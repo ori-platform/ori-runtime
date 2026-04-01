@@ -220,13 +220,13 @@ class TestCpuTemp:
 
     async def test_cpu_temp_osx_cpu_temp_parsed(self):
         adapter = await _make_adapter("cpu_temp")
-        fake_result = MagicMock()
-        fake_result.stdout = "58.2°C\n"
+        fake_proc = MagicMock()
+        fake_proc.communicate = AsyncMock(return_value=(b"58.2\xc2\xb0C\n", b""))
         with (
             patch("platform.system", return_value="Darwin"),
             patch("psutil.sensors_temperatures", return_value={}, create=True),
             patch("shutil.which", return_value="/usr/local/bin/osx-cpu-temp"),
-            patch("subprocess.run", return_value=fake_result),
+            patch("asyncio.create_subprocess_exec", return_value=fake_proc),
         ):
             r = await adapter.read("cpu_temp")
         assert r.value == pytest.approx(58.2)
@@ -500,13 +500,13 @@ class TestSleepBlockingProcess:
             "   pid 5678(Slack): [PreventSystemSleep] named "
             '"Slack notification" 00:00:05\n'
         )
-        fake_result = MagicMock()
-        fake_result.stdout = pmset_output
+        fake_proc = MagicMock()
+        fake_proc.communicate = AsyncMock(return_value=(pmset_output.encode(), b""))
 
         adapter = await _make_adapter("sleep_blocking_process")
         with (
             patch("platform.system", return_value="Darwin"),
-            patch("subprocess.run", return_value=fake_result),
+            patch("asyncio.create_subprocess_exec", return_value=fake_proc),
         ):
             r = await adapter.read("sleep_blocking_process")
 
@@ -521,14 +521,14 @@ class TestSleepBlockingProcess:
             "firefox  1000  4321  sleep:idle  video  block\n"
             "spotify  1000  8765  idle        audio  block\n"
         )
-        fake_result = MagicMock()
-        fake_result.stdout = inhibit_output
+        fake_proc = MagicMock()
+        fake_proc.communicate = AsyncMock(return_value=(inhibit_output.encode(), b""))
 
         adapter = await _make_adapter("sleep_blocking_process")
         with (
             patch("platform.system", return_value="Linux"),
             patch("shutil.which", return_value="/usr/bin/systemd-inhibit"),
-            patch("subprocess.run", return_value=fake_result),
+            patch("asyncio.create_subprocess_exec", return_value=fake_proc),
         ):
             r = await adapter.read("sleep_blocking_process")
 
@@ -548,12 +548,10 @@ class TestSleepBlockingProcess:
         assert r.value == 0.0
 
     async def test_subprocess_failure_graceful(self):
-        import subprocess as sp
-
         adapter = await _make_adapter("sleep_blocking_process")
         with (
             patch("platform.system", return_value="Darwin"),
-            patch("subprocess.run", side_effect=sp.SubprocessError("boom")),
+            patch("asyncio.create_subprocess_exec", side_effect=OSError("boom")),
         ):
             r = await adapter.read("sleep_blocking_process")
         assert r.quality == 0.0

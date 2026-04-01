@@ -5,7 +5,6 @@ import asyncio
 import platform
 import re
 import shutil
-import subprocess
 import time
 from functools import partial
 
@@ -124,7 +123,7 @@ class PsutilAdapter(BaseAdapter):
         if t == "battery_time_remaining":
             return self._battery_time_remaining(sensor_id)
         if t == "cpu_temp":
-            return self._cpu_temp(sensor_id)
+            raise AdapterReadError("cpu_temp must be read via read_async()")
         if t == "disk_percent":
             return self._disk_percent(sensor_id)
         if t == "disk_write_mb":
@@ -145,14 +144,19 @@ class PsutilAdapter(BaseAdapter):
             # a new event loop call.  Instead, expose a direct async path.
             raise AdapterReadError("battery_drain_rate must be read via read_async()")
         if t == "sleep_blocking_process":
-            return self._sleep_blocking(sensor_id)
+            raise AdapterReadError("sleep_blocking_process must be read via read_async()")
         raise AdapterReadError(f"Unknown sensor type: {t}")
 
     # Override read() for battery_drain_rate to keep it fully async
     async def read(self, sensor_id: str) -> SensorReading:  # noqa: F811
         """Sample the configured sensor and return a normalised reading."""
-        if self._sensor_type == "battery_drain_rate":
+        t = self._sensor_type
+        if t == "battery_drain_rate":
             return await self._battery_drain_rate_async(sensor_id)
+        if t == "cpu_temp":
+            return await self._cpu_temp_async(sensor_id)
+        if t == "sleep_blocking_process":
+            return await self._sleep_blocking_async(sensor_id)
         loop = asyncio.get_running_loop()
         try:
             return await loop.run_in_executor(None, partial(self._read_sync, sensor_id))
@@ -254,12 +258,13 @@ class PsutilAdapter(BaseAdapter):
 
     # ── CPU Temperature ───────────────────────────────────────────────────────
 
-    def _cpu_temp(self, sensor_id: str) -> SensorReading:
+    async def _cpu_temp_async(self, sensor_id: str) -> SensorReading:
         system = platform.system()
 
         # (i) psutil.sensors_temperatures — Linux / WSL
         if hasattr(psutil, "sensors_temperatures"):
-            temps = psutil.sensors_temperatures()
+            loop = asyncio.get_running_loop()
+            temps = await loop.run_in_executor(None, psutil.sensors_temperatures)
             for key in ("coretemp", "k10temp", "cpu_thermal", "acpitz"):
                 if key in temps and temps[key]:
                     readings = temps[key]
@@ -276,29 +281,20 @@ class PsutilAdapter(BaseAdapter):
 
         # (ii) osx-cpu-temp subprocess — macOS only
         if system == "Darwin" and shutil.which("osx-cpu-temp"):
-            try:
-                result = subprocess.run(
-                    ["osx-cpu-temp"],
-                    capture_output=True,
-                    text=True,
-                    timeout=3,
+            temp = await self._read_osx_cpu_temp()
+            if temp is not None:
+                return SensorReading(
+                    sensor_id=sensor_id,
+                    sensor_type="cpu_temp",
+                    value=temp,
+                    unit="celsius",
+                    timestamp=_now_ms(),
+                    quality=0.8,
+                    metadata={
+                        "source": "osx-cpu-temp",
+                        "install": "brew install osx-cpu-temp",
+                    },
                 )
-                match = re.search(r"([\d.]+)\s*°?C", result.stdout)
-                if match:
-                    return SensorReading(
-                        sensor_id=sensor_id,
-                        sensor_type="cpu_temp",
-                        value=float(match.group(1)),
-                        unit="celsius",
-                        timestamp=_now_ms(),
-                        quality=0.8,
-                        metadata={
-                            "source": "osx-cpu-temp",
-                            "install": "brew install osx-cpu-temp",
-                        },
-                    )
-            except (subprocess.SubprocessError, OSError, ValueError):
-                pass
 
         # (iii) Not available
         return SensorReading(
@@ -313,6 +309,22 @@ class PsutilAdapter(BaseAdapter):
                 "reason": "no thermal sensors accessible",
             },
         )
+
+    async def _read_osx_cpu_temp(self) -> float | None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "osx-cpu-temp",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+            stdout = stdout_bytes.decode()
+            match = re.search(r"([\d.]+)\s*°?C", stdout)
+            if match:
+                return float(match.group(1))
+        except (FileNotFoundError, asyncio.TimeoutError, OSError, ValueError):
+            pass
+        return None
 
     # ── Storage ───────────────────────────────────────────────────────────────
 
@@ -457,15 +469,15 @@ class PsutilAdapter(BaseAdapter):
 
     # ── Sleep process detection ───────────────────────────────────────────────
 
-    def _sleep_blocking(self, sensor_id: str) -> SensorReading:
+    async def _sleep_blocking_async(self, sensor_id: str) -> SensorReading:
         system = platform.system()
         processes: list[dict] = []
         quality = 0.0
 
         if system == "Darwin":
-            processes, quality = self._pmset_assertions()
+            processes, quality = await self._pmset_assertions_async()
         elif system == "Linux":
-            processes, quality = self._systemd_inhibit()
+            processes, quality = await self._systemd_inhibit_async()
 
         return SensorReading(
             sensor_id=sensor_id,
@@ -477,22 +489,26 @@ class PsutilAdapter(BaseAdapter):
             metadata={"processes": processes},
         )
 
-    def _pmset_assertions(self) -> tuple[list[dict], float]:
+    async def _pmset_assertions_async(self) -> tuple[list[dict], float]:
         """Parse ``pmset -g assertions`` on macOS."""
+        if not shutil.which("pmset"):
+            return [], 0.0
+
         try:
-            result = subprocess.run(
-                ["pmset", "-g", "assertions"],
-                capture_output=True,
-                text=True,
-                timeout=3,
+            proc = await asyncio.create_subprocess_exec(
+                "pmset", "-g", "assertions",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-        except (subprocess.SubprocessError, OSError):
+            stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+            stdout = stdout_bytes.decode()
+        except (FileNotFoundError, asyncio.TimeoutError, OSError):
             return [], 0.0
 
         processes: list[dict] = []
         assertion_types = ("PreventUserIdleSystemSleep", "PreventSystemSleep")
 
-        for line in result.stdout.splitlines():
+        for line in stdout.splitlines():
             for assertion in assertion_types:
                 if assertion not in line:
                     continue
@@ -510,23 +526,24 @@ class PsutilAdapter(BaseAdapter):
 
         return processes, 1.0
 
-    def _systemd_inhibit(self) -> tuple[list[dict], float]:
+    async def _systemd_inhibit_async(self) -> tuple[list[dict], float]:
         """Parse ``systemd-inhibit --list`` on Linux."""
         if not shutil.which("systemd-inhibit"):
             return [], 0.0
 
         try:
-            result = subprocess.run(
-                ["systemd-inhibit", "--list", "--no-legend"],
-                capture_output=True,
-                text=True,
-                timeout=3,
+            proc = await asyncio.create_subprocess_exec(
+                "systemd-inhibit", "--list", "--no-legend",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-        except (subprocess.SubprocessError, OSError):
+            stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=3.0)
+            stdout = stdout_bytes.decode()
+        except (FileNotFoundError, asyncio.TimeoutError, OSError):
             return [], 0.0
 
         processes: list[dict] = []
-        for line in result.stdout.splitlines():
+        for line in stdout.splitlines():
             parts = line.split()
             if len(parts) >= 2:
                 # Column order: WHO  UID  PID  WHAT  WHY  MODE
