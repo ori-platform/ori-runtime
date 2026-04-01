@@ -63,11 +63,12 @@ class TestProcessDeduplication:
     def test_same_reading_after_window_passes_through(self):
         dedup = EventDeduplicator()
         r = _reading(value=5.0)
-        dedup.process(_event(r))
+        now = _ms()
+        with patch("ori.network.deduplicator._now_ms", return_value=now):
+            dedup.process(_event(r))
 
-        # Simulate 6 seconds passing
-        future_ms = _ms() + 6_000
-        with patch("ori.network.deduplicator._now_ms", return_value=future_ms):
+        # 5001ms after first_seen — outside the 5-second window
+        with patch("ori.network.deduplicator._now_ms", return_value=now + 5_001):
             result = dedup.process(_event(r))
         assert result is not None
 
@@ -133,7 +134,7 @@ class TestProcessDeduplication:
         assert dedup.process(e2) is not None
 
     def test_exactly_at_window_boundary_is_suppressed(self):
-        """An event at exactly _WINDOW_MS − 1 ms is still within the window."""
+        """An event at exactly _WINDOW_MS − 1 ms after first_seen is still within the window."""
         dedup = EventDeduplicator()
         r = _reading(value=5.0)
         now = _ms()
@@ -146,7 +147,7 @@ class TestProcessDeduplication:
         assert result is None
 
     def test_exactly_at_window_expiry_passes_through(self):
-        """An event at exactly _WINDOW_MS ms after last_seen is outside the window."""
+        """An event at exactly _WINDOW_MS ms after first_seen is outside the window."""
         dedup = EventDeduplicator()
         r = _reading(value=5.0)
         now = _ms()
@@ -157,6 +158,28 @@ class TestProcessDeduplication:
         with patch("ori.network.deduplicator._now_ms", return_value=at_expiry):
             result = dedup.process(_event(r))
         assert result is not None
+
+    def test_sliding_window_no_boundary_leak(self):
+        """Readings at 4999ms and 5001ms after first_seen: first suppressed, second passes.
+
+        This is the boundary-leak regression test. With the old bucket approach
+        (timestamp // 5000) two readings could fall in different buckets and
+        both pass even though they were only 2ms apart straddling a boundary.
+        With first_seen sliding window this cannot happen.
+        """
+        dedup = EventDeduplicator()
+        r = _reading(value=5.0)
+        now = _ms()
+        with patch("ori.network.deduplicator._now_ms", return_value=now):
+            dedup.process(_event(r))
+
+        # 4999ms later — still inside window → suppressed
+        with patch("ori.network.deduplicator._now_ms", return_value=now + 4_999):
+            assert dedup.process(_event(r)) is None
+
+        # 5001ms after first_seen → outside window → passes through
+        with patch("ori.network.deduplicator._now_ms", return_value=now + 5_001):
+            assert dedup.process(_event(r)) is not None
 
 
 # ─── Stats ────────────────────────────────────────────────────────────────────

@@ -26,8 +26,11 @@ class EventDeduplicator:
     """Suppress duplicate sensor readings that arrive within a 5-second window.
 
     Two events are considered duplicates when they share the same fingerprint
-    (device + sensor_type + rounded value + 5-second bucket), as produced by
-    :func:`~ori.network.events.compute_fingerprint`.
+    (device + sensor_id + sensor_type + rounded value), as produced by
+    :func:`~ori.network.events.compute_fingerprint`, AND the current time is
+    within :data:`_WINDOW_MS` milliseconds of the record's ``first_seen``
+    timestamp.  Using ``first_seen`` (not ``last_seen``) gives a true sliding
+    window that does not leak at fixed bucket boundaries.
 
     The deduplicator is intentionally synchronous and has no external
     dependencies — it runs inline in the event loop without blocking.
@@ -58,7 +61,7 @@ class EventDeduplicator:
         now = _now_ms()
         record = self._records.get(fp)
 
-        if record is not None and (now - record.last_seen) < _WINDOW_MS:
+        if record is not None and (now - record.first_seen) < _WINDOW_MS:
             # Duplicate within the window — suppress
             record.last_seen = now
             record.count += 1

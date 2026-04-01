@@ -123,8 +123,9 @@ def test_ori_event_from_reading_attaches_reading(sample_reading: SensorReading) 
 # ---------------------------------------------------------------------------
 
 
-def test_fingerprint_same_within_5_second_window(sample_reading: SensorReading) -> None:
-    # Two readings 4 seconds apart (4000 ms) in the same 5-second bucket
+def test_fingerprint_same_regardless_of_timestamp(sample_reading: SensorReading) -> None:
+    # Timestamp is excluded from the fingerprint; window enforcement is the
+    # deduplicator's responsibility, not compute_fingerprint's.
     base_ts = 1_700_000_000_000
     r1 = SensorReading(
         sensor_id="current-01",
@@ -139,18 +140,19 @@ def test_fingerprint_same_within_5_second_window(sample_reading: SensorReading) 
         sensor_type="current",
         value=8.2,
         unit="ampere",
-        timestamp=base_ts + 4_000,
+        timestamp=base_ts + 10_000,  # 10 seconds later — same fingerprint
         quality=1.0,
     )
-    # Force both into the same bucket by keeping timestamp // 5000 equal
-    assert (r1.timestamp // 5000) == (r2.timestamp // 5000)
     assert compute_fingerprint(r1, "dev-01") == compute_fingerprint(r2, "dev-01")
 
 
-def test_fingerprint_different_across_5_second_boundary(
+def test_fingerprint_stable_across_bucket_boundary(
     sample_reading: SensorReading,
 ) -> None:
+    # Old approach produced different fingerprints at bucket boundaries for
+    # identical readings — this is the regression guard.
     base_ts = 1_700_000_000_000
+    next_bucket_ts = ((base_ts // 5000) + 1) * 5000
     r1 = SensorReading(
         sensor_id="current-01",
         sensor_type="current",
@@ -159,8 +161,6 @@ def test_fingerprint_different_across_5_second_boundary(
         timestamp=base_ts,
         quality=1.0,
     )
-    # Jump to the next 5-second bucket
-    next_bucket_ts = ((base_ts // 5000) + 1) * 5000
     r2 = SensorReading(
         sensor_id="current-01",
         sensor_type="current",
@@ -169,7 +169,8 @@ def test_fingerprint_different_across_5_second_boundary(
         timestamp=next_bucket_ts,
         quality=1.0,
     )
-    assert compute_fingerprint(r1, "dev-01") != compute_fingerprint(r2, "dev-01")
+    # Fingerprints must be equal — timestamp no longer part of the hash
+    assert compute_fingerprint(r1, "dev-01") == compute_fingerprint(r2, "dev-01")
 
 
 def test_fingerprint_different_for_different_sensor_types() -> None:
@@ -253,7 +254,7 @@ def test_fingerprint_different_for_different_sensor_ids() -> None:
     assert compute_fingerprint(r1, "dev-01") != compute_fingerprint(r2, "dev-01")
 
 
-def test_fingerprint_same_for_same_sensor_id_within_5_seconds() -> None:
+def test_fingerprint_same_for_same_sensor_id_any_timestamp() -> None:
     base_ts = 1_700_000_000_000
     r1 = SensorReading(
         sensor_id="load-current",
@@ -268,10 +269,9 @@ def test_fingerprint_same_for_same_sensor_id_within_5_seconds() -> None:
         sensor_type="current_clamp",
         value=5.0,
         unit="ampere",
-        timestamp=base_ts + 4_000,  # 4 s later, same 5-second bucket
+        timestamp=base_ts + 60_000,  # 60 s later — still same fingerprint
         quality=1.0,
     )
-    assert (r1.timestamp // 5000) == (r2.timestamp // 5000)
     assert compute_fingerprint(r1, "dev-01") == compute_fingerprint(r2, "dev-01")
 
 
