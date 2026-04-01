@@ -1,12 +1,15 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 _VALID_ACTION_TIERS = {"A", "B", "C", "D"}
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -105,6 +108,45 @@ class Config:
         reasoning = _parse_reasoning(data.get("reasoning", {}))
         gateway = _parse_gateway(data.get("gateway", {}))
         actions = _parse_actions(data.get("actions", {}))
+
+        whatsapp_enabled = (
+            str(actions.whatsapp.get("enabled", "")).lower() == "true"
+            or actions.whatsapp.get("enabled") is True
+        )
+        if whatsapp_enabled:
+            for v in (
+                "TWILIO_ACCOUNT_SID",
+                "TWILIO_AUTH_TOKEN",
+                "TWILIO_WHATSAPP_FROM",
+                "OWNER_WHATSAPP_NUMBER",
+            ):
+                val = str(actions.whatsapp.get(v, ""))
+                if not val or "${" in val:
+                    resolved_value = actions.whatsapp.get(v, "")
+                    raise ConfigValidationError(
+                        f"Environment variable not set: {resolved_value}. "
+                        f"Set it in your .env file before starting Ori."
+                    )
+
+        sec_whatsapp = str(actions.whatsapp.get("SECONDARY_WHATSAPP", ""))
+        if "${" in sec_whatsapp:
+            logger.warning(
+                "SECONDARY_WHATSAPP missing. Tier C escalation will not function if operator does not respond."
+            )
+
+        sms_enabled = (
+            str(actions.sms.get("enabled", "")).lower() == "true"
+            or actions.sms.get("enabled") is True
+        )
+        if sms_enabled:
+            for v in ("AT_API_KEY", "AT_USERNAME", "OWNER_PHONE_NUMBER"):
+                val = str(actions.sms.get(v, ""))
+                if not val or "${" in val:
+                    resolved_value = actions.sms.get(v, "")
+                    raise ConfigValidationError(
+                        f"Environment variable not set: {resolved_value}. "
+                        f"Set it in your .env file before starting Ori."
+                    )
 
         return cls(
             device=device,

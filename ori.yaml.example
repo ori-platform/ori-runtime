@@ -98,11 +98,16 @@ actions:
 
   whatsapp:
     enabled: true
-    to_number: "${OWNER_WHATSAPP_NUMBER}"
+    TWILIO_ACCOUNT_SID: "${TWILIO_ACCOUNT_SID}"
+    TWILIO_AUTH_TOKEN: "${TWILIO_AUTH_TOKEN}"
+    TWILIO_WHATSAPP_FROM: "${TWILIO_WHATSAPP_FROM}"
+    OWNER_WHATSAPP_NUMBER: "${OWNER_WHATSAPP_NUMBER}"
 
   sms:
     enabled: true                    # Africa's Talking — primary for Nigeria
-    to_number: "${OWNER_PHONE_NUMBER}"
+    AT_API_KEY: "${AT_API_KEY}"
+    AT_USERNAME: "${AT_USERNAME}"
+    OWNER_PHONE_NUMBER: "${OWNER_PHONE_NUMBER}"
 
   relay:
     enabled: false                   # CHANGE TO true ONLY WHEN RELAY IS WIRED

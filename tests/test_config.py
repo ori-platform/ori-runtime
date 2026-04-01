@@ -11,9 +11,18 @@ from ori.config import (
     ConfigValidationError,
 )
 
-# ─── Fixture: path to the canonical example file ──────────────────────────────
-
 EXAMPLE_YAML = os.path.join(os.path.dirname(__file__), "..", "ori.yaml.example")
+
+
+@pytest.fixture
+def _mock_env_vars_for_examples(monkeypatch):
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "mock_sid")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "mock_token")
+    monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "mock_from")
+    monkeypatch.setenv("OWNER_WHATSAPP_NUMBER", "mock_owner")
+    monkeypatch.setenv("AT_API_KEY", "mock_key")
+    monkeypatch.setenv("AT_USERNAME", "mock_user")
+    monkeypatch.setenv("OWNER_PHONE_NUMBER", "mock_phone")
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -29,6 +38,10 @@ def _write_yaml(tmp_path, content: str) -> str:
 
 
 class TestLoadExample:
+    @pytest.fixture(autouse=True)
+    def use_mock_env(self, _mock_env_vars_for_examples):
+        pass
+
     def test_loads_without_error(self):
         cfg = Config.load(EXAMPLE_YAML)
         assert isinstance(cfg, Config)
@@ -487,12 +500,14 @@ class TestEnvExpansion:
             actions:
               primary_alert_channel: sms
               sms:
-                enabled: true
-                to_number: "${OWNER_PHONE_NUMBER}"
+                enabled: false
+                AT_API_KEY: "mock_key"
+                AT_USERNAME: "mock_user"
+                OWNER_PHONE_NUMBER: "${OWNER_PHONE_NUMBER}"
             """,
         )
         cfg = Config.load(yaml_path)
-        assert cfg.actions.sms["to_number"] == "+2348012345678"
+        assert cfg.actions.sms["OWNER_PHONE_NUMBER"] == "+2348012345678"
 
     def test_unset_env_var_preserved_as_literal(self, tmp_path, monkeypatch):
         monkeypatch.delenv("UNSET_VAR", raising=False)
@@ -516,12 +531,14 @@ class TestEnvExpansion:
             actions:
               primary_alert_channel: sms
               sms:
-                enabled: true
-                to_number: "${UNSET_VAR}"
+                enabled: false
+                AT_API_KEY: "mock_key"
+                AT_USERNAME: "mock_user"
+                OWNER_PHONE_NUMBER: "${UNSET_VAR}"
             """,
         )
         cfg = Config.load(yaml_path)
-        assert cfg.actions.sms["to_number"] == "${UNSET_VAR}"
+        assert cfg.actions.sms["OWNER_PHONE_NUMBER"] == "${UNSET_VAR}"
 
 
 # ─── File not found ───────────────────────────────────────────────────────────
@@ -537,3 +554,76 @@ class TestFileErrors:
         p.write_text("device: [\nunclosed bracket")
         with pytest.raises(ConfigValidationError, match="YAML parse error"):
             Config.load(str(p))
+
+
+class TestActionEnvValidation:
+    def _yaml(self, actions_block: str) -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+  offline_fallback: rule
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+{actions_block}
+"""
+
+    def test_whatsapp_missing_critical_var_raises(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: whatsapp\n"
+                "  whatsapp:\n"
+                "    enabled: true\n"
+                "    TWILIO_ACCOUNT_SID: '${TWILIO_ACCOUNT_SID}'\n"
+                "    TWILIO_AUTH_TOKEN: 'token'\n"
+                "    TWILIO_WHATSAPP_FROM: 'from'\n"
+                "    OWNER_WHATSAPP_NUMBER: 'to'"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="TWILIO_ACCOUNT_SID"):
+            Config.load(yaml_path)
+
+    def test_sms_missing_critical_var_raises(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    OWNER_PHONE_NUMBER: '${OWNER_PHONE_NUMBER}'"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="OWNER_PHONE_NUMBER"):
+            Config.load(yaml_path)
+
+    def test_whatsapp_missing_secondary_warns(self, tmp_path, caplog):
+        import logging
+
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: whatsapp\n"
+                "  whatsapp:\n"
+                "    enabled: true\n"
+                "    TWILIO_ACCOUNT_SID: 'sid'\n"
+                "    TWILIO_AUTH_TOKEN: 'token'\n"
+                "    TWILIO_WHATSAPP_FROM: 'from'\n"
+                "    OWNER_WHATSAPP_NUMBER: 'to'\n"
+                "    SECONDARY_WHATSAPP: '${SECONDARY_WHATSAPP}'"
+            ),
+        )
+        with caplog.at_level(logging.WARNING):
+            Config.load(yaml_path)
+            assert "SECONDARY_WHATSAPP missing" in caplog.text
