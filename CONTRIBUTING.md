@@ -24,6 +24,7 @@ evaluated through the six design lenses defined there. The most important one:
 - [Testing](#testing)
 - [Safety Invariants](#safety-invariants)
 - [Commit Messages](#commit-messages)
+- [Signed Commits (Required)](#signed-commits-required)
 - [Pull Request Process](#pull-request-process)
 - [Types of Contributions Welcome](#types-of-contributions-welcome)
 - [Security](#security)
@@ -365,7 +366,7 @@ async def test_psutil_adapter_integration():
     ...
 ```
 
-The test suite currently has **660+ tests** covering all layers.
+The test suite currently has **790+ tests** covering all layers.
 Every PR must maintain or increase this count.
 
 ---
@@ -419,6 +420,63 @@ security(sandbox): restrict allowed imports for community hooks
 ```
 
 Prefix with `security` for any change touching safety invariants.
+
+---
+
+## Signed Commits (Required)
+
+This repository enforces **verified signed commits** on protected branches.
+Unsigned commits will block merge.
+
+### Recommended setup: SSH signing (no GPG binary required)
+
+```bash
+# Use SSH signatures for commits
+git config --global gpg.format ssh
+git config --global commit.gpgsign true
+git config --global user.signingkey ~/.ssh/id_ed25519.pub
+```
+
+If your key path differs, replace `~/.ssh/id_ed25519.pub`.
+
+### GitHub account setup
+
+In **GitHub → Settings → SSH and GPG keys**:
+
+1. Add your public key as an **Authentication key** (normal git access)
+2. Add the same public key again as a **Signing Key**
+
+Without step 2, commits may still show as unverified.
+
+### Verify before pushing
+
+```bash
+git log --format='%h %G? %ae %s' origin/main..HEAD
+```
+
+`%G?` should show `G` for each commit.
+
+### If your branch already has unsigned commits
+
+```bash
+# Re-sign each commit on your feature branch
+git rebase -i origin/main --exec "git commit --amend -S --no-edit"
+
+# Push rewritten branch history
+git push --force-with-lease
+```
+
+Force-push here is expected only for your feature branch after re-signing.
+Direct pushes to `main` remain blocked by branch protection.
+
+### Optional local verification fix
+
+If git shows `gpg.ssh.allowedSignersFile needs to be configured...`:
+
+```bash
+printf "%s %s\n" "$(git config user.email)" "$(cat ~/.ssh/id_ed25519.pub)" > ~/.ssh/allowed_signers
+git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
+```
 
 ---
 
@@ -512,26 +570,8 @@ circuit breaker. Code with that awareness.
 
 ## Security
 
-**Do not open GitHub issues for security vulnerabilities.**
-
-Security issues in Ori are higher-stakes than most projects because this
-codebase controls physical hardware. A vulnerability could trip a real
-circuit breaker or disable a safety cutoff.
-
-**To report a security issue:**
-
-1. Email the maintainer directly (find contact via GitHub profile)
-2. Include a clear description and reproduction steps
-3. Expect acknowledgement within 72 hours
-4. Do not publish details publicly until a fix is released
-
-**What counts as a security issue:**
-
-- Sandbox escape in skill hooks (`sandbox.py`)
-- Condition validation bypass in the rule engine
-- Tier D bypass via any code path
-- Credential exposure or injection via skill YAML
-- Supply-chain issues in dependencies
+See [`SECURITY.md`](SECURITY.md) for the current vulnerability reporting
+process, response timelines, disclosure policy, and security scope.
 
 ---
 
