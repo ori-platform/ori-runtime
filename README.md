@@ -6,7 +6,8 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-1E6B4A?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-1E6B4A?style=flat-square)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-660%2B%20passing-1E6B4A?style=flat-square)](#testing)
+[![Tests](https://img.shields.io/badge/tests-790%2B%20passing-1E6B4A?style=flat-square)](#testing)
+[![Release](https://img.shields.io/badge/release-alpha-C8A951?style=flat-square)](#release-status)
 [![Platform](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%20·%20Linux%20·%20macOS-C8A951?style=flat-square)](#)
 
 </div>
@@ -18,6 +19,25 @@
 > **IoT devices do not need more data. They need to reason about that data — and act on it.**
 
 Ori is an open-source **agentic IoT runtime** that gives physical devices **tiered autonomous reasoning** — from deterministic safety rules to local SLMs. This reasoning is governed by a **[Physical Actuation Trust](PRINCIPLES.md)** framework that defines exactly what an AI agent is permitted to do in the physical world, at what consequence level, and with what human oversight. Offline-first. No cloud required. Runs on a $55 Raspberry Pi.
+
+## Release Status
+
+**Current channel: Alpha (`0.1.x`)**
+
+- Runtime core is functional and publicly testable.
+- Safety invariants (tier guards, strict skill validation, sandbox boundaries) are CI-enforced on every PR.
+- APIs/config may still evolve between minor alpha releases.
+- Recommended use today: pilots, PoCs, and controlled deployments.
+
+Related repos in the org:
+
+- Runtime: `ori-platform/ori-runtime` (this repo)
+- Skills registry: `ori-platform/ori-skills`
+- CLI: `ori-platform/ori-cli`
+- Gateway: `ori-platform/ori-gateway`
+- SDK (Python): `ori-platform/ori-sdk-python`
+- Dashboard: `ori-platform/ori-dashboard`
+- Specs/RFCs: `ori-platform/ori-specs`
 
 ---
 
@@ -256,7 +276,11 @@ pytest tests/test_rule_engine.py -v           # Specific module
 pytest tests/ --cov=ori --cov-report=term-missing  # With coverage
 ```
 
-The test suite covers all layers — HAL adapters, event bus, rule engine (with AST safety validation), action dispatcher (all four tiers), skill loader, state store, and runtime. 660+ tests passing, 5 skipped (hardware-only).
+The test suite covers all layers — HAL adapters, event bus, rule engine (with AST safety validation), action dispatcher (all four tiers), skill loader, state store, and runtime. 790+ tests passing, 5 skipped (hardware-only).
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, and disclosure policy.
 
 ---
 
