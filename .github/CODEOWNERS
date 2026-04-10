@@ -1,25 +1,35 @@
-# Ori Runtime — Code Owners
+# Ori Runtime — CODEOWNERS
 #
-# GitHub enforces these rules automatically:
-# - A PR touching any file under /ori/ cannot be merged without maintainer approval
-# - A PR touching only /skills/ can be reviewed by any designated maintainer
+# This repo is safety-critical (physical actuation). Default every path to
+# maintainer review, then keep explicit sections for clarity.
 #
-# Reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+# Reference:
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
 
-# ── Core Runtime — maintainer review required ──────────────────────────────────
-# Changes here affect physical hardware. Every line must be understood and approved.
-/ori/                   @AdeGneus
-/tests/                 @AdeGneus
-/pyproject.toml         @AdeGneus
-/requirements*.txt      @AdeGneus
-/requirements*.in       @AdeGneus
-/CLAUDE.md              @AdeGneus
-/AGENTS.md              @AdeGneus
-/PRINCIPLES.md          @AdeGneus
-/.github/               @AdeGneus
+# ── Default owner (no unowned paths) ──────────────────────────────────────────
+* @AdeGneus
 
-# ── Bundled Skills — maintainer review required ────────────────────────────────
-# Bundled skills use _load_hooks_direct() which bypasses the sandbox.
-# They ship with the runtime and are implicitly trusted. Core team review required.
-# Community skill contributions do NOT go here — they go to the Skills Hub repo.
-/skills/                @AdeGneus
+# ── Runtime core (physical behavior + safety) ─────────────────────────────────
+/ori/ @AdeGneus
+/tests/ @AdeGneus
+
+# ── Build + dependency supply chain ───────────────────────────────────────────
+/pyproject.toml @AdeGneus
+/requirements*.in @AdeGneus
+/requirements*.txt @AdeGneus
+
+# ── Runtime policy/spec docs (authoritative behavior) ────────────────────────
+/AGENTS.md @AdeGneus
+/CLAUDE.md @AdeGneus
+/PRINCIPLES.md @AdeGneus
+/README.md @AdeGneus
+/ori.yaml.example @AdeGneus
+/ori.yaml.phone.example @AdeGneus
+
+# ── CI / governance / automation ──────────────────────────────────────────────
+/.github/ @AdeGneus
+/scripts/ @AdeGneus
+
+# ── Bundled skills ship with runtime and are trusted code ────────────────────
+# Community skill submissions belong in the separate ori-skills repository.
+/skills/ @AdeGneus
