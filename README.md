@@ -252,7 +252,7 @@ source .venv/bin/activate
 pip install --upgrade pip          # required: old pip (<22) can't handle pyproject.toml editable installs
 pip install -e ".[dev]"
 
-# Verify everything works (660+ tests)
+# Verify everything works (800+ tests)
 pytest tests/ -v
 
 # Validate a skill loads cleanly
@@ -265,6 +265,66 @@ for t in skill.triggers:
     print(f'  Trigger: {t.name} tier={t.action_tier}')
 "
 ```
+
+### Quick Local SLM Setup (Qwen GGUF)
+
+```bash
+# 1) Activate your venv
+source .venv/bin/activate
+
+# 2) Install llama-cpp-python (CPU path; stable across laptops)
+pip install --no-cache-dir llama-cpp-python
+
+# 3) Download a local GGUF model
+mkdir -p ~/models
+curl -L https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+  -o ~/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+
+# 4) Point your config to the local model
+# reasoning:
+#   default_tier: local
+#   local_model: qwen2.5-0.5b-instruct-q4_k_m
+#   model_path: /Users/<you>/models
+#   offline_fallback: local_slm
+
+# 5) Optional dev convenience: auto-load .env before config parse
+export ORI_AUTOLOAD_DOTENV=true
+
+# 6) Start runtime
+python -m ori.runtime --config ori.local.yaml
+```
+
+Smoke test (without starting full runtime):
+
+```bash
+python - <<'PY'
+import asyncio
+from ori.reasoning.local_llm import LocalLLM
+
+async def main():
+    llm = LocalLLM(
+        model_path="/Users/<you>/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        context_window=2048,
+    )
+    result = await llm.reason("CPU at 96% for 10 minutes. Give 2 short operator actions.")
+    print(result.tier, result.model)
+    print(result.text)
+
+asyncio.run(main())
+PY
+```
+
+Troubleshooting:
+
+- `ori-runtime: command not found`:
+  - install entrypoint into the active venv: `python -m pip install -e .`
+  - or run directly: `python -m ori.runtime --config ori.local.yaml`
+- Config fails with `Environment variable not set: ${...}`:
+  - export required vars into shell or set `ORI_AUTOLOAD_DOTENV=true` with a valid `.env` file
+- `Failed to create llama_context` on macOS:
+  - reinstall `llama-cpp-python` without Metal (CPU path), then retry
+- VS Code uses wrong interpreter:
+  - select `${workspaceFolder}/.venv/bin/python` via `Python: Select Interpreter`
 
 ---
 
