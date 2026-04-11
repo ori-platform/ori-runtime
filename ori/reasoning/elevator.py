@@ -141,7 +141,9 @@ class IntelligenceElevator:
     ) -> None:
         self._local_llm = local_llm
         self._rule_engine = rule_engine or RuleEngine()
-        self._config = config  # ReasoningConfig from ori.yaml; None in test environments
+        self._config = (
+            config  # ReasoningConfig from ori.yaml; None in test environments
+        )
         self._event_bus: Any = None
         self._last_power_mode: str = "normal"
 
@@ -177,7 +179,9 @@ class IntelligenceElevator:
         """
         tier = await self.select_tier(event, skill, state_store)
 
-        rule_result, _ = await self._evaluate_rules_with_hooks(event, skill, state_store)
+        rule_result, _ = await self._evaluate_rules_with_hooks(
+            event, skill, state_store
+        )
         rejection_record = await self._lookup_rejection_record(
             event=event,
             skill=skill,
@@ -186,7 +190,9 @@ class IntelligenceElevator:
         )
         rejection_note: str | None = None
         if rejection_record is not None:
-            operator_reason = str(rejection_record.get("operator_response") or "").strip()
+            operator_reason = str(
+                rejection_record.get("operator_response") or ""
+            ).strip()
             if operator_reason:
                 rejection_note = (
                     "NOTE: A similar pattern was previously rejected by the operator. "
@@ -253,7 +259,9 @@ class IntelligenceElevator:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _is_offline)
 
-    async def _evaluate_rules_with_hooks(self, event: OriEvent, skill: Any, state_store: Any):
+    async def _evaluate_rules_with_hooks(
+        self, event: OriEvent, skill: Any, state_store: Any
+    ):
         """Build context with derived hook variables, and evaluate against RuleEngine."""
         rules = getattr(skill, "triggers", [])
         ctx: dict[str, Any] = {}
@@ -263,17 +271,22 @@ class IntelligenceElevator:
         hook_ctx = None
         if hasattr(skill, "hooks") and hasattr(skill.hooks, "pre_trigger_eval"):
             from ori.skills.hooks_api import HookContext
-            hook_ctx = HookContext.build(event, state_store, getattr(skill, "name", "unknown"))
+
+            hook_ctx = HookContext.build(
+                event, state_store, getattr(skill, "name", "unknown")
+            )
             try:
                 skill.hooks.pre_trigger_eval(hook_ctx)
                 ctx.update(hook_ctx.derived)
             except Exception:
                 logger.exception(
                     "IntelligenceElevator: pre_trigger_eval hook failed for %r",
-                    getattr(skill, "name", "unknown")
+                    getattr(skill, "name", "unknown"),
                 )
 
-        rule_result = await self._rule_engine.evaluate(event, rules, context=ctx, state_store=state_store)
+        rule_result = await self._rule_engine.evaluate(
+            event, rules, context=ctx, state_store=state_store
+        )
         return rule_result, hook_ctx
 
     async def select_tier(
@@ -318,7 +331,9 @@ class IntelligenceElevator:
                     return "rule"
                 self._last_power_mode = "normal"
 
-        rule_result, _ = await self._evaluate_rules_with_hooks(event, skill, state_store)
+        rule_result, _ = await self._evaluate_rules_with_hooks(
+            event, skill, state_store
+        )
 
         # Tier D is always handled by the rule engine — return immediately
         if rule_result.matched and rule_result.action_tier == "D":
@@ -349,8 +364,16 @@ class IntelligenceElevator:
         complexity = _complexity_score(current_value, avg_24h, history, _hour_now())
 
         offline = await self._is_offline_async()
-        fallback = getattr(self._config, "offline_fallback", "rule") if self._config else "rule"
-        threshold = getattr(self._config, "escalation_threshold", 0.70) if self._config else 0.70
+        fallback = (
+            getattr(self._config, "offline_fallback", "rule")
+            if self._config
+            else "rule"
+        )
+        threshold = (
+            getattr(self._config, "escalation_threshold", 0.70)
+            if self._config
+            else 0.70
+        )
 
         if offline:
             return fallback
@@ -468,7 +491,9 @@ class IntelligenceElevator:
         return {"A": 1, "B": 2, "C": 3, "D": 4}.get(str(tier).upper(), 0)
 
     @staticmethod
-    def _resolve_default_action_for_trigger(skill: Any, trigger_name: str) -> str | None:
+    def _resolve_default_action_for_trigger(
+        skill: Any, trigger_name: str
+    ) -> str | None:
         actions: list[str] = []
         if hasattr(skill, "get_default_actions_for_trigger"):
             maybe = skill.get_default_actions_for_trigger(trigger_name)
@@ -511,7 +536,9 @@ class IntelligenceElevator:
 
         proposed_action = str(getattr(rule_result, "action", "") or "")
         if not proposed_action:
-            proposed_action = self._resolve_default_action_for_trigger(skill, trigger_name) or ""
+            proposed_action = (
+                self._resolve_default_action_for_trigger(skill, trigger_name) or ""
+            )
         if not proposed_action:
             return None
 
@@ -711,7 +738,9 @@ class IntelligenceElevator:
                 )
 
         except RuleEngineSafetyError as exc:
-            logger.error("IntelligenceElevator: Safety check blocked reasoning: %s", exc)
+            logger.error(
+                "IntelligenceElevator: Safety check blocked reasoning: %s", exc
+            )
 
             text = (
                 f"Sensor safety check failed: {exc}. "
@@ -735,7 +764,7 @@ class IntelligenceElevator:
                 device_id=event.device_id,
                 sensor_id=event.sensor_id,
                 timestamp=_now_ms(),
-                reading=event.reading
+                reading=event.reading,
             )
 
             actions = []
@@ -756,7 +785,9 @@ class IntelligenceElevator:
                 if "alert_sms" in available_actions:
                     actions.append("alert_sms")
 
-            context = SkillContext(skill=skill, event=synthetic_event, state_store=state_store)
+            context = SkillContext(
+                skill=skill, event=synthetic_event, state_store=state_store
+            )
             for action in actions:
                 await dispatcher.dispatch(
                     action=action,

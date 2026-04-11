@@ -267,6 +267,13 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _rule_get(rule: Any, key: str, default: Any = None) -> Any:
+    """Read rule fields from either dict rules or Trigger dataclasses."""
+    if isinstance(rule, dict):
+        return rule.get(key, default)
+    return getattr(rule, key, default)
+
+
 class RuleEngine:
     """Deterministic, LLM-free rule evaluator — Tier 1 of the Intelligence Elevator.
 
@@ -298,7 +305,7 @@ class RuleEngine:
     async def evaluate(
         self,
         event: OriEvent,
-        rules: list[dict[str, Any]],
+        rules: list[Any],
         context: dict[str, Any] | None = None,
         state_store: Any = None,
     ) -> RuleResult:
@@ -323,7 +330,7 @@ class RuleEngine:
         base_ctx: dict[str, Any] = dict(context or {})
         if event.reading is not None:
             first_rule_name = (
-                rules[0].get("name", "<unnamed>") if rules else "<unknown>"
+                _rule_get(rules[0], "name", "<unnamed>") if rules else "<unknown>"
             )
             _validate_sensor_value(event.reading.value, first_rule_name)
             base_ctx.setdefault("value", event.reading.value)
@@ -335,7 +342,7 @@ class RuleEngine:
         # Pre-fetch history if needed to safely inject into synchronous eval.
         history_cache: dict[tuple, Any] = {}
         for rule in rules:
-            condition = rule.get("condition", "")
+            condition = _rule_get(rule, "condition", "")
             if not condition:
                 continue
             _check_safety_ast(condition)
@@ -377,13 +384,13 @@ class RuleEngine:
         namespace = eval_ctx.as_dict()
 
         for rule in rules:
-            name: str = rule.get("name", "<unnamed>")
-            condition: str = rule.get("condition", "")
-            bypass_llm: bool = bool(rule.get("bypass_llm", False))
-            action_tier: str = str(rule.get("action_tier", "A"))
-            escalate_to: str | None = rule.get("escalate_to")
-            action: str | None = rule.get("action")
-            cooldown_s: int = int(rule.get("cooldown_seconds", 0))
+            name: str = _rule_get(rule, "name", "<unnamed>")
+            condition: str = _rule_get(rule, "condition", "")
+            bypass_llm: bool = bool(_rule_get(rule, "bypass_llm", False))
+            action_tier: str = str(_rule_get(rule, "action_tier", "A"))
+            escalate_to: str | None = _rule_get(rule, "escalate_to")
+            action: str | None = _rule_get(rule, "action")
+            cooldown_s: int = int(_rule_get(rule, "cooldown_seconds", 0))
 
             if not condition:
                 continue

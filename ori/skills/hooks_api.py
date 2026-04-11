@@ -13,20 +13,32 @@ class HookHistoryAdapter:
     def __init__(self, store: Any):
         self._store = store
 
+    def _read(self, fn_name: str, *args: Any) -> Any:
+        """Execute a StateStore sync read helper across store API versions."""
+        if not self._store:
+            return None
+        fn = getattr(self._store, fn_name, None)
+        if fn is None:
+            return None
+        run_read = getattr(self._store, "_run_read_with_conn", None)
+        if callable(run_read):
+            return run_read(fn, *args)
+        return fn(*args)
+
     def avg_hours(self, sensor_id: str, hours: int) -> Optional[float]:
         if not self._store:
             return None
-        return self._store._avg_last_hours_sync(sensor_id, hours)
+        return self._read("_avg_last_hours_sync", sensor_id, hours)
 
     def avg_last_n(self, sensor_id: str, n: int) -> Optional[float]:
         if not self._store:
             return None
-        return self._store._avg_last_n_sync(sensor_id, n)
+        return self._read("_avg_last_n_sync", sensor_id, n)
 
     def last_value(self, sensor_id: str) -> Optional[float]:
         if not self._store:
             return None
-        history = self._store._get_history_sync(sensor_id, 1)
+        history = self._read("_get_history_sync", sensor_id, 1) or []
         if history:
             return history[0].value
         return None
@@ -34,7 +46,7 @@ class HookHistoryAdapter:
     def last_timestamp(self, sensor_id: str) -> Optional[int]:
         if not self._store:
             return None
-        history = self._store._get_history_sync(sensor_id, 1)
+        history = self._read("_get_history_sync", sensor_id, 1) or []
         if history:
             return history[0].timestamp
         return None
@@ -42,7 +54,7 @@ class HookHistoryAdapter:
     def fetch_history(self, sensor_id: str, limit: int = 1) -> list[dict[str, Any]]:
         if not self._store:
             return []
-        history = self._store._get_history_sync(sensor_id, limit)
+        history = self._read("_get_history_sync", sensor_id, limit) or []
         return [
             {
                 "sensor_id": r.sensor_id,
