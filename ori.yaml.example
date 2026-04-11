@@ -140,8 +140,8 @@ skills:
 
 reasoning:
   default_tier: local                # rule | local | gateway | cloud
-  local_model: qwen2.5-0.5b-instruct-q4_k_m
-  model_path: /home/pi/models/       # directory where .gguf model files live
+  local_model: qwen2.5-0.5b-instruct-q4_k_m  # basename or full .gguf filename/path
+  model_path: /home/pi/models/       # directory containing local GGUF models
   offline_fallback: rule             # tier to use when network unavailable
   escalation_threshold: 0.70        # escalate if confidence below this
   energy_aware_reasoning:

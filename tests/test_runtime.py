@@ -9,8 +9,10 @@ are mocked.  No real hardware, credentials, or network calls are made.
 
 import asyncio
 import logging
+import os
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -18,7 +20,13 @@ import pytest
 
 from ori.network.events import OriEvent, SensorReading
 from ori.reasoning.elevator import SkillContext
-from ori.runtime import OriRuntime, _process_target_from_context
+from ori.runtime import (
+    OriRuntime,
+    _build_local_llm,
+    _maybe_autoload_dotenv,
+    _process_target_from_context,
+    _resolve_local_model_file,
+)
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -105,6 +113,146 @@ def _patch_external(monkeypatch):
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
+
+
+class TestLocalSLMWiring:
+    def test_resolve_local_model_from_directory_and_basename(self, tmp_path: Path):
+        model_dir = tmp_path / "models"
+        model_dir.mkdir()
+        model_file = model_dir / "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+        model_file.write_bytes(b"fake")
+
+        cfg_path = tmp_path / "ori.yaml"
+        cfg_path.write_text("device: {}\n", encoding="utf-8")
+
+        resolved = _resolve_local_model_file(
+            local_model="qwen2.5-0.5b-instruct-q4_k_m",
+            model_path=str(model_dir),
+            config_path=str(cfg_path),
+        )
+        assert resolved == str(model_file.resolve())
+
+    def test_resolve_local_model_from_absolute_file(self, tmp_path: Path):
+        model_file = tmp_path / "model.gguf"
+        model_file.write_bytes(b"fake")
+
+        cfg_path = tmp_path / "ori.yaml"
+        cfg_path.write_text("device: {}\n", encoding="utf-8")
+
+        resolved = _resolve_local_model_file(
+            local_model=str(model_file),
+            model_path="",
+            config_path=str(cfg_path),
+        )
+        assert resolved == str(model_file.resolve())
+
+    def test_build_local_llm_returns_none_when_model_missing(self, tmp_path: Path):
+        cfg_path = tmp_path / "ori.yaml"
+        cfg_path.write_text("device: {}\n", encoding="utf-8")
+        reasoning_cfg = SimpleNamespace(
+            local_model="missing-model",
+            model_path=str(tmp_path / "models"),
+            local_context_window=2048,
+        )
+
+        llm = _build_local_llm(reasoning_cfg, str(cfg_path))
+        assert llm is None
+
+    def test_build_local_llm_constructs_with_resolved_model(self, tmp_path, monkeypatch):
+        model_dir = tmp_path / "models"
+        model_dir.mkdir()
+        model_file = model_dir / "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+        model_file.write_bytes(b"fake")
+
+        cfg_path = tmp_path / "ori.yaml"
+        cfg_path.write_text("device: {}\n", encoding="utf-8")
+        reasoning_cfg = SimpleNamespace(
+            local_model="qwen2.5-0.5b-instruct-q4_k_m",
+            model_path=str(model_dir),
+            local_context_window=4096,
+        )
+
+        calls = {}
+
+        class _FakeLocalLLM:
+            def __init__(self, model_path: str, context_window: int = 2048) -> None:
+                calls["model_path"] = model_path
+                calls["context_window"] = context_window
+
+            @property
+            def is_available(self) -> bool:
+                return True
+
+        monkeypatch.setattr("ori.runtime.LocalLLM", _FakeLocalLLM)
+
+        llm = _build_local_llm(reasoning_cfg, str(cfg_path))
+        assert isinstance(llm, _FakeLocalLLM)
+        assert calls["model_path"] == str(model_file.resolve())
+        assert calls["context_window"] == 4096
+
+    async def test_runtime_passes_built_local_llm_to_elevator(
+        self, minimal_config, monkeypatch
+    ):
+        _patch_external(monkeypatch)
+        sentinel = object()
+        captured = {}
+
+        from ori.reasoning.elevator import IntelligenceElevator as _RealElevator
+
+        monkeypatch.setattr("ori.runtime._build_local_llm", lambda *_: sentinel)
+
+        def _elevator_factory(local_llm=None, config=None):
+            captured["local_llm"] = local_llm
+            return _RealElevator(local_llm=local_llm, config=config)
+
+        monkeypatch.setattr("ori.runtime.IntelligenceElevator", _elevator_factory)
+
+        runtime = OriRuntime(config_path=str(minimal_config))
+
+        async def _stop():
+            await asyncio.sleep(0.1)
+            await runtime.stop()
+
+        await asyncio.gather(runtime.start(), _stop())
+        assert captured["local_llm"] is sentinel
+
+
+class TestDotenvAutoload:
+    def test_disabled_does_not_load_dotenv(self, tmp_path: Path, monkeypatch):
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text("device: {}\n", encoding="utf-8")
+        env_path = tmp_path / ".env"
+        env_path.write_text("ORI_AUTOLOAD_SMOKE=from_dotenv\n", encoding="utf-8")
+
+        monkeypatch.delenv("ORI_AUTOLOAD_DOTENV", raising=False)
+        monkeypatch.delenv("ORI_AUTOLOAD_SMOKE", raising=False)
+
+        _maybe_autoload_dotenv(str(cfg))
+        assert os.environ.get("ORI_AUTOLOAD_SMOKE") is None
+
+    def test_enabled_loads_config_dir_dotenv(self, tmp_path: Path, monkeypatch):
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text("device: {}\n", encoding="utf-8")
+        env_path = tmp_path / ".env"
+        env_path.write_text("ORI_AUTOLOAD_SMOKE=from_dotenv\n", encoding="utf-8")
+
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        monkeypatch.delenv("ORI_AUTOLOAD_SMOKE", raising=False)
+
+        _maybe_autoload_dotenv(str(cfg))
+        assert os.environ.get("ORI_AUTOLOAD_SMOKE") == "from_dotenv"
+
+    def test_enabled_does_not_override_existing_env(self, tmp_path: Path, monkeypatch):
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text("device: {}\n", encoding="utf-8")
+        env_path = tmp_path / ".env"
+        env_path.write_text("ORI_AUTOLOAD_SMOKE=from_dotenv\n", encoding="utf-8")
+
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        monkeypatch.setenv("ORI_AUTOLOAD_SMOKE", "already_set")
+
+        _maybe_autoload_dotenv(str(cfg))
+        assert os.environ.get("ORI_AUTOLOAD_SMOKE") == "already_set"
 
 
 class TestAdapterProtocol:

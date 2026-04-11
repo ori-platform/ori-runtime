@@ -35,6 +35,7 @@ from ori.network.events import OriEvent
 from ori.network.sms_webhook import SMSWebhookServer
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
+from ori.reasoning.local_llm import LocalLLM
 from ori.skills.loader import SkillLoader
 from ori.state.store import StateStore
 
@@ -323,7 +324,8 @@ class OriRuntime:
             dispatcher.register_executor("release_relay", _exec_release_relay)
 
         # ── Step D: IntelligenceElevator ──────────────────────────────────────
-        elevator = IntelligenceElevator(local_llm=None, config=config.reasoning)
+        local_llm = _build_local_llm(config.reasoning, self._config_path)
+        elevator = IntelligenceElevator(local_llm=local_llm, config=config.reasoning)
 
         # ── Step E: EventBus ──────────────────────────────────────────────────
         event_bus = EventBus()
@@ -744,6 +746,129 @@ def _is_truthy(value: Any) -> bool:
     return bool(value)
 
 
+def _maybe_autoload_dotenv(config_path: str) -> None:
+    """Load .env when explicitly enabled via ORI_AUTOLOAD_DOTENV=true.
+
+    This is a development convenience toggle. Production remains explicit-env
+    by default (no implicit .env loading).
+    """
+    if not _is_truthy(os.environ.get("ORI_AUTOLOAD_DOTENV", "")):
+        return
+
+    try:
+        from dotenv import load_dotenv  # type: ignore[import-not-found]
+    except ImportError:
+        logger.warning(
+            "[runtime] ORI_AUTOLOAD_DOTENV is enabled but python-dotenv is not installed"
+        )
+        return
+
+    config_dir = Path(config_path).resolve().parent
+    candidates = [config_dir / ".env", Path.cwd() / ".env"]
+    loaded_any = False
+    seen: set[str] = set()
+
+    for candidate in candidates:
+        key = str(candidate.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.is_file():
+            load_dotenv(dotenv_path=candidate, override=False)
+            loaded_any = True
+            logger.info("[runtime] loaded environment from %s", candidate)
+
+    if not loaded_any:
+        logger.info(
+            "[runtime] ORI_AUTOLOAD_DOTENV enabled but no .env file found near config/cwd"
+        )
+
+
+def _resolve_local_model_file(
+    local_model: str,
+    model_path: str,
+    config_path: str,
+) -> str | None:
+    """Resolve local model config to an existing GGUF file path.
+
+    Resolution supports:
+    - `local_model` as an absolute/relative file path (with or without `.gguf`)
+    - `model_path` as a directory containing `local_model` (with optional `.gguf`)
+    - `model_path` itself as a direct model file path
+    """
+    config_dir = Path(config_path).resolve().parent
+    local_model = (local_model or "").strip()
+    model_path = (model_path or "").strip()
+
+    candidates: list[Path] = []
+
+    def _to_abs(path_text: str) -> Path:
+        p = Path(path_text)
+        return p if p.is_absolute() else (config_dir / p)
+
+    if local_model:
+        local_model_path = _to_abs(local_model)
+        candidates.append(local_model_path)
+        if local_model_path.suffix.lower() != ".gguf":
+            candidates.append(local_model_path.with_suffix(".gguf"))
+
+        if model_path:
+            model_base = _to_abs(model_path)
+            local_name = Path(local_model).name
+            candidates.append(model_base / local_name)
+            if not local_name.endswith(".gguf"):
+                candidates.append(model_base / f"{local_name}.gguf")
+    elif model_path:
+        candidates.append(_to_abs(model_path))
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for c in candidates:
+        key = str(c.resolve(strict=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(c)
+
+    for candidate in deduped:
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return None
+
+
+def _build_local_llm(reasoning_cfg: Any, config_path: str) -> LocalLLM | None:
+    """Instantiate LocalLLM from config when a valid local model is available."""
+    local_model = str(getattr(reasoning_cfg, "local_model", "") or "")
+    model_path = str(getattr(reasoning_cfg, "model_path", "") or "")
+    context_window = int(getattr(reasoning_cfg, "local_context_window", 2048) or 2048)
+
+    model_file = _resolve_local_model_file(local_model, model_path, config_path)
+    if model_file is None:
+        logger.warning(
+            "[runtime] local SLM disabled — could not resolve a model file from "
+            "reasoning.local_model=%r and reasoning.model_path=%r",
+            local_model,
+            model_path,
+        )
+        return None
+
+    local_llm = LocalLLM(model_path=model_file, context_window=context_window)
+    if not local_llm.is_available:
+        logger.warning(
+            "[runtime] local SLM unavailable for model=%s. Ensure llama-cpp-python "
+            "is installed and model file is accessible.",
+            model_file,
+        )
+        return None
+
+    logger.info(
+        "[runtime] local SLM enabled — model=%s n_ctx=%d",
+        model_file,
+        context_window,
+    )
+    return local_llm
+
+
 def _process_target_from_context(ctx: SkillContext) -> tuple[int | None, str]:
     """Resolve a single process target for `terminate_process`.
 
@@ -868,6 +993,8 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
+
+    _maybe_autoload_dotenv(args.config)
 
     runtime = OriRuntime(config_path=args.config)
     asyncio.run(runtime.start())

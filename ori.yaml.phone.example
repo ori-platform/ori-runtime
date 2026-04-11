@@ -23,7 +23,7 @@ skills:
 
 reasoning:
   default_tier: local
-  local_model: qwen2.5-0.5b-instruct-q4_k_m
+  local_model: qwen2.5-0.5b-instruct-q4_k_m  # basename or full .gguf filename/path
   model_path: /data/data/com.termux/files/home/models/
   offline_fallback: rule
 
