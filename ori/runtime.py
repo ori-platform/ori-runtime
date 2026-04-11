@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 WATCHDOG_DEVICE = "/dev/watchdog"
 WATCHDOG_PING_INTERVAL = 10  # seconds — kernel expects a ping at least this often
 WATCHDOG_TIMEOUT = 60  # seconds — kernel reboots if no ping within this window
+EXTERNAL_WATCHDOG_GPIO = 17  # BCM pin for optional external watchdog heartbeat
+EXTERNAL_WATCHDOG_PING_S = 30  # heartbeat interval for external watchdog devices
 TIER_D_DRAIN_TIMEOUT = 5.0  # seconds — wait for in-flight Tier D tasks on shutdown
 
 
@@ -410,6 +412,28 @@ class OriRuntime:
         self._background_tasks.append(
             asyncio.create_task(self._watchdog_loop(), name="watchdog")
         )
+        external_wd = (
+            config.hal.external_watchdog
+            if isinstance(config.hal.external_watchdog, dict)
+            else {}
+        )
+        if bool(external_wd.get("enabled", False)):
+            if config.device.deployment_type == "phone":
+                logger.warning(
+                    "[runtime] external watchdog requested on phone deployment; skipping "
+                    "(requires Raspberry Pi GPIO)."
+                )
+            else:
+                gpio_pin = int(external_wd.get("gpio_pin", EXTERNAL_WATCHDOG_GPIO))
+                ping_interval_s = float(
+                    external_wd.get("ping_interval_s", EXTERNAL_WATCHDOG_PING_S)
+                )
+                self._background_tasks.append(
+                    asyncio.create_task(
+                        self._external_watchdog_loop(gpio_pin, ping_interval_s),
+                        name="external-watchdog",
+                    )
+                )
         self._background_tasks.append(
             asyncio.create_task(
                 self._heartbeat_loop(config.device.id), name="heartbeat"
@@ -607,6 +631,49 @@ class OriRuntime:
             )
         except Exception:
             logger.exception("Watchdog loop failed — reboot may follow")
+
+    async def _external_watchdog_loop(
+        self,
+        gpio_pin: int = EXTERNAL_WATCHDOG_GPIO,
+        ping_interval_s: float = EXTERNAL_WATCHDOG_PING_S,
+    ) -> None:
+        """Pulse a GPIO pin for optional external watchdog hardware."""
+        try:
+            import importlib
+
+            gpiozero = importlib.import_module("gpiozero")
+        except ImportError:
+            # Optional hardware feature; silently skip on non-Pi systems.
+            return
+
+        pin = None
+        try:
+            pin = gpiozero.DigitalOutputDevice(gpio_pin)
+            logger.info("External GPIO watchdog active on BCM%d", gpio_pin)
+            while not self._shutdown_event.is_set():
+                pin.on()
+                await asyncio.sleep(0.1)
+                pin.off()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(self._shutdown_event.wait()),
+                        timeout=ping_interval_s,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+        except Exception:
+            logger.exception("[runtime] external watchdog loop failed")
+        finally:
+            if pin is not None:
+                try:
+                    pin.off()
+                except Exception:
+                    pass
+                if hasattr(pin, "close"):
+                    try:
+                        pin.close()
+                    except Exception:
+                        pass
 
     async def _heartbeat_loop(self, device_id: str) -> None:
         """Log a heartbeat every 5 minutes to confirm the runtime is alive.

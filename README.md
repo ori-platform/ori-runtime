@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-1E6B4A?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-1E6B4A?style=flat-square)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-790%2B%20passing-1E6B4A?style=flat-square)](#testing)
+[![Tests](https://img.shields.io/badge/tests-800%2B%20passing-1E6B4A?style=flat-square)](#testing)
 [![Release](https://img.shields.io/badge/release-alpha-C8A951?style=flat-square)](#release-status)
 [![Platform](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%20·%20Linux%20·%20macOS-C8A951?style=flat-square)](#)
 

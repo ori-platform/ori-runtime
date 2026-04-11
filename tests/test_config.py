@@ -121,6 +121,13 @@ class TestLoadExample:
         assert "device" in cfg.raw
         assert "sensors" in cfg.raw
 
+    def test_hal_external_watchdog_defaults(self):
+        cfg = Config.load(EXAMPLE_YAML)
+        ext = cfg.hal.external_watchdog
+        assert ext["enabled"] is False
+        assert ext["gpio_pin"] == 17
+        assert ext["ping_interval_s"] == 30
+
 
 # ─── DeviceConfig validation ──────────────────────────────────────────────────
 
@@ -742,6 +749,37 @@ hal:
             ),
         )
         with pytest.raises(ConfigValidationError, match="success_threshold"):
+            Config.load(yaml_path)
+
+    def test_external_watchdog_gpio_must_be_valid_bcm(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  external_watchdog:\n"
+                "    enabled: true\n"
+                "    gpio_pin: 45\n"
+                "    ping_interval_s: 30"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError, match="hal.external_watchdog.gpio_pin=45"
+        ):
+            Config.load(yaml_path)
+
+    def test_external_watchdog_ping_interval_must_be_positive(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  external_watchdog:\n"
+                "    enabled: true\n"
+                "    gpio_pin: 17\n"
+                "    ping_interval_s: 0"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="hal.external_watchdog.ping_interval_s",
+        ):
             Config.load(yaml_path)
 
 
