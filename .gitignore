@@ -21,7 +21,7 @@ env/
 ENV/
 
 # Ori runtime
-ori.yaml
+ori*.yaml
 *.db
 *.db-shm
 *.db-wal
