@@ -155,7 +155,9 @@ class TestReasonInference:
         with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):
             await llm.reason("my prompt text")
         call_kwargs = mock_llama.call_args
-        assert call_kwargs[0][0] == "my prompt text"
+        sent_prompt = call_kwargs[0][0]
+        assert "my prompt text" in sent_prompt
+        assert "Do NOT produce quizzes" in sent_prompt
 
     async def test_max_tokens_passed_to_llm(self, tmp_path):
         model_file = tmp_path / "model.gguf"
@@ -171,7 +173,7 @@ class TestReasonInference:
         llm, mock_llama = _llm_with_mock(str(model_file))
         with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):
             await llm.reason("prompt")
-        assert mock_llama.call_args[1]["temperature"] == 0.1
+        assert mock_llama.call_args[1]["temperature"] == 0.0
 
     async def test_stop_tokens(self, tmp_path):
         model_file = tmp_path / "model.gguf"
@@ -179,7 +181,58 @@ class TestReasonInference:
         llm, mock_llama = _llm_with_mock(str(model_file))
         with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):
             await llm.reason("prompt")
-        assert mock_llama.call_args[1]["stop"] == ["\n\n"]
+        assert mock_llama.call_args[1]["stop"] == [
+            "\n\n",
+            "Which of the following",
+            "\nA)",
+            "\nB)",
+            "\nC)",
+            "\nD)",
+        ]
+
+
+class TestOutputNormalization:
+    async def test_mcq_tail_is_removed(self, tmp_path):
+        model_file = tmp_path / "model.gguf"
+        model_file.write_bytes(b"fake")
+        llm = LocalLLM(model_path=str(model_file))
+        llm._llm = MagicMock(
+            return_value={
+                "choices": [
+                    {
+                        "text": "Check the compressor and clean the filter. "
+                        "Reduce load for now. Which of the following is true? "
+                        "A) this B) that"
+                    }
+                ],
+                "usage": {"completion_tokens": 30, "prompt_tokens": 50, "total_tokens": 80},
+            }
+        )
+        with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):
+            result = await llm.reason("prompt")
+        assert "Which of the following" not in result.text
+        assert "A)" not in result.text
+
+    async def test_inline_numbered_list_markers_are_removed(self, tmp_path):
+        model_file = tmp_path / "model.gguf"
+        model_file.write_bytes(b"fake")
+        llm = LocalLLM(model_path=str(model_file))
+        llm._llm = MagicMock(
+            return_value={
+                "choices": [
+                    {
+                        "text": (
+                            "Ensure the fan is running. "
+                            "2. Close heavy apps and monitor CPU for 5 minutes."
+                        )
+                    }
+                ],
+                "usage": {"completion_tokens": 24, "prompt_tokens": 40, "total_tokens": 64},
+            }
+        )
+        with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):
+            result = await llm.reason("prompt")
+        assert "2." not in result.text
 
 
 # ─── lazy loading ─────────────────────────────────────────────────────────────

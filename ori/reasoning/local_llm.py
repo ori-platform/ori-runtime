@@ -4,6 +4,7 @@
 import asyncio
 import logging
 import os
+import re
 import time
 from functools import partial
 
@@ -25,6 +26,17 @@ class ModelNotAvailableError(Exception):
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+_OUTPUT_CONTRACT = (
+    "You are Ori, an offline device reasoning agent.\n"
+    "Respond in plain English, exactly 2-3 short sentences.\n"
+    "Provide direct operator guidance only.\n"
+    "Do NOT ask questions.\n"
+    "Do NOT produce quizzes, multiple-choice options, or A/B/C/D answers.\n"
+    "Do NOT include markdown, bullet points, or numbered lists.\n"
+    "Do NOT prefix steps with numbers like '1.' or '2.'."
+)
 
 
 class LocalLLM:
@@ -99,13 +111,14 @@ class LocalLLM:
             None,
             partial(
                 self._infer,
-                prompt=prompt,
+                prompt=self._build_inference_prompt(prompt),
                 max_tokens=max_tokens,
             ),
         )
 
         latency_ms = _now_ms() - start_ms
-        text = output["choices"][0]["text"].strip()
+        raw_text = output["choices"][0]["text"].strip()
+        text = self._normalize_output(raw_text)
         tokens_used = output["usage"]["completion_tokens"]
 
         # Confidence is not reliably extractable from a base LLM completion.
@@ -149,7 +162,61 @@ class LocalLLM:
         return self._llm(  # type: ignore[operator]
             prompt,
             max_tokens=max_tokens,
-            temperature=0.1,
-            stop=["\n\n"],
+            temperature=0.0,
+            top_p=0.9,
+            repeat_penalty=1.1,
+            stop=[
+                "\n\n",
+                "Which of the following",
+                "\nA)",
+                "\nB)",
+                "\nC)",
+                "\nD)",
+            ],
             echo=False,
         )
+
+    @staticmethod
+    def _build_inference_prompt(prompt: str) -> str:
+        return f"{_OUTPUT_CONTRACT}\n\nOperator context:\n{prompt}\n\nResponse:"
+
+    @staticmethod
+    def _normalize_output(text: str) -> str:
+        """Enforce plain operator-style output and strip MCQ drift."""
+        cleaned = " ".join((text or "").strip().split())
+
+        # Remove common quiz/multiple-choice tails if they still appear.
+        for marker in (
+            "Which of the following",
+            "A)",
+            "B)",
+            "C)",
+            "D)",
+            "Option A",
+            "Option B",
+            "Option C",
+            "Option D",
+        ):
+            idx = cleaned.find(marker)
+            if idx > 0:
+                cleaned = cleaned[:idx].strip()
+                break
+
+        # Remove leading numbering/bullet clutter.
+        cleaned = re.sub(r"^(?:[-*]\s+|\d+[.)]\s+)+", "", cleaned)
+        # Remove inline numbering/list markers that can still appear mid-output.
+        cleaned = re.sub(r"(?:^|\s)\d+[.)]\s+", " ", cleaned).strip()
+        cleaned = " ".join(cleaned.split())
+
+        # Keep at most 3 sentences to match the skills contract.
+        sentence_parts = re.split(r"(?<=[.!?])\s+", cleaned)
+        sentence_parts = [s.strip() for s in sentence_parts if s.strip()]
+        if sentence_parts:
+            cleaned = " ".join(sentence_parts[:3]).strip()
+
+        if not cleaned:
+            cleaned = (
+                "An anomaly was detected. Check the device state and reduce load "
+                "if the issue persists."
+            )
+        return cleaned
