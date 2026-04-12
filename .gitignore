@@ -41,6 +41,7 @@ coverage.xml
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+.smoke/
 
 # macOS
 .DS_Store
