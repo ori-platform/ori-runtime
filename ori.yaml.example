@@ -27,7 +27,7 @@ sensors:
   # SCT-013-030 clips around the main load cable in the distribution board
   # Non-invasive — no wiring changes required
   - id: load-current
-    type: current_clamp
+    type: ads1115_current
     protocol: i2c
     address: 0x48                    # ADS1115 default I2C address
     channel: 0                       # ADS1115 channel A0
@@ -37,16 +37,16 @@ sensors:
 
   # ─── Grid voltage sensor on ADS1115 channel 1 ───────────────────────────
   - id: grid-voltage
-    type: voltage
+    type: ads1115_voltage
     protocol: i2c
     address: 0x48
     channel: 1
     poll_interval_ms: 2000
 
-  # ─── Inverter battery state ──────────────────────────────────────────────
-  # Comment out if your inverter does not expose a serial interface
-  - id: inverter-battery
-    type: battery_state
+  # ─── Serial Modbus meter (optional) ──────────────────────────────────────
+  # Example for PZEM/SDM-style RS485 meters over USB serial
+  - id: grid-active-power
+    type: active_power
     protocol: serial
     port: /dev/ttyUSB0
     baud_rate: 9600
@@ -148,7 +148,7 @@ reasoning:
     enabled: true
     throttle_threshold_percent: 20
     critical_threshold_percent: 10
-    battery_sensor_id: inverter-battery
+    battery_sensor_id: ""            # set to a real battery sensor id (for example victron-battery or inverter-battery-soc)
     alert_on_throttle: true
   causal_memory:
     rejection_expiry_days: 30      # 0 = never expire
