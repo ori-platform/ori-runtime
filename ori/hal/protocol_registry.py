@@ -12,6 +12,8 @@ SUPPORTED_SENSOR_PROTOCOLS: frozenset[str] = frozenset(
         "serial",
         "growatt",
         "victron",
+        "zigbee",
+        "lorawan",
         "mqtt_perception",
         "usb_serial",
         "http",
@@ -43,6 +45,14 @@ def make_adapter(protocol: str) -> BaseAdapter:
         from ori.hal.victron_adapter import VictronAdapter
 
         return VictronAdapter()
+    if protocol == "zigbee":
+        from ori.hal.zigbee_adapter import ZigbeeAdapter
+
+        return ZigbeeAdapter()
+    if protocol == "lorawan":
+        from ori.hal.lorawan_adapter import LoraWanAdapter
+
+        return LoraWanAdapter()
     if protocol == "mqtt_perception":
         from ori.hal.mqtt_perception_adapter import MqttPerceptionAdapter
 
