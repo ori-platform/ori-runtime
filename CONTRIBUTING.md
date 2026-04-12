@@ -179,8 +179,8 @@ Ori has a clear separation between bundled skills and community skills. Understa
 ├─────────────────────────────────────────────────────────────┤
 │  COMMUNITY SKILLS  ~/.ori/skills/ on device                 │
 │  Loaded via load_hooks_restricted() — sandboxed             │
-│  Installed from the Skills Hub. Never in this repo.         │
-│  Verified: Ed25519 signature + VirusTotal scan before load  │
+│  Installed from the Skills Hub/CLI flow. Never in this repo.│
+│  Runtime enforces schema+tier validation and sandbox rules  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -204,12 +204,11 @@ A malicious or broken bundled skill can access any Python module on the system.
 **Community skill contributions do not go here.** They go to the
 [ori-skills repository](https://github.com/ori-platform/ori-skills), where they go through:
 
-1. **Ed25519 signature verification** — every skill is signed by its author;
-   the runtime verifies the signature before loading
-2. **VirusTotal scan** — automated malware scan before Hub listing
-3. **Sandbox enforcement** — loaded via `load_hooks_restricted()` with an
+1. **Distribution pipeline checks (Hub/CLI)** — signature verification and
+   malware screening are handled before publication/listing
+2. **Sandbox enforcement at runtime** — loaded via `load_hooks_restricted()` with an
    explicit import allowlist; `hooks.py` cannot import arbitrary modules
-4. **Hub review** — community maintainer review for quality and safety
+3. **Hub review** — community maintainer review for quality and safety
 
 The operator installs only the skills they explicitly want. The runtime
 never auto-loads from the Hub — explicit selection is the model.
@@ -366,8 +365,8 @@ async def test_psutil_adapter_integration():
     ...
 ```
 
-The test suite currently has **790+ tests** covering all layers.
-Every PR must maintain or increase this count.
+The test suite covers all core layers.
+Every PR must keep the suite green.
 
 ---
 
@@ -521,7 +520,7 @@ smart inverter protocols (SolarmanV5, VenusOS MQTT), environmental sensors.
 
 **Community skills** — agriculture, cold chain, HVAC, water quality, solar energy
 and more — go to **[ori-platform/ori-skills](https://github.com/ori-platform/ori-skills)**.
-They are verified with Ed25519 signatures and VirusTotal scans before being listed.
+They go through Hub/CLI publication checks before being listed.
 
 **Bundled skills** (additions to `/skills/` in this repo) are first-party only.
 Open an issue first to discuss whether a skill belongs in the core bundle.
