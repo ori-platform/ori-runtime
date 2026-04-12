@@ -16,6 +16,7 @@ SUPPORTED_SENSOR_PROTOCOLS: frozenset[str] = frozenset(
         "usb_serial",
         "http",
         "opcua",
+        "smart",
     }
 )
 
@@ -62,6 +63,10 @@ def make_adapter(protocol: str) -> BaseAdapter:
         from ori.hal.opcua_adapter import OpcUaAdapter
 
         return OpcUaAdapter()
+    if protocol == "smart":
+        from ori.hal.smart_adapter import SmartAdapter
+
+        return SmartAdapter()
 
     raise UnknownProtocolError(
         f"Unknown sensor protocol '{protocol}'. "

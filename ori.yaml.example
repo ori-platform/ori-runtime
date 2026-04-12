@@ -116,6 +116,13 @@ sensors:
   #   baud_rate: 9600
   #   poll_interval_ms: 2000
 
+  # ─── Drive SMART health (PC-Ori extension) ────────────────────────────────
+  # - id: drive-temp
+  #   type: drive_temp_celsius
+  #   protocol: smart
+  #   device: /dev/sda
+  #   poll_interval_ms: 60000
+
   # ─── Virtual sensor: weather API (optional) ───────────────────────────────
   # - id: outdoor-temperature
   #   type: temperature

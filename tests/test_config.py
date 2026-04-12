@@ -411,6 +411,16 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "opcua"
 
+    def test_accepts_smart_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: drive-health\n    type: drive_temp_celsius\n    protocol: smart\n    poll_interval_ms: 60000"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.sensors[0].protocol == "smart"
+
 
 # ─── SkillConfig / action_tier validation ─────────────────────────────────────
 
