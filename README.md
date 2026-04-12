@@ -113,21 +113,33 @@ For the full architectural specification, read [`CLAUDE.md`](CLAUDE.md). For the
 
 ## Hardware Support
 
-| Protocol             | Status | Coverage                                                                |
-| -------------------- | ------ | ----------------------------------------------------------------------- |
-| GPIO (Raspberry Pi)  | ✅     | Wired sensors and relay control                                         |
-| I2C / SPI            | ✅     | Precision sensors: BME280, ADS1115, SCD40                               |
-| Modbus RTU (RS485)   | ✅     | Industrial energy meters, PLCs, motor drives                            |
-| psutil               | ✅     | PC and server health monitoring (any laptop)                            |
-| MQTT                 | ✅     | WiFi-connected sensors/devices via an MQTT broker (commonly Mosquitto). |
-| OPC-UA               | ✅     | Industrial PLCs (IEC 62541)                                             |
-| SolarmanV5 (Growatt) | ✅     | Smart inverter integration                                              |
-| Zigbee               | ✅     | Smart-home sensors via MQTT bridge (for example zigbee2mqtt)            |
-| LoRaWAN              | ✅     | Rural long-range uplink sensors via MQTT brokers (TTN/ChirpStack)       |
+| Protocol             | Status | Coverage                                                               |
+| -------------------- | ------ | ---------------------------------------------------------------------- |
+| GPIO (Raspberry Pi)  | ✅     | Wired sensors and relay control                                        |
+| I2C / SPI            | ✅     | Precision sensors: BME280, ADS1115, SCD40                              |
+| Modbus RTU (RS485)   | ✅     | Industrial energy meters, PLCs, motor drives                           |
+| psutil               | ✅     | PC and server health monitoring (any laptop)                           |
+| MQTT                 | ✅     | WiFi-connected sensors/devices via an MQTT broker (commonly Mosquitto) |
+| OPC-UA               | ✅     | Industrial PLCs (IEC 62541)                                            |
+| SolarmanV5 (Growatt) | ✅     | Smart inverter integration                                             |
+| Zigbee               | ✅     | Smart-home sensors via MQTT bridge (for example zigbee2mqtt)           |
+| LoRaWAN              | ✅     | Rural long-range uplink sensors via MQTT brokers (TTN/ChirpStack)      |
 
-✅ = Implemented &nbsp;&nbsp; 🗓️ = Roadmap
+✅ = Implemented
 
 All adapters include a **hardware circuit breaker** that auto-isolates failing buses to protect the rest of the system.
+
+---
+
+## Hardware Requirements
+
+| Configuration             | Hardware                       | RAM  | Notes                                         |
+| ------------------------- | ------------------------------ | ---- | --------------------------------------------- |
+| Rule engine only (Tier 1) | Raspberry Pi 3B+ or equivalent | 1GB  | No local SLM. Full safety framework active.   |
+| Full stack with local SLM | Raspberry Pi 4 4GB             | 4GB  | Validated reference hardware. 3–8s inference. |
+| Development / laptop      | Any modern machine             | 4GB+ | psutil adapter. No Pi required.               |
+
+The model file (Qwen2.5-0.5B Q4) is 500MB. The SQLite state store stays bounded under 80MB via the compaction pyramid regardless of deployment duration.
 
 ---
 
@@ -138,11 +150,13 @@ Ori runs a paired decision system on every sensor event:
 ### The Intelligence Elevator — _What does this mean?_
 
 ```text
-Tier 1  RULE ENGINE    microseconds · always available · safety triggers
-Tier 2  LOCAL SLM      3-8 seconds  · fully offline    · everyday reasoning
-Tier 3  GATEWAY LLM    1-3 seconds  · LAN only         · cross-device reasoning (planned wiring)
-Tier 4  CLOUD LLM      2-5 seconds  · internet         · deep analysis + reports (planned wiring)
+Tier 1  RULE ENGINE    microseconds · always available  · safety triggers
+Tier 2  LOCAL SLM      3-8 seconds  · fully offline     · everyday reasoning
+Tier 3  GATEWAY LLM    1-3 seconds  · LAN only          · cross-device reasoning
+Tier 4  CLOUD LLM      2-5 seconds  · internet          · deep analysis + reports
 ```
+
+Tiers 3 and 4 are wired in the elevator. The gateway service (`ori-platform/ori-gateway`) and cloud API connection are implemented as separate services — the runtime routes to them automatically when they are available on the LAN or internet respectively.
 
 ### The Action Tier Framework — _What should I do about it?_
 
@@ -297,15 +311,13 @@ export ORI_AUTOLOAD_DOTENV=true
 python -m ori.runtime --config ori.local.yaml
 ```
 
-Smoke test (without starting full runtime):
+### Smoke Tests
 
+```bash
 # Full runtime smoke test (requires ori.local.yaml configured)
-
-```bash
 bash scripts/smoke-runtime-local.sh
-```
 
-```bash
+# Local SLM quality smoke test (without starting full runtime)
 python - <<'PY'
 import asyncio
 from ori.reasoning.local_llm import LocalLLM
@@ -359,7 +371,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 | ------ | --------------- | --------------------------------------------------------------------- |
 | Core   | ✅ Active Alpha | Core runtime with 6-layer architecture and 4-tier action framework    |
 | PoC    | 🔨 In Progress  | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video. |
-| Launch | 🗓️ Planned      | Skills Hub. CLI tooling. Phone-as-gateway deployment model.           |
+| Launch | 🔨 In Progress  | Skills Hub. CLI tooling. Phone-as-gateway (Termux path live).         |
 | Growth | 🗓️ Planned      | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.          |
 
 ---

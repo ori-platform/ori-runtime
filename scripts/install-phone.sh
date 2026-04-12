@@ -13,7 +13,7 @@ python -m pip install ori-runtime --break-system-packages
 
 MODEL_DIR="${HOME}/models"
 MODEL_PATH="${MODEL_DIR}/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-MODEL_URL="https://oriplatform.dev/models/qwen2.5-0.5b-q4.gguf"
+MODEL_URL="https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
 
 mkdir -p "${MODEL_DIR}"
 if [ ! -f "${MODEL_PATH}" ]; then
