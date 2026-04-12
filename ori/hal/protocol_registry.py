@@ -12,6 +12,7 @@ SUPPORTED_SENSOR_PROTOCOLS: frozenset[str] = frozenset(
         "serial",
         "growatt",
         "victron",
+        "mqtt_perception",
         "usb_serial",
         "http",
         "opcua",
@@ -41,6 +42,10 @@ def make_adapter(protocol: str) -> BaseAdapter:
         from ori.hal.victron_adapter import VictronAdapter
 
         return VictronAdapter()
+    if protocol == "mqtt_perception":
+        from ori.hal.mqtt_perception_adapter import MqttPerceptionAdapter
+
+        return MqttPerceptionAdapter()
     if protocol == "serial":
         from ori.hal.serial_adapter import SerialAdapter
 

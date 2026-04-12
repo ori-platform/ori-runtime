@@ -391,6 +391,16 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "victron"
 
+    def test_accepts_mqtt_perception_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: ppe-hardhat-cam-01\n    type: ppe_hardhat_violation_score\n    protocol: mqtt_perception\n    poll_interval_ms: 1000"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.sensors[0].protocol == "mqtt_perception"
+
     def test_accepts_opcua_protocol(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
