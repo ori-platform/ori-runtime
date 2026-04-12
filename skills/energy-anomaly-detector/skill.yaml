@@ -7,6 +7,10 @@ signature: ed25519:PENDING
 sensors_required:
   - type: current_clamp
     protocol: i2c
+  - type: ads1115_current
+    protocol: i2c
+  - type: current
+    protocol: serial
 
 triggers:
   - name: anomalous_draw
