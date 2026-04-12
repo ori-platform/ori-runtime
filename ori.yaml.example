@@ -132,6 +132,31 @@ sensors:
   #   unit: kelvin
   #   poll_interval_ms: 300000
 
+  # ─── Zigbee smart-home sensor via MQTT bridge (optional) ──────────────────
+  # Requires zigbee2mqtt (or equivalent) publishing JSON payloads.
+  # - id: living-room-temp
+  #   type: temperature
+  #   protocol: zigbee
+  #   broker_host: "192.168.1.55"
+  #   topic: "zigbee2mqtt/living-room"
+  #   port: 1883
+  #   # value_path defaults from sensor type mapping; override if needed:
+  #   # value_path: "temperature"
+  #   # quality_path: "quality"
+  #   poll_interval_ms: 2000
+
+  # ─── LoRaWAN uplink sensor via MQTT broker (optional) ─────────────────────
+  # Works with TTN/ChirpStack MQTT uplink events using configurable JSON paths.
+  # - id: field-temperature
+  #   type: lorawan_temperature
+  #   protocol: lorawan
+  #   broker_host: "192.168.1.88"
+  #   topic: "v3/app@ttn/devices/device-01/up"
+  #   port: 1883
+  #   # value_path defaults from sensor type mapping; override for your payload:
+  #   # value_path: "uplink_message.decoded_payload.temperature"
+  #   poll_interval_ms: 5000
+
   # ─── External perception stream via MQTT (optional) ───────────────────────
   # Payload contract expected on topic:
   # {

@@ -122,7 +122,8 @@ For the full architectural specification, read [`CLAUDE.md`](CLAUDE.md). For the
 | MQTT                 | ✅     | WiFi-connected sensors/devices via an MQTT broker (commonly Mosquitto). |
 | OPC-UA               | ✅     | Industrial PLCs (IEC 62541)                                             |
 | SolarmanV5 (Growatt) | ✅     | Smart inverter integration                                              |
-| Zigbee / LoRaWAN     | 🗓️     | Smart home and rural long-range sensors                                 |
+| Zigbee               | ✅     | Smart-home sensors via MQTT bridge (for example zigbee2mqtt)            |
+| LoRaWAN              | ✅     | Rural long-range uplink sensors via MQTT brokers (TTN/ChirpStack)       |
 
 ✅ = Implemented &nbsp;&nbsp; 🗓️ = Roadmap
 
