@@ -6,7 +6,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-1E6B4A?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-1E6B4A?style=flat-square)](https://python.org)
-[![Tests](https://img.shields.io/badge/tests-800%2B%20passing-1E6B4A?style=flat-square)](#testing)
+[![CI](https://github.com/ori-platform/ori-runtime/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ori-platform/ori-runtime/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/badge/release-alpha-C8A951?style=flat-square)](#release-status)
 [![Platform](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%20·%20Linux%20·%20macOS-C8A951?style=flat-square)](#)
 
@@ -18,7 +18,9 @@
 
 > **IoT devices do not need more data. They need to reason about that data — and act on it.**
 
-Ori is an open-source **agentic IoT runtime** that gives physical devices **tiered autonomous reasoning** — from deterministic safety rules to local SLMs. This reasoning is governed by a **[Physical Actuation Trust](PRINCIPLES.md)** framework that defines exactly what an AI agent is permitted to do in the physical world, at what consequence level, and with what human oversight. Offline-first. No cloud required. Runs on a $55 Raspberry Pi.
+Ori is an open-source **agentic IoT runtime** that gives physical devices **tiered autonomous reasoning** — from deterministic safety rules to local SLMs. This reasoning is governed by a **[Physical Actuation Trust](PRINCIPLES.md)** framework that defines exactly what an AI agent is permitted to do in the physical world, at what consequence level, and with what human oversight. Offline-first and cloud-optional. Runs on a $55 Raspberry Pi.
+
+Built for the world's majority condition — unreliable power, intermittent connectivity, constrained hardware. Systems designed for constraint work everywhere.
 
 ## Release Status
 
@@ -76,7 +78,7 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 ## What Ori Is Not
 
 - Not a monitoring dashboard like Grafana — Ori acts, not just displays
-- Not a cloud IoT platform like AWS IoT Core — Ori runs fully offline
+- Not a cloud IoT platform like AWS IoT Core — Ori can run fully offline (Tier 1 + Tier 2), with optional gateway/cloud escalation
 - Not a notification system — alerts are Tier A, the least of what Ori does
 - Not just a rules engine — Ori pairs deterministic safety rules with LLM reasoning
 
@@ -137,8 +139,8 @@ Ori runs a paired decision system on every sensor event:
 ```text
 Tier 1  RULE ENGINE    microseconds · always available · safety triggers
 Tier 2  LOCAL SLM      3-8 seconds  · fully offline    · everyday reasoning
-Tier 3  GATEWAY LLM    1-3 seconds  · LAN only         · cross-device reasoning
-Tier 4  CLOUD LLM      2-5 seconds  · internet         · deep analysis + reports
+Tier 3  GATEWAY LLM    1-3 seconds  · LAN only         · cross-device reasoning (planned wiring)
+Tier 4  CLOUD LLM      2-5 seconds  · internet         · deep analysis + reports (planned wiring)
 ```
 
 ### The Action Tier Framework — _What should I do about it?_
@@ -203,9 +205,9 @@ triggers:
     action_tier: D # → cuts power. no waiting.
 ```
 
-Bundled skills: **pc-system-health** (runs on any laptop) and **energy-anomaly-detector**. More are coming — including HVAC refrigerant monitoring.
+Bundled skills: **pc-system-health** (runs on any laptop), **energy-anomaly-detector**, and **hvac-refrigerant-monitor**.
 
-Community skills live at **[ori-platform/ori-skills](https://github.com/ori-platform/ori-skills)** — verified by Ed25519 signature and VirusTotal before installation.
+Community skills live at **[ori-platform/ori-skills](https://github.com/ori-platform/ori-skills)**. The runtime enforces strict skill validation and sandboxed hook loading for community-installed skills.
 
 ---
 
@@ -252,7 +254,7 @@ source .venv/bin/activate
 pip install --upgrade pip          # required: old pip (<22) can't handle pyproject.toml editable installs
 pip install -e ".[dev]"
 
-# Verify everything works (800+ tests)
+# Verify everything works
 pytest tests/ -v
 
 # Validate a skill loads cleanly
@@ -296,6 +298,12 @@ python -m ori.runtime --config ori.local.yaml
 
 Smoke test (without starting full runtime):
 
+# Full runtime smoke test (requires ori.local.yaml configured)
+
+```bash
+bash scripts/smoke-runtime-local.sh
+```
+
 ```bash
 python - <<'PY'
 import asyncio
@@ -336,7 +344,7 @@ pytest tests/test_rule_engine.py -v           # Specific module
 pytest tests/ --cov=ori --cov-report=term-missing  # With coverage
 ```
 
-The test suite covers all layers — HAL adapters, event bus, rule engine (with AST safety validation), action dispatcher (all four tiers), skill loader, state store, and runtime. 790+ tests passing, 5 skipped (hardware-only).
+The test suite covers all layers — HAL adapters, event bus, rule engine (with AST safety validation), action dispatcher (all four tiers), skill loader, state store, and runtime.
 
 ## Security
 
@@ -346,12 +354,12 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 
 ## Roadmap
 
-| Phase  | Status         | Milestone                                                                   |
-| ------ | -------------- | --------------------------------------------------------------------------- |
-| Core   | ✅ Complete    | Full runtime with 6-layer architecture, 4-tier action framework, 660+ tests |
-| PoC    | 🔨 In Progress | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video.       |
-| Launch | 🗓️ Planned     | Skills Hub. CLI tooling. Phone-as-gateway deployment model.                 |
-| Growth | 🗓️ Planned     | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.                |
+| Phase  | Status          | Milestone                                                             |
+| ------ | --------------- | --------------------------------------------------------------------- |
+| Core   | ✅ Active Alpha | Core runtime with 6-layer architecture and 4-tier action framework    |
+| PoC    | 🔨 In Progress  | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video. |
+| Launch | 🗓️ Planned      | Skills Hub. CLI tooling. Phone-as-gateway deployment model.           |
+| Growth | 🗓️ Planned      | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.          |
 
 ---
 
