@@ -1,0 +1,73 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: site-safety-ppe
+version: 0.1.0
+author: wasiubakare
+description: >
+  PPE safety monitoring skill for hardhat and vest violations from external
+  perception pipelines.
+license: Apache-2.0
+signature: ed25519:PENDING
+
+sensors_required:
+  - type: ppe_hardhat_violation_score
+    protocol: mqtt_perception
+  - type: ppe_vest_violation_score
+    protocol: mqtt_perception
+
+# Trigger conditions intentionally gate on both violation score AND quality.
+#
+# quality reflects the perception adapter's confidence in the detection
+# (mapped from the ori.perception.v1 payload's confidence field).
+# A high violation score from a low-quality detection — caused by poor
+# lighting, camera occlusion, or a degraded model — should not generate
+# an operator alert.
+#
+# Recommended thresholds for v1 deployments:
+#   violation score > 0.7  — strong signal that a violation is present
+#   quality > 0.6          — detection confidence sufficient to act on
+#
+# Both thresholds are configurable in skill config if the deployment
+# environment requires adjustment.
+triggers:
+  - name: hardhat_violation_detected
+    condition: "ppe_hardhat_violation_score > violation_score_threshold and quality > min_detection_quality"
+    cooldown_seconds: 120
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: vest_violation_detected
+    condition: "ppe_vest_violation_score > violation_score_threshold and quality > min_detection_quality"
+    cooldown_seconds: 120
+    escalate_to: local_slm
+    action_tier: A
+
+prompts:
+  hardhat_violation_detected: |
+    Hardhat PPE violation score: {value}
+    Detection quality: {quality}
+    Evaluate whether this is likely a true missing-hardhat safety violation.
+    Give 2 short operator actions in plain language.
+
+  vest_violation_detected: |
+    Safety vest PPE violation score: {value}
+    Detection quality: {quality}
+    Evaluate whether this is likely a true missing-vest safety violation.
+    Give 2 short operator actions in plain language.
+
+actions:
+  available:
+    - name: alert_whatsapp
+      tier: A
+    - name: alert_sms
+      tier: A
+    - name: log_to_dashboard
+      tier: A
+  defaults:
+    hardhat_violation_detected: [alert_whatsapp, log_to_dashboard]
+    vest_violation_detected: [alert_whatsapp, log_to_dashboard]
+
+config:
+  violation_score_threshold: 0.7
+  min_detection_quality: 0.6

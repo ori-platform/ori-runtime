@@ -273,7 +273,10 @@ class IntelligenceElevator:
             from ori.skills.hooks_api import HookContext
 
             hook_ctx = HookContext.build(
-                event, state_store, getattr(skill, "name", "unknown")
+                event,
+                state_store,
+                getattr(skill, "name", "unknown"),
+                skill_config=getattr(skill, "config", None),
             )
             try:
                 skill.hooks.pre_trigger_eval(hook_ctx)
@@ -672,7 +675,10 @@ class IntelligenceElevator:
                 from ori.skills.hooks_api import HookContext
 
                 pt_ctx = HookContext.build(
-                    event, state_store, getattr(skill, "name", "unknown")
+                    event,
+                    state_store,
+                    getattr(skill, "name", "unknown"),
+                    skill_config=getattr(skill, "config", None),
                 )
                 pt_ctx.trigger_name = rule_res.rule_name if rule_res.matched else ""
 

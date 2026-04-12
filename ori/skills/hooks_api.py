@@ -10,6 +10,7 @@ from ori.network.events import OriEvent
 
 class HookHistoryAdapter:
     """Synchronous adapter to wrap StateStore for skill hooks."""
+
     def __init__(self, store: Any):
         self._store = store
 
@@ -71,6 +72,7 @@ class HookHistoryAdapter:
 
 class HookStateAdapter:
     """Provides key-value persistence specifically isolated to the active skill."""
+
     def __init__(self, store: Any, skill_name: str):
         self._store = store
         self._skill_name = skill_name
@@ -89,15 +91,31 @@ class HookStateAdapter:
 @dataclass
 class HookContext:
     """Context block provided to synchronous skill hooks."""
+
+    event: OriEvent | None
     trigger_name: str
     readings: dict[str, Any]
     history: HookHistoryAdapter
     state: HookStateAdapter
     timestamp: int
+    config: dict[str, Any] = field(default_factory=dict)
     derived: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def reading(self) -> Any:
+        """Convenience accessor for hook compatibility."""
+        if self.event is None:
+            return None
+        return self.event.reading
+
     @classmethod
-    def build(cls, event: OriEvent, store: Any, skill_name: str) -> "HookContext":
+    def build(
+        cls,
+        event: OriEvent,
+        store: Any,
+        skill_name: str,
+        skill_config: dict[str, Any] | None = None,
+    ) -> "HookContext":
         readings = {}
         if event and event.reading:
             readings[event.reading.sensor_id] = event.reading.value
@@ -106,9 +124,11 @@ class HookContext:
                 readings.update(event.reading.metadata)
 
         return cls(
+            event=event,
             trigger_name="",
             readings=readings,
             history=HookHistoryAdapter(store),
             state=HookStateAdapter(store, skill_name),
-            timestamp=event.timestamp if event else int(time.time() * 1000)
+            timestamp=event.timestamp if event else int(time.time() * 1000),
+            config=skill_config if isinstance(skill_config, dict) else {},
         )
