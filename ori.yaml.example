@@ -125,6 +125,36 @@ sensors:
   #   unit: kelvin
   #   poll_interval_ms: 300000
 
+  # ─── External perception stream via MQTT (optional) ───────────────────────
+  # Payload contract expected on topic:
+  # {
+  #   "schema": "ori.perception.v1",
+  #   "sensor_type": "ppe_hardhat_violation_score",
+  #   "value": 0.84,
+  #   "confidence": 0.91,
+  #   "timestamp_ms": 1710000000123,
+  #   "metadata": {
+  #     "zone_id": "line-3",
+  #     "camera_id": "cam-04",
+  #     "subject_id": "worker-17"
+  #   }
+  # }
+  # - id: ppe-hardhat-cam-04
+  #   type: ppe_hardhat_violation_score
+  #   protocol: mqtt_perception
+  #   broker_host: "192.168.1.20"
+  #   topic: "ori/perception/site-b/cam-04"
+  #   port: 1883
+  #   poll_interval_ms: 1000
+  #
+  # - id: ppe-vest-cam-04
+  #   type: ppe_vest_violation_score
+  #   protocol: mqtt_perception
+  #   broker_host: "192.168.1.20"
+  #   topic: "ori/perception/site-b/cam-04"
+  #   port: 1883
+  #   poll_interval_ms: 1000
+
 
 skills:
   - name: energy-anomaly-detector

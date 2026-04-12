@@ -205,7 +205,7 @@ triggers:
     action_tier: D # → cuts power. no waiting.
 ```
 
-Bundled skills: **pc-system-health** (runs on any laptop), **energy-anomaly-detector**, and **hvac-refrigerant-monitor**.
+Bundled skills: **pc-system-health** (runs on any laptop), **energy-anomaly-detector**, **hvac-refrigerant-monitor**, and **site-safety-ppe**.
 
 Community skills live at **[ori-platform/ori-skills](https://github.com/ori-platform/ori-skills)**. The runtime enforces strict skill validation and sandboxed hook loading for community-installed skills.
 
