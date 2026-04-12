@@ -58,9 +58,9 @@ class TestLoadExample:
         # example has 3 uncommented sensors
         assert len(cfg.sensors) == 3
         types = {s.type for s in cfg.sensors}
-        assert "current_clamp" in types
-        assert "voltage" in types
-        assert "battery_state" in types
+        assert "ads1115_current" in types
+        assert "ads1115_voltage" in types
+        assert "active_power" in types
 
     def test_sensor_poll_intervals(self):
         cfg = Config.load(EXAMPLE_YAML)
