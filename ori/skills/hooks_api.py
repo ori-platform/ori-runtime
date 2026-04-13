@@ -77,10 +77,22 @@ class HookStateAdapter:
         self._store = store
         self._skill_name = skill_name
 
+    def _read(self, fn_name: str, *args: Any) -> Any:
+        """Execute a StateStore sync read helper across store API versions."""
+        if not self._store:
+            return None
+        fn = getattr(self._store, fn_name, None)
+        if fn is None:
+            return None
+        run_read = getattr(self._store, "_run_read_with_conn", None)
+        if callable(run_read):
+            return run_read(fn, *args)
+        return fn(*args)
+
     def get(self, key: str) -> Optional[str]:
         if not self._store or not self._skill_name:
             return None
-        return self._store._get_skill_state_sync(self._skill_name, key)
+        return self._read("_get_skill_state_sync", self._skill_name, key)
 
     def set(self, key: str, value: str) -> None:
         if not self._store or not self._skill_name:
