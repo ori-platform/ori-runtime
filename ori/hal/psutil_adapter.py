@@ -37,6 +37,9 @@ _SUPPORTED = frozenset(
         "disk_read_count",
         "net_bytes_sent_mb",
         "net_bytes_recv_mb",
+        "net_listening_sockets",
+        "net_established_connections",
+        "active_terminal_users",
         "battery_drain_rate",
         "sleep_blocking_process",
     }
@@ -86,7 +89,9 @@ class PsutilAdapter(BaseAdapter):
             )
         self._sensor_id = config.get("sensor_id", "")
         self._sensor_type = sensor_type
-        self._breaker = HardwareCircuitBreaker(getattr(self, "adapter_name", type(self).__name__), config)
+        self._breaker = HardwareCircuitBreaker(
+            getattr(self, "adapter_name", type(self).__name__), config
+        )
         self._connected = True
 
     async def close(self) -> None:
@@ -149,6 +154,12 @@ class PsutilAdapter(BaseAdapter):
             return self._net(sensor_id, "sent")
         if t == "net_bytes_recv_mb":
             return self._net(sensor_id, "recv")
+        if t == "net_listening_sockets":
+            return self._net_connections_reading(sensor_id, "LISTEN")
+        if t == "net_established_connections":
+            return self._net_connections_reading(sensor_id, "ESTABLISHED")
+        if t == "active_terminal_users":
+            return self._active_terminal_users(sensor_id)
         raise AdapterReadError(f"Unknown sensor type: {t}")
 
     # ── System resources ──────────────────────────────────────────────────────
@@ -378,6 +389,113 @@ class PsutilAdapter(BaseAdapter):
             unit="megabytes",
             timestamp=_now_ms(),
             quality=1.0,
+        )
+
+    def _permission_degraded_reading(
+        self, sensor_id: str, sensor_type: str, exc: Exception
+    ) -> SensorReading:
+        return SensorReading(
+            sensor_id=sensor_id,
+            sensor_type=sensor_type,
+            value=0.0,
+            unit="count",
+            timestamp=_now_ms(),
+            quality=0.3,
+            metadata={
+                "source": "psutil",
+                "coverage": "partial",
+                "permission_denied": True,
+                "note": "Run with elevated permissions for full socket visibility",
+                "error": str(exc),
+            },
+        )
+
+    @staticmethod
+    def _extract_port(addr: object) -> int | None:
+        if hasattr(addr, "port"):
+            try:
+                return int(getattr(addr, "port"))
+            except (TypeError, ValueError):
+                return None
+        if isinstance(addr, tuple) and len(addr) >= 2:
+            try:
+                return int(addr[1])
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _net_connections_reading(self, sensor_id: str, status: str) -> SensorReading:
+        sensor_type = (
+            "net_listening_sockets"
+            if status == "LISTEN"
+            else "net_established_connections"
+        )
+        try:
+            connections = psutil.net_connections(kind="inet")
+        except (psutil.AccessDenied, PermissionError, OSError) as exc:
+            return self._permission_degraded_reading(sensor_id, sensor_type, exc)
+
+        filtered = [c for c in connections if getattr(c, "status", "") == status]
+        ports: list[int] = []
+        pids: list[int] = []
+        for conn in filtered:
+            port = self._extract_port(getattr(conn, "laddr", None))
+            if port is not None:
+                ports.append(port)
+            pid = getattr(conn, "pid", None)
+            if isinstance(pid, int):
+                pids.append(pid)
+
+        return SensorReading(
+            sensor_id=sensor_id,
+            sensor_type=sensor_type,
+            value=float(len(filtered)),
+            unit="count",
+            timestamp=_now_ms(),
+            quality=1.0,
+            metadata={
+                "source": "psutil",
+                "coverage": "full",
+                "status_filter": status,
+                "total_inet_connections": len(connections),
+                "listener_ports" if status == "LISTEN" else "local_ports": sorted(
+                    set(ports)
+                ),
+                "sample_pids": sorted(set(pids))[:10],
+            },
+        )
+
+    def _active_terminal_users(self, sensor_id: str) -> SensorReading:
+        sensor_type = "active_terminal_users"
+        try:
+            users = psutil.users()
+        except (psutil.AccessDenied, PermissionError, OSError) as exc:
+            return self._permission_degraded_reading(sensor_id, sensor_type, exc)
+
+        sessions: list[dict] = []
+        for user in users:
+            sessions.append(
+                {
+                    "name": str(getattr(user, "name", "")),
+                    "terminal": str(getattr(user, "terminal", "")),
+                    "host": str(getattr(user, "host", "")),
+                }
+            )
+
+        usernames = [s["name"] for s in sessions if s["name"]]
+        return SensorReading(
+            sensor_id=sensor_id,
+            sensor_type=sensor_type,
+            value=float(len(sessions)),
+            unit="count",
+            timestamp=_now_ms(),
+            quality=1.0,
+            metadata={
+                "source": "psutil",
+                "coverage": "full",
+                "sessions": sessions,
+                "usernames": usernames,
+            },
         )
 
     # ── Battery drain rate (calculated, async) ────────────────────────────────

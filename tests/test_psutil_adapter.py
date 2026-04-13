@@ -3,12 +3,13 @@
 
 import shutil
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import psutil
 import pytest
 
-from ori.hal.base import AdapterConnectionError
+from ori.hal.base import AdapterConnectionError, AdapterReadError, CircuitState
 from ori.hal.psutil_adapter import PsutilAdapter
 from ori.network.events import SensorReading
 
@@ -356,6 +357,103 @@ class TestNetwork:
             value_min=0.0,
             quality_min=1.0,
         )
+
+    async def test_net_listening_sockets_counts_listen_only(self):
+        connections = [
+            SimpleNamespace(status="LISTEN", laddr=("127.0.0.1", 5432), pid=111),
+            SimpleNamespace(status="ESTABLISHED", laddr=("10.0.0.2", 443), pid=222),
+            SimpleNamespace(status="LISTEN", laddr=("127.0.0.1", 8080), pid=333),
+        ]
+        adapter = await _make_adapter("net_listening_sockets")
+        with patch("psutil.net_connections", return_value=connections):
+            r = await adapter.read("net_listening_sockets")
+        _assert_reading(
+            r,
+            "net_listening_sockets",
+            "net_listening_sockets",
+            "count",
+            value_min=0.0,
+            quality_min=1.0,
+        )
+        assert r.value == 2.0
+        assert r.metadata["listener_ports"] == [5432, 8080]
+        assert r.metadata["sample_pids"] == [111, 333]
+        assert r.metadata["coverage"] == "full"
+
+    async def test_net_established_connections_counts_established_only(self):
+        connections = [
+            SimpleNamespace(status="LISTEN", laddr=("127.0.0.1", 5432), pid=111),
+            SimpleNamespace(status="ESTABLISHED", laddr=("10.0.0.2", 443), pid=222),
+            SimpleNamespace(status="ESTABLISHED", laddr=("10.0.0.2", 8443), pid=444),
+        ]
+        adapter = await _make_adapter("net_established_connections")
+        with patch("psutil.net_connections", return_value=connections):
+            r = await adapter.read("net_established_connections")
+        _assert_reading(
+            r,
+            "net_established_connections",
+            "net_established_connections",
+            "count",
+            value_min=0.0,
+            quality_min=1.0,
+        )
+        assert r.value == 2.0
+        assert r.metadata["local_ports"] == [443, 8443]
+        assert r.metadata["sample_pids"] == [222, 444]
+        assert r.metadata["coverage"] == "full"
+
+    async def test_active_terminal_users_counts_sessions(self):
+        sessions = [
+            SimpleNamespace(name="admin", terminal="ttys000", host="localhost"),
+            SimpleNamespace(name="deploy", terminal="ttys001", host="localhost"),
+        ]
+        adapter = await _make_adapter("active_terminal_users")
+        with patch("psutil.users", return_value=sessions):
+            r = await adapter.read("active_terminal_users")
+        _assert_reading(
+            r,
+            "active_terminal_users",
+            "active_terminal_users",
+            "count",
+            value_min=0.0,
+            quality_min=1.0,
+        )
+        assert r.value == 2.0
+        assert r.metadata["usernames"] == ["admin", "deploy"]
+        assert len(r.metadata["sessions"]) == 2
+
+    async def test_net_connections_access_denied_returns_low_quality_reading(self):
+        adapter = await _make_adapter("net_listening_sockets")
+        with patch(
+            "psutil.net_connections",
+            side_effect=psutil.AccessDenied(pid=100, name="netstat"),
+        ):
+            r = await adapter.read("net_listening_sockets")
+        assert r.sensor_type == "net_listening_sockets"
+        assert r.value == 0.0
+        assert r.quality == pytest.approx(0.3)
+        assert r.metadata["coverage"] == "partial"
+        assert r.metadata["permission_denied"] is True
+        assert "elevated permissions" in r.metadata["note"]
+
+    async def test_cyber_sensor_failures_trip_circuit_breaker(self):
+        adapter = await _make_adapter("net_established_connections")
+        with patch(
+            "psutil.net_connections",
+            side_effect=RuntimeError("boom"),
+        ):
+            with pytest.raises(AdapterReadError):
+                await adapter.read("net_established_connections")
+            with pytest.raises(AdapterReadError):
+                await adapter.read("net_established_connections")
+            with pytest.raises(AdapterReadError):
+                await adapter.read("net_established_connections")
+            with pytest.raises(AdapterReadError):
+                await adapter.read("net_established_connections")
+            with pytest.raises(AdapterReadError):
+                await adapter.read("net_established_connections")
+        assert adapter._breaker.state == CircuitState.OPEN
+        assert adapter._breaker.failure_count >= adapter._breaker.failure_threshold
 
 
 # ─── Battery drain rate ───────────────────────────────────────────────────────

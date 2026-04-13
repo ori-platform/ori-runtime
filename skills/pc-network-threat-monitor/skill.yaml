@@ -1,0 +1,102 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: pc-network-threat-monitor
+version: 0.1.0
+author: wasiubakare
+description: >
+  Host behavioral anomaly detection for suspicious listener/socket/session
+  changes on PC deployments.
+license: Apache-2.0
+signature: ed25519:PENDING
+
+sensors_required:
+  - type: net_listening_sockets
+    protocol: psutil
+  - type: net_established_connections
+    protocol: psutil
+  - type: active_terminal_users
+    protocol: psutil
+
+# This skill performs host behavioral anomaly detection from psutil telemetry.
+# It does not claim deterministic malware family or zero-day classification.
+#
+# Tier C defaults are intentionally conservative at launch:
+# alert + log only. Do not add terminate_process defaults until baseline false
+# positive rates are measured in production.
+triggers:
+  - name: suspicious_new_listener
+    condition: "sensor_type == 'net_listening_sockets' and warmup_complete == 1 and quality >= min_quality and listener_delta >= listener_delta_threshold"
+    cooldown_seconds: 120
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: suspicious_connection_surge
+    condition: "sensor_type == 'net_established_connections' and warmup_complete == 1 and quality >= min_quality and established_delta >= established_delta_threshold and established_ratio_24h >= established_ratio_threshold"
+    cooldown_seconds: 120
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: suspicious_terminal_user_increase
+    condition: "sensor_type == 'active_terminal_users' and warmup_complete == 1 and quality >= min_quality and user_delta >= user_delta_threshold"
+    cooldown_seconds: 180
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: probable_c2_or_shell_foothold
+    condition: "warmup_complete == 1 and quality >= min_quality and recent_listener_spike == 1 and ((sensor_type == 'net_established_connections' and established_delta >= established_delta_threshold and established_ratio_24h >= tier_c_established_ratio) or (sensor_type == 'active_terminal_users' and user_delta >= tier_c_user_delta))"
+    cooldown_seconds: 300
+    escalate_to: rule
+    action_tier: C
+    approval_timeout_seconds: 300
+    safe_default_action: log_to_dashboard
+
+prompts:
+  suspicious_new_listener: |
+    A new network listener appeared on the host.
+    Evaluate whether this matches host behavioral indicators of post-exploitation
+    foothold behavior or expected local services.
+    Give 2 short operator actions in plain language.
+
+  suspicious_connection_surge: |
+    Outbound established connections surged compared to baseline.
+    Evaluate whether this matches host behavioral indicators of command-and-
+    control or benign burst traffic.
+    Give 2 short operator actions in plain language.
+
+  suspicious_terminal_user_increase: |
+    Active terminal sessions increased unexpectedly.
+    Evaluate whether this looks like authorized maintenance or suspicious shell
+    access behavior.
+    Give 2 short operator actions in plain language.
+
+  probable_c2_or_shell_foothold: |
+    Correlated host behavioral indicators were observed: recent listener spike
+    plus elevated connection/session activity.
+    Assess whether this warrants containment proposal to the operator.
+    Give 2 short operator actions in plain language.
+
+actions:
+  available:
+    - name: alert_whatsapp
+      tier: A
+    - name: log_to_dashboard
+      tier: A
+  defaults:
+    suspicious_new_listener: [alert_whatsapp, log_to_dashboard]
+    suspicious_connection_surge: [alert_whatsapp, log_to_dashboard]
+    suspicious_terminal_user_increase: [alert_whatsapp, log_to_dashboard]
+    probable_c2_or_shell_foothold: [alert_whatsapp, log_to_dashboard]
+
+config:
+  min_quality: 0.8
+  baseline_warmup_polls: 5
+  correlation_window_seconds: 600
+  listener_delta_threshold: 1
+  established_delta_threshold: 20
+  established_ratio_threshold: 2.5
+  user_delta_threshold: 1
+  tier_c_established_ratio: 4.0
+  tier_c_user_delta: 1
+  known_listener_ports: [5432, 3306, 6379, 8080, 9090]
+  known_terminal_users: [admin, deploy]
