@@ -614,7 +614,7 @@ class OriRuntime:
                         try:
                             # Immediate wake on shutdown instead of sleeping blindly
                             await asyncio.wait_for(
-                                asyncio.shield(self._shutdown_event.wait()),
+                                self._shutdown_event.wait(),
                                 timeout=WATCHDOG_PING_INTERVAL,
                             )
                         except asyncio.TimeoutError:
@@ -658,7 +658,7 @@ class OriRuntime:
                 pin.off()
                 try:
                     await asyncio.wait_for(
-                        asyncio.shield(self._shutdown_event.wait()),
+                        self._shutdown_event.wait(),
                         timeout=ping_interval_s,
                     )
                 except asyncio.TimeoutError:
@@ -680,24 +680,38 @@ class OriRuntime:
     async def _heartbeat_loop(self, device_id: str) -> None:
         """Log a heartbeat every 5 minutes to confirm the runtime is alive.
 
-        Uses ``asyncio.wait_for`` on a shielded shutdown-event wait so that
-        the loop wakes immediately on shutdown rather than being cancelled
-        mid-sleep.  This produces a clean exit log line instead of a silent
-        ``CancelledError``.
+        The heartbeat reports:
+        - managed runtime background tasks (pollers/watchdog/compaction/etc.)
+        - pending reasoning tasks
+        - pending approval-wait tasks
+        - total active asyncio tasks
         """
         while not self._shutdown_event.is_set():
             try:
                 await asyncio.wait_for(
-                    asyncio.shield(self._shutdown_event.wait()),
+                    self._shutdown_event.wait(),
                     timeout=300.0,
                 )
                 break  # shutdown was signalled during the wait — exit cleanly
             except asyncio.TimeoutError:
                 pass  # 5 minutes elapsed normally — log heartbeat
             active = [t for t in asyncio.all_tasks() if not t.done()]
+            managed = [t for t in self._background_tasks if not t.done()]
+            reasoning_pending = 0
+            approval_pending = 0
+            for task in active:
+                name = task.get_name()
+                if name.startswith("reason:"):
+                    reasoning_pending += 1
+                elif name.startswith("approval:"):
+                    approval_pending += 1
             logger.info(
-                "[heartbeat] device=%s active_tasks=%d",
+                "[heartbeat] device=%s managed_tasks=%d reasoning_pending=%d "
+                "approval_pending=%d active_tasks=%d",
                 device_id,
+                len(managed),
+                reasoning_pending,
+                approval_pending,
                 len(active),
             )
         logger.debug("[heartbeat] loop exited cleanly")
@@ -707,7 +721,7 @@ class OriRuntime:
         while not self._shutdown_event.is_set():
             try:
                 await asyncio.wait_for(
-                    asyncio.shield(self._shutdown_event.wait()),
+                    self._shutdown_event.wait(),
                     timeout=300.0,
                 )
                 break  # shutdown was signalled

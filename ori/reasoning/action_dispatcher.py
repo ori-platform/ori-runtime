@@ -472,14 +472,20 @@ class ActionDispatcher:
             # Backward compatibility for older test doubles/overrides that
             # patched _listen_for_response with a no-arg coroutine.
             listen_coro = self._listen_for_response()  # type: ignore[call-arg]
+        listen_task = asyncio.create_task(
+            listen_coro,
+            name=f"approval:{action}",
+        )
         try:
             operator_response = await asyncio.wait_for(
-                listen_coro,
+                listen_task,
                 # Keep a small guard margin around provider-side timeout logic.
                 timeout=float(approval_timeout_seconds) + 1.0,
             )
         except asyncio.TimeoutError:
             timed_out = True
+            if not listen_task.done():
+                listen_task.cancel()
             logger.warning(
                 "ActionDispatcher: approval timeout for action=%r after %ds — "
                 "executing safe_default=%r",

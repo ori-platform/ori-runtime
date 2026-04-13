@@ -555,7 +555,7 @@ class TestRegister:
         # patch asyncio.create_task to capture the coroutine
         created_coros = []
 
-        def fake_create_task(coro):
+        def fake_create_task(coro, **_kwargs):
             created_coros.append(coro)
             # Schedule it so it actually runs
             return asyncio.ensure_future(coro)
@@ -584,7 +584,7 @@ class TestRegister:
 
         task_calls = []
 
-        def fake_create_task(coro):
+        def fake_create_task(coro, **_kwargs):
             task_calls.append(coro)
             return asyncio.ensure_future(coro)
 

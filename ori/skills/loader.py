@@ -644,7 +644,8 @@ class SkillLoader:
                     skill=skill,
                     state_store=state_store,
                     dispatcher=dispatcher,
-                )
+                ),
+                name=f"reason:{skill.name}:{trigger.name}",
             )
 
         # Give the handler a useful name for logging
