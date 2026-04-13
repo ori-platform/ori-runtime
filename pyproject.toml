@@ -40,7 +40,7 @@ dependencies = [
 [project.optional-dependencies]
 pi = [
     "gpiozero>=2.0",
-    "smbus2>=0.4",
+    "smbus2>=0.6.1",
     "RPi.GPIO>=0.7",
 ]
 llm = [
