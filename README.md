@@ -317,6 +317,15 @@ python -m ori.runtime --config ori.local.yaml
 # Full runtime smoke test (requires ori.local.yaml configured)
 bash scripts/smoke-runtime-local.sh
 
+# Force pretty console output
+ORI_PRETTY_LOGS=true bash scripts/smoke-runtime-local.sh
+
+# Disable ANSI colors (CI/plain terminals)
+ORI_PRETTY_LOGS=false bash scripts/smoke-runtime-local.sh
+
+# Live host-health report (real psutil readings + skill trigger evaluation)
+ORI_PRETTY_LOGS=true .venv/bin/python scripts/pc_health_report.py
+
 # Local SLM quality smoke test (without starting full runtime)
 python - <<'PY'
 import asyncio
