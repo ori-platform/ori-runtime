@@ -1,6 +1,6 @@
 # Ori Design Principles
 
-The design philosophy governing every architectural decision in this codebase is documented below. Every line of code, architectural design, and feature proposal in this repository must be evaluated through these **six lenses**.
+The design philosophy governing every architectural decision in this codebase is documented below. Every line of code, architectural design, and feature proposal in this repository must be evaluated through these **seven lenses**.
 
 When you write code or review a pull request, ask yourself if it survives these lenses:
 
@@ -9,7 +9,9 @@ When you write code or review a pull request, ask yourself if it survives these 
 
 This codebase implements a **Physical Actuation Trust** framework. This is what makes Ori categorically different from every existing IoT platform and LLM agent framework. An AI agent acting in the physical world must earn the authority to act progressively. Ori's Action Tier Framework — Informational (Tier A) → Soft Physical (Tier B) → Hard Physical (Tier C) → Safety-Critical (Tier D) — is not a safety bolt-on. It is the fundamental model through which the runtime demonstrates trustworthiness. 
 
-Furthermore, trust requires **Continuous Humility**. The operator's context always supersedes the agent's generalization. When an operator rejects a Tier C proposal, Ori explicitly logs that rejection to causal memory. Trust is won by proving that human correction permanently alters the machine's future behavior.
+Furthermore, trust requires **Continuous Humility**. The operator's context always supersedes the agent's generalization. When an operator rejects a Tier C proposal, Ori explicitly logs that rejection to causal memory. Trust is won by proving that human correction permanently alters the machine's future behaviour.
+
+See also: The Lens of Explicit Authority Boundaries — which governs how learned behaviour interacts with actuation permissions.
 
 ## 2. The Lens of Constraint
 *Designed for the world's majority condition.*
@@ -37,3 +39,13 @@ Most of the world's physical infrastructure does not have reliable internet conn
 *The skill is the atomic unit of trust.*
 
 Every autonomous capability Ori possesses is declared, versioned, signed, and auditable. A skill that is not declared cannot execute. An action that is not in the skill's capability declaration cannot be taken. The sandbox enforces this at the import level. The action tier framework enforces this at the execution level. Community skills are cryptographically signed. The trust model is explicit and machine-verifiable.
+
+## 7. The Lens of Explicit Authority Boundaries
+*Learning improves reasoning. It never grants permissions.*
+
+Learning is allowed to improve recommendations, context, deduplication, and prioritization. Learning is not allowed to silently grant new actuation authority.
+
+- Causal memory may influence reasoning text, alert suppression, and escalation hints.
+- Causal memory must never auto-promote action permissions (e.g., Tier C → Tier B) without explicit operator policy change.
+- Any permission-affecting change must be versioned, auditable, and human-approved.
+- Safety and approval invariants remain authoritative over all learned behaviour.
