@@ -46,6 +46,7 @@ class SkillContext:
     skill: Any  # Skill instance (loader.py step 14)
     event: OriEvent
     state_store: Any  # StateStore
+    trigger_name: str = ""
 
 
 def _now_ms() -> int:
@@ -726,7 +727,12 @@ class IntelligenceElevator:
                     )
                     actions = ["log_to_dashboard"]
 
-            context = SkillContext(skill=skill, event=event, state_store=state_store)
+            context = SkillContext(
+                skill=skill,
+                event=event,
+                state_store=state_store,
+                trigger_name=rule_res.rule_name if rule_res.matched else "",
+            )
             for action in actions:
                 await dispatcher.dispatch(
                     action=action,
@@ -792,7 +798,10 @@ class IntelligenceElevator:
                     actions.append("alert_sms")
 
             context = SkillContext(
-                skill=skill, event=synthetic_event, state_store=state_store
+                skill=skill,
+                event=synthetic_event,
+                state_store=state_store,
+                trigger_name="sensor.invalid_value",
             )
             for action in actions:
                 await dispatcher.dispatch(

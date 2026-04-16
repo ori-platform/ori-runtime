@@ -21,6 +21,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ori.actions.alert_failover import AlertFailoverSender
+from ori.actions.coap import CoAPAction
 from ori.actions.logger import LoggerAction
 from ori.actions.process_manager import ProcessManagerAction
 from ori.actions.relay import RelayAction
@@ -180,6 +182,7 @@ class OriRuntime:
         # ── Step C: Instantiate action executors and ActionDispatcher ─────────
         whatsapp_action = WhatsAppAction(provider=TwilioProvider())
         sms_action = SMSAction(state_store=self._state_store)
+        coap_action = CoAPAction(config=config.actions.coap)
         self._sms_action = sms_action
         logger_action = LoggerAction()
         process_manager_action = ProcessManagerAction()
@@ -226,7 +229,11 @@ class OriRuntime:
                 break
 
         primary_alert_channel = config.actions.primary_alert_channel
-        alert_sender = sms_action if primary_alert_channel == "sms" else whatsapp_action
+        alert_sender = AlertFailoverSender(
+            primary_channel=primary_alert_channel,
+            sms_sender=sms_action,
+            whatsapp_sender=whatsapp_action,
+        )
         causal_cfg = (
             config.reasoning.causal_memory
             if isinstance(config.reasoning.causal_memory, dict)
@@ -300,6 +307,28 @@ class OriRuntime:
         dispatcher.register_executor(
             "reset_kernel_subsystem", _exec_reset_kernel_subsystem
         )
+
+        async def _exec_coap_command(action: str, ctx: SkillContext) -> bool:
+            command_name, payload_override = _coap_command_from_context(ctx)
+            if not command_name:
+                logger.warning(
+                    "[runtime] coap_command requested but no command was resolved from trigger=%r "
+                    "(expected skill.config.coap.trigger_commands or event metadata coap_command)",
+                    getattr(ctx, "trigger_name", ""),
+                )
+                return False
+            ok = await coap_action.execute_command(
+                command_name=command_name,
+                payload_override=payload_override,
+            )
+            if not ok:
+                logger.warning(
+                    "[runtime] coap_command execution failed for command=%r",
+                    command_name,
+                )
+            return ok
+
+        dispatcher.register_executor("coap_command", _exec_coap_command)
 
         # log_to_dashboard — override built-in with device_id from config
         async def _exec_log_to_dashboard(action: str, *_: Any) -> None:
@@ -981,6 +1010,56 @@ def _kernel_subsystem_from_context(ctx: SkillContext) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def _coap_command_from_context(ctx: SkillContext) -> tuple[str, str | None]:
+    """Resolve CoAP command from event metadata and skill config.
+
+    Resolution order:
+    1. event.context["coap_command"] / ["coap_payload"]
+    2. reading.metadata["coap_command"] / ["coap_payload"]
+    3. skill.config.coap.trigger_commands[trigger_name]
+    4. skill.config.coap.default_command
+    """
+    if not ctx or not ctx.event:
+        return "", None
+
+    command_name = ""
+    payload_override: str | None = None
+
+    event_ctx = ctx.event.context if isinstance(ctx.event.context, dict) else {}
+    if isinstance(event_ctx.get("coap_command"), str):
+        command_name = str(event_ctx["coap_command"]).strip()
+    if event_ctx.get("coap_payload") is not None:
+        payload_override = str(event_ctx.get("coap_payload"))
+
+    reading = ctx.event.reading
+    metadata = reading.metadata if reading is not None else {}
+    if not command_name and isinstance(metadata.get("coap_command"), str):
+        command_name = str(metadata["coap_command"]).strip()
+    if payload_override is None and metadata.get("coap_payload") is not None:
+        payload_override = str(metadata.get("coap_payload"))
+
+    skill_cfg = getattr(getattr(ctx, "skill", None), "config", {}) or {}
+    if isinstance(skill_cfg, dict):
+        coap_cfg = skill_cfg.get("coap") or {}
+        if isinstance(coap_cfg, dict):
+            trigger_commands = coap_cfg.get("trigger_commands") or {}
+            if (
+                not command_name
+                and isinstance(trigger_commands, dict)
+                and isinstance(getattr(ctx, "trigger_name", ""), str)
+            ):
+                trigger_name = ctx.trigger_name.strip()
+                mapped = trigger_commands.get(trigger_name)
+                if isinstance(mapped, str) and mapped.strip():
+                    command_name = mapped.strip()
+            if not command_name:
+                default_command = coap_cfg.get("default_command")
+                if isinstance(default_command, str) and default_command.strip():
+                    command_name = default_command.strip()
+
+    return command_name, payload_override
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

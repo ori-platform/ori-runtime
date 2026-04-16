@@ -23,6 +23,7 @@ from ori.reasoning.elevator import SkillContext
 from ori.runtime import (
     OriRuntime,
     _build_local_llm,
+    _coap_command_from_context,
     _maybe_autoload_dotenv,
     _process_target_from_context,
     _resolve_local_model_file,
@@ -729,6 +730,60 @@ class TestProcessTargetResolution:
             }
         )
         assert _process_target_from_context(ctx) == (2, "B")
+
+
+class TestCoapCommandResolution:
+    def test_prefers_event_context(self):
+        reading = SensorReading(
+            sensor_id="s-1",
+            sensor_type="temperature",
+            value=1.0,
+            unit="celsius",
+            timestamp=1_700_000_000_000,
+            quality=1.0,
+        )
+        event = OriEvent.from_reading(reading, "dev-01")
+        event.context = {
+            "coap_command": "open_bypass_valve",
+            "coap_payload": '{"state":"open"}',
+        }
+        ctx = SkillContext(
+            skill=SimpleNamespace(config={}),
+            event=event,
+            state_store=None,
+            trigger_name="trigger-a",
+        )
+        command, payload = _coap_command_from_context(ctx)
+        assert command == "open_bypass_valve"
+        assert payload == '{"state":"open"}'
+
+    def test_uses_skill_trigger_mapping(self):
+        reading = SensorReading(
+            sensor_id="s-1",
+            sensor_type="temperature",
+            value=1.0,
+            unit="celsius",
+            timestamp=1_700_000_000_000,
+            quality=1.0,
+        )
+        event = OriEvent.from_reading(reading, "dev-01")
+        ctx = SkillContext(
+            skill=SimpleNamespace(
+                config={
+                    "coap": {
+                        "trigger_commands": {
+                            "probable_c2_or_shell_foothold": "isolate_vlan",
+                        }
+                    }
+                }
+            ),
+            event=event,
+            state_store=None,
+            trigger_name="probable_c2_or_shell_foothold",
+        )
+        command, payload = _coap_command_from_context(ctx)
+        assert command == "isolate_vlan"
+        assert payload is None
 
 
 class TestWebhookIngest:
