@@ -17,7 +17,6 @@ import asyncio
 import logging
 import os
 import signal
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +31,9 @@ from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import Config, ConfigValidationError
 from ori.hal.base import AdapterReadError, BaseAdapter
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
+from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
-from ori.network.events import OriEvent
+from ori.network.events import OriEvent, compute_fingerprint
 from ori.network.sms_webhook import SMSWebhookServer
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
@@ -74,6 +74,7 @@ class OriRuntime:
         self._loaded_skills: list[Any] = []
         self._skill_subscriptions: list[tuple[str, Any]] = []
         self._skill_reload_lock: asyncio.Lock | None = None
+        self._deduplicator: EventDeduplicator | None = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -361,6 +362,7 @@ class OriRuntime:
         elevator.attach_event_bus(event_bus)
         self._event_bus = event_bus
         self._skill_reload_lock = asyncio.Lock()
+        self._deduplicator = EventDeduplicator()
 
         # ── Step F: Load skills and register handlers ─────────────────────────
         skills_dir: str = config.raw.get(
@@ -435,7 +437,13 @@ class OriRuntime:
                 continue
 
             task = asyncio.create_task(
-                self._poll_sensor(adapter, sensor_cfg, event_bus, config.device.id),
+                self._poll_sensor(
+                    adapter,
+                    sensor_cfg,
+                    event_bus,
+                    config.device.id,
+                    self._deduplicator,
+                ),
                 name=f"poll:{sensor_cfg.id}",
             )
             self._background_tasks.append(task)
@@ -471,7 +479,9 @@ class OriRuntime:
             )
         )
         self._background_tasks.append(
-            asyncio.create_task(self._compaction_loop(), name="compaction")
+            asyncio.create_task(
+                self._compaction_loop(self._deduplicator), name="compaction"
+            )
         )
         webhook_task = await self._start_sms_webhook_if_enabled(config)
         if webhook_task is not None:
@@ -598,22 +608,30 @@ class OriRuntime:
         sensor_cfg: Any,
         event_bus: EventBus,
         device_id: str,
+        deduplicator: EventDeduplicator | None = None,
     ) -> None:
         """Read *adapter* at the configured poll interval and publish to *event_bus*."""
         assert self._state_store is not None
         while not self._shutdown_event.is_set():
             try:
                 reading = await adapter.read(sensor_cfg.id)
-                event = OriEvent(
-                    event_id=str(uuid.uuid4()),
-                    event_type=f"sensor.{reading.sensor_type}",
-                    device_id=device_id,
-                    sensor_id=reading.sensor_id,
-                    timestamp=reading.timestamp,
-                    reading=reading,
-                )
-                await event_bus.publish(event)
+                event = OriEvent.from_reading(reading, device_id)
+                event.event_type = f"sensor.{reading.sensor_type}"
+                # Keep source explicit in the poll path; adapters must publish
+                # protocol provenance through reading.metadata["source"].
+                event.source = reading.metadata.get("source", "")
+                event.fingerprint = compute_fingerprint(event.reading, event.device_id)
                 await self._state_store.append_history(event)
+                if event.reading is not None and deduplicator is not None:
+                    if deduplicator.process(event) is None:
+                        logger.debug(
+                            "Deduplicator suppressed duplicate event for sensor %s "
+                            "(fingerprint %s...)",
+                            event.sensor_id,
+                            event.fingerprint[:8],
+                        )
+                        continue
+                await event_bus.publish(event)
             except AdapterReadError as exc:
                 logger.warning("[sensor] %s read failed: %s", sensor_cfg.id, exc)
             except Exception:
@@ -745,7 +763,9 @@ class OriRuntime:
             )
         logger.debug("[heartbeat] loop exited cleanly")
 
-    async def _compaction_loop(self) -> None:
+    async def _compaction_loop(
+        self, deduplicator: EventDeduplicator | None = None
+    ) -> None:
         """Run the SQLite Compaction Pyramid every 5 minutes."""
         while not self._shutdown_event.is_set():
             try:
@@ -764,6 +784,14 @@ class OriRuntime:
                 except Exception:
                     logger.exception(
                         "[compaction] history compaction failed — will retry"
+                    )
+            if deduplicator is not None:
+                try:
+                    deduplicator.cleanup()
+                    logger.debug("[compaction] deduplicator cleanup complete")
+                except Exception:
+                    logger.exception(
+                        "[compaction] deduplicator cleanup failed — will retry"
                     )
 
 

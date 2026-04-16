@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ori.network.deduplicator import EventDeduplicator
+from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
 from ori.reasoning.elevator import SkillContext
 from ori.runtime import (
@@ -28,6 +30,7 @@ from ori.runtime import (
     _process_target_from_context,
     _resolve_local_model_file,
 )
+from ori.state.store import StateStore
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -159,7 +162,9 @@ class TestLocalSLMWiring:
         llm = _build_local_llm(reasoning_cfg, str(cfg_path))
         assert llm is None
 
-    def test_build_local_llm_constructs_with_resolved_model(self, tmp_path, monkeypatch):
+    def test_build_local_llm_constructs_with_resolved_model(
+        self, tmp_path, monkeypatch
+    ):
         model_dir = tmp_path / "models"
         model_dir.mkdir()
         model_file = model_dir / "qwen2.5-0.5b-instruct-q4_k_m.gguf"
@@ -429,7 +434,9 @@ class TestLifecycle:
             encoding="utf-8",
         )
         runtime = OriRuntime(config_path=str(cfg))
-        mocked_connect = AsyncMock(side_effect=AssertionError("relay should not connect"))
+        mocked_connect = AsyncMock(
+            side_effect=AssertionError("relay should not connect")
+        )
         monkeypatch.setattr("ori.actions.relay.RelayAction.connect", mocked_connect)
 
         async def _stop():
@@ -601,12 +608,8 @@ class TestWatchdog:
         with caplog.at_level(logging.WARNING):
             await asyncio.gather(runtime.start(), _stop())
 
-        watchdog_warnings = [
-            r.message
-            for r in caplog.records
-        ]
+        watchdog_warnings = [r.message for r in caplog.records]
         assert watchdog_warnings, "Expected watchdog 'not found' warning in logs"
-
 
     async def test_watchdog_writes_magic_v_on_shutdown(
         self, minimal_config, monkeypatch, caplog
@@ -680,6 +683,338 @@ class TestSensorPolling:
         assert read_count >= 2, "Expected at least 2 poll attempts"
         warning_msgs = [r.message for r in caplog.records if "read failed" in r.message]
         assert warning_msgs, "Expected 'read failed' warning log"
+
+    async def test_poll_sensor_sets_non_empty_fingerprint(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = AsyncMock()
+        runtime._shutdown_event = asyncio.Event()
+
+        reading = SensorReading(
+            sensor_id="cpu-sensor",
+            sensor_type="cpu_percent",
+            value=42.4,
+            unit="percent",
+            timestamp=1_700_000_000_000,
+            quality=1.0,
+            metadata={"source": "psutil"},
+        )
+
+        class _OneShotAdapter:
+            async def read(self, sensor_id: str) -> SensorReading:
+                runtime._shutdown_event.set()
+                return reading
+
+        bus = AsyncMock()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        await runtime._poll_sensor(_OneShotAdapter(), sensor_cfg, bus, "dev-01")
+
+        event = bus.publish.call_args.args[0]
+        assert isinstance(event.fingerprint, str)
+        assert event.fingerprint != ""
+
+    async def test_poll_sensor_fingerprint_stable_across_timestamp_changes(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = AsyncMock()
+        bus = AsyncMock()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+
+        async def _run_once(reading: SensorReading) -> OriEvent:
+            runtime._shutdown_event = asyncio.Event()
+
+            class _OneShotAdapter:
+                async def read(self, sensor_id: str) -> SensorReading:
+                    runtime._shutdown_event.set()
+                    return reading
+
+            await runtime._poll_sensor(_OneShotAdapter(), sensor_cfg, bus, "dev-01")
+            return bus.publish.call_args.args[0]
+
+        first = await _run_once(
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=42.44,  # rounds to 42.4
+                unit="percent",
+                timestamp=1_700_000_000_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            )
+        )
+        second = await _run_once(
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=42.44,  # same rounded value, different timestamp
+                unit="percent",
+                timestamp=1_700_000_060_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            )
+        )
+
+        assert first.fingerprint == second.fingerprint
+
+    async def test_deduplicator_suppresses_identical_readings_within_5_seconds(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._shutdown_event = asyncio.Event()
+
+        class _Store:
+            def __init__(self) -> None:
+                self.events: list[OriEvent] = []
+
+            async def append_history(self, event: OriEvent) -> None:
+                self.events.append(event)
+
+        class _Bus:
+            def __init__(self) -> None:
+                self.events: list[OriEvent] = []
+
+            async def publish(self, event: OriEvent) -> None:
+                self.events.append(event)
+
+        class _SequenceAdapter:
+            def __init__(self, readings: list[SensorReading]) -> None:
+                self._readings = readings
+                self._idx = 0
+
+            async def read(self, sensor_id: str) -> SensorReading:
+                reading = self._readings[self._idx]
+                self._idx += 1
+                if self._idx >= len(self._readings):
+                    runtime._shutdown_event.set()
+                return reading
+
+        runtime._state_store = _Store()
+        bus = _Bus()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        readings = [
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=41.2,
+                unit="percent",
+                timestamp=1_700_000_000_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=41.2,
+                unit="percent",
+                timestamp=1_700_000_001_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+        ]
+
+        with patch("ori.network.deduplicator._now_ms", side_effect=[1_000, 2_000]):
+            await runtime._poll_sensor(
+                _SequenceAdapter(readings),
+                sensor_cfg,
+                bus,
+                "dev-01",
+                EventDeduplicator(),
+            )
+
+        assert len(bus.events) == 1
+        assert len(runtime._state_store.events) == 2
+
+    async def test_deduplicator_allows_identical_readings_after_6_seconds(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._shutdown_event = asyncio.Event()
+
+        class _Store:
+            def __init__(self) -> None:
+                self.events: list[OriEvent] = []
+
+            async def append_history(self, event: OriEvent) -> None:
+                self.events.append(event)
+
+        class _Bus:
+            def __init__(self) -> None:
+                self.events: list[OriEvent] = []
+
+            async def publish(self, event: OriEvent) -> None:
+                self.events.append(event)
+
+        class _SequenceAdapter:
+            def __init__(self, readings: list[SensorReading]) -> None:
+                self._readings = readings
+                self._idx = 0
+
+            async def read(self, sensor_id: str) -> SensorReading:
+                reading = self._readings[self._idx]
+                self._idx += 1
+                if self._idx >= len(self._readings):
+                    runtime._shutdown_event.set()
+                return reading
+
+        runtime._state_store = _Store()
+        bus = _Bus()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        readings = [
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=41.2,
+                unit="percent",
+                timestamp=1_700_000_000_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=41.2,
+                unit="percent",
+                timestamp=1_700_000_006_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+        ]
+
+        with patch("ori.network.deduplicator._now_ms", side_effect=[1_000, 7_001]):
+            await runtime._poll_sensor(
+                _SequenceAdapter(readings),
+                sensor_cfg,
+                bus,
+                "dev-01",
+                EventDeduplicator(),
+            )
+
+        assert len(bus.events) == 2
+        assert len(runtime._state_store.events) == 2
+
+    async def test_non_reading_events_bypass_deduplication(self):
+        bus = EventBus()
+        seen: list[OriEvent] = []
+
+        async def _handler(event: OriEvent) -> None:
+            seen.append(event)
+
+        bus.subscribe("system.alert", _handler)
+        deduplicator = EventDeduplicator()
+
+        first = OriEvent(
+            event_id="evt-1",
+            event_type="system.alert",
+            device_id="dev-01",
+            sensor_id="",
+            timestamp=1_700_000_000_000,
+            reading=None,
+        )
+        second = OriEvent(
+            event_id="evt-2",
+            event_type="system.alert",
+            device_id="dev-01",
+            sensor_id="",
+            timestamp=1_700_000_000_100,
+            reading=None,
+        )
+
+        for event in (first, second):
+            if event.reading is not None and deduplicator.process(event) is None:
+                continue
+            await bus.publish(event)
+
+        assert len(seen) == 2
+
+    async def test_deduplication_does_not_block_history_writes(self, tmp_path: Path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._shutdown_event = asyncio.Event()
+        runtime._state_store = StateStore(str(tmp_path / "ori.db"))
+        await runtime._state_store.open()
+
+        class _Bus:
+            def __init__(self) -> None:
+                self.events: list[OriEvent] = []
+
+            async def publish(self, event: OriEvent) -> None:
+                self.events.append(event)
+
+        class _SequenceAdapter:
+            def __init__(self, readings: list[SensorReading]) -> None:
+                self._readings = readings
+                self._idx = 0
+
+            async def read(self, sensor_id: str) -> SensorReading:
+                reading = self._readings[self._idx]
+                self._idx += 1
+                if self._idx >= len(self._readings):
+                    runtime._shutdown_event.set()
+                return reading
+
+        bus = _Bus()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        readings = [
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=22.0,
+                unit="percent",
+                timestamp=1_700_000_000_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=22.0,
+                unit="percent",
+                timestamp=1_700_000_000_100,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+        ]
+
+        try:
+            with patch("ori.network.deduplicator._now_ms", side_effect=[1_000, 2_000]):
+                await runtime._poll_sensor(
+                    _SequenceAdapter(readings),
+                    sensor_cfg,
+                    bus,
+                    "dev-01",
+                    EventDeduplicator(),
+                )
+
+            history = await runtime._state_store.get_history("cpu-sensor", limit=10)
+            assert len(history) == 2
+            assert len(bus.events) == 1
+        finally:
+            await runtime._state_store.close()
+
+
+class TestCompactionLoop:
+    async def test_compaction_loop_runs_deduplicator_cleanup(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._shutdown_event = asyncio.Event()
+
+        cleanup_calls = {"count": 0}
+
+        class _Dedup:
+            def cleanup(self) -> None:
+                cleanup_calls["count"] += 1
+
+        async def _compact() -> None:
+            runtime._shutdown_event.set()
+
+        runtime._state_store = AsyncMock()
+        runtime._state_store.compact_history.side_effect = _compact
+
+        async def _fake_wait_for(awaitable, timeout):  # noqa: ARG001
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            raise asyncio.TimeoutError
+
+        with patch(
+            "ori.runtime.asyncio.wait_for",
+            new=AsyncMock(side_effect=_fake_wait_for),
+        ):
+            await runtime._compaction_loop(_Dedup())
+
+        runtime._state_store.compact_history.assert_awaited_once()
+        assert cleanup_calls["count"] == 1
 
 
 class TestProcessTargetResolution:
@@ -894,6 +1229,7 @@ class TestWebhookServerStartup:
         fake_instance = _FakeServer()
 
         with patch("ori.runtime.SMSWebhookServer", return_value=fake_instance) as cls:
+
             async def _stop():
                 await asyncio.sleep(0.1)
                 await runtime.stop()
@@ -974,6 +1310,7 @@ class TestWebhookServerStartup:
 
         runtime = OriRuntime(config_path=str(cfg))
         with patch("ori.runtime.SMSWebhookServer") as cls:
+
             async def _stop():
                 await asyncio.sleep(0.1)
                 await runtime.stop()

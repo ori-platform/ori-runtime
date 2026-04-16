@@ -309,3 +309,22 @@ class TestCleanup:
     def test_cleanup_returns_zero_when_nothing_to_evict(self):
         dedup = EventDeduplicator()
         assert dedup.cleanup() == 0
+
+    def test_cleanup_after_dedup_window_and_ttl_evicts_old_record(self):
+        dedup = EventDeduplicator()
+        reading = _reading(sensor_id="cpu", value=11.1)
+        now = _ms()
+
+        with patch("ori.network.deduplicator._now_ms", return_value=now):
+            dedup.process(_event(reading))
+
+        # Dedup window elapsed; same fingerprint is re-registered.
+        with patch("ori.network.deduplicator._now_ms", return_value=now + 6_001):
+            dedup.process(_event(reading))
+
+        # Cleanup past TTL should evict the stale entry.
+        with patch("ori.network.deduplicator._now_ms", return_value=now + 37_100):
+            evicted = dedup.cleanup()
+
+        assert evicted == 1
+        assert len(dedup._records) == 0
