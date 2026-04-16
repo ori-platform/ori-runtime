@@ -157,7 +157,9 @@ Tier 3  GATEWAY LLM    1-3 seconds  · LAN only          · cross-device reasoni
 Tier 4  CLOUD LLM      2-5 seconds  · internet          · deep analysis + reports
 ```
 
-Tiers 3 and 4 are wired in the elevator. The gateway service (`ori-platform/ori-gateway`) and cloud API connection are implemented as separate services — the runtime routes to them automatically when they are available on the LAN or internet respectively.
+- Tier 1 (Rule Engine) and Tier 2 (Local SLM) are fully implemented and available offline.
+- Tier 3 (Gateway LLM) and Tier 4 (Cloud LLM) are defined in the architecture and reserved in the elevator — implementation is coming in the gateway milestone.
+- The runtime is correctly described as an offline-capable safety runtime. Tier 1 and Tier D safety paths are available with zero network dependency.
 
 ### The Action Tier Framework — _What should I do about it?_
 
