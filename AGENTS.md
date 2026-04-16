@@ -15,7 +15,8 @@ the architecture.
 ## What this project is
 
 Ori is an agentic IoT runtime. It reads physical sensor data and takes
-autonomous actions based on LLM reasoning. It runs offline on a Raspberry Pi.
+autonomous actions based on LLM reasoning. It has an offline-capable safety
+core and runs on a Raspberry Pi.
 
 The key concept that every contributor must understand before touching code:
 
@@ -221,14 +222,14 @@ by the runtime. It provides dynamic, sandboxed access to sensor data
 and persistent state. **Never** access the StateStore or database
 directly from hooks — always go through these adapters.
 
-| Property | Type | Description |
-| --- | --- | --- |
-| `context.readings` | `dict[str, Any]` | Current sensor values keyed by sensor_id |
-| `context.history` | `HookHistoryAdapter` | Parameterised history queries (see below) |
-| `context.state` | `HookStateAdapter` | Skill-isolated key-value persistence |
-| `context.timestamp` | `int` | Event timestamp (unix milliseconds) |
-| `context.derived` | `dict[str, Any]` | Writable dict for computed values |
-| `context.trigger_name` | `str` | Name of the trigger that fired |
+| Property               | Type                 | Description                               |
+| ---------------------- | -------------------- | ----------------------------------------- |
+| `context.readings`     | `dict[str, Any]`     | Current sensor values keyed by sensor_id  |
+| `context.history`      | `HookHistoryAdapter` | Parameterised history queries (see below) |
+| `context.state`        | `HookStateAdapter`   | Skill-isolated key-value persistence      |
+| `context.timestamp`    | `int`                | Event timestamp (unix milliseconds)       |
+| `context.derived`      | `dict[str, Any]`     | Writable dict for computed values         |
+| `context.trigger_name` | `str`                | Name of the trigger that fired            |
 
 **HookHistoryAdapter methods:**
 

@@ -18,7 +18,7 @@
 
 > **IoT devices do not need more data. They need to reason about that data — and act on it.**
 
-Ori is an open-source **agentic IoT runtime** that gives physical devices **tiered autonomous reasoning** — from deterministic safety rules to local SLMs. This reasoning is governed by a **[Physical Actuation Trust](PRINCIPLES.md)** framework that defines exactly what an AI agent is permitted to do in the physical world, at what consequence level, and with what human oversight. Offline-first and cloud-optional. Runs on a $55 Raspberry Pi.
+Ori is an open-source **agentic IoT runtime** that gives physical devices **tiered autonomous reasoning** — from deterministic safety rules to local SLMs. This reasoning is governed by a **[Physical Actuation Trust](PRINCIPLES.md)** framework that defines exactly what an AI agent is permitted to do in the physical world, at what consequence level, and with what human oversight. Offline-first with an offline-capable safety core; gateway/cloud escalation is optional. Runs on a $55 Raspberry Pi.
 
 Built for the world's majority condition — unreliable power, intermittent connectivity, constrained hardware. Systems designed for constraint work everywhere.
 
@@ -56,7 +56,7 @@ Every existing IoT platform does the same thing: collect data, apply a threshold
         Estimated failure: 2 weeks.
         I've sent a service reminder to your WhatsApp."
 
-         — sent autonomously, from a $55 Pi, with no internet
+         — sent autonomously from a $55 Pi, without requiring cloud inference for safety decisions
 
 ✅ Ori (Tier B): "Grid voltage dropped to 174V. I have switched to
 inverter power automatically." ← Acted. Then told you.
@@ -78,7 +78,7 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 ## What Ori Is Not
 
 - Not a monitoring dashboard like Grafana — Ori acts, not just displays
-- Not a cloud IoT platform like AWS IoT Core — Ori can run fully offline (Tier 1 + Tier 2), with optional gateway/cloud escalation
+- Not a cloud IoT platform like AWS IoT Core — Ori keeps an offline-capable safety core (Tier 1 + local Tier 2), with optional gateway/cloud escalation when connected
 - Not a notification system — alerts are Tier A, the least of what Ori does
 - Not just a rules engine — Ori pairs deterministic safety rules with LLM reasoning
 
@@ -151,7 +151,7 @@ Ori runs a paired decision system on every sensor event:
 
 ```text
 Tier 1  RULE ENGINE    microseconds · always available  · safety triggers
-Tier 2  LOCAL SLM      3-8 seconds  · fully offline     · everyday reasoning
+Tier 2  LOCAL SLM      3-8 seconds  · offline-capable   · everyday reasoning
 Tier 3  GATEWAY LLM    1-3 seconds  · LAN only          · cross-device reasoning
 Tier 4  CLOUD LLM      2-5 seconds  · internet          · deep analysis + reports
 ```
