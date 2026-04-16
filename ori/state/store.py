@@ -158,30 +158,38 @@ class StateStore:
         self._db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
         self._write_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
     async def open(self) -> None:
         """Open the database connection and apply DDL migrations."""
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._open_sync)
+        async with self._lifecycle_lock:
+            if self._conn is not None:
+                return
+            loop = asyncio.get_running_loop()
+            conn = await loop.run_in_executor(None, self._open_sync)
+            self._conn = conn
 
-    def _open_sync(self) -> None:
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.execute("PRAGMA foreign_keys=ON;")
-        self._migrate_sync()
+    def _open_sync(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        self._migrate_sync(conn)
+        return conn
 
     async def close(self) -> None:
-        if self._conn is not None:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._conn.close)
-            self._conn = None
+        async with self._lifecycle_lock:
+            async with self._write_lock:
+                conn = self._conn
+                self._conn = None
+            if conn is not None:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, conn.close)
 
-    def _migrate_sync(self) -> None:
-        assert self._conn is not None
-        self._conn.executescript(_DDL)
+    def _migrate_sync(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(_DDL)
         # Add columns that may be missing from databases created before this
         # migration.  SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS
         # so duplicate-column errors are handled explicitly.
@@ -193,13 +201,23 @@ class StateStore:
             ("proposed_action", "TEXT"),
         ]
         for col, typedef in _new_reasoning_cols:
-            self._add_column_if_missing("reasoning_log", col, typedef)
-        self._conn.commit()
+            self._add_column_if_missing_on_conn(conn, "reasoning_log", col, typedef)
+        conn.commit()
 
     def _add_column_if_missing(self, table: str, column: str, typedef: str) -> None:
+        """Backward-compatible helper used by tests and migrations."""
         assert self._conn is not None
+        self._add_column_if_missing_on_conn(self._conn, table, column, typedef)
+
+    def _add_column_if_missing_on_conn(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        typedef: str,
+    ) -> None:
         try:
-            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
         except sqlite3.OperationalError as exc:
             msg = str(exc).lower()
             if "duplicate column name" in msg:
@@ -214,8 +232,19 @@ class StateStore:
 
     async def _run_read(self, fn, *args):
         """Run a synchronous read callable in the executor without write lock."""
+        if self._db_path == ":memory:":
+            # In-memory SQLite cannot be shared with short-lived read
+            # connections, so route reads through the primary connection
+            # under the write lock to avoid cross-thread misuse.
+            return await self._run_write(self._run_read_on_primary_conn, fn, *args)
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, partial(self._run_read_with_conn, fn, *args))
+        return await loop.run_in_executor(
+            None, partial(self._run_read_with_conn, fn, *args)
+        )
+
+    def _run_read_on_primary_conn(self, fn, *args):
+        assert self._conn is not None
+        return fn(self._conn, *args)
 
     def _run_read_with_conn(self, fn, *args):
         conn, close_when_done = self._open_read_conn_sync()
@@ -451,7 +480,9 @@ class StateStore:
         self, sensor_id: str, start_ms: int, end_ms: int
     ) -> list[tuple[int, float]]:
         """Fetch chart data from the appropriate compaction tier."""
-        return await self._run_read(self._get_timeseries_sync, sensor_id, start_ms, end_ms)
+        return await self._run_read(
+            self._get_timeseries_sync, sensor_id, start_ms, end_ms
+        )
 
     def _get_timeseries_sync(
         self, conn: sqlite3.Connection, sensor_id: str, start_ms: int, end_ms: int
@@ -745,7 +776,9 @@ class StateStore:
     async def store_causal_memory(
         self, pattern_key: str, resolution: str, confidence: float
     ) -> None:
-        await self._run_write(self._store_causal_sync, pattern_key, resolution, confidence)
+        await self._run_write(
+            self._store_causal_sync, pattern_key, resolution, confidence
+        )
 
     def _store_causal_sync(
         self, pattern_key: str, resolution: str, confidence: float
@@ -886,7 +919,9 @@ class StateStore:
         timestamp_ms: int,
     ) -> str:
         value_bucket = round(float(value) * 2.0) / 2.0
-        dt = datetime.datetime.fromtimestamp(timestamp_ms / 1000.0, tz=datetime.timezone.utc)
+        dt = datetime.datetime.fromtimestamp(
+            timestamp_ms / 1000.0, tz=datetime.timezone.utc
+        )
         two_hour_bucket = (dt.hour // 2) * 2
         day_of_week = dt.weekday()
         raw = (
