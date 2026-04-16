@@ -221,6 +221,7 @@ ori/
 │   │   ├── gpio_adapter.py
 │   │   ├── i2c_adapter.py
 │   │   ├── serial_adapter.py
+│   │   ├── mqtt_adapter.py    ← Generic MQTT telemetry adapter
 │   │   └── psutil_adapter.py  ← PC-Ori, no hardware needed
 │   │
 │   ├── network/               ← Network Layer (Layer 2)
@@ -249,6 +250,8 @@ ori/
 │   │   ├── sms.py             ← Africa's Talking (PRIMARY for Nigeria)
 │   │   ├── relay.py           ← Physical relay control (GPIO output)
 │   │   ├── modbus_control.py  ← Modbus write commands (industrial)
+│   │   ├── alert_failover.py  ← Failover alert transport wrapper
+│   │   ├── coap.py            ← CoAP action executor for constrained devices
 │   │   └── logger.py
 │   │
 │   └── state/
@@ -345,7 +348,8 @@ class ActionDispatcher:
             return await self._approval_workflow(action, context, result)
 
     async def _approval_workflow(self, action, context, result) -> ActionResult:
-        # 1. Send WhatsApp/SMS with reasoning + proposed action
+        # 1. Send WhatsApp/SMS with reasoning + proposed action via AlertFailoverSender
+        #    (tries primary channel first, falls back to secondary on failure)
         # 2. Wait for YES/NO within approval_timeout_seconds (default: 300)
         # 3. YES → execute action
         # 4. NO or timeout → execute safe_default_action, log override
@@ -523,6 +527,16 @@ actions:
   relay:
     enabled: false # true when physical relay is wired
     gpio_pin: 26
+  coap:
+    enabled: false
+    timeout_s: 2.0
+    retries: 1
+    allowed_hosts: ["192.168.1.70"]
+    commands:
+      open_bypass_valve:
+        uri: "coap://192.168.1.70/actuators/bypass"
+        method: POST
+        payload: '{"state":"open"}'
 
 logging:
   level: INFO
