@@ -91,7 +91,8 @@ class SMSWebhookServer:
             if url.path != self._path:
                 await self._respond(writer, 404, "not found")
                 return
-            if self._token and not self._authorized(request.headers):
+            query = parse_qs(url.query, keep_blank_values=True)
+            if self._token and not self._authorized(request.headers, query):
                 await self._respond(writer, 401, "unauthorized")
                 return
 
@@ -147,13 +148,22 @@ class SMSWebhookServer:
 
         return _HttpRequest(method=method, path=path, headers=headers, body=body)
 
-    def _authorized(self, headers: dict[str, str]) -> bool:
+    def _authorized(
+        self, headers: dict[str, str], query: dict[str, list[str]] | None = None
+    ) -> bool:
         token_header = headers.get("x-ori-webhook-token", "")
         if token_header == self._token:
             return True
         auth = headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             return auth[7:].strip() == self._token
+        if query:
+            token_values = query.get("token") or []
+            if token_values and token_values[0] == self._token:
+                logger.warning(
+                    "SMSWebhookServer: authenticated inbound webhook via query token fallback"
+                )
+                return True
         return False
 
     def _decode_payload(self, headers: dict[str, str], body: bytes) -> dict[str, Any]:

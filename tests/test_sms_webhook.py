@@ -31,9 +31,8 @@ class _FakeWriter:
 async def test_authorized_accepts_header_and_bearer():
     server = SMSWebhookServer(sms_action=AsyncMock(), token="secret-token")
     assert server._authorized({"x-ori-webhook-token": "secret-token"}) is True
-    assert (
-        server._authorized({"authorization": "Bearer secret-token"}) is True
-    )
+    assert server._authorized({"authorization": "Bearer secret-token"}) is True
+    assert server._authorized({}, {"token": ["secret-token"]}) is True
     assert server._authorized({"x-ori-webhook-token": "wrong"}) is False
 
 
@@ -112,6 +111,33 @@ async def test_handle_client_returns_200_for_valid_request():
             path="/webhooks/sms/africastalking",
             headers={
                 "x-ori-webhook-token": "secret-token",
+                "content-type": "application/x-www-form-urlencoded",
+            },
+            body=b"from=%2B2348000000000&text=YES",
+        )
+    )
+    reader = asyncio.StreamReader()
+    writer = _FakeWriter()
+
+    await server._handle_client(reader, writer)
+
+    text = writer.buffer.decode("utf-8", errors="replace")
+    assert "200 OK" in text
+    sms_action.ingest_incoming_webhook.assert_awaited_once_with(
+        {"from": "+2348000000000", "text": "YES"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_client_accepts_query_token_fallback():
+    sms_action = AsyncMock()
+    sms_action.ingest_incoming_webhook.return_value = True
+    server = SMSWebhookServer(sms_action=sms_action, token="secret-token")
+    server._read_request = AsyncMock(
+        return_value=_HttpRequest(
+            method="POST",
+            path="/webhooks/sms/africastalking?token=secret-token",
+            headers={
                 "content-type": "application/x-www-form-urlencoded",
             },
             body=b"from=%2B2348000000000&text=YES",
