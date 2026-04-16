@@ -81,6 +81,7 @@ class ActionChannelConfig:
     whatsapp: dict = field(default_factory=dict)
     sms: dict = field(default_factory=dict)
     relay: dict = field(default_factory=dict)
+    coap: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -143,9 +144,13 @@ class Config:
         logging_cfg = _parse_logging(data.get("logging"))
 
         if not actions.operator_contact or "${" in actions.operator_contact:
-            logger.warning("[config] actions.operator_contact is missing or not properly interpolated. Tier C emergency actions will fail.")
+            logger.warning(
+                "[config] actions.operator_contact is missing or not properly interpolated. Tier C emergency actions will fail."
+            )
         if actions.secondary_contact and "${" in actions.secondary_contact:
-            logger.warning("[config] actions.secondary_contact contains uninterpolated variable. Escalations may fail.")
+            logger.warning(
+                "[config] actions.secondary_contact contains uninterpolated variable. Escalations may fail."
+            )
 
         whatsapp_enabled = (
             str(actions.whatsapp.get("enabled", "")).lower() == "true"
@@ -401,6 +406,50 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
                 f"a safety action. Check ori.yaml."
             )
 
+    coap_raw = data.get("coap") or {}
+    if not isinstance(coap_raw, dict):
+        raise ConfigValidationError("'actions.coap' must be a mapping when provided.")
+    coap = dict(coap_raw)
+
+    coap_enabled = (
+        str(coap.get("enabled", "")).lower() == "true" or coap.get("enabled") is True
+    )
+    if coap_enabled:
+        commands = coap.get("commands") or {}
+        if not isinstance(commands, dict):
+            raise ConfigValidationError(
+                "actions.coap.commands must be a mapping when coap is enabled."
+            )
+        for command_name, spec in commands.items():
+            if not isinstance(spec, dict):
+                raise ConfigValidationError(
+                    f"actions.coap.commands.{command_name} must be a mapping."
+                )
+            uri = str(spec.get("uri", "")).strip()
+            method = str(spec.get("method", "POST")).strip().upper()
+            if not uri:
+                raise ConfigValidationError(
+                    f"actions.coap.commands.{command_name}.uri is required."
+                )
+            if not uri.startswith(("coap://", "coaps://")):
+                raise ConfigValidationError(
+                    f"actions.coap.commands.{command_name}.uri must start with coap:// or coaps://."
+                )
+            if method not in {"GET", "POST", "PUT", "DELETE"}:
+                raise ConfigValidationError(
+                    f"actions.coap.commands.{command_name}.method must be one of GET/POST/PUT/DELETE."
+                )
+
+        allowed_hosts = coap.get("allowed_hosts") or []
+        if (
+            not isinstance(allowed_hosts, list)
+            or len(allowed_hosts) == 0
+            or not all(isinstance(host, str) and host.strip() for host in allowed_hosts)
+        ):
+            raise ConfigValidationError(
+                "actions.coap.allowed_hosts must be a non-empty list of hostnames/IPs when coap is enabled."
+            )
+
     return ActionChannelConfig(
         primary_alert_channel=primary,
         operator_contact=str(data.get("operator_contact") or ""),
@@ -408,17 +457,28 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         whatsapp=data.get("whatsapp") or {},
         sms=data.get("sms") or {},
         relay=relay,
+        coap=coap,
     )
 
 
 def _parse_hal(data: Any) -> HalConfig:
     """Parse the HAL block gracefully, enforcing safe defaults on failure."""
-    default_cb = {"failure_threshold": 5, "recovery_timeout_s": 300, "success_threshold": 2}
-    default_external_watchdog = {"enabled": False, "gpio_pin": 17, "ping_interval_s": 30}
+    default_cb = {
+        "failure_threshold": 5,
+        "recovery_timeout_s": 300,
+        "success_threshold": 2,
+    }
+    default_external_watchdog = {
+        "enabled": False,
+        "gpio_pin": 17,
+        "ping_interval_s": 30,
+    }
 
     if not isinstance(data, dict):
         if data is not None:
-            logger.warning("[config] 'hal' config missing or not a dict. Falling back to default circuit breaker.")
+            logger.warning(
+                "[config] 'hal' config missing or not a dict. Falling back to default circuit breaker."
+            )
         return HalConfig(
             circuit_breaker=default_cb,
             external_watchdog=default_external_watchdog,
@@ -427,7 +487,9 @@ def _parse_hal(data: Any) -> HalConfig:
     cb_data = data.get("circuit_breaker")
     if not isinstance(cb_data, dict):
         if cb_data is not None:
-            logger.warning("[config] 'hal.circuit_breaker' missing or not a dict. Falling back to default circuit breaker.")
+            logger.warning(
+                "[config] 'hal.circuit_breaker' missing or not a dict. Falling back to default circuit breaker."
+            )
         cb_out = default_cb
     else:
         try:
@@ -437,7 +499,9 @@ def _parse_hal(data: Any) -> HalConfig:
                 "success_threshold": int(cb_data.get("success_threshold", 2)),
             }
         except (ValueError, TypeError):
-            logger.warning("[config] 'hal.circuit_breaker' has invalid types. Falling back to default circuit breaker.")
+            logger.warning(
+                "[config] 'hal.circuit_breaker' has invalid types. Falling back to default circuit breaker."
+            )
             cb_out = default_cb
         else:
             if cb_out["failure_threshold"] < 1:
@@ -490,7 +554,9 @@ def _parse_hal(data: Any) -> HalConfig:
 def _parse_logging(data: Any) -> LoggingConfig:
     if not isinstance(data, dict):
         if data is not None:
-            logger.warning("[config] 'logging' section is not a mapping. Using defaults.")
+            logger.warning(
+                "[config] 'logging' section is not a mapping. Using defaults."
+            )
         return LoggingConfig()
 
     try:
@@ -506,7 +572,7 @@ def _parse_logging(data: Any) -> LoggingConfig:
         max_bytes=max_bytes,
         backup_count=backup_count,
         log_action_decisions=bool(data.get("log_action_decisions", True)),
-        log_approval_workflow=bool(data.get("log_approval_workflow", True))
+        log_approval_workflow=bool(data.get("log_approval_workflow", True)),
     )
 
 

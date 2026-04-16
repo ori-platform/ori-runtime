@@ -421,6 +421,16 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "mqtt_perception"
 
+    def test_accepts_mqtt_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: chiller-supply\n    type: temperature\n    protocol: mqtt\n    poll_interval_ms: 1000"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.sensors[0].protocol == "mqtt"
+
     def test_accepts_opcua_protocol(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
@@ -440,6 +450,71 @@ actions:
         )
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "smart"
+
+    def test_accepts_coap_action_config(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+  offline_fallback: rule
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+  coap:
+    enabled: true
+    allowed_hosts: ["192.168.1.70"]
+    commands:
+      open_bypass_valve:
+        uri: coap://192.168.1.70/actuators/bypass
+        method: POST
+        payload: '{"state":"open"}'
+""",
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.coap["enabled"] is True
+        assert "open_bypass_valve" in cfg.actions.coap["commands"]
+
+    def test_rejects_coap_enabled_without_allowlist(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+  offline_fallback: rule
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+  coap:
+    enabled: true
+    commands:
+      open_bypass_valve:
+        uri: coap://192.168.1.70/actuators/bypass
+        method: POST
+""",
+        )
+        with pytest.raises(ConfigValidationError, match="allowed_hosts"):
+            Config.load(yaml_path)
 
 
 # ─── SkillConfig / action_tier validation ─────────────────────────────────────
