@@ -108,6 +108,12 @@ class TestConnect:
 
 
 class TestSystemResources:
+    async def test_cpu_percent_sets_non_empty_source_metadata(self):
+        adapter = await _make_adapter("cpu_percent")
+        r = await adapter.read("cpu_percent")
+        assert isinstance(r.metadata.get("source"), str)
+        assert r.metadata["source"].strip() != ""
+
     async def test_cpu_percent(self):
         adapter = await _make_adapter("cpu_percent")
         r = await adapter.read("cpu_percent")

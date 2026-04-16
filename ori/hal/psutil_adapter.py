@@ -126,6 +126,9 @@ class PsutilAdapter(BaseAdapter):
                     raise AdapterReadError(
                         f"PsutilAdapter: unexpected error reading '{self._sensor_type}': {exc}"
                     ) from exc
+            if not isinstance(result.metadata, dict):
+                result.metadata = {}
+            result.metadata.setdefault("source", "psutil")
             return result
 
     def _read_sync(self, sensor_id: str) -> SensorReading:
