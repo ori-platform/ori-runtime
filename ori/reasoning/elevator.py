@@ -191,9 +191,10 @@ class IntelligenceElevator:
         )
         rejection_note: str | None = None
         if rejection_record is not None:
-            operator_reason = str(
-                rejection_record.get("operator_response") or ""
-            ).strip()
+            operator_reason = self._sanitize_prompt_input(
+                rejection_record.get("operator_response") or "",
+                is_reply=True,  # sanitised — AGENTS.md Rule 4.
+            )
             if operator_reason:
                 rejection_note = (
                     "NOTE: A similar pattern was previously rejected by the operator. "
@@ -347,6 +348,27 @@ class IntelligenceElevator:
         if rule_result.matched and rule_result.bypass_llm:
             return "rule"
 
+        # The matched trigger's escalate_to is an authoritative floor for
+        # reasoning tier selection on non-bypass paths.
+        tier_order: dict[str, int] = {
+            "rule": 1,
+            "local_slm": 2,
+            "gateway": 3,
+            "cloud": 4,
+        }
+        tier_floor = "local_slm"
+        if rule_result.matched:
+            declared = str(rule_result.escalate_to or "local_slm").strip().lower()
+            if declared in tier_order:
+                tier_floor = declared
+
+        def _apply_floor(candidate: str) -> str:
+            candidate_rank = tier_order.get(candidate, tier_order["local_slm"])
+            floor_rank = tier_order.get(tier_floor, tier_order["local_slm"])
+            if candidate_rank < floor_rank:
+                return tier_floor
+            return candidate
+
         # Complexity scoring needs current value and history
         current_value = event.reading.value if event.reading else 0.0
         avg_24h: float | None = None
@@ -380,17 +402,17 @@ class IntelligenceElevator:
         )
 
         if offline:
-            return fallback
+            return _apply_floor(fallback)
 
         if complexity < 0.3:
-            return "local_slm"
+            return _apply_floor("local_slm")
 
         if complexity < threshold:
             # Future: return "gateway" if LAN available
-            return "local_slm"
+            return _apply_floor("local_slm")
 
         # Future: return "cloud" if complexity >= threshold and internet available
-        return "local_slm"
+        return _apply_floor("local_slm")
 
     def _energy_aware_cfg(self) -> dict[str, Any]:
         """Return energy-aware throttle config from either dataclass or dict."""
@@ -733,12 +755,35 @@ class IntelligenceElevator:
                 state_store=state_store,
                 trigger_name=rule_res.rule_name if rule_res.matched else "",
             )
+            approval_timeout_seconds = 300
+            if rule_res.matched and rule_res.rule_name:
+                matched_trigger = None
+                for trigger in getattr(skill, "triggers", []):
+                    trigger_name = (
+                        trigger.get("name")
+                        if isinstance(trigger, dict)
+                        else getattr(trigger, "name", None)
+                    )
+                    if trigger_name == rule_res.rule_name:
+                        matched_trigger = trigger
+                        break
+                if matched_trigger is not None:
+                    raw_timeout = (
+                        matched_trigger.get("approval_timeout_seconds", 300)
+                        if isinstance(matched_trigger, dict)
+                        else getattr(matched_trigger, "approval_timeout_seconds", 300)
+                    )
+                    try:
+                        approval_timeout_seconds = int(raw_timeout)
+                    except (TypeError, ValueError):
+                        approval_timeout_seconds = 300
             for action in actions:
                 await dispatcher.dispatch(
                     action=action,
                     tier=result.action_tier,
                     context=context,
                     result=result,
+                    approval_timeout=approval_timeout_seconds,
                 )
 
             # Persist reasoning result
@@ -833,10 +878,26 @@ class IntelligenceElevator:
         lines: list[str] = []
         if event.reading:
             r = event.reading
-            lines.append(f"Sensor: {r.sensor_id} ({r.sensor_type})")
-            lines.append(f"Current value: {r.value} {r.unit}")
-            lines.append(f"Quality: {r.quality}")
-        lines.append(f"Device: {event.device_id}")
+            sensor_id = self._sanitize_prompt_input(
+                r.sensor_id
+            )  # sanitised — AGENTS.md Rule 4.
+            sensor_type = self._sanitize_prompt_input(
+                r.sensor_type
+            )  # sanitised — AGENTS.md Rule 4.
+            value = self._sanitize_prompt_input(
+                str(r.value)
+            )  # sanitised — AGENTS.md Rule 4.
+            unit = self._sanitize_prompt_input(r.unit)  # sanitised — AGENTS.md Rule 4.
+            quality = self._sanitize_prompt_input(
+                str(r.quality)
+            )  # sanitised — AGENTS.md Rule 4.
+            lines.append(f"Sensor: {sensor_id} ({sensor_type})")
+            lines.append(f"Current value: {value} {unit}")
+            lines.append(f"Quality: {quality}")
+        device_id = self._sanitize_prompt_input(
+            event.device_id
+        )  # sanitised — AGENTS.md Rule 4.
+        lines.append(f"Device: {device_id}")
         prompt_template: str | None = None
         if hasattr(skill, "prompts") and isinstance(skill.prompts, dict):
             if trigger_name:
@@ -846,7 +907,44 @@ class IntelligenceElevator:
                     event.reading.sensor_type if event.reading else ""
                 )
         if prompt_template:
-            lines.append(prompt_template)
+            prompt_text = str(prompt_template)
+            if event.reading is not None:
+                reading = event.reading
+                formatted_time = datetime.datetime.fromtimestamp(
+                    reading.timestamp / 1000,
+                    tz=datetime.timezone.utc,
+                ).strftime("%Y-%m-%d %H:%M:%S UTC")
+                substitutions = {
+                    "{value}": self._sanitize_prompt_input(
+                        str(reading.value)
+                    ),  # sanitised — AGENTS.md Rule 4.
+                    "{unit}": self._sanitize_prompt_input(
+                        reading.unit
+                    ),  # sanitised — AGENTS.md Rule 4.
+                    "{sensor_id}": self._sanitize_prompt_input(
+                        reading.sensor_id
+                    ),  # sanitised — AGENTS.md Rule 4.
+                    "{sensor_type}": self._sanitize_prompt_input(
+                        reading.sensor_type
+                    ),  # sanitised — AGENTS.md Rule 4.
+                    "{device_id}": self._sanitize_prompt_input(
+                        event.device_id
+                    ),  # sanitised — AGENTS.md Rule 4.
+                    "{time}": self._sanitize_prompt_input(
+                        formatted_time
+                    ),  # sanitised — AGENTS.md Rule 4.
+                    "{quality}": self._sanitize_prompt_input(
+                        str(round(reading.quality, 2))
+                    ),  # sanitised — AGENTS.md Rule 4.
+                }
+                for key, val in substitutions.items():
+                    prompt_text = prompt_text.replace(key, val)
+                if "{history." in prompt_text:
+                    logger.debug(
+                        "Prompt template contains history placeholder — "
+                        "not yet substituted."
+                    )
+            lines.append(prompt_text)
         else:
             lines.append("Is this reading anomalous? What is the most likely cause?")
             lines.append("Answer in plain English, 2-3 sentences, no jargon.")
@@ -854,6 +952,18 @@ class IntelligenceElevator:
             lines.append("")
             lines.append(rejection_note)
         return "\n".join(lines)
+
+    def _sanitize_prompt_input(self, text: str, is_reply: bool = False) -> str:
+        """Sanitize untrusted values before interpolation into prompt text."""
+        import re
+
+        if not isinstance(text, str):
+            text = str(text)
+        if is_reply:
+            text = re.sub(r"[<>{}\[\]\\$`]", "", text)
+            return text[:500].strip()
+        text = re.sub(r"[^\w\s\-\./°%]", "", text)
+        return text[:200].strip()
 
     @staticmethod
     def _stub_result(tier: str, event: OriEvent) -> ReasoningResult:

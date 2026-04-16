@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, patch
@@ -199,6 +200,27 @@ class TestSelectTier:
         # History not fetched for Tier D — returns immediately
         store.avg_last_hours.assert_not_called()
 
+    async def test_escalate_to_local_slm_floors_tier_when_offline_fallback_is_rule(
+        self,
+    ):
+        conf = type("obj", (object,), {"offline_fallback": "rule"})()
+        elevator = IntelligenceElevator(config=conf)
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "anomalous_draw",
+                    "condition": "value > 3.0",
+                    "action_tier": "A",
+                    "escalate_to": "local_slm",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                }
+            ]
+        )
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            tier = await elevator.select_tier(_event(value=5.0), skill, None)
+        assert tier == "local_slm"
+
 
 # ─── reason ───────────────────────────────────────────────────────────────────
 
@@ -299,6 +321,143 @@ class TestReason:
 
         assert "SENSOR_PROMPT" in result.prompt
 
+    async def test_prompt_template_substitutes_basic_placeholders(self):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="ok",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=12,
+            latency_ms=100,
+        )
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+        skill.prompts = {"anomalous_draw": "Value is {value}{unit} on {device_id}"}
+        event = OriEvent.from_reading(
+            SensorReading(
+                sensor_id="load-current",
+                sensor_type="current_clamp",
+                value=8.2,
+                unit="A",
+                timestamp=_ms(),
+                quality=1.0,
+            ),
+            "ikeja-01",
+        )
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            result = await elevator.reason(event, skill, None)
+
+        assert "Value is 8.2A on ikeja-01" in result.prompt
+
+    async def test_history_placeholders_are_not_substituted_and_log_debug(self, caplog):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="ok",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=12,
+            latency_ms=100,
+        )
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+        skill.prompts = {
+            "anomalous_draw": "History snapshot: {history.last_n('load-current', 6)}"
+        }
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            with caplog.at_level(logging.DEBUG):
+                result = await elevator.reason(_event(value=8.2), skill, None)
+
+        assert "Prompt template contains history placeholder" in caplog.text
+        assert "{history.last_n('load-current', 6)}" in result.prompt
+
+    async def test_prompt_template_sanitizes_malicious_sensor_id(self):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="ok",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=12,
+            latency_ms=100,
+        )
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+        skill.prompts = {"anomalous_draw": "Sensor reference: {sensor_id}"}
+        event = OriEvent.from_reading(
+            SensorReading(
+                sensor_id="{malicious: inject}",
+                sensor_type="current_clamp",
+                value=8.2,
+                unit="A",
+                timestamp=_ms(),
+                quality=1.0,
+            ),
+            "ikeja-01",
+        )
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            result = await elevator.reason(event, skill, None)
+
+        assert "{malicious: inject}" not in result.prompt
+        assert "malicious inject" in result.prompt
+
+    async def test_rejection_note_strips_operator_reply_angle_brackets(self):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="ok",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=12,
+            latency_ms=100,
+        )
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            with patch.object(
+                elevator,
+                "_lookup_rejection_record",
+                new=AsyncMock(return_value={"operator_response": "<override safety>"}),
+            ):
+                result = await elevator.reason(_event(value=5.0), skill, None)
+
+        assert "<override safety>" not in result.prompt
+        assert "override safety" in result.prompt
+
+    async def test_rejection_note_keeps_normal_operator_reply_text(self):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="ok",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=12,
+            latency_ms=100,
+        )
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            with patch.object(
+                elevator,
+                "_lookup_rejection_record",
+                new=AsyncMock(
+                    return_value={"operator_response": "yes, proceed with caution"}
+                ),
+            ):
+                result = await elevator.reason(_event(value=5.0), skill, None)
+
+        assert "yes, proceed with caution" in result.prompt
+
+    def test_sanitize_prompt_input_coerces_float_to_string(self):
+        elevator = IntelligenceElevator()
+        assert elevator._sanitize_prompt_input(12.5) == "12.5"
+
     async def test_rule_engine_result_has_empty_prompt(self):
         """Rule engine (Tier D, bypass_llm=True) must leave prompt as empty string."""
         elevator = IntelligenceElevator()
@@ -374,6 +533,36 @@ class TestReasonAndDispatch:
 
         call = mock_dispatcher.dispatch.call_args
         assert call[1]["tier"] == "D"
+
+    async def test_approval_timeout_from_trigger_passed_to_dispatcher(self):
+        mock_dispatcher = AsyncMock()
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "sleep_blocked_terminate_candidate",
+                    "condition": "value > 3.0",
+                    "action_tier": "C",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                    "approval_timeout_seconds": 60,
+                }
+            ],
+            actions={
+                "available": [{"name": "terminate_process", "tier": "C"}],
+                "defaults": {
+                    "sleep_blocked_terminate_candidate": ["terminate_process"]
+                },
+            },
+        )
+        elevator = IntelligenceElevator()
+        event = _event(value=5.0)
+        event.context = {"__handler_trigger_name": "sleep_blocked_terminate_candidate"}
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            await elevator.reason_and_dispatch(event, skill, None, mock_dispatcher)
+
+        call = mock_dispatcher.dispatch.call_args
+        assert call[1]["approval_timeout"] == 60
 
     async def test_reason_and_dispatch_clamps_result_tier_to_trigger_tier(self):
         mock_dispatcher = AsyncMock()

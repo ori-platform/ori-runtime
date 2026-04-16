@@ -441,6 +441,37 @@ class TestTierC:
         assert result.approved is False
         assert result.action_taken == "log_to_dashboard"
 
+    async def test_tier_c_uses_provided_approval_timeout(self):
+        d = ActionDispatcher()
+        ctx = _context()
+        captured: dict[str, float] = {}
+
+        async def slow_listen(*args, **kwargs):
+            await asyncio.sleep(999)
+            return None  # pragma: no cover
+
+        async def fake_wait_for(awaitable, timeout):
+            captured["timeout"] = timeout
+            raise asyncio.TimeoutError
+
+        with patch.object(d, "_listen_for_response", new=slow_listen):
+            with patch(
+                "ori.reasoning.action_dispatcher.asyncio.wait_for",
+                new=AsyncMock(side_effect=fake_wait_for),
+            ):
+                result = await d.dispatch(
+                    "trip_main_breaker",
+                    ActionTier.HARD_PHYSICAL,
+                    ctx,
+                    _result(),
+                    safe_default_action="log_to_dashboard",
+                    approval_timeout=60,
+                )
+
+        assert result.approved is False
+        assert result.action_taken == "log_to_dashboard"
+        assert captured["timeout"] == 61.0
+
     async def test_tier_c_timeout_escalates_to_secondary(self):
         mock_sender = AsyncMock()
         d = ActionDispatcher(
@@ -788,9 +819,7 @@ class TestCapabilityTierGuard:
             config={"operator_contact": "+234000"},
             alert_sender=AsyncMock(),
         )
-        ctx = _context(
-            actions={"available": [{"name": "trip_relay", "tier": "C"}]}
-        )
+        ctx = _context(actions={"available": [{"name": "trip_relay", "tier": "C"}]})
 
         with patch.object(d, "_listen_for_response", return_value="no"):
             result = await d.dispatch("trip_relay", "B", ctx, _result(action_tier="B"))
@@ -803,9 +832,7 @@ class TestCapabilityTierGuard:
             config={"operator_contact": "+234000"},
             alert_sender=AsyncMock(),
         )
-        ctx = _context(
-            actions={"available": [{"name": "trip_relay", "tier": "A"}]}
-        )
+        ctx = _context(actions={"available": [{"name": "trip_relay", "tier": "A"}]})
 
         with patch.object(d, "_listen_for_response", return_value="no"):
             result = await d.dispatch("trip_relay", "C", ctx, _result(action_tier="C"))

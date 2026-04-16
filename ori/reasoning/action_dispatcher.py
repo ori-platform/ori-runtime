@@ -94,8 +94,12 @@ class ActionDispatcher:
         self._state_store = state_store
         self._alert_sender = alert_sender
         self._config: dict = config or {}
-        self._log_action_decisions = bool(self._config.get("log_action_decisions", True))
-        self._log_approval_workflow = bool(self._config.get("log_approval_workflow", True))
+        self._log_action_decisions = bool(
+            self._config.get("log_action_decisions", True)
+        )
+        self._log_approval_workflow = bool(
+            self._config.get("log_approval_workflow", True)
+        )
         self._logger_action = LoggerAction()
         self._inflight_tier_d_tasks: set[asyncio.Task[Any]] = set()
         self._executors: dict[str, Any] = {
@@ -135,7 +139,8 @@ class ActionDispatcher:
         context: SkillContext,
         result: ReasoningResult,
         safe_default_action: str = _DEFAULT_SAFE_DEFAULT_ACTION,
-        approval_timeout_seconds: int = _DEFAULT_APPROVAL_TIMEOUT,
+        approval_timeout: int | None = None,
+        approval_timeout_seconds: int | None = None,
     ) -> ActionResult:
         """Route *action* to the correct execution path for *tier*.
 
@@ -160,8 +165,10 @@ class ActionDispatcher:
                 the Intelligence Elevator.
             safe_default_action: Action to execute on Tier C approval timeout
                 or NO response.  Overrides the dispatcher default.
-            approval_timeout_seconds: Seconds to wait for operator approval
-                before executing *safe_default_action*.
+            approval_timeout: Seconds to wait for operator approval before
+                executing *safe_default_action*.
+            approval_timeout_seconds: Backward-compatible alias for
+                ``approval_timeout``.
 
         Returns:
             :class:`~ori.network.events.ActionResult` describing what happened.
@@ -199,6 +206,18 @@ class ActionDispatcher:
         # Log autonomous Tier D dispatch to override_log before execution —
         # a safety-critical action firing without operator approval is itself
         # an override event that must be auditable.
+        timeout_value = approval_timeout
+        if timeout_value is None:
+            timeout_value = (
+                approval_timeout_seconds
+                if approval_timeout_seconds is not None
+                else _DEFAULT_APPROVAL_TIMEOUT
+            )
+        try:
+            timeout_value = int(timeout_value)
+        except (TypeError, ValueError):
+            timeout_value = _DEFAULT_APPROVAL_TIMEOUT
+
         if tier == ActionTier.SAFETY_CRITICAL:
             _store = (
                 context.state_store
@@ -248,7 +267,7 @@ class ActionDispatcher:
                         context,
                         result,
                         safe_default_action,
-                        approval_timeout_seconds,
+                        timeout_value,
                     )
                 else:
                     action_result = await self._execute_immediately(
@@ -263,7 +282,7 @@ class ActionDispatcher:
                     context,
                     result,
                     safe_default_action,
-                    approval_timeout_seconds,
+                    timeout_value,
                 )
 
             else:
@@ -354,7 +373,9 @@ class ActionDispatcher:
             executor = self._executors.get(action)
             if executor is not None:
                 if self._log_action_decisions:
-                    logger.info("ActionDispatcher: executing action %r (tier=%s)", action, tier)
+                    logger.info(
+                        "ActionDispatcher: executing action %r (tier=%s)", action, tier
+                    )
                 maybe_ok = await executor(action, context)
                 if maybe_ok is False:
                     executed = False
@@ -437,7 +458,10 @@ class ActionDispatcher:
             ``True`` / ``False`` based on the operator response.
         """
         if self._log_approval_workflow:
-            logger.info("ActionDispatcher: triggering Tier C approval workflow for action=%r", action)
+            logger.info(
+                "ActionDispatcher: triggering Tier C approval workflow for action=%r",
+                action,
+            )
 
         device_id = context.event.device_id if context.event else "unknown"
         message = self._format_approval_message(
@@ -453,7 +477,9 @@ class ActionDispatcher:
         operator_contact = self._config.get("operator_contact", "")
         if self._alert_sender is not None and operator_contact:
             try:
-                await self._alert_sender.send(message=message, to_number=operator_contact)
+                await self._alert_sender.send(
+                    message=message, to_number=operator_contact
+                )
             except Exception:
                 logger.exception(
                     "ActionDispatcher: failed to send approval request for action=%r",
@@ -680,6 +706,7 @@ class ActionDispatcher:
             Formatted approval message string matching the README template.
         """
         from zoneinfo import ZoneInfo
+
         tz = ZoneInfo(device_timezone or "Africa/Lagos")
         dt = datetime.datetime.fromtimestamp(timestamp_ms / 1000, tz=tz)
         formatted_time = dt.strftime("%A %H:%M")  # e.g. "Wednesday 14:32"
