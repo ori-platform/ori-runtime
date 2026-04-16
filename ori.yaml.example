@@ -157,6 +157,18 @@ sensors:
   #   # value_path: "uplink_message.decoded_payload.temperature"
   #   poll_interval_ms: 5000
 
+  # ─── Generic MQTT telemetry sensor (optional) ─────────────────────────────
+  # Use this when a device publishes JSON measurements to a broker.
+  # - id: chiller-supply-temp
+  #   type: temperature
+  #   protocol: mqtt
+  #   broker_host: "192.168.1.20"
+  #   topic: "plant/chiller-1/supply"
+  #   value_path: "reading.value"
+  #   quality_path: "reading.quality"
+  #   unit: celsius
+  #   poll_interval_ms: 2000
+
   # ─── External perception stream via MQTT (optional) ───────────────────────
   # Payload contract expected on topic:
   # {
@@ -249,6 +261,19 @@ actions:
     enabled: false                   # CHANGE TO true ONLY WHEN RELAY IS WIRED
     gpio_pin: 26                     # BCM pin number connected to relay IN
     active_high: true
+
+  # CoAP command transport (optional; constrained-device actuation path)
+  # CoAP commands are executed through `coap_command` actions in skills.
+  coap:
+    enabled: false
+    timeout_s: 2.0
+    retries: 1
+    allowed_hosts: ["192.168.1.70"]  # required when enabled
+    commands:
+      open_bypass_valve:
+        uri: "coap://192.168.1.70/actuators/bypass"
+        method: POST
+        payload: '{"state":"open"}'
 
 
 hal:

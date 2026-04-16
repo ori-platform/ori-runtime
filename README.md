@@ -120,6 +120,7 @@ For the full architectural specification, read [`CLAUDE.md`](CLAUDE.md). For the
 | Modbus RTU (RS485)   | ✅     | Industrial energy meters, PLCs, motor drives                           |
 | psutil               | ✅     | PC and server health monitoring (any laptop)                           |
 | MQTT                 | ✅     | WiFi-connected sensors/devices via an MQTT broker (commonly Mosquitto) |
+| CoAP (actuation)     | ✅     | Constrained-device command path for low-overhead control endpoints     |
 | OPC-UA               | ✅     | Industrial PLCs (IEC 62541)                                            |
 | SolarmanV5 (Growatt) | ✅     | Smart inverter integration                                             |
 | Zigbee               | ✅     | Smart-home sensors via MQTT bridge (for example zigbee2mqtt)           |
@@ -190,6 +191,9 @@ Ori is designed for [physical actuation trust](PRINCIPLES.md). The safety archit
 - **Sandboxed skill hooks** — community skills cannot import arbitrary modules. The sandbox enforces an explicit allowlist at import time
 - **Hardware circuit breakers** — failing sensor buses are auto-isolated using a three-state (CLOSED → OPEN → HALF_OPEN) circuit breaker so one bad sensor doesn't crash the runtime
 - **Approval workflows for hard physical actions** — Tier C actions always require operator approval via WhatsApp/SMS. No config flag to skip it
+- **Alert transport failover** — approval requests use the configured primary channel first, then fail over to the secondary channel if delivery fails
+
+For constrained deployments, a common pattern is MQTT for continuous telemetry plus CoAP for low-overhead command delivery.
 
 For the full set of security invariants, see [`AGENTS.md`](AGENTS.md#security-invariants--never-violate-these).
 
