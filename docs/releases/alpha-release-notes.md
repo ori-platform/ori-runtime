@@ -2,7 +2,8 @@
 
 ## Versioned Notes
 
-- [`v0.1.0-alpha.3`](v0.1.0-alpha.3.md) — latest alpha cut
+- [`v0.1.0-alpha.4`](v0.1.0-alpha.4.md) — latest alpha cut
+- [`v0.1.0-alpha.3`](v0.1.0-alpha.3.md)
 - [`v0.1.0-alpha.2`](v0.1.0-alpha.2.md)
 - [`v0.1.0-alpha.1`](https://github.com/ori-platform/ori-runtime/releases/tag/v0.1.0-alpha.1)
 - [`v0.1.0-alpha`](https://github.com/ori-platform/ori-runtime/releases/tag/v0.1.0-alpha)
