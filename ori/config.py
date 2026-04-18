@@ -75,7 +75,7 @@ class GatewayConfig:
 
 @dataclass
 class ActionChannelConfig:
-    primary_alert_channel: str  # 'sms' | 'whatsapp' | 'telegram'
+    primary_alert_channel: str  # 'sms' | 'whatsapp'
     operator_contact: str = ""  # phone number for Tier C approvals and emergency SMS
     secondary_contact: str = ""  # escalation contact if operator doesn't respond
     whatsapp: dict = field(default_factory=dict)
@@ -204,8 +204,7 @@ class Config:
             str(actions.telegram.get("enabled", "")).lower() == "true"
             or actions.telegram.get("enabled") is True
         )
-        primary_telegram = actions.primary_alert_channel == "telegram"
-        if telegram_enabled or primary_telegram:
+        if telegram_enabled:
             token = str(
                 actions.telegram.get("bot_token", "")
                 or actions.telegram.get("TELEGRAM_BOT_TOKEN", "")
@@ -218,13 +217,6 @@ class Config:
                     f"Telegram bot token missing or not interpolated: {resolved!r}. "
                     "Set actions.telegram.bot_token (for example ${TELEGRAM_BOT_TOKEN}) "
                     "and define it in your environment."
-                )
-        if primary_telegram:
-            oc = str(actions.operator_contact or "").strip()
-            if not oc or "${" in oc:
-                raise ConfigValidationError(
-                    "actions.primary_alert_channel is 'telegram' but operator_contact is missing "
-                    "or not interpolated. Set actions.operator_contact to your Telegram chat id."
                 )
 
         if device.deployment_type == "phone":
@@ -416,10 +408,13 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         raise ConfigValidationError("'actions' section must be a mapping.")
 
     primary = str(data.get("primary_alert_channel", "sms"))
-    if primary not in {"sms", "whatsapp", "telegram"}:
+    if primary == "telegram":
         raise ConfigValidationError(
-            f"actions.primary_alert_channel must be 'sms', 'whatsapp', or 'telegram', "
-            f"got: {primary!r}"
+            "actions.primary_alert_channel cannot be 'telegram' (use sms or whatsapp)."
+        )
+    if primary not in {"sms", "whatsapp"}:
+        raise ConfigValidationError(
+            f"actions.primary_alert_channel must be 'sms' or 'whatsapp', got: {primary!r}"
         )
 
     relay_raw: dict = data.get("relay") or {}

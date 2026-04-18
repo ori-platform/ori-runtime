@@ -517,7 +517,7 @@ gateway:
   broker_url: mqtt://192.168.1.10:1883
 
 actions:
-  primary_alert_channel: sms # 'sms' | 'whatsapp' | 'telegram' — use sms for Nigeria
+  primary_alert_channel: sms # 'sms' | 'whatsapp' — use sms for Nigeria
   operator_contact: "${OPERATOR_CONTACT}"
   secondary_contact: "${SECONDARY_CONTACT}"
   whatsapp:
@@ -728,7 +728,7 @@ async def test_tier_d_bypasses_dispatcher():
 
 ```bash
 # Alert delivery — set in .env; ori.yaml references ${VAR} only (no secrets in YAML).
-# OPERATOR_CONTACT format follows actions.primary_alert_channel (E.164 / whatsapp:+… / Telegram chat id).
+# OPERATOR_CONTACT format follows actions.primary_alert_channel (E.164 / whatsapp:+…).
 OPERATOR_CONTACT=whatsapp:+234XXXXXXXXXX
 SECONDARY_CONTACT=whatsapp:+234XXXXXXXXXX  # Escalation contact if primary operator does not respond (Tier C)
 
