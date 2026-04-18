@@ -31,18 +31,24 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      - name: Lint — ruff
-        run: ruff check ori/ tests/ skills/
-
-      - name: Check license headers
+      - name: Pre-commit (lint + format + hygiene)
+        env:
+          SKIP: no-commit-to-branch
         run: |
-          missing=$(grep -rL "SPDX-License-Identifier: Apache-2.0" ori/ tests/ --include="*.py" || true)
-          if [ -n "$missing" ]; then
-            echo "❌ Missing Apache-2.0 license header in:"
-            echo "$missing"
-            exit 1
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FROM_REF="${{ github.event.pull_request.base.sha }}"
+            TO_REF="${{ github.event.pull_request.head.sha }}"
+          else
+            FROM_REF="${{ github.event.before }}"
+            TO_REF="${{ github.sha }}"
           fi
-          echo "✅ All Python files have license headers"
+          if echo "$FROM_REF" | grep -Eq '^0+$'; then
+            echo "Running pre-commit on all files (no valid base ref)"
+            pre-commit run --show-diff-on-failure --all-files
+          else
+            echo "Running pre-commit from $FROM_REF to $TO_REF"
+            pre-commit run --show-diff-on-failure --from-ref "$FROM_REF" --to-ref "$TO_REF"
+          fi
 
       - name: Guard Tier Escalation Invariants
         run: |

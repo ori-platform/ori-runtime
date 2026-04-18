@@ -6,16 +6,19 @@
 #
 # This is opt-in for contributors. CI enforces the same checks unconditionally.
 
+minimum_pre_commit_version: "3.7.0"
+default_install_hook_types: [pre-commit, pre-push, commit-msg]
+
 repos:
   # ── Ruff: lint + format ──────────────────────────────────────────────────────
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.9
     hooks:
       - id: ruff
-        args: [--fix]
-        files: ^(ori|tests|skills)/.*\.py$
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^(ori|tests|skills|scripts)/.*\.py$
       - id: ruff-format
-        files: ^(ori|tests|skills)/.*\.py$
+        files: ^(ori|tests|skills|scripts)/.*\.py$
 
   # ── License header check ─────────────────────────────────────────────────────
   - repo: local
@@ -30,10 +33,11 @@ repos:
             import pathlib
             import sys
 
+            roots = {"ori", "tests", "skills", "scripts"}
             missing = [
                 str(f)
                 for f in pathlib.Path(".").rglob("*.py")
-                if any(p in str(f) for p in ["ori/", "tests/"])
+                if f.parts and f.parts[0] in roots
                 and "SPDX-License-Identifier: Apache-2.0" not in f.read_text()
             ]
 
