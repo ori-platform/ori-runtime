@@ -113,7 +113,9 @@ class AlertFailoverSender:
                     self._listen_safe(
                         channel_name=channel_name,
                         listener=listener,
-                        from_number=self._contact_for_channel(channel_name, from_number),
+                        from_number=self._contact_for_channel(
+                            channel_name, from_number
+                        ),
                         timeout_seconds=timeout_seconds,
                     ),
                     name=f"approval-listen:{channel_name}",

@@ -130,7 +130,10 @@ class TelegramBotAction:
                     poll_timeout = max(1, min(5, int(remaining)))
                     resp = await client.get(
                         url,
-                        params={"offset": self._updates_offset, "timeout": poll_timeout},
+                        params={
+                            "offset": self._updates_offset,
+                            "timeout": poll_timeout,
+                        },
                     )
                     if resp.status_code != 200:
                         return None

@@ -564,7 +564,9 @@ class TestTierC:
             telegram_sender=_TelegramSender(),
             contacts={"telegram": "12345"},
         )
-        d = ActionDispatcher(alert_sender=failover, config={"operator_contact": "ignored"})
+        d = ActionDispatcher(
+            alert_sender=failover, config={"operator_contact": "ignored"}
+        )
         result = await d.dispatch(
             "trip_main_breaker",
             ActionTier.HARD_PHYSICAL,
@@ -590,7 +592,9 @@ class TestTierC:
             telegram_sender=_TelegramSender(),
             contacts={"telegram": "12345"},
         )
-        d = ActionDispatcher(alert_sender=failover, config={"operator_contact": "ignored"})
+        d = ActionDispatcher(
+            alert_sender=failover, config={"operator_contact": "ignored"}
+        )
         result = await d.dispatch(
             "trip_main_breaker",
             ActionTier.HARD_PHYSICAL,

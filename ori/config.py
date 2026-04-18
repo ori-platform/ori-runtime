@@ -148,9 +148,8 @@ class Config:
         primary_contact = str(
             (actions.contacts or {}).get(actions.primary_alert_channel, "")
         )
-        if (
-            (not actions.operator_contact or "${" in actions.operator_contact)
-            and (not primary_contact or "${" in primary_contact)
+        if (not actions.operator_contact or "${" in actions.operator_contact) and (
+            not primary_contact or "${" in primary_contact
         ):
             logger.warning(
                 "[config] actions.operator_contact is missing or not properly interpolated. Tier C emergency actions will fail."
@@ -226,9 +225,7 @@ class Config:
                     "Set actions.telegram.bot_token (for example ${TELEGRAM_BOT_TOKEN}) "
                     "and define it in your environment."
                 )
-        if primary_telegram and (
-            not primary_contact or "${" in primary_contact
-        ):
+        if primary_telegram and (not primary_contact or "${" in primary_contact):
             raise ConfigValidationError(
                 "actions.contacts.telegram is required when primary_alert_channel is 'telegram'."
             )
@@ -428,7 +425,9 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         )
     contacts = data.get("contacts") or {}
     if not isinstance(contacts, dict):
-        raise ConfigValidationError("'actions.contacts' must be a mapping when provided.")
+        raise ConfigValidationError(
+            "'actions.contacts' must be a mapping when provided."
+        )
 
     relay_raw: dict = data.get("relay") or {}
     relay: dict = dict(relay_raw)

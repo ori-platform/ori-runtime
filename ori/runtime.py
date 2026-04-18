@@ -227,7 +227,9 @@ class OriRuntime:
             )
         _secondary_contact: str = config.actions.secondary_contact or ""
         _contacts = config.actions.contacts or {}
-        _primary_contact = str(_contacts.get(config.actions.primary_alert_channel, "")).strip()
+        _primary_contact = str(
+            _contacts.get(config.actions.primary_alert_channel, "")
+        ).strip()
         if _primary_contact:
             _operator_contact = _primary_contact
 
