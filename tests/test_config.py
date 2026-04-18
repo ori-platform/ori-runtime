@@ -773,7 +773,9 @@ class TestActionsValidation:
                 bot_token: "123456:ABC-test-token"
             """,
         )
-        with pytest.raises(ConfigValidationError, match="primary_alert_channel cannot be 'telegram'"):
+        with pytest.raises(
+            ConfigValidationError, match="primary_alert_channel cannot be 'telegram'"
+        ):
             Config.load(yaml_path)
 
     def test_telegram_enabled_requires_token(self, tmp_path):
