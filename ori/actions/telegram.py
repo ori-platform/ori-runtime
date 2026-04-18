@@ -7,18 +7,12 @@ import logging
 import os
 from typing import Any
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
-try:
-    import httpx as _httpx  # type: ignore[import-untyped]
-
-    _HTTPX_AVAILABLE = True
-except ImportError:
-    _httpx = None
-    _HTTPX_AVAILABLE = False
-
 _TELEGRAM_MAX_MESSAGE_LEN = 4096
-_DEFAULT_TIMEOUT_S = 15.0
+_DEFAULT_TIMEOUT_S = 3.0
 
 
 class TelegramBotAction:
@@ -42,18 +36,17 @@ class TelegramBotAction:
                 "or TELEGRAM_BOT_TOKEN"
             )
             return False
-        if not _HTTPX_AVAILABLE or _httpx is None:
-            logger.error("TelegramBotAction.send: httpx is not installed")
-            return False
 
-        text = message if len(message) <= _TELEGRAM_MAX_MESSAGE_LEN else (
-            message[: _TELEGRAM_MAX_MESSAGE_LEN - 20] + "\n…(truncated)"
+        text = (
+            message
+            if len(message) <= _TELEGRAM_MAX_MESSAGE_LEN
+            else message[: _TELEGRAM_MAX_MESSAGE_LEN - 20] + "\n…(truncated)"
         )
         url = f"https://api.telegram.org/bot{self._token}/sendMessage"
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
 
         try:
-            async with _httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_S) as client:
+            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_S) as client:
                 resp = await client.post(url, json=payload)
         except Exception:
             logger.exception("TelegramBotAction.send: HTTP request failed")

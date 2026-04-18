@@ -278,9 +278,9 @@ class OriRuntime:
 
         dispatcher.register_executor("alert_sms", _exec_alert_sms)
 
-        async def _exec_alert_telegram(action: str, ctx: SkillContext) -> None:
+        async def _exec_alert_telegram(action: str, ctx: SkillContext) -> bool:
             msg = _message_from_context(ctx, action)
-            await telegram_action.send(message=msg, to_number=_operator_contact)
+            return await telegram_action.send(message=msg, to_number=_operator_contact)
 
         dispatcher.register_executor("alert_telegram", _exec_alert_telegram)
 
