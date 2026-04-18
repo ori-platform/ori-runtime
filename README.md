@@ -272,8 +272,9 @@ git clone https://github.com/ori-platform/ori-runtime.git
 cd ori-runtime
 python3 -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip          # required: old pip (<22) can't handle pyproject.toml editable installs
-pip install -e ".[dev]"
+
+# One-command dev bootstrap (deps + hooks + formatting baseline)
+bash scripts/bootstrap.sh
 
 # Verify everything works
 pytest tests/ -v

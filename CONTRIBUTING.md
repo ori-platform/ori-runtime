@@ -263,6 +263,12 @@ Identify which [extension point](AGENTS.md) your change fits into:
 ### 4. Write Tests and Submit
 
 ```bash
+# First-time setup (deps + hooks + baseline formatting)
+bash scripts/bootstrap.sh
+
+# Run full quality gate locally (before pushing)
+pre-commit run --all-files
+
 # Run tests
 pytest tests/ -v
 
