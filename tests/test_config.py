@@ -19,10 +19,12 @@ def _mock_env_vars_for_examples(monkeypatch):
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "mock_sid")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "mock_token")
     monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "mock_from")
-    monkeypatch.setenv("OWNER_WHATSAPP_NUMBER", "mock_owner")
+    monkeypatch.setenv("OPERATOR_CONTACT", "mock_operator")
+    monkeypatch.setenv("SECONDARY_CONTACT", "")
     monkeypatch.setenv("AT_API_KEY", "mock_key")
     monkeypatch.setenv("AT_USERNAME", "mock_user")
-    monkeypatch.setenv("OWNER_PHONE_NUMBER", "mock_phone")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "mock_tg_token")
+    monkeypatch.setenv("ORI_SMS_WEBHOOK_TOKEN", "mock_webhook_token")
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -736,10 +738,138 @@ class TestActionsValidation:
               enabled: false
               broker_url: mqtt://localhost
             actions:
-              primary_alert_channel: telegram
+              primary_alert_channel: fax
             """,
         )
         with pytest.raises(ConfigValidationError, match="primary_alert_channel"):
+            Config.load(yaml_path)
+
+    def test_telegram_primary_loads(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: telegram
+              operator_contact: "987654"
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+              telegram:
+                bot_token: "123456:ABC-test-token"
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.primary_alert_channel == "telegram"
+        assert cfg.actions.operator_contact == "987654"
+
+    def test_telegram_primary_raises_without_token(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: telegram
+              operator_contact: "1"
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+              telegram: {}
+            """,
+        )
+        with pytest.raises(ConfigValidationError, match="Telegram bot token"):
+            Config.load(yaml_path)
+
+    def test_telegram_primary_raises_without_operator_contact(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: telegram
+              operator_contact: ""
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+              telegram:
+                bot_token: "123:abc"
+            """,
+        )
+        with pytest.raises(ConfigValidationError, match="operator_contact"):
+            Config.load(yaml_path)
+
+    def test_telegram_enabled_requires_token(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+              operator_contact: ""
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+              telegram:
+                enabled: true
+            """,
+        )
+        with pytest.raises(ConfigValidationError, match="Telegram bot token"):
             Config.load(yaml_path)
 
     def test_gpio_pin_coerced_to_int(self, tmp_path):
@@ -1038,7 +1168,7 @@ actions:
             tmp_path,
             self._yaml(
                 "  primary_alert_channel: whatsapp\n"
-                "  operator_contact: '${OWNER_PHONE_NUMBER}'\n"
+                "  operator_contact: '${OPERATOR_CONTACT}'\n"
             ),
         )
         with caplog.at_level(logging.WARNING):

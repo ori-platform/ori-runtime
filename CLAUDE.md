@@ -504,7 +504,7 @@ skills:
       requires_approval_for_soft_actions: false
       approval_timeout_seconds: 300
       safe_default_action: log_to_dashboard
-      secondary_contact_number: ${SECONDARY_WHATSAPP}
+      secondary_contact_number: "${SECONDARY_CONTACT}"
 
 reasoning:
   default_tier: local
@@ -517,13 +517,18 @@ gateway:
   broker_url: mqtt://192.168.1.10:1883
 
 actions:
-  primary_alert_channel: sms # 'sms' | 'whatsapp' — use sms for Nigeria
+  primary_alert_channel: sms # 'sms' | 'whatsapp' | 'telegram' — use sms for Nigeria
+  operator_contact: "${OPERATOR_CONTACT}"
+  secondary_contact: "${SECONDARY_CONTACT}"
   whatsapp:
     enabled: true
-    to_number: "${OWNER_WHATSAPP_NUMBER}"
+    TWILIO_ACCOUNT_SID: "${TWILIO_ACCOUNT_SID}"
+    TWILIO_AUTH_TOKEN: "${TWILIO_AUTH_TOKEN}"
+    TWILIO_WHATSAPP_FROM: "${TWILIO_WHATSAPP_FROM}"
   sms:
     enabled: true # Africa's Talking — primary for Nigeria
-    to_number: "${OWNER_PHONE_NUMBER}"
+    AT_API_KEY: "${AT_API_KEY}"
+    AT_USERNAME: "${AT_USERNAME}"
   relay:
     enabled: false # true when physical relay is wired
     gpio_pin: 26
@@ -722,10 +727,10 @@ async def test_tier_d_bypasses_dispatcher():
 ## Environment Variables
 
 ```bash
-# Alert delivery
-OWNER_WHATSAPP_NUMBER=whatsapp:+234XXXXXXXXXX
-OWNER_PHONE_NUMBER=+234XXXXXXXXXX
-SECONDARY_WHATSAPP=whatsapp:+234XXXXXXXXXX  # Escalation contact for Tier C no-response
+# Alert delivery — set in .env; ori.yaml references ${VAR} only (no secrets in YAML).
+# OPERATOR_CONTACT format follows actions.primary_alert_channel (E.164 / whatsapp:+… / Telegram chat id).
+OPERATOR_CONTACT=whatsapp:+234XXXXXXXXXX
+SECONDARY_CONTACT=whatsapp:+234XXXXXXXXXX  # Escalation contact if primary operator does not respond (Tier C)
 
 # WhatsApp (Twilio or WhatsApp Cloud API)
 TWILIO_ACCOUNT_SID=
@@ -736,6 +741,9 @@ TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
 AT_API_KEY=
 AT_USERNAME=
 AT_SENDER_ID=ORI
+
+# Telegram Bot API (optional; enable in ori.yaml actions.telegram)
+TELEGRAM_BOT_TOKEN=
 
 # Cloud LLM (Tier 4 reasoning)
 ANTHROPIC_API_KEY=

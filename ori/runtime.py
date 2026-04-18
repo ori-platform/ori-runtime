@@ -27,6 +27,7 @@ from ori.actions.process_manager import ProcessManagerAction
 from ori.actions.relay import RelayAction
 from ori.actions.sms import SMSAction
 from ori.actions.system_control import SystemControlAction
+from ori.actions.telegram import TelegramBotAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import Config, ConfigValidationError
 from ori.hal.base import AdapterReadError, BaseAdapter
@@ -184,6 +185,11 @@ class OriRuntime:
         whatsapp_action = WhatsAppAction(provider=TwilioProvider())
         sms_action = SMSAction(state_store=self._state_store)
         coap_action = CoAPAction(config=config.actions.coap)
+        tg_cfg = config.actions.telegram or {}
+        _tg_token = str(
+            tg_cfg.get("bot_token", "") or tg_cfg.get("TELEGRAM_BOT_TOKEN", "")
+        ).strip()
+        telegram_action = TelegramBotAction(bot_token=_tg_token or None)
         self._sms_action = sms_action
         logger_action = LoggerAction()
         process_manager_action = ProcessManagerAction()
@@ -271,6 +277,12 @@ class OriRuntime:
             await sms_action.send(message=msg, to_number=_operator_contact)
 
         dispatcher.register_executor("alert_sms", _exec_alert_sms)
+
+        async def _exec_alert_telegram(action: str, ctx: SkillContext) -> None:
+            msg = _message_from_context(ctx, action)
+            await telegram_action.send(message=msg, to_number=_operator_contact)
+
+        dispatcher.register_executor("alert_telegram", _exec_alert_telegram)
 
         async def _exec_terminate_process(action: str, ctx: SkillContext) -> bool:
             pid, name = _process_target_from_context(ctx)
@@ -802,10 +814,7 @@ def _message_from_context(ctx: SkillContext, fallback: str) -> str:
     """Build an alert message string from a SkillContext."""
     if ctx.event and ctx.event.reading:
         r = ctx.event.reading
-        return (
-            f"[{ctx.event.device_id}] {r.sensor_id} ({r.sensor_type}): "
-            f"{r.value} {r.unit}"
-        )
+        return f"[{ctx.event.device_id}] {r.sensor_id} ({r.sensor_type}): {r.value} {r.unit}"
     return fallback
 
 

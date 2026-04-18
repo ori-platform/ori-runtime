@@ -209,7 +209,7 @@ skills:
       requires_approval_for_soft_actions: false
       approval_timeout_seconds: 300
       safe_default_action: log_to_dashboard
-      # secondary_contact_number: "${SECONDARY_WHATSAPP}"
+      # secondary_contact_number: "${SECONDARY_CONTACT}"
 
 
 reasoning:
@@ -236,9 +236,10 @@ gateway:
 actions:
   # For Nigeria: use sms as primary (Africa's Talking — no approval required)
   # For UK/EU:   use whatsapp as primary
+  # For Telegram as Tier C primary: primary_alert_channel: telegram — set OPERATOR_CONTACT to chat id in .env
   primary_alert_channel: sms
-  operator_contact: "${OWNER_PHONE_NUMBER}"          # Unified: WHO to contact for Tier-C Approvals
-  secondary_contact: ""                              # Optional escalation contact
+  operator_contact: "${OPERATOR_CONTACT}"          # Unified: WHO to contact for Tier-C Approvals
+  secondary_contact: "${SECONDARY_CONTACT}"        # Optional escalation contact
 
   whatsapp:
     enabled: true
@@ -256,6 +257,10 @@ actions:
       port: 8080
       path: "/webhooks/sms/africastalking"
       token: "${ORI_SMS_WEBHOOK_TOKEN}"  # required; shared secret checked on inbound requests
+
+  telegram:
+    enabled: false
+    bot_token: "${TELEGRAM_BOT_TOKEN}"               # required when enabled or primary_alert_channel is telegram
 
   relay:
     enabled: false                   # CHANGE TO true ONLY WHEN RELAY IS WIRED
