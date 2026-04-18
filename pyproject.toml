@@ -31,6 +31,7 @@ dependencies = [
     "pyserial>=3.5",
     "asyncua>=1.1",
     "aiofiles>=23.0",
+    "httpx>=0.27",
     "twilio>=9.0",
     "africastalking>=1.0",
     "python-dotenv>=1.0",
