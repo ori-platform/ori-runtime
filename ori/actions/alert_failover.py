@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 
 
 class AlertFailoverSender:
+<<<<<<< Updated upstream
     """Wraps SMS and WhatsApp senders with primary/secondary failover."""
+=======
+    """Wraps SMS and WhatsApp senders with failover ordering."""
+>>>>>>> Stashed changes
 
     def __init__(
         self,
@@ -42,6 +46,7 @@ class AlertFailoverSender:
 
     @property
     def _ordered_senders(self) -> list[tuple[str, Any]]:
+<<<<<<< Updated upstream
         primary = (
             ("sms", self._sms_sender)
             if self._primary_channel == "sms"
@@ -53,6 +58,19 @@ class AlertFailoverSender:
             else ("sms", self._sms_sender)
         )
         return [primary, secondary]
+=======
+        if self._primary_channel == "sms":
+            ordered: list[tuple[str, Any]] = [
+                ("sms", self._sms_sender),
+                ("whatsapp", self._whatsapp_sender),
+            ]
+        else:
+            ordered = [
+                ("whatsapp", self._whatsapp_sender),
+                ("sms", self._sms_sender),
+            ]
+        return [(name, sender) for name, sender in ordered if sender is not None]
+>>>>>>> Stashed changes
 
     async def send(self, message: str, to_number: str) -> bool:
         """Send via primary transport; fall back to secondary on failure."""

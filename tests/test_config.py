@@ -744,7 +744,7 @@ class TestActionsValidation:
         with pytest.raises(ConfigValidationError, match="primary_alert_channel"):
             Config.load(yaml_path)
 
-    def test_telegram_primary_loads(self, tmp_path):
+    def test_rejects_telegram_as_primary_alert_channel(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
             """
@@ -773,71 +773,7 @@ class TestActionsValidation:
                 bot_token: "123456:ABC-test-token"
             """,
         )
-        cfg = Config.load(yaml_path)
-        assert cfg.actions.primary_alert_channel == "telegram"
-        assert cfg.actions.operator_contact == "987654"
-
-    def test_telegram_primary_raises_without_token(self, tmp_path):
-        yaml_path = _write_yaml(
-            tmp_path,
-            """
-            device:
-              id: dev-01
-              name: Test
-              location: Lagos
-            sensors: []
-            skills: []
-            reasoning:
-              default_tier: local
-              local_model: x
-              model_path: /tmp
-              offline_fallback: rule
-            gateway:
-              enabled: false
-              broker_url: mqtt://localhost
-            actions:
-              primary_alert_channel: telegram
-              operator_contact: "1"
-              whatsapp:
-                enabled: false
-              sms:
-                enabled: false
-              telegram: {}
-            """,
-        )
-        with pytest.raises(ConfigValidationError, match="Telegram bot token"):
-            Config.load(yaml_path)
-
-    def test_telegram_primary_raises_without_operator_contact(self, tmp_path):
-        yaml_path = _write_yaml(
-            tmp_path,
-            """
-            device:
-              id: dev-01
-              name: Test
-              location: Lagos
-            sensors: []
-            skills: []
-            reasoning:
-              default_tier: local
-              local_model: x
-              model_path: /tmp
-              offline_fallback: rule
-            gateway:
-              enabled: false
-              broker_url: mqtt://localhost
-            actions:
-              primary_alert_channel: telegram
-              operator_contact: ""
-              whatsapp:
-                enabled: false
-              sms:
-                enabled: false
-              telegram:
-                bot_token: "123:abc"
-            """,
-        )
-        with pytest.raises(ConfigValidationError, match="operator_contact"):
+        with pytest.raises(ConfigValidationError, match="primary_alert_channel cannot be 'telegram'"):
             Config.load(yaml_path)
 
     def test_telegram_enabled_requires_token(self, tmp_path):
