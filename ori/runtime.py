@@ -226,6 +226,10 @@ class OriRuntime:
                 "Set actions.operator_contact in ori.yaml."
             )
         _secondary_contact: str = config.actions.secondary_contact or ""
+        _contacts = config.actions.contacts or {}
+        _primary_contact = str(_contacts.get(config.actions.primary_alert_channel, "")).strip()
+        if _primary_contact:
+            _operator_contact = _primary_contact
 
         # Use first skill's approval_timeout_seconds if set; otherwise default
         _approval_timeout: int = 300
@@ -240,6 +244,8 @@ class OriRuntime:
             primary_channel=primary_alert_channel,
             sms_sender=sms_action,
             whatsapp_sender=whatsapp_action,
+            telegram_sender=telegram_action,
+            contacts=_contacts,
         )
         causal_cfg = (
             config.reasoning.causal_memory
@@ -267,20 +273,23 @@ class OriRuntime:
         # alert_whatsapp executor
         async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> None:
             msg = _message_from_context(ctx, action)
-            await whatsapp_action.send(message=msg, to_number=_operator_contact)
+            to_number = str(_contacts.get("whatsapp", "")).strip() or _operator_contact
+            await whatsapp_action.send(message=msg, to_number=to_number)
 
         dispatcher.register_executor("alert_whatsapp", _exec_alert_whatsapp)
 
         # alert_sms executor
         async def _exec_alert_sms(action: str, ctx: SkillContext) -> None:
             msg = _message_from_context(ctx, action)
-            await sms_action.send(message=msg, to_number=_operator_contact)
+            to_number = str(_contacts.get("sms", "")).strip() or _operator_contact
+            await sms_action.send(message=msg, to_number=to_number)
 
         dispatcher.register_executor("alert_sms", _exec_alert_sms)
 
         async def _exec_alert_telegram(action: str, ctx: SkillContext) -> bool:
             msg = _message_from_context(ctx, action)
-            return await telegram_action.send(message=msg, to_number=_operator_contact)
+            to_number = str(_contacts.get("telegram", "")).strip() or _operator_contact
+            return await telegram_action.send(message=msg, to_number=to_number)
 
         dispatcher.register_executor("alert_telegram", _exec_alert_telegram)
 

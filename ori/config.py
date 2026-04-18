@@ -75,9 +75,10 @@ class GatewayConfig:
 
 @dataclass
 class ActionChannelConfig:
-    primary_alert_channel: str  # 'sms' | 'whatsapp'
+    primary_alert_channel: str  # 'sms' | 'whatsapp' | 'telegram'
     operator_contact: str = ""  # phone number for Tier C approvals and emergency SMS
     secondary_contact: str = ""  # escalation contact if operator doesn't respond
+    contacts: dict = field(default_factory=dict)
     whatsapp: dict = field(default_factory=dict)
     sms: dict = field(default_factory=dict)
     telegram: dict = field(default_factory=dict)
@@ -144,7 +145,13 @@ class Config:
         hal = _parse_hal(data.get("hal"))
         logging_cfg = _parse_logging(data.get("logging"))
 
-        if not actions.operator_contact or "${" in actions.operator_contact:
+        primary_contact = str(
+            (actions.contacts or {}).get(actions.primary_alert_channel, "")
+        )
+        if (
+            (not actions.operator_contact or "${" in actions.operator_contact)
+            and (not primary_contact or "${" in primary_contact)
+        ):
             logger.warning(
                 "[config] actions.operator_contact is missing or not properly interpolated. Tier C emergency actions will fail."
             )
@@ -204,7 +211,8 @@ class Config:
             str(actions.telegram.get("enabled", "")).lower() == "true"
             or actions.telegram.get("enabled") is True
         )
-        if telegram_enabled:
+        primary_telegram = actions.primary_alert_channel == "telegram"
+        if telegram_enabled or primary_telegram:
             token = str(
                 actions.telegram.get("bot_token", "")
                 or actions.telegram.get("TELEGRAM_BOT_TOKEN", "")
@@ -218,6 +226,12 @@ class Config:
                     "Set actions.telegram.bot_token (for example ${TELEGRAM_BOT_TOKEN}) "
                     "and define it in your environment."
                 )
+        if primary_telegram and (
+            not primary_contact or "${" in primary_contact
+        ):
+            raise ConfigValidationError(
+                "actions.contacts.telegram is required when primary_alert_channel is 'telegram'."
+            )
 
         if device.deployment_type == "phone":
             logger.info(
@@ -408,14 +422,13 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         raise ConfigValidationError("'actions' section must be a mapping.")
 
     primary = str(data.get("primary_alert_channel", "sms"))
-    if primary == "telegram":
+    if primary not in {"sms", "whatsapp", "telegram"}:
         raise ConfigValidationError(
-            "actions.primary_alert_channel cannot be 'telegram' (use sms or whatsapp)."
+            f"actions.primary_alert_channel must be 'sms', 'whatsapp', or 'telegram', got: {primary!r}"
         )
-    if primary not in {"sms", "whatsapp"}:
-        raise ConfigValidationError(
-            f"actions.primary_alert_channel must be 'sms' or 'whatsapp', got: {primary!r}"
-        )
+    contacts = data.get("contacts") or {}
+    if not isinstance(contacts, dict):
+        raise ConfigValidationError("'actions.contacts' must be a mapping when provided.")
 
     relay_raw: dict = data.get("relay") or {}
     relay: dict = dict(relay_raw)
@@ -477,6 +490,7 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         primary_alert_channel=primary,
         operator_contact=str(data.get("operator_contact") or ""),
         secondary_contact=str(data.get("secondary_contact") or ""),
+        contacts=contacts,
         whatsapp=data.get("whatsapp") or {},
         sms=data.get("sms") or {},
         telegram=data.get("telegram") or {},

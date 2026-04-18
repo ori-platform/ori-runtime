@@ -236,9 +236,14 @@ gateway:
 actions:
   # For Nigeria: use sms as primary (Africa's Talking — no approval required)
   # For UK/EU:   use whatsapp as primary
+  # For Telegram as Tier C primary, set primary_alert_channel: telegram and contacts.telegram
   primary_alert_channel: sms
   operator_contact: "${OPERATOR_CONTACT}"          # Unified: WHO to contact for Tier-C Approvals
   secondary_contact: "${SECONDARY_CONTACT}"        # Optional escalation contact
+  contacts:
+    sms: "${OPERATOR_CONTACT_SMS}"
+    whatsapp: "${OPERATOR_CONTACT_WHATSAPP}"
+    telegram: "${OPERATOR_CONTACT_TELEGRAM}"
 
   whatsapp:
     enabled: true

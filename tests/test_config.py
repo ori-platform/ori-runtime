@@ -744,7 +744,7 @@ class TestActionsValidation:
         with pytest.raises(ConfigValidationError, match="primary_alert_channel"):
             Config.load(yaml_path)
 
-    def test_rejects_telegram_as_primary_alert_channel(self, tmp_path):
+    def test_telegram_primary_loads_with_channel_contacts(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
             """
@@ -764,7 +764,8 @@ class TestActionsValidation:
               broker_url: mqtt://localhost
             actions:
               primary_alert_channel: telegram
-              operator_contact: "987654"
+              contacts:
+                telegram: "987654"
               whatsapp:
                 enabled: false
               sms:
@@ -773,9 +774,35 @@ class TestActionsValidation:
                 bot_token: "123456:ABC-test-token"
             """,
         )
-        with pytest.raises(
-            ConfigValidationError, match="primary_alert_channel cannot be 'telegram'"
-        ):
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.primary_alert_channel == "telegram"
+        assert cfg.actions.contacts["telegram"] == "987654"
+
+    def test_telegram_primary_raises_without_contacts_telegram(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: telegram
+              telegram:
+                bot_token: "123:abc"
+            """,
+        )
+        with pytest.raises(ConfigValidationError, match="actions.contacts.telegram"):
             Config.load(yaml_path)
 
     def test_telegram_enabled_requires_token(self, tmp_path):

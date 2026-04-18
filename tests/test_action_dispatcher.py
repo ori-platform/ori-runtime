@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, patch
 
+from ori.actions.alert_failover import AlertFailoverSender
 from ori.network.events import (
     ActionResult,
     ActionTier,
@@ -547,6 +548,59 @@ class TestTierC:
             )
 
         store.log_action.assert_awaited_once()
+
+    async def test_tier_c_telegram_primary_yes_executes_action(self):
+        class _TelegramSender:
+            async def send(self, message, to_number):
+                return True
+
+            async def listen_for_response(self, from_number, timeout_seconds):
+                return "YES"
+
+        failover = AlertFailoverSender(
+            primary_channel="telegram",
+            sms_sender=object(),
+            whatsapp_sender=object(),
+            telegram_sender=_TelegramSender(),
+            contacts={"telegram": "12345"},
+        )
+        d = ActionDispatcher(alert_sender=failover, config={"operator_contact": "ignored"})
+        result = await d.dispatch(
+            "trip_main_breaker",
+            ActionTier.HARD_PHYSICAL,
+            _context(),
+            _result(),
+            approval_timeout_seconds=3,
+        )
+        assert result.approved is True
+        assert result.executed is True
+
+    async def test_tier_c_telegram_primary_no_executes_safe_default(self):
+        class _TelegramSender:
+            async def send(self, message, to_number):
+                return True
+
+            async def listen_for_response(self, from_number, timeout_seconds):
+                return "NO"
+
+        failover = AlertFailoverSender(
+            primary_channel="telegram",
+            sms_sender=object(),
+            whatsapp_sender=object(),
+            telegram_sender=_TelegramSender(),
+            contacts={"telegram": "12345"},
+        )
+        d = ActionDispatcher(alert_sender=failover, config={"operator_contact": "ignored"})
+        result = await d.dispatch(
+            "trip_main_breaker",
+            ActionTier.HARD_PHYSICAL,
+            _context(),
+            _result(),
+            safe_default_action="log_to_dashboard",
+            approval_timeout_seconds=3,
+        )
+        assert result.approved is False
+        assert result.action_taken == "log_to_dashboard"
 
 
 # ─── Failed action — exception handling ───────────────────────────────────────

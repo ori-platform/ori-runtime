@@ -75,3 +75,47 @@ class TestAlertFailoverSender:
             timeout_seconds=1,
         )
         assert response is None
+
+    @pytest.mark.asyncio
+    async def test_send_telegram_primary_then_sms(self):
+        tg = AsyncMock()
+        tg.send = AsyncMock(return_value=True)
+        sms = AsyncMock()
+        sms.send = AsyncMock(return_value=True)
+        whatsapp = AsyncMock()
+        whatsapp.send = AsyncMock(return_value=True)
+
+        sender = AlertFailoverSender(
+            primary_channel="telegram",
+            sms_sender=sms,
+            whatsapp_sender=whatsapp,
+            telegram_sender=tg,
+            contacts={"telegram": "12345"},
+        )
+        ok = await sender.send("hello", "+2340000000")
+        assert ok is True
+        tg.send.assert_awaited_once_with(message="hello", to_number="12345")
+        sms.send.assert_not_awaited()
+        whatsapp.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_telegram_primary_falls_back_to_sms_with_contacts(self):
+        tg = AsyncMock()
+        tg.send = AsyncMock(return_value=False)
+        sms = AsyncMock()
+        sms.send = AsyncMock(return_value=True)
+        whatsapp = AsyncMock()
+        whatsapp.send = AsyncMock(return_value=True)
+
+        sender = AlertFailoverSender(
+            primary_channel="telegram",
+            sms_sender=sms,
+            whatsapp_sender=whatsapp,
+            telegram_sender=tg,
+            contacts={"telegram": "12345", "sms": "+2341111111111"},
+        )
+        ok = await sender.send("hello", "+2340000000")
+        assert ok is True
+        tg.send.assert_awaited_once_with(message="hello", to_number="12345")
+        sms.send.assert_awaited_once_with(message="hello", to_number="+2341111111111")
+        whatsapp.send.assert_not_awaited()

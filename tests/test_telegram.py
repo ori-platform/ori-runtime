@@ -210,3 +210,132 @@ async def test_send_passes_short_timeout_to_httpx_client():
 
     assert captured.get("timeout") == _DEFAULT_TIMEOUT_S
     assert _DEFAULT_TIMEOUT_S <= 3.0
+
+
+@pytest.mark.asyncio
+async def test_listen_for_response_returns_text_from_matching_chat():
+    """Drain calls ``getUpdates`` first; first response must be empty, then the reply batch."""
+    bodies = [
+        {"ok": True, "result": []},
+        {
+            "ok": True,
+            "result": [
+                {"update_id": 10, "message": {"chat": {"id": 111}, "text": "YES"}},
+            ],
+        },
+    ]
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def __init__(self, body: dict[str, Any]) -> None:
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    class _Client:
+        def __init__(self) -> None:
+            self._n = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def get(self, *_a, **_k):
+            body = bodies[min(self._n, len(bodies) - 1)]
+            self._n += 1
+            return _Resp(body)
+
+    fake_httpx = SimpleNamespace(AsyncClient=lambda **kwargs: _Client())
+    act = TelegramBotAction(bot_token="123:secret")
+    with patch("ori.actions.telegram.httpx", fake_httpx):
+        assert await act.listen_for_response("111", timeout_seconds=1) == "YES"
+
+
+@pytest.mark.asyncio
+async def test_listen_for_response_drains_backlog_then_accepts_new_message():
+    bodies = [
+        {
+            "ok": True,
+            "result": [
+                {
+                    "update_id": 1,
+                    "message": {"chat": {"id": 111}, "text": "/start"},
+                },
+            ],
+        },
+        {"ok": True, "result": []},
+        {
+            "ok": True,
+            "result": [
+                {
+                    "update_id": 2,
+                    "message": {"chat": {"id": 111}, "text": "YES"},
+                },
+            ],
+        },
+    ]
+
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def __init__(self, body: dict[str, Any]) -> None:
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    class _Client:
+        def __init__(self) -> None:
+            self._n = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def get(self, *_a, **_k):
+            body = bodies[min(self._n, len(bodies) - 1)]
+            self._n += 1
+            return _Resp(body)
+
+    fake_httpx = SimpleNamespace(AsyncClient=lambda **kwargs: _Client())
+    act = TelegramBotAction(bot_token="123:secret")
+    with patch("ori.actions.telegram.httpx", fake_httpx):
+        assert await act.listen_for_response("111", timeout_seconds=5) == "YES"
+
+
+@pytest.mark.asyncio
+async def test_listen_for_response_ignores_other_chats_and_times_out():
+    class _Resp:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "ok": True,
+                "result": [
+                    {"update_id": 10, "message": {"chat": {"id": 222}, "text": "NO"}},
+                ],
+            }
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def get(self, *_a, **_k):
+            return _Resp()
+
+    fake_httpx = SimpleNamespace(AsyncClient=lambda **kwargs: _Client())
+    act = TelegramBotAction(bot_token="123:secret")
+    with patch("ori.actions.telegram.httpx", fake_httpx):
+        assert await act.listen_for_response("111", timeout_seconds=1) is None

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class AlertFailoverSender:
-    """Wraps SMS and WhatsApp senders with failover ordering."""
+    """Wraps SMS, WhatsApp, and Telegram senders with failover ordering."""
 
     def __init__(
         self,
@@ -28,12 +28,16 @@ class AlertFailoverSender:
         primary_channel: str,
         sms_sender: Any,
         whatsapp_sender: Any,
+        telegram_sender: Any | None = None,
+        contacts: dict[str, str] | None = None,
     ) -> None:
         self._primary_channel = str(primary_channel or "sms").strip().lower()
         self._sms_sender = sms_sender
         self._whatsapp_sender = whatsapp_sender
+        self._telegram_sender = telegram_sender
+        self._contacts = contacts or {}
 
-        if self._primary_channel not in {"sms", "whatsapp"}:
+        if self._primary_channel not in {"sms", "whatsapp", "telegram"}:
             logger.warning(
                 "AlertFailoverSender: unknown primary channel %r; defaulting to sms",
                 self._primary_channel,
@@ -46,21 +50,34 @@ class AlertFailoverSender:
             ordered: list[tuple[str, Any]] = [
                 ("sms", self._sms_sender),
                 ("whatsapp", self._whatsapp_sender),
+                ("telegram", self._telegram_sender),
+            ]
+        elif self._primary_channel == "telegram":
+            ordered = [
+                ("telegram", self._telegram_sender),
+                ("sms", self._sms_sender),
+                ("whatsapp", self._whatsapp_sender),
             ]
         else:
             ordered = [
                 ("whatsapp", self._whatsapp_sender),
                 ("sms", self._sms_sender),
+                ("telegram", self._telegram_sender),
             ]
         return [(name, sender) for name, sender in ordered if sender is not None]
+
+    def _contact_for_channel(self, channel_name: str, fallback: str) -> str:
+        channel_contact = str(self._contacts.get(channel_name, "")).strip()
+        return channel_contact or fallback
 
     async def send(self, message: str, to_number: str) -> bool:
         """Send via primary transport; fall back to secondary on failure."""
         for channel_name, sender in self._ordered_senders:
             if sender is None:
                 continue
+            channel_contact = self._contact_for_channel(channel_name, to_number)
             try:
-                ok = await sender.send(message=message, to_number=to_number)
+                ok = await sender.send(message=message, to_number=channel_contact)
             except Exception:
                 logger.exception(
                     "AlertFailoverSender: send failed on channel=%s",
@@ -96,7 +113,7 @@ class AlertFailoverSender:
                     self._listen_safe(
                         channel_name=channel_name,
                         listener=listener,
-                        from_number=from_number,
+                        from_number=self._contact_for_channel(channel_name, from_number),
                         timeout_seconds=timeout_seconds,
                     ),
                     name=f"approval-listen:{channel_name}",
