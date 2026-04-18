@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -41,6 +43,13 @@ jobs:
           else
             FROM_REF="${{ github.event.before }}"
             TO_REF="${{ github.sha }}"
+          fi
+          # Some event refs may not exist in shallow/partial clones.
+          # If either commit is unavailable, fall back to all-files mode.
+          if ! git cat-file -e "${FROM_REF}^{commit}" 2>/dev/null || ! git cat-file -e "${TO_REF}^{commit}" 2>/dev/null; then
+            echo "Pre-commit refs unavailable in checkout (from=$FROM_REF to=$TO_REF); running all-files."
+            pre-commit run --show-diff-on-failure --all-files
+            exit $?
           fi
           if echo "$FROM_REF" | grep -Eq '^0+$'; then
             echo "Running pre-commit on all files (no valid base ref)"
