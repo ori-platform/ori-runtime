@@ -75,11 +75,12 @@ class GatewayConfig:
 
 @dataclass
 class ActionChannelConfig:
-    primary_alert_channel: str  # 'sms' | 'whatsapp'
+    primary_alert_channel: str  # 'sms' | 'whatsapp' | 'telegram'
     operator_contact: str = ""  # phone number for Tier C approvals and emergency SMS
     secondary_contact: str = ""  # escalation contact if operator doesn't respond
     whatsapp: dict = field(default_factory=dict)
     sms: dict = field(default_factory=dict)
+    telegram: dict = field(default_factory=dict)
     relay: dict = field(default_factory=dict)
     coap: dict = field(default_factory=dict)
 
@@ -198,6 +199,33 @@ class Config:
                             f"Environment variable not set: {resolved_value}. "
                             f"Set it in your .env file before starting Ori."
                         )
+
+        telegram_enabled = (
+            str(actions.telegram.get("enabled", "")).lower() == "true"
+            or actions.telegram.get("enabled") is True
+        )
+        primary_telegram = actions.primary_alert_channel == "telegram"
+        if telegram_enabled or primary_telegram:
+            token = str(
+                actions.telegram.get("bot_token", "")
+                or actions.telegram.get("TELEGRAM_BOT_TOKEN", "")
+            )
+            if not token or "${" in token:
+                resolved = actions.telegram.get("bot_token") or actions.telegram.get(
+                    "TELEGRAM_BOT_TOKEN", ""
+                )
+                raise ConfigValidationError(
+                    f"Telegram bot token missing or not interpolated: {resolved!r}. "
+                    "Set actions.telegram.bot_token (for example ${TELEGRAM_BOT_TOKEN}) "
+                    "and define it in your environment."
+                )
+        if primary_telegram:
+            oc = str(actions.operator_contact or "").strip()
+            if not oc or "${" in oc:
+                raise ConfigValidationError(
+                    "actions.primary_alert_channel is 'telegram' but operator_contact is missing "
+                    "or not interpolated. Set actions.operator_contact to your Telegram chat id."
+                )
 
         if device.deployment_type == "phone":
             logger.info(
@@ -388,9 +416,9 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         raise ConfigValidationError("'actions' section must be a mapping.")
 
     primary = str(data.get("primary_alert_channel", "sms"))
-    if primary not in {"sms", "whatsapp"}:
+    if primary not in {"sms", "whatsapp", "telegram"}:
         raise ConfigValidationError(
-            f"actions.primary_alert_channel must be 'sms' or 'whatsapp', "
+            f"actions.primary_alert_channel must be 'sms', 'whatsapp', or 'telegram', "
             f"got: {primary!r}"
         )
 
@@ -456,6 +484,7 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         secondary_contact=str(data.get("secondary_contact") or ""),
         whatsapp=data.get("whatsapp") or {},
         sms=data.get("sms") or {},
+        telegram=data.get("telegram") or {},
         relay=relay,
         coap=coap,
     )
