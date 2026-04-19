@@ -25,7 +25,7 @@ echo "Installing/upgrading project dependencies..."
 "${PYTHON_BIN}" -m pip install -e ".[dev]"
 
 echo "Installing git hooks..."
-"${PYTHON_BIN}" -m pre_commit install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
+"${PYTHON_BIN}" -m pre_commit install --install-hooks --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
 
 echo "Running pre-commit baseline pass..."
 if ! "${PYTHON_BIN}" -m pre_commit run --all-files; then

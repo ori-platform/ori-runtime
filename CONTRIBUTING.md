@@ -26,6 +26,7 @@ evaluated through the six design lenses defined there. The most important one:
 - [Commit Messages](#commit-messages)
 - [Signed Commits (Required)](#signed-commits-required)
 - [Pull Request Process](#pull-request-process)
+- [Local PR Review (CODEOWNERS)](#local-pr-review-codeowners)
 - [Types of Contributions Welcome](#types-of-contributions-welcome)
 - [Security](#security)
 - [Community Guidelines](#community-guidelines)
@@ -64,12 +65,19 @@ source .venv/bin/activate
 # Upgrade pip first (required — old system pip can't handle pyproject.toml editable installs)
 pip install --upgrade pip
 
-# Option A — hash-locked install (recommended, matches what CI uses)
+# Recommended first-time setup (deps + hooks + formatting baseline)
+bash scripts/bootstrap.sh
+
+# Option A — hash-locked install (manual path; matches what CI uses)
 pip install --require-hashes -r requirements-dev.txt
 pip install -e . --no-deps
 
-# Option B — editable install for active development (resolves latest compatible versions)
+# Option B — editable install for active development (manual path; resolves latest compatible versions)
 pip install -e ".[dev]"
+
+# If you used a manual path above, install git hooks explicitly
+pre-commit install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
+pre-commit run --all-files
 
 # Verify everything works
 pytest tests/ -v
@@ -493,6 +501,14 @@ git config --global gpg.ssh.allowedSignersFile ~/.ssh/allowed_signers
 4. **Copyright headers present** — on every new `.py` file
 5. **Description explains WHY** — not just what changed
 6. **One concern per PR** — don't bundle unrelated changes
+
+For CODEOWNERS and maintainers, use the local review workflow:
+[`docs/review/local-pr-review.md`](docs/review/local-pr-review.md).
+
+## Local PR Review (CODEOWNERS)
+
+Use the required local review SOP:
+[`docs/review/local-pr-review.md`](docs/review/local-pr-review.md).
 
 ### For New Skills
 
