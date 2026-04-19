@@ -253,7 +253,9 @@ class SerialAdapter(BaseAdapter):
                 f"SerialAdapter: failed to open '{self._port}': {exc}"
             ) from exc
 
-        self._breaker = HardwareCircuitBreaker(getattr(self, "adapter_name", type(self).__name__), config)
+        self._breaker = HardwareCircuitBreaker(
+            getattr(self, "adapter_name", type(self).__name__), config
+        )
         self._connected = True
 
     def _open_port(self) -> None:

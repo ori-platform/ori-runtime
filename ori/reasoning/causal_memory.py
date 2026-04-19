@@ -31,7 +31,9 @@ def generate_key(event: OriEvent, trigger_name: str) -> str:
     sensor_type = (
         event.reading.sensor_type if event.reading is not None else event.event_type
     )
-    value_bucket = str(round(event.reading.value, 0) if event.reading is not None else 0)
+    value_bucket = str(
+        round(event.reading.value, 0) if event.reading is not None else 0
+    )
     day_of_week = str(datetime.datetime.now().weekday())  # 0=Monday, 6=Sunday
 
     raw = sensor_type + trigger_name + value_bucket + day_of_week
@@ -70,9 +72,7 @@ class CausalMemory:
         """
         return await self._store.lookup_causal_memory(pattern_key)
 
-    async def store(
-        self, pattern_key: str, resolution: str, confidence: float
-    ) -> None:
+    async def store(self, pattern_key: str, resolution: str, confidence: float) -> None:
         """Persist or update a resolution for *pattern_key*.
 
         If the key already exists the resolution and confidence are updated and

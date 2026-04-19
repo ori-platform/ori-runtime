@@ -136,8 +136,7 @@ class EventBus:
             except Exception:
                 duration_ms = (time.perf_counter() - start) * 1000.0
                 logger.exception(
-                    "EventBus: handler %r raised an exception for event_id=%s "
-                    "(%.2fms)",
+                    "EventBus: handler %r raised an exception for event_id=%s (%.2fms)",
                     handler_name,
                     event.event_id,
                     duration_ms,

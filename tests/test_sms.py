@@ -41,7 +41,11 @@ def _make_at_stub_empty_recipients() -> types.ModuleType:
     stub.SMS = type(
         "_SMS",
         (),
-        {"send": staticmethod(lambda msg, recip, sid: {"SMSMessageData": {"Recipients": []}})},
+        {
+            "send": staticmethod(
+                lambda msg, recip, sid: {"SMSMessageData": {"Recipients": []}}
+            )
+        },
     )
     stub.initialize = lambda username, api_key: None
     return stub
@@ -156,7 +160,9 @@ async def test_send_uses_at_sender_id_env_var(monkeypatch):
 @pytest.mark.asyncio
 async def test_send_returns_false_on_non_success_status(monkeypatch):
     monkeypatch.setenv("AT_API_KEY", "test-key")
-    monkeypatch.setitem(sys.modules, "africastalking", _make_at_stub("InvalidPhoneNumber"))
+    monkeypatch.setitem(
+        sys.modules, "africastalking", _make_at_stub("InvalidPhoneNumber")
+    )
     action = SMSAction()
     ok = await action.send("Alert", "+000")
     assert ok is False
@@ -206,6 +212,7 @@ async def test_listen_for_response_returns_none(monkeypatch):
 async def test_listen_for_response_does_not_block(monkeypatch):
     """Stub must return immediately — no sleeping or polling."""
     import time
+
     monkeypatch.setenv("AT_API_KEY", "key")
     monkeypatch.setitem(sys.modules, "africastalking", _make_at_stub())
     action = SMSAction()
@@ -249,7 +256,9 @@ async def test_ingest_incoming_webhook_rejects_invalid_payload(monkeypatch):
 @pytest.mark.asyncio
 async def test_listen_for_response_reads_from_state_store(monkeypatch):
     monkeypatch.delenv("AT_API_KEY", raising=False)
-    store = types.SimpleNamespace(consume_incoming_message=AsyncMock(return_value="YES"))
+    store = types.SimpleNamespace(
+        consume_incoming_message=AsyncMock(return_value="YES")
+    )
     action = SMSAction(state_store=store)
 
     reply = await action.listen_for_response("+234 800 000 0000", timeout_seconds=1)

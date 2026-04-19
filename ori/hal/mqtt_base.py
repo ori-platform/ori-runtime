@@ -201,7 +201,9 @@ class MqttCachedAdapter(BaseAdapter):
                 f"{self.adapter_name}: '{broker_host_key}' is required in sensor config."
             )
         if self._port <= 0:
-            raise AdapterConnectionError(f"{self.adapter_name}: '{port_key}' must be > 0.")
+            raise AdapterConnectionError(
+                f"{self.adapter_name}: '{port_key}' must be > 0."
+            )
 
         try:
             client_kwargs = self._build_mqtt_client_kwargs(config)

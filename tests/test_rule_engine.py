@@ -92,14 +92,18 @@ class TestEvaluate:
     @pytest.mark.asyncio
     async def test_condition_true_returns_match(self):
         engine = RuleEngine()
-        result = await engine.evaluate(_event(value=15.0), [_rule(condition="value > 10.0")])
+        result = await engine.evaluate(
+            _event(value=15.0), [_rule(condition="value > 10.0")]
+        )
         assert result.matched is True
         assert result.rule_name == "overcurrent"
 
     @pytest.mark.asyncio
     async def test_condition_false_returns_no_match(self):
         engine = RuleEngine()
-        result = await engine.evaluate(_event(value=5.0), [_rule(condition="value > 10.0")])
+        result = await engine.evaluate(
+            _event(value=5.0), [_rule(condition="value > 10.0")]
+        )
         assert result.matched is False
 
     @pytest.mark.asyncio
@@ -166,7 +170,9 @@ class TestEvaluate:
     @pytest.mark.asyncio
     async def test_confidence_is_1_for_rule_match(self):
         engine = RuleEngine()
-        result = await engine.evaluate(_event(value=15.0), [_rule(condition="value > 10.0")])
+        result = await engine.evaluate(
+            _event(value=15.0), [_rule(condition="value > 10.0")]
+        )
         assert result.confidence == 1.0
 
     @pytest.mark.asyncio

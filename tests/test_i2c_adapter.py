@@ -22,15 +22,18 @@ skip_if_no_pi = pytest.mark.skipif(
     reason="No I2C bus — not running on Pi",
 )
 
+
 @pytest.fixture(autouse=True)
 def _clear_shared_i2c_bus_cache():
     """Ensure tests don't leak cached bus handles."""
     import ori.hal.i2c_adapter
+
     ori.hal.i2c_adapter._shared_busio_instances.clear()
     ori.hal.i2c_adapter._shared_busio_refs.clear()
     yield
     ori.hal.i2c_adapter._shared_busio_instances.clear()
     ori.hal.i2c_adapter._shared_busio_refs.clear()
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -163,7 +166,9 @@ class TestConnect:
     async def test_connect_adafruit_unsupported_bus_raises(self):
         adapter = I2CAdapter()
         with patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", True):
-            with pytest.raises(AdapterConnectionError, match="currently only support I2C bus 1"):
+            with pytest.raises(
+                AdapterConnectionError, match="currently only support I2C bus 1"
+            ):
                 await adapter.connect(_config(sensor_type="ads1115_current", bus=3))
 
     async def test_connect_stores_sensitivity(self):
@@ -234,7 +239,7 @@ class TestClose:
         adapter = _connected_ads_adapter("ads1115_current")
         adapter._bus_number = 1
         _mod._shared_busio_instances[1] = MagicMock()  # seed the cache
-        _mod._shared_busio_refs[1] = 1                 # seed the reference
+        _mod._shared_busio_refs[1] = 1  # seed the reference
 
         await adapter.close()
 

@@ -205,7 +205,11 @@ class TestOutputNormalization:
                         "A) this B) that"
                     }
                 ],
-                "usage": {"completion_tokens": 30, "prompt_tokens": 50, "total_tokens": 80},
+                "usage": {
+                    "completion_tokens": 30,
+                    "prompt_tokens": 50,
+                    "total_tokens": 80,
+                },
             }
         )
         with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):
@@ -227,7 +231,11 @@ class TestOutputNormalization:
                         )
                     }
                 ],
-                "usage": {"completion_tokens": 24, "prompt_tokens": 40, "total_tokens": 64},
+                "usage": {
+                    "completion_tokens": 24,
+                    "prompt_tokens": 40,
+                    "total_tokens": 64,
+                },
             }
         )
         with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):

@@ -104,7 +104,7 @@ class TestBuildReadRequest:
 
     def test_slave_id_and_fc(self):
         frame = _build_read_request(3, 0x0000, 1)
-        assert frame[0] == 3    # slave id
+        assert frame[0] == 3  # slave id
         assert frame[1] == 0x03  # function code
 
     def test_register_encoded(self):
@@ -444,14 +444,14 @@ class TestAllSensorTypes:
     @pytest.mark.parametrize(
         "sensor_type,register_count,raw,expected_value,expected_unit",
         [
-            ("voltage",        2, 2300,  230.0,   "volt"),
-            ("current",        2, 1500,  15.0,    "ampere"),
-            ("active_power",   2, 5000,  500.0,   "watt"),
-            ("apparent_power", 2, 5200,  520.0,   "volt_ampere"),
-            ("reactive_power", 2,  800,   80.0,   "var"),
-            ("power_factor",   1,  900,    0.9,   "ratio"),
-            ("frequency",      1,  500,   50.0,   "hertz"),
-            ("energy_kwh",     2, 10000, 100.0,   "kilowatt_hour"),
+            ("voltage", 2, 2300, 230.0, "volt"),
+            ("current", 2, 1500, 15.0, "ampere"),
+            ("active_power", 2, 5000, 500.0, "watt"),
+            ("apparent_power", 2, 5200, 520.0, "volt_ampere"),
+            ("reactive_power", 2, 800, 80.0, "var"),
+            ("power_factor", 1, 900, 0.9, "ratio"),
+            ("frequency", 1, 500, 50.0, "hertz"),
+            ("energy_kwh", 2, 10000, 100.0, "kilowatt_hour"),
         ],
     )
     async def test_sensor_type(

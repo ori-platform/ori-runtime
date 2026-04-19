@@ -128,7 +128,9 @@ class UsbSerialAdapter(BaseAdapter):
                 "UsbSerialAdapter: 'device_path' is required (e.g. /dev/ttyUSB0)"
             )
 
-        baud_from_cfg = config.get("baud_rate", config.get("baudrate", _DEFAULT_BAUD_RATE))
+        baud_from_cfg = config.get(
+            "baud_rate", config.get("baudrate", _DEFAULT_BAUD_RATE)
+        )
         self._baud_rate = int(baud_from_cfg)
         self._bytesize = int(config.get("bytesize", _DEFAULT_BYTESIZE))
         self._parity = str(config.get("parity", _DEFAULT_PARITY))
@@ -160,7 +162,9 @@ class UsbSerialAdapter(BaseAdapter):
                 "UsbSerialAdapter: not connected — call connect() first"
             )
         if self._breaker is None:
-            raise AdapterReadError("UsbSerialAdapter: circuit breaker is not initialized")
+            raise AdapterReadError(
+                "UsbSerialAdapter: circuit breaker is not initialized"
+            )
 
         async with self._breaker:
             register, count, scale, unit = _SENSOR_MAP[self._sensor_type]
@@ -217,7 +221,9 @@ class UsbSerialAdapter(BaseAdapter):
 
     def _open_port_sync(self) -> None:
         if _serial_module is None:
-            raise AdapterConnectionError("UsbSerialAdapter: pyserial module unavailable")
+            raise AdapterConnectionError(
+                "UsbSerialAdapter: pyserial module unavailable"
+            )
         self._serial = _serial_module.Serial(
             port=self._device_path,
             baudrate=self._baud_rate,

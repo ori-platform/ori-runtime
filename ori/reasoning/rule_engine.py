@@ -370,7 +370,9 @@ class RuleEngine:
                         continue
                     try:
                         readings = await state_store.get_history(args[0], limit=args[1])
-                        history_cache[key] = [r.value for r in readings] if readings else []
+                        history_cache[key] = (
+                            [r.value for r in readings] if readings else []
+                        )
                     except Exception:
                         history_cache[key] = []
                         logger.warning(

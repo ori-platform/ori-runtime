@@ -70,7 +70,9 @@ class ReasoningResult:
     action_tier: str = "A"  # Default: informational only
     proposed_action: str | None = None
     prompt: str = ""  # LLM prompt used to produce this result; "" for rule engine
-    reasoning: str = ""  # fuller explanation for Tier C approval messages; falls back to text
+    reasoning: str = (
+        ""  # fuller explanation for Tier C approval messages; falls back to text
+    )
 
 
 class ActionTier:

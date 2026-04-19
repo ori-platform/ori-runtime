@@ -123,7 +123,9 @@ def test_ori_event_from_reading_attaches_reading(sample_reading: SensorReading) 
 # ---------------------------------------------------------------------------
 
 
-def test_fingerprint_same_regardless_of_timestamp(sample_reading: SensorReading) -> None:
+def test_fingerprint_same_regardless_of_timestamp(
+    sample_reading: SensorReading,
+) -> None:
     # Timestamp is excluded from the fingerprint; window enforcement is the
     # deduplicator's responsibility, not compute_fingerprint's.
     base_ts = 1_700_000_000_000

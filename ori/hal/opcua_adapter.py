@@ -176,8 +176,10 @@ class OpcUaAdapter(BaseAdapter):
 
         # Some wrappers may use lowercase `.value`.
         inner_lower = getattr(current, "value", None)
-        if inner_lower is not None and inner_lower is not current and not isinstance(
-            current, (str, bytes, bytearray)
+        if (
+            inner_lower is not None
+            and inner_lower is not current
+            and not isinstance(current, (str, bytes, bytearray))
         ):
             current = inner_lower
 

@@ -406,9 +406,7 @@ class TestReasoningLog:
             device_id="dev-01",
         )
         rows = await store._run(
-            lambda: store._conn.execute(
-                "SELECT * FROM reasoning_log"
-            ).fetchall()
+            lambda: store._conn.execute("SELECT * FROM reasoning_log").fetchall()
         )
         assert len(rows) == 1
 
@@ -421,9 +419,7 @@ class TestReasoningLog:
             device_id="dev-01",
         )
         row = await store._run(
-            lambda: store._conn.execute(
-                "SELECT prompt FROM reasoning_log"
-            ).fetchone()
+            lambda: store._conn.execute("SELECT prompt FROM reasoning_log").fetchone()
         )
         assert row["prompt"] == prompt_text
 
@@ -434,9 +430,7 @@ class TestReasoningLog:
             device_id="dev-01",
         )
         row = await store._run(
-            lambda: store._conn.execute(
-                "SELECT prompt FROM reasoning_log"
-            ).fetchone()
+            lambda: store._conn.execute("SELECT prompt FROM reasoning_log").fetchone()
         )
         assert row["prompt"] == ""
 

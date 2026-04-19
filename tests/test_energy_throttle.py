@@ -196,7 +196,9 @@ class TestEnergyAwareThrottle:
         elevator = IntelligenceElevator(config=_cfg(enabled=True))
         dispatcher = AsyncMock()
         store = _state_store(battery_pct=5.0)
-        await elevator.reason_and_dispatch(_event(value=5.0), _skill_tier_d(), store, dispatcher)
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), _skill_tier_d(), store, dispatcher
+        )
 
         dispatcher.dispatch.assert_called_once()
         kwargs = dispatcher.dispatch.call_args.kwargs

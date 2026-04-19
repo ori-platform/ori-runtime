@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 from ori.network.events import OriEvent, compute_fingerprint
 
-_WINDOW_MS = 5_000   # suppress duplicates seen within this window
-_TTL_MS = 30_000     # evict records older than this from the cache
+_WINDOW_MS = 5_000  # suppress duplicates seen within this window
+_TTL_MS = 30_000  # evict records older than this from the cache
 
 
 def _now_ms() -> int:
@@ -16,8 +16,8 @@ def _now_ms() -> int:
 
 @dataclass
 class OccurrenceRecord:
-    first_seen: int   # unix milliseconds
-    last_seen: int    # unix milliseconds
+    first_seen: int  # unix milliseconds
+    last_seen: int  # unix milliseconds
     count: int
     event: OriEvent
 

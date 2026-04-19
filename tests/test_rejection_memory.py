@@ -126,7 +126,9 @@ class TestRejectionMemory:
 
     def test_pattern_key_bucketing(self):
         ts = int(
-            datetime.datetime(2026, 1, 1, 2, 30, tzinfo=datetime.timezone.utc).timestamp()
+            datetime.datetime(
+                2026, 1, 1, 2, 30, tzinfo=datetime.timezone.utc
+            ).timestamp()
             * 1000
         )
         k1 = StateStore._build_rejection_pattern_key(
@@ -143,15 +145,21 @@ class TestRejectionMemory:
 
     def test_time_bucketing(self):
         ts_2am = int(
-            datetime.datetime(2026, 1, 1, 2, 0, tzinfo=datetime.timezone.utc).timestamp()
+            datetime.datetime(
+                2026, 1, 1, 2, 0, tzinfo=datetime.timezone.utc
+            ).timestamp()
             * 1000
         )
         ts_3am = int(
-            datetime.datetime(2026, 1, 1, 3, 0, tzinfo=datetime.timezone.utc).timestamp()
+            datetime.datetime(
+                2026, 1, 1, 3, 0, tzinfo=datetime.timezone.utc
+            ).timestamp()
             * 1000
         )
         ts_5am = int(
-            datetime.datetime(2026, 1, 1, 5, 0, tzinfo=datetime.timezone.utc).timestamp()
+            datetime.datetime(
+                2026, 1, 1, 5, 0, tzinfo=datetime.timezone.utc
+            ).timestamp()
             * 1000
         )
         k_2 = StateStore._build_rejection_pattern_key(
@@ -306,7 +314,9 @@ class TestRejectionMemory:
                 "rejection_expiry_days": 30,
             },
         )
-        ctx = SkillContext(skill=_FakeSkill(), event=_event(value=5.0), state_store=store)
+        ctx = SkillContext(
+            skill=_FakeSkill(), event=_event(value=5.0), state_store=store
+        )
         res = ReasoningResult(
             text="trip breaker",
             tier="local_slm",

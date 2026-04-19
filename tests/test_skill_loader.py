@@ -33,8 +33,14 @@ def _minimal_yaml(
     safe_default: str | None = None,
 ) -> str:
     # 12 spaces keeps indentation correct after textwrap.dedent strips 8 spaces
-    bypass_line = f"\n            bypass_llm: {str(bypass_llm).lower()}" if bypass_llm is not None else ""
-    safe_line = f"\n            safe_default_action: {safe_default}" if safe_default else ""
+    bypass_line = (
+        f"\n            bypass_llm: {str(bypass_llm).lower()}"
+        if bypass_llm is not None
+        else ""
+    )
+    safe_line = (
+        f"\n            safe_default_action: {safe_default}" if safe_default else ""
+    )
     return f"""\
         name: {name}
         version: 0.1.0
@@ -96,7 +102,9 @@ class TestSkillGetDefaultActions:
             author="a",
             sensors_required=[{"type": "current_clamp", "protocol": "i2c"}],
             triggers=[Trigger(name="over_threshold", condition="x>1", action_tier="A")],
-            actions={"defaults": {"over_threshold": ["alert_whatsapp", "log_to_dashboard"]}},
+            actions={
+                "defaults": {"over_threshold": ["alert_whatsapp", "log_to_dashboard"]}
+            },
         )
 
     def test_returns_actions_for_matching_sensor(self):
@@ -110,7 +118,9 @@ class TestSkillGetDefaultActions:
 
     def test_returns_empty_when_no_defaults_configured(self):
         skill = Skill(
-            name="s", version="0.1.0", author="a",
+            name="s",
+            version="0.1.0",
+            author="a",
             sensors_required=[{"type": "current_clamp"}],
             triggers=[Trigger(name="t", condition="x>1", action_tier="A")],
             actions={},
@@ -249,7 +259,9 @@ class TestValidation:
         skill_dir = tmp_path / "bad"
         _write_skill_yaml(skill_dir, yaml_content)
         loader = SkillLoader()
-        with pytest.raises(SkillValidationError, match="missing required field 'action_tier'"):
+        with pytest.raises(
+            SkillValidationError, match="missing required field 'action_tier'"
+        ):
             loader.load_one(skill_dir)
 
     def test_invalid_action_tier_raises(self, tmp_path):
@@ -274,7 +286,9 @@ class TestValidation:
         skill_dir = tmp_path / "bad"
         _write_skill_yaml(skill_dir, _minimal_yaml(action_tier="A", bypass_llm=True))
         loader = SkillLoader()
-        with pytest.raises(SkillValidationError, match="bypass_llm is reserved for Tier D"):
+        with pytest.raises(
+            SkillValidationError, match="bypass_llm is reserved for Tier D"
+        ):
             loader.load_one(skill_dir)
 
     def test_tier_c_without_safe_default_raises(self, tmp_path):
@@ -298,7 +312,9 @@ class TestValidation:
 
     def test_tier_c_with_safe_default_is_valid(self, tmp_path):
         skill_dir = tmp_path / "c"
-        _write_skill_yaml(skill_dir, _minimal_yaml(action_tier="C", safe_default="log_to_dashboard"))
+        _write_skill_yaml(
+            skill_dir, _minimal_yaml(action_tier="C", safe_default="log_to_dashboard")
+        )
         loader = SkillLoader()
         skill = loader.load_one(skill_dir)
         assert skill.triggers[0].action_tier == "C"
@@ -414,7 +430,9 @@ class TestValidation:
         skill_dir = tmp_path / "bad-meta"
         _write_skill_yaml(skill_dir, yaml_content)
         loader = SkillLoader()
-        with pytest.raises(SkillValidationError, match="triggers must be a non-empty list"):
+        with pytest.raises(
+            SkillValidationError, match="triggers must be a non-empty list"
+        ):
             loader.load_one(skill_dir)
 
     def test_missing_defaults_mapping_for_trigger_raises(self, tmp_path):
@@ -437,7 +455,9 @@ class TestValidation:
         skill_dir = tmp_path / "bad-defaults"
         _write_skill_yaml(skill_dir, yaml_content)
         loader = SkillLoader()
-        with pytest.raises(SkillValidationError, match="missing actions.defaults mapping"):
+        with pytest.raises(
+            SkillValidationError, match="missing actions.defaults mapping"
+        ):
             loader.load_one(skill_dir)
 
     def test_extra_defaults_key_without_trigger_raises(self, tmp_path):
@@ -560,7 +580,9 @@ class TestRegister:
             # Schedule it so it actually runs
             return asyncio.ensure_future(coro)
 
-        with patch("ori.skills.loader.asyncio.create_task", side_effect=fake_create_task):
+        with patch(
+            "ori.skills.loader.asyncio.create_task", side_effect=fake_create_task
+        ):
             await bus.publish(event)
             # Flush tasks
             await asyncio.sleep(0)
@@ -588,7 +610,9 @@ class TestRegister:
             task_calls.append(coro)
             return asyncio.ensure_future(coro)
 
-        with patch("ori.skills.loader.asyncio.create_task", side_effect=fake_create_task):
+        with patch(
+            "ori.skills.loader.asyncio.create_task", side_effect=fake_create_task
+        ):
             await bus.publish(event)  # first — fires
             await bus.publish(event)  # second — blocked by cooldown (10s)
             await asyncio.sleep(0)

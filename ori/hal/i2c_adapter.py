@@ -205,7 +205,9 @@ class I2CAdapter(BaseAdapter):
                 f"address 0x{self._address:02X} on bus {self._bus_number}: {exc}"
             ) from exc
 
-        self._breaker = HardwareCircuitBreaker(getattr(self, "adapter_name", type(self).__name__), config)
+        self._breaker = HardwareCircuitBreaker(
+            getattr(self, "adapter_name", type(self).__name__), config
+        )
         self._connected = True
 
     def _connect_sync(self, sensor_type: str) -> None:

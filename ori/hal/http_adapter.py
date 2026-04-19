@@ -76,9 +76,7 @@ class HttpAdapter(BaseAdapter):
         if not self._json_path:
             raise AdapterConnectionError("HttpAdapter: 'json_path' is required")
         if self._poll_interval_ms < 100:
-            raise AdapterConnectionError(
-                "HttpAdapter: poll_interval_ms must be >= 100"
-            )
+            raise AdapterConnectionError("HttpAdapter: poll_interval_ms must be >= 100")
         if self._timeout_s <= 0:
             raise AdapterConnectionError("HttpAdapter: timeout_s must be > 0")
 

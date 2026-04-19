@@ -72,7 +72,9 @@ class _FakeSerial:
         if self._last_request is None:
             return b""
         slave_id, register, count = self._last_request
-        return self._responses.get((register, count), _modbus_response(slave_id, count, 0))
+        return self._responses.get(
+            (register, count), _modbus_response(slave_id, count, 0)
+        )
 
     def close(self) -> None:
         self.is_open = False
@@ -120,7 +122,9 @@ class TestUsbSerialAdapter:
             patch("ori.hal.usb_serial_adapter._PYSERIAL_AVAILABLE", True),
             patch("ori.hal.usb_serial_adapter._serial_module", fake_module),
         ):
-            await adapter.connect(_config(sensor_type="usb_power", device_path="/dev/ttyUSB9"))
+            await adapter.connect(
+                _config(sensor_type="usb_power", device_path="/dev/ttyUSB9")
+            )
 
         assert adapter.is_connected is True
         assert adapter._device_path == "/dev/ttyUSB9"

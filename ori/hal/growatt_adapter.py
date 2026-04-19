@@ -126,7 +126,9 @@ class GrowattAdapter(BaseAdapter):
                 "Run: pip install pysolarmanv5"
             )
         if not self._connected:
-            raise AdapterReadError("GrowattAdapter: not connected — call connect() first")
+            raise AdapterReadError(
+                "GrowattAdapter: not connected — call connect() first"
+            )
 
         async with self._breaker:
             loop = asyncio.get_running_loop()

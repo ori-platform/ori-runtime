@@ -130,7 +130,8 @@ class TestVictronAdapter:
             assert reading.metadata["topic"] == topic
 
             expected_topics = {
-                f"N/{adapter._portal_id}/{suffix}" for suffix, _unit in _SENSOR_MAP.values()
+                f"N/{adapter._portal_id}/{suffix}"
+                for suffix, _unit in _SENSOR_MAP.values()
             }
             assert set(adapter._client.subscriptions) == expected_topics
             await adapter.close()
