@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import base64
 import textwrap
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
@@ -17,6 +19,18 @@ from ori.skills.loader import (
     Trigger,
     _CooldownTracker,
 )
+from ori.skills.sandbox import SkillSecurityError
+from ori.skills.signing import canonical_skill_payload
+
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+    )
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+except Exception:  # pragma: no cover - environment without cryptography support
+    Ed25519PrivateKey = None
+    Encoding = None
+    PublicFormat = None
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -24,6 +38,14 @@ from ori.skills.loader import (
 def _write_skill_yaml(skill_dir: Path, content: str) -> None:
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "skill.yaml").write_text(textwrap.dedent(content))
+
+
+def _write_skill_yaml_mapping(skill_dir: Path, content: dict) -> None:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "skill.yaml").write_text(
+        yaml.safe_dump(content, sort_keys=False),
+        encoding="utf-8",
+    )
 
 
 def _minimal_yaml(
@@ -72,6 +94,33 @@ def _make_event(sensor_type: str = "current_clamp", value: float = 6.0) -> OriEv
         quality=1.0,
     )
     return OriEvent.from_reading(reading, "dev-01")
+
+
+def _community_skill_mapping(name: str = "community-skill") -> dict:
+    return {
+        "name": name,
+        "version": "0.1.0",
+        "author": "community-author",
+        "sensors_required": [{"type": "current_clamp", "protocol": "i2c"}],
+        "triggers": [
+            {
+                "name": "over_threshold",
+                "condition": "value > 5.0",
+                "cooldown_seconds": 10,
+                "action_tier": "A",
+            }
+        ],
+        "actions": {
+            "available": [{"name": "alert_whatsapp", "tier": "A"}],
+            "defaults": {"over_threshold": ["alert_whatsapp"]},
+        },
+    }
+
+
+def _sign_skill(raw_skill: dict, private_key: Ed25519PrivateKey) -> str:  # type: ignore
+    payload = canonical_skill_payload(raw_skill)
+    signature = private_key.sign(payload)
+    return "ed25519:" + base64.b64encode(signature).decode("ascii")
 
 
 # ─── Trigger dataclass ────────────────────────────────────────────────────────
@@ -238,6 +287,103 @@ class TestLoadOne:
         loader = SkillLoader()
         with pytest.raises(FileNotFoundError):
             loader.load_one(skill_dir)
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_loads_valid_signed_community_skill(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "community-valid"
+        raw = _community_skill_mapping()
+        private_key = Ed25519PrivateKey.generate()
+        public_key_b64 = base64.b64encode(
+            private_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        raw["signature"] = _sign_skill(raw, private_key)
+        _write_skill_yaml_mapping(skill_dir, raw)
+
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            public_key_b64,
+        )
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            skill = loader.load_one(skill_dir)
+        assert skill.name == raw["name"]
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_rejects_tampered_community_skill(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "community-tampered"
+        raw = _community_skill_mapping()
+        private_key = Ed25519PrivateKey.generate()
+        public_key_b64 = base64.b64encode(
+            private_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        raw["signature"] = _sign_skill(raw, private_key)
+        raw["version"] = "0.2.0"  # tamper after signature
+        _write_skill_yaml_mapping(skill_dir, raw)
+
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            public_key_b64,
+        )
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            with pytest.raises(
+                SkillSecurityError,
+                match="signature verification failed",
+            ):
+                loader.load_one(skill_dir)
+
+    def test_rejects_missing_community_signature(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "community-missing-signature"
+        raw = _community_skill_mapping()
+        _write_skill_yaml_mapping(skill_dir, raw)
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            "dGVzdA==",
+        )
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            with pytest.raises(
+                SkillSecurityError,
+                match="missing required 'signature' field",
+            ):
+                loader.load_one(skill_dir)
+
+    def test_rejects_invalid_signature_scheme(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "community-invalid-scheme"
+        raw = _community_skill_mapping()
+        raw["signature"] = "rsa:abc"
+        _write_skill_yaml_mapping(skill_dir, raw)
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            "dGVzdA==",
+        )
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            with pytest.raises(
+                SkillSecurityError,
+                match="unsupported signature scheme",
+            ):
+                loader.load_one(skill_dir)
+
+    def test_bundled_unsigned_skill_still_loads(self, tmp_path):
+        skill_dir = tmp_path / "bundled-unsigned"
+        _write_skill_yaml(skill_dir, _minimal_yaml(name="bundled-unsigned"))
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=True):
+            skill = loader.load_one(skill_dir)
+        assert skill.name == "bundled-unsigned"
 
 
 # ─── SkillLoader validation ───────────────────────────────────────────────────
@@ -542,6 +688,26 @@ class TestLoadAll:
         names = {s.name for s in skills}
         assert "real-skill" in names
         assert "template" not in names
+
+    def test_security_failed_skill_is_skipped(self, tmp_path):
+        _write_skill_yaml(tmp_path / "good-skill", _minimal_yaml(name="good-skill"))
+        _write_skill_yaml(
+            tmp_path / "bad-community-skill",
+            _minimal_yaml(name="bad-community-skill"),
+        )
+        loader = SkillLoader()
+        original_load_one = loader.load_one
+
+        def _fake_load_one(path):
+            if Path(path).name == "bad-community-skill":
+                raise SkillSecurityError("signature verification failed")
+            return original_load_one(path)
+
+        with patch.object(loader, "load_one", side_effect=_fake_load_one):
+            skills = loader.load_all(str(tmp_path))
+
+        assert len(skills) == 1
+        assert skills[0].name == "good-skill"
 
 
 # ─── SkillLoader.register — EventBus handler ─────────────────────────────────
