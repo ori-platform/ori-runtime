@@ -1318,3 +1318,155 @@ class TestWebhookServerStartup:
             await asyncio.gather(runtime.start(), _stop())
 
         cls.assert_not_called()
+
+
+class TestAlertOutbox:
+    async def test_send_or_queue_alert_queues_when_send_fails(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "outbox-queue.db"))
+        await runtime._state_store.open()
+
+        sms_action = AsyncMock()
+        sms_action.send.return_value = False
+        whatsapp_action = AsyncMock()
+        whatsapp_action.send.return_value = False
+
+        try:
+            handled = await runtime._send_or_queue_alert(
+                channel="sms",
+                message="alert message",
+                recipient="+2340000000000",
+                action_tier="A",
+                trigger_name="high_draw",
+                original_ts=1234567890,
+                sms_action=sms_action,
+                whatsapp_action=whatsapp_action,
+            )
+            assert handled is True
+            queued = await runtime._state_store.get_retryable_alerts(limit=10)
+            assert len(queued) == 1
+            assert queued[0]["channel"] == "sms"
+            assert queued[0]["status"] == "pending"
+        finally:
+            await runtime._state_store.close()
+
+    async def test_alert_delivery_loop_delivers_queued_alert(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "outbox-deliver.db"))
+        await runtime._state_store.open()
+        monkeypatch.setattr("ori.runtime.ALERT_OUTBOX_RETRY_INTERVAL_S", 0.01)
+
+        await runtime._state_store.enqueue_alert(
+            alert_id="deliver-1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+
+        async def _send_and_stop(*, message: str, to_number: str) -> bool:
+            runtime._shutdown_event.set()
+            return True
+
+        sms_action = AsyncMock()
+        sms_action.send.side_effect = _send_and_stop
+        whatsapp_action = AsyncMock()
+        whatsapp_action.send.return_value = True
+
+        try:
+            await runtime._alert_delivery_loop(sms_action, whatsapp_action)
+            remaining = await runtime._state_store.get_retryable_alerts(limit=10)
+            assert remaining == []
+        finally:
+            await runtime._state_store.close()
+
+    async def test_alert_delivery_loop_tier_d_never_abandons(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "outbox-tierd.db"))
+        await runtime._state_store.open()
+        monkeypatch.setattr("ori.runtime.ALERT_OUTBOX_RETRY_INTERVAL_S", 0.01)
+
+        await runtime._state_store.enqueue_alert(
+            alert_id="tierd-1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="D",
+            trigger_name="critical",
+            original_ts=1234,
+        )
+        await runtime._state_store.mark_alert_attempt_failed("tierd-1")
+        await runtime._state_store.mark_alert_attempt_failed("tierd-1")
+
+        async def _fail_and_stop(*, message: str, to_number: str) -> bool:
+            runtime._shutdown_event.set()
+            return False
+
+        sms_action = AsyncMock()
+        sms_action.send.side_effect = _fail_and_stop
+        whatsapp_action = AsyncMock()
+        whatsapp_action.send.return_value = False
+
+        try:
+            await runtime._alert_delivery_loop(sms_action, whatsapp_action)
+            rows = await runtime._state_store.get_retryable_alerts(limit=10)
+            assert len(rows) == 1
+            assert rows[0]["status"] == "failed"
+            assert rows[0]["attempt_count"] == 3
+        finally:
+            await runtime._state_store.close()
+
+    async def test_alert_delivery_loop_abandons_non_tier_d_at_threshold(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "outbox-abandon.db"))
+        await runtime._state_store.open()
+        monkeypatch.setattr("ori.runtime.ALERT_OUTBOX_RETRY_INTERVAL_S", 0.01)
+
+        await runtime._state_store.enqueue_alert(
+            alert_id="aband-1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+        for _ in range(9):
+            await runtime._state_store.mark_alert_attempt_failed("aband-1")
+
+        async def _fail_and_stop(*, message: str, to_number: str) -> bool:
+            runtime._shutdown_event.set()
+            return False
+
+        sms_action = AsyncMock()
+        sms_action.send.side_effect = _fail_and_stop
+        whatsapp_action = AsyncMock()
+        whatsapp_action.send.return_value = False
+
+        try:
+            await runtime._alert_delivery_loop(sms_action, whatsapp_action)
+            retryable = await runtime._state_store.get_retryable_alerts(limit=10)
+            assert retryable == []
+
+            row = await runtime._state_store._run_read(
+                lambda conn: conn.execute(
+                    """
+                    SELECT status, attempt_count
+                    FROM alert_outbox
+                    WHERE alert_id = ?
+                    """,
+                    ("aband-1",),
+                ).fetchone()
+            )
+            assert row["status"] == "abandoned"
+            assert row["attempt_count"] == 10
+        finally:
+            await runtime._state_store.close()

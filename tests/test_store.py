@@ -89,6 +89,7 @@ class TestLifecycle:
             "action_log",
             "causal_memory",
             "skill_state",
+            "alert_outbox",
         } <= names
 
     async def test_open_is_idempotent(self, tmp_path):
@@ -289,6 +290,102 @@ class TestActionLog:
     async def test_get_action_log_empty(self, store):
         log = await store.get_action_log()
         assert log == []
+
+
+# ─── alert_outbox ─────────────────────────────────────────────────────────────
+
+
+class TestAlertOutbox:
+    async def test_enqueue_and_fetch_retryable(self, store):
+        inserted = await store.enqueue_alert(
+            alert_id="a1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+        assert inserted is True
+
+        rows = await store.get_retryable_alerts(limit=10)
+        assert len(rows) == 1
+        assert rows[0]["alert_id"] == "a1"
+        assert rows[0]["status"] == "pending"
+        assert rows[0]["attempt_count"] == 0
+
+    async def test_enqueue_deduplicates_by_alert_id(self, store):
+        first = await store.enqueue_alert(
+            alert_id="dup-1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+        second = await store.enqueue_alert(
+            alert_id="dup-1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+        assert first is True
+        assert second is False
+
+        rows = await store.get_retryable_alerts(limit=10)
+        assert len(rows) == 1
+
+    async def test_mark_failed_increments_attempt_count(self, store):
+        await store.enqueue_alert(
+            alert_id="f1",
+            channel="whatsapp",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="B",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+
+        await store.mark_alert_attempt_failed("f1")
+        rows = await store.get_retryable_alerts(limit=10)
+        assert len(rows) == 1
+        assert rows[0]["status"] == "failed"
+        assert rows[0]["attempt_count"] == 1
+        assert rows[0]["last_attempt_ts"] is not None
+
+    async def test_mark_delivered_removes_from_retryable(self, store):
+        await store.enqueue_alert(
+            alert_id="d1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+
+        await store.mark_alert_delivered("d1")
+        rows = await store.get_retryable_alerts(limit=10)
+        assert rows == []
+
+    async def test_mark_abandoned_removes_from_retryable(self, store):
+        await store.enqueue_alert(
+            alert_id="ab1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+
+        await store.mark_alert_abandoned("ab1")
+        rows = await store.get_retryable_alerts(limit=10)
+        assert rows == []
 
 
 # ─── causal_memory ────────────────────────────────────────────────────────────

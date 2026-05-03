@@ -112,6 +112,23 @@ CREATE TABLE IF NOT EXISTS inbound_messages (
 CREATE INDEX IF NOT EXISTS idx_inbound_lookup
     ON inbound_messages (channel, from_number, received_at, consumed_at);
 
+CREATE TABLE IF NOT EXISTS alert_outbox (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id        TEXT    NOT NULL UNIQUE,
+    channel         TEXT    NOT NULL,   -- 'sms' | 'whatsapp'
+    recipient       TEXT    NOT NULL,
+    message         TEXT    NOT NULL,
+    action_tier     TEXT    NOT NULL,   -- 'A' | 'B' | 'C' | 'D'
+    trigger_name    TEXT    NOT NULL DEFAULT '',
+    original_ts     INTEGER NOT NULL,
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    last_attempt_ts INTEGER,
+    status          TEXT    NOT NULL DEFAULT 'pending' -- 'pending' | 'failed' | 'delivered' | 'abandoned'
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_outbox_status_tier_ts
+    ON alert_outbox (status, action_tier, original_ts ASC);
+
 CREATE TABLE IF NOT EXISTS sensor_history_5min (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sensor_id TEXT NOT NULL,
@@ -651,6 +668,156 @@ class StateStore:
         )
         self._conn.commit()
         return str(row["message"])
+
+    # ─── alert_outbox ─────────────────────────────────────────────────────────
+
+    async def enqueue_alert(
+        self,
+        *,
+        alert_id: str,
+        channel: str,
+        recipient: str,
+        message: str,
+        action_tier: str,
+        trigger_name: str,
+        original_ts: int,
+    ) -> bool:
+        """Insert an outbound alert row into alert_outbox.
+
+        Returns:
+            True if a new row was inserted, False if a row with alert_id already
+            exists (deduplicated by UNIQUE constraint).
+        """
+        return await self._run_write(
+            self._enqueue_alert_sync,
+            alert_id,
+            channel,
+            recipient,
+            message,
+            action_tier,
+            trigger_name,
+            original_ts,
+        )
+
+    def _enqueue_alert_sync(
+        self,
+        alert_id: str,
+        channel: str,
+        recipient: str,
+        message: str,
+        action_tier: str,
+        trigger_name: str,
+        original_ts: int,
+    ) -> bool:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            INSERT INTO alert_outbox
+                (alert_id, channel, recipient, message, action_tier, trigger_name, original_ts, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+            ON CONFLICT(alert_id) DO NOTHING
+            """,
+            (
+                alert_id,
+                channel,
+                recipient,
+                message,
+                action_tier,
+                trigger_name,
+                original_ts,
+            ),
+        )
+        self._conn.commit()
+        return int(cur.rowcount) > 0
+
+    async def get_retryable_alerts(self, limit: int = 50) -> list[dict]:
+        """Fetch pending/failed outbox alerts in oldest-first order."""
+        return await self._run_read(self._get_retryable_alerts_sync, limit)
+
+    def _get_retryable_alerts_sync(
+        self,
+        conn: sqlite3.Connection,
+        limit: int,
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT alert_id, channel, recipient, message, action_tier,
+                   trigger_name, original_ts, attempt_count, last_attempt_ts, status
+            FROM alert_outbox
+            WHERE status IN ('pending', 'failed')
+            ORDER BY original_ts ASC, id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def mark_alert_delivered(
+        self, alert_id: str, delivered_ts_ms: int | None = None
+    ) -> None:
+        await self._run_write(
+            self._mark_alert_delivered_sync,
+            alert_id,
+            delivered_ts_ms if delivered_ts_ms is not None else _now_ms(),
+        )
+
+    def _mark_alert_delivered_sync(self, alert_id: str, delivered_ts_ms: int) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE alert_outbox
+            SET status = 'delivered',
+                last_attempt_ts = ?
+            WHERE alert_id = ?
+            """,
+            (delivered_ts_ms, alert_id),
+        )
+        self._conn.commit()
+
+    async def mark_alert_attempt_failed(
+        self, alert_id: str, failed_ts_ms: int | None = None
+    ) -> None:
+        await self._run_write(
+            self._mark_alert_attempt_failed_sync,
+            alert_id,
+            failed_ts_ms if failed_ts_ms is not None else _now_ms(),
+        )
+
+    def _mark_alert_attempt_failed_sync(self, alert_id: str, failed_ts_ms: int) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE alert_outbox
+            SET attempt_count = attempt_count + 1,
+                last_attempt_ts = ?,
+                status = 'failed'
+            WHERE alert_id = ?
+            """,
+            (failed_ts_ms, alert_id),
+        )
+        self._conn.commit()
+
+    async def mark_alert_abandoned(
+        self, alert_id: str, abandoned_ts_ms: int | None = None
+    ) -> None:
+        await self._run_write(
+            self._mark_alert_abandoned_sync,
+            alert_id,
+            abandoned_ts_ms if abandoned_ts_ms is not None else _now_ms(),
+        )
+
+    def _mark_alert_abandoned_sync(self, alert_id: str, abandoned_ts_ms: int) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE alert_outbox
+            SET status = 'abandoned',
+                last_attempt_ts = ?
+            WHERE alert_id = ?
+            """,
+            (abandoned_ts_ms, alert_id),
+        )
+        self._conn.commit()
 
     # ─── reasoning_log ───────────────────────────────────────────────────────
 

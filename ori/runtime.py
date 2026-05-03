@@ -14,9 +14,11 @@ Or via the CLI entry point::
 """
 
 import asyncio
+import hashlib
 import logging
 import os
 import signal
+import time
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +51,10 @@ WATCHDOG_TIMEOUT = 60  # seconds — kernel reboots if no ping within this windo
 EXTERNAL_WATCHDOG_GPIO = 17  # BCM pin for optional external watchdog heartbeat
 EXTERNAL_WATCHDOG_PING_S = 30  # heartbeat interval for external watchdog devices
 TIER_D_DRAIN_TIMEOUT = 5.0  # seconds — wait for in-flight Tier D tasks on shutdown
+ALERT_OUTBOX_RETRY_INTERVAL_S = 30.0
+ALERT_OUTBOX_BATCH_SIZE = 50
+ALERT_OUTBOX_MAX_ATTEMPTS_NON_TIER_D = 10
+ALERT_OUTBOX_TIER_D_CRITICAL_THRESHOLD = 3
 
 
 class OriRuntime:
@@ -267,14 +273,38 @@ class OriRuntime:
         # alert_whatsapp executor
         async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> None:
             msg = _message_from_context(ctx, action)
-            await whatsapp_action.send(message=msg, to_number=_operator_contact)
+            action_tier = _resolve_action_declared_tier(ctx, action)
+            trigger_name = _resolve_trigger_name(ctx)
+            original_ts = _resolve_original_ts(ctx)
+            return await self._send_or_queue_alert(
+                channel="whatsapp",
+                message=msg,
+                recipient=_operator_contact,
+                action_tier=action_tier,
+                trigger_name=trigger_name,
+                original_ts=original_ts,
+                sms_action=sms_action,
+                whatsapp_action=whatsapp_action,
+            )
 
         dispatcher.register_executor("alert_whatsapp", _exec_alert_whatsapp)
 
         # alert_sms executor
         async def _exec_alert_sms(action: str, ctx: SkillContext) -> None:
             msg = _message_from_context(ctx, action)
-            await sms_action.send(message=msg, to_number=_operator_contact)
+            action_tier = _resolve_action_declared_tier(ctx, action)
+            trigger_name = _resolve_trigger_name(ctx)
+            original_ts = _resolve_original_ts(ctx)
+            return await self._send_or_queue_alert(
+                channel="sms",
+                message=msg,
+                recipient=_operator_contact,
+                action_tier=action_tier,
+                trigger_name=trigger_name,
+                original_ts=original_ts,
+                sms_action=sms_action,
+                whatsapp_action=whatsapp_action,
+            )
 
         dispatcher.register_executor("alert_sms", _exec_alert_sms)
 
@@ -487,6 +517,12 @@ class OriRuntime:
         self._background_tasks.append(
             asyncio.create_task(
                 self._compaction_loop(self._deduplicator), name="compaction"
+            )
+        )
+        self._background_tasks.append(
+            asyncio.create_task(
+                self._alert_delivery_loop(sms_action, whatsapp_action),
+                name="alert-outbox",
             )
         )
         webhook_task = await self._start_sms_webhook_if_enabled(config)
@@ -800,6 +836,192 @@ class OriRuntime:
                         "[compaction] deduplicator cleanup failed — will retry"
                     )
 
+    async def _send_or_queue_alert(
+        self,
+        *,
+        channel: str,
+        message: str,
+        recipient: str,
+        action_tier: str,
+        trigger_name: str,
+        original_ts: int,
+        sms_action: SMSAction,
+        whatsapp_action: WhatsAppAction,
+    ) -> bool:
+        """Attempt immediate delivery; enqueue on failure.
+
+        Returns True if delivered immediately or queued successfully.
+        Returns False only if queueing also fails.
+        """
+        if not recipient:
+            logger.warning(
+                "[runtime] %s alert skipped: operator_contact not configured", channel
+            )
+            return False
+
+        delivered = False
+        try:
+            if channel == "sms":
+                delivered = await sms_action.send(message=message, to_number=recipient)
+            elif channel == "whatsapp":
+                delivered = await whatsapp_action.send(
+                    message=message, to_number=recipient
+                )
+            else:
+                logger.error("[runtime] unknown alert channel=%r", channel)
+                return False
+        except Exception:
+            logger.exception(
+                "[runtime] unexpected %s send failure; falling back to outbox queue",
+                channel,
+            )
+            delivered = False
+
+        if delivered:
+            return True
+
+        if self._state_store is None:
+            logger.error(
+                "[runtime] alert delivery failed and StateStore is unavailable; dropping alert"
+            )
+            return False
+
+        alert_id = _build_alert_id(
+            channel=channel,
+            recipient=recipient,
+            message=message,
+            action_tier=action_tier,
+            trigger_name=trigger_name,
+            original_ts=original_ts,
+        )
+        inserted = await self._state_store.enqueue_alert(
+            alert_id=alert_id,
+            channel=channel,
+            recipient=recipient,
+            message=message,
+            action_tier=action_tier,
+            trigger_name=trigger_name,
+            original_ts=original_ts,
+        )
+        if inserted:
+            logger.info(
+                "[runtime] queued failed %s alert id=%s tier=%s trigger=%s original_ts=%d",
+                channel,
+                alert_id,
+                action_tier,
+                trigger_name,
+                original_ts,
+            )
+        else:
+            logger.debug(
+                "[runtime] alert already queued id=%s channel=%s", alert_id, channel
+            )
+        return True
+
+    async def _alert_delivery_loop(
+        self,
+        sms_action: SMSAction,
+        whatsapp_action: WhatsAppAction,
+    ) -> None:
+        """Retry queued outbound alerts until delivered (or abandoned for non-Tier D)."""
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(),
+                    timeout=ALERT_OUTBOX_RETRY_INTERVAL_S,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+            if self._state_store is None:
+                continue
+
+            try:
+                pending = await self._state_store.get_retryable_alerts(
+                    ALERT_OUTBOX_BATCH_SIZE
+                )
+            except Exception:
+                logger.exception("[runtime] alert outbox fetch failed")
+                continue
+
+            for alert in pending:
+                try:
+                    channel = str(alert["channel"])
+                    message = str(alert["message"])
+                    recipient = str(alert["recipient"])
+                    action_tier = str(alert["action_tier"]).upper()
+                    attempt_count = int(alert.get("attempt_count", 0))
+                    alert_id = str(alert["alert_id"])
+                except Exception:
+                    logger.exception("[runtime] malformed outbox row: %r", alert)
+                    continue
+
+                delivered = False
+                try:
+                    if channel == "sms":
+                        delivered = await sms_action.send(
+                            message=message,
+                            to_number=recipient,
+                        )
+                    elif channel == "whatsapp":
+                        delivered = await whatsapp_action.send(
+                            message=message,
+                            to_number=recipient,
+                        )
+                    else:
+                        logger.error(
+                            "[runtime] alert outbox has unknown channel=%r id=%s",
+                            channel,
+                            alert_id,
+                        )
+                except Exception:
+                    logger.exception(
+                        "[runtime] alert outbox send failed for id=%s channel=%s",
+                        alert_id,
+                        channel,
+                    )
+
+                if delivered:
+                    await self._state_store.mark_alert_delivered(alert_id)
+                    logger.info(
+                        "[runtime] delivered queued alert id=%s channel=%s after %d attempt(s)",
+                        alert_id,
+                        channel,
+                        attempt_count + 1,
+                    )
+                    continue
+
+                await self._state_store.mark_alert_attempt_failed(alert_id)
+                attempts_after = attempt_count + 1
+                logger.warning(
+                    "[runtime] retry failed for queued alert id=%s channel=%s tier=%s attempt=%d",
+                    alert_id,
+                    channel,
+                    action_tier,
+                    attempts_after,
+                )
+
+                if action_tier == "D":
+                    if attempts_after >= ALERT_OUTBOX_TIER_D_CRITICAL_THRESHOLD:
+                        logger.critical(
+                            "[runtime] Tier D notification delivery still failing id=%s "
+                            "channel=%s attempts=%d (will keep retrying)",
+                            alert_id,
+                            channel,
+                            attempts_after,
+                        )
+                    continue
+
+                if attempts_after >= ALERT_OUTBOX_MAX_ATTEMPTS_NON_TIER_D:
+                    await self._state_store.mark_alert_abandoned(alert_id)
+                    logger.warning(
+                        "[runtime] abandoning queued alert id=%s channel=%s after %d attempts",
+                        alert_id,
+                        channel,
+                        attempts_after,
+                    )
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -813,6 +1035,56 @@ def _message_from_context(ctx: SkillContext, fallback: str) -> str:
             f"{r.value} {r.unit}"
         )
     return fallback
+
+
+def _resolve_trigger_name(ctx: SkillContext) -> str:
+    if ctx and isinstance(getattr(ctx, "trigger_name", ""), str):
+        trigger_name = ctx.trigger_name.strip()
+        if trigger_name:
+            return trigger_name
+    if ctx and ctx.event and isinstance(getattr(ctx.event, "sensor_id", ""), str):
+        return ctx.event.sensor_id
+    return ""
+
+
+def _resolve_original_ts(ctx: SkillContext) -> int:
+    if ctx and ctx.event:
+        try:
+            return int(ctx.event.timestamp)
+        except Exception:
+            pass
+    return int(time.time() * 1000)
+
+
+def _resolve_action_declared_tier(ctx: SkillContext, action_name: str) -> str:
+    """Resolve declared tier for an action from skill capability metadata."""
+    if ctx and hasattr(ctx, "skill") and hasattr(ctx.skill, "actions"):
+        available = None
+        if isinstance(ctx.skill.actions, dict):
+            available = ctx.skill.actions.get("available")
+        if isinstance(available, list):
+            for item in available:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("name", "")) != action_name:
+                    continue
+                tier = str(item.get("tier", "")).upper().strip()
+                if tier in {"A", "B", "C", "D"}:
+                    return tier
+    return "A"
+
+
+def _build_alert_id(
+    *,
+    channel: str,
+    recipient: str,
+    message: str,
+    action_tier: str,
+    trigger_name: str,
+    original_ts: int,
+) -> str:
+    raw = f"{channel}|{recipient}|{action_tier}|{trigger_name}|{original_ts}|{message}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _is_truthy(value: Any) -> bool:
