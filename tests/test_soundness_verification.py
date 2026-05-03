@@ -96,7 +96,7 @@ async def test_tier_c_dispatch_upgrade():
 @pytest.mark.asyncio
 async def test_dispatcher_never_downgrades_tier():
     """If the requested tier is stricter than capability metadata, keep stricter tier."""
-    config = {"operator_contact": "+234000"}
+    config = {"operator_contact": "+234000", "relay_enabled": True}
     mock_sender = AsyncMock()
     dispatcher = ActionDispatcher(config=config, alert_sender=mock_sender)
 

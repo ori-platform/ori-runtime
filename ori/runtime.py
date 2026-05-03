@@ -190,15 +190,20 @@ class OriRuntime:
         system_control_action = SystemControlAction()
 
         relay_action: RelayAction | None = None
-        relay_requested = bool(config.actions.relay.get("enabled", False))
-        if config.device.deployment_type == "phone" and relay_requested:
+        has_relay_config = "gpio_pin" in config.actions.relay
+        relay_enabled = bool(config.actions.relay.get("enabled", False))
+
+        if config.device.deployment_type == "phone" and has_relay_config:
             logger.warning(
-                "[runtime] deployment_type=phone with relay enabled; skipping relay initialization "
+                "[runtime] deployment_type=phone with relay configured; skipping relay initialization "
                 "(phone gateway supports Tier A/B software actions only)."
             )
-            relay_requested = False
+            has_relay_config = False
+            # Effective relay permission must be false on phone deployments
+            # because no GPIO relay executor is initialized on this target.
+            relay_enabled = False
 
-        if relay_requested:
+        if has_relay_config:
             relay_action = RelayAction()
             gpio_pin: int = config.actions.relay["gpio_pin"]
             try:
@@ -206,7 +211,7 @@ class OriRuntime:
                 logger.info("[runtime] relay connected on GPIO pin %d", gpio_pin)
             except Exception:
                 logger.exception(
-                    "[runtime] relay connect failed on pin %d — relay disabled",
+                    "[runtime] relay connect failed on pin %d",
                     gpio_pin,
                 )
                 relay_action = None
@@ -253,6 +258,7 @@ class OriRuntime:
                 "device_timezone": config.device.timezone,
                 "log_action_decisions": config.logging.log_action_decisions,
                 "log_approval_workflow": config.logging.log_approval_workflow,
+                "relay_enabled": relay_enabled,
                 "rejection_expiry_days": rejection_expiry_days,
             },
         )

@@ -448,7 +448,7 @@ class TestLifecycle:
 
         assert mocked_connect.await_count == 0
         assert any(
-            "deployment_type=phone with relay enabled" in r.message
+            "deployment_type=phone with relay configured" in r.message
             for r in caplog.records
         )
 

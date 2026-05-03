@@ -816,7 +816,7 @@ class TestApprovalMessageFormat:
 class TestCapabilityTierGuard:
     async def test_capability_tier_can_escalate(self):
         d = ActionDispatcher(
-            config={"operator_contact": "+234000"},
+            config={"operator_contact": "+234000", "relay_enabled": True},
             alert_sender=AsyncMock(),
         )
         ctx = _context(actions={"available": [{"name": "trip_relay", "tier": "C"}]})
@@ -829,7 +829,7 @@ class TestCapabilityTierGuard:
 
     async def test_capability_tier_never_downgrades(self):
         d = ActionDispatcher(
-            config={"operator_contact": "+234000"},
+            config={"operator_contact": "+234000", "relay_enabled": True},
             alert_sender=AsyncMock(),
         )
         ctx = _context(actions={"available": [{"name": "trip_relay", "tier": "A"}]})

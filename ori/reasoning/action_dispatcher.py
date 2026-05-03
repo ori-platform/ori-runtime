@@ -25,6 +25,7 @@ from typing import Any
 
 from ori.actions.logger import LoggerAction
 from ori.network.events import ActionResult, ActionTier, ReasoningResult
+from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.elevator import SkillContext
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,8 @@ class ActionDispatcher:
         self._log_approval_workflow = bool(
             self._config.get("log_approval_workflow", True)
         )
+        self._relay_b_c_enabled = bool(self._config.get("relay_enabled", False))
+        self._policy: DevicePolicy | None = DevicePolicy.unrestricted()
         self._logger_action = LoggerAction()
         self._inflight_tier_d_tasks: set[asyncio.Task[Any]] = set()
         self._executors: dict[str, Any] = {
@@ -123,6 +126,22 @@ class ActionDispatcher:
             executor: Async callable invoked when the action fires.
         """
         self._executors[action_name] = executor
+
+    def update_policy(self, policy: DevicePolicy | None) -> None:
+        """Update the active DevicePolicy.
+
+        ``None`` resets to unrestricted self-hosted behaviour.
+        """
+        self._policy = policy if policy is not None else DevicePolicy.unrestricted()
+
+    def permits_relay_action(self, action_tier: str) -> bool:
+        """Check if a relay action is permitted for the given tier based on DevicePolicy and config."""
+        if action_tier == ActionTier.SAFETY_CRITICAL:
+            return True  # Invariant 10: Tier D is never blocked
+        if action_tier == ActionTier.INFORMATIONAL:
+            return True  # Tier A informational always permitted
+        active_policy = self._policy if self._policy is not None else DevicePolicy.unrestricted()
+        return self._relay_b_c_enabled and active_policy.permits_action(action_tier)
 
     def get_inflight_tier_d_tasks(self) -> set[asyncio.Task[Any]]:
         """Return currently running Tier D execution tasks."""
@@ -217,6 +236,30 @@ class ActionDispatcher:
             timeout_value = int(timeout_value)
         except (TypeError, ValueError):
             timeout_value = _DEFAULT_APPROVAL_TIMEOUT
+
+        # Tier D Bypass and Policy restrictions for B/C relay actions
+        if action in ("trip_relay", "release_relay") and tier in (ActionTier.SOFT_PHYSICAL, ActionTier.HARD_PHYSICAL):
+            if not self.permits_relay_action(tier):
+                # Persist explicit suppression audit before fallback rewrite so
+                # the original attempted relay action is preserved in action_log.
+                suppression_result = ActionResult(
+                    action_name=action,
+                    tier=tier,
+                    executed=False,
+                    approved=None,
+                    action_taken="suppressed",
+                    timestamp=_now_ms(),
+                    operator_response="policy_suppression",
+                )
+                await self._log_action(suppression_result, context)
+                logger.warning(
+                    "ActionDispatcher: %r suppressed for Tier %s due to relay.enabled or DevicePolicy restriction. Downgrading to safe default.",
+                    action,
+                    tier,
+                )
+
+                action = safe_default_action
+                tier = ActionTier.INFORMATIONAL
 
         if tier == ActionTier.SAFETY_CRITICAL:
             _store = (
@@ -380,7 +423,10 @@ class ActionDispatcher:
                 if maybe_ok is False:
                     executed = False
             else:
-                if self._log_action_decisions:
+                if action in ("trip_relay", "release_relay") and tier == ActionTier.SAFETY_CRITICAL:
+                    executed = False
+                    logger.critical("ActionDispatcher: Tier D relay executor is not registered (hardware initialization failed).")
+                elif self._log_action_decisions:
                     logger.debug(
                         "ActionDispatcher: no executor registered for action=%r — "
                         "logging intent only",

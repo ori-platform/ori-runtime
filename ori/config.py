@@ -16,9 +16,11 @@ logger = logging.getLogger(__name__)
 _VALID_ACTION_TIERS = {"A", "B", "C", "D"}
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-# BCM GPIO pins valid for relay use on Raspberry Pi 4.
+# BCM GPIO pins valid for relay use on Raspberry Pi 4 and CM4 (both BCM2711).
 # Mirrors ori/actions/relay.py::_VALID_BCM_PINS — kept here to avoid a
-# config → actions import.  If the range ever changes, update both.
+# config → actions import. If the range ever changes, update both.
+# If Ori is ported to a non-Broadcom SoC, replace this with a hardware-profile
+# abstraction rather than removing startup pin validation.
 _VALID_BCM_PINS: frozenset[int] = frozenset(range(2, 28))
 
 
@@ -396,6 +398,17 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
 
     relay_raw: dict = data.get("relay") or {}
     relay: dict = dict(relay_raw)
+
+    relay_enabled = (
+        str(relay.get("enabled", "")).lower() == "true" or relay.get("enabled") is True
+    )
+
+    if relay_enabled and "gpio_pin" not in relay:
+        raise ConfigValidationError(
+            "actions.relay.enabled is true but no 'gpio_pin' is configured. "
+            "A valid BCM gpio_pin must be provided to use relay actions."
+        )
+
     if "gpio_pin" in relay:
         relay["gpio_pin"] = int(relay["gpio_pin"])
         if relay["gpio_pin"] not in _VALID_BCM_PINS:

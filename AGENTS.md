@@ -538,6 +538,29 @@ Violating them creates vulnerabilities that affect physical hardware.
    CRITICAL escalation and emergency SMS path in `_execute_immediately()`
    depends on this contract — direct relay calls bypass it entirely.
 
+10. DevicePolicy.permits_action() and relay.enabled in ori.yaml govern Tier B and Tier C
+    relay actuation only. Tier D relay paths must:
+    (a) be initialised at boot regardless of relay.enabled or DevicePolicy state,
+    (b) bypass all DevicePolicy checks at dispatch time unconditionally.
+    A DevicePolicy enforcement mechanism that prevents Tier D actuation is a safety
+    failure, not a billing control. This invariant is verified by a test matrix covering:
+    - test_tier_d_relay_fires_when_policy_expired()
+    - test_tier_d_relay_fires_when_policy_missing()
+    - test_tier_d_relay_fires_when_policy_parse_fails()
+    - test_tier_d_relay_fires_when_policy_refresh_fails()
+
+11. Remote DevicePolicy payloads from ori-cloud must be verified for integrity before
+    any policy is applied. The runtime must verify:
+    (a) HTTPS transport,
+    (b) device authentication on the request (API key or JWT),
+    (c) policy version is not a downgrade (monotonically increasing),
+    (d) response timestamp is within 5 minutes of current device time,
+    (e) payload Ed25519 signature is valid against the stored ori-cloud public key.
+    A policy payload that fails any of these checks must be REJECTED.
+    Rejection behaviour: keep current policy, log at WARNING with audit trail.
+    NEVER reject silently. NEVER fail open by applying an unverified policy.
+    The phrase 'reject silently' must not appear in any policy enforcement code path.
+
 ---
 
 ## Where to find things
