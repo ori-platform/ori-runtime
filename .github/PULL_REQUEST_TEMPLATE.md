@@ -15,24 +15,30 @@
 ## Checklist
 
 ### Required for all PRs
+
 - [ ] `pytest tests/ -v` passes with 0 failures
 - [ ] `ruff check --fix ori/ tests/ skills/` is clean
 - [ ] Every new `.py` file has the Apache-2.0 license header
+- [ ] If capability behavior changed, `docs/CAPABILITY_MATRIX.md` is updated in this PR
 - [ ] PR description explains **why**, not just what
 
 ### If you used AI assistance
+
 - [ ] I can explain every line of AI-generated code in this PR
 - [ ] I have read and understood all files I am modifying
 - [ ] I am not submitting code I cannot defend in a review conversation
 
 ### If this touches `/ori/` (core runtime)
+
 - [ ] I opened an issue and discussed this change before writing code
 - [ ] Every new Tier D code path has test coverage
 - [ ] No new dependencies added without prior issue discussion
 
 ### If this adds or modifies a bundled skill (`/skills/`)
+
 > **Community skills go to [ori-platform/ori-skills](https://github.com/ori-platform/ori-skills) — not here.**
 > PRs to `/skills/` in this repo are for first-party bundled skills only.
+
 - [ ] I opened an issue and got maintainer approval before writing this skill
 - [ ] `action_tier` is declared on every trigger
 - [ ] `bypass_llm: true` is only paired with `action_tier: D`

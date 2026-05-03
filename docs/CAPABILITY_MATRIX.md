@@ -1,0 +1,33 @@
+# Capability Matrix
+
+This is the authoritative record of what is real versus planned.
+
+| Capability | Status | File ref | Notes |
+| :--- | :--- | :--- | :--- |
+| Tier A/B/C/D dispatch | Implemented | action_dispatcher.py | All four tiers, asyncio.shield for Tier D |
+| Intelligence Elevator Tier 1 (rule engine) | Implemented | elevator.py | Deterministic. Tier D bypass always. |
+| Intelligence Elevator Tier 2 (local SLM) | Implemented | elevator.py | Qwen2.5-0.5B via llama-cpp-python |
+| Intelligence Elevator Tier 3 (gateway) | Partial — stubbed | elevator.py:125, :250 | MQTT request/response not wired. Falls back to local_slm. |
+| Intelligence Elevator Tier 4 (cloud LLM) | Partial — stubbed | elevator.py:410, :969 | Returns stub result. No external API call. |
+| CoAP actuation executor | Implemented | actions/coap.py, runtime.py:312 | Host allowlist enforced in config.py:409. |
+| CoAP HAL telemetry adapter | Not implemented | ori/hal/coap_adapter.py missing | See P3-R8. |
+| Tier C approval workflow | Implemented | action_dispatcher.py:649 | WhatsApp/SMS channels. Local console fallback not wired. |
+| Tier C local console fallback | Not implemented | action_dispatcher.py:649 | Listener delegates to alert sender only. See P3-R3. |
+| Tier D relay bypass when DevicePolicy restricted | Implemented | action_dispatcher.py | P3-R0b-i. Critical safety fix. |
+| SMS via Africa's Talking (IP) | Implemented | sms.py:57 | send(message, to_number). Requires internet. |
+| SMS via GSM modem (offline) | Not implemented | — | See P3-R3b. |
+| Outbound alert outbox + retry | Not implemented | — | See P3-R3a. |
+| Ed25519 community skill verification | Not implemented | loader.py:257 | Signature parsed, not verified. See P3-R4. |
+| Python-level skill sandbox | Implemented | loader.py:518, 562 | RestrictedImportFinder + AST validation. |
+| OS-level sandbox (seccomp/Landlock) | Not implemented | — | See P3-R11. |
+| Capability posture signaling | Not implemented | elevator.py:60 | Hard-coded 8.8.8.8 check. See P3-R1. |
+| LED + buzzer status driver | Not implemented | ori/hardware/ missing | See P3-R2. |
+| DevicePolicy enforcement layer | Implemented | action_dispatcher.py, device_policy.py | P3-R0b-iii. |
+| Device policy refresh loop | Not implemented | — | See P3-R0b-v. |
+| Device policy cache (SQLite) | Not implemented | — | Table: device_policy_cache. See P3-R0b-iv. |
+| Battery lifecycle observability | Not implemented | — | See P3-R9. |
+| Health/status RPC socket | Not implemented | — | See P3-R10. |
+| Energy anomaly detector v2 | Not implemented | skills/energy-anomaly-detector/ | Basic triggers only. See P3-R5. |
+| Solar performance monitor skill | Not implemented | skills/solar-performance-monitor/ missing | See P3-R7. |
+| Energy cost calculator hook | Not implemented | — | See P3-R6. |
+| Offline Tier C auth tokens | Not implemented | — | See P3-R3c. CLI: ori-cli. |

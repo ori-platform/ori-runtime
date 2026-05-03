@@ -59,6 +59,13 @@ jobs:
             pre-commit run --show-diff-on-failure --from-ref "$FROM_REF" --to-ref "$TO_REF"
           fi
 
+      - name: Guard Capability Matrix Updated
+        if: github.event_name == 'pull_request'
+        run: |
+          FROM_REF="${{ github.event.pull_request.base.sha }}"
+          TO_REF="${{ github.event.pull_request.head.sha }}"
+          bash scripts/guard-capability-matrix.sh "$FROM_REF" "$TO_REF"
+
       - name: Guard Tier Escalation Invariants
         run: |
           pytest -v \
