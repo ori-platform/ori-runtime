@@ -28,11 +28,14 @@ from typing import Any
 import yaml
 
 from ori.network.events import OriEvent
+from ori.skills.sandbox import SkillSecurityError
+from ori.skills.signing import verify_community_skill_signature
 
 logger = logging.getLogger(__name__)
 
 _VALID_TIERS = frozenset({"A", "B", "C", "D"})
 _TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_HUB_ROOT_PUBLIC_KEY_B64 = "PENDING_REPLACE_AT_HUB_LAUNCH"
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -231,6 +234,12 @@ class SkillLoader:
                 logger.error(
                     "SkillLoader: validation failed for %s — %s", child.name, exc
                 )
+            except SkillSecurityError as exc:
+                logger.error(
+                    "SkillLoader: security validation failed for %s — %s",
+                    child.name,
+                    exc,
+                )
             except Exception:
                 logger.exception(
                     "SkillLoader: unexpected error loading skill from %s", child
@@ -273,6 +282,7 @@ class SkillLoader:
             raw.get("name", "<unknown>"),
             trigger_names=[t.name for t in triggers],
         )
+        self._verify_community_signature(raw, skill_dir)
         hooks = self._load_hooks(skill_dir)
 
         return Skill(
@@ -285,6 +295,25 @@ class SkillLoader:
             actions=raw.get("actions") or {},
             config=raw.get("config") or {},
             hooks=hooks,
+        )
+
+    def _verify_community_signature(
+        self,
+        raw: dict[str, Any],
+        skill_dir: Path,
+    ) -> None:
+        """Verify signatures for community-installed skills only."""
+        if self._is_bundled_skill(skill_dir):
+            return
+
+        if _HUB_ROOT_PUBLIC_KEY_B64 == "PENDING_REPLACE_AT_HUB_LAUNCH":
+            raise SkillSecurityError(
+                "community skill verification trust anchor is not configured"
+            )
+
+        verify_community_skill_signature(
+            raw_skill=raw,
+            trust_anchor_public_key_b64=_HUB_ROOT_PUBLIC_KEY_B64,
         )
 
     def _validate_skill_metadata(
