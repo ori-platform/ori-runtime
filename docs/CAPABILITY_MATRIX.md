@@ -16,7 +16,7 @@ This is the authoritative record of what is real versus planned.
 | Tier D relay bypass when DevicePolicy restricted | Implemented | action_dispatcher.py | P3-R0b-i. Critical safety fix. |
 | SMS via Africa's Talking (IP) | Implemented | sms.py:57 | send(message, to_number). Requires internet. |
 | SMS via GSM modem (offline) | Not implemented | — | See P3-R3b. |
-| Outbound alert outbox + retry | Not implemented | — | See P3-R3a. |
+| Outbound alert outbox + retry | Implemented | runtime.py, state/store.py | Store-and-retry queue with Tier D critical escalation and non-Tier-D abandon threshold. |
 | Ed25519 community skill verification | Not implemented | loader.py:257 | Signature parsed, not verified. See P3-R4. |
 | Python-level skill sandbox | Implemented | loader.py:518, 562 | RestrictedImportFinder + AST validation. |
 | OS-level sandbox (seccomp/Landlock) | Not implemented | — | See P3-R11. |
