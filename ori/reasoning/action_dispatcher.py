@@ -140,7 +140,9 @@ class ActionDispatcher:
             return True  # Invariant 10: Tier D is never blocked
         if action_tier == ActionTier.INFORMATIONAL:
             return True  # Tier A informational always permitted
-        active_policy = self._policy if self._policy is not None else DevicePolicy.unrestricted()
+        active_policy = (
+            self._policy if self._policy is not None else DevicePolicy.unrestricted()
+        )
         return self._relay_b_c_enabled and active_policy.permits_action(action_tier)
 
     def get_inflight_tier_d_tasks(self) -> set[asyncio.Task[Any]]:
@@ -238,7 +240,10 @@ class ActionDispatcher:
             timeout_value = _DEFAULT_APPROVAL_TIMEOUT
 
         # Tier D Bypass and Policy restrictions for B/C relay actions
-        if action in ("trip_relay", "release_relay") and tier in (ActionTier.SOFT_PHYSICAL, ActionTier.HARD_PHYSICAL):
+        if action in ("trip_relay", "release_relay") and tier in (
+            ActionTier.SOFT_PHYSICAL,
+            ActionTier.HARD_PHYSICAL,
+        ):
             if not self.permits_relay_action(tier):
                 # Persist explicit suppression audit before fallback rewrite so
                 # the original attempted relay action is preserved in action_log.
@@ -423,9 +428,14 @@ class ActionDispatcher:
                 if maybe_ok is False:
                     executed = False
             else:
-                if action in ("trip_relay", "release_relay") and tier == ActionTier.SAFETY_CRITICAL:
+                if (
+                    action in ("trip_relay", "release_relay")
+                    and tier == ActionTier.SAFETY_CRITICAL
+                ):
                     executed = False
-                    logger.critical("ActionDispatcher: Tier D relay executor is not registered (hardware initialization failed).")
+                    logger.critical(
+                        "ActionDispatcher: Tier D relay executor is not registered (hardware initialization failed)."
+                    )
                 elif self._log_action_decisions:
                     logger.debug(
                         "ActionDispatcher: no executor registered for action=%r — "

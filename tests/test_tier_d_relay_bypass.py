@@ -1,3 +1,6 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -39,12 +42,20 @@ async def test_tier_d_relay_fires_when_policy_expired(dispatcher, context, resul
     disp, executor = dispatcher
 
     expired_policy = DevicePolicy(
-        tier="cloud", relay_b_enabled=True, relay_c_enabled=True, cloud_llm_enabled=True,
-        valid_until=int(time.time()) - 1000, policy_version=1, issued_at=0, signature="test"
+        tier="cloud",
+        relay_b_enabled=True,
+        relay_c_enabled=True,
+        cloud_llm_enabled=True,
+        valid_until=int(time.time()) - 1000,
+        policy_version=1,
+        issued_at=0,
+        signature="test",
     )
     disp.update_policy(expired_policy)
 
-    result_action = await disp.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, context, result)
+    result_action = await disp.dispatch(
+        "trip_relay", ActionTier.SAFETY_CRITICAL, context, result
+    )
 
     assert result_action.executed is True
     executor.assert_called_once()
@@ -57,7 +68,9 @@ async def test_tier_d_relay_fires_when_policy_missing(dispatcher, context, resul
 
     disp.update_policy(None)
 
-    result_action = await disp.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, context, result)
+    result_action = await disp.dispatch(
+        "trip_relay", ActionTier.SAFETY_CRITICAL, context, result
+    )
 
     assert result_action.executed is True
     executor.assert_called_once()
@@ -70,8 +83,14 @@ async def test_tier_d_relay_fires_when_policy_parse_fails(dispatcher, context, r
     # Keep a restrictive policy loaded, then simulate a parse failure while
     # fetching a replacement payload. The loaded policy remains unchanged.
     restrictive_policy = DevicePolicy(
-        tier="cloud", relay_b_enabled=False, relay_c_enabled=False, cloud_llm_enabled=False,
-        valid_until=int(time.time()) + 1000, policy_version=1, issued_at=0, signature="test"
+        tier="cloud",
+        relay_b_enabled=False,
+        relay_c_enabled=False,
+        cloud_llm_enabled=False,
+        valid_until=int(time.time()) + 1000,
+        policy_version=1,
+        issued_at=0,
+        signature="test",
     )
     disp.update_policy(restrictive_policy)
 
@@ -81,20 +100,30 @@ async def test_tier_d_relay_fires_when_policy_parse_fails(dispatcher, context, r
     with pytest.raises(ValueError):
         _parse_policy_payload({"malformed": True})
 
-    result_action = await disp.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, context, result)
+    result_action = await disp.dispatch(
+        "trip_relay", ActionTier.SAFETY_CRITICAL, context, result
+    )
 
     assert result_action.executed is True
     executor.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_tier_d_relay_fires_when_policy_refresh_fails(dispatcher, context, result):
+async def test_tier_d_relay_fires_when_policy_refresh_fails(
+    dispatcher, context, result
+):
     disp, executor = dispatcher
 
     # Simulate refresh failure: stale cached policy remains loaded.
     stale_policy = DevicePolicy(
-        tier="cloud", relay_b_enabled=False, relay_c_enabled=False, cloud_llm_enabled=False,
-        valid_until=int(time.time()) - 1000, policy_version=1, issued_at=0, signature="test"
+        tier="cloud",
+        relay_b_enabled=False,
+        relay_c_enabled=False,
+        cloud_llm_enabled=False,
+        valid_until=int(time.time()) - 1000,
+        policy_version=1,
+        issued_at=0,
+        signature="test",
     )
     disp.update_policy(stale_policy)
 
@@ -104,19 +133,25 @@ async def test_tier_d_relay_fires_when_policy_refresh_fails(dispatcher, context,
     with pytest.raises(TimeoutError):
         await _refresh_policy_from_cloud()
 
-    result_action = await disp.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, context, result)
+    result_action = await disp.dispatch(
+        "trip_relay", ActionTier.SAFETY_CRITICAL, context, result
+    )
 
     assert result_action.executed is True
     executor.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_tier_d_logs_critical_when_executor_not_initialised(dispatcher, context, result):
+async def test_tier_d_logs_critical_when_executor_not_initialised(
+    dispatcher, context, result
+):
     disp, _ = dispatcher
 
     disp._executors.pop("trip_relay")
 
-    result_action = await disp.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, context, result)
+    result_action = await disp.dispatch(
+        "trip_relay", ActionTier.SAFETY_CRITICAL, context, result
+    )
 
     assert result_action.executed is False
     disp._emergency_sms.assert_called_once_with("trip_relay", "test-device")

@@ -39,4 +39,3 @@ if [[ -n "${capability_touched}" && -z "${matrix_touched}" ]]; then
 fi
 
 echo "Capability matrix guard: OK."
-
