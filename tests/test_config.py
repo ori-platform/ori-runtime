@@ -1331,6 +1331,8 @@ actions:
         assert cfg.device_policy["public_key_b64"] == ""
         assert cfg.device_policy["request_timeout_ms"] == 3000
         assert cfg.device_policy["max_clock_skew_s"] == 300
+        assert cfg.device_policy["refresh_enabled"] is False
+        assert cfg.device_policy["refresh_interval_s"] == 21600
 
     def test_enabled_requires_https_url(self, tmp_path):
         yaml_path = _write_yaml(
@@ -1385,6 +1387,8 @@ actions:
                 "  public_key_b64: dGVzdA==\n"
                 "  request_timeout_ms: 5000\n"
                 "  max_clock_skew_s: 120\n"
+                "  refresh_enabled: true\n"
+                "  refresh_interval_s: 3600\n"
             ),
         )
         cfg = Config.load(yaml_path)
@@ -1392,3 +1396,21 @@ actions:
         assert cfg.device_policy["url"] == "https://example.com/policy"
         assert cfg.device_policy["request_timeout_ms"] == 5000
         assert cfg.device_policy["max_clock_skew_s"] == 120
+        assert cfg.device_policy["refresh_enabled"] is True
+        assert cfg.device_policy["refresh_interval_s"] == 3600
+
+    def test_refresh_interval_minimum_enforced(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "device_policy:\n"
+                "  enabled: false\n"
+                "  refresh_enabled: true\n"
+                "  refresh_interval_s: 59\n"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="refresh_interval_s must be >= 60",
+        ):
+            Config.load(yaml_path)

@@ -1579,6 +1579,127 @@ class TestRemoteDevicePolicy:
         finally:
             await runtime._state_store.close()
 
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    async def test_policy_refresh_loop_applies_and_caches_policy(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-refresh-loop.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        payload, raw_payload, public_key_b64 = self._signed_policy_payload()
+        calls = {"count": 0}
+
+        async def _fake_fetch(*_args, **_kwargs):
+            calls["count"] += 1
+            runtime._shutdown_event.set()
+            return FetchedRemotePolicy(
+                policy=DevicePolicy(
+                    tier=str(payload["tier"]),
+                    relay_b_enabled=bool(payload["relay_b_enabled"]),
+                    relay_c_enabled=bool(payload["relay_c_enabled"]),
+                    cloud_llm_enabled=bool(payload["cloud_llm_enabled"]),
+                    valid_until=int(payload["valid_until"]),
+                    policy_version=int(payload["policy_version"]),
+                    issued_at=int(payload["issued_at"]),
+                    signature=str(payload["signature"]),
+                ),
+                raw_payload=raw_payload,
+                payload=payload,
+            )
+
+        monkeypatch.setattr(
+            "ori.runtime.fetch_remote_device_policy_bundle",
+            _fake_fetch,
+        )
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-refresh-01"),
+            device_policy={
+                "enabled": True,
+                "url": "https://example.com/device-policy",
+                "auth_token": "token",
+                "public_key_b64": public_key_b64,
+                "request_timeout_ms": 3000,
+                "max_clock_skew_s": 300,
+                "refresh_enabled": True,
+                "refresh_interval_s": 60,
+            },
+        )
+
+        try:
+            await runtime._device_policy_refresh_loop(
+                config=cfg,
+                dispatcher=dispatcher,
+                refresh_interval_s=0.01,
+            )
+            assert calls["count"] == 1
+            assert dispatcher.current_policy_version() == int(payload["policy_version"])
+            cached = await runtime._state_store.get_latest_device_policy_cache()
+            assert cached is not None
+            assert cached["raw_payload"] == raw_payload
+        finally:
+            await runtime._state_store.close()
+
+    async def test_policy_refresh_transient_network_audit_dedupes(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-refresh-dedupe.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+
+        async def _fake_fetch(*_args, **_kwargs):
+            raise RemotePolicyFetchError(
+                "network_error",
+                "policy endpoint network error: offline",
+            )
+
+        monkeypatch.setattr(
+            "ori.runtime.fetch_remote_device_policy_bundle",
+            _fake_fetch,
+        )
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-refresh-02"),
+            device_policy={
+                "enabled": True,
+                "url": "https://example.com/device-policy",
+                "auth_token": "token",
+                "public_key_b64": "key",
+                "request_timeout_ms": 3000,
+                "max_clock_skew_s": 300,
+                "refresh_enabled": True,
+                "refresh_interval_s": 60,
+            },
+        )
+
+        try:
+            await runtime._refresh_remote_device_policy_once(
+                config=cfg,
+                dispatcher=dispatcher,
+                suppress_transient_audit=True,
+            )
+            await runtime._refresh_remote_device_policy_once(
+                config=cfg,
+                dispatcher=dispatcher,
+                suppress_transient_audit=True,
+            )
+            row = await runtime._state_store._run_read(
+                lambda conn: conn.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM override_log
+                    WHERE override_type='policy_rejection'
+                    """
+                ).fetchone()
+            )
+            assert row is not None
+            assert int(row["c"]) == 1
+        finally:
+            await runtime._state_store.close()
+
     async def test_alert_delivery_loop_delivers_queued_alert(
         self, tmp_path, monkeypatch
     ):
