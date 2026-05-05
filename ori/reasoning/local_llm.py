@@ -5,10 +5,10 @@ import asyncio
 import logging
 import os
 import re
-import time
 from functools import partial
 
 from ori.network.events import ReasoningResult
+from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +22,6 @@ except ImportError:
 
 class ModelNotAvailableError(Exception):
     """Raised when the model file is missing or llama-cpp-python is not installed."""
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 _OUTPUT_CONTRACT = (
@@ -105,7 +101,7 @@ class LocalLLM:
         await self._ensure_loaded()
 
         loop = asyncio.get_running_loop()
-        start_ms = _now_ms()
+        start_ms = now_ms()
 
         output = await loop.run_in_executor(
             None,
@@ -116,7 +112,7 @@ class LocalLLM:
             ),
         )
 
-        latency_ms = _now_ms() - start_ms
+        latency_ms = now_ms() - start_ms
         raw_text = output["choices"][0]["text"].strip()
         text = self._normalize_output(raw_text)
         tokens_used = output["usage"]["completion_tokens"]

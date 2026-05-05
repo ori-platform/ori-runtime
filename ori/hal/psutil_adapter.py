@@ -6,7 +6,6 @@ import logging
 import platform
 import re
 import shutil
-import time
 from functools import partial
 
 import psutil
@@ -18,6 +17,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
+from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +46,6 @@ _SUPPORTED = frozenset(
 )
 
 _DISK_IO_META = {"note": "cumulative since boot - use delta between readings for rate"}
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 class PsutilAdapter(BaseAdapter):
@@ -174,7 +170,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type="cpu_percent",
             value=float(value),
             unit="percent",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
         )
 
@@ -185,7 +181,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type="memory_percent",
             value=float(value),
             unit="percent",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
         )
 
@@ -196,7 +192,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type="memory_used_mb",
             value=round(value, 2),
             unit="megabytes",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
         )
 
@@ -208,7 +204,7 @@ class PsutilAdapter(BaseAdapter):
                 sensor_type="battery_percent",
                 value=0.0,
                 unit="percent",
-                timestamp=_now_ms(),
+                timestamp=now_ms(),
                 quality=0.0,
                 metadata={"unavailable": True, "reason": "no battery detected"},
             )
@@ -217,7 +213,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type="battery_percent",
             value=float(battery.percent),
             unit="percent",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
         )
 
@@ -229,7 +225,7 @@ class PsutilAdapter(BaseAdapter):
                 sensor_type="battery_time_remaining",
                 value=0.0,
                 unit="minutes",
-                timestamp=_now_ms(),
+                timestamp=now_ms(),
                 quality=0.0,
                 metadata={"unavailable": True, "reason": "no battery detected"},
             )
@@ -241,7 +237,7 @@ class PsutilAdapter(BaseAdapter):
                 sensor_type="battery_time_remaining",
                 value=-1.0,
                 unit="minutes",
-                timestamp=_now_ms(),
+                timestamp=now_ms(),
                 quality=1.0,
                 metadata={"power_plugged": battery.power_plugged},
             )
@@ -250,7 +246,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type="battery_time_remaining",
             value=round(secsleft / 60.0, 2),
             unit="minutes",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
         )
 
@@ -272,7 +268,7 @@ class PsutilAdapter(BaseAdapter):
                         sensor_type="cpu_temp",
                         value=round(avg, 2),
                         unit="celsius",
-                        timestamp=_now_ms(),
+                        timestamp=now_ms(),
                         quality=1.0,
                         metadata={"source": key, "core_count": len(readings)},
                     )
@@ -286,7 +282,7 @@ class PsutilAdapter(BaseAdapter):
                     sensor_type="cpu_temp",
                     value=temp,
                     unit="celsius",
-                    timestamp=_now_ms(),
+                    timestamp=now_ms(),
                     quality=0.8,
                     metadata={
                         "source": "osx-cpu-temp",
@@ -300,7 +296,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type="cpu_temp",
             value=0.0,
             unit="celsius",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=0.0,
             metadata={
                 "unavailable": True,
@@ -333,7 +329,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type="disk_percent",
             value=float(value),
             unit="percent",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
         )
 
@@ -345,7 +341,7 @@ class PsutilAdapter(BaseAdapter):
                 sensor_type=f"disk_{metric}",
                 value=0.0,
                 unit="megabytes" if metric.endswith("_mb") else "count",
-                timestamp=_now_ms(),
+                timestamp=now_ms(),
                 quality=0.0,
                 metadata={**_DISK_IO_META, "unavailable": True},
             )
@@ -370,7 +366,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type=sensor_type,
             value=round(value, 2),
             unit=unit,
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata=dict(_DISK_IO_META),
         )
@@ -390,7 +386,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type=sensor_type,
             value=round(value, 2),
             unit="megabytes",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
         )
 
@@ -402,7 +398,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type=sensor_type,
             value=0.0,
             unit="count",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=0.3,
             metadata={
                 "source": "psutil",
@@ -454,7 +450,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type=sensor_type,
             value=float(len(filtered)),
             unit="count",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata={
                 "source": "psutil",
@@ -491,7 +487,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type=sensor_type,
             value=float(len(sessions)),
             unit="count",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata={
                 "source": "psutil",
@@ -510,7 +506,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type="battery_drain_rate",
             value=0.0,
             unit="percent_per_hour",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=0.0,
         )
 
@@ -523,7 +519,7 @@ class PsutilAdapter(BaseAdapter):
         if battery is None:
             return _zero
 
-        now = _now_ms()
+        now = now_ms()
         current_pct = float(battery.percent)
 
         # Fetch previous battery_percent reading for this sensor
@@ -589,7 +585,7 @@ class PsutilAdapter(BaseAdapter):
             sensor_type="sleep_blocking_process",
             value=float(len(processes)),
             unit="count",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=quality,
             metadata={
                 "processes": processes,

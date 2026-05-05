@@ -20,13 +20,13 @@ must never crash the runtime.
 import asyncio
 import datetime
 import logging
-import time
 from typing import Any
 
 from ori.actions.logger import LoggerAction
 from ori.network.events import ActionResult, ActionTier, ReasoningResult
 from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.elevator import SkillContext
+from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +58,6 @@ def _parse_approval_response(response: str | None) -> bool:
         return False
     token = response.strip().lower()
     return token in _YES_TOKENS
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 def _tier_rank(tier: str) -> int:
@@ -253,7 +249,7 @@ class ActionDispatcher:
                     executed=False,
                     approved=None,
                     action_taken="suppressed",
-                    timestamp=_now_ms(),
+                    timestamp=now_ms(),
                     operator_response="policy_suppression",
                 )
                 await self._log_action(suppression_result, context)
@@ -369,7 +365,7 @@ class ActionDispatcher:
                 executed=False,
                 approved=None,
                 action_taken="",
-                timestamp=_now_ms(),
+                timestamp=now_ms(),
             )
 
         await self._log_action(action_result, context)
@@ -476,7 +472,7 @@ class ActionDispatcher:
             executed=executed,
             approved=None,  # no approval step for A/B/D
             action_taken=action if executed else "",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
         )
 
     async def _approval_workflow(
@@ -522,7 +518,7 @@ class ActionDispatcher:
         device_id = context.event.device_id if context.event else "unknown"
         message = self._format_approval_message(
             device_id=device_id,
-            timestamp_ms=context.event.timestamp if context.event else _now_ms(),
+            timestamp_ms=context.event.timestamp if context.event else now_ms(),
             result=result,
             action=action,
             timeout_seconds=approval_timeout_seconds,
@@ -630,7 +626,7 @@ class ActionDispatcher:
             executed=executed,
             approved=approved,
             action_taken=action_taken,
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             operator_response=operator_response,
         )
 

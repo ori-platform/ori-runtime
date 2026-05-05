@@ -357,11 +357,11 @@ class TestCooldown:
         rules = [_rule(name="r", condition="value > 10.0", cooldown_seconds=5)]
         now = _ms()
 
-        with patch("ori.reasoning.rule_engine._now_ms", return_value=now):
+        with patch("ori.reasoning.rule_engine.now_ms", return_value=now):
             await engine.evaluate(_event(value=15.0), rules)
 
         # 6 seconds later — cooldown expired
-        with patch("ori.reasoning.rule_engine._now_ms", return_value=now + 6_000):
+        with patch("ori.reasoning.rule_engine.now_ms", return_value=now + 6_000):
             result = await engine.evaluate(_event(value=15.0), rules)
 
         assert result.matched is True

@@ -36,6 +36,7 @@ import time
 from typing import Protocol, runtime_checkable
 
 from ori.network.events import ReasoningResult
+from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +282,7 @@ class WhatsAppAction:
         Returns:
             The first message body received, or None on timeout.
         """
-        since_ms = since_ms if since_ms is not None else int(time.time() * 1000)
+        since_ms = since_ms if since_ms is not None else now_ms()
         deadline = time.monotonic() + timeout_seconds
 
         while time.monotonic() < deadline:

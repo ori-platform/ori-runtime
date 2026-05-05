@@ -4,7 +4,6 @@
 import asyncio
 import logging
 import threading
-import time
 from functools import partial
 from typing import Any
 
@@ -16,6 +15,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
+from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +67,6 @@ _SUPPORTED = frozenset(
 # Default ADS1115 current-clamp sensitivity (V/A) for common SCT-013 clamps.
 # Override via config key ``sensitivity`` in ori.yaml.
 _DEFAULT_SENSITIVITY = 0.1  # V/A
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 # ── Shared I2C bus singleton registry ─────────────────────────────────────
@@ -352,7 +348,7 @@ class I2CAdapter(BaseAdapter):
             sensor_type="bme280",
             value=round(data.temperature, 2),
             unit="celsius",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata={
                 "pressure_hpa": round(data.pressure, 2),
@@ -371,7 +367,7 @@ class I2CAdapter(BaseAdapter):
             sensor_type="ads1115_current",
             value=round(current_amps, 4),
             unit="ampere",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata={
                 "adc_voltage": round(adc_voltage, 6),
@@ -390,7 +386,7 @@ class I2CAdapter(BaseAdapter):
             sensor_type="ads1115_voltage",
             value=round(voltage, 4),
             unit="volt",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata={"channel": self._channel},
         )
@@ -408,7 +404,7 @@ class I2CAdapter(BaseAdapter):
             sensor_type="scd40",
             value=float(self._scd4x.CO2),
             unit="ppm",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata={
                 "temperature_celsius": round(self._scd4x.temperature, 2),

@@ -6,12 +6,12 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 from ori.hal.base import AdapterConnectionError, AdapterReadError
 from ori.hal.mqtt_base import MqttCachedAdapter
 from ori.network.events import SensorReading
+from ori.time_utils import now_ms
 
 _DEFAULT_PORT = 1883
 
@@ -106,7 +106,7 @@ class MqttAdapter(MqttCachedAdapter):
             raw_quality = _extract_path(parsed, self._quality_path)
             quality = _clamp_quality(_coerce_float(raw_quality))
 
-        timestamp_ms = int(time.time() * 1000)
+        timestamp_ms = now_ms()
         self._cache_value(
             topic,
             value,

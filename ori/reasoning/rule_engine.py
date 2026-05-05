@@ -4,11 +4,11 @@
 import ast
 import logging
 import math
-import time
 from dataclasses import dataclass
 from typing import Any
 
 from ori.network.events import OriEvent
+from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -263,10 +263,6 @@ def _check_safety_ast(condition: str) -> None:
         )
 
 
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
 def _rule_get(rule: Any, key: str, default: Any = None) -> Any:
     """Read rule fields from either dict rules or Trigger dataclasses."""
     if isinstance(rule, dict):
@@ -426,7 +422,7 @@ class RuleEngine:
                 rec = self._cooldowns.get(name)
                 if (
                     rec is not None
-                    and (_now_ms() - rec.last_fired_ms) < cooldown_s * 1000
+                    and (now_ms() - rec.last_fired_ms) < cooldown_s * 1000
                 ):
                     logger.debug(
                         "RuleEngine: rule %r suppressed by cooldown (%ds)",
@@ -436,7 +432,7 @@ class RuleEngine:
                     continue
 
             # Record fire time
-            self._cooldowns[name] = _CooldownRecord(last_fired_ms=_now_ms())
+            self._cooldowns[name] = _CooldownRecord(last_fired_ms=now_ms())
 
             logger.info(
                 "RuleEngine: rule %r matched (tier=%s, bypass_llm=%s)",

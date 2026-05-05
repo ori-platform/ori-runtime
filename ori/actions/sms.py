@@ -28,6 +28,8 @@ import os
 import time
 from typing import Any
 
+from ori.time_utils import now_ms
+
 logger = logging.getLogger(__name__)
 
 
@@ -195,7 +197,7 @@ class SMSAction:
         if not normalized_from:
             return None
 
-        since_ms = int(time.time() * 1000)
+        since_ms = now_ms()
         deadline = time.monotonic() + timeout_seconds
 
         while time.monotonic() < deadline:

@@ -1,11 +1,11 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ori.network.events import OriEvent
+from ori.time_utils import now_ms
 
 
 class HookHistoryAdapter:
@@ -141,6 +141,6 @@ class HookContext:
             readings=readings,
             history=HookHistoryAdapter(store),
             state=HookStateAdapter(store, skill_name),
-            timestamp=event.timestamp if event else int(time.time() * 1000),
+            timestamp=event.timestamp if event else now_ms(),
             config=skill_config if isinstance(skill_config, dict) else {},
         )

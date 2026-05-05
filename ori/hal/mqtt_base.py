@@ -6,7 +6,6 @@ import inspect
 import json
 import logging
 import ssl
-import time
 from typing import Any, Iterable
 
 from ori.hal.base import (
@@ -15,6 +14,7 @@ from ori.hal.base import (
     BaseAdapter,
     HardwareCircuitBreaker,
 )
+from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +279,7 @@ class MqttCachedAdapter(BaseAdapter):
         raise NotImplementedError
 
     def _cache_value(self, topic: str, value: float, raw_payload: Any) -> None:
-        self._cache[topic] = (float(value), int(time.time() * 1000), raw_payload)
+        self._cache[topic] = (float(value), now_ms(), raw_payload)
 
     @staticmethod
     def parse_numeric_payload(payload: Any) -> tuple[float, Any]:

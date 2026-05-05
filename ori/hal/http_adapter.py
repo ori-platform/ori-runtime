@@ -3,7 +3,6 @@
 
 import asyncio
 import logging
-import time
 from typing import Any
 
 from ori.hal.base import (
@@ -13,6 +12,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
+from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +26,6 @@ except ImportError:
 
 _DEFAULT_POLL_INTERVAL_MS = 10_000
 _DEFAULT_TIMEOUT_S = 5.0
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 class HttpAdapter(BaseAdapter):
@@ -167,7 +163,7 @@ class HttpAdapter(BaseAdapter):
                 sensor_type=self._sensor_type,
                 value=value,
                 unit=self._unit,
-                timestamp=_now_ms(),
+                timestamp=now_ms(),
                 quality=1.0,
                 metadata={
                     "source": "http",

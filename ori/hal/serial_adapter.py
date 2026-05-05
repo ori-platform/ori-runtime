@@ -4,7 +4,6 @@
 import asyncio
 import logging
 import struct
-import time
 from functools import partial
 from typing import Any
 
@@ -16,6 +15,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
+from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +53,6 @@ _DEFAULT_PARITY = "N"
 _DEFAULT_STOPBITS = 1
 _DEFAULT_TIMEOUT = 1.0  # seconds
 _DEFAULT_SLAVE_ID = 1  # Modbus slave address
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 def _crc16(data: bytes) -> int:
@@ -337,7 +333,7 @@ class SerialAdapter(BaseAdapter):
                 sensor_type=self._sensor_type,
                 value=value,
                 unit=unit,
-                timestamp=_now_ms(),
+                timestamp=now_ms(),
                 quality=1.0,
                 metadata={
                     "slave_id": self._slave_id,

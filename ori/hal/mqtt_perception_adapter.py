@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-import time
 from typing import Any
 
 from ori.hal.base import AdapterConnectionError, AdapterReadError
 from ori.hal.mqtt_base import MqttCachedAdapter
 from ori.network.events import SensorReading
+from ori.time_utils import now_ms
 
 _DEFAULT_PORT = 1883
 _CONTRACT_VERSION = "ori.perception.v1"
@@ -158,7 +158,7 @@ class MqttPerceptionAdapter(MqttCachedAdapter):
         parsed["confidence"] = float(confidence)
 
         if "timestamp_ms" not in parsed:
-            parsed["timestamp_ms"] = int(time.time() * 1000)
+            parsed["timestamp_ms"] = now_ms()
         elif not isinstance(parsed.get("timestamp_ms"), (int, float)):
             raise AdapterReadError(
                 "Perception payload field 'timestamp_ms' must be numeric"

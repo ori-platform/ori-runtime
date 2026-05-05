@@ -10,6 +10,7 @@ from functools import partial
 from typing import Optional
 
 from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
+from ori.time_utils import now_ms
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS sensor_history (
@@ -295,13 +296,13 @@ class StateStore:
         Call from runtime.py via asyncio.create_task() on a 5-minute
         schedule using asyncio periodic task pattern.
         """
-        now_ms = _now_ms()
+        current_ms = now_ms()
         cutoffs = {
-            "raw": now_ms - (48 * 3600 * 1000),  # 48 hours
-            "5min": now_ms - (30 * 86400 * 1000),  # 30 days
-            "hourly": now_ms - (365 * 86400 * 1000),  # 1 year
+            "raw": current_ms - (48 * 3600 * 1000),  # 48 hours
+            "5min": current_ms - (30 * 86400 * 1000),  # 30 days
+            "hourly": current_ms - (365 * 86400 * 1000),  # 1 year
         }
-        await self._run_write(self._compact_sync, cutoffs, now_ms)
+        await self._run_write(self._compact_sync, cutoffs, current_ms)
 
     def _compact_sync(self, cutoffs: dict, now_ms: int) -> None:
         assert self._conn is not None
@@ -455,7 +456,7 @@ class StateStore:
     def _avg_last_hours_sync(
         self, conn: sqlite3.Connection, sensor_id: str, hours: int
     ) -> Optional[float]:
-        cutoff_ms = _now_ms() - hours * 3_600_000
+        cutoff_ms = now_ms() - hours * 3_600_000
 
         # Weighted average across all tiers to seamlessly span compaction boundaries
         row = conn.execute(
@@ -604,7 +605,7 @@ class StateStore:
             channel,
             from_number,
             message,
-            received_at_ms if received_at_ms is not None else _now_ms(),
+            received_at_ms if received_at_ms is not None else now_ms(),
         )
 
     def _store_incoming_message_sync(
@@ -664,7 +665,7 @@ class StateStore:
             SET consumed_at = ?
             WHERE id = ? AND consumed_at IS NULL
             """,
-            (_now_ms(), row["id"]),
+            (now_ms(), row["id"]),
         )
         self._conn.commit()
         return str(row["message"])
@@ -758,7 +759,7 @@ class StateStore:
         await self._run_write(
             self._mark_alert_delivered_sync,
             alert_id,
-            delivered_ts_ms if delivered_ts_ms is not None else _now_ms(),
+            delivered_ts_ms if delivered_ts_ms is not None else now_ms(),
         )
 
     def _mark_alert_delivered_sync(self, alert_id: str, delivered_ts_ms: int) -> None:
@@ -780,7 +781,7 @@ class StateStore:
         await self._run_write(
             self._mark_alert_attempt_failed_sync,
             alert_id,
-            failed_ts_ms if failed_ts_ms is not None else _now_ms(),
+            failed_ts_ms if failed_ts_ms is not None else now_ms(),
         )
 
     def _mark_alert_attempt_failed_sync(self, alert_id: str, failed_ts_ms: int) -> None:
@@ -803,7 +804,7 @@ class StateStore:
         await self._run_write(
             self._mark_alert_abandoned_sync,
             alert_id,
-            abandoned_ts_ms if abandoned_ts_ms is not None else _now_ms(),
+            abandoned_ts_ms if abandoned_ts_ms is not None else now_ms(),
         )
 
     def _mark_alert_abandoned_sync(self, alert_id: str, abandoned_ts_ms: int) -> None:
@@ -857,7 +858,7 @@ class StateStore:
                 result.tokens_used,
                 result.latency_ms,
                 result.proposed_action,
-                _now_ms(),
+                now_ms(),
             ),
         )
         self._conn.commit()
@@ -908,7 +909,7 @@ class StateStore:
                 operator_response,
                 override_type,
                 device_id,
-                _now_ms(),
+                now_ms(),
             ),
         )
         self._conn.commit()
@@ -935,7 +936,7 @@ class StateStore:
             SET hit_count = hit_count + 1, last_seen = ?
             WHERE pattern_key = ?
             """,
-            (_now_ms(), pattern_key),
+            (now_ms(), pattern_key),
         )
         self._conn.commit()
         return row["resolution"]
@@ -951,7 +952,7 @@ class StateStore:
         self, pattern_key: str, resolution: str, confidence: float
     ) -> None:
         assert self._conn is not None
-        now = _now_ms()
+        now = now_ms()
         self._conn.execute(
             """
             INSERT INTO causal_memory
@@ -1010,7 +1011,7 @@ class StateStore:
         expiry_days: int,
     ) -> None:
         assert self._conn is not None
-        rejected_at = _now_ms()
+        rejected_at = now_ms()
         expiry_ms: int | None = None
         if expiry_days > 0:
             expiry_ms = int(expiry_days * 86_400_000)
@@ -1072,7 +1073,7 @@ class StateStore:
         expiry_ms = row["expiry_ms"]
         if expiry_ms is not None:
             expires_at = int(row["rejected_at"]) + int(expiry_ms)
-            if expires_at < _now_ms():
+            if expires_at < now_ms():
                 return None
 
         return dict(row)
@@ -1127,16 +1128,6 @@ class StateStore:
                 value      = excluded.value,
                 updated_at = excluded.updated_at
             """,
-            (skill_name, key, value, _now_ms()),
+            (skill_name, key, value, now_ms()),
         )
         self._conn.commit()
-
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def _now_ms() -> int:
-    """Current time as unix milliseconds (UTC)."""
-    import time
-
-    return int(time.time() * 1000)

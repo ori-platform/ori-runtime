@@ -239,7 +239,7 @@ class TestRejectionMemory:
             expiry_days=1,
         )
         now = _ms()
-        monkeypatch.setattr("ori.state.store._now_ms", lambda: now + (3 * 86_400_000))
+        monkeypatch.setattr("ori.state.store.now_ms", lambda: now + (3 * 86_400_000))
 
         llm = AsyncMock()
         llm.reason.return_value = ReasoningResult(

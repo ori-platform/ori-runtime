@@ -808,7 +808,7 @@ class TestSensorPolling:
             ),
         ]
 
-        with patch("ori.network.deduplicator._now_ms", side_effect=[1_000, 2_000]):
+        with patch("ori.network.deduplicator.now_ms", side_effect=[1_000, 2_000]):
             await runtime._poll_sensor(
                 _SequenceAdapter(readings),
                 sensor_cfg,
@@ -874,7 +874,7 @@ class TestSensorPolling:
             ),
         ]
 
-        with patch("ori.network.deduplicator._now_ms", side_effect=[1_000, 7_001]):
+        with patch("ori.network.deduplicator.now_ms", side_effect=[1_000, 7_001]):
             await runtime._poll_sensor(
                 _SequenceAdapter(readings),
                 sensor_cfg,
@@ -969,7 +969,7 @@ class TestSensorPolling:
         ]
 
         try:
-            with patch("ori.network.deduplicator._now_ms", side_effect=[1_000, 2_000]):
+            with patch("ori.network.deduplicator.now_ms", side_effect=[1_000, 2_000]):
                 await runtime._poll_sensor(
                     _SequenceAdapter(readings),
                     sensor_cfg,

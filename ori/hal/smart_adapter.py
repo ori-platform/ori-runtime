@@ -6,7 +6,6 @@ import json
 import logging
 import re
 import subprocess
-import time
 from typing import Any
 
 from ori.hal.base import (
@@ -16,6 +15,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
+from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,6 @@ _SENSOR_UNITS = {
     "reallocated_sectors": "count",
     "power_on_hours": "hours",
 }
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 def _to_float(value: Any) -> float | None:
@@ -277,7 +273,7 @@ class SmartAdapter(BaseAdapter):
                 sensor_type=self._sensor_type,
                 value=round(float(value), 4),
                 unit=_SENSOR_UNITS[self._sensor_type],
-                timestamp=_now_ms(),
+                timestamp=now_ms(),
                 quality=1.0,
                 metadata={
                     "source": "smart",

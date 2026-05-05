@@ -21,7 +21,7 @@ async def store(tmp_path):
 
 @pytest.mark.asyncio
 async def test_compaction_pyramid(store, monkeypatch):
-    monkeypatch.setattr("ori.state.store._now_ms", lambda: NOW_MS)
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
 
     def _insert_raw(ts: int, value: float):
         store._conn.execute(
@@ -92,7 +92,7 @@ async def test_clock_skew_guard(store, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unified_read_paths(store, monkeypatch):
-    monkeypatch.setattr("ori.state.store._now_ms", lambda: NOW_MS)
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
 
     # Insert raw
     store._conn.execute(
