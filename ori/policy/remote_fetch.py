@@ -42,6 +42,13 @@ class RemotePolicyFetchConfig:
     max_clock_skew_s: int = 300
 
 
+@dataclass(frozen=True)
+class FetchedRemotePolicy:
+    policy: DevicePolicy
+    raw_payload: str
+    payload: dict[str, Any]
+
+
 def _parse_bool(v: Any) -> bool:
     if isinstance(v, bool):
         return v
@@ -58,6 +65,40 @@ def _to_int(value: Any, field: str) -> int:
             "invalid_payload",
             f"policy field '{field}' must be an integer",
         ) from exc
+
+
+def device_policy_from_payload(
+    payload: dict[str, Any],
+    *,
+    context_label: str = "policy payload",
+) -> DevicePolicy:
+    required = (
+        "tier",
+        "relay_b_enabled",
+        "relay_c_enabled",
+        "cloud_llm_enabled",
+        "valid_until",
+        "policy_version",
+        "issued_at",
+        "signature",
+    )
+    missing = [k for k in required if k not in payload]
+    if missing:
+        raise RemotePolicyFetchError(
+            "invalid_payload",
+            f"{context_label} missing required fields: {', '.join(missing)}",
+        )
+
+    return DevicePolicy(
+        tier=str(payload.get("tier", "")),
+        relay_b_enabled=_parse_bool(payload.get("relay_b_enabled")),
+        relay_c_enabled=_parse_bool(payload.get("relay_c_enabled")),
+        cloud_llm_enabled=_parse_bool(payload.get("cloud_llm_enabled")),
+        valid_until=_to_int(payload.get("valid_until"), "valid_until"),
+        policy_version=_to_int(payload.get("policy_version"), "policy_version"),
+        issued_at=_to_int(payload.get("issued_at"), "issued_at"),
+        signature=str(payload.get("signature", "")),
+    )
 
 
 def _build_config(raw: dict[str, Any]) -> RemotePolicyFetchConfig:
@@ -77,7 +118,7 @@ def _build_config(raw: dict[str, Any]) -> RemotePolicyFetchConfig:
     )
 
 
-def _http_get_json(cfg: RemotePolicyFetchConfig) -> dict[str, Any]:
+def _http_get_json(cfg: RemotePolicyFetchConfig) -> tuple[str, dict[str, Any]]:
     req = urllib.request.Request(
         cfg.url,
         headers={
@@ -113,7 +154,15 @@ def _http_get_json(cfg: RemotePolicyFetchConfig) -> dict[str, Any]:
         )
 
     try:
-        payload = json.loads(body.decode("utf-8"))
+        raw_payload = body.decode("utf-8")
+    except Exception as exc:
+        raise RemotePolicyFetchError(
+            "invalid_payload",
+            "policy endpoint returned non-UTF8 payload",
+        ) from exc
+
+    try:
+        payload = json.loads(raw_payload)
     except Exception as exc:
         raise RemotePolicyFetchError(
             "invalid_payload",
@@ -125,7 +174,7 @@ def _http_get_json(cfg: RemotePolicyFetchConfig) -> dict[str, Any]:
             "invalid_payload",
             "policy payload must be a JSON object",
         )
-    return payload
+    return raw_payload, payload
 
 
 def _verify_payload(
@@ -134,17 +183,7 @@ def _verify_payload(
     *,
     current_policy_version: int | None,
 ) -> DevicePolicy:
-    required = (
-        "tier",
-        "relay_b_enabled",
-        "relay_c_enabled",
-        "cloud_llm_enabled",
-        "valid_until",
-        "policy_version",
-        "issued_at",
-        "timestamp",
-        "signature",
-    )
+    required = ("timestamp",)
     missing = [k for k in required if k not in payload]
     if missing:
         raise RemotePolicyFetchError(
@@ -185,16 +224,13 @@ def _verify_payload(
             payload_timestamp=payload_ts,
         ) from exc
 
-    return DevicePolicy(
-        tier=str(payload.get("tier", "")),
-        relay_b_enabled=_parse_bool(payload.get("relay_b_enabled")),
-        relay_c_enabled=_parse_bool(payload.get("relay_c_enabled")),
-        cloud_llm_enabled=_parse_bool(payload.get("cloud_llm_enabled")),
-        valid_until=_to_int(payload.get("valid_until"), "valid_until"),
-        policy_version=policy_version,
-        issued_at=_to_int(payload.get("issued_at"), "issued_at"),
-        signature=str(payload.get("signature", "")),
-    )
+    parsed = device_policy_from_payload(payload, context_label="policy payload")
+    if parsed.policy_version != policy_version:
+        raise RemotePolicyFetchError(
+            "invalid_payload",
+            "policy_version value changed during payload parsing",
+        )
+    return parsed
 
 
 async def fetch_remote_device_policy(
@@ -229,9 +265,54 @@ async def fetch_remote_device_policy(
             "device_policy.max_clock_skew_s must be >= 1",
         )
 
-    payload = await asyncio.to_thread(_http_get_json, cfg)
+    _, payload = await asyncio.to_thread(_http_get_json, cfg)
     return _verify_payload(
         payload,
         cfg,
         current_policy_version=current_policy_version,
+    )
+
+
+async def fetch_remote_device_policy_bundle(
+    raw_config: dict[str, Any],
+    *,
+    current_policy_version: int | None = None,
+) -> FetchedRemotePolicy:
+    """Fetch + verify and return both parsed policy and exact raw payload JSON."""
+    cfg = _build_config(raw_config)
+    if not cfg.url.startswith("https://"):
+        raise RemotePolicyFetchError(
+            "invalid_config",
+            "device_policy.url must start with https://",
+        )
+    if not cfg.auth_token:
+        raise RemotePolicyFetchError(
+            "invalid_config", "device_policy.auth_token is empty"
+        )
+    if not cfg.public_key_b64:
+        raise RemotePolicyFetchError(
+            "invalid_config",
+            "device_policy.public_key_b64 is empty",
+        )
+    if cfg.request_timeout_ms < 100:
+        raise RemotePolicyFetchError(
+            "invalid_config",
+            "device_policy.request_timeout_ms must be >= 100",
+        )
+    if cfg.max_clock_skew_s < 1:
+        raise RemotePolicyFetchError(
+            "invalid_config",
+            "device_policy.max_clock_skew_s must be >= 1",
+        )
+
+    raw_payload, payload = await asyncio.to_thread(_http_get_json, cfg)
+    verified = _verify_payload(
+        payload,
+        cfg,
+        current_policy_version=current_policy_version,
+    )
+    return FetchedRemotePolicy(
+        policy=verified,
+        raw_payload=raw_payload,
+        payload=payload,
     )

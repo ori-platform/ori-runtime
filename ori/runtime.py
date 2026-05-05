@@ -47,13 +47,15 @@ from ori.network.events import OriEvent, compute_fingerprint
 from ori.network.sms_webhook import SMSWebhookServer
 from ori.policy.remote_fetch import (
     RemotePolicyFetchError,
-    fetch_remote_device_policy,
+    device_policy_from_payload,
+    fetch_remote_device_policy_bundle,
 )
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.skills.loader import SkillLoader
+from ori.skills.signing import verify_signed_payload
 from ori.state.store import StateStore
 from ori.time_utils import now_ms
 
@@ -310,6 +312,7 @@ class OriRuntime:
             },
         )
         self._dispatcher = dispatcher
+        await self._load_cached_device_policy(config, dispatcher)
         await self._maybe_refresh_remote_device_policy_once(config, dispatcher)
 
         # alert_whatsapp executor
@@ -838,17 +841,41 @@ class OriRuntime:
 
         current_version = dispatcher.current_policy_version()
         try:
-            fetched = await fetch_remote_device_policy(
+            fetched = await fetch_remote_device_policy_bundle(
                 policy_cfg,
                 current_policy_version=current_version,
             )
-            dispatcher.update_policy(fetched)
+            dispatcher.update_policy(fetched.policy)
             logger.info(
                 "[runtime] remote DevicePolicy applied — version=%s tier=%s valid_until=%s",
-                fetched.policy_version,
-                fetched.tier,
-                fetched.valid_until,
+                fetched.policy.policy_version,
+                fetched.policy.tier,
+                fetched.policy.valid_until,
             )
+            if self._state_store is not None:
+                try:
+                    await self._state_store.upsert_device_policy_cache(
+                        policy_version=fetched.policy.policy_version,
+                        tier=fetched.policy.tier,
+                        relay_b_enabled=fetched.policy.relay_b_enabled,
+                        relay_c_enabled=fetched.policy.relay_c_enabled,
+                        cloud_llm_enabled=fetched.policy.cloud_llm_enabled,
+                        valid_until=fetched.policy.valid_until,
+                        issued_at=fetched.policy.issued_at,
+                        signature=fetched.policy.signature,
+                        raw_payload=fetched.raw_payload,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[runtime] failed to persist verified DevicePolicy cache"
+                    )
+                    await self._audit_policy_rejection(
+                        device_id=config.device.id,
+                        reason_code="cache_write_failed",
+                        detail="verified policy applied but cache persistence failed",
+                        policy_version=fetched.policy.policy_version,
+                        payload_timestamp=int(fetched.payload.get("timestamp", 0)),
+                    )
         except RemotePolicyFetchError as exc:
             logger.warning(
                 "[runtime] remote DevicePolicy rejected code=%s detail=%s",
@@ -871,6 +898,90 @@ class OriRuntime:
                 policy_version=None,
                 payload_timestamp=None,
             )
+
+    async def _load_cached_device_policy(
+        self,
+        config: Config,
+        dispatcher: ActionDispatcher,
+    ) -> None:
+        """Load and verify cached DevicePolicy from SQLite before remote fetch."""
+        if self._state_store is None:
+            return
+        try:
+            cached = await self._state_store.get_latest_device_policy_cache()
+        except Exception:
+            logger.exception("[runtime] failed to read cached DevicePolicy")
+            await self._audit_policy_rejection(
+                device_id=config.device.id,
+                reason_code="cache_read_failed",
+                detail="failed to read device_policy_cache row",
+                policy_version=None,
+                payload_timestamp=None,
+            )
+            return
+        if not cached:
+            return
+
+        policy_cfg = (
+            config.device_policy if isinstance(config.device_policy, dict) else {}
+        )
+        public_key_b64 = str(policy_cfg.get("public_key_b64", "")).strip()
+        if not public_key_b64:
+            logger.warning(
+                "[runtime] cached DevicePolicy exists but device_policy.public_key_b64 is not configured"
+            )
+            await self._audit_policy_rejection(
+                device_id=config.device.id,
+                reason_code="cache_verification_unavailable",
+                detail="missing device_policy.public_key_b64 for cached policy verification",
+                policy_version=int(cached.get("policy_version", 0)),
+                payload_timestamp=None,
+            )
+            return
+
+        raw_payload = str(cached.get("raw_payload", "") or "")
+        if not raw_payload:
+            logger.warning("[runtime] cached DevicePolicy missing raw_payload")
+            await self._audit_policy_rejection(
+                device_id=config.device.id,
+                reason_code="cache_missing_raw_payload",
+                detail="device_policy_cache row has empty raw_payload",
+                policy_version=int(cached.get("policy_version", 0)),
+                payload_timestamp=None,
+            )
+            return
+
+        try:
+            parsed_payload = json.loads(raw_payload)
+            if not isinstance(parsed_payload, dict):
+                raise ValueError("cached raw payload is not a JSON object")
+            verify_signed_payload(
+                parsed_payload,
+                public_key_b64,
+                context_label="cached device policy payload",
+            )
+            cached_policy = device_policy_from_payload(
+                parsed_payload,
+                context_label="cached device policy payload",
+            )
+        except Exception as exc:
+            logger.warning("[runtime] cached DevicePolicy rejected: %s", exc)
+            await self._audit_policy_rejection(
+                device_id=config.device.id,
+                reason_code="cache_invalid_payload",
+                detail=str(exc),
+                policy_version=int(cached.get("policy_version", 0)),
+                payload_timestamp=None,
+            )
+            return
+
+        dispatcher.update_policy(cached_policy)
+        logger.info(
+            "[runtime] cached DevicePolicy applied — version=%s tier=%s valid_until=%s",
+            cached_policy.policy_version,
+            cached_policy.tier,
+            cached_policy.valid_until,
+        )
 
     async def _audit_policy_rejection(
         self,
