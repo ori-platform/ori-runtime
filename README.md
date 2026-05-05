@@ -324,8 +324,11 @@ python -m ori.runtime --config ori.local.yaml
 ### Smoke Tests
 
 ```bash
-# Full runtime smoke test (requires ori.local.yaml configured)
+# Full runtime smoke test (auto-selects config by platform if arg #1 is omitted)
 bash scripts/smoke-runtime-local.sh
+
+# Linux explicit config (recommended)
+bash scripts/smoke-runtime-local.sh ori.yaml
 
 # Force pretty console output
 ORI_PRETTY_LOGS=true bash scripts/smoke-runtime-local.sh

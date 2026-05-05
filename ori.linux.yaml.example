@@ -1,4 +1,4 @@
-# ori.local.linux.example.yaml
+# ori.linux.yaml.example
 # ─────────────────────────────────────────────────────────────────────────────
 # Minimal validated config for Linux laptops / servers — NO hardware required.
 #
@@ -6,7 +6,7 @@
 # ori.yaml is gitignored — never commit it.
 #
 # Usage:
-#   cp ori.local.linux.example.yaml ori.yaml
+#   cp ori.linux.yaml.example ori.yaml
 #   # Edit ori.yaml — replace <your-...> placeholders
 #   python -m ori.runtime --config ori.yaml
 #

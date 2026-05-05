@@ -49,13 +49,13 @@ cp ori.linux.yaml.example ori.yaml
 
 Then edit `ori.yaml` and replace the placeholders:
 
-| Field              | What to put                        | Example                       |
-| ------------------ | ---------------------------------- | ----------------------------- |
-| `device.id`        | Unique identifier, no spaces       | `my-laptop-01`                |
-| `device.name`      | Human-readable device name         | `My Linux Laptop`             |
-| `device.location`  | Your city and country              | `Lagos, Nigeria`              |
-| `device.timezone`  | IANA timezone                      | `Africa/Lagos`                |
-| `skills[].config.owner_name` | Display name for alerts | `My Linux Laptop`             |
+| Field                        | What to put                  | Example           |
+| ---------------------------- | ---------------------------- | ----------------- |
+| `device.id`                  | Unique identifier, no spaces | `my-laptop-01`    |
+| `device.name`                | Human-readable device name   | `My Linux Laptop` |
+| `device.location`            | Your city and country        | `Lagos, Nigeria`  |
+| `device.timezone`            | IANA timezone                | `Africa/Lagos`    |
+| `skills[].config.owner_name` | Display name for alerts      | `My Linux Laptop` |
 
 **All other fields have working defaults** — you do not need to change them to get started.
 
@@ -63,22 +63,22 @@ Then edit `ori.yaml` and replace the placeholders:
 
 These fields are **required** by the runtime. Missing any of them will cause a `ConfigValidationError`:
 
-| Field                          | Required | Type    | Description                                     |
-| ------------------------------ | -------- | ------- | ----------------------------------------------- |
-| `device.id`                    | Yes      | string  | Unique device identifier (no spaces)            |
-| `device.name`                  | Yes      | string  | Human-readable device name                      |
-| `device.location`              | Yes      | string  | Physical location (city, country)               |
-| `reasoning.default_tier`       | No       | string  | Defaults to `rule` (`rule \| local \| gateway \| cloud`) |
-| `reasoning.local_model`        | No       | string  | GGUF model filename (only needed for `local` tier) |
-| `reasoning.model_path`         | No       | string  | Directory containing GGUF models                |
-| `reasoning.offline_fallback`   | No       | string  | Defaults to `rule`                              |
+| Field                        | Required | Type   | Description                                              |
+| ---------------------------- | -------- | ------ | -------------------------------------------------------- |
+| `device.id`                  | Yes      | string | Unique device identifier (no spaces)                     |
+| `device.name`                | Yes      | string | Human-readable device name                               |
+| `device.location`            | Yes      | string | Physical location (city, country)                        |
+| `reasoning.default_tier`     | No       | string | Defaults to `rule` (`rule \| local \| gateway \| cloud`) |
+| `reasoning.local_model`      | No       | string | GGUF model filename (only needed for `local` tier)       |
+| `reasoning.model_path`       | No       | string | Directory containing GGUF models                         |
+| `reasoning.offline_fallback` | No       | string | Defaults to `rule`                                       |
 
 Optional but recommended:
 
-| Field                          | Description                                     |
-| ------------------------------ | ----------------------------------------------- |
-| `actions.operator_contact`     | Phone number for Tier C approval requests       |
-| `actions.primary_alert_channel`| `sms` (Africa's Talking) or `whatsapp` (Twilio) |
+| Field                           | Description                                     |
+| ------------------------------- | ----------------------------------------------- |
+| `actions.operator_contact`      | Phone number for Tier C approval requests       |
+| `actions.primary_alert_channel` | `sms` (Africa's Talking) or `whatsapp` (Twilio) |
 
 ---
 
@@ -156,7 +156,7 @@ python -m ori.runtime --config ori.yaml
 
 You should see output like:
 
-```
+```bash
 [ori] Ori runtime starting...
 [ori] Loaded skill: pc-system-health v0.1.0
 [ori] Sensor system-cpu polling at 5000ms
@@ -173,18 +173,19 @@ You should see output like:
 
 You may see a warning like:
 
-```
+```md
 WARNING: cannot open /dev/watchdog — Permission denied
 ```
 
-This is **non-critical**. The external watchdog requires root or `dialout` group membership:
+This is **non-critical**. Access to `/dev/watchdog` is distro-dependent and usually controlled by the device's owning group:
 
 ```bash
 # Option 1: Run with sudo (not recommended for development)
 sudo python -m ori.runtime --config ori.yaml
 
-# Option 2: Add your user to the dialout group (persistent)
-sudo usermod -aG dialout $USER
+# Option 2: Add your user to the watchdog device group (persistent)
+WATCHDOG_GROUP="$(stat -c '%G' /dev/watchdog)"
+sudo usermod -aG "$WATCHDOG_GROUP" "$USER"
 # Then log out and back in
 
 # Option 3: Ignore the warning — it does not affect runtime functionality
@@ -208,16 +209,16 @@ pytest tests/ -v -m "not hardware"
 
 ## Troubleshooting
 
-| Problem | Solution |
-| ------- | -------- |
-| `FileNotFoundError: No such file or directory: 'ori.yaml'` | Run `cp ori.local.linux.example.yaml ori.yaml` |
-| `ConfigValidationError: 'device.id' is required but missing` | Fill in all `device.*` fields in your `ori.yaml` |
-| `ConfigValidationError: 'device.name' is required but missing` | Add `name:` under `device:` in your `ori.yaml` |
-| `ConfigValidationError: 'device.location' is required but missing` | Add `location:` under `device:` in your `ori.yaml` |
-| `Environment variable not set: ${...}` | Set required vars in `.env` and export `ORI_AUTOLOAD_DOTENV=true`, or replace `${VAR}` with literal values in `ori.yaml` |
-| `Failed to create llama_context` | Reinstall llama-cpp-python: `pip install --no-cache-dir --force-reinstall llama-cpp-python` |
-| `ori-runtime: command not found` | Install entrypoint: `pip install -e .`, or use `python -m ori.runtime` |
-| `operator_contact is not configured — Tier C approval requests will not reach operator` | This is a **warning**, not an error. Set `actions.operator_contact` in `ori.yaml` if you need Tier C approvals |
+| Problem                                                                                 | Solution                                                                                                                 |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `FileNotFoundError: No such file or directory: 'ori.yaml'`                              | Run `cp ori.linux.yaml.example ori.yaml`                                                                                 |
+| `ConfigValidationError: 'device.id' is required but missing`                            | Fill in all `device.*` fields in your `ori.yaml`                                                                         |
+| `ConfigValidationError: 'device.name' is required but missing`                          | Add `name:` under `device:` in your `ori.yaml`                                                                           |
+| `ConfigValidationError: 'device.location' is required but missing`                      | Add `location:` under `device:` in your `ori.yaml`                                                                       |
+| `Environment variable not set: ${...}`                                                  | Set required vars in `.env` and export `ORI_AUTOLOAD_DOTENV=true`, or replace `${VAR}` with literal values in `ori.yaml` |
+| `Failed to create llama_context`                                                        | Reinstall llama-cpp-python: `pip install --no-cache-dir --force-reinstall llama-cpp-python`                              |
+| `ori-runtime: command not found`                                                        | Install entrypoint: `pip install -e .`, or use `python -m ori.runtime`                                                   |
+| `operator_contact is not configured — Tier C approval requests will not reach operator` | This is a **warning**, not an error. Set `actions.operator_contact` in `ori.yaml` if you need Tier C approvals           |
 
 ---
 
