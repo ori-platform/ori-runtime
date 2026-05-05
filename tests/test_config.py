@@ -1298,3 +1298,97 @@ actions:
         )
         cfg = Config.load(yaml_path)
         assert cfg.actions.sms["incoming_webhook"]["token"] == "super-secret-token"
+
+
+class TestDevicePolicyConfig:
+    def _yaml(self, extra_block: str = "") -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+  offline_fallback: rule
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+{extra_block}
+"""
+
+    def test_defaults_when_block_missing(self, tmp_path):
+        yaml_path = _write_yaml(tmp_path, self._yaml())
+        cfg = Config.load(yaml_path)
+        assert cfg.device_policy["enabled"] is False
+        assert cfg.device_policy["url"] == ""
+        assert cfg.device_policy["auth_token"] == ""
+        assert cfg.device_policy["public_key_b64"] == ""
+        assert cfg.device_policy["request_timeout_ms"] == 3000
+        assert cfg.device_policy["max_clock_skew_s"] == 300
+
+    def test_enabled_requires_https_url(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "device_policy:\n"
+                "  enabled: true\n"
+                "  url: http://localhost/policy\n"
+                "  auth_token: token\n"
+                "  public_key_b64: key\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="must start with https://"):
+            Config.load(yaml_path)
+
+    def test_enabled_requires_auth_token(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "device_policy:\n"
+                "  enabled: true\n"
+                "  url: https://example.com/policy\n"
+                "  auth_token: ''\n"
+                "  public_key_b64: key\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="auth_token"):
+            Config.load(yaml_path)
+
+    def test_enabled_requires_public_key(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "device_policy:\n"
+                "  enabled: true\n"
+                "  url: https://example.com/policy\n"
+                "  auth_token: token\n"
+                "  public_key_b64: ''\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="public_key_b64"):
+            Config.load(yaml_path)
+
+    def test_enabled_valid_configuration(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "device_policy:\n"
+                "  enabled: true\n"
+                "  url: https://example.com/policy\n"
+                "  auth_token: token\n"
+                "  public_key_b64: dGVzdA==\n"
+                "  request_timeout_ms: 5000\n"
+                "  max_clock_skew_s: 120\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device_policy["enabled"] is True
+        assert cfg.device_policy["url"] == "https://example.com/policy"
+        assert cfg.device_policy["request_timeout_ms"] == 5000
+        assert cfg.device_policy["max_clock_skew_s"] == 120

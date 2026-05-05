@@ -239,6 +239,13 @@ gateway:
   enabled: false                     # set true when gateway Pi is on the LAN
   broker_url: mqtt://192.168.1.10:1883
 
+device_policy:
+  enabled: false
+  url: "https://api.ori.cloud/v1/device-policy" # ori-cloud endpoint for signed DevicePolicy
+  auth_token: "${ORI_DEVICE_POLICY_TOKEN}"      # device auth bearer token
+  public_key_b64: "${ORI_CLOUD_PUBKEY_B64}"     # ori-cloud Ed25519 public key (base64)
+  request_timeout_ms: 3000
+  max_clock_skew_s: 300
 
 actions:
   # For Nigeria: use sms as primary (Africa's Talking — no approval required)

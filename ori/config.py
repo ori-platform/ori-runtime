@@ -114,6 +114,7 @@ class Config:
     actions: ActionChannelConfig
     hal: HalConfig
     logging: LoggingConfig
+    device_policy: dict = field(default_factory=dict)
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -145,6 +146,7 @@ class Config:
         gateway = _parse_gateway(data.get("gateway", {}))
         actions = _parse_actions(data.get("actions", {}))
         hal = _parse_hal(data.get("hal"))
+        device_policy = _parse_device_policy(data.get("device_policy"))
         logging_cfg = _parse_logging(data.get("logging"))
 
         if not actions.operator_contact or "${" in actions.operator_contact:
@@ -233,6 +235,7 @@ class Config:
             gateway=gateway,
             actions=actions,
             hal=hal,
+            device_policy=device_policy,
             logging=logging_cfg,
             raw=data,
         )
@@ -714,6 +717,67 @@ def _parse_hal(data: Any) -> HalConfig:
         external_watchdog=ew_out,
         status_signaling=ss_out,
     )
+
+
+def _parse_device_policy(data: Any) -> dict:
+    """Parse remote DevicePolicy fetch settings."""
+    default_policy = {
+        "enabled": False,
+        "url": "",
+        "auth_token": "",
+        "public_key_b64": "",
+        "request_timeout_ms": 3000,
+        "max_clock_skew_s": 300,
+    }
+
+    if data is None:
+        return default_policy
+
+    if not isinstance(data, dict):
+        logger.warning(
+            "[config] 'device_policy' is not a mapping. Falling back to defaults."
+        )
+        return default_policy
+
+    try:
+        out = {
+            "enabled": bool(data.get("enabled", False)),
+            "url": str(data.get("url", "") or "").strip(),
+            "auth_token": str(data.get("auth_token", "") or "").strip(),
+            "public_key_b64": str(data.get("public_key_b64", "") or "").strip(),
+            "request_timeout_ms": int(data.get("request_timeout_ms", 3000)),
+            "max_clock_skew_s": int(data.get("max_clock_skew_s", 300)),
+        }
+    except (TypeError, ValueError):
+        logger.warning(
+            "[config] 'device_policy' has invalid types. Falling back to defaults."
+        )
+        return default_policy
+
+    if out["request_timeout_ms"] < 100:
+        raise ConfigValidationError("device_policy.request_timeout_ms must be >= 100.")
+    if out["max_clock_skew_s"] < 1:
+        raise ConfigValidationError("device_policy.max_clock_skew_s must be >= 1.")
+
+    if out["enabled"]:
+        if not out["url"]:
+            raise ConfigValidationError(
+                "device_policy.enabled is true but 'url' is empty."
+            )
+        if not out["url"].startswith("https://"):
+            raise ConfigValidationError(
+                "device_policy.url must start with https:// when enabled."
+            )
+        if not out["auth_token"] or "${" in out["auth_token"]:
+            raise ConfigValidationError(
+                "device_policy.auth_token is missing or not properly interpolated."
+            )
+        if not out["public_key_b64"] or "${" in out["public_key_b64"]:
+            raise ConfigValidationError(
+                "device_policy.public_key_b64 is missing or not properly interpolated."
+            )
+
+    return out
 
 
 def _parse_logging(data: Any) -> LoggingConfig:
