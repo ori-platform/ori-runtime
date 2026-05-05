@@ -246,6 +246,8 @@ device_policy:
   public_key_b64: "${ORI_CLOUD_PUBKEY_B64}"     # ori-cloud Ed25519 public key (base64)
   request_timeout_ms: 3000
   max_clock_skew_s: 300
+  refresh_enabled: false                         # background refresh loop
+  refresh_interval_s: 21600                      # 6h; minimum allowed is 60s
 
 actions:
   # For Nigeria: use sms as primary (Africa's Talking — no approval required)

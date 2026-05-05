@@ -728,6 +728,8 @@ def _parse_device_policy(data: Any) -> dict:
         "public_key_b64": "",
         "request_timeout_ms": 3000,
         "max_clock_skew_s": 300,
+        "refresh_enabled": False,
+        "refresh_interval_s": 21600,
     }
 
     if data is None:
@@ -747,6 +749,8 @@ def _parse_device_policy(data: Any) -> dict:
             "public_key_b64": str(data.get("public_key_b64", "") or "").strip(),
             "request_timeout_ms": int(data.get("request_timeout_ms", 3000)),
             "max_clock_skew_s": int(data.get("max_clock_skew_s", 300)),
+            "refresh_enabled": bool(data.get("refresh_enabled", False)),
+            "refresh_interval_s": int(data.get("refresh_interval_s", 21600)),
         }
     except (TypeError, ValueError):
         logger.warning(
@@ -758,6 +762,8 @@ def _parse_device_policy(data: Any) -> dict:
         raise ConfigValidationError("device_policy.request_timeout_ms must be >= 100.")
     if out["max_clock_skew_s"] < 1:
         raise ConfigValidationError("device_policy.max_clock_skew_s must be >= 1.")
+    if out["refresh_interval_s"] < 60:
+        raise ConfigValidationError("device_policy.refresh_interval_s must be >= 60.")
 
     if out["enabled"]:
         if not out["url"]:
