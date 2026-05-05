@@ -72,6 +72,8 @@ ALERT_OUTBOX_BATCH_SIZE = 50
 ALERT_OUTBOX_MAX_ATTEMPTS_NON_TIER_D = 10
 ALERT_OUTBOX_TIER_D_CRITICAL_THRESHOLD = 3
 CAPABILITY_POSTURE_UPDATE_INTERVAL_S = 30.0
+DEVICE_POLICY_REFRESH_DEFAULT_S = 21600.0
+DEVICE_POLICY_TRANSIENT_AUDIT_SUPPRESS_MS = 900_000
 
 
 class OriRuntime:
@@ -101,6 +103,7 @@ class OriRuntime:
         self._capability_posture_tracker: CapabilityPostureTracker | None = None
         self._status_indicator: LEDIndicator | None = None
         self._faulted_sensors: set[str] = set()
+        self._last_policy_refresh_transient_audit_ms: dict[str, int] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -620,6 +623,25 @@ class OriRuntime:
                 name="alert-outbox",
             )
         )
+        policy_cfg = (
+            config.device_policy if isinstance(config.device_policy, dict) else {}
+        )
+        if bool(policy_cfg.get("enabled", False)) and bool(
+            policy_cfg.get("refresh_enabled", False)
+        ):
+            refresh_interval_s = float(
+                policy_cfg.get("refresh_interval_s", DEVICE_POLICY_REFRESH_DEFAULT_S)
+            )
+            self._background_tasks.append(
+                asyncio.create_task(
+                    self._device_policy_refresh_loop(
+                        config=config,
+                        dispatcher=dispatcher,
+                        refresh_interval_s=refresh_interval_s,
+                    ),
+                    name="device-policy-refresh",
+                )
+            )
         if posture_tracker is not None:
             posture_interval_s = float(
                 posture_cfg.get(
@@ -839,10 +861,23 @@ class OriRuntime:
         if not bool(policy_cfg.get("enabled", False)):
             return
 
+        await self._refresh_remote_device_policy_once(
+            config=config,
+            dispatcher=dispatcher,
+            suppress_transient_audit=False,
+        )
+
+    async def _refresh_remote_device_policy_once(
+        self,
+        *,
+        config: Config,
+        dispatcher: ActionDispatcher,
+        suppress_transient_audit: bool,
+    ) -> None:
         current_version = dispatcher.current_policy_version()
         try:
             fetched = await fetch_remote_device_policy_bundle(
-                policy_cfg,
+                config.device_policy,
                 current_policy_version=current_version,
             )
             dispatcher.update_policy(fetched.policy)
@@ -882,6 +917,14 @@ class OriRuntime:
                 exc.code,
                 str(exc),
             )
+            if (
+                suppress_transient_audit
+                and self._should_suppress_transient_policy_audit(
+                    reason_code=exc.code,
+                    detail=str(exc),
+                )
+            ):
+                return
             await self._audit_policy_rejection(
                 device_id=config.device.id,
                 reason_code=exc.code,
@@ -898,6 +941,47 @@ class OriRuntime:
                 policy_version=None,
                 payload_timestamp=None,
             )
+
+    async def _device_policy_refresh_loop(
+        self,
+        *,
+        config: Config,
+        dispatcher: ActionDispatcher,
+        refresh_interval_s: float,
+    ) -> None:
+        """Periodically refresh and apply remote DevicePolicy while runtime is running."""
+        interval = max(1.0, float(refresh_interval_s))
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
+                break
+            except asyncio.TimeoutError:
+                pass
+            await self._refresh_remote_device_policy_once(
+                config=config,
+                dispatcher=dispatcher,
+                suppress_transient_audit=True,
+            )
+
+    def _should_suppress_transient_policy_audit(
+        self,
+        *,
+        reason_code: str,
+        detail: str,
+    ) -> bool:
+        """Deduplicate repeated transient network policy-refresh audit rows."""
+        if reason_code not in {"network_error", "network_timeout"}:
+            return False
+        key = f"{reason_code}:{detail}"
+        now = now_ms()
+        last = self._last_policy_refresh_transient_audit_ms.get(key)
+        if (
+            last is not None
+            and (now - last) < DEVICE_POLICY_TRANSIENT_AUDIT_SUPPRESS_MS
+        ):
+            return True
+        self._last_policy_refresh_transient_audit_ms[key] = now
+        return False
 
     async def _load_cached_device_policy(
         self,
