@@ -292,6 +292,14 @@ hal:
     enabled: false                   # optional GPIO heartbeat for external watchdog ICs
     gpio_pin: 17                     # BCM pin connected to watchdog DONE/WDI pin
     ping_interval_s: 30              # heartbeat interval in seconds
+  status_signaling:
+    enabled: false                   # LED/buzzer runtime state signaling
+    power_led_pin: 17                # BCM pin: power source indicator
+    relay_led_pin: 27                # BCM pin: relay state indicator
+    network_led_pin: 22              # BCM pin: network/cellular indicator
+    health_led_pin: 23               # BCM pin: runtime health indicator
+    buzzer_pin: 24                   # BCM pin: audible alert indicator
+    tick_ms: 100                     # pattern update interval in milliseconds
 
 
 logging:

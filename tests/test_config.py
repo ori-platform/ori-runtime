@@ -127,6 +127,14 @@ class TestLoadExample:
         assert ext["enabled"] is False
         assert ext["gpio_pin"] == 17
         assert ext["ping_interval_s"] == 30
+        status = cfg.hal.status_signaling
+        assert status["enabled"] is False
+        assert status["power_led_pin"] == 17
+        assert status["relay_led_pin"] == 27
+        assert status["network_led_pin"] == 22
+        assert status["health_led_pin"] == 23
+        assert status["buzzer_pin"] == 24
+        assert status["tick_ms"] == 100
 
 
 # ─── DeviceConfig validation ──────────────────────────────────────────────────
@@ -895,6 +903,46 @@ class TestActionsValidation:
         with pytest.raises(ConfigValidationError, match="gpio_pin=45"):
             Config.load(yaml_path)
 
+    def test_relay_gpio_conflicts_status_signaling_relay_led_pin(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+              relay:
+                enabled: true
+                gpio_pin: 26
+            hal:
+              status_signaling:
+                enabled: true
+                power_led_pin: 17
+                relay_led_pin: 26
+                network_led_pin: 22
+                health_led_pin: 23
+                buzzer_pin: 24
+                tick_ms: 100
+            """,
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="hal.status_signaling.relay_led_pin conflicts with actions.relay.gpio_pin",
+        ):
+            Config.load(yaml_path)
+
 
 # ─── HAL / Circuit Breaker validation ─────────────────────────────────────────
 
@@ -989,6 +1037,83 @@ hal:
         with pytest.raises(
             ConfigValidationError,
             match="hal.external_watchdog.ping_interval_s",
+        ):
+            Config.load(yaml_path)
+
+    def test_status_signaling_pin_must_be_valid_bcm(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  status_signaling:\n"
+                "    enabled: true\n"
+                "    power_led_pin: 45\n"
+                "    relay_led_pin: 27\n"
+                "    network_led_pin: 22\n"
+                "    health_led_pin: 23\n"
+                "    buzzer_pin: 24\n"
+                "    tick_ms: 100"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError, match="hal.status_signaling.power_led_pin=45"
+        ):
+            Config.load(yaml_path)
+
+    def test_status_signaling_pins_must_be_unique(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  status_signaling:\n"
+                "    enabled: true\n"
+                "    power_led_pin: 17\n"
+                "    relay_led_pin: 17\n"
+                "    network_led_pin: 22\n"
+                "    health_led_pin: 23\n"
+                "    buzzer_pin: 24\n"
+                "    tick_ms: 100"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="pins must be unique"):
+            Config.load(yaml_path)
+
+    def test_status_signaling_tick_must_be_min_50(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  status_signaling:\n"
+                "    enabled: true\n"
+                "    power_led_pin: 17\n"
+                "    relay_led_pin: 27\n"
+                "    network_led_pin: 22\n"
+                "    health_led_pin: 23\n"
+                "    buzzer_pin: 24\n"
+                "    tick_ms: 40"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="tick_ms must be >= 50"):
+            Config.load(yaml_path)
+
+    def test_status_signaling_power_pin_conflicts_external_watchdog(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  external_watchdog:\n"
+                "    enabled: true\n"
+                "    gpio_pin: 17\n"
+                "    ping_interval_s: 30\n"
+                "  status_signaling:\n"
+                "    enabled: true\n"
+                "    power_led_pin: 17\n"
+                "    relay_led_pin: 27\n"
+                "    network_led_pin: 22\n"
+                "    health_led_pin: 23\n"
+                "    buzzer_pin: 24\n"
+                "    tick_ms: 100"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="power_led_pin conflicts with hal.external_watchdog.gpio_pin",
         ):
             Config.load(yaml_path)
 
