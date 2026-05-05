@@ -8,6 +8,8 @@ are mocked.  No real hardware, credentials, or network calls are made.
 """
 
 import asyncio
+import base64
+import json
 import logging
 import os
 import textwrap
@@ -23,7 +25,7 @@ from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
 from ori.policy.device_policy import DevicePolicy
-from ori.policy.remote_fetch import RemotePolicyFetchError
+from ori.policy.remote_fetch import FetchedRemotePolicy, RemotePolicyFetchError
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import SkillContext
 from ori.runtime import (
@@ -34,7 +36,16 @@ from ori.runtime import (
     _process_target_from_context,
     _resolve_local_model_file,
 )
+from ori.skills.signing import canonical_signed_payload
 from ori.state.store import StateStore
+
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+except Exception:  # pragma: no cover - environment without cryptography support
+    Ed25519PrivateKey = None
+    Encoding = None
+    PublicFormat = None
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -1356,25 +1367,60 @@ class TestAlertOutbox:
 
 
 class TestRemoteDevicePolicy:
+    def _signed_policy_payload(self):
+        assert Ed25519PrivateKey is not None
+        private_key = Ed25519PrivateKey.generate()
+        payload = {
+            "tier": "cloud",
+            "relay_b_enabled": True,
+            "relay_c_enabled": False,
+            "cloud_llm_enabled": False,
+            "valid_until": int(time.time()) + 600,
+            "policy_version": 7,
+            "issued_at": int(time.time()) - 10,
+            "timestamp": int(time.time()),
+        }
+        signature = private_key.sign(canonical_signed_payload(payload))
+        payload["signature"] = "ed25519:" + base64.b64encode(signature).decode("ascii")
+        public_key_b64 = base64.b64encode(
+            private_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        raw_payload = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        return payload, raw_payload, public_key_b64
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
     async def test_applies_verified_remote_policy(self, tmp_path, monkeypatch):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "policy-apply.db"))
         await runtime._state_store.open()
         dispatcher = ActionDispatcher()
+        payload, raw_payload, public_key_b64 = self._signed_policy_payload()
 
         async def _fake_fetch(*_args, **_kwargs):
-            return DevicePolicy(
-                tier="cloud",
-                relay_b_enabled=True,
-                relay_c_enabled=False,
-                cloud_llm_enabled=False,
-                valid_until=int(time.time()) + 600,
-                policy_version=7,
-                issued_at=int(time.time()) - 10,
-                signature="ed25519:test",
+            return FetchedRemotePolicy(
+                policy=DevicePolicy(
+                    tier="cloud",
+                    relay_b_enabled=True,
+                    relay_c_enabled=False,
+                    cloud_llm_enabled=False,
+                    valid_until=int(time.time()) + 600,
+                    policy_version=7,
+                    issued_at=int(time.time()) - 10,
+                    signature=payload["signature"],
+                ),
+                raw_payload=raw_payload,
+                payload=payload,
             )
 
-        monkeypatch.setattr("ori.runtime.fetch_remote_device_policy", _fake_fetch)
+        monkeypatch.setattr(
+            "ori.runtime.fetch_remote_device_policy_bundle", _fake_fetch
+        )
 
         cfg = SimpleNamespace(
             device=SimpleNamespace(id="dev-01"),
@@ -1382,7 +1428,7 @@ class TestRemoteDevicePolicy:
                 "enabled": True,
                 "url": "https://example.com/device-policy",
                 "auth_token": "token",
-                "public_key_b64": "key",
+                "public_key_b64": public_key_b64,
                 "request_timeout_ms": 3000,
                 "max_clock_skew_s": 300,
             },
@@ -1393,6 +1439,10 @@ class TestRemoteDevicePolicy:
             assert dispatcher.current_policy_version() == 7
             assert dispatcher._policy is not None
             assert dispatcher._policy.relay_c_enabled is False
+            cached = await runtime._state_store.get_latest_device_policy_cache()
+            assert cached is not None
+            assert cached["policy_version"] == 7
+            assert cached["raw_payload"] == raw_payload
         finally:
             await runtime._state_store.close()
 
@@ -1410,7 +1460,9 @@ class TestRemoteDevicePolicy:
                 payload_timestamp=1234567890,
             )
 
-        monkeypatch.setattr("ori.runtime.fetch_remote_device_policy", _fake_fetch)
+        monkeypatch.setattr(
+            "ori.runtime.fetch_remote_device_policy_bundle", _fake_fetch
+        )
 
         cfg = SimpleNamespace(
             device=SimpleNamespace(id="dev-02"),
@@ -1442,6 +1494,88 @@ class TestRemoteDevicePolicy:
             assert row["device_id"] == "dev-02"
             assert '"code":"invalid_signature"' in row["reason"]
             assert '"policy_version":5' in row["reason"]
+        finally:
+            await runtime._state_store.close()
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    async def test_load_cached_policy_applies_when_signature_valid(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-cache-valid.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        payload, raw_payload, public_key_b64 = self._signed_policy_payload()
+
+        await runtime._state_store.upsert_device_policy_cache(
+            policy_version=int(payload["policy_version"]),
+            tier=str(payload["tier"]),
+            relay_b_enabled=bool(payload["relay_b_enabled"]),
+            relay_c_enabled=bool(payload["relay_c_enabled"]),
+            cloud_llm_enabled=bool(payload["cloud_llm_enabled"]),
+            valid_until=int(payload["valid_until"]),
+            issued_at=int(payload["issued_at"]),
+            signature=str(payload["signature"]),
+            raw_payload=raw_payload,
+        )
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-cache-01"),
+            device_policy={"public_key_b64": public_key_b64},
+        )
+
+        try:
+            await runtime._load_cached_device_policy(cfg, dispatcher)
+            assert dispatcher.current_policy_version() == int(payload["policy_version"])
+            assert dispatcher._policy is not None
+            assert dispatcher._policy.relay_c_enabled is False
+        finally:
+            await runtime._state_store.close()
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    async def test_load_cached_policy_rejects_invalid_signature_audits(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-cache-bad.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        payload, raw_payload, _public_key_b64 = self._signed_policy_payload()
+        _, _, wrong_public_key_b64 = self._signed_policy_payload()
+
+        await runtime._state_store.upsert_device_policy_cache(
+            policy_version=int(payload["policy_version"]),
+            tier=str(payload["tier"]),
+            relay_b_enabled=bool(payload["relay_b_enabled"]),
+            relay_c_enabled=bool(payload["relay_c_enabled"]),
+            cloud_llm_enabled=bool(payload["cloud_llm_enabled"]),
+            valid_until=int(payload["valid_until"]),
+            issued_at=int(payload["issued_at"]),
+            signature=str(payload["signature"]),
+            raw_payload=raw_payload,
+        )
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-cache-02"),
+            device_policy={"public_key_b64": wrong_public_key_b64},
+        )
+
+        try:
+            await runtime._load_cached_device_policy(cfg, dispatcher)
+            assert dispatcher.current_policy_version() == 0
+            row = await runtime._state_store._run_read(
+                lambda conn: conn.execute(
+                    """
+                    SELECT override_type, reason
+                    FROM override_log
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            )
+            assert row is not None
+            assert row["override_type"] == "policy_rejection"
+            assert '"code":"cache_invalid_payload"' in row["reason"]
         finally:
             await runtime._state_store.close()
 

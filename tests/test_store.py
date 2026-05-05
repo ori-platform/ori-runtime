@@ -388,6 +388,58 @@ class TestAlertOutbox:
         assert rows == []
 
 
+class TestDevicePolicyCache:
+    async def test_upsert_and_get_latest_device_policy_cache(self, store):
+        await store.upsert_device_policy_cache(
+            policy_version=4,
+            tier="cloud",
+            relay_b_enabled=True,
+            relay_c_enabled=False,
+            cloud_llm_enabled=False,
+            valid_until=1_800_000_000,
+            issued_at=1_700_000_000,
+            signature="ed25519:test",
+            raw_payload='{"policy_version":4}',
+            cached_at_ms=1111,
+        )
+        row = await store.get_latest_device_policy_cache()
+        assert row is not None
+        assert row["policy_version"] == 4
+        assert row["relay_b_enabled"] is True
+        assert row["relay_c_enabled"] is False
+        assert row["raw_payload"] == '{"policy_version":4}'
+
+    async def test_get_latest_returns_highest_policy_version(self, store):
+        await store.upsert_device_policy_cache(
+            policy_version=2,
+            tier="cloud",
+            relay_b_enabled=True,
+            relay_c_enabled=True,
+            cloud_llm_enabled=True,
+            valid_until=1_800_000_000,
+            issued_at=1_700_000_000,
+            signature="ed25519:a",
+            raw_payload='{"policy_version":2}',
+            cached_at_ms=1111,
+        )
+        await store.upsert_device_policy_cache(
+            policy_version=5,
+            tier="cloud",
+            relay_b_enabled=False,
+            relay_c_enabled=False,
+            cloud_llm_enabled=False,
+            valid_until=1_900_000_000,
+            issued_at=1_700_000_100,
+            signature="ed25519:b",
+            raw_payload='{"policy_version":5}',
+            cached_at_ms=2222,
+        )
+        row = await store.get_latest_device_policy_cache()
+        assert row is not None
+        assert row["policy_version"] == 5
+        assert row["signature"] == "ed25519:b"
+
+
 # ─── causal_memory ────────────────────────────────────────────────────────────
 
 

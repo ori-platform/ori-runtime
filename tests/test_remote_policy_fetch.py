@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
+import json
 import time
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from ori.policy.remote_fetch import (
     RemotePolicyFetchError,
     fetch_remote_device_policy,
+    fetch_remote_device_policy_bundle,
 )
 from ori.skills.signing import canonical_signed_payload
 
@@ -64,11 +66,39 @@ async def test_fetch_remote_policy_accepts_valid_signed_payload(monkeypatch):
     ).decode("ascii")
     payload = _signed_payload(private_key)
 
-    monkeypatch.setattr("ori.policy.remote_fetch._http_get_json", lambda _cfg: payload)
+    monkeypatch.setattr(
+        "ori.policy.remote_fetch._http_get_json",
+        lambda _cfg: (json.dumps(payload), payload),
+    )
     policy = await fetch_remote_device_policy(_base_config(public_key_b64))
     assert policy.policy_version == 2
     assert policy.relay_b_enabled is True
     assert policy.signature.startswith("ed25519:")
+
+
+@pytest.mark.skipif(
+    Ed25519PrivateKey is None,
+    reason="cryptography ed25519 is unavailable",
+)
+@pytest.mark.asyncio
+async def test_fetch_remote_policy_bundle_returns_exact_raw_payload(monkeypatch):
+    private_key = Ed25519PrivateKey.generate()
+    public_key_b64 = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=Encoding.Raw,
+            format=PublicFormat.Raw,
+        )
+    ).decode("ascii")
+    payload = _signed_payload(private_key)
+    raw_payload = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+    monkeypatch.setattr(
+        "ori.policy.remote_fetch._http_get_json",
+        lambda _cfg: (raw_payload, payload),
+    )
+    fetched = await fetch_remote_device_policy_bundle(_base_config(public_key_b64))
+    assert fetched.raw_payload == raw_payload
+    assert fetched.policy.policy_version == int(payload["policy_version"])
 
 
 @pytest.mark.skipif(
@@ -86,7 +116,10 @@ async def test_fetch_remote_policy_rejects_stale_timestamp(monkeypatch):
     ).decode("ascii")
     payload = _signed_payload(private_key, timestamp=int(time.time()) - 1000)
 
-    monkeypatch.setattr("ori.policy.remote_fetch._http_get_json", lambda _cfg: payload)
+    monkeypatch.setattr(
+        "ori.policy.remote_fetch._http_get_json",
+        lambda _cfg: (json.dumps(payload), payload),
+    )
     with pytest.raises(RemotePolicyFetchError, match="skew window") as exc:
         await fetch_remote_device_policy(
             {**_base_config(public_key_b64), "max_clock_skew_s": 5}
@@ -109,7 +142,10 @@ async def test_fetch_remote_policy_rejects_version_downgrade(monkeypatch):
     ).decode("ascii")
     payload = _signed_payload(private_key, policy_version=1)
 
-    monkeypatch.setattr("ori.policy.remote_fetch._http_get_json", lambda _cfg: payload)
+    monkeypatch.setattr(
+        "ori.policy.remote_fetch._http_get_json",
+        lambda _cfg: (json.dumps(payload), payload),
+    )
     with pytest.raises(RemotePolicyFetchError, match="lower than current") as exc:
         await fetch_remote_device_policy(
             _base_config(public_key_b64),
@@ -134,7 +170,10 @@ async def test_fetch_remote_policy_rejects_invalid_signature(monkeypatch):
     ).decode("ascii")
     payload = _signed_payload(private_key)
 
-    monkeypatch.setattr("ori.policy.remote_fetch._http_get_json", lambda _cfg: payload)
+    monkeypatch.setattr(
+        "ori.policy.remote_fetch._http_get_json",
+        lambda _cfg: (json.dumps(payload), payload),
+    )
     with pytest.raises(
         RemotePolicyFetchError,
         match="signature verification failed",
