@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import textwrap
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -21,6 +22,9 @@ import pytest
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
+from ori.policy.device_policy import DevicePolicy
+from ori.policy.remote_fetch import RemotePolicyFetchError
+from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import SkillContext
 from ori.runtime import (
     OriRuntime,
@@ -1347,6 +1351,97 @@ class TestAlertOutbox:
             assert len(queued) == 1
             assert queued[0]["channel"] == "sms"
             assert queued[0]["status"] == "pending"
+        finally:
+            await runtime._state_store.close()
+
+
+class TestRemoteDevicePolicy:
+    async def test_applies_verified_remote_policy(self, tmp_path, monkeypatch):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-apply.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+
+        async def _fake_fetch(*_args, **_kwargs):
+            return DevicePolicy(
+                tier="cloud",
+                relay_b_enabled=True,
+                relay_c_enabled=False,
+                cloud_llm_enabled=False,
+                valid_until=int(time.time()) + 600,
+                policy_version=7,
+                issued_at=int(time.time()) - 10,
+                signature="ed25519:test",
+            )
+
+        monkeypatch.setattr("ori.runtime.fetch_remote_device_policy", _fake_fetch)
+
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-01"),
+            device_policy={
+                "enabled": True,
+                "url": "https://example.com/device-policy",
+                "auth_token": "token",
+                "public_key_b64": "key",
+                "request_timeout_ms": 3000,
+                "max_clock_skew_s": 300,
+            },
+        )
+
+        try:
+            await runtime._maybe_refresh_remote_device_policy_once(cfg, dispatcher)
+            assert dispatcher.current_policy_version() == 7
+            assert dispatcher._policy is not None
+            assert dispatcher._policy.relay_c_enabled is False
+        finally:
+            await runtime._state_store.close()
+
+    async def test_rejection_is_persisted_to_override_log(self, tmp_path, monkeypatch):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-reject.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+
+        async def _fake_fetch(*_args, **_kwargs):
+            raise RemotePolicyFetchError(
+                "invalid_signature",
+                "signature verification failed",
+                policy_version=5,
+                payload_timestamp=1234567890,
+            )
+
+        monkeypatch.setattr("ori.runtime.fetch_remote_device_policy", _fake_fetch)
+
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-02"),
+            device_policy={
+                "enabled": True,
+                "url": "https://example.com/device-policy",
+                "auth_token": "token",
+                "public_key_b64": "key",
+                "request_timeout_ms": 3000,
+                "max_clock_skew_s": 300,
+            },
+        )
+
+        try:
+            await runtime._maybe_refresh_remote_device_policy_once(cfg, dispatcher)
+            row = await runtime._state_store._run_read(
+                lambda conn: conn.execute(
+                    """
+                    SELECT override_type, action, reason, device_id
+                    FROM override_log
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            )
+            assert row is not None
+            assert row["override_type"] == "policy_rejection"
+            assert row["action"] == "refresh_device_policy"
+            assert row["device_id"] == "dev-02"
+            assert '"code":"invalid_signature"' in row["reason"]
+            assert '"policy_version":5' in row["reason"]
         finally:
             await runtime._state_store.close()
 

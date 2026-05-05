@@ -15,6 +15,7 @@ Or via the CLI entry point::
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import signal
@@ -44,6 +45,10 @@ from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, compute_fingerprint
 from ori.network.sms_webhook import SMSWebhookServer
+from ori.policy.remote_fetch import (
+    RemotePolicyFetchError,
+    fetch_remote_device_policy,
+)
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
@@ -305,6 +310,7 @@ class OriRuntime:
             },
         )
         self._dispatcher = dispatcher
+        await self._maybe_refresh_remote_device_policy_once(config, dispatcher)
 
         # alert_whatsapp executor
         async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> None:
@@ -817,6 +823,87 @@ class OriRuntime:
             except Exception:
                 logger.exception("[sensor] unexpected error polling %s", sensor_cfg.id)
             await asyncio.sleep(sensor_cfg.poll_interval_ms / 1000)
+
+    async def _maybe_refresh_remote_device_policy_once(
+        self,
+        config: Config,
+        dispatcher: ActionDispatcher,
+    ) -> None:
+        """Optionally fetch and apply a verified remote DevicePolicy once at startup."""
+        policy_cfg = (
+            config.device_policy if isinstance(config.device_policy, dict) else {}
+        )
+        if not bool(policy_cfg.get("enabled", False)):
+            return
+
+        current_version = dispatcher.current_policy_version()
+        try:
+            fetched = await fetch_remote_device_policy(
+                policy_cfg,
+                current_policy_version=current_version,
+            )
+            dispatcher.update_policy(fetched)
+            logger.info(
+                "[runtime] remote DevicePolicy applied — version=%s tier=%s valid_until=%s",
+                fetched.policy_version,
+                fetched.tier,
+                fetched.valid_until,
+            )
+        except RemotePolicyFetchError as exc:
+            logger.warning(
+                "[runtime] remote DevicePolicy rejected code=%s detail=%s",
+                exc.code,
+                str(exc),
+            )
+            await self._audit_policy_rejection(
+                device_id=config.device.id,
+                reason_code=exc.code,
+                detail=str(exc),
+                policy_version=exc.policy_version,
+                payload_timestamp=exc.payload_timestamp,
+            )
+        except Exception:
+            logger.exception("[runtime] unexpected remote DevicePolicy fetch error")
+            await self._audit_policy_rejection(
+                device_id=config.device.id,
+                reason_code="unexpected_error",
+                detail="unexpected exception during remote policy fetch",
+                policy_version=None,
+                payload_timestamp=None,
+            )
+
+    async def _audit_policy_rejection(
+        self,
+        *,
+        device_id: str,
+        reason_code: str,
+        detail: str,
+        policy_version: int | None,
+        payload_timestamp: int | None,
+    ) -> None:
+        if self._state_store is None:
+            return
+        audit_reason = json.dumps(
+            {
+                "code": reason_code,
+                "detail": detail,
+                "policy_version": policy_version,
+                "payload_timestamp": payload_timestamp,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        try:
+            await self._state_store.log_override(
+                trigger_name="device_policy_refresh",
+                action="refresh_device_policy",
+                reason=audit_reason,
+                operator_response=None,
+                override_type="policy_rejection",
+                device_id=device_id,
+            )
+        except Exception:
+            logger.exception("[runtime] failed to persist policy rejection audit trail")
 
     async def _watchdog_loop(self) -> None:
         """Ping /dev/watchdog every WATCHDOG_PING_INTERVAL seconds."""

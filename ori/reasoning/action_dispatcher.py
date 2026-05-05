@@ -138,6 +138,11 @@ class ActionDispatcher:
     def update_capability_posture(self, posture: CapabilityPosture | None) -> None:
         self._capability_posture = posture
 
+    def current_policy_version(self) -> int | None:
+        if self._policy is None:
+            return None
+        return int(self._policy.policy_version)
+
     def permits_relay_action(self, action_tier: str) -> bool:
         """Check if a relay action is permitted for the given tier based on DevicePolicy and config."""
         if action_tier == ActionTier.SAFETY_CRITICAL:
