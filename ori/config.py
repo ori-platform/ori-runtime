@@ -66,6 +66,7 @@ class ReasoningConfig:
     offline_fallback: str
     escalation_threshold: float = 0.70
     energy_aware_reasoning: dict = field(default_factory=dict)
+    capability_posture: dict = field(default_factory=dict)
     causal_memory: dict = field(default_factory=dict)
 
 
@@ -363,6 +364,63 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
         raise ConfigValidationError(
             "'reasoning.causal_memory' must be a mapping when provided."
         )
+    capability_posture = data.get("capability_posture") or {}
+    if not isinstance(capability_posture, dict):
+        raise ConfigValidationError(
+            "'reasoning.capability_posture' must be a mapping when provided."
+        )
+
+    try:
+        probe_interval_seconds = int(
+            capability_posture.get("probe_interval_seconds", 30)
+        )
+        gateway_heartbeat_ttl_seconds = int(
+            capability_posture.get("gateway_heartbeat_ttl_seconds", 30)
+        )
+        internet_probe_timeout_ms = int(
+            capability_posture.get("internet_probe_timeout_ms", 1000)
+        )
+        internet_probe_port = int(capability_posture.get("internet_probe_port", 53))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "reasoning.capability_posture numeric fields must be valid integers."
+        ) from exc
+
+    if not (1 <= probe_interval_seconds <= 30):
+        raise ConfigValidationError(
+            "reasoning.capability_posture.probe_interval_seconds must be between 1 and 30."
+        )
+    if gateway_heartbeat_ttl_seconds < 1:
+        raise ConfigValidationError(
+            "reasoning.capability_posture.gateway_heartbeat_ttl_seconds must be >= 1."
+        )
+    if internet_probe_timeout_ms < 100:
+        raise ConfigValidationError(
+            "reasoning.capability_posture.internet_probe_timeout_ms must be >= 100."
+        )
+    if not (1 <= internet_probe_port <= 65535):
+        raise ConfigValidationError(
+            "reasoning.capability_posture.internet_probe_port must be between 1 and 65535."
+        )
+    internet_probe_host = str(
+        capability_posture.get("internet_probe_host", "one.one.one.one")
+    ).strip()
+    if not internet_probe_host:
+        raise ConfigValidationError(
+            "reasoning.capability_posture.internet_probe_host must not be empty."
+        )
+
+    capability_posture_cfg = {
+        "enabled": (
+            str(capability_posture.get("enabled", "true")).strip().lower() == "true"
+            or capability_posture.get("enabled") is True
+        ),
+        "probe_interval_seconds": probe_interval_seconds,
+        "gateway_heartbeat_ttl_seconds": gateway_heartbeat_ttl_seconds,
+        "internet_probe_timeout_ms": internet_probe_timeout_ms,
+        "internet_probe_port": internet_probe_port,
+        "internet_probe_host": internet_probe_host,
+    }
 
     return ReasoningConfig(
         default_tier=str(data.get("default_tier", "local")),
@@ -371,6 +429,7 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
         offline_fallback=str(data.get("offline_fallback", "rule")),
         escalation_threshold=float(data.get("escalation_threshold", 0.70)),
         energy_aware_reasoning=energy_aware,
+        capability_posture=capability_posture_cfg,
         causal_memory=causal_memory,
     )
 

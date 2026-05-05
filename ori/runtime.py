@@ -18,7 +18,6 @@ import hashlib
 import logging
 import os
 import signal
-import time
 from pathlib import Path
 from typing import Any
 
@@ -38,10 +37,12 @@ from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, compute_fingerprint
 from ori.network.sms_webhook import SMSWebhookServer
 from ori.reasoning.action_dispatcher import ActionDispatcher
+from ori.reasoning.capability_posture import CapabilityPostureTracker
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.skills.loader import SkillLoader
 from ori.state.store import StateStore
+from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ ALERT_OUTBOX_RETRY_INTERVAL_S = 30.0
 ALERT_OUTBOX_BATCH_SIZE = 50
 ALERT_OUTBOX_MAX_ATTEMPTS_NON_TIER_D = 10
 ALERT_OUTBOX_TIER_D_CRITICAL_THRESHOLD = 3
+CAPABILITY_POSTURE_UPDATE_INTERVAL_S = 30.0
 
 
 class OriRuntime:
@@ -81,6 +83,7 @@ class OriRuntime:
         self._skill_subscriptions: list[tuple[str, Any]] = []
         self._skill_reload_lock: asyncio.Lock | None = None
         self._deduplicator: EventDeduplicator | None = None
+        self._capability_posture_tracker: CapabilityPostureTracker | None = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -389,7 +392,32 @@ class OriRuntime:
             dispatcher.register_executor("trip_relay", _exec_trip_relay)
             dispatcher.register_executor("release_relay", _exec_release_relay)
 
-        # ── Step D: IntelligenceElevator ──────────────────────────────────────
+        # ── Step D: Capability posture tracker + IntelligenceElevator ─────────
+        posture_cfg = (
+            config.reasoning.capability_posture
+            if isinstance(config.reasoning.capability_posture, dict)
+            else {}
+        )
+        posture_enabled = bool(posture_cfg.get("enabled", True))
+        posture_tracker: CapabilityPostureTracker | None = None
+        if posture_enabled:
+            posture_tracker = CapabilityPostureTracker(
+                probe_interval_seconds=int(
+                    posture_cfg.get("probe_interval_seconds", 30)
+                ),
+                gateway_heartbeat_ttl_seconds=int(
+                    posture_cfg.get("gateway_heartbeat_ttl_seconds", 30)
+                ),
+                internet_probe_host=str(
+                    posture_cfg.get("internet_probe_host", "one.one.one.one")
+                ),
+                internet_probe_port=int(posture_cfg.get("internet_probe_port", 53)),
+                internet_probe_timeout_ms=int(
+                    posture_cfg.get("internet_probe_timeout_ms", 1000)
+                ),
+            )
+            self._capability_posture_tracker = posture_tracker
+
         local_llm = _build_local_llm(config.reasoning, self._config_path)
         elevator = IntelligenceElevator(local_llm=local_llm, config=config.reasoning)
 
@@ -397,6 +425,24 @@ class OriRuntime:
         event_bus = EventBus()
         elevator.attach_event_bus(event_bus)
         self._event_bus = event_bus
+        if posture_tracker is not None:
+
+            async def _on_gateway_health(event: OriEvent) -> None:
+                posture_tracker.record_gateway_heartbeat(event.timestamp)
+
+            event_bus.subscribe("ori/gateway/health", _on_gateway_health)
+
+            # Build an initial posture snapshot before processing events.
+            posture = await posture_tracker.refresh(
+                sms_available=_is_truthy(config.actions.sms.get("enabled", False)),
+                whatsapp_available=_is_truthy(
+                    config.actions.whatsapp.get("enabled", False)
+                ),
+                local_slm_loaded=_is_local_slm_available(local_llm),
+                relay_connected=relay_action is not None,
+            )
+            elevator.update_capability_posture(posture)
+
         self._skill_reload_lock = asyncio.Lock()
         self._deduplicator = EventDeduplicator()
 
@@ -525,6 +571,31 @@ class OriRuntime:
                 name="alert-outbox",
             )
         )
+        if posture_tracker is not None:
+            posture_interval_s = float(
+                posture_cfg.get(
+                    "probe_interval_seconds",
+                    CAPABILITY_POSTURE_UPDATE_INTERVAL_S,
+                )
+            )
+            self._background_tasks.append(
+                asyncio.create_task(
+                    self._capability_posture_loop(
+                        tracker=posture_tracker,
+                        elevator=elevator,
+                        sms_enabled=_is_truthy(
+                            config.actions.sms.get("enabled", False)
+                        ),
+                        whatsapp_enabled=_is_truthy(
+                            config.actions.whatsapp.get("enabled", False)
+                        ),
+                        local_llm=local_llm,
+                        relay_connected=relay_action is not None,
+                        update_interval_s=posture_interval_s,
+                    ),
+                    name="capability-posture",
+                )
+            )
         webhook_task = await self._start_sms_webhook_if_enabled(config)
         if webhook_task is not None:
             self._background_tasks.append(webhook_task)
@@ -818,7 +889,6 @@ class OriRuntime:
                 break  # shutdown was signalled
             except asyncio.TimeoutError:
                 pass
-
             if self._state_store is not None:
                 try:
                     await self._state_store.compact_history()
@@ -835,6 +905,36 @@ class OriRuntime:
                     logger.exception(
                         "[compaction] deduplicator cleanup failed — will retry"
                     )
+
+    async def _capability_posture_loop(
+        self,
+        *,
+        tracker: CapabilityPostureTracker,
+        elevator: IntelligenceElevator,
+        sms_enabled: bool,
+        whatsapp_enabled: bool,
+        local_llm: LocalLLM | None,
+        relay_connected: bool,
+        update_interval_s: float,
+    ) -> None:
+        """Periodically refresh capability posture and feed it into the elevator."""
+        interval = max(update_interval_s, 1.0)
+        while not self._shutdown_event.is_set():
+            try:
+                posture = await tracker.refresh(
+                    sms_available=sms_enabled,
+                    whatsapp_available=whatsapp_enabled,
+                    local_slm_loaded=_is_local_slm_available(local_llm),
+                    relay_connected=relay_connected,
+                )
+                elevator.update_capability_posture(posture)
+            except Exception:
+                logger.exception("[runtime] capability posture refresh failed")
+
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
 
     async def _send_or_queue_alert(
         self,
@@ -1053,7 +1153,7 @@ def _resolve_original_ts(ctx: SkillContext) -> int:
             return int(ctx.event.timestamp)
         except Exception:
             pass
-    return int(time.time() * 1000)
+    return now_ms()
 
 
 def _resolve_action_declared_tier(ctx: SkillContext, action_name: str) -> str:
@@ -1093,6 +1193,13 @@ def _is_truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _is_local_slm_available(local_llm: Any) -> bool:
+    """Safely resolve local SLM availability from any LocalLLM-like object."""
+    if local_llm is None:
+        return False
+    return bool(getattr(local_llm, "is_available", False))
 
 
 def _maybe_autoload_dotenv(config_path: str) -> None:

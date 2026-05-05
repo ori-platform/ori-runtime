@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ori.network.events import OriEvent, ReasoningResult, SensorReading
+from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext, _complexity_score
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -219,6 +220,28 @@ class TestSelectTier:
         )
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
             tier = await elevator.select_tier(_event(value=5.0), skill, None)
+        assert tier == "local_slm"
+
+    async def test_fresh_capability_posture_is_used_without_probe(self):
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(config=conf)
+        posture = CapabilityPosture(
+            sms_available=True,
+            whatsapp_available=True,
+            gateway_reachable=False,
+            local_slm_loaded=True,
+            relay_connected=False,
+            internet_available=False,
+            checked_at_ms=_ms(),
+            expires_at_ms=_ms() + 60_000,
+            gateway_last_heartbeat_ms=None,
+        )
+        elevator.update_capability_posture(posture)
+        with patch(
+            "ori.reasoning.elevator._is_offline",
+            side_effect=AssertionError("offline probe should not run"),
+        ):
+            tier = await elevator.select_tier(_event(value=5.0), FakeSkill(), None)
         assert tier == "local_slm"
 
 

@@ -218,6 +218,13 @@ reasoning:
   model_path: /home/pi/models/       # directory containing local GGUF models
   offline_fallback: rule             # tier to use when network unavailable
   escalation_threshold: 0.70        # escalate if confidence below this
+  capability_posture:
+    enabled: true
+    probe_interval_seconds: 30      # must be <=30; posture refresh cadence
+    gateway_heartbeat_ttl_seconds: 30
+    internet_probe_host: one.one.one.one
+    internet_probe_port: 53
+    internet_probe_timeout_ms: 1000
   energy_aware_reasoning:
     enabled: true
     throttle_threshold_percent: 20

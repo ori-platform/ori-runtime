@@ -18,14 +18,17 @@ and returns a :class:`~ori.network.events.ReasoningResult`.
 import asyncio
 import datetime
 import logging
-import socket
-import time
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ori.network.events import OriEvent, ReasoningResult
+from ori.reasoning.capability_posture import (
+    CapabilityPosture,
+    probe_internet_available,
+)
 from ori.reasoning.rule_engine import RuleEngine, RuleEngineSafetyError
+from ori.time_utils import now_ms
 
 if TYPE_CHECKING:
     pass
@@ -49,23 +52,17 @@ class SkillContext:
     trigger_name: str = ""
 
 
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
 def _hour_now() -> int:
     return datetime.datetime.now().hour
 
 
 def _is_offline() -> bool:
     """Return ``True`` if no internet connectivity is detectable."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(1.0)
-            sock.connect(("8.8.8.8", 53))
-        return False
-    except OSError:
-        return True
+    return not probe_internet_available(
+        host="one.one.one.one",
+        port=53,
+        timeout_ms=1000,
+    )
 
 
 def _complexity_score(
@@ -147,10 +144,19 @@ class IntelligenceElevator:
         )
         self._event_bus: Any = None
         self._last_power_mode: str = "normal"
+        self._capability_posture: CapabilityPosture | None = None
 
     def attach_event_bus(self, event_bus: Any) -> None:
         """Attach EventBus for synthetic runtime alerts emitted by the elevator."""
         self._event_bus = event_bus
+
+    def update_capability_posture(self, posture: CapabilityPosture) -> None:
+        """Inject latest runtime capability posture snapshot."""
+        self._capability_posture = posture
+
+    def get_capability_posture(self) -> CapabilityPosture | None:
+        """Return latest posture snapshot, or None if unavailable."""
+        return self._capability_posture
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -258,6 +264,11 @@ class IntelligenceElevator:
 
     async def _is_offline_async(self) -> bool:
         """Run connectivity probe in a worker thread to avoid blocking the loop."""
+        if (
+            self._capability_posture is not None
+            and not self._capability_posture.is_stale()
+        ):
+            return not self._capability_posture.internet_available
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _is_offline)
 
@@ -484,7 +495,7 @@ class IntelligenceElevator:
             event_type="power.low_battery_throttle",
             device_id=event.device_id,
             sensor_id=event.sensor_id,
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             reading=None,
             context={
                 "message": msg,
@@ -820,7 +831,7 @@ class IntelligenceElevator:
                 event_id=f"syn-{event.event_id}",
                 device_id=event.device_id,
                 sensor_id=event.sensor_id,
-                timestamp=_now_ms(),
+                timestamp=now_ms(),
                 reading=event.reading,
             )
 

@@ -712,6 +712,101 @@ class TestReasoningConfig:
         cm = cfg.reasoning.causal_memory
         assert cm["rejection_expiry_days"] == 30
 
+    def test_capability_posture_defaults(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        cp = cfg.reasoning.capability_posture
+        assert cp["enabled"] is True
+        assert cp["probe_interval_seconds"] == 30
+        assert cp["gateway_heartbeat_ttl_seconds"] == 30
+
+    def test_capability_posture_custom_values(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+              capability_posture:
+                enabled: true
+                probe_interval_seconds: 20
+                gateway_heartbeat_ttl_seconds: 25
+                internet_probe_timeout_ms: 1500
+                internet_probe_port: 443
+                internet_probe_host: one.one.one.one
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        cp = cfg.reasoning.capability_posture
+        assert cp["probe_interval_seconds"] == 20
+        assert cp["gateway_heartbeat_ttl_seconds"] == 25
+        assert cp["internet_probe_timeout_ms"] == 1500
+        assert cp["internet_probe_port"] == 443
+        assert cp["internet_probe_host"] == "one.one.one.one"
+
+    def test_capability_posture_rejects_probe_interval_over_30(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+              capability_posture:
+                probe_interval_seconds: 31
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="probe_interval_seconds must be between 1 and 30",
+        ):
+            Config.load(yaml_path)
+
 
 # ─── ActionChannelConfig validation ───────────────────────────────────────────
 
