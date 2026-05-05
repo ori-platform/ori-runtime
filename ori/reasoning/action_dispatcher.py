@@ -25,6 +25,7 @@ from typing import Any
 from ori.actions.logger import LoggerAction
 from ori.network.events import ActionResult, ActionTier, ReasoningResult
 from ori.policy.device_policy import DevicePolicy
+from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
 from ori.time_utils import now_ms
 
@@ -86,6 +87,7 @@ class ActionDispatcher:
         self,
         state_store: Any = None,
         alert_sender: Any = None,
+        status_indicator: Any = None,
         config: dict | None = None,
     ) -> None:
         self._state_store = state_store
@@ -99,6 +101,8 @@ class ActionDispatcher:
         )
         self._relay_b_c_enabled = bool(self._config.get("relay_enabled", False))
         self._policy: DevicePolicy | None = DevicePolicy.unrestricted()
+        self._capability_posture: CapabilityPosture | None = None
+        self._status_indicator = status_indicator
         self._logger_action = LoggerAction()
         self._inflight_tier_d_tasks: set[asyncio.Task[Any]] = set()
         self._executors: dict[str, Any] = {
@@ -129,6 +133,10 @@ class ActionDispatcher:
         ``None`` resets to unrestricted self-hosted behaviour.
         """
         self._policy = policy if policy is not None else DevicePolicy.unrestricted()
+        self._sync_policy_led_state()
+
+    def update_capability_posture(self, posture: CapabilityPosture | None) -> None:
+        self._capability_posture = posture
 
     def permits_relay_action(self, action_tier: str) -> bool:
         """Check if a relay action is permitted for the given tier based on DevicePolicy and config."""
@@ -287,6 +295,8 @@ class ActionDispatcher:
 
         try:
             if tier == ActionTier.SAFETY_CRITICAL:
+                if self._status_indicator is not None:
+                    self._status_indicator.set_tier_d_firing()
                 # Track Tier D work explicitly so runtime shutdown can drain it
                 # without relying on fragile task attribute mutation.
                 inner_task = asyncio.create_task(
@@ -294,6 +304,8 @@ class ActionDispatcher:
                 )
                 self._track_tier_d_task(inner_task)
                 action_result = await asyncio.shield(inner_task)
+                if self._status_indicator is not None:
+                    self._status_indicator.clear_tier_d_firing()
 
             elif tier == ActionTier.INFORMATIONAL:
                 action_result = await self._execute_immediately(action, tier, context)
@@ -367,6 +379,11 @@ class ActionDispatcher:
                 action_taken="",
                 timestamp=now_ms(),
             )
+            if (
+                tier == ActionTier.SAFETY_CRITICAL
+                and self._status_indicator is not None
+            ):
+                self._status_indicator.clear_tier_d_firing()
 
         await self._log_action(action_result, context)
         return action_result
@@ -514,6 +531,10 @@ class ActionDispatcher:
                 "ActionDispatcher: triggering Tier C approval workflow for action=%r",
                 action,
             )
+        if self._status_indicator is not None:
+            self._status_indicator.set_tier_c_pending(
+                has_comms=self._tier_c_comms_available()
+            )
 
         device_id = context.event.device_id if context.event else "unknown"
         message = self._format_approval_message(
@@ -582,53 +603,60 @@ class ActionDispatcher:
                     safe_default_action,
                 )
 
-        # Parse response
-        approved = _parse_approval_response(operator_response)
+        try:
+            # Parse response
+            approved = _parse_approval_response(operator_response)
 
-        if approved:
-            inner = await self._execute_immediately(action, tier, context)
-            action_taken = inner.action_taken
-            executed = inner.executed
-        else:
-            # NO, None, or timeout → safe default
-            if timed_out:
-                await self._escalate_to_secondary(action, context, result)
-            inner = await self._execute_immediately(safe_default_action, tier, context)
-            action_taken = inner.action_taken
-            executed = inner.executed
-            # Log operator rejection / timeout override to override_log
-            store = (
-                context.state_store
-                if hasattr(context, "state_store") and context.state_store is not None
-                else self._state_store
+            if approved:
+                inner = await self._execute_immediately(action, tier, context)
+                action_taken = inner.action_taken
+                executed = inner.executed
+            else:
+                # NO, None, or timeout → safe default
+                if timed_out:
+                    await self._escalate_to_secondary(action, context, result)
+                inner = await self._execute_immediately(
+                    safe_default_action, tier, context
+                )
+                action_taken = inner.action_taken
+                executed = inner.executed
+                # Log operator rejection / timeout override to override_log
+                store = (
+                    context.state_store
+                    if hasattr(context, "state_store")
+                    and context.state_store is not None
+                    else self._state_store
+                )
+                if store is not None and hasattr(store, "log_override"):
+                    device_id = context.event.device_id if context.event else "unknown"
+                    await store.log_override(
+                        trigger_name=context.event.sensor_id if context.event else "",
+                        action=action,
+                        reason="timeout" if timed_out else "operator_rejection",
+                        operator_response=operator_response,
+                        override_type="rejection",
+                        device_id=device_id,
+                    )
+                if not timed_out and operator_response is not None:
+                    await self._store_rejection_pattern(
+                        store=store,
+                        action=action,
+                        context=context,
+                        operator_response=operator_response,
+                    )
+
+            return ActionResult(
+                action_name=action,
+                tier=tier,
+                executed=executed,
+                approved=approved,
+                action_taken=action_taken,
+                timestamp=now_ms(),
+                operator_response=operator_response,
             )
-            if store is not None and hasattr(store, "log_override"):
-                device_id = context.event.device_id if context.event else "unknown"
-                await store.log_override(
-                    trigger_name=context.event.sensor_id if context.event else "",
-                    action=action,
-                    reason="timeout" if timed_out else "operator_rejection",
-                    operator_response=operator_response,
-                    override_type="rejection",
-                    device_id=device_id,
-                )
-            if not timed_out and operator_response is not None:
-                await self._store_rejection_pattern(
-                    store=store,
-                    action=action,
-                    context=context,
-                    operator_response=operator_response,
-                )
-
-        return ActionResult(
-            action_name=action,
-            tier=tier,
-            executed=executed,
-            approved=approved,
-            action_taken=action_taken,
-            timestamp=now_ms(),
-            operator_response=operator_response,
-        )
+        finally:
+            if self._status_indicator is not None:
+                self._status_indicator.clear_tier_c_pending()
 
     async def _store_rejection_pattern(
         self,
@@ -852,6 +880,37 @@ class ActionDispatcher:
                 "ActionDispatcher: emergency SMS also failed for action=%r",
                 action,
             )
+
+    def _sync_policy_led_state(self) -> None:
+        if self._status_indicator is None:
+            return
+        if self._policy is None:
+            self._status_indicator.set_policy_state("restricted")
+            return
+        if self._policy.is_expired:
+            self._status_indicator.set_policy_state("restricted")
+            return
+        if self._policy.signature == "self_hosted":
+            self._status_indicator.set_policy_state("normal")
+            return
+        if not (
+            self._policy.relay_b_enabled
+            and self._policy.relay_c_enabled
+            and self._policy.cloud_llm_enabled
+        ):
+            self._status_indicator.set_policy_state("grace")
+            return
+        self._status_indicator.set_policy_state("normal")
+
+    def _tier_c_comms_available(self) -> bool:
+        if self._capability_posture is not None:
+            return bool(
+                self._capability_posture.sms_available
+                or self._capability_posture.whatsapp_available
+            )
+        return bool(
+            self._alert_sender is not None and self._config.get("operator_contact")
+        )
 
     async def _log_action(
         self,

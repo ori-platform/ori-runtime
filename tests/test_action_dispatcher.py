@@ -13,6 +13,7 @@ from ori.network.events import (
     ReasoningResult,
     SensorReading,
 )
+from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.action_dispatcher import ActionDispatcher, _parse_approval_response
 from ori.reasoning.elevator import SkillContext
 
@@ -919,3 +920,67 @@ class TestCancellationHandling:
         assert result.executed is False
         assert any(record.levelno == logging.CRITICAL for record in caplog.records)
         assert any("Tier D" in record.message for record in caplog.records)
+
+
+class _StatusSpy:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, object]] = []
+
+    def set_tier_c_pending(self, *, has_comms: bool) -> None:
+        self.calls.append(("tier_c_pending", has_comms))
+
+    def clear_tier_c_pending(self) -> None:
+        self.calls.append(("tier_c_clear", None))
+
+    def set_tier_d_firing(self) -> None:
+        self.calls.append(("tier_d_set", None))
+
+    def clear_tier_d_firing(self) -> None:
+        self.calls.append(("tier_d_clear", None))
+
+    def set_policy_state(self, state: str) -> None:
+        self.calls.append(("policy", state))
+
+
+class TestStatusSignalingHooks:
+    async def test_tier_c_pending_set_and_cleared(self):
+        status = _StatusSpy()
+        d = ActionDispatcher(status_indicator=status)
+        ctx = _context()
+
+        with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
+            await d.dispatch(
+                "trip_main_breaker",
+                ActionTier.HARD_PHYSICAL,
+                ctx,
+                _result(),
+                approval_timeout_seconds=10,
+            )
+
+        assert ("tier_c_pending", False) in status.calls
+        assert ("tier_c_clear", None) in status.calls
+
+    async def test_tier_d_set_and_clear(self):
+        status = _StatusSpy()
+        d = ActionDispatcher(status_indicator=status)
+        await d.dispatch(
+            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+        )
+        assert ("tier_d_set", None) in status.calls
+        assert ("tier_d_clear", None) in status.calls
+
+    def test_policy_state_restricted_for_expired_policy(self):
+        status = _StatusSpy()
+        d = ActionDispatcher(status_indicator=status)
+        expired = DevicePolicy(
+            tier="cloud",
+            relay_b_enabled=True,
+            relay_c_enabled=True,
+            cloud_llm_enabled=True,
+            valid_until=int(time.time()) - 1,
+            policy_version=1,
+            issued_at=0,
+            signature="ed25519:test",
+        )
+        d.update_policy(expired)
+        assert ("policy", "restricted") in status.calls

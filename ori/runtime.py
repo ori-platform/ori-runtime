@@ -32,12 +32,20 @@ from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import Config, ConfigValidationError
 from ori.hal.base import AdapterReadError, BaseAdapter
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
+from ori.hardware.led_indicator import (
+    LEDIndicator,
+    NetworkState,
+    PolicyLEDState,
+    PowerState,
+    RuntimeHealthState,
+    StatusSignalingConfig,
+)
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, compute_fingerprint
 from ori.network.sms_webhook import SMSWebhookServer
 from ori.reasoning.action_dispatcher import ActionDispatcher
-from ori.reasoning.capability_posture import CapabilityPostureTracker
+from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.skills.loader import SkillLoader
@@ -84,6 +92,8 @@ class OriRuntime:
         self._skill_reload_lock: asyncio.Lock | None = None
         self._deduplicator: EventDeduplicator | None = None
         self._capability_posture_tracker: CapabilityPostureTracker | None = None
+        self._status_indicator: LEDIndicator | None = None
+        self._faulted_sensors: set[str] = set()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -184,6 +194,28 @@ class OriRuntime:
             config.device.deployment_type,
         )
 
+        status_cfg = (
+            config.hal.status_signaling
+            if isinstance(config.hal.status_signaling, dict)
+            else {}
+        )
+        status_indicator: LEDIndicator | None = None
+        if bool(status_cfg.get("enabled", False)):
+            status_indicator = LEDIndicator(
+                StatusSignalingConfig(
+                    power_led_pin=int(status_cfg.get("power_led_pin", 17)),
+                    relay_led_pin=int(status_cfg.get("relay_led_pin", 27)),
+                    network_led_pin=int(status_cfg.get("network_led_pin", 22)),
+                    health_led_pin=int(status_cfg.get("health_led_pin", 23)),
+                    buzzer_pin=int(status_cfg.get("buzzer_pin", 24)),
+                ),
+                tick_ms=int(status_cfg.get("tick_ms", 100)),
+            )
+            await status_indicator.connect()
+            status_indicator.set_runtime_state(RuntimeHealthState.STARTING)
+            status_indicator.set_policy_state(PolicyLEDState.NORMAL)
+            self._status_indicator = status_indicator
+
         # ── Step B: Open StateStore ───────────────────────────────────────────
         db_path: str = config.raw.get("database", {}).get("path", "ori_state.db")
         self._state_store = StateStore(db_path=db_path)
@@ -259,6 +291,7 @@ class OriRuntime:
         dispatcher = ActionDispatcher(
             state_store=self._state_store,
             alert_sender=alert_sender,
+            status_indicator=status_indicator,
             config={
                 "operator_contact": _operator_contact,
                 "secondary_contact": _secondary_contact,
@@ -385,9 +418,13 @@ class OriRuntime:
 
             async def _exec_trip_relay(*_: Any) -> None:
                 await relay_action.trigger(duration_seconds=None)  # type: ignore[union-attr]
+                if status_indicator is not None:
+                    status_indicator.set_relay_energized(True)
 
             async def _exec_release_relay(*_: Any) -> None:
                 await relay_action.release()  # type: ignore[union-attr]
+                if status_indicator is not None:
+                    status_indicator.set_relay_energized(False)
 
             dispatcher.register_executor("trip_relay", _exec_trip_relay)
             dispatcher.register_executor("release_relay", _exec_release_relay)
@@ -442,6 +479,9 @@ class OriRuntime:
                 relay_connected=relay_action is not None,
             )
             elevator.update_capability_posture(posture)
+            dispatcher.update_capability_posture(posture)
+            if status_indicator is not None:
+                _sync_network_state_from_posture(status_indicator, posture)
 
         self._skill_reload_lock = asyncio.Lock()
         self._deduplicator = EventDeduplicator()
@@ -596,9 +636,23 @@ class OriRuntime:
                     name="capability-posture",
                 )
             )
+        if status_indicator is not None:
+            status_tick_ms = int(status_cfg.get("tick_ms", 100))
+            self._background_tasks.append(
+                asyncio.create_task(
+                    self._status_signaling_loop(
+                        indicator=status_indicator,
+                        tick_ms=status_tick_ms,
+                    ),
+                    name="status-signaling",
+                )
+            )
         webhook_task = await self._start_sms_webhook_if_enabled(config)
         if webhook_task is not None:
             self._background_tasks.append(webhook_task)
+
+        if status_indicator is not None:
+            status_indicator.set_runtime_state(RuntimeHealthState.NORMAL)
 
         # Block here until stop() sets the shutdown event
         await self._shutdown_event.wait()
@@ -609,6 +663,8 @@ class OriRuntime:
             return
         logger.info("[runtime] shutdown initiated")
         self._shutdown_event.set()
+        if self._status_indicator is not None:
+            self._status_indicator.set_runtime_state(RuntimeHealthState.DEGRADED)
 
         # 1. Drain in-flight Tier D tasks before cancelling anything else.
         tier_d_tasks: list[asyncio.Task] = []
@@ -728,6 +784,10 @@ class OriRuntime:
         while not self._shutdown_event.is_set():
             try:
                 reading = await adapter.read(sensor_cfg.id)
+                if sensor_cfg.id in self._faulted_sensors:
+                    self._faulted_sensors.discard(sensor_cfg.id)
+                    if self._status_indicator is not None and not self._faulted_sensors:
+                        self._status_indicator.set_hardware_fault(False)
                 event = OriEvent.from_reading(reading, device_id)
                 event.event_type = f"sensor.{reading.sensor_type}"
                 # Keep source explicit in the poll path; adapters must publish
@@ -745,8 +805,15 @@ class OriRuntime:
                         )
                         continue
                 await event_bus.publish(event)
+                if self._status_indicator is not None:
+                    _sync_power_state_from_reading(self._status_indicator, reading)
             except AdapterReadError as exc:
                 logger.warning("[sensor] %s read failed: %s", sensor_cfg.id, exc)
+                if self._status_indicator is not None and "circuit breaker OPEN" in str(
+                    exc
+                ):
+                    self._faulted_sensors.add(sensor_cfg.id)
+                    self._status_indicator.set_hardware_fault(True)
             except Exception:
                 logger.exception("[sensor] unexpected error polling %s", sensor_cfg.id)
             await asyncio.sleep(sensor_cfg.poll_interval_ms / 1000)
@@ -928,6 +995,10 @@ class OriRuntime:
                     relay_connected=relay_connected,
                 )
                 elevator.update_capability_posture(posture)
+                if self._dispatcher is not None:
+                    self._dispatcher.update_capability_posture(posture)
+                if self._status_indicator is not None:
+                    _sync_network_state_from_posture(self._status_indicator, posture)
             except Exception:
                 logger.exception("[runtime] capability posture refresh failed")
 
@@ -935,6 +1006,24 @@ class OriRuntime:
                 await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 pass
+
+    async def _status_signaling_loop(
+        self,
+        *,
+        indicator: LEDIndicator,
+        tick_ms: int,
+    ) -> None:
+        interval = max(int(tick_ms), 50) / 1000.0
+        while not self._shutdown_event.is_set():
+            try:
+                indicator.tick()
+            except Exception:
+                logger.exception("[runtime] status signaling tick failed")
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+        await indicator.close()
 
     async def _send_or_queue_alert(
         self,
@@ -1200,6 +1289,34 @@ def _is_local_slm_available(local_llm: Any) -> bool:
     if local_llm is None:
         return False
     return bool(getattr(local_llm, "is_available", False))
+
+
+def _sync_network_state_from_posture(
+    indicator: LEDIndicator, posture: CapabilityPosture
+) -> None:
+    if posture.internet_available:
+        indicator.set_network_state(NetworkState.INTERNET)
+        return
+    if posture.sms_available:
+        indicator.set_network_state(NetworkState.GSM_ONLY)
+        return
+    indicator.set_network_state(NetworkState.NONE)
+
+
+def _sync_power_state_from_reading(indicator: LEDIndicator, reading: Any) -> None:
+    sensor_type = str(getattr(reading, "sensor_type", ""))
+    if sensor_type not in {"battery_percent", "growatt_battery_soc"}:
+        return
+    try:
+        value = float(getattr(reading, "value", 0.0))
+    except (TypeError, ValueError):
+        return
+    if value < 10.0:
+        indicator.set_power_state(PowerState.BATTERY_CRITICAL)
+    elif value < 20.0:
+        indicator.set_power_state(PowerState.BATTERY_LOW)
+    else:
+        indicator.set_power_state(PowerState.MAINS)
 
 
 def _maybe_autoload_dotenv(config_path: str) -> None:
