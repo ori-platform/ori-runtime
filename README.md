@@ -266,6 +266,8 @@ The agent does the diagnosis. The operator approves or rejects a specific, fully
 
 Ori's **pc-system-health** skill runs on any laptop using `psutil`. No Raspberry Pi, no sensors, no wiring.
 
+> **Linux users:** See [docs/linux-setup.md](docs/linux-setup.md) for a step-by-step Linux setup guide, including a minimal validated config (`ori.linux.yaml.example`), Linux model paths, and troubleshooting for common Linux-specific issues.
+
 ```bash
 # Clone and install
 git clone https://github.com/ori-platform/ori-runtime.git
@@ -308,7 +310,8 @@ curl -L https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen
 # reasoning:
 #   default_tier: local
 #   local_model: qwen2.5-0.5b-instruct-q4_k_m
-#   model_path: /Users/<you>/models
+#   model_path: /Users/<you>/models       # macOS
+#   # model_path: /home/<you>/models     # Linux
 #   offline_fallback: local_slm
 
 # 5) Optional dev convenience: auto-load .env before config parse
@@ -340,7 +343,8 @@ from ori.reasoning.local_llm import LocalLLM
 
 async def main():
     llm = LocalLLM(
-        model_path="/Users/<you>/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        model_path="/Users/<you>/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",  # macOS
+        # model_path="/home/<you>/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",  # Linux
         context_window=2048,
     )
     result = await llm.reason("CPU at 96% for 10 minutes. Give 2 short operator actions.")

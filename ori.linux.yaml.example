@@ -1,0 +1,91 @@
+# ori.local.linux.example.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Minimal validated config for Linux laptops / servers — NO hardware required.
+#
+# Copy this file to ori.yaml and edit the placeholders.
+# ori.yaml is gitignored — never commit it.
+#
+# Usage:
+#   cp ori.local.linux.example.yaml ori.yaml
+#   # Edit ori.yaml — replace <your-...> placeholders
+#   python -m ori.runtime --config ori.yaml
+#
+# This config uses the psutil adapter and pc-system-health skill which run
+# on any Linux machine. No Raspberry Pi, no sensors, no wiring needed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+device:
+  id: my-laptop-01                     # unique, no spaces, no special chars
+  name: My Linux Laptop
+  location: Lagos, Nigeria             # your city/country
+  deployment_type: server              # 'server' for laptops/PCs
+  timezone: Africa/Lagos               # IANA timezone for approval messages
+
+sensors:
+  # ─── PC system health (runs on any Linux machine via psutil) ──────────
+  - id: system-cpu
+    type: cpu_percent
+    protocol: psutil
+    poll_interval_ms: 5000
+
+  - id: system-memory
+    type: memory_percent
+    protocol: psutil
+    poll_interval_ms: 10000
+
+  - id: system-temp
+    type: cpu_temp
+    protocol: psutil
+    poll_interval_ms: 10000
+
+skills:
+  - name: pc-system-health
+    version: '0.1.0'
+    config:
+      owner_name: "My Linux Laptop"
+
+reasoning:
+  default_tier: rule                   # use 'local' when SLM model is installed
+  # ─── Local SLM (optional — uncomment after downloading a GGUF model) ─
+  # local_model: qwen2.5-0.5b-instruct-q4_k_m
+  # model_path: /home/<user>/models/   # directory containing your .gguf file
+  offline_fallback: rule
+  escalation_threshold: 0.70
+  energy_aware_reasoning:
+    enabled: false
+  causal_memory:
+    rejection_expiry_days: 30
+
+gateway:
+  enabled: false
+  broker_url: ""
+
+actions:
+  primary_alert_channel: sms           # 'sms' | 'whatsapp'
+  operator_contact: ""                 # phone number for Tier C approvals
+  secondary_contact: ""                # optional escalation contact
+
+  whatsapp:
+    enabled: false                     # set true and fill credentials for Twilio
+
+  sms:
+    enabled: false                     # set true and fill credentials for Africa's Talking
+
+  relay:
+    enabled: false                     # no GPIO on laptops
+
+hal:
+  circuit_breaker:
+    failure_threshold: 5
+    recovery_timeout_s: 300
+    success_threshold: 2
+  external_watchdog:
+    enabled: false                     # leave false on laptops
+
+logging:
+  level: INFO
+  file: ori.log
+  max_bytes: 10485760
+  backup_count: 3
+  log_action_decisions: true
+  log_approval_workflow: true
