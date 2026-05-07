@@ -6,6 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -151,6 +152,7 @@ class Config:
         hal = _parse_hal(data.get("hal"))
         device_policy = _parse_device_policy(data.get("device_policy"))
         logging_cfg = _parse_logging(data.get("logging"))
+        _validate_coap_sensor_allowlist(sensors, actions.coap)
 
         if not actions.operator_contact or "${" in actions.operator_contact:
             logger.warning(
@@ -385,6 +387,8 @@ def _parse_sensors(data: Any) -> list[SensorConfig]:
         # Fields not in the first-class set go into metadata
         known = {"id", "type", "protocol", "poll_interval_ms", "calibration"}
         metadata = {k: v for k, v in item.items() if k not in known}
+        if protocol == "coap":
+            _validate_coap_sensor_metadata(metadata, f"sensors[{i}]")
 
         sensors.append(
             SensorConfig(
@@ -397,6 +401,80 @@ def _parse_sensors(data: Any) -> list[SensorConfig]:
             )
         )
     return sensors
+
+
+def _validate_coap_sensor_metadata(metadata: dict[str, Any], section: str) -> None:
+    uri = str(metadata.get("uri", "")).strip()
+    if not uri:
+        raise ConfigValidationError(f"{section}: coap sensors require 'uri'.")
+    parsed = urlparse(uri)
+    if parsed.scheme not in {"coap", "coaps"}:
+        raise ConfigValidationError(
+            f"{section}: coap sensor uri must start with coap:// or coaps://."
+        )
+    if not (parsed.hostname or "").strip():
+        raise ConfigValidationError(f"{section}: coap sensor uri host is required.")
+
+    json_path = str(metadata.get("json_path", "")).strip()
+    if not json_path:
+        raise ConfigValidationError(f"{section}: coap sensors require 'json_path'.")
+
+    method = str(metadata.get("method", "GET")).strip().upper()
+    if method not in {"GET", "POST", "PUT", "DELETE"}:
+        raise ConfigValidationError(
+            f"{section}: coap sensor method must be one of GET/POST/PUT/DELETE."
+        )
+
+    if "timeout_s" in metadata:
+        try:
+            timeout_s = float(metadata.get("timeout_s"))
+        except (TypeError, ValueError) as exc:
+            raise ConfigValidationError(
+                f"{section}: coap sensor timeout_s must be numeric."
+            ) from exc
+        if timeout_s <= 0:
+            raise ConfigValidationError(
+                f"{section}: coap sensor timeout_s must be > 0."
+            )
+
+    if "allowed_hosts" in metadata:
+        sensor_allow = metadata.get("allowed_hosts")
+        if not isinstance(sensor_allow, list) or not all(
+            isinstance(host, str) and host.strip() for host in sensor_allow
+        ):
+            raise ConfigValidationError(
+                f"{section}: coap sensor allowed_hosts must be a list of non-empty strings."
+            )
+
+
+def _validate_coap_sensor_allowlist(
+    sensors: list[SensorConfig], coap_actions_cfg: dict[str, Any]
+) -> None:
+    coap_sensors = [sensor for sensor in sensors if sensor.protocol == "coap"]
+    if not coap_sensors:
+        return
+
+    global_allow = coap_actions_cfg.get("allowed_hosts") if coap_actions_cfg else None
+    if not isinstance(global_allow, list) or not all(
+        isinstance(host, str) and host.strip() for host in global_allow
+    ):
+        raise ConfigValidationError(
+            "actions.coap.allowed_hosts must be configured as a non-empty list "
+            "when using protocol=coap sensors."
+        )
+    global_allow_set = {str(host).strip().lower() for host in global_allow}
+    if not global_allow_set:
+        raise ConfigValidationError(
+            "actions.coap.allowed_hosts must be non-empty when using protocol=coap sensors."
+        )
+
+    for sensor in coap_sensors:
+        uri = str(sensor.metadata.get("uri", "")).strip()
+        host = (urlparse(uri).hostname or "").strip().lower()
+        if host and host not in global_allow_set:
+            raise ConfigValidationError(
+                f"sensors[{sensor.id!r}]: coap uri host {host!r} is not listed in actions.coap.allowed_hosts."
+            )
 
 
 def _parse_skills(data: Any) -> list[SkillConfig]:

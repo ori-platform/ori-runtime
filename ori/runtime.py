@@ -570,6 +570,14 @@ class OriRuntime:
                 "circuit_breaker": config.hal.circuit_breaker,
                 **sensor_cfg.metadata,
             }
+            if sensor_cfg.protocol == "coap":
+                coap_cfg = (
+                    config.actions.coap if isinstance(config.actions.coap, dict) else {}
+                )
+                connect_cfg.setdefault(
+                    "allowed_hosts", coap_cfg.get("allowed_hosts", [])
+                )
+                connect_cfg.setdefault("timeout_s", coap_cfg.get("timeout_s", 2.0))
             try:
                 await adapter.connect(connect_cfg)
                 self._adapters.append(adapter)

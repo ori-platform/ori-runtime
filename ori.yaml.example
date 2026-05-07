@@ -133,6 +133,17 @@ sensors:
   #   unit: kelvin
   #   poll_interval_ms: 300000
 
+  # ─── CoAP telemetry sensor (optional) ──────────────────────────────────────
+  # Requires the host to be listed under actions.coap.allowed_hosts.
+  # - id: room-temp-coap
+  #   type: temperature
+  #   protocol: coap
+  #   uri: "coap://192.168.1.70/telemetry/temp"
+  #   method: GET
+  #   json_path: "metrics.temp_c"
+  #   unit: celsius
+  #   poll_interval_ms: 2000
+
   # ─── Zigbee smart-home sensor via MQTT bridge (optional) ──────────────────
   # Requires zigbee2mqtt (or equivalent) publishing JSON payloads.
   # - id: living-room-temp
