@@ -146,6 +146,24 @@ CREATE TABLE IF NOT EXISTS device_policy_cache (
 CREATE INDEX IF NOT EXISTS idx_device_policy_cache_version
     ON device_policy_cache (policy_version DESC, cached_at DESC);
 
+CREATE TABLE IF NOT EXISTS offline_token_consumption (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id    TEXT    NOT NULL UNIQUE,
+    device_id   TEXT    NOT NULL,
+    action      TEXT    NOT NULL,
+    consumed_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS offline_token_audit (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id    TEXT    NOT NULL DEFAULT '',
+    device_id   TEXT    NOT NULL,
+    action      TEXT    NOT NULL,
+    approved    INTEGER NOT NULL,
+    reason      TEXT    NOT NULL,
+    attempted_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sensor_history_5min (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sensor_id TEXT NOT NULL,
@@ -827,6 +845,83 @@ class StateStore:
             WHERE alert_id = ?
             """,
             (abandoned_ts_ms, alert_id),
+        )
+        self._conn.commit()
+
+    # ─── offline_token_consumption / offline_token_audit ─────────────────────
+
+    async def claim_offline_token(
+        self,
+        *,
+        token_id: str,
+        device_id: str,
+        action: str,
+        consumed_at_ms: int | None = None,
+    ) -> bool:
+        return await self._run_write(
+            self._claim_offline_token_sync,
+            token_id,
+            device_id,
+            action,
+            consumed_at_ms if consumed_at_ms is not None else now_ms(),
+        )
+
+    def _claim_offline_token_sync(
+        self,
+        token_id: str,
+        device_id: str,
+        action: str,
+        consumed_at_ms: int,
+    ) -> bool:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            INSERT INTO offline_token_consumption (token_id, device_id, action, consumed_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(token_id) DO NOTHING
+            """,
+            (token_id, device_id, action, consumed_at_ms),
+        )
+        self._conn.commit()
+        return int(cur.rowcount) > 0
+
+    async def log_offline_token_attempt(
+        self,
+        *,
+        token_id: str,
+        device_id: str,
+        action: str,
+        approved: bool,
+        reason: str,
+        attempted_at_ms: int | None = None,
+    ) -> None:
+        await self._run_write(
+            self._log_offline_token_attempt_sync,
+            token_id,
+            device_id,
+            action,
+            approved,
+            reason,
+            attempted_at_ms if attempted_at_ms is not None else now_ms(),
+        )
+
+    def _log_offline_token_attempt_sync(
+        self,
+        token_id: str,
+        device_id: str,
+        action: str,
+        approved: bool,
+        reason: str,
+        attempted_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO offline_token_audit
+                (token_id, device_id, action, approved, reason, attempted_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (token_id, device_id, action, int(bool(approved)), reason, attempted_at_ms),
         )
         self._conn.commit()
 

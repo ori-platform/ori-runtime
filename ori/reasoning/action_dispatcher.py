@@ -27,6 +27,7 @@ from ori.network.events import ActionResult, ActionTier, ReasoningResult
 from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
+from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -88,12 +89,14 @@ class ActionDispatcher:
         state_store: Any = None,
         alert_sender: Any = None,
         emergency_sms_sender: Any = None,
+        offline_token_verifier: OfflineTierCTokenVerifier | None = None,
         status_indicator: Any = None,
         config: dict | None = None,
     ) -> None:
         self._state_store = state_store
         self._alert_sender = alert_sender
         self._emergency_sms_sender = emergency_sms_sender
+        self._offline_token_verifier = offline_token_verifier
         self._config: dict = config or {}
         self._log_action_decisions = bool(
             self._config.get("log_action_decisions", True)
@@ -645,6 +648,38 @@ class ActionDispatcher:
         try:
             # Parse response
             approved = _parse_approval_response(parsed_operator_response)
+            if (
+                local_console_mode
+                and parsed_operator_response is not None
+                and parsed_operator_response.strip().upper().startswith("TOKEN:")
+            ):
+                token_value = parsed_operator_response.split(":", 1)[1].strip()
+                if self._offline_token_verifier is None:
+                    approved = False
+                    logger.warning(
+                        "ActionDispatcher: offline token provided but verifier is disabled"
+                    )
+                else:
+                    verify_result = await self._offline_token_verifier.verify_token(
+                        token_value,
+                        expected_device_id=device_id,
+                        expected_action=action,
+                        state_store=store,
+                    )
+                    approved = bool(verify_result.approved)
+                    if approved:
+                        operator_response = (
+                            f"LOCAL:TOKEN_APPROVED:{verify_result.token_id}"
+                        )
+                    else:
+                        operator_response = (
+                            f"LOCAL:TOKEN_REJECTED:{verify_result.reason}"
+                        )
+                        logger.warning(
+                            "ActionDispatcher: offline token rejected for action=%r reason=%s",
+                            action,
+                            verify_result.reason,
+                        )
 
             if approved:
                 inner = await self._execute_immediately(action, tier, context)

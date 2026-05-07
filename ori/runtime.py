@@ -54,6 +54,7 @@ from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
+from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.skills.loader import SkillLoader
 from ori.skills.signing import verify_signed_payload
 from ori.state.store import StateStore
@@ -304,6 +305,7 @@ class OriRuntime:
             state_store=self._state_store,
             alert_sender=alert_sender,
             emergency_sms_sender=sms_action,
+            offline_token_verifier=_build_offline_token_verifier(config.actions),
             status_indicator=status_indicator,
             config={
                 "operator_contact": _operator_contact,
@@ -1576,6 +1578,20 @@ def _is_truthy(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _build_offline_token_verifier(actions_cfg: Any) -> OfflineTierCTokenVerifier | None:
+    offline_cfg = {}
+    if actions_cfg is not None and hasattr(actions_cfg, "offline_tokens"):
+        candidate = getattr(actions_cfg, "offline_tokens", {}) or {}
+        if isinstance(candidate, dict):
+            offline_cfg = candidate
+    if not _is_truthy(offline_cfg.get("enabled", False)):
+        return None
+    return OfflineTierCTokenVerifier(
+        public_key_b64=str(offline_cfg.get("public_key_b64", "")),
+        max_clock_skew_s=int(offline_cfg.get("max_clock_skew_s", 300)),
+    )
 
 
 def _is_local_slm_available(local_llm: Any) -> bool:

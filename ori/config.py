@@ -86,6 +86,7 @@ class ActionChannelConfig:
     relay: dict = field(default_factory=dict)
     coap: dict = field(default_factory=dict)
     local_console: dict = field(default_factory=dict)
+    offline_tokens: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -622,6 +623,27 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
             "actions.local_console.poll_interval_ms must be >= 100."
         )
 
+    offline_tokens_raw = data.get("offline_tokens") or {}
+    if not isinstance(offline_tokens_raw, dict):
+        raise ConfigValidationError(
+            "'actions.offline_tokens' must be a mapping when provided."
+        )
+    offline_tokens = {
+        "enabled": bool(offline_tokens_raw.get("enabled", False)),
+        "public_key_b64": str(offline_tokens_raw.get("public_key_b64", "")),
+        "max_clock_skew_s": int(offline_tokens_raw.get("max_clock_skew_s", 300)),
+    }
+    if offline_tokens["max_clock_skew_s"] < 0:
+        raise ConfigValidationError(
+            "actions.offline_tokens.max_clock_skew_s must be >= 0."
+        )
+    if offline_tokens["enabled"]:
+        public_key = offline_tokens["public_key_b64"]
+        if not public_key or "${" in public_key:
+            raise ConfigValidationError(
+                "actions.offline_tokens.enabled=true requires actions.offline_tokens.public_key_b64."
+            )
+
     return ActionChannelConfig(
         primary_alert_channel=primary,
         operator_contact=str(data.get("operator_contact") or ""),
@@ -631,6 +653,7 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         relay=relay,
         coap=coap,
         local_console=local_console,
+        offline_tokens=offline_tokens,
     )
 
 
