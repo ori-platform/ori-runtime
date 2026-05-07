@@ -1385,6 +1385,8 @@ actions:
         assert cfg.actions.local_console["enabled"] is False
         assert cfg.actions.local_console["poll_interval_ms"] == 1000
         assert cfg.actions.local_console["approval_channel_id"] == "local_console"
+        assert cfg.actions.offline_tokens["enabled"] is False
+        assert cfg.actions.offline_tokens["max_clock_skew_s"] == 300
 
     def test_local_console_poll_interval_minimum(self, tmp_path):
         yaml_path = _write_yaml(
@@ -1401,6 +1403,40 @@ actions:
             match="actions.local_console.poll_interval_ms must be >= 100",
         ):
             Config.load(yaml_path)
+
+    def test_offline_tokens_enabled_requires_public_key(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: false\n"
+                "  offline_tokens:\n"
+                "    enabled: true\n"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="actions.offline_tokens.enabled=true requires",
+        ):
+            Config.load(yaml_path)
+
+    def test_offline_tokens_enabled_with_public_key_is_valid(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: false\n"
+                "  offline_tokens:\n"
+                "    enabled: true\n"
+                "    public_key_b64: 'dGVzdA=='\n"
+                "    max_clock_skew_s: 10\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.offline_tokens["enabled"] is True
+        assert cfg.actions.offline_tokens["max_clock_skew_s"] == 10
 
 
 class TestDevicePolicyConfig:

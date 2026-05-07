@@ -17,6 +17,7 @@ from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.action_dispatcher import ActionDispatcher, _parse_approval_response
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
+from ori.security.offline_tokens import TokenVerificationResult
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1121,3 +1122,72 @@ class TestEmergencySmsSender:
         await d._emergency_sms("trip_relay", "dev-01")
 
         injected_sms.send.assert_awaited_once()
+
+
+class TestOfflineTokenApproval:
+    async def test_local_console_token_approves_tier_c(self):
+        verifier = AsyncMock()
+        verifier.verify_token = AsyncMock(
+            return_value=TokenVerificationResult(
+                approved=True,
+                reason="approved",
+                token_id="tok-1",
+            )
+        )
+        d = ActionDispatcher(
+            offline_token_verifier=verifier,
+            config={
+                "local_console_enabled": True,
+                "operator_contact": "+2348000000000",
+            },
+        )
+        exec_mock = AsyncMock()
+        d.register_executor("trip_main_breaker", exec_mock)
+        with patch.object(
+            d,
+            "_listen_for_local_console_response",
+            new=AsyncMock(return_value="TOKEN:abc"),
+        ):
+            result = await d.dispatch(
+                "trip_main_breaker",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(action_tier="C"),
+            )
+        assert result.approved is True
+        assert result.executed is True
+        verifier.verify_token.assert_awaited_once()
+        exec_mock.assert_awaited_once()
+
+    async def test_local_console_token_rejected_runs_safe_default(self):
+        verifier = AsyncMock()
+        verifier.verify_token = AsyncMock(
+            return_value=TokenVerificationResult(
+                approved=False,
+                reason="expired",
+                token_id="tok-2",
+            )
+        )
+        d = ActionDispatcher(
+            offline_token_verifier=verifier,
+            config={
+                "local_console_enabled": True,
+                "operator_contact": "+2348000000000",
+            },
+        )
+        safe_default = AsyncMock()
+        d.register_executor("log_to_dashboard", safe_default)
+        with patch.object(
+            d,
+            "_listen_for_local_console_response",
+            new=AsyncMock(return_value="TOKEN:abc"),
+        ):
+            result = await d.dispatch(
+                "trip_main_breaker",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(action_tier="C"),
+            )
+        assert result.approved is False
+        assert result.action_taken == "log_to_dashboard"
+        safe_default.assert_awaited_once()

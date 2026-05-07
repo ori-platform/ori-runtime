@@ -388,6 +388,45 @@ class TestAlertOutbox:
         assert rows == []
 
 
+class TestOfflineTokens:
+    async def test_claim_offline_token_is_single_use(self, store):
+        first = await store.claim_offline_token(
+            token_id="tok-1",
+            device_id="dev-01",
+            action="trip_main_breaker",
+        )
+        second = await store.claim_offline_token(
+            token_id="tok-1",
+            device_id="dev-01",
+            action="trip_main_breaker",
+        )
+        assert first is True
+        assert second is False
+
+    async def test_log_offline_token_attempt_persists(self, store):
+        await store.log_offline_token_attempt(
+            token_id="tok-2",
+            device_id="dev-01",
+            action="trip_main_breaker",
+            approved=False,
+            reason="expired",
+        )
+        row = await store._run_read(
+            lambda conn: conn.execute(
+                """
+                SELECT token_id, approved, reason
+                FROM offline_token_audit
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        )
+        assert row is not None
+        assert row["token_id"] == "tok-2"
+        assert bool(row["approved"]) is False
+        assert row["reason"] == "expired"
+
+
 class TestDevicePolicyCache:
     async def test_upsert_and_get_latest_device_policy_cache(self, store):
         await store.upsert_device_policy_cache(
