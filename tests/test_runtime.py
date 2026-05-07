@@ -33,6 +33,7 @@ from ori.runtime import (
     _build_local_llm,
     _coap_command_from_context,
     _maybe_autoload_dotenv,
+    _message_from_context,
     _process_target_from_context,
     _resolve_local_model_file,
 )
@@ -1150,6 +1151,51 @@ class TestCoapCommandResolution:
         command, payload = _coap_command_from_context(ctx)
         assert command == "isolate_vlan"
         assert payload is None
+
+
+class TestMessageComposition:
+    def _ctx(self, *, context: dict | None = None):
+        reading = SensorReading(
+            sensor_id="sensor-1",
+            sensor_type="temperature",
+            value=27.5,
+            unit="celsius",
+            timestamp=1_700_000_000_000,
+            quality=1.0,
+        )
+        event = OriEvent.from_reading(reading, "dev-01")
+        event.context = context or {}
+        return SkillContext(skill=None, event=event, state_store=None)
+
+    def test_sms_uses_operator_message_and_caps_length(self):
+        ctx = self._ctx(context={"operator_message": "a" * 220})
+        msg = _message_from_context(ctx, "fallback", channel="sms")
+        assert len(msg) <= 160
+        assert msg.endswith("...")
+
+    def test_whatsapp_prefers_channel_specific_message(self):
+        ctx = self._ctx(
+            context={
+                "operator_message": "generic",
+                "channel_messages": {
+                    "whatsapp": "WhatsApp enriched message",
+                    "sms": "SMS compact message",
+                },
+            }
+        )
+        assert (
+            _message_from_context(ctx, "fallback", channel="whatsapp")
+            == "WhatsApp enriched message"
+        )
+        assert (
+            _message_from_context(ctx, "fallback", channel="sms")
+            == "SMS compact message"
+        )
+
+    def test_whatsapp_sensor_fallback_is_richer_layout(self):
+        ctx = self._ctx()
+        msg = _message_from_context(ctx, "fallback", channel="whatsapp")
+        assert "\nValue: " in msg
 
 
 class TestWebhookIngest:

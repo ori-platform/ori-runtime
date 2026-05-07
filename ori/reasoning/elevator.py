@@ -723,6 +723,11 @@ class IntelligenceElevator:
                         getattr(skill, "name", "unknown"),
                     )
 
+            # Expose composed operator text to dispatch executors so channel
+            # formatting can happen without re-running skill hooks.
+            if isinstance(getattr(event, "context", None), dict):
+                event.context["operator_message"] = str(getattr(result, "text", "") or "")
+
             actions: list[str] = []
             if rule_res.matched and rule_res.rule_name:
                 if hasattr(skill, "get_default_actions_for_trigger"):
@@ -833,6 +838,7 @@ class IntelligenceElevator:
                 timestamp=now_ms(),
                 reading=event.reading,
             )
+            synthetic_event.context["operator_message"] = str(result.text)
 
             actions = []
             if hasattr(skill, "get_default_actions"):

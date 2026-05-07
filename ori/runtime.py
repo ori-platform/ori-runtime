@@ -336,7 +336,7 @@ class OriRuntime:
 
         # alert_whatsapp executor
         async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> None:
-            msg = _message_from_context(ctx, action)
+            msg = _message_from_context(ctx, action, channel="whatsapp")
             action_tier = _resolve_action_declared_tier(ctx, action)
             trigger_name = _resolve_trigger_name(ctx)
             original_ts = _resolve_original_ts(ctx)
@@ -354,7 +354,7 @@ class OriRuntime:
 
         # alert_sms executor
         async def _exec_alert_sms(action: str, ctx: SkillContext) -> None:
-            msg = _message_from_context(ctx, action)
+            msg = _message_from_context(ctx, action, channel="sms")
             action_tier = _resolve_action_declared_tier(ctx, action)
             trigger_name = _resolve_trigger_name(ctx)
             original_ts = _resolve_original_ts(ctx)
@@ -1521,15 +1521,50 @@ class OriRuntime:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _message_from_context(ctx: SkillContext, fallback: str) -> str:
-    """Build an alert message string from a SkillContext."""
-    if ctx.event and ctx.event.reading:
+def _cap_sms_message(message: str, limit: int = 160) -> str:
+    compact = " ".join(message.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(limit - 3, 0)].rstrip() + "..."
+
+
+def _message_from_context(
+    ctx: SkillContext,
+    fallback: str,
+    channel: str = "sms",
+) -> str:
+    """Build a channel-aware alert message string from a SkillContext."""
+    event_ctx = ctx.event.context if ctx.event and isinstance(ctx.event.context, dict) else {}
+    channel_key = str(channel or "").strip().lower()
+
+    msg = ""
+    channel_messages = event_ctx.get("channel_messages")
+    if isinstance(channel_messages, dict):
+        raw_channel = channel_messages.get(channel_key) or channel_messages.get("default")
+        if isinstance(raw_channel, str) and raw_channel.strip():
+            msg = raw_channel.strip()
+    if not msg:
+        raw_operator = event_ctx.get("operator_message")
+        if isinstance(raw_operator, str) and raw_operator.strip():
+            msg = raw_operator.strip()
+
+    # Fallback for raw sensor alerts that did not pass through a skill composer.
+    if not msg and ctx.event and ctx.event.reading:
         r = ctx.event.reading
-        return (
-            f"[{ctx.event.device_id}] {r.sensor_id} ({r.sensor_type}): "
-            f"{r.value} {r.unit}"
-        )
-    return fallback
+        if channel_key == "whatsapp":
+            msg = (
+                f"[{ctx.event.device_id}] {r.sensor_id} ({r.sensor_type})\n"
+                f"Value: {r.value} {r.unit}"
+            )
+        else:
+            msg = f"[{ctx.event.device_id}] {r.sensor_id} ({r.sensor_type}): {r.value} {r.unit}"
+
+    if not msg:
+        msg = str(fallback)
+
+    if channel_key == "sms":
+        return _cap_sms_message(msg)
+    return msg
 
 
 def _resolve_trigger_name(ctx: SkillContext) -> str:
