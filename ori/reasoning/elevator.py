@@ -726,7 +726,9 @@ class IntelligenceElevator:
             # Expose composed operator text to dispatch executors so channel
             # formatting can happen without re-running skill hooks.
             if isinstance(getattr(event, "context", None), dict):
-                event.context["operator_message"] = str(getattr(result, "text", "") or "")
+                event.context["operator_message"] = str(
+                    getattr(result, "text", "") or ""
+                )
 
             actions: list[str] = []
             if rule_res.matched and rule_res.rule_name:

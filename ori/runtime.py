@@ -1534,13 +1534,17 @@ def _message_from_context(
     channel: str = "sms",
 ) -> str:
     """Build a channel-aware alert message string from a SkillContext."""
-    event_ctx = ctx.event.context if ctx.event and isinstance(ctx.event.context, dict) else {}
+    event_ctx = (
+        ctx.event.context if ctx.event and isinstance(ctx.event.context, dict) else {}
+    )
     channel_key = str(channel or "").strip().lower()
 
     msg = ""
     channel_messages = event_ctx.get("channel_messages")
     if isinstance(channel_messages, dict):
-        raw_channel = channel_messages.get(channel_key) or channel_messages.get("default")
+        raw_channel = channel_messages.get(channel_key) or channel_messages.get(
+            "default"
+        )
         if isinstance(raw_channel, str) and raw_channel.strip():
             msg = raw_channel.strip()
     if not msg:
