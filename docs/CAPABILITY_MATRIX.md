@@ -11,7 +11,7 @@ This is the authoritative record of what is real versus planned.
 | Intelligence Elevator Tier 4 (cloud LLM)         | Partial — stubbed | elevator.py:410, :969                     | Returns stub result. No external API call.                                                                            |
 | CoAP actuation executor                          | Implemented       | actions/coap.py, runtime.py:312           | Host allowlist enforced in config.py:409.                                                                             |
 | CoAP HAL telemetry adapter                       | Not implemented   | ori/hal/coap_adapter.py missing           | See P3-R8.                                                                                                            |
-| Tier C approval workflow                         | Implemented       | action_dispatcher.py:649                  | WhatsApp/SMS channels. Local console fallback not wired.                                                              |
+| Tier C approval workflow                         | Implemented       | action_dispatcher.py:649                  | WhatsApp/SMS channels with local-console fallback path.                                                               |
 | Tier C local console fallback                    | Implemented       | action_dispatcher.py, runtime.py, config.py | When SMS/WhatsApp are unavailable and `actions.local_console.enabled=true`, Tier C approval polls local inbound channel and records `LOCAL:<reply>` in action results. |
 | Tier D relay bypass when DevicePolicy restricted | Implemented       | action_dispatcher.py                      | P3-R0b-i. Critical safety fix.                                                                                        |
 | SMS via Africa's Talking (IP)                    | Implemented       | sms.py:57                                 | send(message, to_number). Requires internet.                                                                          |
@@ -32,3 +32,7 @@ This is the authoritative record of what is real versus planned.
 | Solar performance monitor skill                  | Not implemented   | skills/solar-performance-monitor/ missing | See P3-R7.                                                                                                            |
 | Energy cost calculator hook                      | Not implemented   | —                                         | See P3-R6.                                                                                                            |
 | Offline Tier C auth tokens                       | Not implemented   | —                                         | See P3-R3c. CLI: ori-cli.                                                                                             |
+
+## Recent updates
+
+- 2026-05-07: Runtime async offload refactor changed blocking-call wrappers from `run_in_executor` to `asyncio.to_thread` in actions/HAL/reasoning/store paths. Capability statuses unchanged (implementation detail only).
