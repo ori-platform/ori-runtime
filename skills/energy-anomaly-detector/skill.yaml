@@ -13,17 +13,46 @@ sensors_required:
     protocol: serial
 
 triggers:
-  - name: anomalous_draw
-    condition: "value > 8.0"
+  - name: sustained_overdraw
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and deviation_percent >= overdraw_threshold_percent and sustained_high_ratio >= sustained_ratio_threshold"
+    cooldown_seconds: 600
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: sudden_load_spike
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and spike_ratio >= spike_ratio_threshold and deviation_percent >= (overdraw_threshold_percent / 2.0)"
     cooldown_seconds: 300
     escalate_to: local_slm
     action_tier: A
 
+  - name: unstable_power_draw
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and recent_volatility_percent >= volatility_threshold_percent and deviation_percent >= (overdraw_threshold_percent / 3.0)"
+    cooldown_seconds: 600
+    escalate_to: local_slm
+    action_tier: A
+
   - name: dangerous_overcurrent
-    condition: "value > 20.0"
+    condition: "value > dangerous_overcurrent_threshold"
     bypass_llm: true
     action_tier: D
     cooldown_seconds: 0
+
+prompts:
+  sustained_overdraw: |
+    Power usage has stayed above normal for several recent checks.
+    Explain likely causes in plain language and give 2 practical next steps.
+
+  sudden_load_spike: |
+    Power usage jumped sharply compared to the last reading and baseline.
+    Explain what this may mean for equipment risk and give 2 quick checks.
+
+  unstable_power_draw: |
+    Power usage has become unusually unstable compared to normal.
+    Explain what this pattern may indicate and give 2 preventive actions.
+
+  dangerous_overcurrent: |
+    Dangerous current level detected. Prioritize safety in the response.
+    Keep instructions short and clear for the operator.
 
 actions:
   available:
@@ -32,5 +61,17 @@ actions:
     - name: log_to_dashboard
       tier: A
   defaults:
-    anomalous_draw: [alert_whatsapp, log_to_dashboard]
+    sustained_overdraw: [alert_whatsapp, log_to_dashboard]
+    sudden_load_spike: [alert_whatsapp, log_to_dashboard]
+    unstable_power_draw: [alert_whatsapp, log_to_dashboard]
     dangerous_overcurrent: [alert_whatsapp, log_to_dashboard]
+
+config:
+  min_quality: 0.8
+  overdraw_threshold_percent: 30.0
+  spike_ratio_threshold: 1.5
+  sustained_ratio_threshold: 0.7
+  volatility_threshold_percent: 20.0
+  history_window: 10
+  persistence_window: 6
+  dangerous_overcurrent_threshold: 20.0
