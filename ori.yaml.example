@@ -273,6 +273,11 @@ actions:
       path: "/webhooks/sms/africastalking"
       token: "${ORI_SMS_WEBHOOK_TOKEN}"  # required; shared secret checked on inbound requests
 
+  local_console:
+    enabled: false                   # Tier C local fallback when SMS/WhatsApp are unavailable
+    poll_interval_ms: 1000
+    approval_channel_id: "local_console"
+
   relay:
     enabled: false                   # CHANGE TO true ONLY WHEN RELAY IS WIRED
     gpio_pin: 26                     # BCM pin number connected to relay IN

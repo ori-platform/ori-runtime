@@ -85,6 +85,7 @@ class ActionChannelConfig:
     sms: dict = field(default_factory=dict)
     relay: dict = field(default_factory=dict)
     coap: dict = field(default_factory=dict)
+    local_console: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -538,6 +539,23 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
                 "actions.coap.allowed_hosts must be a non-empty list of hostnames/IPs when coap is enabled."
             )
 
+    local_console_raw = data.get("local_console") or {}
+    if not isinstance(local_console_raw, dict):
+        raise ConfigValidationError(
+            "'actions.local_console' must be a mapping when provided."
+        )
+    local_console = {
+        "enabled": bool(local_console_raw.get("enabled", False)),
+        "poll_interval_ms": int(local_console_raw.get("poll_interval_ms", 1000)),
+        "approval_channel_id": str(
+            local_console_raw.get("approval_channel_id", "local_console")
+        ),
+    }
+    if local_console["poll_interval_ms"] < 100:
+        raise ConfigValidationError(
+            "actions.local_console.poll_interval_ms must be >= 100."
+        )
+
     return ActionChannelConfig(
         primary_alert_channel=primary,
         operator_contact=str(data.get("operator_contact") or ""),
@@ -546,6 +564,7 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         sms=data.get("sms") or {},
         relay=relay,
         coap=coap,
+        local_console=local_console,
     )
 
 
