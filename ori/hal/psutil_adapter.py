@@ -6,7 +6,6 @@ import logging
 import platform
 import re
 import shutil
-from functools import partial
 
 import psutil
 
@@ -111,11 +110,8 @@ class PsutilAdapter(BaseAdapter):
             elif t == "sleep_blocking_process":
                 result = await self._sleep_blocking_async(sensor_id)
             else:
-                loop = asyncio.get_running_loop()
                 try:
-                    result = await loop.run_in_executor(
-                        None, partial(self._read_sync, sensor_id)
-                    )
+                    result = await asyncio.to_thread(self._read_sync, sensor_id)
                 except (AdapterReadError, AdapterConnectionError):
                     raise
                 except Exception as exc:
@@ -257,8 +253,7 @@ class PsutilAdapter(BaseAdapter):
 
         # (i) psutil.sensors_temperatures — Linux / WSL
         if hasattr(psutil, "sensors_temperatures"):
-            loop = asyncio.get_running_loop()
-            temps = await loop.run_in_executor(None, psutil.sensors_temperatures)
+            temps = await asyncio.to_thread(psutil.sensors_temperatures)
             for key in ("coretemp", "k10temp", "cpu_thermal", "acpitz"):
                 if key in temps and temps[key]:
                     readings = temps[key]
@@ -514,8 +509,7 @@ class PsutilAdapter(BaseAdapter):
             return _zero
 
         # Current battery reading (non-blocking via executor)
-        loop = asyncio.get_running_loop()
-        battery = await loop.run_in_executor(None, psutil.sensors_battery)
+        battery = await asyncio.to_thread(psutil.sensors_battery)
         if battery is None:
             return _zero
 

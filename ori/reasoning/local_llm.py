@@ -5,7 +5,6 @@ import asyncio
 import logging
 import os
 import re
-from functools import partial
 
 from ori.network.events import ReasoningResult
 from ori.time_utils import now_ms
@@ -100,16 +99,12 @@ class LocalLLM:
 
         await self._ensure_loaded()
 
-        loop = asyncio.get_running_loop()
         start_ms = now_ms()
 
-        output = await loop.run_in_executor(
-            None,
-            partial(
-                self._infer,
-                prompt=self._build_inference_prompt(prompt),
-                max_tokens=max_tokens,
-            ),
+        output = await asyncio.to_thread(
+            self._infer,
+            prompt=self._build_inference_prompt(prompt),
+            max_tokens=max_tokens,
         )
 
         latency_ms = now_ms() - start_ms
@@ -136,13 +131,12 @@ class LocalLLM:
         """Load the model in a thread-pool executor if not already loaded."""
         if self._llm is not None:
             return
-        loop = asyncio.get_running_loop()
         logger.info(
             "LocalLLM: loading model '%s' (n_ctx=%d) …",
             self._model_path,
             self._context_window,
         )
-        self._llm = await loop.run_in_executor(None, self._load_model)
+        self._llm = await asyncio.to_thread(self._load_model)
         logger.info("LocalLLM: model loaded")
 
     def _load_model(self) -> object:

@@ -6,7 +6,6 @@ import datetime
 import hashlib
 import json
 import sqlite3
-from functools import partial
 from typing import Optional
 
 from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
@@ -202,8 +201,7 @@ class StateStore:
         async with self._lifecycle_lock:
             if self._conn is not None:
                 return
-            loop = asyncio.get_running_loop()
-            conn = await loop.run_in_executor(None, self._open_sync)
+            conn = await asyncio.to_thread(self._open_sync)
             self._conn = conn
 
     def _open_sync(self) -> sqlite3.Connection:
@@ -220,8 +218,7 @@ class StateStore:
                 conn = self._conn
                 self._conn = None
             if conn is not None:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, conn.close)
+                await asyncio.to_thread(conn.close)
 
     def _migrate_sync(self, conn: sqlite3.Connection) -> None:
         conn.executescript(_DDL)
@@ -261,9 +258,8 @@ class StateStore:
 
     async def _run_write(self, fn, *args):
         """Run a synchronous write callable in the executor under write lock."""
-        loop = asyncio.get_running_loop()
         async with self._write_lock:
-            return await loop.run_in_executor(None, partial(fn, *args))
+            return await asyncio.to_thread(fn, *args)
 
     async def _run_read(self, fn, *args):
         """Run a synchronous read callable in the executor without write lock."""
@@ -272,10 +268,7 @@ class StateStore:
             # connections, so route reads through the primary connection
             # under the write lock to avoid cross-thread misuse.
             return await self._run_write(self._run_read_on_primary_conn, fn, *args)
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, partial(self._run_read_with_conn, fn, *args)
-        )
+        return await asyncio.to_thread(self._run_read_with_conn, fn, *args)
 
     def _run_read_on_primary_conn(self, fn, *args):
         assert self._conn is not None

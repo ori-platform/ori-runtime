@@ -251,9 +251,8 @@ class SmartAdapter(BaseAdapter):
             raise AdapterReadError("SmartAdapter: circuit breaker is not initialized")
 
         async with self._breaker:
-            loop = asyncio.get_running_loop()
             try:
-                metrics = await loop.run_in_executor(None, self._read_metrics_sync)
+                metrics = await asyncio.to_thread(self._read_metrics_sync)
             except AdapterReadError:
                 raise
             except Exception as exc:

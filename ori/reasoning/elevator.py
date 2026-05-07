@@ -269,8 +269,7 @@ class IntelligenceElevator:
             and not self._capability_posture.is_stale()
         ):
             return not self._capability_posture.internet_available
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _is_offline)
+        return await asyncio.to_thread(_is_offline)
 
     async def _evaluate_rules_with_hooks(
         self, event: OriEvent, skill: Any, state_store: Any

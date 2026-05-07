@@ -97,13 +97,11 @@ class SMSAction:
 
             # Africa's Talking SDK is synchronous — push to executor so the
             # event loop is not blocked during the HTTP round-trip.
-            loop = asyncio.get_running_loop()
-
             def _send_sync() -> dict:
                 sms = africastalking.SMS
                 return sms.send(message, [to_number], self._sender_id)
 
-            response = await loop.run_in_executor(None, _send_sync)
+            response = await asyncio.to_thread(_send_sync)
 
             # AT returns a dict with a "SMSMessageData" key containing
             # a "Recipients" list.  Each recipient has a "status" field.

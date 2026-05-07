@@ -96,9 +96,7 @@ class CapabilityPostureTracker:
         relay_connected: bool,
     ) -> CapabilityPosture:
         """Probe live signals and produce a fresh posture snapshot."""
-        loop = asyncio.get_running_loop()
-        internet_available = await loop.run_in_executor(
-            None,
+        internet_available = await asyncio.to_thread(
             probe_internet_available,
             self._internet_probe_host,
             self._internet_probe_port,

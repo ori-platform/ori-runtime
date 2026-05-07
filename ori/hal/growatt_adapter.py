@@ -3,7 +3,6 @@
 
 import asyncio
 import logging
-from functools import partial
 from typing import Any
 
 from ori.hal.base import (
@@ -106,8 +105,7 @@ class GrowattAdapter(BaseAdapter):
             closer = getattr(client, "close", None)
         if callable(closer):
             try:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, closer)
+                await asyncio.to_thread(closer)
             except Exception:
                 logger.warning("GrowattAdapter: exception during client close")
 
@@ -127,11 +125,8 @@ class GrowattAdapter(BaseAdapter):
             )
 
         async with self._breaker:
-            loop = asyncio.get_running_loop()
             try:
-                return await loop.run_in_executor(
-                    None, partial(self._read_sensor_value_sync, sensor_id)
-                )
+                return await asyncio.to_thread(self._read_sensor_value_sync, sensor_id)
             except ConnectionRefusedError as exc:
                 raise AdapterReadError(
                     f"GrowattAdapter: connection refused for host={self._host}:{self._port}"

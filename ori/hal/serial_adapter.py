@@ -4,7 +4,6 @@
 import asyncio
 import logging
 import struct
-from functools import partial
 from typing import Any
 
 from ori.hal.base import (
@@ -239,9 +238,8 @@ class SerialAdapter(BaseAdapter):
         reg = config.get("register")
         self._register = int(reg) if reg is not None else None
 
-        loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, self._open_port)
+            await asyncio.to_thread(self._open_port)
         except AdapterConnectionError:
             raise
         except Exception as exc:
@@ -268,8 +266,7 @@ class SerialAdapter(BaseAdapter):
         """Close the serial port."""
         try:
             if self._serial is not None and self._serial.is_open:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._serial.close)
+                await asyncio.to_thread(self._serial.close)
         except Exception:
             logger.warning("SerialAdapter: exception during close on '%s'", self._port)
         finally:
@@ -304,15 +301,11 @@ class SerialAdapter(BaseAdapter):
             if self._register is not None:
                 reg = self._register
 
-            loop = asyncio.get_running_loop()
             read_timeout = self._timeout + 1.0  # asyncio guard > serial read timeout
 
             try:
                 raw = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None,
-                        partial(self._read_sync, reg, count),
-                    ),
+                    asyncio.to_thread(self._read_sync, reg, count),
                     timeout=read_timeout,
                 )
             except asyncio.TimeoutError as exc:

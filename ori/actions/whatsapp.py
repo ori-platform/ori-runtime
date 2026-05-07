@@ -123,14 +123,11 @@ class TwilioProvider:
             client = Client(self._sid, self._token)
             # Twilio's Python SDK is synchronous — run in executor to avoid
             # blocking the event loop.
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: client.messages.create(
-                    body=message,
-                    from_=self._from,
-                    to=to,
-                ),
+            await asyncio.to_thread(
+                client.messages.create,
+                body=message,
+                from_=self._from,
+                to=to,
             )
             logger.info("TwilioProvider.send: message delivered to %r", to)
             return True
@@ -156,15 +153,11 @@ class TwilioProvider:
                 since_ms / 1000.0, tz=datetime.timezone.utc
             )
             client = Client(self._sid, self._token)
-            loop = asyncio.get_running_loop()
-
-            messages = await loop.run_in_executor(
-                None,
-                lambda: client.messages.list(
-                    from_=from_number,
-                    to=self._from,
-                    date_sent_after=since_dt,
-                ),
+            messages = await asyncio.to_thread(
+                client.messages.list,
+                from_=from_number,
+                to=self._from,
+                date_sent_after=since_dt,
             )
             return [m.body for m in messages]
         except Exception:

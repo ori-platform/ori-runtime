@@ -4,7 +4,6 @@
 import asyncio
 import logging
 import struct
-from functools import partial
 from typing import Any
 
 from ori.hal.base import (
@@ -136,9 +135,8 @@ class UsbSerialAdapter(BaseAdapter):
 
         self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
 
-        loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, self._open_port_sync)
+            await asyncio.to_thread(self._open_port_sync)
         except AdapterConnectionError:
             raise
         except Exception as exc:
@@ -164,14 +162,10 @@ class UsbSerialAdapter(BaseAdapter):
 
         async with self._breaker:
             register, count, scale, unit = _SENSOR_MAP[self._sensor_type]
-            loop = asyncio.get_running_loop()
             read_timeout = self._timeout_s + 1.0
             try:
                 raw = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None,
-                        partial(self._read_sync, register, count),
-                    ),
+                    asyncio.to_thread(self._read_sync, register, count),
                     timeout=read_timeout,
                 )
             except asyncio.TimeoutError as exc:
@@ -204,8 +198,7 @@ class UsbSerialAdapter(BaseAdapter):
     async def close(self) -> None:
         try:
             if self._serial is not None and self._serial.is_open:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._serial.close)
+                await asyncio.to_thread(self._serial.close)
         except Exception:
             logger.warning(
                 "UsbSerialAdapter: exception during close on '%s'",

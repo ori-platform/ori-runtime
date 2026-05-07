@@ -519,7 +519,13 @@ class TestSkillReload:
 
         start_task = asyncio.create_task(runtime.start())
         try:
-            await asyncio.sleep(0.2)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if runtime._event_bus is not None and (
+                    runtime._event_bus.subscriber_count("cpu_percent") >= 1
+                ):
+                    break
+                await asyncio.sleep(0.05)
             assert runtime._event_bus is not None
             assert runtime._event_bus.subscriber_count("cpu_percent") == 1
 
@@ -564,7 +570,13 @@ class TestSkillReload:
 
         start_task = asyncio.create_task(runtime.start())
         try:
-            await asyncio.sleep(0.2)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if runtime._event_bus is not None and (
+                    runtime._event_bus.subscriber_count("cpu_percent") >= 1
+                ):
+                    break
+                await asyncio.sleep(0.05)
             assert runtime._event_bus is not None
             before = runtime._event_bus.subscriber_count("cpu_percent")
             assert before == 1
@@ -689,7 +701,11 @@ class TestSensorPolling:
         runtime = OriRuntime(config_path=str(minimal_config))
 
         async def _stop():
-            await asyncio.sleep(0.35)  # allow a few poll cycles
+            # Avoid startup timing races: wait until polling has actually
+            # happened (or timeout), then stop.
+            deadline = time.monotonic() + 2.0
+            while read_count < 2 and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
             await runtime.stop()
 
         with caplog.at_level(logging.WARNING):

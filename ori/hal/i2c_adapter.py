@@ -4,7 +4,6 @@
 import asyncio
 import logging
 import threading
-from functools import partial
 from typing import Any
 
 from ori.hal.base import (
@@ -190,9 +189,8 @@ class I2CAdapter(BaseAdapter):
         self._channel = int(config.get("channel", 0))
         self._sensitivity = float(config.get("sensitivity", _DEFAULT_SENSITIVITY))
 
-        loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, partial(self._connect_sync, sensor_type))
+            await asyncio.to_thread(self._connect_sync, sensor_type)
         except AdapterConnectionError:
             raise
         except Exception as exc:
@@ -263,12 +261,10 @@ class I2CAdapter(BaseAdapter):
         """
         try:
             if self._scd4x is not None:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._scd4x.stop_periodic_measurement)
+                await asyncio.to_thread(self._scd4x.stop_periodic_measurement)
                 self._scd4x = None
             if self._bus is not None:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._bus.close)
+                await asyncio.to_thread(self._bus.close)
                 self._bus = None
             if self._sensor_type in _ADS_SENSOR_TYPES | {"scd40"}:
                 _release_shared_busio_i2c(self._bus_number)
@@ -305,10 +301,9 @@ class I2CAdapter(BaseAdapter):
             raise AdapterReadError("I2CAdapter: not connected — call connect() first")
 
         async with self._breaker:
-            loop = asyncio.get_running_loop()
             try:
                 reading = await asyncio.wait_for(
-                    loop.run_in_executor(None, partial(self._read_sync, sensor_id)),
+                    asyncio.to_thread(self._read_sync, sensor_id),
                     timeout=5.0,
                 )
             except asyncio.TimeoutError as exc:
