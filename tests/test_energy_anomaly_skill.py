@@ -250,3 +250,68 @@ def test_post_reasoning_uses_global_safe_fallback_timezone():
     )
     updated = skill.hooks.post_reasoning(result, hook_ctx)
     assert updated.text.startswith("At ")
+
+
+def test_cost_projection_infers_country_voltage_and_currency():
+    skill = _load_skill()
+    skill.config["tariff_per_kwh"] = 100.0
+    skill.config.pop("line_voltage", None)
+    skill.config.pop("currency_symbol", None)
+    skill.config.pop("currency_code", None)
+
+    store = _Store()
+    sensor_id = "load-current-01"
+    _seed_history(store, sensor_id, [10.0, 10.0, 10.0, 10.0, 10.0, 10.0])
+    event = _event(sensor_id=sensor_id, value=14.0, quality=0.95)
+    event.context["device_country_code"] = "US"
+    hook_ctx, _ = _ctx(skill, event, store)
+
+    assert hook_ctx.derived["line_voltage_used"] == pytest.approx(120.0)
+    assert hook_ctx.derived["cost_currency_symbol"] == "$"
+    assert hook_ctx.derived["cost_confidence"] == "estimated"
+    assert hook_ctx.derived["delta_amps"] == pytest.approx(4.0)
+    assert hook_ctx.derived["projected_extra_cost_daily"] > 0.0
+
+
+def test_cost_projection_uses_explicit_voltage_and_exact_confidence():
+    skill = _load_skill()
+    skill.config["tariff_per_kwh"] = 120.0
+    skill.config["line_voltage"] = 230.0
+    skill.config["currency_symbol"] = "€"
+    skill.config["power_factor"] = 1.0
+
+    store = _Store()
+    sensor_id = "load-current-01"
+    _seed_history(store, sensor_id, [10.0, 10.0, 10.0, 10.0, 10.0, 10.0])
+    event = _event(sensor_id=sensor_id, value=13.0, quality=0.95)
+    hook_ctx, _ = _ctx(skill, event, store)
+
+    assert hook_ctx.derived["line_voltage_used"] == pytest.approx(230.0)
+    assert hook_ctx.derived["cost_currency_symbol"] == "€"
+    assert hook_ctx.derived["cost_confidence"] == "exact"
+    assert hook_ctx.derived["projected_extra_cost_daily"] > 0.0
+
+
+def test_post_reasoning_includes_projected_daily_risk_anchor():
+    skill = _load_skill()
+    skill.config["tariff_per_kwh"] = 150.0
+    skill.config["currency_symbol"] = "₦"
+    skill.config["line_voltage"] = 230.0
+
+    store = _Store()
+    sensor_id = "load-current-01"
+    _seed_history(store, sensor_id, [10.0, 10.0, 10.0, 10.0, 10.0, 10.0])
+    event = _event(sensor_id=sensor_id, value=14.0, quality=0.95)
+    hook_ctx, _ = _ctx(skill, event, store)
+    hook_ctx.trigger_name = "sustained_overdraw"
+
+    result = ReasoningResult(
+        text="Power remained elevated due to delayed generator stop.",
+        tier="local_slm",
+        model="stub",
+        tokens_used=0,
+        latency_ms=0,
+    )
+    updated = skill.hooks.post_reasoning(result, hook_ctx)
+    assert "/day projected extra cost risk" in updated.text
+    assert "prevented" not in updated.text.lower()
