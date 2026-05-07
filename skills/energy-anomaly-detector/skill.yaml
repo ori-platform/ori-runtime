@@ -94,4 +94,12 @@ config:
   volatility_threshold_percent: 20.0
   history_window: 10
   persistence_window: 6
+  observed_window_minutes: 10
+  tariff_per_kwh: 225.0
+  currency_code: NGN
+  # Optional overrides:
+  # currency_symbol: "₦"
+  # country_code: NG
+  # line_voltage: 230.0
+  power_factor: 0.9
   dangerous_overcurrent_threshold: 20.0
