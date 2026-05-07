@@ -512,6 +512,110 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "smart"
 
+    def test_accepts_coap_protocol_with_required_fields(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors:
+  - id: coap-temp-01
+    type: temperature
+    protocol: coap
+    poll_interval_ms: 1000
+    uri: coap://192.168.1.70/telemetry/temp
+    method: GET
+    json_path: metrics.temp_c
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+  offline_fallback: rule
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+  coap:
+    enabled: false
+    allowed_hosts: ["192.168.1.70"]
+""",
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.sensors[0].protocol == "coap"
+        assert cfg.sensors[0].metadata["uri"].startswith("coap://")
+
+    def test_rejects_coap_sensor_without_uri(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors:
+  - id: coap-temp-01
+    type: temperature
+    protocol: coap
+    poll_interval_ms: 1000
+    json_path: metrics.temp_c
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+  offline_fallback: rule
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+  coap:
+    enabled: false
+    allowed_hosts: ["192.168.1.70"]
+""",
+        )
+        with pytest.raises(ConfigValidationError, match="require 'uri'"):
+            Config.load(yaml_path)
+
+    def test_rejects_coap_sensor_when_host_not_in_global_allowlist(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors:
+  - id: coap-temp-01
+    type: temperature
+    protocol: coap
+    poll_interval_ms: 1000
+    uri: coap://10.0.0.9/telemetry/temp
+    method: GET
+    json_path: metrics.temp_c
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+  offline_fallback: rule
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+  coap:
+    enabled: false
+    allowed_hosts: ["192.168.1.70"]
+""",
+        )
+        with pytest.raises(ConfigValidationError, match="allowed_hosts"):
+            Config.load(yaml_path)
+
     def test_accepts_coap_action_config(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
