@@ -18,6 +18,7 @@ SUPPORTED_SENSOR_PROTOCOLS: frozenset[str] = frozenset(
         "mqtt_perception",
         "usb_serial",
         "http",
+        "coap",
         "opcua",
         "smart",
     }
@@ -74,6 +75,10 @@ def make_adapter(protocol: str) -> BaseAdapter:
         from ori.hal.http_adapter import HttpAdapter
 
         return HttpAdapter()
+    if protocol == "coap":
+        from ori.hal.coap_adapter import CoapAdapter
+
+        return CoapAdapter()
     if protocol == "opcua":
         from ori.hal.opcua_adapter import OpcUaAdapter
 
