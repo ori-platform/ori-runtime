@@ -184,18 +184,69 @@ async def test_dangerous_overcurrent_threshold_is_configurable():
 
 def test_post_reasoning_appends_baseline_summary():
     skill = _load_skill()
-    event = _event(value=14.0)
+    event = _event(value=14.0, timestamp=1_710_000_000_000)
     hook_ctx = HookContext.build(event, _Store(), skill.name, skill_config=skill.config)
-    hook_ctx.derived["baseline_24h"] = 10.0
-    hook_ctx.derived["deviation_percent"] = 40.0
+    hook_ctx.trigger_name = "sustained_overdraw"
 
     result = ReasoningResult(
-        text="Power draw is higher than normal.",
+        text="Current reading crossed baseline threshold due to anomaly.",
         tier="local_slm",
         model="stub",
         tokens_used=0,
         latency_ms=0,
     )
     updated = skill.hooks.post_reasoning(result, hook_ctx)
-    assert "Baseline(24h): 10.00A" in updated.text
-    assert "Deviation: 40.0%" in updated.text
+    assert updated.text.startswith("At ")
+    assert "I noticed power stayed high for too long." in updated.text
+    assert len(updated.text) <= 160
+    banned = [
+        "threshold",
+        "anomaly",
+        "baseline",
+        "deviation",
+        "sensor",
+        "reading",
+        "value",
+        " current ",
+        "voltage",
+    ]
+    lower = f" {updated.text.lower()} "
+    for token in banned:
+        assert token not in lower
+
+
+def test_post_reasoning_uses_configured_timezone_when_provided():
+    skill = _load_skill()
+    # 2024-03-09 10:40:00 UTC => 11:40 WAT
+    event = _event(value=14.0, timestamp=1_709_980_800_000)
+    hook_ctx = HookContext.build(
+        event, _Store(), skill.name, skill_config={"timezone": "Africa/Lagos"}
+    )
+    hook_ctx.trigger_name = "sudden_load_spike"
+
+    result = ReasoningResult(
+        text="Power changed quickly.",
+        tier="local_slm",
+        model="stub",
+        tokens_used=0,
+        latency_ms=0,
+    )
+    updated = skill.hooks.post_reasoning(result, hook_ctx)
+    assert updated.text.startswith("At 11:40,")
+
+
+def test_post_reasoning_uses_global_safe_fallback_timezone():
+    skill = _load_skill()
+    event = _event(value=14.0, timestamp=1_709_980_800_000)
+    hook_ctx = HookContext.build(event, _Store(), skill.name, skill_config={})
+    hook_ctx.trigger_name = "sudden_load_spike"
+
+    result = ReasoningResult(
+        text="Power changed quickly.",
+        tier="local_slm",
+        model="stub",
+        tokens_used=0,
+        latency_ms=0,
+    )
+    updated = skill.hooks.post_reasoning(result, hook_ctx)
+    assert updated.text.startswith("At ")
