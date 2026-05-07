@@ -87,11 +87,13 @@ class ActionDispatcher:
         self,
         state_store: Any = None,
         alert_sender: Any = None,
+        emergency_sms_sender: Any = None,
         status_indicator: Any = None,
         config: dict | None = None,
     ) -> None:
         self._state_store = state_store
         self._alert_sender = alert_sender
+        self._emergency_sms_sender = emergency_sms_sender
         self._config: dict = config or {}
         self._log_action_decisions = bool(
             self._config.get("log_action_decisions", True)
@@ -923,10 +925,12 @@ class ActionDispatcher:
             action: The Tier D action name that failed.
             device_id: The device on which the failure occurred.
         """
-        from ori.actions.sms import SMSAction
-
         try:
-            sms = SMSAction()
+            sms = self._emergency_sms_sender
+            if sms is None:
+                from ori.actions.sms import SMSAction
+
+                sms = SMSAction()
             contact = self._config.get("operator_contact", "")
             if not contact:
                 logger.critical(

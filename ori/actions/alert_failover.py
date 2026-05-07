@@ -16,6 +16,8 @@ import logging
 import time
 from typing import Any
 
+from ori.reasoning.capability_posture import CapabilityPosture
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +34,7 @@ class AlertFailoverSender:
         self._primary_channel = str(primary_channel or "sms").strip().lower()
         self._sms_sender = sms_sender
         self._whatsapp_sender = whatsapp_sender
+        self._capability_posture: CapabilityPosture | None = None
 
         if self._primary_channel not in {"sms", "whatsapp"}:
             logger.warning(
@@ -40,11 +43,34 @@ class AlertFailoverSender:
             )
             self._primary_channel = "sms"
 
-    @property
-    def _ordered_senders(self) -> list[tuple[str, Any]]:
+    def update_capability_posture(self, posture: CapabilityPosture | None) -> None:
+        self._capability_posture = posture
+
+    def _channel_available(self, channel: str) -> bool:
+        posture = self._capability_posture
+        if posture is None:
+            return True
+        if channel == "whatsapp":
+            return bool(posture.whatsapp_available and posture.internet_available)
+        if channel == "sms":
+            return bool(posture.sms_available)
+        return False
+
+    def _ordered_senders(
+        self,
+        preferred_channel: str | None = None,
+    ) -> list[tuple[str, Any]]:
+        preferred = (
+            str(preferred_channel).strip().lower()
+            if preferred_channel
+            else self._primary_channel
+        )
+        if preferred not in {"sms", "whatsapp"}:
+            preferred = self._primary_channel
+
         primary = (
             ("sms", self._sms_sender)
-            if self._primary_channel == "sms"
+            if preferred == "sms"
             else ("whatsapp", self._whatsapp_sender)
         )
         secondary = (
@@ -52,13 +78,21 @@ class AlertFailoverSender:
             if primary[0] == "sms"
             else ("sms", self._sms_sender)
         )
-        return [primary, secondary]
+        return [
+            (channel, sender)
+            for channel, sender in (primary, secondary)
+            if sender is not None and self._channel_available(channel)
+        ]
 
-    async def send(self, message: str, to_number: str) -> bool:
+    async def send(
+        self,
+        message: str,
+        to_number: str,
+        *,
+        preferred_channel: str | None = None,
+    ) -> bool:
         """Send via primary transport; fall back to secondary on failure."""
-        for channel_name, sender in self._ordered_senders:
-            if sender is None:
-                continue
+        for channel_name, sender in self._ordered_senders(preferred_channel):
             try:
                 ok = await sender.send(message=message, to_number=to_number)
             except Exception:
@@ -75,12 +109,12 @@ class AlertFailoverSender:
         self,
         from_number: str,
         timeout_seconds: int,
+        *,
+        preferred_channel: str | None = None,
     ) -> str | None:
         """Wait for first response from either transport listener."""
         listeners: list[tuple[str, Any]] = []
-        for channel_name, sender in self._ordered_senders:
-            if sender is None:
-                continue
+        for channel_name, sender in self._ordered_senders(preferred_channel):
             listener = getattr(sender, "listen_for_response", None)
             if callable(listener):
                 listeners.append((channel_name, listener))

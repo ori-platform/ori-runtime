@@ -1357,10 +1357,8 @@ class TestAlertOutbox:
         runtime._state_store = StateStore(str(tmp_path / "outbox-queue.db"))
         await runtime._state_store.open()
 
-        sms_action = AsyncMock()
-        sms_action.send.return_value = False
-        whatsapp_action = AsyncMock()
-        whatsapp_action.send.return_value = False
+        alert_sender = AsyncMock()
+        alert_sender.send = AsyncMock(return_value=False)
 
         try:
             handled = await runtime._send_or_queue_alert(
@@ -1370,8 +1368,7 @@ class TestAlertOutbox:
                 action_tier="A",
                 trigger_name="high_draw",
                 original_ts=1234567890,
-                sms_action=sms_action,
-                whatsapp_action=whatsapp_action,
+                alert_sender=alert_sender,
             )
             assert handled is True
             queued = await runtime._state_store.get_retryable_alerts(limit=10)
@@ -1734,17 +1731,17 @@ class TestRemoteDevicePolicy:
             original_ts=1234,
         )
 
-        async def _send_and_stop(*, message: str, to_number: str) -> bool:
+        async def _send_and_stop(
+            *, message: str, to_number: str, preferred_channel: str | None = None
+        ) -> bool:
             runtime._shutdown_event.set()
             return True
 
-        sms_action = AsyncMock()
-        sms_action.send.side_effect = _send_and_stop
-        whatsapp_action = AsyncMock()
-        whatsapp_action.send.return_value = True
+        alert_sender = AsyncMock()
+        alert_sender.send.side_effect = _send_and_stop
 
         try:
-            await runtime._alert_delivery_loop(sms_action, whatsapp_action)
+            await runtime._alert_delivery_loop(alert_sender)
             remaining = await runtime._state_store.get_retryable_alerts(limit=10)
             assert remaining == []
         finally:
@@ -1770,17 +1767,17 @@ class TestRemoteDevicePolicy:
         await runtime._state_store.mark_alert_attempt_failed("tierd-1")
         await runtime._state_store.mark_alert_attempt_failed("tierd-1")
 
-        async def _fail_and_stop(*, message: str, to_number: str) -> bool:
+        async def _fail_and_stop(
+            *, message: str, to_number: str, preferred_channel: str | None = None
+        ) -> bool:
             runtime._shutdown_event.set()
             return False
 
-        sms_action = AsyncMock()
-        sms_action.send.side_effect = _fail_and_stop
-        whatsapp_action = AsyncMock()
-        whatsapp_action.send.return_value = False
+        alert_sender = AsyncMock()
+        alert_sender.send.side_effect = _fail_and_stop
 
         try:
-            await runtime._alert_delivery_loop(sms_action, whatsapp_action)
+            await runtime._alert_delivery_loop(alert_sender)
             rows = await runtime._state_store.get_retryable_alerts(limit=10)
             assert len(rows) == 1
             assert rows[0]["status"] == "failed"
@@ -1808,17 +1805,17 @@ class TestRemoteDevicePolicy:
         for _ in range(9):
             await runtime._state_store.mark_alert_attempt_failed("aband-1")
 
-        async def _fail_and_stop(*, message: str, to_number: str) -> bool:
+        async def _fail_and_stop(
+            *, message: str, to_number: str, preferred_channel: str | None = None
+        ) -> bool:
             runtime._shutdown_event.set()
             return False
 
-        sms_action = AsyncMock()
-        sms_action.send.side_effect = _fail_and_stop
-        whatsapp_action = AsyncMock()
-        whatsapp_action.send.return_value = False
+        alert_sender = AsyncMock()
+        alert_sender.send.side_effect = _fail_and_stop
 
         try:
-            await runtime._alert_delivery_loop(sms_action, whatsapp_action)
+            await runtime._alert_delivery_loop(alert_sender)
             retryable = await runtime._state_store.get_retryable_alerts(limit=10)
             assert retryable == []
 

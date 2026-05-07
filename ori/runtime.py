@@ -91,6 +91,7 @@ class OriRuntime:
         self._state_store: StateStore | None = None
         self._background_tasks: list[asyncio.Task] = []
         self._sms_action: SMSAction | None = None
+        self._alert_sender: AlertFailoverSender | None = None
         self._sms_webhook_server: SMSWebhookServer | None = None
         self._dispatcher: ActionDispatcher | None = None
         self._event_bus: EventBus | None = None
@@ -233,7 +234,7 @@ class OriRuntime:
 
         # ── Step C: Instantiate action executors and ActionDispatcher ─────────
         whatsapp_action = WhatsAppAction(provider=TwilioProvider())
-        sms_action = SMSAction(state_store=self._state_store)
+        sms_action = SMSAction(state_store=self._state_store, config=config.actions.sms)
         coap_action = CoAPAction(config=config.actions.coap)
         self._sms_action = sms_action
         logger_action = LoggerAction()
@@ -291,6 +292,7 @@ class OriRuntime:
             sms_sender=sms_action,
             whatsapp_sender=whatsapp_action,
         )
+        self._alert_sender = alert_sender
         causal_cfg = (
             config.reasoning.causal_memory
             if isinstance(config.reasoning.causal_memory, dict)
@@ -301,6 +303,7 @@ class OriRuntime:
         dispatcher = ActionDispatcher(
             state_store=self._state_store,
             alert_sender=alert_sender,
+            emergency_sms_sender=sms_action,
             status_indicator=status_indicator,
             config={
                 "operator_contact": _operator_contact,
@@ -342,8 +345,7 @@ class OriRuntime:
                 action_tier=action_tier,
                 trigger_name=trigger_name,
                 original_ts=original_ts,
-                sms_action=sms_action,
-                whatsapp_action=whatsapp_action,
+                alert_sender=alert_sender,
             )
 
         dispatcher.register_executor("alert_whatsapp", _exec_alert_whatsapp)
@@ -361,8 +363,7 @@ class OriRuntime:
                 action_tier=action_tier,
                 trigger_name=trigger_name,
                 original_ts=original_ts,
-                sms_action=sms_action,
-                whatsapp_action=whatsapp_action,
+                alert_sender=alert_sender,
             )
 
         dispatcher.register_executor("alert_sms", _exec_alert_sms)
@@ -503,6 +504,7 @@ class OriRuntime:
             )
             elevator.update_capability_posture(posture)
             dispatcher.update_capability_posture(posture)
+            alert_sender.update_capability_posture(posture)
             if status_indicator is not None:
                 _sync_network_state_from_posture(status_indicator, posture)
 
@@ -630,7 +632,7 @@ class OriRuntime:
         )
         self._background_tasks.append(
             asyncio.create_task(
-                self._alert_delivery_loop(sms_action, whatsapp_action),
+                self._alert_delivery_loop(alert_sender),
                 name="alert-outbox",
             )
         )
@@ -1290,6 +1292,8 @@ class OriRuntime:
                 elevator.update_capability_posture(posture)
                 if self._dispatcher is not None:
                     self._dispatcher.update_capability_posture(posture)
+                if self._alert_sender is not None:
+                    self._alert_sender.update_capability_posture(posture)
                 if self._status_indicator is not None:
                     _sync_network_state_from_posture(self._status_indicator, posture)
             except Exception:
@@ -1327,8 +1331,7 @@ class OriRuntime:
         action_tier: str,
         trigger_name: str,
         original_ts: int,
-        sms_action: SMSAction,
-        whatsapp_action: WhatsAppAction,
+        alert_sender: AlertFailoverSender,
     ) -> bool:
         """Attempt immediate delivery; enqueue on failure.
 
@@ -1343,15 +1346,11 @@ class OriRuntime:
 
         delivered = False
         try:
-            if channel == "sms":
-                delivered = await sms_action.send(message=message, to_number=recipient)
-            elif channel == "whatsapp":
-                delivered = await whatsapp_action.send(
-                    message=message, to_number=recipient
-                )
-            else:
-                logger.error("[runtime] unknown alert channel=%r", channel)
-                return False
+            delivered = await alert_sender.send(
+                message=message,
+                to_number=recipient,
+                preferred_channel=channel,
+            )
         except Exception:
             logger.exception(
                 "[runtime] unexpected %s send failure; falling back to outbox queue",
@@ -1402,8 +1401,7 @@ class OriRuntime:
 
     async def _alert_delivery_loop(
         self,
-        sms_action: SMSAction,
-        whatsapp_action: WhatsAppAction,
+        alert_sender: AlertFailoverSender,
     ) -> None:
         """Retry queued outbound alerts until delivered (or abandoned for non-Tier D)."""
         while not self._shutdown_event.is_set():
@@ -1441,22 +1439,25 @@ class OriRuntime:
 
                 delivered = False
                 try:
-                    if channel == "sms":
-                        delivered = await sms_action.send(
-                            message=message,
-                            to_number=recipient,
-                        )
-                    elif channel == "whatsapp":
-                        delivered = await whatsapp_action.send(
-                            message=message,
-                            to_number=recipient,
-                        )
-                    else:
+                    preferred_channel = channel
+                    if channel not in {"sms", "whatsapp"}:
                         logger.error(
                             "[runtime] alert outbox has unknown channel=%r id=%s",
                             channel,
                             alert_id,
                         )
+                        preferred_channel = "sms"
+                    elif attempt_count >= 1:
+                        # On retries, switch first attempt preference to the other
+                        # channel so a persistent single-channel outage does not
+                        # stall notification delivery.
+                        preferred_channel = "whatsapp" if channel == "sms" else "sms"
+
+                    delivered = await alert_sender.send(
+                        message=message,
+                        to_number=recipient,
+                        preferred_channel=preferred_channel,
+                    )
                 except Exception:
                     logger.exception(
                         "[runtime] alert outbox send failed for id=%s channel=%s",

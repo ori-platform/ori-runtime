@@ -1107,3 +1107,17 @@ class TestStatusSignalingHooks:
         )
         d.update_policy(expired)
         assert ("policy", "restricted") in status.calls
+
+
+class TestEmergencySmsSender:
+    async def test_emergency_sms_uses_injected_sender(self):
+        injected_sms = AsyncMock()
+        injected_sms.send = AsyncMock(return_value=True)
+        d = ActionDispatcher(
+            emergency_sms_sender=injected_sms,
+            config={"operator_contact": "+2348000000000"},
+        )
+
+        await d._emergency_sms("trip_relay", "dev-01")
+
+        injected_sms.send.assert_awaited_once()
