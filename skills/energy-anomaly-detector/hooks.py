@@ -3,23 +3,14 @@
 
 """Hooks for the bundled energy-anomaly-detector skill."""
 
-import re
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-
-
-def _as_float(value, default):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
-
-
-def _as_int(value, default):
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return int(default)
+from ori.skills.composer import (
+    DEFAULT_JARGON_REPLACEMENTS,
+    as_float,
+    as_int,
+    one_sentence_diagnosis,
+    resolve_timezone,
+    sms_cap,
+)
 
 
 def _mean(values):
@@ -36,7 +27,6 @@ def _stddev(values):
     return variance**0.5
 
 
-_FALLBACK_UTC = timezone.utc
 _SMS_MAX_CHARS = 160
 _DIAGNOSIS_MAX_CHARS = 66
 _DEFAULT_POWER_FACTOR = 0.9
@@ -74,67 +64,31 @@ _COUNTRY_TO_LINE_VOLTAGE = {
     "CA": 120.0,
 }
 
-_JARGON_REPLACEMENTS = (
-    (r"\bthresholds?\b", "limit"),
-    (r"\banomal(y|ies)\b", "issue"),
-    (r"\bbaseline\b", "usual level"),
-    (r"\bdeviations?\b", "difference"),
-    (r"\bsensors?\b", "device"),
-    (r"\breadings?\b", "measure"),
-    (r"\bvalues?\b", "level"),
-    (r"\bcurrent\b", "power"),
-    (r"\bvoltage\b", "power"),
-)
-
 
 def _resolve_timezone(tz_name):
-    if tz_name:
-        try:
-            return ZoneInfo(str(tz_name).strip())
-        except Exception:
-            pass
-    try:
-        local_tz = datetime.now().astimezone().tzinfo
-        if local_tz is not None:
-            return local_tz
-    except Exception:
-        pass
-    return _FALLBACK_UTC
+    return resolve_timezone(tz_name)
 
 
 def _format_event_time(context):
-    ts_ms = _as_int(getattr(context, "timestamp", 0), 0)
+    ts_ms = as_int(getattr(context, "timestamp", 0), 0)
     ts_sec = max(0, ts_ms) / 1000.0
     tz_name = getattr(context, "config", {}).get("timezone")
+    from datetime import datetime
+
     dt = datetime.fromtimestamp(ts_sec, tz=_resolve_timezone(tz_name))
     return dt.strftime("%H:%M")
 
 
 def _one_sentence(text):
-    normalized = " ".join(str(text or "").split()).strip()
-    if not normalized:
-        return "Power use changed in a way that needs quick attention."
-    parts = re.split(r"[.!?]+", normalized, maxsplit=1)
-    sentence = parts[0].strip()
-    if not sentence:
-        sentence = normalized
-    for pattern, replacement in _JARGON_REPLACEMENTS:
-        sentence = re.sub(pattern, replacement, sentence, flags=re.IGNORECASE)
-    sentence = " ".join(sentence.split()).strip(" -,:;")
-    if not sentence:
-        sentence = "Power use changed in a way that needs quick attention."
-    if len(sentence) > _DIAGNOSIS_MAX_CHARS:
-        sentence = sentence[: _DIAGNOSIS_MAX_CHARS - 1].rstrip() + "…"
-    if not sentence.endswith("."):
-        sentence = f"{sentence}."
-    return sentence
+    return one_sentence_diagnosis(
+        text,
+        jargon_replacements=DEFAULT_JARGON_REPLACEMENTS,
+        max_chars=_DIAGNOSIS_MAX_CHARS,
+        fallback="Power use changed in a way that needs quick attention.",
+    )
 
 
-def _compose_sms_first(trigger_name, hhmm, diagnosis):
-    return _compose_sms_first_with_anchor(trigger_name, hhmm, diagnosis, anchor="")
-
-
-def _compose_sms_first_with_anchor(trigger_name, hhmm, diagnosis, anchor):
+def _compose_sms_first(trigger_name, hhmm, diagnosis, anchor=""):
     prefix = f"{anchor}. " if anchor else ""
     if trigger_name == "sustained_overdraw":
         msg = (
@@ -161,10 +115,7 @@ def _compose_sms_first_with_anchor(trigger_name, hhmm, diagnosis, anchor):
             f"{prefix}At {hhmm}, I noticed unusual power behavior. {diagnosis} "
             "I flagged it now so you can act early."
         )
-    compact = " ".join(msg.split())
-    if len(compact) <= _SMS_MAX_CHARS:
-        return compact
-    return compact[: _SMS_MAX_CHARS - 1].rstrip() + "…"
+    return sms_cap(msg, max_chars=_SMS_MAX_CHARS)
 
 
 def _country_code(context):
@@ -242,7 +193,7 @@ def _round_money(amount):
 
 
 def _cost_anchor(context):
-    projected = _as_float(context.derived.get("projected_extra_cost_daily", 0.0), 0.0)
+    projected = as_float(context.derived.get("projected_extra_cost_daily", 0.0), 0.0)
     if projected <= 0.0:
         return ""
     symbol = str(context.derived.get("cost_currency_symbol", "")).strip() or "$"
@@ -258,32 +209,32 @@ def pre_trigger_eval(context):
     event = getattr(context, "event", None)
     reading = getattr(event, "reading", None)
 
-    context.derived["min_quality"] = _as_float(cfg.get("min_quality", 0.8), 0.8)
-    context.derived["overdraw_threshold_percent"] = _as_float(
+    context.derived["min_quality"] = as_float(cfg.get("min_quality", 0.8), 0.8)
+    context.derived["overdraw_threshold_percent"] = as_float(
         cfg.get("overdraw_threshold_percent", 30.0),
         30.0,
     )
-    context.derived["spike_ratio_threshold"] = _as_float(
+    context.derived["spike_ratio_threshold"] = as_float(
         cfg.get("spike_ratio_threshold", 1.5),
         1.5,
     )
-    context.derived["sustained_ratio_threshold"] = _as_float(
+    context.derived["sustained_ratio_threshold"] = as_float(
         cfg.get("sustained_ratio_threshold", 0.7),
         0.7,
     )
-    context.derived["volatility_threshold_percent"] = _as_float(
+    context.derived["volatility_threshold_percent"] = as_float(
         cfg.get("volatility_threshold_percent", 20.0),
         20.0,
     )
     context.derived["history_window"] = max(
         3,
-        _as_int(cfg.get("history_window", 10), 10),
+        as_int(cfg.get("history_window", 10), 10),
     )
     context.derived["persistence_window"] = max(
         3,
-        _as_int(cfg.get("persistence_window", 6), 6),
+        as_int(cfg.get("persistence_window", 6), 6),
     )
-    context.derived["dangerous_overcurrent_threshold"] = _as_float(
+    context.derived["dangerous_overcurrent_threshold"] = as_float(
         cfg.get("dangerous_overcurrent_threshold", 20.0),
         20.0,
     )
@@ -309,12 +260,12 @@ def pre_trigger_eval(context):
         return context
 
     sensor_id = str(getattr(reading, "sensor_id", "")).strip()
-    current_value = _as_float(getattr(reading, "value", 0.0), 0.0)
+    current_value = as_float(getattr(reading, "value", 0.0), 0.0)
     history_window = context.derived["history_window"]
     persistence_window = context.derived["persistence_window"]
 
     baseline = context.history.avg_hours(sensor_id, 24)
-    baseline_24h = _as_float(baseline, 0.0) if baseline is not None else 0.0
+    baseline_24h = as_float(baseline, 0.0) if baseline is not None else 0.0
     baseline_valid = 1 if baseline_24h > 0.0 else 0
 
     context.derived["baseline_24h"] = baseline_24h
@@ -327,7 +278,7 @@ def pre_trigger_eval(context):
 
     history_rows = context.history.fetch_history(sensor_id, limit=history_window)
     values = [
-        _as_float(item.get("value", 0.0), 0.0)
+        as_float(item.get("value", 0.0), 0.0)
         for item in history_rows
         if isinstance(item, dict)
     ]
@@ -387,7 +338,7 @@ def pre_trigger_eval(context):
         limit=max(2, persistence_window),
     )
     timestamps = [
-        _as_int(item.get("timestamp", 0), 0)
+        as_int(item.get("timestamp", 0), 0)
         for item in history_rows
         if isinstance(item, dict)
     ]
@@ -396,7 +347,7 @@ def pre_trigger_eval(context):
         if span_ms > 0:
             observed_hours = span_ms / 3_600_000.0
     if observed_hours <= 0.0:
-        observed_minutes = max(5, _as_int(cfg.get("observed_window_minutes", 10), 10))
+        observed_minutes = max(5, as_int(cfg.get("observed_window_minutes", 10), 10))
         observed_hours = observed_minutes / 60.0
     context.derived["observed_window_hours"] = observed_hours
 
@@ -417,5 +368,5 @@ def post_reasoning(result, context):
     hhmm = _format_event_time(context)
     # Per approved scope, hook uses risk framing only.
     anchor = _cost_anchor(context)
-    result.text = _compose_sms_first_with_anchor(trigger_name, hhmm, diagnosis, anchor)
+    result.text = _compose_sms_first(trigger_name, hhmm, diagnosis, anchor=anchor)
     return result

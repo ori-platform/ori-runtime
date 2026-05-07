@@ -84,6 +84,13 @@ actions:
     sustained_overdraw: [alert_whatsapp, log_to_dashboard]
     sudden_load_spike: [alert_whatsapp, log_to_dashboard]
     unstable_power_draw: [alert_whatsapp, log_to_dashboard]
+    # Tier D executes immediately (no LLM, no approval), but this bundled default
+    # remains informational so the skill is safe on deployments without relay
+    # hardware (e.g. phone/gateway-only or Pi without a wired relay).
+    #
+    # For edge-node energy cutoffs, override this action list in deployment config
+    # after relay wiring is physically verified and mapped in `actions.relay`.
+    # Example override: [trip_relay, alert_whatsapp, log_to_dashboard]
     dangerous_overcurrent: [alert_whatsapp, log_to_dashboard]
 
 config:
