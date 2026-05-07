@@ -100,6 +100,15 @@ class ActionDispatcher:
             self._config.get("log_approval_workflow", True)
         )
         self._relay_b_c_enabled = bool(self._config.get("relay_enabled", False))
+        self._local_console_enabled = bool(
+            self._config.get("local_console_enabled", False)
+        )
+        self._local_console_poll_interval_ms = max(
+            100, int(self._config.get("local_console_poll_interval_ms", 1000))
+        )
+        self._local_console_channel_id = str(
+            self._config.get("local_console_channel_id", "local_console")
+        )
         self._policy: DevicePolicy | None = DevicePolicy.unrestricted()
         self._capability_posture: CapabilityPosture | None = None
         self._status_indicator = status_indicator
@@ -536,10 +545,9 @@ class ActionDispatcher:
                 "ActionDispatcher: triggering Tier C approval workflow for action=%r",
                 action,
             )
+        has_comms = self._tier_c_comms_available()
         if self._status_indicator is not None:
-            self._status_indicator.set_tier_c_pending(
-                has_comms=self._tier_c_comms_available()
-            )
+            self._status_indicator.set_tier_c_pending(has_comms=has_comms)
 
         device_id = context.event.device_id if context.event else "unknown"
         message = self._format_approval_message(
@@ -551,9 +559,9 @@ class ActionDispatcher:
             device_timezone=self._config.get("device_timezone", "Africa/Lagos"),
         )
 
-        # Send approval request
+        # Send approval request (best-effort only when comms are available).
         operator_contact = self._config.get("operator_contact", "")
-        if self._alert_sender is not None and operator_contact:
+        if has_comms and self._alert_sender is not None and operator_contact:
             try:
                 await self._alert_sender.send(
                     message=message, to_number=operator_contact
@@ -566,51 +574,75 @@ class ActionDispatcher:
 
         # Wait for response
         operator_response: str | None = None
+        parsed_operator_response: str | None = None
         timed_out = False
-        try:
-            listen_coro = self._listen_for_response(
-                from_number=operator_contact,
+        local_console_mode = bool(not has_comms and self._local_console_enabled)
+        store = self._resolve_state_store(context)
+        if local_console_mode:
+            local_from_number = operator_contact or "local-operator"
+            operator_response = await self._listen_for_local_console_response(
+                store=store,
+                from_number=local_from_number,
                 timeout_seconds=approval_timeout_seconds,
             )
-        except TypeError:
-            # Backward compatibility for older test doubles/overrides that
-            # patched _listen_for_response with a no-arg coroutine.
-            listen_coro = self._listen_for_response()  # type: ignore[call-arg]
-        listen_task = asyncio.create_task(
-            listen_coro,
-            name=f"approval:{action}",
-        )
-        try:
-            operator_response = await asyncio.wait_for(
-                listen_task,
-                # Keep a small guard margin around provider-side timeout logic.
-                timeout=float(approval_timeout_seconds) + 1.0,
-            )
-        except asyncio.TimeoutError:
-            timed_out = True
-            if not listen_task.done():
-                listen_task.cancel()
-            logger.warning(
-                "ActionDispatcher: approval timeout for action=%r after %ds — "
-                "executing safe_default=%r",
-                action,
-                approval_timeout_seconds,
-                safe_default_action,
-            )
-        else:
-            if operator_response is None:
+            parsed_operator_response = operator_response
+            if operator_response is not None:
+                operator_response = f"LOCAL:{operator_response}"
+            else:
                 timed_out = True
                 logger.warning(
-                    "ActionDispatcher: no approval response for action=%r within %ds — "
+                    "ActionDispatcher: local console approval timeout for action=%r "
+                    "after %ds — executing safe_default=%r",
+                    action,
+                    approval_timeout_seconds,
+                    safe_default_action,
+                )
+        else:
+            try:
+                listen_coro = self._listen_for_response(
+                    from_number=operator_contact,
+                    timeout_seconds=approval_timeout_seconds,
+                )
+            except TypeError:
+                # Backward compatibility for older test doubles/overrides that
+                # patched _listen_for_response with a no-arg coroutine.
+                listen_coro = self._listen_for_response()  # type: ignore[call-arg]
+            listen_task = asyncio.create_task(
+                listen_coro,
+                name=f"approval:{action}",
+            )
+            try:
+                operator_response = await asyncio.wait_for(
+                    listen_task,
+                    # Keep a small guard margin around provider-side timeout logic.
+                    timeout=float(approval_timeout_seconds) + 1.0,
+                )
+                parsed_operator_response = operator_response
+            except asyncio.TimeoutError:
+                timed_out = True
+                if not listen_task.done():
+                    listen_task.cancel()
+                logger.warning(
+                    "ActionDispatcher: approval timeout for action=%r after %ds — "
                     "executing safe_default=%r",
                     action,
                     approval_timeout_seconds,
                     safe_default_action,
                 )
+            else:
+                if operator_response is None:
+                    timed_out = True
+                    logger.warning(
+                        "ActionDispatcher: no approval response for action=%r within %ds — "
+                        "executing safe_default=%r",
+                        action,
+                        approval_timeout_seconds,
+                        safe_default_action,
+                    )
 
         try:
             # Parse response
-            approved = _parse_approval_response(operator_response)
+            approved = _parse_approval_response(parsed_operator_response)
 
             if approved:
                 inner = await self._execute_immediately(action, tier, context)
@@ -626,12 +658,6 @@ class ActionDispatcher:
                 action_taken = inner.action_taken
                 executed = inner.executed
                 # Log operator rejection / timeout override to override_log
-                store = (
-                    context.state_store
-                    if hasattr(context, "state_store")
-                    and context.state_store is not None
-                    else self._state_store
-                )
                 if store is not None and hasattr(store, "log_override"):
                     device_id = context.event.device_id if context.event else "unknown"
                     await store.log_override(
@@ -662,6 +688,40 @@ class ActionDispatcher:
         finally:
             if self._status_indicator is not None:
                 self._status_indicator.clear_tier_c_pending()
+
+    async def _listen_for_local_console_response(
+        self,
+        *,
+        store: Any,
+        from_number: str,
+        timeout_seconds: int,
+    ) -> str | None:
+        """Poll local inbound channel for Tier C approval replies."""
+        if store is None or not hasattr(store, "consume_incoming_message"):
+            return None
+
+        timeout_ms = max(0, int(timeout_seconds) * 1000)
+        since_ms = now_ms()
+        deadline_ms = since_ms + timeout_ms
+        channel = self._local_console_channel_id
+        poll_s = self._local_console_poll_interval_ms / 1000.0
+        while True:
+            try:
+                response = await store.consume_incoming_message(
+                    channel=channel,
+                    from_number=from_number,
+                    since_ms=since_ms,
+                )
+            except Exception:
+                logger.exception(
+                    "ActionDispatcher: local console approval listener failed"
+                )
+                return None
+            if response is not None:
+                return response
+            if now_ms() >= deadline_ms:
+                return None
+            await asyncio.sleep(poll_s)
 
     async def _store_rejection_pattern(
         self,
@@ -948,3 +1008,8 @@ class ActionDispatcher:
                 "ActionDispatcher: failed to log action=%r to action_log",
                 action_result.action_name,
             )
+
+    def _resolve_state_store(self, context: SkillContext) -> Any:
+        if hasattr(context, "state_store") and context.state_store is not None:
+            return context.state_store
+        return self._state_store

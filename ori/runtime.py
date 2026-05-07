@@ -312,6 +312,17 @@ class OriRuntime:
                 "log_approval_workflow": config.logging.log_approval_workflow,
                 "relay_enabled": relay_enabled,
                 "rejection_expiry_days": rejection_expiry_days,
+                "local_console_enabled": bool(
+                    config.actions.local_console.get("enabled", False)
+                ),
+                "local_console_poll_interval_ms": int(
+                    config.actions.local_console.get("poll_interval_ms", 1000)
+                ),
+                "local_console_channel_id": str(
+                    config.actions.local_console.get(
+                        "approval_channel_id", "local_console"
+                    )
+                ),
             },
         )
         self._dispatcher = dispatcher
