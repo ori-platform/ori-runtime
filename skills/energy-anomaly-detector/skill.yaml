@@ -39,20 +39,40 @@ triggers:
 
 prompts:
   sustained_overdraw: |
-    Power usage has stayed above normal for several recent checks.
-    Explain likely causes in plain language and give 2 practical next steps.
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining the
+    most likely cause and why it matters.
+    Do not include timestamps, currency, percentages, units, or action
+    statements.
+    Example: "Your generator kept running longer than needed after grid power
+    returned, which wastes fuel."
 
   sudden_load_spike: |
-    Power usage jumped sharply compared to the last reading and baseline.
-    Explain what this may mean for equipment risk and give 2 quick checks.
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining the
+    most likely cause and why it matters.
+    Do not include timestamps, currency, percentages, units, or action
+    statements.
+    Example: "A large appliance likely started suddenly, which can stress your
+    electrical setup."
 
   unstable_power_draw: |
-    Power usage has become unusually unstable compared to normal.
-    Explain what this pattern may indicate and give 2 preventive actions.
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining the
+    most likely cause and why it matters.
+    Do not include timestamps, currency, percentages, units, or action
+    statements.
+    Example: "Your power usage is swinging up and down, which may point to an
+    equipment fault developing."
 
   dangerous_overcurrent: |
-    Dangerous current level detected. Prioritize safety in the response.
-    Keep instructions short and clear for the operator.
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining the
+    immediate risk in plain language.
+    Do not include timestamps, currency, percentages, units, or action
+    statements.
+    Example: "A dangerous power surge was detected and this can damage
+    equipment quickly."
 
 actions:
   available:

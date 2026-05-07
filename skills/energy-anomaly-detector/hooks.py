@@ -3,6 +3,10 @@
 
 """Hooks for the bundled energy-anomaly-detector skill."""
 
+import re
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 
 def _as_float(value, default):
     try:
@@ -30,6 +34,98 @@ def _stddev(values):
     avg = _mean(values)
     variance = sum((v - avg) ** 2 for v in values) / len(values)
     return variance**0.5
+
+
+_FALLBACK_UTC = timezone.utc
+_SMS_MAX_CHARS = 160
+_DIAGNOSIS_MAX_CHARS = 66
+
+_JARGON_REPLACEMENTS = (
+    (r"\bthresholds?\b", "limit"),
+    (r"\banomal(y|ies)\b", "issue"),
+    (r"\bbaseline\b", "usual level"),
+    (r"\bdeviations?\b", "difference"),
+    (r"\bsensors?\b", "device"),
+    (r"\breadings?\b", "measure"),
+    (r"\bvalues?\b", "level"),
+    (r"\bcurrent\b", "power"),
+    (r"\bvoltage\b", "power"),
+)
+
+
+def _resolve_timezone(tz_name):
+    if tz_name:
+        try:
+            return ZoneInfo(str(tz_name).strip())
+        except Exception:
+            pass
+    try:
+        local_tz = datetime.now().astimezone().tzinfo
+        if local_tz is not None:
+            return local_tz
+    except Exception:
+        pass
+    return _FALLBACK_UTC
+
+
+def _format_event_time(context):
+    ts_ms = _as_int(getattr(context, "timestamp", 0), 0)
+    ts_sec = max(0, ts_ms) / 1000.0
+    tz_name = getattr(context, "config", {}).get("timezone")
+    dt = datetime.fromtimestamp(ts_sec, tz=_resolve_timezone(tz_name))
+    return dt.strftime("%H:%M")
+
+
+def _one_sentence(text):
+    normalized = " ".join(str(text or "").split()).strip()
+    if not normalized:
+        return "Power use changed in a way that needs quick attention."
+    parts = re.split(r"[.!?]+", normalized, maxsplit=1)
+    sentence = parts[0].strip()
+    if not sentence:
+        sentence = normalized
+    for pattern, replacement in _JARGON_REPLACEMENTS:
+        sentence = re.sub(pattern, replacement, sentence, flags=re.IGNORECASE)
+    sentence = " ".join(sentence.split()).strip(" -,:;")
+    if not sentence:
+        sentence = "Power use changed in a way that needs quick attention."
+    if len(sentence) > _DIAGNOSIS_MAX_CHARS:
+        sentence = sentence[: _DIAGNOSIS_MAX_CHARS - 1].rstrip() + "…"
+    if not sentence.endswith("."):
+        sentence = f"{sentence}."
+    return sentence
+
+
+def _compose_sms_first(trigger_name, hhmm, diagnosis):
+    if trigger_name == "sustained_overdraw":
+        msg = (
+            f"At {hhmm}, I noticed power stayed high for too long. {diagnosis} "
+            "I flagged it early so you can prevent extra cost."
+        )
+    elif trigger_name == "sudden_load_spike":
+        msg = (
+            f"At {hhmm}, power jumped suddenly. {diagnosis} "
+            "I flagged it now so you can check affected equipment."
+        )
+    elif trigger_name == "unstable_power_draw":
+        msg = (
+            f"At {hhmm}, power became unstable. {diagnosis} "
+            "I flagged it now so you can prevent a failure."
+        )
+    elif trigger_name == "dangerous_overcurrent":
+        msg = (
+            f"At {hhmm}, I detected a dangerous power surge. {diagnosis} "
+            "Please isolate non-essential load now."
+        )
+    else:
+        msg = (
+            f"At {hhmm}, I noticed unusual power behavior. {diagnosis} "
+            "I flagged it now so you can act early."
+        )
+    compact = " ".join(msg.split())
+    if len(compact) <= _SMS_MAX_CHARS:
+        return compact
+    return compact[: _SMS_MAX_CHARS - 1].rstrip() + "…"
 
 
 def pre_trigger_eval(context):
@@ -131,12 +227,9 @@ def pre_trigger_eval(context):
 
 
 def post_reasoning(result, context):
-    """Append concise baseline context to operator-facing explanation."""
-    baseline = _as_float(context.derived.get("baseline_24h", 0.0), 0.0)
-    deviation = _as_float(context.derived.get("deviation_percent", 0.0), 0.0)
-    if baseline > 0.0:
-        result.text = (
-            f"{result.text}\n"
-            f"Baseline(24h): {baseline:.2f}A | Deviation: {deviation:.1f}%"
-        )
+    """Compose SMS-first operator message with deterministic local timestamp."""
+    diagnosis = _one_sentence(result.text)
+    trigger_name = str(getattr(context, "trigger_name", "") or "")
+    hhmm = _format_event_time(context)
+    result.text = _compose_sms_first(trigger_name, hhmm, diagnosis)
     return result
