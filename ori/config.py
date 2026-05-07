@@ -38,6 +38,7 @@ class DeviceConfig:
     location: str
     rated_capacity_amps: float = 10.0
     timezone: str = "Africa/Lagos"
+    country_code: str = ""
     deployment_type: str = "pi"  # 'pi' | 'phone' | 'server'
 
 
@@ -340,6 +341,11 @@ def _parse_device(data: Any) -> DeviceConfig:
         raise ConfigValidationError(
             "device.deployment_type must be one of ['phone', 'pi', 'server']."
         )
+    country_code = str(data.get("country_code", "")).strip().upper()
+    if country_code and (len(country_code) != 2 or not country_code.isalpha()):
+        raise ConfigValidationError(
+            "device.country_code must be a 2-letter ISO country code (e.g. NG, US, KE)."
+        )
 
     return DeviceConfig(
         id=device_id,
@@ -347,6 +353,7 @@ def _parse_device(data: Any) -> DeviceConfig:
         location=_require_str(data, "location", "device"),
         rated_capacity_amps=float(data.get("rated_capacity_amps", 10.0)),
         timezone=str(data.get("timezone", "Africa/Lagos")),
+        country_code=country_code,
         deployment_type=deployment_type,
     )
 

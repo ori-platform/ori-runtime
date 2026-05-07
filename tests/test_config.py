@@ -52,6 +52,7 @@ class TestLoadExample:
         assert cfg.device.name == "Ikeja Office Energy Monitor"
         assert cfg.device.location == "Lagos, Nigeria"
         assert cfg.device.rated_capacity_amps == 10.0
+        assert cfg.device.country_code == "NG"
 
     def test_sensors_count_and_types(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -268,6 +269,58 @@ class TestDeviceValidation:
             """,
         )
         with pytest.raises(ConfigValidationError, match="deployment_type"):
+            Config.load(yaml_path)
+
+    def test_accepts_valid_country_code(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Nairobi
+              country_code: ke
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device.country_code == "KE"
+
+    def test_rejects_invalid_country_code(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Test
+              country_code: NGR
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        with pytest.raises(ConfigValidationError, match="country_code"):
             Config.load(yaml_path)
 
 

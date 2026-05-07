@@ -592,6 +592,8 @@ class OriRuntime:
                     event_bus,
                     config.device.id,
                     self._deduplicator,
+                    config.device.timezone,
+                    config.device.country_code,
                 ),
                 name=f"poll:{sensor_cfg.id}",
             )
@@ -824,6 +826,8 @@ class OriRuntime:
         event_bus: EventBus,
         device_id: str,
         deduplicator: EventDeduplicator | None = None,
+        device_timezone: str = "",
+        device_country_code: str = "",
     ) -> None:
         """Read *adapter* at the configured poll interval and publish to *event_bus*."""
         assert self._state_store is not None
@@ -836,6 +840,12 @@ class OriRuntime:
                         self._status_indicator.set_hardware_fault(False)
                 event = OriEvent.from_reading(reading, device_id)
                 event.event_type = f"sensor.{reading.sensor_type}"
+                if not isinstance(event.context, dict):
+                    event.context = {}
+                event.context["device_timezone"] = device_timezone
+                event.context["device_country_code"] = (
+                    str(device_country_code or "").strip().upper()
+                )
                 # Keep source explicit in the poll path; adapters must publish
                 # protocol provenance through reading.metadata["source"].
                 event.source = reading.metadata.get("source", "")
