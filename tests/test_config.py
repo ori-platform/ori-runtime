@@ -1299,6 +1299,32 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.actions.sms["incoming_webhook"]["token"] == "super-secret-token"
 
+    def test_local_console_defaults(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml("  primary_alert_channel: sms\n  sms:\n    enabled: false\n"),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.local_console["enabled"] is False
+        assert cfg.actions.local_console["poll_interval_ms"] == 1000
+        assert cfg.actions.local_console["approval_channel_id"] == "local_console"
+
+    def test_local_console_poll_interval_minimum(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  local_console:\n"
+                "    enabled: true\n"
+                "    poll_interval_ms: 10\n"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="actions.local_console.poll_interval_ms must be >= 100",
+        ):
+            Config.load(yaml_path)
+
 
 class TestDevicePolicyConfig:
     def _yaml(self, extra_block: str = "") -> str:

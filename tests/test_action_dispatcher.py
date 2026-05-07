@@ -15,6 +15,7 @@ from ori.network.events import (
 )
 from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.action_dispatcher import ActionDispatcher, _parse_approval_response
+from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -548,6 +549,128 @@ class TestTierC:
             )
 
         store.log_action.assert_awaited_once()
+
+    async def test_tier_c_uses_local_console_fallback_when_comms_unavailable(self):
+        d = ActionDispatcher(
+            config={
+                "operator_contact": "+234800000000",
+                "local_console_enabled": True,
+                "local_console_poll_interval_ms": 100,
+                "local_console_channel_id": "local_console",
+            }
+        )
+        d.update_capability_posture(
+            CapabilityPosture(
+                sms_available=False,
+                whatsapp_available=False,
+                gateway_reachable=False,
+                local_slm_loaded=True,
+                relay_connected=True,
+                internet_available=False,
+                checked_at_ms=_ms(),
+                expires_at_ms=_ms() + 30_000,
+            )
+        )
+        ctx = _context()
+
+        with (
+            patch.object(
+                d,
+                "_listen_for_local_console_response",
+                new=AsyncMock(return_value="YES"),
+            ) as local_listener,
+            patch.object(
+                d,
+                "_listen_for_response",
+                new=AsyncMock(return_value="NO"),
+            ) as remote_listener,
+        ):
+            result = await d.dispatch(
+                "trip_main_breaker",
+                ActionTier.HARD_PHYSICAL,
+                ctx,
+                _result(),
+                approval_timeout_seconds=10,
+            )
+
+        local_listener.assert_awaited_once()
+        remote_listener.assert_not_awaited()
+        assert result.approved is True
+        assert result.operator_response == "LOCAL:YES"
+        assert result.action_taken == "trip_main_breaker"
+
+    async def test_tier_c_local_console_no_response_runs_safe_default(self):
+        d = ActionDispatcher(
+            config={
+                "operator_contact": "+234800000000",
+                "local_console_enabled": True,
+                "local_console_poll_interval_ms": 100,
+                "local_console_channel_id": "local_console",
+            }
+        )
+        d.update_capability_posture(
+            CapabilityPosture(
+                sms_available=False,
+                whatsapp_available=False,
+                gateway_reachable=False,
+                local_slm_loaded=True,
+                relay_connected=True,
+                internet_available=False,
+                checked_at_ms=_ms(),
+                expires_at_ms=_ms() + 30_000,
+            )
+        )
+        ctx = _context()
+
+        with patch.object(
+            d,
+            "_listen_for_local_console_response",
+            new=AsyncMock(return_value=None),
+        ):
+            result = await d.dispatch(
+                "trip_main_breaker",
+                ActionTier.HARD_PHYSICAL,
+                ctx,
+                _result(),
+                safe_default_action="log_to_dashboard",
+                approval_timeout_seconds=10,
+            )
+
+        assert result.approved is False
+        assert result.action_taken == "log_to_dashboard"
+
+    async def test_tier_c_uses_remote_listener_when_comms_available(self):
+        mock_sender = AsyncMock()
+        d = ActionDispatcher(
+            alert_sender=mock_sender,
+            config={
+                "operator_contact": "+234800000000",
+                "local_console_enabled": True,
+            },
+        )
+        ctx = _context()
+        with (
+            patch.object(
+                d,
+                "_listen_for_response",
+                new=AsyncMock(return_value="YES"),
+            ) as remote_listener,
+            patch.object(
+                d,
+                "_listen_for_local_console_response",
+                new=AsyncMock(return_value="NO"),
+            ) as local_listener,
+        ):
+            result = await d.dispatch(
+                "trip_main_breaker",
+                ActionTier.HARD_PHYSICAL,
+                ctx,
+                _result(),
+                approval_timeout_seconds=10,
+            )
+        remote_listener.assert_awaited_once()
+        local_listener.assert_not_awaited()
+        assert result.approved is True
 
 
 # ─── Failed action — exception handling ───────────────────────────────────────
