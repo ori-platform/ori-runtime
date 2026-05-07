@@ -289,6 +289,11 @@ actions:
     poll_interval_ms: 1000
     approval_channel_id: "local_console"
 
+  offline_tokens:
+    enabled: false                   # Tier C offline cryptographic approval tokens
+    public_key_b64: "${ORI_OFFLINE_TOKEN_PUBKEY_B64}"
+    max_clock_skew_s: 300
+
   relay:
     enabled: false                   # CHANGE TO true ONLY WHEN RELAY IS WIRED
     gpio_pin: 26                     # BCM pin number connected to relay IN

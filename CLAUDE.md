@@ -201,34 +201,56 @@ class ReasoningResult:
 
 ```bash
 ori/
+├── AGENTS.md
 ├── CLAUDE.md
+├── PRINCIPLES.md
 ├── README.md
 ├── CONTRIBUTING.md
+├── SECURITY.md
 ├── LICENSE
 ├── pyproject.toml
+├── requirements.in
 ├── requirements.txt
+├── requirements-dev.in
 ├── requirements-dev.txt
 ├── ori.yaml.example
+├── ori.linux.yaml.example
+├── ori.yaml.phone.example
+│
+├── docs/
+│   ├── CAPABILITY_MATRIX.md
+│   ├── linux-setup.md
+│   └── releases/
+│
+├── scripts/
+│   └── guard-capability-matrix.sh
 │
 ├── ori/
 │   ├── __init__.py
 │   ├── runtime.py             ← main event loop — build last
 │   ├── config.py              ← ori.yaml loader and validator
+│   ├── time_utils.py
 │   │
 │   ├── hal/                   ← Hardware Abstraction Layer (Layer 1)
 │   │   ├── __init__.py
 │   │   ├── base.py
-│   │   ├── gpio_adapter.py
 │   │   ├── i2c_adapter.py
 │   │   ├── serial_adapter.py
 │   │   ├── mqtt_adapter.py    ← Generic MQTT telemetry adapter
-│   │   └── psutil_adapter.py  ← PC-Ori, no hardware needed
+│   │   ├── psutil_adapter.py  ← PC-Ori, no hardware needed
+│   │   ├── smart_adapter.py
+│   │   ├── http_adapter.py
+│   │   ├── opcua_adapter.py
+│   │   ├── victron_adapter.py
+│   │   ├── growatt_adapter.py
+│   │   └── ... (LoRaWAN, Zigbee, USB-Serial, MQTT perception adapters)
 │   │
 │   ├── network/               ← Network Layer (Layer 2)
 │   │   ├── __init__.py
 │   │   ├── events.py          ← OriEvent + SensorReading + ActionResult — BUILD FIRST
 │   │   ├── event_bus.py
-│   │   └── deduplicator.py
+│   │   ├── deduplicator.py
+│   │   └── sms_webhook.py
 │   │
 │   ├── reasoning/             ← Intelligence Elevator + Action Tiers (Layer 4)
 │   │   ├── __init__.py
@@ -236,22 +258,37 @@ ori/
 │   │   ├── rule_engine.py     ← deterministic rules — BUILD BEFORE LLM
 │   │   ├── local_llm.py       ← llama-cpp-python wrapper
 │   │   ├── causal_memory.py   ← SQLite pattern cache
+│   │   ├── capability_posture.py
 │   │   └── action_dispatcher.py ← ACTION TIER ROUTER — the agent's executor
+│   │
+│   ├── hardware/
+│   │   ├── __init__.py
+│   │   └── led_indicator.py
+│   │
+│   ├── policy/
+│   │   ├── device_policy.py
+│   │   └── remote_fetch.py
+│   │
+│   ├── security/
+│   │   ├── __init__.py
+│   │   └── offline_tokens.py
 │   │
 │   ├── skills/                ← Skills loader (Layer 5)
 │   │   ├── __init__.py
 │   │   ├── loader.py
 │   │   ├── hooks_api.py
-│   │   └── sandbox.py
+│   │   ├── sandbox.py
+│   │   └── signing.py
 │   │
 │   ├── actions/               ← Action executors (called by action_dispatcher)
 │   │   ├── __init__.py
 │   │   ├── whatsapp.py        ← Twilio / WhatsApp Cloud API
 │   │   ├── sms.py             ← Africa's Talking (PRIMARY for Nigeria)
 │   │   ├── relay.py           ← Physical relay control (GPIO output)
-│   │   ├── modbus_control.py  ← Modbus write commands (industrial)
 │   │   ├── alert_failover.py  ← Failover alert transport wrapper
 │   │   ├── coap.py            ← CoAP action executor for constrained devices
+│   │   ├── process_manager.py
+│   │   ├── system_control.py
 │   │   └── logger.py
 │   │
 │   └── state/
@@ -265,22 +302,28 @@ ori/
 │   ├── energy-anomaly-detector/
 │   │   ├── skill.yaml
 │   │   └── hooks.py
+│   ├── hvac-refrigerant-monitor/
+│   │   ├── skill.yaml
+│   │   └── hooks.py
+│   ├── pc-network-threat-monitor/
+│   │   ├── skill.yaml
+│   │   └── hooks.py
+│   ├── site-safety-ppe/
+│   │   ├── skill.yaml
+│   │   └── hooks.py
 │   └── pc-system-health/
 │       ├── skill.yaml
 │       └── hooks.py           ← uses HookContext dynamic API
 │
 └── tests/
     ├── __init__.py
-    ├── test_events.py
-    ├── test_rule_engine.py         ← includes AST whitelist validation tests
     ├── test_action_dispatcher.py
-    ├── test_circuit_breaker.py
-    ├── test_deduplicator.py
     ├── test_config.py
     ├── test_elevator.py
-    ├── test_event_bus.py
-    ├── test_store.py
-    └── ... (23 test modules total)
+    ├── test_led_indicator.py
+    ├── test_remote_policy_fetch.py
+    ├── test_offline_tokens.py
+    └── ... (full suite in tests/)
 ```
 
 ---

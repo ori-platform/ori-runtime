@@ -31,7 +31,7 @@ This is the authoritative record of what is real versus planned.
 | Energy anomaly detector v2                       | Not implemented   | skills/energy-anomaly-detector/           | Basic triggers only. See P3-R5.                                                                                       |
 | Solar performance monitor skill                  | Not implemented   | skills/solar-performance-monitor/ missing | See P3-R7.                                                                                                            |
 | Energy cost calculator hook                      | Not implemented   | —                                         | See P3-R6.                                                                                                            |
-| Offline Tier C auth tokens                       | Not implemented   | —                                         | See P3-R3c. CLI: ori-cli.                                                                                             |
+| Offline Tier C auth tokens                       | Implemented       | security/offline_tokens.py, action_dispatcher.py, state/store.py | Local-console `TOKEN:<value>` approvals are signature-verified (Ed25519), device/action-bound, expiry-checked, and replay-protected via SQLite token claim table. |
 
 ## Recent updates
 
