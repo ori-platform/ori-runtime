@@ -1,0 +1,94 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: solar-performance-monitor
+version: 0.1.0
+author: wasiubakare
+license: Apache-2.0
+signature: ed25519:PENDING
+
+sensors_required:
+  - type: growatt_pv_power
+    protocol: growatt
+  - type: growatt_grid_power
+    protocol: growatt
+  - type: growatt_battery_soc
+    protocol: growatt
+  - type: victron_pv_power
+    protocol: victron
+  - type: victron_grid_power
+    protocol: victron
+  - type: victron_battery_soc
+    protocol: victron
+
+triggers:
+  - name: solar_underperforming_daytime
+    condition: "(sensor_type == 'growatt_pv_power' or sensor_type == 'victron_pv_power') and quality >= min_quality and config_valid == 1 and is_daytime == 1 and pv_capacity_ratio < min_expected_pv_ratio"
+    cooldown_seconds: 900
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: battery_not_charging_when_pv_available
+    condition: "(sensor_type == 'growatt_battery_soc' or sensor_type == 'victron_battery_soc') and quality >= min_quality and config_valid == 1 and is_daytime == 1 and pv_ratio_snapshot >= strong_sun_ratio and battery_soc_delta <= 0.0 and value < battery_not_full_soc_threshold"
+    cooldown_seconds: 1200
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: unexpected_grid_draw_with_good_sun
+    condition: "(sensor_type == 'growatt_grid_power' or sensor_type == 'victron_grid_power') and quality >= min_quality and config_valid == 1 and is_daytime == 1 and pv_ratio_snapshot >= strong_sun_ratio and grid_import_watts >= grid_draw_threshold_watts"
+    cooldown_seconds: 900
+    escalate_to: local_slm
+    action_tier: A
+
+prompts:
+  solar_underperforming_daytime: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical business owner explaining the
+    likely cause and why it matters.
+    Do not include timestamps, currency, percentages, units, or action statements.
+    Example: "Your solar output is lower than expected for this time of day,
+    which can increase grid costs."
+
+  battery_not_charging_when_pv_available: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical business owner explaining the
+    likely cause and why it matters.
+    Do not include timestamps, currency, percentages, units, or action statements.
+    Example: "Your battery is not charging even with good sun, which can reduce
+    backup availability later."
+
+  unexpected_grid_draw_with_good_sun: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical business owner explaining the
+    likely cause and why it matters.
+    Do not include timestamps, currency, percentages, units, or action statements.
+    Example: "You are drawing notable power from the grid despite strong solar
+    conditions, which may indicate a configuration issue."
+
+actions:
+  available:
+    - name: alert_whatsapp
+      tier: A
+    - name: log_to_dashboard
+      tier: A
+  defaults:
+    solar_underperforming_daytime: [alert_whatsapp, log_to_dashboard]
+    battery_not_charging_when_pv_available: [alert_whatsapp, log_to_dashboard]
+    unexpected_grid_draw_with_good_sun: [alert_whatsapp, log_to_dashboard]
+
+config:
+  # Required physical baselines for safe heuristics:
+  installed_pv_capacity_watts: 5000.0
+  battery_capacity_wh: 10000.0
+
+  # Locale/time controls:
+  timezone: Africa/Lagos
+  day_start_hour: 10
+  day_end_hour: 15
+
+  # Detection thresholds:
+  min_quality: 0.8
+  min_expected_pv_ratio: 0.25
+  strong_sun_ratio: 0.5
+  grid_draw_threshold_watts: 500.0
+  battery_not_full_soc_threshold: 95.0
