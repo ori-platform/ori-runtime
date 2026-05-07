@@ -182,14 +182,80 @@ class Config:
             or actions.sms.get("enabled") is True
         )
         if sms_enabled:
-            for v in ("AT_API_KEY", "AT_USERNAME"):
-                val = str(actions.sms.get(v, ""))
-                if not val or "${" in val:
-                    resolved_value = actions.sms.get(v, "")
+            sms_transport = str(actions.sms.get("transport", "hybrid")).strip().lower()
+            if sms_transport not in {"ip", "gsm", "hybrid"}:
+                raise ConfigValidationError(
+                    "actions.sms.transport must be one of: ip, gsm, hybrid."
+                )
+
+            at_api_key = str(actions.sms.get("AT_API_KEY", ""))
+            at_username = str(actions.sms.get("AT_USERNAME", ""))
+            ip_configured = bool(
+                at_api_key
+                and "${" not in at_api_key
+                and at_username
+                and "${" not in at_username
+            )
+
+            gsm_cfg = actions.sms.get("gsm") or {}
+            if gsm_cfg and not isinstance(gsm_cfg, dict):
+                raise ConfigValidationError("actions.sms.gsm must be a mapping.")
+            if not isinstance(gsm_cfg, dict):
+                gsm_cfg = {}
+
+            gsm_enabled = (
+                str(gsm_cfg.get("enabled", "")).lower() == "true"
+                or gsm_cfg.get("enabled") is True
+            )
+            gsm_port = str(gsm_cfg.get("port", "")).strip()
+            if gsm_enabled and not gsm_port:
+                raise ConfigValidationError(
+                    "actions.sms.gsm.port is required when actions.sms.gsm.enabled=true."
+                )
+
+            if gsm_enabled:
+                try:
+                    baud = int(gsm_cfg.get("baud", 115200))
+                except (TypeError, ValueError) as exc:
                     raise ConfigValidationError(
-                        f"Environment variable not set: {resolved_value}. "
-                        f"Set it in your .env file before starting Ori."
-                    )
+                        "actions.sms.gsm.baud must be a valid integer."
+                    ) from exc
+                if baud <= 0:
+                    raise ConfigValidationError("actions.sms.gsm.baud must be > 0.")
+            gsm_configured = bool(gsm_enabled and gsm_port)
+
+            if sms_transport == "ip":
+                for v in ("AT_API_KEY", "AT_USERNAME"):
+                    val = str(actions.sms.get(v, ""))
+                    if not val or "${" in val:
+                        resolved_value = actions.sms.get(v, "")
+                        raise ConfigValidationError(
+                            f"Environment variable not set: {resolved_value}. "
+                            f"Set it in your .env file before starting Ori."
+                        )
+
+            if sms_transport == "gsm" and not gsm_configured:
+                raise ConfigValidationError(
+                    "actions.sms.transport=gsm requires actions.sms.gsm.enabled=true and actions.sms.gsm.port."
+                )
+
+            if sms_transport == "hybrid":
+                # If hybrid explicitly includes AT fields, validate them
+                # instead of collapsing to a generic "no path configured" error.
+                for v in ("AT_API_KEY", "AT_USERNAME"):
+                    if v in actions.sms:
+                        val = str(actions.sms.get(v, ""))
+                        if not val or "${" in val:
+                            resolved_value = actions.sms.get(v, "")
+                            raise ConfigValidationError(
+                                f"Environment variable not set: {resolved_value}. "
+                                f"Set it in your .env file before starting Ori."
+                            )
+
+            if sms_transport == "hybrid" and not (ip_configured or gsm_configured):
+                raise ConfigValidationError(
+                    "actions.sms.transport=hybrid requires at least one configured transport path (IP credentials or GSM modem config)."
+                )
 
             incoming = actions.sms.get("incoming_webhook") or {}
             if isinstance(incoming, dict):

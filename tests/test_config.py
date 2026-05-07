@@ -1251,6 +1251,83 @@ actions:
         with pytest.raises(ConfigValidationError, match="AT_USERNAME"):
             Config.load(yaml_path)
 
+    def test_sms_invalid_transport_raises(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    transport: satellite\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="actions.sms.transport"):
+            Config.load(yaml_path)
+
+    def test_sms_gsm_transport_does_not_require_at_credentials(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    transport: gsm\n"
+                "    gsm:\n"
+                "      enabled: true\n"
+                "      port: '/dev/ttyUSB0'\n"
+                "      baud: 115200\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.sms["transport"] == "gsm"
+
+    def test_sms_gsm_transport_requires_port(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    transport: gsm\n"
+                "    gsm:\n"
+                "      enabled: true\n"
+                "      baud: 115200\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="actions.sms.gsm.port"):
+            Config.load(yaml_path)
+
+    def test_sms_hybrid_transport_accepts_gsm_without_ip_credentials(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    transport: hybrid\n"
+                "    gsm:\n"
+                "      enabled: true\n"
+                "      port: '/dev/ttyUSB0'\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.sms["transport"] == "hybrid"
+
+    def test_sms_hybrid_transport_requires_at_least_one_path(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    transport: hybrid\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="at least one configured"):
+            Config.load(yaml_path)
+
     def test_operator_contact_missing_warns(self, tmp_path, caplog):
         import logging
 

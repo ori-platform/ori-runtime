@@ -263,9 +263,20 @@ actions:
     TWILIO_WHATSAPP_FROM: "${TWILIO_WHATSAPP_FROM}"
 
   sms:
-    enabled: true                    # Africa's Talking — primary for Nigeria
+    enabled: true                    # SMS transport enabled
+    transport: hybrid                # ip | gsm | hybrid
+    hybrid_order: gsm_first          # ip_first | gsm_first (used only when transport=hybrid)
     AT_API_KEY: "${AT_API_KEY}"
     AT_USERNAME: "${AT_USERNAME}"
+    AT_SENDER_ID: "${AT_SENDER_ID}"
+    gsm:
+      enabled: false                 # set true to enable direct modem SMS transport
+      port: "/dev/ttyUSB0"
+      baud: 115200
+      sim_pin: ""
+      timeout_s: 5.0
+      command_timeout_s: 3.0
+      write_timeout_s: 3.0
     incoming_webhook:
       enabled: false                 # set true when exposing a public webhook endpoint
       host: "0.0.0.0"
