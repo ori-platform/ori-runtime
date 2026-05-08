@@ -75,6 +75,8 @@ ALERT_OUTBOX_TIER_D_CRITICAL_THRESHOLD = 3
 CAPABILITY_POSTURE_UPDATE_INTERVAL_S = 30.0
 DEVICE_POLICY_REFRESH_DEFAULT_S = 21600.0
 DEVICE_POLICY_TRANSIENT_AUDIT_SUPPRESS_MS = 900_000
+STALE_SENSOR_MIN_CHECK_INTERVAL_S = 1.0
+STALE_SENSOR_MAX_CHECK_INTERVAL_S = 30.0
 
 
 class OriRuntime:
@@ -106,6 +108,11 @@ class OriRuntime:
         self._status_indicator: LEDIndicator | None = None
         self._faulted_sensors: set[str] = set()
         self._last_policy_refresh_transient_audit_ms: dict[str, int] = {}
+        self._primary_alert_channel: str = "sms"
+        self._operator_contact: str = ""
+        self._sensor_poll_interval_ms: dict[str, int] = {}
+        self._sensor_last_seen_ms: dict[str, int] = {}
+        self._stale_sensor_active: set[str] = set()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -288,6 +295,8 @@ class OriRuntime:
                 break
 
         primary_alert_channel = config.actions.primary_alert_channel
+        self._primary_alert_channel = primary_alert_channel
+        self._operator_contact = _operator_contact
         alert_sender = AlertFailoverSender(
             primary_channel=primary_alert_channel,
             sms_sender=sms_action,
@@ -559,6 +568,10 @@ class OriRuntime:
             logger.info("[runtime] SIGHUP handler active — send HUP to reload skills")
 
         # ── Start background tasks ────────────────────────────────────────────
+        self._sensor_poll_interval_ms = {}
+        self._sensor_last_seen_ms = {}
+        self._stale_sensor_active = set()
+
         for sensor_cfg in config.sensors:
             try:
                 adapter = make_adapter(sensor_cfg.protocol)
@@ -581,6 +594,10 @@ class OriRuntime:
             try:
                 await adapter.connect(connect_cfg)
                 self._adapters.append(adapter)
+                self._sensor_poll_interval_ms[sensor_cfg.id] = int(
+                    sensor_cfg.poll_interval_ms
+                )
+                self._sensor_last_seen_ms[sensor_cfg.id] = now_ms()
                 logger.info(
                     "[runtime] adapter=%s sensor_id=%s connected",
                     adapter.adapter_name,
@@ -606,6 +623,22 @@ class OriRuntime:
                 name=f"poll:{sensor_cfg.id}",
             )
             self._background_tasks.append(task)
+
+        if self._sensor_poll_interval_ms:
+            min_poll_ms = min(self._sensor_poll_interval_ms.values())
+            stale_check_interval_s = min(
+                STALE_SENSOR_MAX_CHECK_INTERVAL_S,
+                max(STALE_SENSOR_MIN_CHECK_INTERVAL_S, (min_poll_ms / 1000.0) / 2.0),
+            )
+            self._background_tasks.append(
+                asyncio.create_task(
+                    self._sensor_staleness_loop(
+                        alert_sender=alert_sender,
+                        check_interval_s=stale_check_interval_s,
+                    ),
+                    name="sensor-staleness",
+                )
+            )
 
         self._background_tasks.append(
             asyncio.create_task(self._watchdog_loop(), name="watchdog")
@@ -842,6 +875,13 @@ class OriRuntime:
         while not self._shutdown_event.is_set():
             try:
                 reading = await adapter.read(sensor_cfg.id)
+                self._sensor_last_seen_ms[sensor_cfg.id] = now_ms()
+                if sensor_cfg.id in self._stale_sensor_active:
+                    self._stale_sensor_active.discard(sensor_cfg.id)
+                    logger.info(
+                        "[runtime] sensor recovered from stale state sensor_id=%s",
+                        sensor_cfg.id,
+                    )
                 if sensor_cfg.id in self._faulted_sensors:
                     self._faulted_sensors.discard(sensor_cfg.id)
                     if self._status_indicator is not None and not self._faulted_sensors:
@@ -881,6 +921,74 @@ class OriRuntime:
             except Exception:
                 logger.exception("[sensor] unexpected error polling %s", sensor_cfg.id)
             await asyncio.sleep(sensor_cfg.poll_interval_ms / 1000)
+
+    async def _sensor_staleness_loop(
+        self,
+        *,
+        alert_sender: AlertFailoverSender,
+        check_interval_s: float,
+    ) -> None:
+        """Emit Tier A warnings when sensors go silent past 2x poll interval."""
+        interval = max(STALE_SENSOR_MIN_CHECK_INTERVAL_S, float(check_interval_s))
+        while not self._shutdown_event.is_set():
+            now = now_ms()
+            for sensor_id, poll_ms in self._sensor_poll_interval_ms.items():
+                last_seen = self._sensor_last_seen_ms.get(sensor_id)
+                if last_seen is None:
+                    continue
+                stale_after_ms = max(2 * int(poll_ms), 200)
+                stale_duration_ms = now - int(last_seen)
+                is_stale = stale_duration_ms > stale_after_ms
+                if is_stale and sensor_id not in self._stale_sensor_active:
+                    self._stale_sensor_active.add(sensor_id)
+                    logger.warning(
+                        "[runtime] stale sensor warning sensor_id=%s stale_for_ms=%d threshold_ms=%d",
+                        sensor_id,
+                        stale_duration_ms,
+                        stale_after_ms,
+                    )
+                    await self._emit_stale_sensor_warning(
+                        alert_sender=alert_sender,
+                        sensor_id=sensor_id,
+                        stale_duration_ms=stale_duration_ms,
+                        stale_after_ms=stale_after_ms,
+                    )
+
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _emit_stale_sensor_warning(
+        self,
+        *,
+        alert_sender: AlertFailoverSender,
+        sensor_id: str,
+        stale_duration_ms: int,
+        stale_after_ms: int,
+    ) -> None:
+        """Send or queue a stale-sensor Tier A notification."""
+        if not self._operator_contact:
+            logger.warning(
+                "[runtime] stale sensor warning not sent: operator_contact is not configured"
+            )
+            return
+        minutes = max(stale_duration_ms // 60_000, 1)
+        threshold_seconds = max(stale_after_ms // 1000, 1)
+        message = (
+            f"Sensor {sensor_id} has not reported for about {minutes} minute(s). "
+            f"This exceeded the stale threshold of {threshold_seconds}s."
+        )
+        await self._send_or_queue_alert(
+            channel=self._primary_alert_channel,
+            message=message,
+            recipient=self._operator_contact,
+            action_tier="A",
+            trigger_name="sensor_stale_warning",
+            original_ts=now_ms(),
+            alert_sender=alert_sender,
+        )
 
     async def _maybe_refresh_remote_device_policy_once(
         self,

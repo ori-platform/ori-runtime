@@ -786,6 +786,35 @@ class TestSensorPolling:
 
         assert first.fingerprint == second.fingerprint
 
+    async def test_sensor_staleness_loop_emits_transition_warning_once(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._shutdown_event = asyncio.Event()
+        runtime._sensor_poll_interval_ms = {"sensor-x": 100}
+        runtime._sensor_last_seen_ms = {"sensor-x": int(time.time() * 1000) - 1000}
+        runtime._stale_sensor_active = set()
+        runtime._primary_alert_channel = "sms"
+        runtime._operator_contact = "+2340000000000"
+        runtime._send_or_queue_alert = AsyncMock(return_value=True)
+        alert_sender = AsyncMock()
+
+        async def _stop():
+            await asyncio.sleep(0.05)
+            await runtime.stop()
+
+        await asyncio.gather(
+            runtime._sensor_staleness_loop(
+                alert_sender=alert_sender,
+                check_interval_s=0.01,
+            ),
+            _stop(),
+        )
+
+        runtime._send_or_queue_alert.assert_awaited_once()
+        kwargs = runtime._send_or_queue_alert.await_args.kwargs
+        assert kwargs["trigger_name"] == "sensor_stale_warning"
+        assert kwargs["channel"] == "sms"
+        assert "sensor-x" in kwargs["message"]
+
     async def test_deduplicator_suppresses_identical_readings_within_5_seconds(self):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._shutdown_event = asyncio.Event()
