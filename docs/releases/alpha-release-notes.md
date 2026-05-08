@@ -1,5 +1,9 @@
 # Ori Runtime — Alpha Release Notes
 
+Alpha series archive. Current release channel is beta:
+
+- [`docs/releases/beta-release-notes.md`](beta-release-notes.md)
+
 ## Versioned Notes
 
 - [`v0.1.0-alpha.4`](v0.1.0-alpha.4.md) — latest alpha cut
