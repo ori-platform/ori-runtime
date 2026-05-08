@@ -137,6 +137,12 @@ class TestLoadExample:
         assert status["buzzer_pin"] == 24
         assert status["tick_ms"] == 100
 
+    def test_health_socket_defaults(self):
+        cfg = Config.load(EXAMPLE_YAML)
+        assert cfg.health_socket["enabled"] is True
+        assert cfg.health_socket["path"] == "/run/ori/health.sock"
+        assert cfg.health_socket["mode"] == 0o660
+
 
 # ─── DeviceConfig validation ──────────────────────────────────────────────────
 
@@ -1710,3 +1716,62 @@ actions:
             match="refresh_interval_s must be >= 60",
         ):
             Config.load(yaml_path)
+
+
+class TestHealthSocketConfig:
+    def _yaml(self, extra_block: str = "") -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+  offline_fallback: rule
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+{extra_block}
+"""
+
+    def test_defaults_when_block_missing(self, tmp_path):
+        yaml_path = _write_yaml(tmp_path, self._yaml())
+        cfg = Config.load(yaml_path)
+        assert cfg.health_socket["enabled"] is True
+        assert cfg.health_socket["path"] == "/run/ori/health.sock"
+        assert cfg.health_socket["mode"] == 0o660
+
+    def test_rejects_empty_path(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml("health_socket:\n  enabled: true\n  path: ''\n"),
+        )
+        with pytest.raises(ConfigValidationError, match="health_socket.path"):
+            Config.load(yaml_path)
+
+    def test_rejects_invalid_mode(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml("health_socket:\n  enabled: true\n  mode: invalid\n"),
+        )
+        with pytest.raises(ConfigValidationError, match="health_socket.mode"):
+            Config.load(yaml_path)
+
+    def test_accepts_mode_string(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "health_socket:\n"
+                "  enabled: true\n"
+                "  path: /tmp/ori-health.sock\n"
+                "  mode: '0o666'\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.health_socket["mode"] == 0o666
