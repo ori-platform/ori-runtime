@@ -61,6 +61,8 @@ jobs:
 
       - name: Guard Capability Matrix Updated
         if: github.event_name == 'pull_request'
+        env:
+          GUARD_CAP_MATRIX_BYPASS_TEXT: ${{ github.event.pull_request.body || '' }}
         run: |
           FROM_REF="${{ github.event.pull_request.base.sha }}"
           TO_REF="${{ github.event.pull_request.head.sha }}"
