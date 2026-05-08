@@ -355,6 +355,10 @@ hal:
     tick_ms: 100                     # pattern update interval in milliseconds
 
 
+state:
+  compaction:
+    max_backward_skew_ms: 3600000    # Threshold (in ms) to reject compaction due to clock skew
+
 logging:
   level: INFO                        # DEBUG | INFO | WARNING | ERROR
   file: ori.log

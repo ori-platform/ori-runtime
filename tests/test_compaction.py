@@ -78,16 +78,27 @@ async def test_compaction_pyramid(store, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_clock_skew_guard(store, monkeypatch):
-    # The guardrail prevents raw retention from being configured to less than 1 hour
-    # regardless of how it was called, protecting the very recent dataset.
+    # Guardrail: if host clock moves backward relative to persisted history,
+    # compaction must refuse to delete data.
     now = 2_000_000_000_000
-    bad_cutoffs = {
-        "raw": now - 60_000,  # only 1 minute buffer (violates 1-hour rule)
-        "5min": 0,
-        "hourly": 0,
+    future_ts = now + 4_000_000
+    store._conn.execute(
+        """
+        INSERT INTO sensor_history
+        (sensor_id, sensor_type, value, unit, timestamp, quality)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("s1", "temp", 20.0, "c", future_ts, 1.0),
+    )
+    store._conn.commit()
+
+    cutoffs = {
+        "hourly": now - 300_000,
+        "5min": now - 200_000,
+        "raw": now - 100_000,
     }
-    with pytest.raises(AssertionError, match="Clock skew detected"):
-        store._compact_sync(bad_cutoffs, now)
+    with pytest.raises(RuntimeError, match="Clock skew detected"):
+        store._compact_sync(cutoffs, now)
 
 
 @pytest.mark.asyncio

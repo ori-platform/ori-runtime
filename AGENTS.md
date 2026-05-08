@@ -561,6 +561,10 @@ Violating them creates vulnerabilities that affect physical hardware.
     NEVER reject silently. NEVER fail open by applying an unverified policy.
     The phrase 'reject silently' must not appear in any policy enforcement code path.
 
+12. Database compaction logic must always query the physical tables to check for backwards clock skew
+    before deleting history. Relying on host clock calculations (`now_ms - 48h < now_ms - 1h`) is a
+    tautology and will blindly destroy data if the host clock jumps backward.
+
 ---
 
 ## Where to find things

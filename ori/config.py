@@ -99,6 +99,16 @@ class HalConfig:
 
 
 @dataclass
+class CompactionConfig:
+    max_backward_skew_ms: int = 3600000
+
+
+@dataclass
+class StateConfig:
+    compaction: CompactionConfig = field(default_factory=CompactionConfig)
+
+
+@dataclass
 class LoggingConfig:
     level: str = "INFO"
     file: str = "ori.log"
@@ -121,6 +131,7 @@ class Config:
     device_policy: dict = field(default_factory=dict)
     health_socket: dict = field(default_factory=dict)
     os_sandbox: dict = field(default_factory=dict)
+    state: StateConfig = field(default_factory=StateConfig)
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -155,6 +166,7 @@ class Config:
         device_policy = _parse_device_policy(data.get("device_policy"))
         health_socket = _parse_health_socket(data.get("health_socket"))
         os_sandbox = _parse_os_sandbox(data.get("os_sandbox"))
+        state_cfg = _parse_state(data.get("state"))
         logging_cfg = _parse_logging(data.get("logging"))
         _validate_coap_sensor_allowlist(sensors, actions.coap)
 
@@ -313,6 +325,7 @@ class Config:
             device_policy=device_policy,
             health_socket=health_socket,
             os_sandbox=os_sandbox,
+            state=state_cfg,
             logging=logging_cfg,
             raw=data,
         )
@@ -1060,6 +1073,28 @@ def _parse_os_sandbox(data: Any) -> dict:
     if out["max_output_bytes"] < 4096:
         raise ConfigValidationError("os_sandbox.max_output_bytes must be >= 4096.")
     return out
+
+
+def _parse_state(data: Any) -> StateConfig:
+    if not isinstance(data, dict):
+        return StateConfig()
+    comp_data = data.get("compaction", {})
+    if not isinstance(comp_data, dict):
+        comp_data = {}
+
+    try:
+        max_skew = int(comp_data.get("max_backward_skew_ms", 3600000))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "state.compaction.max_backward_skew_ms must be an integer."
+        ) from exc
+
+    if max_skew < 60000:
+        raise ConfigValidationError(
+            "state.compaction.max_backward_skew_ms must be >= 60000."
+        )
+
+    return StateConfig(compaction=CompactionConfig(max_backward_skew_ms=max_skew))
 
 
 def _parse_logging(data: Any) -> LoggingConfig:

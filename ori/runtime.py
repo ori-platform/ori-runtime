@@ -360,7 +360,7 @@ class OriRuntime:
         await self._maybe_refresh_remote_device_policy_once(config, dispatcher)
 
         # alert_whatsapp executor
-        async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> None:
+        async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> bool:
             msg = _message_from_context(ctx, action, channel="whatsapp")
             action_tier = _resolve_action_declared_tier(ctx, action)
             trigger_name = _resolve_trigger_name(ctx)
@@ -378,7 +378,7 @@ class OriRuntime:
         dispatcher.register_executor("alert_whatsapp", _exec_alert_whatsapp)
 
         # alert_sms executor
-        async def _exec_alert_sms(action: str, ctx: SkillContext) -> None:
+        async def _exec_alert_sms(action: str, ctx: SkillContext) -> bool:
             msg = _message_from_context(ctx, action, channel="sms")
             action_tier = _resolve_action_declared_tier(ctx, action)
             trigger_name = _resolve_trigger_name(ctx)
@@ -694,7 +694,11 @@ class OriRuntime:
         )
         self._background_tasks.append(
             asyncio.create_task(
-                self._compaction_loop(self._deduplicator), name="compaction"
+                self._compaction_loop(
+                    self._deduplicator,
+                    max_backward_skew_ms=config.state.compaction.max_backward_skew_ms,
+                ),
+                name="compaction",
             )
         )
         self._background_tasks.append(
@@ -1048,7 +1052,7 @@ class OriRuntime:
                 # Keep source explicit in the poll path; adapters must publish
                 # protocol provenance through reading.metadata["source"].
                 event.source = reading.metadata.get("source", "")
-                event.fingerprint = compute_fingerprint(event.reading, event.device_id)
+                event.fingerprint = compute_fingerprint(reading, event.device_id)
                 await self._state_store.append_history(event)
                 if event.reading is not None and deduplicator is not None:
                     if deduplicator.process(event) is None:
@@ -1518,7 +1522,9 @@ class OriRuntime:
         logger.debug("[heartbeat] loop exited cleanly")
 
     async def _compaction_loop(
-        self, deduplicator: EventDeduplicator | None = None
+        self,
+        deduplicator: EventDeduplicator | None = None,
+        max_backward_skew_ms: int = 3600000,
     ) -> None:
         """Run the SQLite Compaction Pyramid every 5 minutes."""
         while not self._shutdown_event.is_set():
@@ -1532,7 +1538,9 @@ class OriRuntime:
                 pass
             if self._state_store is not None:
                 try:
-                    await self._state_store.compact_history()
+                    await self._state_store.compact_history(
+                        max_backward_skew_ms=max_backward_skew_ms
+                    )
                     logger.debug("[compaction] history compaction complete")
                 except Exception:
                     logger.exception(

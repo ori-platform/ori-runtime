@@ -318,7 +318,7 @@ class StateStore:
 
     # ─── sensor_history ───────────────────────────────────────────────────────
 
-    async def compact_history(self) -> None:
+    async def compact_history(self, max_backward_skew_ms: int = 3600000) -> None:
         """Compact raw sensor history into time-bucketed averages.
 
         Call from runtime.py via asyncio.create_task() on a 5-minute
@@ -330,13 +330,50 @@ class StateStore:
             "5min": current_ms - (30 * 86400 * 1000),  # 30 days
             "hourly": current_ms - (365 * 86400 * 1000),  # 1 year
         }
-        await self._run_write(self._compact_sync, cutoffs, current_ms)
-
-    def _compact_sync(self, cutoffs: dict, now_ms: int) -> None:
-        assert self._conn is not None
-        assert cutoffs["raw"] < now_ms - 3600000, (
-            "Clock skew detected: refused to compact history"
+        await self._run_write(
+            self._compact_sync,
+            cutoffs,
+            current_ms,
+            max_backward_skew_ms,
         )
+
+    def _compact_sync(
+        self,
+        cutoffs: dict,
+        now_ms: int,
+        max_backward_skew_ms: int = 3600000,
+    ) -> None:
+        if self._conn is None:
+            raise RuntimeError("StateStore is not open")
+
+        if max_backward_skew_ms < 0:
+            raise RuntimeError("Invalid compaction skew threshold: must be >= 0")
+
+        if not (cutoffs["hourly"] < cutoffs["5min"] < cutoffs["raw"] < now_ms):
+            raise RuntimeError(
+                "Invalid compaction cutoffs: must be strictly ordered in the past"
+            )
+
+        row = self._conn.execute(
+            """
+            SELECT MAX(t) as max_ts FROM (
+                SELECT MAX(timestamp) as t FROM sensor_history
+                UNION ALL
+                SELECT MAX(bucket_ms) as t FROM sensor_history_5min
+                UNION ALL
+                SELECT MAX(bucket_ms) as t FROM sensor_history_hourly
+                UNION ALL
+                SELECT MAX(bucket_ms) as t FROM sensor_history_daily
+            )
+            """
+        ).fetchone()
+
+        if row and row["max_ts"] is not None:
+            db_max_ts = row["max_ts"]
+            if now_ms + max_backward_skew_ms < db_max_ts:
+                raise RuntimeError(
+                    f"Clock skew detected: now_ms ({now_ms}) is behind db_max_ts ({db_max_ts}) by more than {max_backward_skew_ms}ms"
+                )
 
         # 1. Aggregate raw → 5-minute buckets older than 48h
         self._conn.execute(

@@ -127,6 +127,49 @@ class TestMigrationHardening:
 # ─── append_history / get_history ─────────────────────────────────────────────
 
 
+class TestCompactionGuard:
+    def test_compact_sync_raises_on_invalid_cutoff_order(self, store):
+        # hourly > 5min => invalid
+        cutoffs = {
+            "hourly": 1000,
+            "5min": 500,
+            "raw": 2000,
+        }
+        with pytest.raises(RuntimeError, match="Invalid compaction cutoffs"):
+            store._compact_sync(cutoffs, now_ms=3000)
+
+    async def test_compact_sync_raises_on_backward_clock_skew(self, store):
+        # Insert a row into the future
+        future_ts = _ms() + 10_000_000
+        await store.append_history(_event(_reading(timestamp=future_ts)))
+
+        # now_ms is in the past compared to DB
+        past_ms = future_ts - 4_000_000
+        cutoffs = {
+            "hourly": past_ms - 30_000,
+            "5min": past_ms - 20_000,
+            "raw": past_ms - 10_000,
+        }
+
+        with pytest.raises(RuntimeError, match="Clock skew detected"):
+            await store._run_write(store._compact_sync, cutoffs, past_ms, 3600000)
+
+    async def test_compact_sync_succeeds_normally(self, store):
+        # Insert a row safely in the past
+        past_ts = _ms() - 1000
+        await store.append_history(_event(_reading(timestamp=past_ts)))
+
+        now = _ms()
+        cutoffs = {
+            "hourly": now - 300_000,
+            "5min": now - 200_000,
+            "raw": now - 100_000,
+        }
+
+        # Should not raise
+        await store._run_write(store._compact_sync, cutoffs, now, 3600000)
+
+
 class TestSensorHistory:
     async def test_append_and_retrieve(self, store):
         r = _reading(value=7.3)

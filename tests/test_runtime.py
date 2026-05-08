@@ -1057,7 +1057,7 @@ class TestCompactionLoop:
             def cleanup(self) -> None:
                 cleanup_calls["count"] += 1
 
-        async def _compact() -> None:
+        async def _compact(*_args, **_kwargs) -> None:
             runtime._shutdown_event.set()
 
         runtime._state_store = AsyncMock()
@@ -1074,7 +1074,9 @@ class TestCompactionLoop:
         ):
             await runtime._compaction_loop(_Dedup())
 
-        runtime._state_store.compact_history.assert_awaited_once()
+        runtime._state_store.compact_history.assert_awaited_once_with(
+            max_backward_skew_ms=3600000
+        )
         assert cleanup_calls["count"] == 1
 
 
