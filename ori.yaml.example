@@ -261,6 +261,11 @@ device_policy:
   refresh_enabled: false                         # background refresh loop
   refresh_interval_s: 21600                      # 6h; minimum allowed is 60s
 
+health_socket:
+  enabled: true
+  path: /run/ori/health.sock                     # local read-only runtime health RPC
+  mode: 0o660                                    # unix socket permission bits
+
 actions:
   # For Nigeria: use sms as primary (Africa's Talking — no approval required)
   # For UK/EU:   use whatsapp as primary
