@@ -160,13 +160,15 @@ def _resolve_line_voltage(context):
 
     cc = _country_code(context)
     if cc in _COUNTRY_TO_LINE_VOLTAGE:
-        return float(_COUNTRY_TO_LINE_VOLTAGE[cc]), "estimated"
+        return _COUNTRY_TO_LINE_VOLTAGE[cc], "estimated"
     return _FALLBACK_LINE_VOLTAGE, "estimated"
 
 
 def _resolve_power_factor(context):
     cfg = getattr(context, "config", {}) or {}
     raw_pf = cfg.get("power_factor", _DEFAULT_POWER_FACTOR)
+    if raw_pf is None:
+        raw_pf = _DEFAULT_POWER_FACTOR
     try:
         pf = float(raw_pf)
     except (TypeError, ValueError):
@@ -177,6 +179,8 @@ def _resolve_power_factor(context):
 def _resolve_tariff(context):
     cfg = getattr(context, "config", {}) or {}
     raw = cfg.get("tariff_per_kwh", None)
+    if raw is None:
+        return 0.0, False
     try:
         tariff = float(raw)
     except (TypeError, ValueError):
