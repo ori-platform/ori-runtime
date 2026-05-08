@@ -113,6 +113,30 @@ def _mock_state_store(
     return store
 
 
+class _PromptHistoryStore:
+    def __init__(self, values_by_sensor: dict[str, list[float]]) -> None:
+        self._values_by_sensor = values_by_sensor
+
+    def _run_read_with_conn(self, fn, *args):
+        return fn(*args)
+
+    def _avg_last_hours_sync(self, sensor_id: str, _hours: int) -> float | None:
+        values = self._values_by_sensor.get(sensor_id, [])
+        if not values:
+            return None
+        return sum(values) / len(values)
+
+    def _avg_last_n_sync(self, sensor_id: str, n: int) -> float | None:
+        values = self._values_by_sensor.get(sensor_id, [])[:n]
+        if not values:
+            return None
+        return sum(values) / len(values)
+
+    def _get_history_sync(self, sensor_id: str, limit: int):
+        values = self._values_by_sensor.get(sensor_id, [])[:limit]
+        return [_reading(value=v, sensor_id=sensor_id) for v in values]
+
+
 # ─── _complexity_score ────────────────────────────────────────────────────────
 
 
@@ -374,7 +398,7 @@ class TestReason:
 
         assert "Value is 8.2A on ikeja-01" in result.prompt
 
-    async def test_history_placeholders_are_not_substituted_and_log_debug(self, caplog):
+    async def test_history_placeholders_substitute_last_n_alias(self):
         mock_llm = AsyncMock()
         mock_llm.reason.return_value = ReasoningResult(
             text="ok",
@@ -389,13 +413,82 @@ class TestReason:
         skill.prompts = {
             "anomalous_draw": "History snapshot: {history.last_n('load-current', 6)}"
         }
+        store = _PromptHistoryStore({"load-current": [12.4, 12.5, 12.6]})
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            result = await elevator.reason(_event(value=8.2), skill, store)
+
+        assert "{history.last_n('load-current', 6)}" not in result.prompt
+        assert "[12.4,12.5,12.6]" in result.prompt
+
+    async def test_history_placeholder_unsupported_method_stays_literal(self, caplog):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="ok",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=12,
+            latency_ms=100,
+        )
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+        skill.prompts = {
+            "anomalous_draw": "Check: {history.not_a_method('load-current', 2)}"
+        }
+        store = _PromptHistoryStore({"load-current": [1.0, 2.0]})
 
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
             with caplog.at_level(logging.DEBUG):
-                result = await elevator.reason(_event(value=8.2), skill, None)
+                result = await elevator.reason(_event(value=8.2), skill, store)
 
-        assert "Prompt template contains history placeholder" in caplog.text
-        assert "{history.last_n('load-current', 6)}" in result.prompt
+        assert "{history.not_a_method('load-current', 2)}" in result.prompt
+        assert "Failed to resolve history placeholder" in caplog.text
+
+    async def test_history_placeholder_avg_hours_is_substituted(self):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="ok",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=12,
+            latency_ms=100,
+        )
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+        skill.prompts = {
+            "anomalous_draw": '24h avg: {history.avg_hours("load-current", 24)}'
+        }
+        store = _PromptHistoryStore({"load-current": [10.0, 14.0]})
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            result = await elevator.reason(_event(value=8.2), skill, store)
+
+        assert '{history.avg_hours("load-current", 24)}' not in result.prompt
+        assert "24h avg: 12.0" in result.prompt
+
+    async def test_history_placeholder_malformed_expression_stays_literal(self):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="ok",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=12,
+            latency_ms=100,
+        )
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+        skill.prompts = {
+            "anomalous_draw": "Broken: {history.last_n(sensor_id='load-current', n=2)}"
+        }
+        store = _PromptHistoryStore({"load-current": [10.0, 14.0]})
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            result = await elevator.reason(_event(value=8.2), skill, store)
+
+        assert "{history.last_n(sensor_id='load-current', n=2)}" in result.prompt
 
     async def test_prompt_template_sanitizes_malicious_sensor_id(self):
         mock_llm = AsyncMock()

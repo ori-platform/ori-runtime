@@ -15,9 +15,12 @@ and returns a :class:`~ori.network.events.ReasoningResult`.
    point where control is yielded back to the event loop immediately.
 """
 
+import ast
 import asyncio
 import datetime
+import json
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -34,6 +37,8 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+_HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
+_MAX_HISTORY_PLACEHOLDERS = 16
 
 
 # ── Minimal shared types ──────────────────────────────────────────────────────
@@ -50,6 +55,12 @@ class SkillContext:
     event: OriEvent
     state_store: Any  # StateStore
     trigger_name: str = ""
+
+
+@dataclass(frozen=True)
+class _ParsedHistoryCall:
+    method: str
+    args: tuple[Any, ...]
 
 
 def _hour_now() -> int:
@@ -227,9 +238,10 @@ class IntelligenceElevator:
             )
 
         if tier in ("local_slm",) and self._local_llm is not None:
-            prompt = self._build_prompt(
+            prompt = await self._build_prompt(
                 event,
                 skill,
+                state_store=state_store,
                 trigger_name=rule_result.rule_name if rule_result.matched else None,
                 rejection_note=rejection_note,
             )
@@ -889,10 +901,11 @@ class IntelligenceElevator:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _build_prompt(
+    async def _build_prompt(
         self,
         event: OriEvent,
         skill: Any,
+        state_store: Any,
         trigger_name: str | None = None,
         rejection_note: str | None = None,
     ) -> str:
@@ -961,11 +974,11 @@ class IntelligenceElevator:
                 }
                 for key, val in substitutions.items():
                     prompt_text = prompt_text.replace(key, val)
-                if "{history." in prompt_text:
-                    logger.debug(
-                        "Prompt template contains history placeholder — "
-                        "not yet substituted."
-                    )
+                prompt_text = await self._interpolate_history_placeholders(
+                    prompt_text=prompt_text,
+                    event=event,
+                    state_store=state_store,
+                )
             lines.append(prompt_text)
         else:
             lines.append("Is this reading anomalous? What is the most likely cause?")
@@ -974,6 +987,224 @@ class IntelligenceElevator:
             lines.append("")
             lines.append(rejection_note)
         return "\n".join(lines)
+
+    async def _interpolate_history_placeholders(
+        self,
+        *,
+        prompt_text: str,
+        event: OriEvent,
+        state_store: Any,
+    ) -> str:
+        matches = list(_HISTORY_PLACEHOLDER_PATTERN.finditer(prompt_text))
+        if not matches:
+            return prompt_text
+        if state_store is None:
+            logger.debug(
+                "Prompt template contains history placeholder but no state_store is available."
+            )
+            return prompt_text
+
+        replacements: dict[str, str] = {}
+        for match in matches[:_MAX_HISTORY_PLACEHOLDERS]:
+            token = match.group(0)
+            if token in replacements:
+                continue
+            expr = token[1:-1]
+            replacement = await self._resolve_history_expression(
+                expression=expr,
+                event=event,
+                state_store=state_store,
+            )
+            if replacement is not None:
+                replacements[token] = replacement
+
+        if len(matches) > _MAX_HISTORY_PLACEHOLDERS:
+            logger.debug(
+                "Prompt template contained %d history placeholders; only first %d were processed.",
+                len(matches),
+                _MAX_HISTORY_PLACEHOLDERS,
+            )
+
+        for token, replacement in replacements.items():
+            prompt_text = prompt_text.replace(token, replacement)
+        return prompt_text
+
+    async def _resolve_history_expression(
+        self,
+        *,
+        expression: str,
+        event: OriEvent,
+        state_store: Any,
+    ) -> str | None:
+        from ori.skills.hooks_api import HookHistoryAdapter
+
+        parsed = self._parse_history_expression(expression)
+        if parsed is None:
+            logger.debug("Unsupported history placeholder syntax: %s", expression)
+            return None
+
+        adapter = HookHistoryAdapter(state_store)
+        try:
+            raw = await asyncio.to_thread(
+                self._execute_history_call_sync,
+                adapter,
+                parsed,
+                event,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to resolve history placeholder %s", expression, exc_info=True
+            )
+            return None
+        return self._format_history_placeholder_value(raw)
+
+    def _parse_history_expression(self, expression: str) -> _ParsedHistoryCall | None:
+        try:
+            node = ast.parse(expression, mode="eval")
+        except SyntaxError:
+            return None
+        if not isinstance(node, ast.Expression) or not isinstance(node.body, ast.Call):
+            return None
+        call = node.body
+        if call.keywords:
+            return None
+        if not isinstance(call.func, ast.Attribute):
+            return None
+        root = call.func.value
+        if not isinstance(root, ast.Name) or root.id != "history":
+            return None
+
+        args: list[Any] = []
+        for arg in call.args:
+            if isinstance(arg, ast.Constant):
+                args.append(arg.value)
+                continue
+            if (
+                isinstance(arg, ast.UnaryOp)
+                and isinstance(arg.op, ast.USub)
+                and isinstance(arg.operand, ast.Constant)
+                and isinstance(arg.operand.value, (int, float))
+            ):
+                args.append(-arg.operand.value)
+                continue
+            return None
+        return _ParsedHistoryCall(method=str(call.func.attr), args=tuple(args))
+
+    def _execute_history_call_sync(
+        self,
+        adapter: Any,
+        parsed: _ParsedHistoryCall,
+        event: OriEvent,
+    ) -> Any:
+        method = parsed.method
+        args = parsed.args
+        if method == "last_n":
+            sensor_id, n = self._parse_sensor_and_int_arg_pair(
+                args,
+                default_sensor_id=event.sensor_id,
+                default_n=6,
+            )
+            rows = adapter.fetch_history(sensor_id, limit=n)
+            return [row.get("value") for row in rows]
+        if method == "avg_hours":
+            sensor_id, hours = self._parse_sensor_and_int_arg_pair(
+                args,
+                default_sensor_id=event.sensor_id,
+                default_n=24,
+            )
+            return adapter.avg_hours(sensor_id, hours)
+        if method == "avg_last_n":
+            sensor_id, n = self._parse_sensor_and_int_arg_pair(
+                args,
+                default_sensor_id=event.sensor_id,
+                default_n=6,
+            )
+            return adapter.avg_last_n(sensor_id, n)
+        if method == "last_value":
+            sensor_id = self._parse_sensor_single_arg(args, event.sensor_id)
+            return adapter.last_value(sensor_id)
+        if method == "last_timestamp":
+            sensor_id = self._parse_sensor_single_arg(args, event.sensor_id)
+            return adapter.last_timestamp(sensor_id)
+        if method == "fetch_history":
+            sensor_id, limit = self._parse_sensor_and_int_arg_pair(
+                args,
+                default_sensor_id=event.sensor_id,
+                default_n=1,
+            )
+            rows = adapter.fetch_history(sensor_id, limit=limit)
+            compact: list[dict[str, Any]] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                compact.append(
+                    {
+                        "value": row.get("value"),
+                        "timestamp": row.get("timestamp"),
+                    }
+                )
+            return compact
+        raise ValueError(f"unsupported history method: {method}")
+
+    def _parse_sensor_single_arg(
+        self,
+        args: tuple[Any, ...],
+        default_sensor_id: str,
+    ) -> str:
+        if len(args) == 0:
+            return str(default_sensor_id)
+        if len(args) != 1 or not isinstance(args[0], str):
+            raise ValueError("expected a single string sensor_id argument")
+        return str(args[0])[:128]
+
+    def _parse_sensor_and_int_arg_pair(
+        self,
+        args: tuple[Any, ...],
+        *,
+        default_sensor_id: str,
+        default_n: int,
+    ) -> tuple[str, int]:
+        if len(args) == 0:
+            return str(default_sensor_id), int(default_n)
+        if len(args) == 1:
+            if not isinstance(args[0], str):
+                raise ValueError("first argument must be sensor_id string")
+            return str(args[0])[:128], int(default_n)
+        if len(args) != 2:
+            raise ValueError("expected one or two arguments")
+        sensor_raw, n_raw = args
+        if not isinstance(sensor_raw, str) or not isinstance(n_raw, (int, float)):
+            raise ValueError("expected (sensor_id: str, count: int)")
+        n = max(1, min(int(n_raw), 100))
+        return str(sensor_raw)[:128], n
+
+    def _format_history_placeholder_value(self, raw: Any) -> str:
+        if raw is None:
+            return "null"
+        if isinstance(raw, bool):
+            return "true" if raw else "false"
+        if isinstance(raw, (int, float)):
+            return str(raw)
+        if isinstance(raw, list):
+            normalized: list[Any] = []
+            for item in raw[:50]:
+                if isinstance(item, (int, float)):
+                    normalized.append(item)
+                elif isinstance(item, dict):
+                    normalized.append(
+                        {
+                            "value": item.get("value"),
+                            "timestamp": item.get("timestamp"),
+                        }
+                    )
+                else:
+                    normalized.append(str(item))
+            text = json.dumps(normalized, separators=(",", ":"))
+            return text[:400]
+        if isinstance(raw, dict):
+            text = json.dumps(raw, separators=(",", ":"))
+            return text[:400]
+        return str(raw)[:200]
 
     def _sanitize_prompt_input(self, text: str, is_reply: bool = False) -> str:
         """Sanitize untrusted values before interpolation into prompt text."""
