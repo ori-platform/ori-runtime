@@ -1,0 +1,88 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: battery-lifecycle-observer
+version: 0.1.0
+author: wasiubakare
+license: Apache-2.0
+signature: ed25519:PENDING
+
+sensors_required:
+  - type: growatt_battery_soc
+    protocol: growatt
+  - type: victron_battery_soc
+    protocol: victron
+  - type: ads1115_voltage
+    protocol: i2c
+  - type: growatt_grid_power
+    protocol: growatt
+  - type: victron_grid_power
+    protocol: victron
+
+triggers:
+  - name: battery_deep_discharge_risk
+    condition: "is_soc_sensor == 1 and quality >= min_quality and soc_value <= low_soc_threshold and low_soc_persist_minutes >= low_soc_persistence_minutes"
+    cooldown_seconds: 900
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: battery_cycle_stress
+    condition: "is_soc_sensor == 1 and quality >= min_quality and weekly_efc >= efc_warning_threshold_weekly"
+    cooldown_seconds: 3600
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: olax_voltage_decay_degraded
+    condition: "is_voltage_mode == 1 and is_battery_voltage_sensor == 1 and outage_active == 1 and outage_duration_minutes >= olax_min_outage_minutes and voltage_decay_v_per_hour >= olax_decay_threshold_v_per_hour"
+    cooldown_seconds: 1800
+    escalate_to: local_slm
+    action_tier: A
+
+prompts:
+  battery_deep_discharge_risk: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining why
+    deep battery discharge is risky and why action now matters.
+    Do not include timestamps, percentages, units, currency, or action statements.
+    Example: "Your backup battery has stayed too low for too long, which can shorten its life quickly."
+
+  battery_cycle_stress: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining why
+    heavy battery cycling increases wear and future replacement risk.
+    Do not include timestamps, percentages, units, currency, or action statements.
+    Example: "Your battery has been cycling heavily this week, which can speed up wear."
+
+  olax_voltage_decay_degraded: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining why
+    fast battery voltage drop during outage is a concern.
+    Do not include timestamps, percentages, units, currency, or action statements.
+    Example: "Your backup unit is draining faster than normal during outages, which suggests weakening battery health."
+
+actions:
+  available:
+    - name: alert_whatsapp
+      tier: A
+    - name: log_to_dashboard
+      tier: A
+  defaults:
+    battery_deep_discharge_risk: [alert_whatsapp, log_to_dashboard]
+    battery_cycle_stress: [alert_whatsapp, log_to_dashboard]
+    olax_voltage_decay_degraded: [alert_whatsapp, log_to_dashboard]
+
+config:
+  timezone: Africa/Lagos
+  min_quality: 0.8
+
+  # SOC mode (future PCB / inverter telemetry)
+  low_soc_threshold: 20.0
+  low_soc_persistence_minutes: 30
+  efc_warning_threshold_weekly: 7.0
+
+  # Voltage-proxy mode (PoC OLAX UPS path)
+  battery_voltage_sensor_ids: ["olax-battery-voltage"]
+  grid_voltage_sensor_ids: ["grid-voltage"]
+  grid_outage_voltage_threshold: 180.0
+  olax_min_outage_minutes: 10
+  olax_decay_threshold_v_per_hour: 1.2
