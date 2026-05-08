@@ -548,6 +548,7 @@ class OriRuntime:
             elevator=elevator,
             state_store=self._state_store,
             dispatcher=dispatcher,
+            os_sandbox_config=config.os_sandbox,
         )
         self._skill_loader = loader
         await self.reload_skills()

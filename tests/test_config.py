@@ -142,6 +142,10 @@ class TestLoadExample:
         assert cfg.health_socket["enabled"] is True
         assert cfg.health_socket["path"] == "/run/ori/health.sock"
         assert cfg.health_socket["mode"] == 0o660
+        assert cfg.os_sandbox["enabled"] is True
+        assert cfg.os_sandbox["require_for_community"] is False
+        assert cfg.os_sandbox["exec_timeout_ms"] == 2000
+        assert cfg.os_sandbox["max_output_bytes"] == 65536
 
 
 # ─── DeviceConfig validation ──────────────────────────────────────────────────
@@ -1775,3 +1779,49 @@ actions:
         )
         cfg = Config.load(yaml_path)
         assert cfg.health_socket["mode"] == 0o666
+
+
+class TestOSSandboxConfig:
+    def _yaml(self, extra_block: str = "") -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+  offline_fallback: rule
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+{extra_block}
+"""
+
+    def test_defaults_when_block_missing(self, tmp_path):
+        cfg = Config.load(_write_yaml(tmp_path, self._yaml()))
+        assert cfg.os_sandbox["enabled"] is True
+        assert cfg.os_sandbox["require_for_community"] is False
+        assert cfg.os_sandbox["exec_timeout_ms"] == 2000
+        assert cfg.os_sandbox["max_output_bytes"] == 65536
+
+    def test_rejects_invalid_numeric_fields(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml("os_sandbox:\n  exec_timeout_ms: abc\n"),
+        )
+        with pytest.raises(ConfigValidationError, match="os_sandbox.exec_timeout_ms"):
+            Config.load(yaml_path)
+
+    def test_rejects_too_small_limits(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml("os_sandbox:\n  exec_timeout_ms: 10\n  max_output_bytes: 100\n"),
+        )
+        with pytest.raises(ConfigValidationError, match="exec_timeout_ms"):
+            Config.load(yaml_path)

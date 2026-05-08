@@ -291,7 +291,9 @@ class IntelligenceElevator:
                 skill_config=getattr(skill, "config", None),
             )
             try:
-                skill.hooks.pre_trigger_eval(hook_ctx)
+                maybe = skill.hooks.pre_trigger_eval(hook_ctx)
+                if asyncio.iscoroutine(maybe):
+                    await maybe
                 ctx.update(hook_ctx.derived)
             except Exception:
                 logger.exception(
@@ -716,7 +718,9 @@ class IntelligenceElevator:
                 pt_ctx.trigger_name = rule_res.rule_name if rule_res.matched else ""
 
                 try:
-                    skill.hooks.post_reasoning(result, pt_ctx)
+                    maybe = skill.hooks.post_reasoning(result, pt_ctx)
+                    if asyncio.iscoroutine(maybe):
+                        await maybe
                 except Exception:
                     logger.exception(
                         "IntelligenceElevator: post_reasoning hook failed for %r",

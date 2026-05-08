@@ -120,6 +120,7 @@ class Config:
     logging: LoggingConfig
     device_policy: dict = field(default_factory=dict)
     health_socket: dict = field(default_factory=dict)
+    os_sandbox: dict = field(default_factory=dict)
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -153,6 +154,7 @@ class Config:
         hal = _parse_hal(data.get("hal"))
         device_policy = _parse_device_policy(data.get("device_policy"))
         health_socket = _parse_health_socket(data.get("health_socket"))
+        os_sandbox = _parse_os_sandbox(data.get("os_sandbox"))
         logging_cfg = _parse_logging(data.get("logging"))
         _validate_coap_sensor_allowlist(sensors, actions.coap)
 
@@ -310,6 +312,7 @@ class Config:
             hal=hal,
             device_policy=device_policy,
             health_socket=health_socket,
+            os_sandbox=os_sandbox,
             logging=logging_cfg,
             raw=data,
         )
@@ -1023,6 +1026,39 @@ def _parse_health_socket(data: Any) -> dict:
         raise ConfigValidationError("health_socket.mode must be between 0 and 0o777.")
     out["mode"] = mode
 
+    return out
+
+
+def _parse_os_sandbox(data: Any) -> dict:
+    """Parse community skill OS sandbox settings."""
+    defaults = {
+        "enabled": True,
+        "require_for_community": False,
+        "exec_timeout_ms": 2000,
+        "max_output_bytes": 65536,
+    }
+    if data is None:
+        return defaults
+    if not isinstance(data, dict):
+        logger.warning(
+            "[config] 'os_sandbox' is not a mapping. Falling back to defaults."
+        )
+        return defaults
+
+    out = dict(defaults)
+    out["enabled"] = bool(data.get("enabled", True))
+    out["require_for_community"] = bool(data.get("require_for_community", False))
+    try:
+        out["exec_timeout_ms"] = int(data.get("exec_timeout_ms", 2000))
+        out["max_output_bytes"] = int(data.get("max_output_bytes", 65536))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "os_sandbox.exec_timeout_ms and os_sandbox.max_output_bytes must be integers."
+        ) from exc
+    if out["exec_timeout_ms"] < 100:
+        raise ConfigValidationError("os_sandbox.exec_timeout_ms must be >= 100.")
+    if out["max_output_bytes"] < 4096:
+        raise ConfigValidationError("os_sandbox.max_output_bytes must be >= 4096.")
     return out
 
 

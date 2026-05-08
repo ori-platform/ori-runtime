@@ -28,6 +28,7 @@ from typing import Any
 import yaml
 
 from ori.network.events import OriEvent
+from ori.skills.os_sandbox import load_community_hooks
 from ori.skills.sandbox import SkillSecurityError
 from ori.skills.signing import verify_community_skill_signature
 
@@ -185,10 +186,14 @@ class SkillLoader:
         elevator: Any = None,
         state_store: Any = None,
         dispatcher: Any = None,
+        os_sandbox_config: dict[str, Any] | None = None,
     ) -> None:
         self._elevator = elevator
         self._state_store = state_store
         self._dispatcher = dispatcher
+        self._os_sandbox_config = (
+            dict(os_sandbox_config) if isinstance(os_sandbox_config, dict) else {}
+        )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -590,15 +595,16 @@ class SkillLoader:
 
     def _load_hooks_sandboxed(self, hooks_path: Path) -> Any:
         # Used for all community skills installed from the Skills Hub.
-        from ori.skills.sandbox import SkillSecurityError, load_hooks_restricted
-
         try:
-            module = load_hooks_restricted(str(hooks_path))
+            module = load_community_hooks(
+                hooks_path=hooks_path,
+                state_store=self._state_store,
+                skill_name=hooks_path.parent.name,
+                os_sandbox_config=self._os_sandbox_config,
+            )
             if module is None:
                 return None
-            logger.info(
-                "SkillLoader: loaded sandboxed hooks for %s", hooks_path.parent.name
-            )
+            logger.info("SkillLoader: loaded hooks for %s", hooks_path.parent.name)
             return module
         except SkillSecurityError as exc:
             logger.error(

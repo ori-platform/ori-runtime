@@ -266,6 +266,12 @@ health_socket:
   path: /run/ori/health.sock                     # local read-only runtime health RPC
   mode: 0o660                                    # unix socket permission bits
 
+os_sandbox:
+  enabled: true
+  require_for_community: false                   # true => reject community hooks if kernel hardening unavailable
+  exec_timeout_ms: 2000
+  max_output_bytes: 65536
+
 actions:
   # For Nigeria: use sms as primary (Africa's Talking — no approval required)
   # For UK/EU:   use whatsapp as primary
