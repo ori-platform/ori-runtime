@@ -157,6 +157,32 @@ class ActionDispatcher:
             return None
         return int(self._policy.policy_version)
 
+    def get_policy_state_snapshot(self) -> dict[str, Any]:
+        """Return current in-memory DevicePolicy state for diagnostics."""
+        if self._policy is None:
+            return {
+                "available": False,
+                "policy_version": None,
+                "tier": None,
+                "relay_b_enabled": None,
+                "relay_c_enabled": None,
+                "cloud_llm_enabled": None,
+                "valid_until": None,
+                "issued_at": None,
+                "is_expired": None,
+            }
+        return {
+            "available": True,
+            "policy_version": int(self._policy.policy_version),
+            "tier": str(self._policy.tier),
+            "relay_b_enabled": bool(self._policy.relay_b_enabled),
+            "relay_c_enabled": bool(self._policy.relay_c_enabled),
+            "cloud_llm_enabled": bool(self._policy.cloud_llm_enabled),
+            "valid_until": int(self._policy.valid_until),
+            "issued_at": int(self._policy.issued_at),
+            "is_expired": bool(self._policy.is_expired()),
+        }
+
     def permits_relay_action(self, action_tier: str) -> bool:
         """Check if a relay action is permitted for the given tier based on DevicePolicy and config."""
         if action_tier == ActionTier.SAFETY_CRITICAL:

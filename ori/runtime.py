@@ -54,6 +54,7 @@ from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
+from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.skills.loader import SkillLoader
 from ori.skills.signing import verify_signed_payload
@@ -77,6 +78,7 @@ DEVICE_POLICY_REFRESH_DEFAULT_S = 21600.0
 DEVICE_POLICY_TRANSIENT_AUDIT_SUPPRESS_MS = 900_000
 STALE_SENSOR_MIN_CHECK_INTERVAL_S = 1.0
 STALE_SENSOR_MAX_CHECK_INTERVAL_S = 30.0
+HEALTH_SOCKET_DEFAULT_PATH = "/run/ori/health.sock"
 
 
 class OriRuntime:
@@ -113,6 +115,15 @@ class OriRuntime:
         self._sensor_poll_interval_ms: dict[str, int] = {}
         self._sensor_last_seen_ms: dict[str, int] = {}
         self._stale_sensor_active: set[str] = set()
+        self._runtime_started_at_ms: int = 0
+        self._configured_sensors: list[Any] = []
+        self._connected_sensor_ids: set[str] = set()
+        self._last_alert_timestamps_by_channel: dict[str, int] = {}
+        self._last_alert_timestamps_by_trigger: dict[str, int] = {}
+        self._health_socket_server: RuntimeHealthSocketServer | None = None
+        self._health_socket_path: str = ""
+        self._device_policy_enabled: bool = False
+        self._device_id: str = ""
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -211,6 +222,11 @@ class OriRuntime:
             config.device.id,
             config.device.location,
             config.device.deployment_type,
+        )
+        self._device_id = str(config.device.id)
+        self._runtime_started_at_ms = now_ms()
+        self._device_policy_enabled = bool(
+            (config.device_policy or {}).get("enabled", False)
         )
 
         status_cfg = (
@@ -568,9 +584,13 @@ class OriRuntime:
             logger.info("[runtime] SIGHUP handler active — send HUP to reload skills")
 
         # ── Start background tasks ────────────────────────────────────────────
+        self._configured_sensors = list(config.sensors)
+        self._connected_sensor_ids = set()
         self._sensor_poll_interval_ms = {}
         self._sensor_last_seen_ms = {}
         self._stale_sensor_active = set()
+        self._last_alert_timestamps_by_channel = {}
+        self._last_alert_timestamps_by_trigger = {}
 
         for sensor_cfg in config.sensors:
             try:
@@ -594,6 +614,7 @@ class OriRuntime:
             try:
                 await adapter.connect(connect_cfg)
                 self._adapters.append(adapter)
+                self._connected_sensor_ids.add(sensor_cfg.id)
                 self._sensor_poll_interval_ms[sensor_cfg.id] = int(
                     sensor_cfg.poll_interval_ms
                 )
@@ -740,6 +761,8 @@ class OriRuntime:
         if webhook_task is not None:
             self._background_tasks.append(webhook_task)
 
+        await self._start_health_socket_if_enabled(config)
+
         if status_indicator is not None:
             status_indicator.set_runtime_state(RuntimeHealthState.NORMAL)
 
@@ -786,6 +809,15 @@ class OriRuntime:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 2b. Stop local health socket service.
+        if self._health_socket_server is not None:
+            try:
+                await self._health_socket_server.close()
+            except Exception:
+                logger.exception("[shutdown] error closing health socket")
+            self._health_socket_server = None
+            self._health_socket_path = ""
 
         # 3. Close HAL adapters
         for adapter in self._adapters:
@@ -849,6 +881,124 @@ class OriRuntime:
             self._sms_webhook_server.serve_until(self._shutdown_event),
             name="sms-webhook",
         )
+
+    async def _start_health_socket_if_enabled(self, config: Config) -> None:
+        cfg = config.health_socket if isinstance(config.health_socket, dict) else {}
+        if not bool(cfg.get("enabled", True)):
+            return
+
+        socket_path = str(cfg.get("path", HEALTH_SOCKET_DEFAULT_PATH)).strip()
+        mode = int(cfg.get("mode", 0o660))
+        if not socket_path:
+            logger.warning("[runtime] health socket path is empty; skipping startup")
+            return
+
+        server = RuntimeHealthSocketServer(
+            socket_path=socket_path,
+            mode=mode,
+            snapshot_provider=self._build_health_snapshot,
+        )
+        try:
+            bound_path = await server.start()
+        except Exception:
+            logger.exception("[runtime] failed to start health socket service")
+            return
+
+        self._health_socket_server = server
+        self._health_socket_path = bound_path
+        logger.info("[runtime] health socket ready at %s", bound_path)
+
+    def _build_health_snapshot(self) -> dict[str, Any]:
+        now = now_ms()
+        uptime_s = (
+            max(0.0, (now - self._runtime_started_at_ms) / 1000.0)
+            if self._runtime_started_at_ms > 0
+            else 0.0
+        )
+
+        posture = (
+            vars(self._capability_posture_tracker.get_snapshot())
+            if self._capability_posture_tracker is not None
+            else None
+        )
+        if posture is None:
+            capability_posture = {
+                "available": False,
+                "sms_available": False,
+                "whatsapp_available": False,
+                "gateway_reachable": False,
+                "local_slm_loaded": False,
+                "relay_connected": False,
+                "internet_available": False,
+                "checked_at_ms": 0,
+                "expires_at_ms": 0,
+                "gateway_last_heartbeat_ms": None,
+            }
+        else:
+            capability_posture = {
+                "available": True,
+                "sms_available": bool(posture["sms_available"]),
+                "whatsapp_available": bool(posture["whatsapp_available"]),
+                "gateway_reachable": bool(posture["gateway_reachable"]),
+                "local_slm_loaded": bool(posture["local_slm_loaded"]),
+                "relay_connected": bool(posture["relay_connected"]),
+                "internet_available": bool(posture["internet_available"]),
+                "checked_at_ms": int(posture["checked_at_ms"]),
+                "expires_at_ms": int(posture["expires_at_ms"]),
+                "gateway_last_heartbeat_ms": posture["gateway_last_heartbeat_ms"],
+            }
+
+        sensors: list[dict[str, Any]] = []
+        for sensor_cfg in self._configured_sensors:
+            sensor_id = str(sensor_cfg.id)
+            poll_ms = int(sensor_cfg.poll_interval_ms)
+            last_seen_ms = self._sensor_last_seen_ms.get(sensor_id)
+            stale = False
+            if last_seen_ms is not None:
+                stale = (now - int(last_seen_ms)) > max(2 * poll_ms, 200)
+            sensors.append(
+                {
+                    "id": sensor_id,
+                    "type": str(sensor_cfg.type),
+                    "protocol": str(sensor_cfg.protocol),
+                    "poll_interval_ms": poll_ms,
+                    "connected": sensor_id in self._connected_sensor_ids,
+                    "last_seen_ms": int(last_seen_ms)
+                    if last_seen_ms is not None
+                    else None,
+                    "stale": bool(stale),
+                }
+            )
+
+        device_policy_state: dict[str, Any]
+        if self._dispatcher is not None:
+            device_policy_state = self._dispatcher.get_policy_state_snapshot()
+        else:
+            device_policy_state = {
+                "available": False,
+                "policy_version": None,
+                "tier": None,
+                "relay_b_enabled": None,
+                "relay_c_enabled": None,
+                "cloud_llm_enabled": None,
+                "valid_until": None,
+                "issued_at": None,
+                "is_expired": None,
+            }
+        device_policy_state["enabled"] = self._device_policy_enabled
+
+        return {
+            "device_id": self._device_id,
+            "uptime_s": uptime_s,
+            "health_socket_path": self._health_socket_path,
+            "capability_posture": capability_posture,
+            "sensors": sensors,
+            "last_alert_timestamps": {
+                "by_channel": dict(self._last_alert_timestamps_by_channel),
+                "by_trigger": dict(self._last_alert_timestamps_by_trigger),
+            },
+            "device_policy": device_policy_state,
+        }
 
     def _unregister_skill_handlers(self) -> None:
         if self._event_bus is None:
@@ -1466,6 +1616,11 @@ class OriRuntime:
         Returns True if delivered immediately or queued successfully.
         Returns False only if queueing also fails.
         """
+        alert_ts = now_ms()
+        self._last_alert_timestamps_by_channel[channel] = alert_ts
+        if trigger_name:
+            self._last_alert_timestamps_by_trigger[trigger_name] = alert_ts
+
         if not recipient:
             logger.warning(
                 "[runtime] %s alert skipped: operator_contact not configured", channel
@@ -1559,6 +1714,7 @@ class OriRuntime:
                     message = str(alert["message"])
                     recipient = str(alert["recipient"])
                     action_tier = str(alert["action_tier"]).upper()
+                    trigger_name = str(alert.get("trigger_name", "") or "")
                     attempt_count = int(alert.get("attempt_count", 0))
                     alert_id = str(alert["alert_id"])
                 except Exception:
@@ -1594,6 +1750,12 @@ class OriRuntime:
                     )
 
                 if delivered:
+                    delivered_ts = now_ms()
+                    self._last_alert_timestamps_by_channel[channel] = delivered_ts
+                    if trigger_name:
+                        self._last_alert_timestamps_by_trigger[trigger_name] = (
+                            delivered_ts
+                        )
                     await self._state_store.mark_alert_delivered(alert_id)
                     logger.info(
                         "[runtime] delivered queued alert id=%s channel=%s after %d attempt(s)",
@@ -1604,6 +1766,10 @@ class OriRuntime:
                     continue
 
                 await self._state_store.mark_alert_attempt_failed(alert_id)
+                failed_ts = now_ms()
+                self._last_alert_timestamps_by_channel[channel] = failed_ts
+                if trigger_name:
+                    self._last_alert_timestamps_by_trigger[trigger_name] = failed_ts
                 attempts_after = attempt_count + 1
                 logger.warning(
                     "[runtime] retry failed for queued alert id=%s channel=%s tier=%s attempt=%d",
