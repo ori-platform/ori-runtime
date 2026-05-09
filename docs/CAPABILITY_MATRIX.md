@@ -8,6 +8,7 @@ This is the authoritative record of what is real versus planned.
 | Intelligence Elevator Tier 1 (rule engine)       | Implemented       | elevator.py                               | Deterministic. Tier D bypass always.                                                                                  |
 | Intelligence Elevator Tier 2 (local SLM)         | Implemented       | elevator.py                               | Qwen2.5-0.5B via llama-cpp-python                                                                                     |
 | Prompt history placeholder interpolation          | Implemented       | reasoning/elevator.py, tests/test_elevator.py | Supports safe `{history.method(...)}` interpolation in prompts (AST-validated, async-resolved), including compact `history.last_n(...)` output for low-token local SLM reasoning. |
+| Skill prompt history placeholder guard            | Implemented       | skills/loader.py, tests/test_skill_loader.py  | Skill load now fails fast when any prompt template exceeds 16 `{history.*}` placeholders; unresolved/unsupported placeholders are emitted at WARNING level for operator visibility. |
 | Intelligence Elevator Tier 3 (gateway)           | Partial — stubbed | elevator.py:125, :250                     | MQTT request/response not wired. Falls back to local_slm.                                                             |
 | Intelligence Elevator Tier 4 (cloud LLM)         | Partial — stubbed | elevator.py:410, :969                     | Returns stub result. No external API call.                                                                            |
 | CoAP actuation executor                          | Implemented       | actions/coap.py, runtime.py:312           | Host allowlist enforced in config.py:409.                                                                             |
@@ -39,3 +40,4 @@ This is the authoritative record of what is real versus planned.
 
 - 2026-05-07: Runtime async offload refactor changed blocking-call wrappers from `run_in_executor` to `asyncio.to_thread` in actions/HAL/reasoning/store paths. Capability statuses unchanged (implementation detail only).
 - 2026-05-08: Added safe history-placeholder prompt interpolation in the elevator and hardened state compaction with configurable DB-backed clock-skew guard (`state.compaction.max_backward_skew_ms`).
+- 2026-05-09: Added load-time guardrails for history placeholder volume in skill prompts and raised unresolved history placeholder observability to WARNING logs.
