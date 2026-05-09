@@ -1040,7 +1040,11 @@ class IntelligenceElevator:
 
         parsed = self._parse_history_expression(expression)
         if parsed is None:
-            logger.debug("Unsupported history placeholder syntax: %s", expression)
+            logger.warning(
+                "Unsupported history placeholder syntax for sensor_id=%s: %s",
+                event.sensor_id,
+                expression,
+            )
             return None
 
         adapter = HookHistoryAdapter(state_store)
@@ -1052,8 +1056,11 @@ class IntelligenceElevator:
                 event,
             )
         except Exception:
-            logger.debug(
-                "Failed to resolve history placeholder %s", expression, exc_info=True
+            logger.warning(
+                "Failed to resolve history placeholder for sensor_id=%s: %s",
+                event.sensor_id,
+                expression,
+                exc_info=True,
             )
             return None
         return self._format_history_placeholder_value(raw)

@@ -439,11 +439,35 @@ class TestReason:
         store = _PromptHistoryStore({"load-current": [1.0, 2.0]})
 
         with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            with caplog.at_level(logging.DEBUG):
+            with caplog.at_level(logging.WARNING):
                 result = await elevator.reason(_event(value=8.2), skill, store)
 
         assert "{history.not_a_method('load-current', 2)}" in result.prompt
         assert "Failed to resolve history placeholder" in caplog.text
+
+    async def test_history_placeholder_malformed_expression_logs_warning(self, caplog):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="ok",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=12,
+            latency_ms=100,
+        )
+        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+        skill.prompts = {
+            "anomalous_draw": "Broken: {history.last_n(sensor_id='load-current', n=2)}"
+        }
+        store = _PromptHistoryStore({"load-current": [10.0, 14.0]})
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            with caplog.at_level(logging.WARNING):
+                result = await elevator.reason(_event(value=8.2), skill, store)
+
+        assert "{history.last_n(sensor_id='load-current', n=2)}" in result.prompt
+        assert "Unsupported history placeholder syntax" in caplog.text
 
     async def test_history_placeholder_avg_hours_is_substituted(self):
         mock_llm = AsyncMock()
