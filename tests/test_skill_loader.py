@@ -390,6 +390,67 @@ class TestLoadOne:
 
 
 class TestValidation:
+    def test_history_placeholders_above_limit_raise(self, tmp_path):
+        placeholders = " ".join(
+            [f"{{history.last_n('load-current', {i})}}" for i in range(1, 18)]
+        )
+        yaml_content = f"""\
+            name: too-many-history-placeholders
+            version: 0.1.0
+            author: test
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: A
+            prompts:
+              over_threshold: "{placeholders}"
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [alert_whatsapp]
+        """
+        skill_dir = tmp_path / "too-many-history-placeholders"
+        _write_skill_yaml(skill_dir, yaml_content)
+        loader = SkillLoader()
+        with pytest.raises(
+            SkillValidationError,
+            match="contains 17 history placeholders; maximum allowed is 16",
+        ):
+            loader.load_one(skill_dir)
+
+    def test_history_placeholders_at_limit_loads(self, tmp_path):
+        placeholders = " ".join(
+            [f"{{history.last_n('load-current', {i})}}" for i in range(1, 17)]
+        )
+        yaml_content = f"""\
+            name: max-history-placeholders
+            version: 0.1.0
+            author: test
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: A
+            prompts:
+              over_threshold: "{placeholders}"
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [alert_whatsapp]
+        """
+        skill_dir = tmp_path / "max-history-placeholders"
+        _write_skill_yaml(skill_dir, yaml_content)
+        loader = SkillLoader()
+        skill = loader.load_one(skill_dir)
+        assert skill.name == "max-history-placeholders"
+
     def test_missing_action_tier_raises(self, tmp_path):
         yaml_content = """\
             name: bad-skill

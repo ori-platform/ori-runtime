@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 _VALID_TIERS = frozenset({"A", "B", "C", "D"})
 _TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
+_MAX_HISTORY_PLACEHOLDERS = 16
 _HUB_ROOT_PUBLIC_KEY_B64 = "PENDING_REPLACE_AT_HUB_LAUNCH"
 
 
@@ -287,6 +289,12 @@ class SkillLoader:
             raw.get("name", "<unknown>"),
             trigger_names=[t.name for t in triggers],
         )
+        prompts = raw.get("prompts") or {}
+        self._validate_history_placeholder_count(
+            prompts=prompts,
+            skill_name=raw.get("name", "<unknown>"),
+            trigger_names=[t.name for t in triggers],
+        )
         self._verify_community_signature(raw, skill_dir)
         hooks = self._load_hooks(skill_dir)
 
@@ -296,7 +304,7 @@ class SkillLoader:
             author=raw.get("author", ""),
             sensors_required=raw.get("sensors_required") or [],
             triggers=triggers,
-            prompts=raw.get("prompts") or {},
+            prompts=prompts,
             actions=raw.get("actions") or {},
             config=raw.get("config") or {},
             hooks=hooks,
@@ -548,6 +556,33 @@ class SkillLoader:
                 )
             )
         return triggers
+
+    def _validate_history_placeholder_count(
+        self,
+        *,
+        prompts: Any,
+        skill_name: str,
+        trigger_names: list[str],
+    ) -> None:
+        """Fail fast when prompt templates exceed history placeholder cap."""
+        if not isinstance(prompts, dict):
+            return
+        trigger_name_set = set(trigger_names)
+        for prompt_key, template in prompts.items():
+            if not isinstance(template, str):
+                continue
+            count = len(_HISTORY_PLACEHOLDER_PATTERN.findall(template))
+            if count <= _MAX_HISTORY_PLACEHOLDERS:
+                continue
+            scope = (
+                "trigger"
+                if isinstance(prompt_key, str) and prompt_key in trigger_name_set
+                else "prompt key"
+            )
+            raise SkillValidationError(
+                f"Skill {skill_name!r}: {scope} {prompt_key!r} contains {count} "
+                f"history placeholders; maximum allowed is {_MAX_HISTORY_PLACEHOLDERS}."
+            )
 
     def _load_hooks(self, skill_dir: Path) -> Any:
         hooks_path = skill_dir / "hooks.py"
