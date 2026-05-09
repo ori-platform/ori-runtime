@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
 _MAX_HISTORY_PLACEHOLDERS = 16
+_UNRESOLVED_HISTORY_PLACEHOLDER_SENTINEL = "null"
 
 
 # ── Minimal shared types ──────────────────────────────────────────────────────
@@ -998,16 +999,24 @@ class IntelligenceElevator:
         matches = list(_HISTORY_PLACEHOLDER_PATTERN.finditer(prompt_text))
         if not matches:
             return prompt_text
+        unique_tokens = list(dict.fromkeys(match.group(0) for match in matches))
         if state_store is None:
-            logger.debug(
-                "Prompt template contains history placeholder but no state_store is available."
+            logger.warning(
+                "Prompt template contains history placeholders but no state_store is available for sensor_id=%s. "
+                "Using sentinel value %r.",
+                event.sensor_id,
+                _UNRESOLVED_HISTORY_PLACEHOLDER_SENTINEL,
             )
+            for token in unique_tokens:
+                prompt_text = prompt_text.replace(
+                    token, _UNRESOLVED_HISTORY_PLACEHOLDER_SENTINEL
+                )
             return prompt_text
 
         replacements: dict[str, str] = {}
-        for match in matches[:_MAX_HISTORY_PLACEHOLDERS]:
-            token = match.group(0)
-            if token in replacements:
+        for index, token in enumerate(unique_tokens):
+            if index >= _MAX_HISTORY_PLACEHOLDERS:
+                replacements[token] = _UNRESOLVED_HISTORY_PLACEHOLDER_SENTINEL
                 continue
             expr = token[1:-1]
             replacement = await self._resolve_history_expression(
@@ -1015,14 +1024,20 @@ class IntelligenceElevator:
                 event=event,
                 state_store=state_store,
             )
-            if replacement is not None:
-                replacements[token] = replacement
+            replacements[token] = (
+                replacement
+                if replacement is not None
+                else _UNRESOLVED_HISTORY_PLACEHOLDER_SENTINEL
+            )
 
-        if len(matches) > _MAX_HISTORY_PLACEHOLDERS:
-            logger.debug(
-                "Prompt template contained %d history placeholders; only first %d were processed.",
-                len(matches),
+        if len(unique_tokens) > _MAX_HISTORY_PLACEHOLDERS:
+            logger.warning(
+                "Prompt template contained %d unique history placeholders; max is %d. "
+                "Remaining placeholders were replaced with sentinel value %r for sensor_id=%s.",
+                len(unique_tokens),
                 _MAX_HISTORY_PLACEHOLDERS,
+                _UNRESOLVED_HISTORY_PLACEHOLDER_SENTINEL,
+                event.sensor_id,
             )
 
         for token, replacement in replacements.items():
