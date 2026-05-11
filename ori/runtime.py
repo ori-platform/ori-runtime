@@ -871,7 +871,7 @@ class OriRuntime:
             )
             return None
 
-        host = str(webhook_cfg.get("host", "0.0.0.0"))
+        host = str(webhook_cfg.get("host", "127.0.0.1"))
         port = int(webhook_cfg.get("port", 8080))
         path = str(webhook_cfg.get("path", "/webhooks/sms/africastalking"))
 
