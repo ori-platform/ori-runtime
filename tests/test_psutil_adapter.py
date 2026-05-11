@@ -501,7 +501,11 @@ class TestBatteryDrainRate:
             state_store=store,
             extra_config={"battery_source_sensor_id": "battery-main"},
         )
-        _ = await adapter.read("battery_drain_rate")
+        with patch(
+            "psutil.sensors_battery",
+            return_value=SimpleNamespace(percent=80.0, power_plugged=False),
+        ):
+            _ = await adapter.read("battery_drain_rate")
         store.get_history.assert_awaited_once_with("battery-main", limit=2)
 
     async def test_elapsed_too_short_returns_zero_quality(self):
