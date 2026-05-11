@@ -1167,6 +1167,8 @@ class StateStore:
     # ─── causal_memory ────────────────────────────────────────────────────────
 
     async def lookup_causal_memory(self, pattern_key: str) -> Optional[str]:
+        # Intentional write-path lock: lookup also updates hit_count/last_seen
+        # in the same transaction for causal-memory ranking.
         return await self._run_write(self._lookup_causal_sync, pattern_key)
 
     def _lookup_causal_sync(self, pattern_key: str) -> Optional[str]:

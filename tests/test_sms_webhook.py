@@ -36,6 +36,11 @@ async def test_authorized_accepts_header_and_bearer():
     assert server._authorized({"x-ori-webhook-token": "wrong"}) is False
 
 
+def test_default_host_is_loopback():
+    server = SMSWebhookServer(sms_action=AsyncMock(), token="secret-token")
+    assert server._host == "127.0.0.1"
+
+
 @pytest.mark.asyncio
 async def test_decode_payload_form_and_json():
     server = SMSWebhookServer(sms_action=AsyncMock(), token="secret-token")
@@ -75,6 +80,25 @@ async def test_read_request_parses_http_message():
     assert request.path == "/webhooks/sms/africastalking"
     assert request.headers["content-type"] == "application/json"
     assert request.body == body
+
+
+@pytest.mark.asyncio
+async def test_read_request_rejects_oversized_body():
+    server = SMSWebhookServer(sms_action=AsyncMock(), token="secret-token")
+    reader = asyncio.StreamReader()
+    content_length = 70 * 1024
+    raw = (
+        b"POST /webhooks/sms/africastalking HTTP/1.1\r\n"
+        b"Host: localhost\r\n"
+        b"Content-Type: application/json\r\n"
+        + f"Content-Length: {content_length}\r\n".encode("utf-8")
+        + b"\r\n"
+    )
+    reader.feed_data(raw)
+    reader.feed_eof()
+
+    request = await server._read_request(reader)
+    assert request is None
 
 
 @pytest.mark.asyncio

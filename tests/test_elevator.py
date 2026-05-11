@@ -755,12 +755,16 @@ class TestReasonAndDispatch:
         call = mock_dispatcher.dispatch.call_args
         assert call[1]["tier"] == "A"
 
-    async def test_exception_in_reason_is_caught(self):
-        """A crash inside reason() must not propagate from reason_and_dispatch."""
+    async def test_exception_in_reason_pipeline_is_caught(self):
+        """A crash inside reasoning pipeline must not propagate from reason_and_dispatch."""
         mock_dispatcher = AsyncMock()
         elevator = IntelligenceElevator()
 
-        with patch.object(elevator, "reason", side_effect=RuntimeError("boom")):
+        with patch.object(
+            elevator,
+            "_reason_with_rule_result",
+            side_effect=RuntimeError("boom"),
+        ):
             # Must not raise
             await elevator.reason_and_dispatch(
                 _event(), FakeSkill(), None, mock_dispatcher
@@ -911,7 +915,9 @@ class TestReasonAndDispatch:
         skill.actions = {"available": [{"name": "alert_sms", "tier": "A"}]}
 
         with patch.object(
-            elevator, "reason", side_effect=RuleEngineSafetyError("NaN in reading")
+            elevator,
+            "_reason_with_rule_result",
+            side_effect=RuleEngineSafetyError("NaN in reading"),
         ):
             await elevator.reason_and_dispatch(_event(), skill, None, mock_dispatcher)
 

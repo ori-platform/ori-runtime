@@ -196,11 +196,35 @@ class IntelligenceElevator:
             :class:`~ori.network.events.ReasoningResult` from whichever tier
             handled the request.
         """
-        tier = await self.select_tier(event, skill, state_store)
-
-        rule_result, _ = await self._evaluate_rules_with_hooks(
-            event, skill, state_store
+        result, _ = await self._reason_with_rule_result(
+            event=event,
+            skill=skill,
+            state_store=state_store,
+            precomputed_rule_result=None,
         )
+        return result
+
+    async def _reason_with_rule_result(
+        self,
+        event: OriEvent,
+        skill: Any,
+        state_store: Any,
+        precomputed_rule_result: Any = None,
+    ) -> tuple[ReasoningResult, Any]:
+        """Run reasoning and return both the model result and evaluated rule result."""
+        rule_result = precomputed_rule_result
+        if rule_result is None:
+            rule_result, _ = await self._evaluate_rules_with_hooks(
+                event, skill, state_store
+            )
+
+        tier = await self._select_tier_from_rule_result(
+            event=event,
+            skill=skill,
+            state_store=state_store,
+            rule_result=rule_result,
+        )
+
         rejection_record = await self._lookup_rejection_record(
             event=event,
             skill=skill,
@@ -227,15 +251,18 @@ class IntelligenceElevator:
                 event.context["__rejection_cap_tier_a"] = True
 
         if tier == "rule":
-            return ReasoningResult(
-                text=f"Rule matched: {rule_result.rule_name}",
-                tier="rule",
-                model="rule_engine",
-                tokens_used=0,
-                latency_ms=0,
-                confidence=rule_result.confidence,
-                action_tier=rule_result.action_tier,
-                proposed_action=rule_result.action,
+            return (
+                ReasoningResult(
+                    text=f"Rule matched: {rule_result.rule_name}",
+                    tier="rule",
+                    model="rule_engine",
+                    tokens_used=0,
+                    latency_ms=0,
+                    confidence=rule_result.confidence,
+                    action_tier=rule_result.action_tier,
+                    proposed_action=rule_result.action,
+                ),
+                rule_result,
             )
 
         if tier in ("local_slm",) and self._local_llm is not None:
@@ -258,7 +285,7 @@ class IntelligenceElevator:
                 if rejection_record is not None:
                     result.action_tier = "A"
                 result.proposed_action = result.proposed_action or rule_result.action
-                return result
+                return result, rule_result
             except Exception:
                 logger.exception(
                     "IntelligenceElevator: local_slm inference failed for "
@@ -273,7 +300,7 @@ class IntelligenceElevator:
             stub.proposed_action = rule_result.action
         if rejection_record is not None:
             stub.action_tier = "A"
-        return stub
+        return stub, rule_result
 
     async def _is_offline_async(self) -> bool:
         """Run connectivity probe in a worker thread to avoid blocking the loop."""
@@ -336,6 +363,24 @@ class IntelligenceElevator:
            internet available → ``'cloud'`` (future)
            fallback → ``'local_slm'``
         """
+        rule_result, _ = await self._evaluate_rules_with_hooks(
+            event, skill, state_store
+        )
+        return await self._select_tier_from_rule_result(
+            event=event,
+            skill=skill,
+            state_store=state_store,
+            rule_result=rule_result,
+        )
+
+    async def _select_tier_from_rule_result(
+        self,
+        event: OriEvent,
+        skill: Any,
+        state_store: Any,
+        rule_result: Any,
+    ) -> str:
+        """Select reasoning tier using a pre-evaluated rule result."""
         # Energy-aware throttle: cap to rule-only under low battery to preserve
         # power for safety actions. Tier D remains guaranteed by rule execution
         # in the reasoning path.
@@ -360,10 +405,6 @@ class IntelligenceElevator:
                     self._last_power_mode = "low"
                     return "rule"
                 self._last_power_mode = "normal"
-
-        rule_result, _ = await self._evaluate_rules_with_hooks(
-            event, skill, state_store
-        )
 
         # Tier D is always handled by the rule engine — return immediately
         if rule_result.matched and rule_result.action_tier == "D":
@@ -685,12 +726,11 @@ class IntelligenceElevator:
                 if pre_rule_result.rule_name != handler_trigger_name:
                     return
 
-            result = await self.reason(event, skill, state_store)
-
-            rule_res, _ = (
-                (pre_rule_result, None)
-                if pre_rule_result is not None
-                else await self._evaluate_rules_with_hooks(event, skill, state_store)
+            result, rule_res = await self._reason_with_rule_result(
+                event=event,
+                skill=skill,
+                state_store=state_store,
+                precomputed_rule_result=pre_rule_result,
             )
 
             # Clamp any model-produced tier to the matched trigger's declared tier.

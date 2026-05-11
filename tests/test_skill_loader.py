@@ -377,6 +377,69 @@ class TestLoadOne:
             ):
                 loader.load_one(skill_dir)
 
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_loads_signed_community_skill_with_env_trust_anchor(
+        self, tmp_path, monkeypatch
+    ):
+        skill_dir = tmp_path / "community-valid-env-anchor"
+        raw = _community_skill_mapping()
+        private_key = Ed25519PrivateKey.generate()
+        public_key_b64 = base64.b64encode(
+            private_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        raw["signature"] = _sign_skill(raw, private_key)
+        _write_skill_yaml_mapping(skill_dir, raw)
+
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            "PENDING_REPLACE_AT_HUB_LAUNCH",
+        )
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", public_key_b64)
+
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            skill = loader.load_one(skill_dir)
+        assert skill.name == raw["name"]
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_constructor_trust_anchor_overrides_env(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "community-valid-ctor-anchor"
+        raw = _community_skill_mapping()
+        signing_key = Ed25519PrivateKey.generate()
+        signing_public_key_b64 = base64.b64encode(
+            signing_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        raw["signature"] = _sign_skill(raw, signing_key)
+        _write_skill_yaml_mapping(skill_dir, raw)
+
+        wrong_key = Ed25519PrivateKey.generate()
+        wrong_public_key_b64 = base64.b64encode(
+            wrong_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", wrong_public_key_b64)
+
+        loader = SkillLoader(
+            community_trust_anchor_public_key_b64=signing_public_key_b64
+        )
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            skill = loader.load_one(skill_dir)
+        assert skill.name == raw["name"]
+
     def test_bundled_unsigned_skill_still_loads(self, tmp_path):
         skill_dir = tmp_path / "bundled-unsigned"
         _write_skill_yaml(skill_dir, _minimal_yaml(name="bundled-unsigned"))

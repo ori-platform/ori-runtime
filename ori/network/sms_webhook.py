@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 logger = logging.getLogger(__name__)
 
 _MAX_HEADER_BYTES = 64 * 1024
+_MAX_BODY_BYTES = 64 * 1024
 _CHUNK_BYTES = 4096
 
 
@@ -30,7 +31,7 @@ class SMSWebhookServer:
     def __init__(
         self,
         sms_action: Any,
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int = 8080,
         path: str = "/webhooks/sms/africastalking",
         token: str = "",
@@ -140,11 +141,17 @@ class SMSWebhookServer:
         content_length = int(headers.get("content-length", "0") or "0")
         if content_length < 0:
             return None
+        if content_length > _MAX_BODY_BYTES:
+            return None
+        if len(body) > _MAX_BODY_BYTES:
+            return None
         while len(body) < content_length:
             chunk = await reader.read(content_length - len(body))
             if not chunk:
                 return None
             body += chunk
+            if len(body) > _MAX_BODY_BYTES:
+                return None
 
         return _HttpRequest(method=method, path=path, headers=headers, body=body)
 

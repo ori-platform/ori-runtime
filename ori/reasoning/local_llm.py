@@ -56,6 +56,7 @@ class LocalLLM:
         self._model_path = model_path
         self._context_window = context_window
         self._llm: object | None = None  # Llama instance, populated on first call
+        self._load_lock = asyncio.Lock()
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -129,15 +130,16 @@ class LocalLLM:
 
     async def _ensure_loaded(self) -> None:
         """Load the model in a thread-pool executor if not already loaded."""
-        if self._llm is not None:
-            return
-        logger.info(
-            "LocalLLM: loading model '%s' (n_ctx=%d) …",
-            self._model_path,
-            self._context_window,
-        )
-        self._llm = await asyncio.to_thread(self._load_model)
-        logger.info("LocalLLM: model loaded")
+        async with self._load_lock:
+            if self._llm is not None:
+                return
+            logger.info(
+                "LocalLLM: loading model '%s' (n_ctx=%d) …",
+                self._model_path,
+                self._context_window,
+            )
+            self._llm = await asyncio.to_thread(self._load_model)
+            logger.info("LocalLLM: model loaded")
 
     def _load_model(self) -> object:
         return Llama(
