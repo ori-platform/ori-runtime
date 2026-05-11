@@ -2,11 +2,12 @@
 
 ## Versioned Notes
 
+- [`v0.9.0-beta.2`](v0.9.0-beta.2.md) — v1-readiness hardening and transport/config safeguards
 - [`v0.9.0-beta.1`](v0.9.0-beta.1.md) — first beta cut
 
 ## Version
 
-`v0.9.0-beta.1` (or current `0.9.x` beta tag)
+`v0.9.0-beta.2` (or current `0.9.x` beta tag)
 
 ## Beta Scope
 
