@@ -96,12 +96,30 @@ class TestProcessDeduplication:
             is not None
         )
 
-    def test_different_sensor_types_are_independent(self):  # noqa
+    def test_different_sensor_types_are_independent_explicit(self):
         dedup = EventDeduplicator()
         r1 = _reading(sensor_type="current_clamp", value=5.0)
         r2 = _reading(sensor_type="voltage", value=5.0)
         dedup.process(_event(r1))
         assert dedup.process(_event(r2)) is not None
+
+    def test_window_restarts_after_expiry(self):
+        """After expiry, forwarded event must restart dedup window from new time."""
+        dedup = EventDeduplicator()
+        r = _reading(value=5.0)
+        start = _ms()
+        with patch("ori.network.deduplicator.now_ms", return_value=start):
+            assert dedup.process(_event(r)) is not None
+
+        # First event after expiry passes through and starts a new window.
+        after_expiry = start + 5_001
+        with patch("ori.network.deduplicator.now_ms", return_value=after_expiry):
+            assert dedup.process(_event(r)) is not None
+
+        # A millisecond later should be suppressed by the restarted window.
+        just_after = after_expiry + 1
+        with patch("ori.network.deduplicator.now_ms", return_value=just_after):
+            assert dedup.process(_event(r)) is None
 
     def test_different_devices_are_independent(self):
         dedup = EventDeduplicator()

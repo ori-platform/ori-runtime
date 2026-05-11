@@ -66,7 +66,9 @@ class EventDeduplicator:
 
         # New or expired — forward and (re)register
         self._records[fp] = OccurrenceRecord(
-            first_seen=record.first_seen if record is not None else now,
+            # Always restart the dedup window from "now" once the event is
+            # forwarded (new fingerprint or previous window expired).
+            first_seen=now,
             last_seen=now,
             count=record.count + 1 if record is not None else 1,
             event=event,
