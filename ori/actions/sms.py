@@ -28,6 +28,7 @@ import os
 import time
 from typing import Any
 
+from ori.bool_utils import is_truthy
 from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -108,7 +109,7 @@ class SMSAction:
         self._ip_ready = bool(self._api_key)
 
         gsm_cfg = sms_cfg.get("gsm") if isinstance(sms_cfg.get("gsm"), dict) else {}
-        self._gsm_enabled = _is_truthy(gsm_cfg.get("enabled", False))
+        self._gsm_enabled = is_truthy(gsm_cfg.get("enabled", False))
         self._gsm_port = str(gsm_cfg.get("port", "")).strip()
         self._gsm_baud = int(gsm_cfg.get("baud", self._DEFAULT_GSM_BAUD))
         self._gsm_sim_pin = str(gsm_cfg.get("sim_pin", "")).strip()
@@ -482,11 +483,3 @@ class SMSAction:
 def _normalize_phone(value: str) -> str:
     """Normalize a phone number for stable matching."""
     return "".join(ch for ch in value if ch.isdigit() or ch == "+")
-
-
-def _is_truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() == "true"
-    return bool(value)

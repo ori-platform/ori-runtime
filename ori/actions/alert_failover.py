@@ -84,6 +84,19 @@ class AlertFailoverSender:
             if sender is not None and self._channel_available(channel)
         ]
 
+    @staticmethod
+    def _normalize_for_channel(channel: str, contact: str) -> str:
+        raw = str(contact or "").strip()
+        if channel == "whatsapp":
+            if raw.lower().startswith("whatsapp:"):
+                return raw
+            # Twilio expects whatsapp:+<E.164>; preserve leading '+' when present.
+            normalized = raw if raw.startswith("+") else f"+{raw}"
+            return f"whatsapp:{normalized}"
+        if channel == "sms" and raw.lower().startswith("whatsapp:"):
+            return raw.split(":", 1)[1].strip()
+        return raw
+
     async def send(
         self,
         message: str,
@@ -93,8 +106,9 @@ class AlertFailoverSender:
     ) -> bool:
         """Send via primary transport; fall back to secondary on failure."""
         for channel_name, sender in self._ordered_senders(preferred_channel):
+            channel_contact = self._normalize_for_channel(channel_name, to_number)
             try:
-                ok = await sender.send(message=message, to_number=to_number)
+                ok = await sender.send(message=message, to_number=channel_contact)
             except Exception:
                 logger.exception(
                     "AlertFailoverSender: send failed on channel=%s",
@@ -125,12 +139,13 @@ class AlertFailoverSender:
         deadline = time.monotonic() + max(1, int(timeout_seconds))
         pending: set[asyncio.Task[str | None]] = set()
         for channel_name, listener in listeners:
+            channel_contact = self._normalize_for_channel(channel_name, from_number)
             pending.add(
                 asyncio.create_task(
                     self._listen_safe(
                         channel_name=channel_name,
                         listener=listener,
-                        from_number=from_number,
+                        from_number=channel_contact,
                         timeout_seconds=timeout_seconds,
                     ),
                     name=f"approval-listen:{channel_name}",

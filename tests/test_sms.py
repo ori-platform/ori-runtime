@@ -83,6 +83,20 @@ async def test_listen_returns_none_without_api_key(monkeypatch):
     assert result is None
 
 
+@pytest.mark.parametrize("enabled_value", ["true", "1", "yes", "on", True])
+def test_gsm_enabled_accepts_common_truthy_values(enabled_value):
+    action = SMSAction(
+        config={
+            "transport": "gsm",
+            "gsm": {
+                "enabled": enabled_value,
+                "port": "/dev/ttyUSB0",
+            },
+        }
+    )
+    assert action._gsm_enabled is True
+
+
 # ── Successful send ───────────────────────────────────────────────────────────
 
 

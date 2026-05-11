@@ -6,6 +6,9 @@
 All tests use a fake in-process provider — no Twilio credentials required.
 """
 
+import sys
+import types
+
 import pytest
 
 from ori.actions.whatsapp import (
@@ -118,13 +121,14 @@ async def test_send_never_raises_even_on_exception():
 async def test_send_approval_request_returns_formatted_string():
     provider = _OKProvider()
     action = WhatsAppAction(provider=provider)
-    msg = await action.send_approval_request(
+    msg, delivered = await action.send_approval_request(
         result=_result("AC draws 40% above baseline."),
         action="trip_main_breaker",
         timeout_seconds=300,
         to_number="whatsapp:+234111",
         device_id="energy-monitor-ikeja-01",
     )
+    assert delivered is True
     assert "energy-monitor-ikeja-01" in msg
     assert "AC draws 40% above baseline." in msg
     assert "trip_main_breaker" in msg
@@ -136,12 +140,13 @@ async def test_send_approval_request_returns_formatted_string():
 async def test_send_approval_request_sends_via_provider():
     provider = _OKProvider()
     action = WhatsAppAction(provider=provider)
-    await action.send_approval_request(
+    _, delivered = await action.send_approval_request(
         result=_result(),
         action="trip_main_breaker",
         timeout_seconds=300,
         to_number="whatsapp:+234111",
     )
+    assert delivered is True
     assert len(provider.sent) == 1
     to, body = provider.sent[0]
     assert to == "whatsapp:+234111"
@@ -154,15 +159,29 @@ async def test_send_approval_request_contains_all_template_fields():
     """Every placeholder in the canonical template must be filled."""
     provider = _OKProvider()
     action = WhatsAppAction(provider=provider)
-    msg = await action.send_approval_request(
+    msg, delivered = await action.send_approval_request(
         result=_result("High temperature."),
         action="shutdown_heater",
         timeout_seconds=120,
         to_number="whatsapp:+1",
         device_id="device-x",
     )
+    assert delivered is True
     # No un-expanded {placeholder} should remain
     assert "{" not in msg and "}" not in msg
+
+
+@pytest.mark.asyncio
+async def test_send_approval_request_returns_false_when_provider_fails():
+    action = WhatsAppAction(provider=_FailProvider())
+    _msg, delivered = await action.send_approval_request(
+        result=_result("High temperature."),
+        action="shutdown_heater",
+        timeout_seconds=120,
+        to_number="whatsapp:+1",
+        device_id="device-x",
+    )
+    assert delivered is False
 
 
 # ── WhatsAppAction.listen_for_response ────────────────────────────────────────
@@ -247,6 +266,64 @@ async def test_twilio_provider_get_incoming_returns_empty_without_credentials(
     provider = TwilioProvider()
     msgs = await provider.get_incoming("whatsapp:+1", since_ms=0)
     assert msgs == []
+
+
+@pytest.mark.asyncio
+async def test_twilio_provider_disables_on_invalid_from_prefix(monkeypatch):
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "sid")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
+    monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "+14155238886")
+    provider = TwilioProvider()
+    assert await provider.send("whatsapp:+1", "hello") is False
+
+
+@pytest.mark.asyncio
+async def test_twilio_provider_rate_limit_backoff_skips_immediate_repoll(monkeypatch):
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "sid")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
+    monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+    monkeypatch.setenv("TWILIO_INCOMING_MIN_POLL_INTERVAL_S", "1")
+    monkeypatch.setenv("TWILIO_RATE_LIMIT_COOLDOWN_S", "30")
+
+    # Stub twilio.rest.Client import path.
+    twilio_mod = types.ModuleType("twilio")
+    twilio_rest_mod = types.ModuleType("twilio.rest")
+
+    class _FakeClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        class messages:  # noqa: N801
+            @staticmethod
+            def list(**_kwargs):
+                return []
+
+    twilio_rest_mod.Client = _FakeClient
+    monkeypatch.setitem(sys.modules, "twilio", twilio_mod)
+    monkeypatch.setitem(sys.modules, "twilio.rest", twilio_rest_mod)
+
+    class _RateLimitError(Exception):
+        status = 429
+        code = 20429
+
+    async def _raise_rate_limit(*_args, **_kwargs):
+        raise _RateLimitError()
+
+    provider = TwilioProvider()
+    monkeypatch.setattr("ori.actions.whatsapp.asyncio.to_thread", _raise_rate_limit)
+    first = await provider.get_incoming("whatsapp:+234111", since_ms=0)
+    assert first == []
+
+    called = {"count": 0}
+
+    async def _count_calls(*_args, **_kwargs):
+        called["count"] += 1
+        return []
+
+    monkeypatch.setattr("ori.actions.whatsapp.asyncio.to_thread", _count_calls)
+    second = await provider.get_incoming("whatsapp:+234111", since_ms=0)
+    assert second == []
+    assert called["count"] == 0
 
 
 # ── Provider swappability ─────────────────────────────────────────────────────

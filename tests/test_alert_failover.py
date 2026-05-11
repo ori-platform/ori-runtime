@@ -62,6 +62,25 @@ class TestAlertFailoverSender:
         sms.send.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_send_normalizes_contact_per_channel(self):
+        sms = AsyncMock()
+        sms.send = AsyncMock(return_value=False)
+        whatsapp = AsyncMock()
+        whatsapp.send = AsyncMock(return_value=True)
+
+        sender = AlertFailoverSender(
+            primary_channel="sms",
+            sms_sender=sms,
+            whatsapp_sender=whatsapp,
+        )
+        ok = await sender.send("hello", "+2340000000")
+        assert ok is True
+        whatsapp.send.assert_awaited_once_with(
+            message="hello",
+            to_number="whatsapp:+2340000000",
+        )
+
+    @pytest.mark.asyncio
     async def test_send_skips_whatsapp_when_internet_unavailable(self):
         sms = AsyncMock()
         sms.send = AsyncMock(return_value=True)

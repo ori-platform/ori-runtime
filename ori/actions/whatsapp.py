@@ -21,9 +21,9 @@ Usage
 
     ok = await action.send("Hello", to_number="whatsapp:+234XXXXXXXXXX")
 
-    msg = await action.send_approval_request(result, "trip_main_breaker",
-                                             timeout_seconds=300,
-                                             to_number="whatsapp:+234XXXXXXXXXX")
+    msg, delivered = await action.send_approval_request(result, "trip_main_breaker",
+                                                        timeout_seconds=300,
+                                                        to_number="whatsapp:+234XXXXXXXXXX")
 
     reply = await action.listen_for_response("whatsapp:+234XXXXXXXXXX",
                                              timeout_seconds=300)
@@ -99,7 +99,24 @@ class TwilioProvider:
         self._sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
         self._token = os.environ.get("TWILIO_AUTH_TOKEN", "")
         self._from = os.environ.get("TWILIO_WHATSAPP_FROM", "")
+        self._request_timeout_s = max(
+            1.0, float(os.environ.get("TWILIO_REQUEST_TIMEOUT_S", "5.0"))
+        )
+        self._min_incoming_poll_interval_s = max(
+            1.0, float(os.environ.get("TWILIO_INCOMING_MIN_POLL_INTERVAL_S", "5.0"))
+        )
+        self._rate_limit_cooldown_s = max(
+            5.0, float(os.environ.get("TWILIO_RATE_LIMIT_COOLDOWN_S", "30.0"))
+        )
+        self._last_incoming_poll_monotonic = 0.0
+        self._next_incoming_poll_monotonic = 0.0
         self._ready = bool(self._sid and self._token and self._from)
+        if self._ready and not self._from.lower().startswith("whatsapp:+"):
+            logger.error(
+                "TwilioProvider: TWILIO_WHATSAPP_FROM must start with 'whatsapp:+'; got %r",
+                self._from,
+            )
+            self._ready = False
         if not self._ready:
             logger.warning(
                 "TwilioProvider: TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / "
@@ -116,6 +133,12 @@ class TwilioProvider:
                 "TwilioProvider.send: skipped (credentials not configured). to=%r", to
             )
             return False
+        if not str(to).lower().startswith("whatsapp:+"):
+            logger.error(
+                "TwilioProvider.send: destination must start with 'whatsapp:+'; got %r",
+                to,
+            )
+            return False
 
         try:
             from twilio.rest import Client  # type: ignore[import-untyped]
@@ -123,11 +146,14 @@ class TwilioProvider:
             client = Client(self._sid, self._token)
             # Twilio's Python SDK is synchronous — run in executor to avoid
             # blocking the event loop.
-            await asyncio.to_thread(
-                client.messages.create,
-                body=message,
-                from_=self._from,
-                to=to,
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.messages.create,
+                    body=message,
+                    from_=self._from,
+                    to=to,
+                ),
+                timeout=self._request_timeout_s,
             )
             logger.info("TwilioProvider.send: message delivered to %r", to)
             return True
@@ -142,6 +168,22 @@ class TwilioProvider:
         """
         if not self._ready:
             return []
+        if not str(from_number).lower().startswith("whatsapp:+"):
+            logger.error(
+                "TwilioProvider.get_incoming: source number must start with 'whatsapp:+'; got %r",
+                from_number,
+            )
+            return []
+
+        now_mono = time.monotonic()
+        if now_mono < self._next_incoming_poll_monotonic:
+            return []
+        if (
+            now_mono - self._last_incoming_poll_monotonic
+            < self._min_incoming_poll_interval_s
+        ):
+            return []
+        self._last_incoming_poll_monotonic = now_mono
 
         try:
             import datetime
@@ -153,14 +195,27 @@ class TwilioProvider:
                 since_ms / 1000.0, tz=datetime.timezone.utc
             )
             client = Client(self._sid, self._token)
-            messages = await asyncio.to_thread(
-                client.messages.list,
-                from_=from_number,
-                to=self._from,
-                date_sent_after=since_dt,
+            messages = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.messages.list,
+                    from_=from_number,
+                    to=self._from,
+                    date_sent_after=since_dt,
+                ),
+                timeout=self._request_timeout_s,
             )
             return [m.body for m in messages]
-        except Exception:
+        except Exception as exc:
+            status = getattr(exc, "status", None)
+            code = getattr(exc, "code", None)
+            if status == 429 or code == 20429:
+                self._next_incoming_poll_monotonic = (
+                    time.monotonic() + self._rate_limit_cooldown_s
+                )
+                logger.warning(
+                    "TwilioProvider.get_incoming: rate-limited; backing off for %.1fs",
+                    self._rate_limit_cooldown_s,
+                )
             logger.exception(
                 "TwilioProvider.get_incoming: failed to fetch messages from %r",
                 from_number,
@@ -179,15 +234,12 @@ class WhatsAppAction:
             :class:`TwilioProvider` instance constructed from environment
             variables.
 
-    The approval workflow (used for Tier C hard-physical actions):
+    Tier C approval orchestration lives in ``ActionDispatcher`` via
+    ``AlertFailoverSender``. This class provides the transport primitives
+    used there (``send`` and ``listen_for_response``).
 
-    1. Call :meth:`send_approval_request` — formats and sends the canonical
-       approval message template, returns the formatted string for logging.
-    2. Call :meth:`listen_for_response` — polls for an inbound YES/NO reply
-       every 5 seconds until *timeout_seconds* elapses.
-    3. Pass the returned string to
-       :func:`~ori.reasoning.action_dispatcher.parse_approval_response` to
-       decide whether to execute or fall back to ``safe_default_action``.
+    ``send_approval_request`` is retained for standalone integrations and tests,
+    but is not used by the runtime's built-in approval workflow.
     """
 
     _POLL_INTERVAL_SECONDS: int = 5
@@ -219,7 +271,7 @@ class WhatsAppAction:
         timeout_seconds: int,
         to_number: str,
         device_id: str = "ori-device",
-    ) -> str:
+    ) -> tuple[str, bool]:
         """Format and send the canonical Tier C approval request.
 
         Args:
@@ -233,7 +285,8 @@ class WhatsAppAction:
             device_id: Device identifier shown in the alert header.
 
         Returns:
-            The formatted message string (useful for logging / audit trail).
+            ``(message, delivered)`` where ``message`` is the formatted string
+            (for audit trail) and ``delivered`` is the provider send status.
         """
         import datetime
 
@@ -248,8 +301,8 @@ class WhatsAppAction:
             confidence=f"{result.confidence:.0%}",
             timeout=timeout_seconds,
         )
-        await self._provider.send(to_number, message)
-        return message
+        delivered = await self._provider.send(to_number, message)
+        return message, bool(delivered)
 
     async def listen_for_response(
         self,
