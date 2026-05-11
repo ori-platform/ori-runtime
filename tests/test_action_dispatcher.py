@@ -1110,6 +1110,33 @@ class TestStatusSignalingHooks:
         assert ("policy", "restricted") in status.calls
 
 
+class TestPolicyStateSnapshot:
+    def test_snapshot_none_policy(self):
+        d = ActionDispatcher()
+        d._policy = None
+        snapshot = d.get_policy_state_snapshot()
+        assert snapshot["available"] is False
+        assert snapshot["is_expired"] is None
+
+    def test_snapshot_uses_property_not_callable(self):
+        d = ActionDispatcher()
+        policy = DevicePolicy(
+            tier="cloud",
+            relay_b_enabled=True,
+            relay_c_enabled=True,
+            cloud_llm_enabled=True,
+            valid_until=int(time.time()) + 10_000,
+            policy_version=3,
+            issued_at=0,
+            signature="ed25519:test",
+        )
+        d.update_policy(policy)
+        snapshot = d.get_policy_state_snapshot()
+        assert snapshot["available"] is True
+        assert snapshot["policy_version"] == 3
+        assert snapshot["is_expired"] is False
+
+
 class TestEmergencySmsSender:
     async def test_emergency_sms_uses_injected_sender(self):
         injected_sms = AsyncMock()

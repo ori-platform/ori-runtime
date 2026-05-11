@@ -180,7 +180,7 @@ class ActionDispatcher:
             "cloud_llm_enabled": bool(self._policy.cloud_llm_enabled),
             "valid_until": int(self._policy.valid_until),
             "issued_at": int(self._policy.issued_at),
-            "is_expired": bool(self._policy.is_expired()),
+            "is_expired": bool(self._policy.is_expired),
         }
 
     def permits_relay_action(self, action_tier: str) -> bool:
