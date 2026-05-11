@@ -68,7 +68,7 @@ These fields are **required** by the runtime. Missing any of them will cause a `
 | `device.id`                  | Yes      | string | Unique device identifier (no spaces)                     |
 | `device.name`                | Yes      | string | Human-readable device name                               |
 | `device.location`            | Yes      | string | Physical location (city, country)                        |
-| `reasoning.default_tier`     | No       | string | Defaults to `rule` (`rule \| local \| gateway \| cloud`) |
+| `reasoning.default_tier`     | No       | string | Defaults to `rule` (`rule \| local`) |
 | `reasoning.local_model`      | No       | string | GGUF model filename (only needed for `local` tier)       |
 | `reasoning.model_path`       | No       | string | Directory containing GGUF models                         |
 | `reasoning.offline_fallback` | No       | string | Defaults to `rule`                                       |
@@ -153,6 +153,13 @@ export ORI_AUTOLOAD_DOTENV=true
 # Start the runtime
 python -m ori.runtime --config ori.yaml
 ```
+
+### Skill Reload Semantics (SIGHUP)
+
+If you send `SIGHUP` to reload skills, the new YAML/hooks apply to **new events only**.
+Any in-flight `reason_and_dispatch` tasks continue under the skill/config snapshot they
+started with. This is intentional for safety consistency (for example, a Tier C approval
+flow already in progress is not rewritten mid-flight).
 
 You should see output like:
 

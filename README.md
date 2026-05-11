@@ -320,6 +320,10 @@ export ORI_AUTOLOAD_DOTENV=true
 
 # 6) Start runtime
 python -m ori.runtime --config ori.local.yaml
+
+# 7) Optional: hot-reload skills without restart (Unix only)
+# Reload applies to new events only; in-flight actions keep previous skill config.
+kill -HUP "$(pgrep -f 'python -m ori.runtime' | head -n 1)"
 ```
 
 ### Smoke Tests

@@ -8,7 +8,7 @@ description: >
   Multi-joint refrigerant leak detection for HVAC systems using Figaro TGS 5141
   sensors (R22/R410A) plus compressor current anomaly monitoring.
 license: Apache-2.0
-signature: ed25519:PENDING
+signature: bundled
 
 sensors_required:
   - type: gas_concentration

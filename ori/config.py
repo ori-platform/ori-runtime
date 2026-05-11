@@ -4,9 +4,11 @@
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -27,6 +29,49 @@ _VALID_BCM_PINS: frozenset[int] = frozenset(range(2, 28))
 
 class ConfigValidationError(Exception):
     pass
+
+
+def _validate_iana_timezone(tz_name: str) -> bool:
+    try:
+        ZoneInfo(tz_name)
+        return True
+    except ZoneInfoNotFoundError:
+        return False
+
+
+def _detect_host_timezone() -> str | None:
+    """Best-effort host timezone detection using IANA names only."""
+    tz_env = str(os.environ.get("TZ", "")).strip()
+    if tz_env and _validate_iana_timezone(tz_env):
+        return tz_env
+
+    local_tz = datetime.now().astimezone().tzinfo
+    key = str(getattr(local_tz, "key", "") or "").strip()
+    if key and _validate_iana_timezone(key):
+        return key
+    return None
+
+
+def _resolve_device_timezone(raw_value: Any) -> str:
+    """Resolve runtime timezone: config value -> host timezone -> UTC."""
+    configured = str(raw_value or "").strip()
+    if configured:
+        if _validate_iana_timezone(configured):
+            return configured
+        logger.warning(
+            "[config] device.timezone=%r is invalid; attempting host timezone fallback.",
+            configured,
+        )
+
+    host_tz = _detect_host_timezone()
+    if host_tz:
+        logger.info("[config] using host timezone fallback: %s", host_tz)
+        return host_tz
+
+    logger.warning(
+        "[config] unable to resolve device timezone from config/host; falling back to UTC."
+    )
+    return str(timezone.utc)
 
 
 # ─── Dataclasses ──────────────────────────────────────────────────────────────
@@ -196,6 +241,12 @@ class Config:
                         f"Environment variable not set: {resolved_value}. "
                         f"Set it in your .env file before starting Ori."
                     )
+            twilio_from = str(actions.whatsapp.get("TWILIO_WHATSAPP_FROM", "")).strip()
+            if not twilio_from.lower().startswith("whatsapp:+"):
+                raise ConfigValidationError(
+                    "actions.whatsapp.TWILIO_WHATSAPP_FROM must start with 'whatsapp:+' "
+                    "(example: 'whatsapp:+14155238886')."
+                )
 
         sms_enabled = (
             str(actions.sms.get("enabled", "")).lower() == "true"
@@ -373,7 +424,7 @@ def _parse_device(data: Any) -> DeviceConfig:
         name=_require_str(data, "name", "device"),
         location=_require_str(data, "location", "device"),
         rated_capacity_amps=float(data.get("rated_capacity_amps", 10.0)),
-        timezone=str(data.get("timezone", "Africa/Lagos")),
+        timezone=_resolve_device_timezone(data.get("timezone", "")),
         country_code=country_code,
         deployment_type=deployment_type,
     )
@@ -610,8 +661,15 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
         "internet_probe_host": internet_probe_host,
     }
 
+    default_tier = str(data.get("default_tier", "local")).strip().lower()
+    if default_tier not in {"rule", "local"}:
+        raise ConfigValidationError(
+            "reasoning.default_tier must be one of: rule, local. "
+            "gateway/cloud tiers are not supported in v1 runtime."
+        )
+
     return ReasoningConfig(
-        default_tier=str(data.get("default_tier", "local")),
+        default_tier=default_tier,
         local_model=str(data.get("local_model", "")),
         model_path=str(data.get("model_path", "")),
         offline_fallback=str(data.get("offline_fallback", "rule")),

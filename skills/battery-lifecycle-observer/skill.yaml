@@ -5,7 +5,7 @@ name: battery-lifecycle-observer
 version: 0.1.0
 author: wasiubakare
 license: Apache-2.0
-signature: ed25519:PENDING
+signature: bundled
 
 sensors_required:
   - type: growatt_battery_soc

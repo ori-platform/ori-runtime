@@ -18,8 +18,8 @@ EXAMPLE_YAML = os.path.join(os.path.dirname(__file__), "..", "ori.yaml.example")
 def _mock_env_vars_for_examples(monkeypatch):
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "mock_sid")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "mock_token")
-    monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "mock_from")
-    monkeypatch.setenv("OWNER_WHATSAPP_NUMBER", "mock_owner")
+    monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+    monkeypatch.setenv("OWNER_WHATSAPP_NUMBER", "whatsapp:+2340000000000")
     monkeypatch.setenv("AT_API_KEY", "mock_key")
     monkeypatch.setenv("AT_USERNAME", "mock_user")
     monkeypatch.setenv("OWNER_PHONE_NUMBER", "mock_phone")
@@ -254,6 +254,92 @@ class TestDeviceValidation:
         )
         cfg = Config.load(yaml_path)
         assert cfg.device.deployment_type == "phone"
+
+    def test_invalid_device_timezone_falls_back_to_host_tz_env(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("TZ", "Europe/London")
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              timezone: Invalid/Timezone
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device.timezone == "Europe/London"
+
+    def test_missing_device_timezone_falls_back_to_host_tz_env(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("TZ", "America/New_York")
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device.timezone == "America/New_York"
+
+    def test_timezone_falls_back_to_utc_when_config_and_host_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("ori.config._detect_host_timezone", lambda: None)
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              timezone: Invalid/Timezone
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device.timezone == "UTC"
 
     def test_rejects_invalid_deployment_type(self, tmp_path):
         yaml_path = _write_yaml(
@@ -1404,6 +1490,25 @@ actions:
         with pytest.raises(ConfigValidationError, match="TWILIO_ACCOUNT_SID"):
             Config.load(yaml_path)
 
+    def test_whatsapp_from_must_use_whatsapp_prefix(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TWILIO_ACCOUNT_SID", "sid")
+        monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: whatsapp\n"
+                "  whatsapp:\n"
+                "    enabled: true\n"
+                "    TWILIO_ACCOUNT_SID: '${TWILIO_ACCOUNT_SID}'\n"
+                "    TWILIO_AUTH_TOKEN: '${TWILIO_AUTH_TOKEN}'\n"
+                "    TWILIO_WHATSAPP_FROM: '+14155238886'\n"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError, match="must start with 'whatsapp:\\+'"
+        ):
+            Config.load(yaml_path)
+
     def test_sms_missing_critical_var_raises(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
@@ -1824,4 +1929,36 @@ actions:
             self._yaml("os_sandbox:\n  exec_timeout_ms: 10\n  max_output_bytes: 100\n"),
         )
         with pytest.raises(ConfigValidationError, match="exec_timeout_ms"):
+            Config.load(yaml_path)
+
+
+class TestReasoningDefaultTierValidation:
+    def _yaml(self, tier: str) -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: {tier}
+  local_model: x
+  model_path: /tmp
+  offline_fallback: rule
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+"""
+
+    def test_rejects_gateway_default_tier_pre_v1(self, tmp_path):
+        yaml_path = _write_yaml(tmp_path, self._yaml("gateway"))
+        with pytest.raises(ConfigValidationError, match="reasoning.default_tier"):
+            Config.load(yaml_path)
+
+    def test_rejects_cloud_default_tier_pre_v1(self, tmp_path):
+        yaml_path = _write_yaml(tmp_path, self._yaml("cloud"))
+        with pytest.raises(ConfigValidationError, match="reasoning.default_tier"):
             Config.load(yaml_path)

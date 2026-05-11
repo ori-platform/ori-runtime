@@ -39,6 +39,7 @@ _VALID_TIERS = frozenset({"A", "B", "C", "D"})
 _TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
 _MAX_HISTORY_PLACEHOLDERS = 16
+_BUNDLED_SIGNATURE_SENTINEL = "bundled"
 _HUB_ROOT_PUBLIC_KEY_B64 = "PENDING_REPLACE_AT_HUB_LAUNCH"
 _HUB_TRUST_ANCHOR_ENV = "ORI_HUB_ROOT_PUBLIC_KEY_B64"
 
@@ -286,7 +287,7 @@ class SkillLoader:
                 f"Skill {skill_dir.name!r}: skill.yaml must be a mapping"
             )
 
-        self._validate_skill_metadata(raw, skill_dir.name)
+        self._validate_skill_metadata(raw, skill_dir)
 
         triggers = self._parse_triggers(
             raw.get("triggers") or [], raw.get("name", "<unknown>")
@@ -327,6 +328,13 @@ class SkillLoader:
         if self._is_bundled_skill(skill_dir):
             return
 
+        signature = str(raw.get("signature") or "").strip()
+        if signature == _BUNDLED_SIGNATURE_SENTINEL:
+            raise SkillSecurityError(
+                "community skill uses bundled signature sentinel. "
+                "Re-sign with an 'ed25519:' signature before installing under ~/.ori/skills/."
+            )
+
         trust_anchor = self._resolve_community_trust_anchor()
         if trust_anchor == "PENDING_REPLACE_AT_HUB_LAUNCH":
             raise SkillSecurityError(
@@ -349,10 +357,9 @@ class SkillLoader:
 
         return _HUB_ROOT_PUBLIC_KEY_B64
 
-    def _validate_skill_metadata(
-        self, raw: dict[str, Any], skill_dir_name: str
-    ) -> None:
+    def _validate_skill_metadata(self, raw: dict[str, Any], skill_dir: Path) -> None:
         """Validate core metadata presence for runtime-loadable skills."""
+        skill_dir_name = skill_dir.name
         name = str(raw.get("name") or "").strip()
         version = str(raw.get("version") or "").strip()
         author = str(raw.get("author") or "").strip()
@@ -373,6 +380,19 @@ class SkillLoader:
         if not isinstance(triggers, list) or len(triggers) == 0:
             raise SkillValidationError(
                 f"Skill {name!r}: triggers must be a non-empty list"
+            )
+
+        if self._is_bundled_skill(skill_dir):
+            signature = str(raw.get("signature") or "").strip()
+            if not signature:
+                return
+            if signature == _BUNDLED_SIGNATURE_SENTINEL:
+                return
+            if signature.startswith("ed25519:"):
+                return
+            raise SkillValidationError(
+                f"Skill {name!r}: bundled skill signature must be either "
+                f"{_BUNDLED_SIGNATURE_SENTINEL!r} or an 'ed25519:' signature."
             )
 
     def register(self, skill: Skill, event_bus: Any) -> list[tuple[str, Any]]:

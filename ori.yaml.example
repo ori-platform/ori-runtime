@@ -19,8 +19,8 @@ device:
   rated_capacity_amps: 10.0          # used for Tier D threshold calculations
                                      # set this to the actual rated amperage
                                      # of your main circuit
-  timezone: Africa/Lagos             # IANA timezone for Tier C approval messages
-                                     # operators see local time, not UTC
+  timezone: Africa/Lagos             # IANA timezone for operator-facing timestamps
+                                     # if omitted/invalid, runtime falls back to host timezone, then UTC
                                      # e.g. Africa/Lagos, Europe/London, America/New_York
 
 sensors:
@@ -225,7 +225,7 @@ skills:
 
 
 reasoning:
-  default_tier: local                # rule | local | gateway | cloud
+  default_tier: local                # rule | local (gateway/cloud are post-v1)
   local_model: qwen2.5-0.5b-instruct-q4_k_m  # basename or full .gguf filename/path
   model_path: /home/pi/models/       # directory containing local GGUF models
   offline_fallback: rule             # tier to use when network unavailable
@@ -244,6 +244,8 @@ reasoning:
     battery_sensor_id: ""            # set to a real battery sensor id (for example victron-battery or inverter-battery-soc)
     alert_on_throttle: true
   causal_memory:
+    enabled: false
+    min_confidence_to_store: 0.0
     rejection_expiry_days: 30      # 0 = never expire
 
 

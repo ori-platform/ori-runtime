@@ -67,6 +67,7 @@ def _minimal_yaml(
         name: {name}
         version: 0.1.0
         author: test
+        signature: bundled
         sensors_required:
           - type: current_clamp
             protocol: i2c
@@ -377,6 +378,25 @@ class TestLoadOne:
             ):
                 loader.load_one(skill_dir)
 
+    def test_rejects_bundled_signature_sentinel_for_community_skill(
+        self, tmp_path, monkeypatch
+    ):
+        skill_dir = tmp_path / "community-bundled-sentinel"
+        raw = _community_skill_mapping()
+        raw["signature"] = "bundled"
+        _write_skill_yaml_mapping(skill_dir, raw)
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            "dGVzdA==",
+        )
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            with pytest.raises(
+                SkillSecurityError,
+                match="community skill uses bundled signature sentinel",
+            ):
+                loader.load_one(skill_dir)
+
     @pytest.mark.skipif(
         Ed25519PrivateKey is None,
         reason="cryptography ed25519 is unavailable",
@@ -447,6 +467,20 @@ class TestLoadOne:
         with patch.object(loader, "_is_bundled_skill", return_value=True):
             skill = loader.load_one(skill_dir)
         assert skill.name == "bundled-unsigned"
+
+    def test_bundled_skill_rejects_unknown_signature_sentinel(self, tmp_path):
+        skill_dir = tmp_path / "bundled-bad-signature"
+        raw = _minimal_yaml(name="bundled-bad-signature").replace(
+            "signature: bundled", "signature: pending"
+        )
+        _write_skill_yaml(skill_dir, raw)
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=True):
+            with pytest.raises(
+                SkillValidationError,
+                match="bundled skill signature must be either",
+            ):
+                loader.load_one(skill_dir)
 
 
 # ─── SkillLoader validation ───────────────────────────────────────────────────

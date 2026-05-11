@@ -168,7 +168,7 @@ name: your-skill-name
 version: 0.1.0
 author: your-github-handle
 license: Apache-2.0
-signature: ed25519:PENDING # filled by ori skill publish
+signature: bundled # use 'bundled' for repo-bundled skills; use ed25519:<sig> for community distribution
 
 sensors_required:
   - type: temperature # sensor types this skill needs

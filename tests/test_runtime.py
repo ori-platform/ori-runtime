@@ -35,6 +35,7 @@ from ori.runtime import (
     _maybe_autoload_dotenv,
     _message_from_context,
     _process_target_from_context,
+    _resolve_dispatcher_approval_timeout,
     _resolve_local_model_file,
 )
 from ori.skills.signing import canonical_signed_payload
@@ -361,6 +362,23 @@ class TestLifecycle:
 
         await asyncio.gather(runtime.start(), _double_stop())
 
+    def test_resolve_dispatcher_approval_timeout_uses_max_declared(self):
+        skills_cfg = [
+            SimpleNamespace(config={"approval_timeout_seconds": 90}),
+            SimpleNamespace(config={"approval_timeout_seconds": 600}),
+            SimpleNamespace(config={}),
+        ]
+        resolved = _resolve_dispatcher_approval_timeout(skills_cfg, 300)
+        assert resolved == 600
+
+    def test_resolve_dispatcher_approval_timeout_ignores_invalid_values(self):
+        skills_cfg = [
+            SimpleNamespace(config={"approval_timeout_seconds": "invalid"}),
+            SimpleNamespace(config={"approval_timeout_seconds": -1}),
+        ]
+        resolved = _resolve_dispatcher_approval_timeout(skills_cfg, 300)
+        assert resolved == 300
+
     async def test_start_does_not_duplicate_rotating_file_handler(
         self, minimal_config, monkeypatch
     ):
@@ -682,6 +700,21 @@ class TestWatchdog:
 
 
 class TestSensorPolling:
+    async def test_poll_sensor_returns_when_state_store_missing(self, caplog):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = None
+        runtime._shutdown_event = asyncio.Event()
+
+        class _NeverCalledAdapter:
+            async def read(self, sensor_id: str) -> SensorReading:
+                raise AssertionError("read() should not be called")
+
+        bus = AsyncMock()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        with caplog.at_level(logging.ERROR):
+            await runtime._poll_sensor(_NeverCalledAdapter(), sensor_cfg, bus, "dev-01")
+        assert "state_store unavailable for sensor poll task" in caplog.text
+
     async def test_sensor_read_error_does_not_crash_runtime(
         self, minimal_config, monkeypatch, caplog
     ):

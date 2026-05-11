@@ -30,6 +30,7 @@ from ori.actions.relay import RelayAction
 from ori.actions.sms import SMSAction
 from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
+from ori.bool_utils import is_truthy
 from ori.config import Config, ConfigValidationError
 from ori.hal.base import AdapterReadError, BaseAdapter
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
@@ -79,6 +80,25 @@ DEVICE_POLICY_TRANSIENT_AUDIT_SUPPRESS_MS = 900_000
 STALE_SENSOR_MIN_CHECK_INTERVAL_S = 1.0
 STALE_SENSOR_MAX_CHECK_INTERVAL_S = 30.0
 HEALTH_SOCKET_DEFAULT_PATH = "/run/ori/health.sock"
+
+
+def _resolve_dispatcher_approval_timeout(
+    skills_cfg: list[Any],
+    default_timeout_s: int = 300,
+) -> int:
+    """Choose dispatcher fallback timeout deterministically across all skills."""
+    resolved = int(default_timeout_s)
+    for sc in skills_cfg:
+        raw = getattr(sc, "config", {}).get("approval_timeout_seconds")
+        if raw is None:
+            continue
+        try:
+            candidate = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if candidate > resolved:
+            resolved = candidate
+    return max(1, resolved)
 
 
 class OriRuntime:
@@ -133,6 +153,12 @@ class OriRuntime:
         This method preserves the same validation and sandbox rules as startup:
         it reuses :class:`ori.skills.loader.SkillLoader` and only swaps handlers
         after the new skill set has been loaded successfully.
+
+        Semantics:
+        - Reload affects **new events only** after handler swap.
+        - In-flight ``reason_and_dispatch`` tasks continue under the skill/config
+          snapshot they started with. This avoids mutating active Tier C/Tier D
+          flows mid-execution.
         """
         if self._skill_reload_lock is None:
             self._skill_reload_lock = asyncio.Lock()
@@ -302,13 +328,9 @@ class OriRuntime:
             )
         _secondary_contact: str = config.actions.secondary_contact or ""
 
-        # Use first skill's approval_timeout_seconds if set; otherwise default
-        _approval_timeout: int = 300
-        for sc in config.skills:
-            t = sc.config.get("approval_timeout_seconds")
-            if t is not None:
-                _approval_timeout = int(t)
-                break
+        # Dispatcher-level fallback timeout (used only when trigger-level timeout
+        # is unavailable): select the maximum declared skill timeout.
+        _approval_timeout = _resolve_dispatcher_approval_timeout(config.skills, 300)
 
         primary_alert_channel = config.actions.primary_alert_channel
         self._primary_alert_channel = primary_alert_channel
@@ -522,8 +544,8 @@ class OriRuntime:
 
             # Build an initial posture snapshot before processing events.
             posture = await posture_tracker.refresh(
-                sms_available=_is_truthy(config.actions.sms.get("enabled", False)),
-                whatsapp_available=_is_truthy(
+                sms_available=is_truthy(config.actions.sms.get("enabled", False)),
+                whatsapp_available=is_truthy(
                     config.actions.whatsapp.get("enabled", False)
                 ),
                 local_slm_loaded=_is_local_slm_available(local_llm),
@@ -582,7 +604,9 @@ class OriRuntime:
             loop.add_signal_handler(
                 signal.SIGHUP, lambda: asyncio.create_task(self.reload_skills())
             )
-            logger.info("[runtime] SIGHUP handler active — send HUP to reload skills")
+            logger.info(
+                "[runtime] SIGHUP handler active — reload applies to new events only; in-flight tasks keep previous skill config"
+            )
 
         # ── Start background tasks ────────────────────────────────────────────
         self._configured_sensors = list(config.sensors)
@@ -738,10 +762,8 @@ class OriRuntime:
                     self._capability_posture_loop(
                         tracker=posture_tracker,
                         elevator=elevator,
-                        sms_enabled=_is_truthy(
-                            config.actions.sms.get("enabled", False)
-                        ),
-                        whatsapp_enabled=_is_truthy(
+                        sms_enabled=is_truthy(config.actions.sms.get("enabled", False)),
+                        whatsapp_enabled=is_truthy(
                             config.actions.whatsapp.get("enabled", False)
                         ),
                         local_llm=local_llm,
@@ -855,7 +877,7 @@ class OriRuntime:
         if not isinstance(webhook_cfg, dict):
             return None
 
-        enabled = _is_truthy(webhook_cfg.get("enabled", False))
+        enabled = is_truthy(webhook_cfg.get("enabled", False))
         if not enabled:
             return None
 
@@ -1026,7 +1048,12 @@ class OriRuntime:
         device_country_code: str = "",
     ) -> None:
         """Read *adapter* at the configured poll interval and publish to *event_bus*."""
-        assert self._state_store is not None
+        if self._state_store is None:
+            logger.error(
+                "[runtime] state_store unavailable for sensor poll task sensor_id=%s; stopping poll loop",
+                sensor_cfg.id,
+            )
+            return
         while not self._shutdown_event.is_set():
             try:
                 reading = await adapter.read(sensor_cfg.id)
@@ -1912,21 +1939,13 @@ def _build_alert_id(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _is_truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
-
-
 def _build_offline_token_verifier(actions_cfg: Any) -> OfflineTierCTokenVerifier | None:
     offline_cfg = {}
     if actions_cfg is not None and hasattr(actions_cfg, "offline_tokens"):
         candidate = getattr(actions_cfg, "offline_tokens", {}) or {}
         if isinstance(candidate, dict):
             offline_cfg = candidate
-    if not _is_truthy(offline_cfg.get("enabled", False)):
+    if not is_truthy(offline_cfg.get("enabled", False)):
         return None
     return OfflineTierCTokenVerifier(
         public_key_b64=str(offline_cfg.get("public_key_b64", "")),
@@ -1975,7 +1994,7 @@ def _maybe_autoload_dotenv(config_path: str) -> None:
     This is a development convenience toggle. Production remains explicit-env
     by default (no implicit .env loading).
     """
-    if not _is_truthy(os.environ.get("ORI_AUTOLOAD_DOTENV", "")):
+    if not is_truthy(os.environ.get("ORI_AUTOLOAD_DOTENV", "")):
         return
 
     try:
