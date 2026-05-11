@@ -466,6 +466,12 @@ class StateStore:
     ) -> list[SensorReading]:
         return await self._run_read(self._get_history_sync, sensor_id, limit)
 
+    def hooks_get_history(
+        self, sensor_id: str, limit: int = 100
+    ) -> list[SensorReading]:
+        """Stable sync facade for hook history lookups."""
+        return self._run_read_with_conn(self._get_history_sync, sensor_id, limit)
+
     def _get_history_sync(
         self, conn: sqlite3.Connection, sensor_id: str, limit: int
     ) -> list[SensorReading]:
@@ -496,6 +502,10 @@ class StateStore:
         """Average of the n most-recent readings for a sensor."""
         return await self._run_read(self._avg_last_n_sync, sensor_id, n)
 
+    def hooks_avg_last_n(self, sensor_id: str, n: int) -> Optional[float]:
+        """Stable sync facade for hook rolling-N average lookups."""
+        return self._run_read_with_conn(self._avg_last_n_sync, sensor_id, n)
+
     def _avg_last_n_sync(
         self, conn: sqlite3.Connection, sensor_id: str, n: int
     ) -> Optional[float]:
@@ -517,6 +527,10 @@ class StateStore:
     async def avg_last_hours(self, sensor_id: str, hours: int) -> Optional[float]:
         """Average of all readings within the last *hours* hours."""
         return await self._run_read(self._avg_last_hours_sync, sensor_id, hours)
+
+    def hooks_avg_last_hours(self, sensor_id: str, hours: int) -> Optional[float]:
+        """Stable sync facade for hook average-over-hours lookups."""
+        return self._run_read_with_conn(self._avg_last_hours_sync, sensor_id, hours)
 
     def _avg_last_hours_sync(
         self, conn: sqlite3.Connection, sensor_id: str, hours: int
@@ -1355,6 +1369,10 @@ class StateStore:
     async def get_skill_state(self, skill_name: str, key: str) -> Optional[str]:
         return await self._run_read(self._get_skill_state_sync, skill_name, key)
 
+    def hooks_get_skill_state(self, skill_name: str, key: str) -> Optional[str]:
+        """Stable sync facade for hook skill-state reads."""
+        return self._run_read_with_conn(self._get_skill_state_sync, skill_name, key)
+
     def _get_skill_state_sync(
         self, conn: sqlite3.Connection, skill_name: str, key: str
     ) -> Optional[str]:
@@ -1369,6 +1387,10 @@ class StateStore:
 
     async def set_skill_state(self, skill_name: str, key: str, value: str) -> None:
         await self._run_write(self._set_skill_state_sync, skill_name, key, value)
+
+    def hooks_set_skill_state(self, skill_name: str, key: str, value: str) -> None:
+        """Stable sync facade for hook skill-state writes."""
+        self._set_skill_state_sync(skill_name, key, value)
 
     def _set_skill_state_sync(self, skill_name: str, key: str, value: str) -> None:
         assert self._conn is not None

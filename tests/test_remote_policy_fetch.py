@@ -9,7 +9,6 @@ import pytest
 
 from ori.policy.remote_fetch import (
     RemotePolicyFetchError,
-    fetch_remote_device_policy,
     fetch_remote_device_policy_bundle,
 )
 from ori.skills.signing import canonical_signed_payload
@@ -70,7 +69,8 @@ async def test_fetch_remote_policy_accepts_valid_signed_payload(monkeypatch):
         "ori.policy.remote_fetch._http_get_json",
         lambda _cfg: (json.dumps(payload), payload),
     )
-    policy = await fetch_remote_device_policy(_base_config(public_key_b64))
+    fetched = await fetch_remote_device_policy_bundle(_base_config(public_key_b64))
+    policy = fetched.policy
     assert policy.policy_version == 2
     assert policy.relay_b_enabled is True
     assert policy.signature.startswith("ed25519:")
@@ -121,7 +121,7 @@ async def test_fetch_remote_policy_rejects_stale_timestamp(monkeypatch):
         lambda _cfg: (json.dumps(payload), payload),
     )
     with pytest.raises(RemotePolicyFetchError, match="skew window") as exc:
-        await fetch_remote_device_policy(
+        await fetch_remote_device_policy_bundle(
             {**_base_config(public_key_b64), "max_clock_skew_s": 5}
         )
     assert exc.value.code == "stale_timestamp"
@@ -147,7 +147,7 @@ async def test_fetch_remote_policy_rejects_version_downgrade(monkeypatch):
         lambda _cfg: (json.dumps(payload), payload),
     )
     with pytest.raises(RemotePolicyFetchError, match="lower than current") as exc:
-        await fetch_remote_device_policy(
+        await fetch_remote_device_policy_bundle(
             _base_config(public_key_b64),
             current_policy_version=3,
         )
@@ -178,14 +178,14 @@ async def test_fetch_remote_policy_rejects_invalid_signature(monkeypatch):
         RemotePolicyFetchError,
         match="signature verification failed",
     ) as exc:
-        await fetch_remote_device_policy(_base_config(public_key_b64))
+        await fetch_remote_device_policy_bundle(_base_config(public_key_b64))
     assert exc.value.code == "invalid_signature"
 
 
 @pytest.mark.asyncio
 async def test_fetch_remote_policy_rejects_non_https_url():
     with pytest.raises(RemotePolicyFetchError, match="https://") as exc:
-        await fetch_remote_device_policy(
+        await fetch_remote_device_policy_bundle(
             {
                 "enabled": True,
                 "url": "http://example.com/device-policy",

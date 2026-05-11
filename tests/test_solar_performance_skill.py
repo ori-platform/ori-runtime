@@ -32,6 +32,24 @@ class _Store:
     def _set_skill_state_sync(self, skill_name: str, key: str, value: str) -> None:
         self._state[(skill_name, key)] = value
 
+    def hooks_get_history(self, sensor_id: str, limit: int = 1) -> list[SensorReading]:
+        return self._get_history_sync(sensor_id, limit)
+
+    def hooks_avg_last_hours(self, sensor_id: str, hours: int) -> float | None:
+        return self._avg_last_hours_sync(sensor_id, hours)
+
+    def hooks_avg_last_n(self, sensor_id: str, n: int) -> float | None:
+        rows = self._get_history_sync(sensor_id, n)
+        if not rows:
+            return None
+        return sum(r.value for r in rows) / len(rows)
+
+    def hooks_get_skill_state(self, skill_name: str, key: str) -> str | None:
+        return self._get_skill_state_sync(skill_name, key)
+
+    def hooks_set_skill_state(self, skill_name: str, key: str, value: str) -> None:
+        self._set_skill_state_sync(skill_name, key, value)
+
 
 def _skill_dir() -> Path:
     return Path(__file__).parent.parent / "skills" / "solar-performance-monitor"

@@ -559,6 +559,15 @@ class TestCausalMemory:
         )
         assert row["confidence"] == pytest.approx(0.95)
 
+    async def test_hooks_history_facade_methods(self, store):
+        reading = _reading(sensor_id="s-1", value=5.0, sensor_type="current")
+        await store.append_history(OriEvent.from_reading(reading, "dev-01"))
+        history = store.hooks_get_history("s-1", 1)
+        assert len(history) == 1
+        assert history[0].value == pytest.approx(5.0)
+        assert store.hooks_avg_last_n("s-1", 1) == pytest.approx(5.0)
+        assert store.hooks_avg_last_hours("s-1", 1) == pytest.approx(5.0)
+
 
 # ─── skill_state ──────────────────────────────────────────────────────────────
 
@@ -611,6 +620,10 @@ class TestSkillState:
             ).fetchone()
         )
         assert row2["updated_at"] >= row1["updated_at"]
+
+    async def test_hooks_skill_state_facade_methods(self, store):
+        store.hooks_set_skill_state("skill-y", "flag", "on")
+        assert store.hooks_get_skill_state("skill-y", "flag") == "on"
 
 
 # ─── reasoning_log ────────────────────────────────────────────────────────────

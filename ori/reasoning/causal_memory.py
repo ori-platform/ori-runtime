@@ -34,7 +34,10 @@ def generate_key(event: OriEvent, trigger_name: str) -> str:
     value_bucket = str(
         round(event.reading.value, 0) if event.reading is not None else 0
     )
-    day_of_week = str(datetime.datetime.now().weekday())  # 0=Monday, 6=Sunday
+    dt = datetime.datetime.fromtimestamp(
+        event.timestamp / 1000.0, tz=datetime.timezone.utc
+    )
+    day_of_week = str(dt.weekday())  # 0=Monday, 6=Sunday
 
     raw = sensor_type + trigger_name + value_bucket + day_of_week
     return hashlib.sha256(raw.encode()).hexdigest()

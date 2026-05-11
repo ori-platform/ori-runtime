@@ -233,13 +233,7 @@ def _verify_payload(
     return parsed
 
 
-async def fetch_remote_device_policy(
-    raw_config: dict[str, Any],
-    *,
-    current_policy_version: int | None = None,
-) -> DevicePolicy:
-    """Fetch remote policy over HTTPS and verify signature/version/timestamp."""
-    cfg = _build_config(raw_config)
+def _validate_fetch_config(cfg: RemotePolicyFetchConfig) -> None:
     if not cfg.url.startswith("https://"):
         raise RemotePolicyFetchError(
             "invalid_config",
@@ -264,13 +258,6 @@ async def fetch_remote_device_policy(
             "invalid_config",
             "device_policy.max_clock_skew_s must be >= 1",
         )
-
-    _, payload = await asyncio.to_thread(_http_get_json, cfg)
-    return _verify_payload(
-        payload,
-        cfg,
-        current_policy_version=current_policy_version,
-    )
 
 
 async def fetch_remote_device_policy_bundle(
@@ -280,30 +267,7 @@ async def fetch_remote_device_policy_bundle(
 ) -> FetchedRemotePolicy:
     """Fetch + verify and return both parsed policy and exact raw payload JSON."""
     cfg = _build_config(raw_config)
-    if not cfg.url.startswith("https://"):
-        raise RemotePolicyFetchError(
-            "invalid_config",
-            "device_policy.url must start with https://",
-        )
-    if not cfg.auth_token:
-        raise RemotePolicyFetchError(
-            "invalid_config", "device_policy.auth_token is empty"
-        )
-    if not cfg.public_key_b64:
-        raise RemotePolicyFetchError(
-            "invalid_config",
-            "device_policy.public_key_b64 is empty",
-        )
-    if cfg.request_timeout_ms < 100:
-        raise RemotePolicyFetchError(
-            "invalid_config",
-            "device_policy.request_timeout_ms must be >= 100",
-        )
-    if cfg.max_clock_skew_s < 1:
-        raise RemotePolicyFetchError(
-            "invalid_config",
-            "device_policy.max_clock_skew_s must be >= 1",
-        )
+    _validate_fetch_config(cfg)
 
     raw_payload, payload = await asyncio.to_thread(_http_get_json, cfg)
     verified = _verify_payload(

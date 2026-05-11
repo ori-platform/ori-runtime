@@ -357,20 +357,14 @@ class OSSandboxHookRunner:
         try:
             if method == "state.get":
                 key = str(params.get("key", ""))
-                fn = getattr(self._state_store, "_get_skill_state_sync", None)
-                run_read = getattr(self._state_store, "_run_read_with_conn", None)
-                if callable(fn) and callable(run_read):
-                    val = run_read(fn, self._skill_name, key)
-                elif callable(fn):
-                    val = fn(self._skill_name, key)
-                else:
-                    val = None
+                fn = getattr(self._state_store, "hooks_get_skill_state", None)
+                val = fn(self._skill_name, key) if callable(fn) else None
                 return {"type": _RPC_RESP, "ok": True, "result": val}
 
             if method == "state.set":
                 key = str(params.get("key", ""))
                 value = str(params.get("value", ""))
-                fn = getattr(self._state_store, "_set_skill_state_sync", None)
+                fn = getattr(self._state_store, "hooks_set_skill_state", None)
                 if callable(fn):
                     fn(self._skill_name, key, value)
                 return {"type": _RPC_RESP, "ok": True, "result": True}
@@ -379,13 +373,13 @@ class OSSandboxHookRunner:
                 sensor_id = str(params.get("sensor_id", ""))
                 hours = int(params.get("hours", 0))
                 return self._history_read_response(
-                    "_avg_last_hours_sync", sensor_id, hours
+                    "hooks_avg_last_hours", sensor_id, hours
                 )
 
             if method == "history.avg_last_n":
                 sensor_id = str(params.get("sensor_id", ""))
                 n = int(params.get("n", 0))
-                return self._history_read_response("_avg_last_n_sync", sensor_id, n)
+                return self._history_read_response("hooks_avg_last_n", sensor_id, n)
 
             if method in {
                 "history.last_value",
@@ -395,7 +389,7 @@ class OSSandboxHookRunner:
                 sensor_id = str(params.get("sensor_id", ""))
                 limit = int(params.get("limit", 1))
                 history = (
-                    self._history_read_response("_get_history_sync", sensor_id, limit)[
+                    self._history_read_response("hooks_get_history", sensor_id, limit)[
                         "result"
                     ]
                     or []
@@ -428,15 +422,9 @@ class OSSandboxHookRunner:
         except Exception as exc:
             return {"type": _RPC_RESP, "ok": False, "error": str(exc)}
 
-    def _history_read_response(self, fn_name: str, *args: Any) -> dict[str, Any]:
-        fn = getattr(self._state_store, fn_name, None)
-        run_read = getattr(self._state_store, "_run_read_with_conn", None)
-        if callable(fn) and callable(run_read):
-            val = run_read(fn, *args)
-        elif callable(fn):
-            val = fn(*args)
-        else:
-            val = None
+    def _history_read_response(self, method_name: str, *args: Any) -> dict[str, Any]:
+        fn = getattr(self._state_store, method_name, None)
+        val = fn(*args) if callable(fn) else None
         return {"type": _RPC_RESP, "ok": True, "result": val}
 
 

@@ -64,6 +64,7 @@ class PsutilAdapter(BaseAdapter):
         self._sensor_id: str = ""
         self._sensor_type: str = ""
         self._connected: bool = False
+        self._config: dict = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -84,6 +85,7 @@ class PsutilAdapter(BaseAdapter):
             )
         self._sensor_id = config.get("sensor_id", "")
         self._sensor_type = sensor_type
+        self._config = dict(config)
         self._breaker = HardwareCircuitBreaker(
             getattr(self, "adapter_name", type(self).__name__), config
         )
@@ -516,8 +518,13 @@ class PsutilAdapter(BaseAdapter):
         now = now_ms()
         current_pct = float(battery.percent)
 
-        # Fetch previous battery_percent reading for this sensor
-        history = await self._state_store.get_history(sensor_id, limit=2)
+        # Fetch previous battery_percent readings from configured source sensor.
+        source_sensor_id = str(
+            self._config.get("battery_source_sensor_id", "battery_percent")
+        ).strip()
+        if not source_sensor_id:
+            source_sensor_id = "battery_percent"
+        history = await self._state_store.get_history(source_sensor_id, limit=2)
         battery_history = [r for r in history if r.sensor_type == "battery_percent"]
 
         if not battery_history:

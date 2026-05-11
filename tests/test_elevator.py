@@ -136,6 +136,16 @@ class _PromptHistoryStore:
         values = self._values_by_sensor.get(sensor_id, [])[:limit]
         return [_reading(value=v, sensor_id=sensor_id) for v in values]
 
+    # Stable hook-sync facade methods (mirrors StateStore public hook API)
+    def hooks_avg_last_hours(self, sensor_id: str, hours: int):
+        return self._avg_last_hours_sync(sensor_id, hours)
+
+    def hooks_avg_last_n(self, sensor_id: str, n: int):
+        return self._avg_last_n_sync(sensor_id, n)
+
+    def hooks_get_history(self, sensor_id: str, limit: int = 1):
+        return self._get_history_sync(sensor_id, limit)
+
 
 # ─── _complexity_score ────────────────────────────────────────────────────────
 
@@ -305,6 +315,71 @@ class TestReason:
         mock_llm.reason.assert_called_once()
         assert result.tier == "local_slm"
         assert result.text == "Load is anomalous."
+
+    async def test_causal_memory_hit_short_circuits_local_llm(self):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="LLM should not run on cache hit.",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=10,
+            latency_ms=50,
+        )
+        conf = type(
+            "obj",
+            (object,),
+            {
+                "offline_fallback": "local_slm",
+                "causal_memory": {"enabled": True},
+            },
+        )()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+        store = _mock_state_store()
+        store.lookup_causal_memory.return_value = "Cached known-good resolution."
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            result = await elevator.reason(_event(value=5.0), skill, store)
+
+        assert result.model == "causal_memory"
+        assert result.text == "Cached known-good resolution."
+        mock_llm.reason.assert_not_called()
+        store.lookup_causal_memory.assert_awaited()
+
+    async def test_causal_memory_store_on_local_llm_miss(self):
+        mock_llm = AsyncMock()
+        mock_llm.reason.return_value = ReasoningResult(
+            text="Fresh LLM resolution.",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=20,
+            latency_ms=100,
+            confidence=0.9,
+        )
+        conf = type(
+            "obj",
+            (object,),
+            {
+                "offline_fallback": "local_slm",
+                "causal_memory": {
+                    "enabled": True,
+                    "min_confidence_to_store": 0.5,
+                },
+            },
+        )()
+        elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
+        skill = _tier_a_skill()
+        store = _mock_state_store()
+        store.lookup_causal_memory.return_value = None
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            result = await elevator.reason(_event(value=5.0), skill, store)
+
+        assert result.text == "Fresh LLM resolution."
+        store.store_causal_memory.assert_awaited_once()
+        _, stored_text, stored_confidence = store.store_causal_memory.await_args.args
+        assert stored_text == "Fresh LLM resolution."
+        assert stored_confidence == pytest.approx(0.9)
 
     async def test_local_slm_prompt_attached_to_result(self):
         """After LLM reasoning, result.prompt is populated with the built prompt."""
