@@ -108,6 +108,23 @@ jobs:
           python -m pip_audit -r requirements.txt
           python -m pip_audit -r requirements-dev.txt
 
+      - name: Generate runtime SBOM
+        if: matrix.python-version == '3.12'
+        run: |
+          python -m cyclonedx_py requirements requirements.txt \
+            --pyproject pyproject.toml \
+            --output-reproducible \
+            --of JSON \
+            -o sbom-runtime.json
+
+      - name: Upload runtime SBOM
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-runtime
+          path: sbom-runtime.json
+          if-no-files-found: error
+
       - name: Validate bundled skills load cleanly
         run: |
           python -c "
