@@ -20,9 +20,10 @@ fi
 
 echo "Using Python: $(${PYTHON_BIN} --version)"
 
-echo "Installing/upgrading project dependencies..."
-"${PYTHON_BIN}" -m pip install --upgrade pip
-"${PYTHON_BIN}" -m pip install -e ".[dev]"
+echo "Installing hash-locked project dependencies..."
+"${PYTHON_BIN}" -m pip --version
+"${PYTHON_BIN}" -m pip install --require-hashes -r requirements-dev.txt
+"${PYTHON_BIN}" -m pip install --no-deps -e .
 
 echo "Installing git hooks..."
 "${PYTHON_BIN}" -m pre_commit install --install-hooks --hook-type pre-commit --hook-type pre-push --hook-type commit-msg

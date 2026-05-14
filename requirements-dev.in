@@ -5,3 +5,7 @@ pytest-cov>=5.0
 black>=24.0
 ruff>=0.4
 mypy>=1.10
+pre-commit>=3.7
+pip-tools>=7.4
+pip-audit>=2.7
+cyclonedx-bom>=6.0

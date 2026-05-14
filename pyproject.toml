@@ -35,6 +35,7 @@ dependencies = [
     "africastalking>=1.0",
     "python-dotenv>=1.0",
     "anthropic>=0.28",
+    "urllib3>=2.7.0",
 ]
 
 [project.optional-dependencies]

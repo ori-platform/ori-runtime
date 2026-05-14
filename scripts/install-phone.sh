@@ -8,8 +8,17 @@ set -euo pipefail
 pkg update -y
 pkg install -y python sqlite curl
 
-python -m pip install --upgrade pip
-python -m pip install ori-runtime --break-system-packages
+WHEELHOUSE_DIR="${ORI_WHEELHOUSE_DIR:-${HOME}/ori-wheelhouse}"
+if [ ! -d "${WHEELHOUSE_DIR}" ]; then
+  echo "ERROR: Signed wheelhouse not found: ${WHEELHOUSE_DIR}" >&2
+  echo "Production phone installs must use a signed Ori wheelhouse, not live PyPI resolution." >&2
+  echo "Set ORI_WHEELHOUSE_DIR to a directory containing wheels and requirements.txt." >&2
+  exit 1
+fi
+
+python -m pip --version
+python -m pip install --break-system-packages --no-index --find-links "${WHEELHOUSE_DIR}" --require-hashes -r "${WHEELHOUSE_DIR}/requirements.txt"
+python -m pip install --break-system-packages --no-index --find-links "${WHEELHOUSE_DIR}" --no-deps ori-runtime
 
 MODEL_DIR="${HOME}/models"
 MODEL_PATH="${MODEL_DIR}/qwen2.5-0.5b-instruct-q4_k_m.gguf"
