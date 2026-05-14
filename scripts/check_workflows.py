@@ -21,9 +21,7 @@ REMOTE_EXEC_RE = re.compile(
 def _workflow_files() -> list[Path]:
     if not WORKFLOW_DIR.exists():
         return []
-    return sorted(
-        p for p in WORKFLOW_DIR.rglob("*") if p.suffix in {".yml", ".yaml"}
-    )
+    return sorted(p for p in WORKFLOW_DIR.rglob("*") if p.suffix in {".yml", ".yaml"})
 
 
 def _line_number(text: str, index: int) -> int:
@@ -43,10 +41,14 @@ def main() -> int:
             # A full SHA pin with a version comment is allowed; mutable refs are not.
             source_line = text.splitlines()[line - 1]
             if not SHA_RE.search(source_line):
-                failures.append(f"{path}:{line}: mutable GitHub Action ref: {source_line.strip()}")
+                failures.append(
+                    f"{path}:{line}: mutable GitHub Action ref: {source_line.strip()}"
+                )
         for match in REMOTE_EXEC_RE.finditer(text):
             line = _line_number(text, match.start())
-            failures.append(f"{path}:{line}: remote script download/execution is forbidden")
+            failures.append(
+                f"{path}:{line}: remote script download/execution is forbidden"
+            )
         if "permissions:" not in text:
             failures.append(f"{path}: missing explicit workflow permissions")
     if failures:

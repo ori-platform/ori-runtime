@@ -2406,6 +2406,12 @@ urllib3==2.7.0 \
     #   -r requirements.txt
     #   requests
     #   responses
+wait-for2==0.3.2 ; python_version < "3.12" \
+    --hash=sha256:93863026dc35f3471104ecf7de1f4a0b31f4c8b12a2241c0d6ee26dcc0c2092a
+    # via
+    #   -c requirements.txt
+    #   -r requirements.txt
+    #   asyncua
 virtualenv==21.3.3 \
     --hash=sha256:7d5987d8369e098e41406efb780a3d4ca79280097293899e351a6407ee153ab3 \
     --hash=sha256:f5bda277e553b1c2b3c1a8debfc30496e1288cc93ce6b7b71b3280047e317328
