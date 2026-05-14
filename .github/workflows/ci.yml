@@ -39,7 +39,7 @@ jobs:
       - name: Show pip version
         run: python -m pip --version
 
-      - name: Guard workflow supply-chain invariants
+      - name: Guard supply-chain invariants
         run: python scripts/check_workflows.py
 
       - name: Install hash-locked dependencies

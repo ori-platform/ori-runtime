@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
-"""Guard GitHub Actions workflows against supply-chain footguns."""
+"""Guard CI and hook configuration against supply-chain footguns."""
 
 from __future__ import annotations
 
@@ -10,8 +10,10 @@ import sys
 from pathlib import Path
 
 WORKFLOW_DIR = Path(".github/workflows")
+PRE_COMMIT_CONFIG = Path(".pre-commit-config.yaml")
 SHA_RE = re.compile(r"uses:\s*[^\s#]+@[0-9a-f]{40}(?:\s*#.*)?$")
 MUTABLE_ACTION_RE = re.compile(r"uses:\s*[^\s#]+@(?:v\d+(?:\.\d+\.\d+)?|main|master)\b")
+PRE_COMMIT_REV_RE = re.compile(r"^\s+rev:\s*([^#\s]+)")
 REMOTE_EXEC_RE = re.compile(
     r"(?:curl|wget)\b[^\n]*(?:\|\s*(?:bash|sh|python\d*)|&&\s*(?:bash|sh|python\d*)\b)",
     re.IGNORECASE,
@@ -26,6 +28,30 @@ def _workflow_files() -> list[Path]:
 
 def _line_number(text: str, index: int) -> int:
     return text.count("\n", 0, index) + 1
+
+
+def _check_pre_commit_config(failures: list[str]) -> None:
+    if not PRE_COMMIT_CONFIG.exists():
+        return
+    current_repo: str | None = None
+    for line_number, line in enumerate(
+        PRE_COMMIT_CONFIG.read_text().splitlines(), start=1
+    ):
+        stripped = line.strip()
+        if stripped.startswith("- repo:"):
+            current_repo = stripped.removeprefix("- repo:").strip()
+            continue
+        if current_repo in {None, "local"}:
+            continue
+        match = PRE_COMMIT_REV_RE.match(line)
+        if not match:
+            continue
+        rev = match.group(1)
+        if not re.fullmatch(r"[0-9a-f]{40}", rev):
+            failures.append(
+                f"{PRE_COMMIT_CONFIG}:{line_number}: remote pre-commit hook "
+                f"{current_repo} must pin rev to a full commit SHA"
+            )
 
 
 def main() -> int:
@@ -51,12 +77,13 @@ def main() -> int:
             )
         if "permissions:" not in text:
             failures.append(f"{path}: missing explicit workflow permissions")
+    _check_pre_commit_config(failures)
     if failures:
-        print("Workflow supply-chain guard failed:", file=sys.stderr)
+        print("Supply-chain guard failed:", file=sys.stderr)
         for failure in failures:
             print(f"  - {failure}", file=sys.stderr)
         return 1
-    print("Workflow supply-chain guard: OK")
+    print("Supply-chain guard: OK")
     return 0
 
 

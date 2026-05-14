@@ -606,9 +606,11 @@ these rules can compromise the runtime that controls physical hardware.
    Tier C/D skill review gates and runtime sandboxing remain mandatory
    regardless of provenance or author reputation.
 
-10. Run `scripts/check_workflows.py` before merging workflow changes. The script
-    fails on `pull_request_target`, mutable action refs, unauthorized
-    `id-token: write`, and remote script execution patterns.
+10. Run `scripts/check_workflows.py` before merging workflow or pre-commit
+    configuration changes. The script fails on `pull_request_target`, mutable
+    action refs, unauthorized `id-token: write`, remote script execution
+    patterns, and remote pre-commit hooks that are not pinned to full commit
+    SHAs.
 
 11. Ed25519 signing implementations that must interoperate with the runtime use
     `cryptography`, not PyNaCl. `ori-skills-hub` must use `cryptography` for Hub
