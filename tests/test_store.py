@@ -87,6 +87,7 @@ class TestLifecycle:
             "sensor_history",
             "reasoning_log",
             "action_log",
+            "tier_c_decision_log",
             "causal_memory",
             "skill_state",
             "alert_outbox",
@@ -293,7 +294,7 @@ class TestActionLog:
             tier="C",
             executed=True,
             approved=True,
-            action_taken="trip_main_breaker",
+            action_taken="open_safety_circuit",
             operator_response="YES",
         )
         await store.log_action(result, trigger_name="critical_fault")
@@ -333,6 +334,56 @@ class TestActionLog:
     async def test_get_action_log_empty(self, store):
         log = await store.get_action_log()
         assert log == []
+
+
+class TestTierCDecisionLog:
+    async def test_log_and_retrieve_tier_c_decision(self, store):
+        await store.log_tier_c_decision(
+            device_id="dev-01",
+            site_type="pharmacy",
+            location="Lagos",
+            timezone="Africa/Lagos",
+            sensor_id="load-current",
+            sensor_type="current_clamp",
+            reading_value=18.5,
+            reading_unit="ampere",
+            reading_timestamp=1234,
+            history_window=[{"timestamp": 1000, "value": 10.0}],
+            skill_name="energy-anomaly-detector",
+            trigger_name="overcurrent",
+            proposed_action="trip_relay",
+            confidence=0.91,
+            reasoning_tier="local_slm",
+            reasoning_model="qwen.gguf",
+            prompt_context_summary="load is high",
+            operator_decision="rejected",
+            operator_response="NO",
+            decision_latency_ms=2500,
+            approval_timeout_seconds=300,
+            safe_default_action="log_to_dashboard",
+            safe_default_used=True,
+            action_taken="log_to_dashboard",
+            action_executed=True,
+            final_action_result={"approved": False},
+            later_outcome=None,
+            created_at=5000,
+        )
+
+        rows = await store.get_tier_c_decision_log()
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["device_id"] == "dev-01"
+        assert row["site_type"] == "pharmacy"
+        assert row["sensor_type"] == "current_clamp"
+        assert row["reading_value"] == pytest.approx(18.5)
+        assert row["history_window"] == [{"timestamp": 1000, "value": 10.0}]
+        assert row["skill_name"] == "energy-anomaly-detector"
+        assert row["operator_decision"] == "rejected"
+        assert row["safe_default_used"] is True
+        assert row["action_executed"] is True
+        assert row["final_action_result"] == {"approved": False}
+        assert row["later_outcome"] is None
 
 
 # ─── alert_outbox ─────────────────────────────────────────────────────────────
@@ -436,12 +487,12 @@ class TestOfflineTokens:
         first = await store.claim_offline_token(
             token_id="tok-1",
             device_id="dev-01",
-            action="trip_main_breaker",
+            action="open_safety_circuit",
         )
         second = await store.claim_offline_token(
             token_id="tok-1",
             device_id="dev-01",
-            action="trip_main_breaker",
+            action="open_safety_circuit",
         )
         assert first is True
         assert second is False
@@ -450,7 +501,7 @@ class TestOfflineTokens:
         await store.log_offline_token_attempt(
             token_id="tok-2",
             device_id="dev-01",
-            action="trip_main_breaker",
+            action="open_safety_circuit",
             approved=False,
             reason="expired",
         )

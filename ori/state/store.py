@@ -65,6 +65,44 @@ CREATE TABLE IF NOT EXISTS action_log (
     timestamp         INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tier_c_decision_log (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id                TEXT    NOT NULL DEFAULT '',
+    site_type                TEXT    NOT NULL DEFAULT '',
+    location                 TEXT    NOT NULL DEFAULT '',
+    timezone                 TEXT    NOT NULL DEFAULT '',
+    sensor_id                TEXT    NOT NULL DEFAULT '',
+    sensor_type              TEXT    NOT NULL DEFAULT '',
+    reading_value            REAL,
+    reading_unit             TEXT    NOT NULL DEFAULT '',
+    reading_timestamp        INTEGER,
+    history_window_json      TEXT    NOT NULL DEFAULT 'null',
+    skill_name               TEXT    NOT NULL DEFAULT '',
+    trigger_name             TEXT    NOT NULL DEFAULT '',
+    proposed_action          TEXT    NOT NULL DEFAULT '',
+    confidence               REAL    NOT NULL DEFAULT 0,
+    reasoning_tier           TEXT    NOT NULL DEFAULT '',
+    reasoning_model          TEXT    NOT NULL DEFAULT '',
+    prompt_context_summary   TEXT    NOT NULL DEFAULT '',
+    operator_decision        TEXT    NOT NULL DEFAULT '', -- 'approved' | 'rejected' | 'timeout'
+    operator_response        TEXT,
+    decision_latency_ms      INTEGER NOT NULL DEFAULT 0,
+    approval_timeout_seconds INTEGER NOT NULL DEFAULT 0,
+    safe_default_action      TEXT    NOT NULL DEFAULT '',
+    safe_default_used        INTEGER NOT NULL DEFAULT 0,
+    action_taken             TEXT    NOT NULL DEFAULT '',
+    action_executed          INTEGER NOT NULL DEFAULT 0,
+    final_action_result_json TEXT    NOT NULL DEFAULT '{}',
+    later_outcome_json       TEXT    NOT NULL DEFAULT 'null',
+    created_at               INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tier_c_decision_log_device_ts
+    ON tier_c_decision_log (device_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_tier_c_decision_log_skill_trigger
+    ON tier_c_decision_log (skill_name, trigger_name, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS causal_memory (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     pattern_key TEXT    NOT NULL UNIQUE,
@@ -668,6 +706,91 @@ class StateStore:
                     "timestamp": row["timestamp"],
                 }
             )
+        return result
+
+    # ─── tier_c_decision_log ───────────────────────────────────────────────────
+
+    async def log_tier_c_decision(self, **fields) -> None:
+        """Persist a full Tier C proposal/decision record for analytics.
+
+        This table is intentionally richer than ``action_log``.  It captures the
+        sensor context, reasoning proposal, operator decision, latency, and final
+        action outcome needed for future approval/rejection learning.
+        """
+        await self._run_write(self._log_tier_c_decision_sync, fields)
+
+    def _log_tier_c_decision_sync(self, fields: dict) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO tier_c_decision_log
+                (device_id, site_type, location, timezone, sensor_id, sensor_type,
+                 reading_value, reading_unit, reading_timestamp, history_window_json,
+                 skill_name, trigger_name, proposed_action, confidence,
+                 reasoning_tier, reasoning_model, prompt_context_summary,
+                 operator_decision, operator_response, decision_latency_ms,
+                 approval_timeout_seconds, safe_default_action, safe_default_used,
+                 action_taken, action_executed, final_action_result_json,
+                 later_outcome_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(fields.get("device_id", "") or ""),
+                str(fields.get("site_type", "") or ""),
+                str(fields.get("location", "") or ""),
+                str(fields.get("timezone", "") or ""),
+                str(fields.get("sensor_id", "") or ""),
+                str(fields.get("sensor_type", "") or ""),
+                fields.get("reading_value"),
+                str(fields.get("reading_unit", "") or ""),
+                fields.get("reading_timestamp"),
+                json.dumps(fields.get("history_window"), sort_keys=True),
+                str(fields.get("skill_name", "") or ""),
+                str(fields.get("trigger_name", "") or ""),
+                str(fields.get("proposed_action", "") or ""),
+                float(fields.get("confidence", 0.0) or 0.0),
+                str(fields.get("reasoning_tier", "") or ""),
+                str(fields.get("reasoning_model", "") or ""),
+                str(fields.get("prompt_context_summary", "") or ""),
+                str(fields.get("operator_decision", "") or ""),
+                fields.get("operator_response"),
+                int(fields.get("decision_latency_ms", 0) or 0),
+                int(fields.get("approval_timeout_seconds", 0) or 0),
+                str(fields.get("safe_default_action", "") or ""),
+                1 if fields.get("safe_default_used") else 0,
+                str(fields.get("action_taken", "") or ""),
+                1 if fields.get("action_executed") else 0,
+                json.dumps(fields.get("final_action_result", {}), sort_keys=True),
+                json.dumps(fields.get("later_outcome"), sort_keys=True),
+                int(fields.get("created_at") or now_ms()),
+            ),
+        )
+        self._conn.commit()
+
+    async def get_tier_c_decision_log(self, limit: int = 50) -> list[dict]:
+        return await self._run_read(self._get_tier_c_decision_log_sync, limit)
+
+    def _get_tier_c_decision_log_sync(
+        self, conn: sqlite3.Connection, limit: int
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM tier_c_decision_log
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["history_window"] = json.loads(item.pop("history_window_json"))
+            item["safe_default_used"] = bool(item["safe_default_used"])
+            item["action_executed"] = bool(item["action_executed"])
+            item["final_action_result"] = json.loads(item.pop("final_action_result_json"))
+            item["later_outcome"] = json.loads(item.pop("later_outcome_json"))
+            result.append(item)
         return result
 
     # ─── inbound_messages ─────────────────────────────────────────────────────

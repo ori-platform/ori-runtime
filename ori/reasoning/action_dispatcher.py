@@ -571,6 +571,7 @@ class ActionDispatcher:
             :class:`~ori.network.events.ActionResult` with ``approved`` set to
             ``True`` / ``False`` based on the operator response.
         """
+        approval_started_at = now_ms()
         if self._log_approval_workflow:
             logger.info(
                 "ActionDispatcher: triggering Tier C approval workflow for action=%r",
@@ -739,18 +740,123 @@ class ActionDispatcher:
                         operator_response=operator_response,
                     )
 
-            return ActionResult(
+            completed_at = now_ms()
+            action_result = ActionResult(
                 action_name=action,
                 tier=tier,
                 executed=executed,
                 approved=approved,
                 action_taken=action_taken,
-                timestamp=now_ms(),
+                timestamp=completed_at,
                 operator_response=operator_response,
             )
+            await self._log_tier_c_decision(
+                store=store,
+                context=context,
+                result=result,
+                action=action,
+                action_result=action_result,
+                operator_decision=(
+                    "approved" if approved else "timeout" if timed_out else "rejected"
+                ),
+                approval_started_at=approval_started_at,
+                completed_at=completed_at,
+                approval_timeout_seconds=approval_timeout_seconds,
+                safe_default_action=safe_default_action,
+                safe_default_used=not bool(approved),
+            )
+            return action_result
         finally:
             if self._status_indicator is not None:
                 self._status_indicator.clear_tier_c_pending()
+
+    async def _log_tier_c_decision(
+        self,
+        *,
+        store: Any,
+        context: SkillContext,
+        result: ReasoningResult,
+        action: str,
+        action_result: ActionResult,
+        operator_decision: str,
+        approval_started_at: int,
+        completed_at: int,
+        approval_timeout_seconds: int,
+        safe_default_action: str,
+        safe_default_used: bool,
+    ) -> None:
+        """Persist the rich Tier C proposal/decision record if supported."""
+        if store is None or not hasattr(store, "log_tier_c_decision"):
+            return
+
+        event = context.event if context else None
+        reading = event.reading if event is not None else None
+        event_context = (
+            event.context
+            if event is not None and isinstance(event.context, dict)
+            else {}
+        )
+        skill = context.skill if context else None
+        skill_name = str(getattr(skill, "name", "") or "")
+        trigger_name = str(getattr(context, "trigger_name", "") or "")
+        if not trigger_name and event is not None:
+            trigger_name = event.sensor_id
+
+        history_window = (
+            event_context.get("history_window")
+            or event_context.get("history")
+            or event_context.get("readings_window")
+        )
+        prompt_context_summary = result.prompt or result.reasoning or result.text
+        if len(prompt_context_summary) > 4000:
+            prompt_context_summary = prompt_context_summary[:4000]
+
+        try:
+            await store.log_tier_c_decision(
+                device_id=event.device_id if event is not None else "unknown",
+                site_type=event_context.get("site_type", ""),
+                location=event_context.get("location", ""),
+                timezone=event_context.get(
+                    "device_timezone", self._config.get("device_timezone", "")
+                ),
+                sensor_id=reading.sensor_id if reading is not None else "",
+                sensor_type=reading.sensor_type if reading is not None else "",
+                reading_value=reading.value if reading is not None else None,
+                reading_unit=reading.unit if reading is not None else "",
+                reading_timestamp=reading.timestamp if reading is not None else None,
+                history_window=history_window,
+                skill_name=skill_name,
+                trigger_name=trigger_name,
+                proposed_action=action,
+                confidence=result.confidence,
+                reasoning_tier=result.tier,
+                reasoning_model=result.model,
+                prompt_context_summary=prompt_context_summary,
+                operator_decision=operator_decision,
+                operator_response=action_result.operator_response,
+                decision_latency_ms=max(0, completed_at - approval_started_at),
+                approval_timeout_seconds=approval_timeout_seconds,
+                safe_default_action=safe_default_action,
+                safe_default_used=safe_default_used,
+                action_taken=action_result.action_taken,
+                action_executed=action_result.executed,
+                final_action_result={
+                    "action_name": action_result.action_name,
+                    "tier": action_result.tier,
+                    "executed": action_result.executed,
+                    "approved": action_result.approved,
+                    "action_taken": action_result.action_taken,
+                    "operator_response": action_result.operator_response,
+                    "timestamp": action_result.timestamp,
+                },
+                later_outcome=None,
+                created_at=completed_at,
+            )
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: failed to log Tier C decision for action=%r",
+                action,
+            )
 
     async def _listen_for_local_console_response(
         self,

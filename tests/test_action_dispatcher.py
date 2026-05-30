@@ -74,6 +74,7 @@ def _result(
 def _mock_store() -> AsyncMock:
     store = AsyncMock()
     store.log_action = AsyncMock(return_value=None)
+    store.log_tier_c_decision = AsyncMock(return_value=None)
     return store
 
 
@@ -370,7 +371,7 @@ class TestTierC:
             "_approval_workflow",
             new=AsyncMock(
                 return_value=ActionResult(
-                    action_name="trip_main_breaker",
+                    action_name="open_safety_circuit",
                     tier=ActionTier.HARD_PHYSICAL,
                     executed=False,
                     approved=False,
@@ -380,7 +381,7 @@ class TestTierC:
             ),
         ) as mock_wf:
             await d.dispatch(
-                "trip_main_breaker", ActionTier.HARD_PHYSICAL, ctx, _result()
+                "open_safety_circuit", ActionTier.HARD_PHYSICAL, ctx, _result()
             )
 
         mock_wf.assert_awaited_once()
@@ -394,7 +395,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="YES")):
             result = await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -403,7 +404,7 @@ class TestTierC:
 
         assert result.approved is True
         assert result.executed is True
-        assert result.action_taken == "trip_main_breaker"
+        assert result.action_taken == "open_safety_circuit"
 
     async def test_tier_c_with_no_response_executes_safe_default(self):
         d = ActionDispatcher()
@@ -411,7 +412,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
             result = await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -433,7 +434,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=slow_listen):
             result = await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -463,7 +464,7 @@ class TestTierC:
                 new=AsyncMock(side_effect=fake_wait_for),
             ):
                 result = await d.dispatch(
-                    "trip_main_breaker",
+                    "open_safety_circuit",
                     ActionTier.HARD_PHYSICAL,
                     ctx,
                     _result(),
@@ -492,7 +493,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=slow_listen):
             await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -511,7 +512,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="yes")):
             result = await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -526,7 +527,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="YES")):
             result = await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -542,7 +543,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
             await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -550,6 +551,54 @@ class TestTierC:
             )
 
         store.log_action.assert_awaited_once()
+
+    async def test_tier_c_decision_logged_with_context(self):
+        store = _mock_store()
+        event = _event()
+        event.context = {
+            "site_type": "pharmacy",
+            "location": "Lagos",
+            "device_timezone": "Africa/Lagos",
+            "history_window": [{"timestamp": 1, "value": 5.0}],
+        }
+        ctx = SkillContext(
+            skill=FakeSkill(name="energy-anomaly-detector"),
+            event=event,
+            state_store=store,
+            trigger_name="overcurrent",
+        )
+        d = ActionDispatcher(
+            config={"device_timezone": "Africa/Lagos", "relay_enabled": True}
+        )
+
+        with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
+            result = await d.dispatch(
+                "trip_relay",
+                ActionTier.HARD_PHYSICAL,
+                ctx,
+                _result(action_tier="C"),
+                safe_default_action="log_to_dashboard",
+                approval_timeout_seconds=10,
+            )
+
+        assert result.approved is False
+        store.log_tier_c_decision.assert_awaited_once()
+        kwargs = store.log_tier_c_decision.await_args.kwargs
+        assert kwargs["device_id"] == "dev-01"
+        assert kwargs["site_type"] == "pharmacy"
+        assert kwargs["sensor_id"] == "load-current"
+        assert kwargs["sensor_type"] == "current_clamp"
+        assert kwargs["history_window"] == [{"timestamp": 1, "value": 5.0}]
+        assert kwargs["skill_name"] == "energy-anomaly-detector"
+        assert kwargs["trigger_name"] == "overcurrent"
+        assert kwargs["proposed_action"] == "trip_relay"
+        assert kwargs["operator_decision"] == "rejected"
+        assert kwargs["operator_response"] == "NO"
+        assert kwargs["safe_default_action"] == "log_to_dashboard"
+        assert kwargs["safe_default_used"] is True
+        assert kwargs["action_taken"] == "log_to_dashboard"
+        assert kwargs["approval_timeout_seconds"] == 10
+        assert kwargs["decision_latency_ms"] >= 0
 
     async def test_tier_c_uses_local_console_fallback_when_comms_unavailable(self):
         d = ActionDispatcher(
@@ -587,7 +636,7 @@ class TestTierC:
             ) as remote_listener,
         ):
             result = await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -598,7 +647,7 @@ class TestTierC:
         remote_listener.assert_not_awaited()
         assert result.approved is True
         assert result.operator_response == "LOCAL:YES"
-        assert result.action_taken == "trip_main_breaker"
+        assert result.action_taken == "open_safety_circuit"
 
     async def test_tier_c_local_console_no_response_runs_safe_default(self):
         d = ActionDispatcher(
@@ -629,7 +678,7 @@ class TestTierC:
             new=AsyncMock(return_value=None),
         ):
             result = await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -663,7 +712,7 @@ class TestTierC:
             ) as local_listener,
         ):
             result = await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -683,9 +732,9 @@ class TestFailedAction:
             raise RuntimeError("GPIO failure")
 
         d = ActionDispatcher()
-        d.register_executor("trip_breaker", boom)
+        d.register_executor("open_safety_circuit", boom)
         result = await d.dispatch(
-            "trip_breaker", ActionTier.INFORMATIONAL, _context(), _result()
+            "open_safety_circuit", ActionTier.INFORMATIONAL, _context(), _result()
         )
         assert result.executed is False
 
@@ -776,7 +825,7 @@ class TestApprovalMessageFormat:
             device_id="dev-lagos-01",
             timestamp_ms=1_700_000_000_000,
             result=_result(text="AC unit drawing 40% above baseline."),
-            action="trip_main_breaker",
+            action="open_safety_circuit",
             timeout_seconds=300,
             device_timezone="Africa/Lagos",
         )
@@ -799,10 +848,10 @@ class TestApprovalMessageFormat:
             device_id="dev-01",
             timestamp_ms=_ms(),
             result=_result(),
-            action="trip_main_breaker",
+            action="open_safety_circuit",
             timeout_seconds=300,
         )
-        assert "trip_main_breaker" in msg
+        assert "open_safety_circuit" in msg
 
     def test_contains_confidence_percentage(self):
         d = ActionDispatcher()
@@ -845,7 +894,7 @@ class TestApprovalMessageFormat:
             device_id="dev-01",
             timestamp_ms=_ms(),
             result=_result(text="Overcurrent detected."),
-            action="trip_main_breaker",
+            action="open_safety_circuit",
             timeout_seconds=300,
         )
         assert "OBSERVATION:" in msg
@@ -871,7 +920,7 @@ class TestApprovalMessageFormat:
             device_id="dev-01",
             timestamp_ms=_ms(),
             result=result,
-            action="trip_main_breaker",
+            action="open_safety_circuit",
             timeout_seconds=300,
         )
         assert "Detailed explanation of the fault pattern." in msg
@@ -1074,7 +1123,7 @@ class TestStatusSignalingHooks:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
             await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -1169,14 +1218,14 @@ class TestOfflineTokenApproval:
             },
         )
         exec_mock = AsyncMock()
-        d.register_executor("trip_main_breaker", exec_mock)
+        d.register_executor("open_safety_circuit", exec_mock)
         with patch.object(
             d,
             "_listen_for_local_console_response",
             new=AsyncMock(return_value="TOKEN:abc"),
         ):
             result = await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -1210,7 +1259,7 @@ class TestOfflineTokenApproval:
             new=AsyncMock(return_value="TOKEN:abc"),
         ):
             result = await d.dispatch(
-                "trip_main_breaker",
+                "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
