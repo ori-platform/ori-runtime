@@ -26,7 +26,7 @@ Ori is an agent that reasons about physical signals and acts on them.
 
 Tier A actions  — always autonomous (alerts, logs)
 Tier B actions  — autonomous by default (source switching, valve control)
-Tier C actions  — approval required (breaker trips, equipment shutdown)
+Tier C actions  — approval required (relay/contactor-controlled shutdowns)
 Tier D actions  — always autonomous, highest priority (safety cutoffs)
 ```
 
@@ -564,6 +564,13 @@ Violating them creates vulnerabilities that affect physical hardware.
 12. Database compaction logic must always query the physical tables to check for backwards clock skew
     before deleting history. Relying on host clock calculations (`now_ms - 48h < now_ms - 1h`) is a
     tautology and will blindly destroy data if the host clock jumps backward.
+
+13. Remote commands that change configuration, policy, update intent, relay state,
+    or any other actuator-affecting setting must be authenticated before execution.
+    SMS, WhatsApp, and cloud-originated commands require HMAC, signature, offline
+    token, or an equivalent replay-resistant check. Tier D evaluation and
+    execution paths must not be disableable by any remote command, including SMS,
+    WhatsApp, or cloud API.
 
 ---
 

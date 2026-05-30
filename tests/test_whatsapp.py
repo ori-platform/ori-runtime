@@ -32,7 +32,7 @@ def _result(
         latency_ms=1,
         confidence=confidence,
         action_tier="C",
-        proposed_action="trip_main_breaker",
+        proposed_action="open_safety_circuit",
     )
 
 
@@ -123,7 +123,7 @@ async def test_send_approval_request_returns_formatted_string():
     action = WhatsAppAction(provider=provider)
     msg, delivered = await action.send_approval_request(
         result=_result("AC draws 40% above baseline."),
-        action="trip_main_breaker",
+        action="open_safety_circuit",
         timeout_seconds=300,
         to_number="whatsapp:+234111",
         device_id="energy-monitor-ikeja-01",
@@ -131,7 +131,7 @@ async def test_send_approval_request_returns_formatted_string():
     assert delivered is True
     assert "energy-monitor-ikeja-01" in msg
     assert "AC draws 40% above baseline." in msg
-    assert "trip_main_breaker" in msg
+    assert "open_safety_circuit" in msg
     assert "300" in msg
     assert "95%" in msg  # confidence formatted as percentage
 
@@ -142,7 +142,7 @@ async def test_send_approval_request_sends_via_provider():
     action = WhatsAppAction(provider=provider)
     _, delivered = await action.send_approval_request(
         result=_result(),
-        action="trip_main_breaker",
+        action="open_safety_circuit",
         timeout_seconds=300,
         to_number="whatsapp:+234111",
     )

@@ -71,7 +71,7 @@ def test_log_reasoning_never_raises():
 
 def test_log_override_writes_warning(caplog):
     with caplog.at_level(logging.WARNING, logger="ori.actions.logger"):
-        LoggerAction().log_override("trip_breaker", "rejection", "dev-01")
+        LoggerAction().log_override("open_safety_circuit", "rejection", "dev-01")
     assert any(r.levelno == logging.WARNING for r in caplog.records)
 
 
@@ -83,8 +83,8 @@ def test_log_override_contains_override_type(caplog):
 
 def test_log_override_contains_action(caplog):
     with caplog.at_level(logging.WARNING, logger="ori.actions.logger"):
-        LoggerAction().log_override("trip_breaker", "rejection", "dev-01")
-    assert any("trip_breaker" in r.message for r in caplog.records)
+        LoggerAction().log_override("open_safety_circuit", "rejection", "dev-01")
+    assert any("open_safety_circuit" in r.message for r in caplog.records)
 
 
 def test_log_override_never_raises():

@@ -94,8 +94,8 @@ def _skill_tier_d() -> FakeSkill:
             }
         ],
         actions={
-            "available": [{"name": "trip_main_breaker", "tier": "D"}],
-            "defaults": {"dangerous_overcurrent": ["trip_main_breaker"]},
+            "available": [{"name": "open_safety_circuit", "tier": "D"}],
+            "defaults": {"dangerous_overcurrent": ["open_safety_circuit"]},
         },
     )
 
@@ -202,7 +202,7 @@ class TestEnergyAwareThrottle:
 
         dispatcher.dispatch.assert_called_once()
         kwargs = dispatcher.dispatch.call_args.kwargs
-        assert kwargs["action"] == "trip_main_breaker"
+        assert kwargs["action"] == "open_safety_circuit"
         assert kwargs["tier"] == "D"
 
     @pytest.mark.asyncio

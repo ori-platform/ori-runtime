@@ -87,7 +87,7 @@ Tier B  SOFT PHYSICAL        Autonomous by default. Operator can require approva
         Reversible, low-consequence. Config flag: requires_approval: true.
 
 Tier C  HARD PHYSICAL        Approval workflow. Always. No exception.
-        Tripping breakers, shutting down industrial equipment,
+        Opening relay/contactor-controlled safety circuits,
         high-pressure valve control.
         Ori reasons → proposes action via WhatsApp → operator replies YES/NO
         → action executes or is cancelled.
@@ -453,7 +453,7 @@ triggers:
     escalate_to: rule
     action_tier: B
 
-  # Tier C: Hard physical — propose breaker trip, await approval
+  # Tier C: Hard physical — propose relay/contactor-controlled shutdown, await approval
   - name: critical_fault
     condition: "load_current > rated_capacity * 3.0"
     cooldown_seconds: 0
@@ -495,10 +495,10 @@ actions:
       tier: B
       requires_approval: false # true = operator must approve each switch
 
-    - name: trip_main_breaker
+    - name: open_safety_circuit
       tier: C
       approval_message: |
-        PROPOSED: Trip main circuit breaker.
+        PROPOSED: Open the installer-wired safety circuit.
         REASON: {result.text}
         Reply YES to approve or NO to cancel.
 
@@ -508,7 +508,7 @@ actions:
   defaults:
     anomalous_draw: [alert_whatsapp, log_to_dashboard]
     source_switch_recommended: [switch_power_source, alert_sms]
-    critical_fault: [trip_main_breaker]
+    critical_fault: [open_safety_circuit]
     dangerous_overcurrent: [emergency_cutoff]
     daily_report: [alert_whatsapp]
 ```

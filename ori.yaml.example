@@ -6,7 +6,7 @@
 # ACTION TIER REFERENCE:
 #   Tier A  INFORMATIONAL   — Always autonomous. Alerts, logs, reports.
 #   Tier B  SOFT PHYSICAL   — Autonomous by default. Power switching, valves.
-#   Tier C  HARD PHYSICAL   — Approval workflow required. Breakers, shutdowns.
+#   Tier C  HARD PHYSICAL   — Approval workflow required. Relay/contactor shutdowns.
 #   Tier D  SAFETY-CRITICAL — Always autonomous. Cannot be overridden.
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -63,11 +63,11 @@ Every existing IoT platform does the same thing: collect data, apply a threshold
 inverter power automatically." ← Acted. Then told you.
 
 ✅ Ori (Tier C): "Critical fault detected on main circuit. I am
-proposing to trip the breaker. Reply YES to approve
+proposing to open the protected-load safety circuit. Reply YES to approve
 or NO to cancel. Auto-cancel in 5 minutes."
 ← Reasoned. Proposed. Awaiting you.
 
-✅ Ori (Tier D): [Relay trips immediately]
+✅ Ori (Tier D): [Installer-wired relay/contactor opens immediately]
 "Dangerous overcurrent (52A on 10A circuit). Emergency
 cutoff executed at 14:32." ← Safety. No waiting.
 ```
@@ -173,7 +173,7 @@ Tier B  SOFT PHYSICAL        Autonomous by default, configurable
         The agent acts and tells you what it did
 
 Tier C  HARD PHYSICAL        Approval workflow — always
-        Breaker trips, equipment shutdown, high-consequence control
+        Relay/contactor-controlled shutdown, high-consequence control
         The agent reasons, proposes, and waits for your YES or NO
 
 Tier D  SAFETY-CRITICAL      Always autonomous, cannot be overridden
@@ -219,7 +219,7 @@ triggers:
 
   - name: critical_fault
     condition: "load_current > rated_capacity * 3.0"
-    action_tier: C # → "Trip breaker? Reply YES/NO"
+    action_tier: C # → "Open protected load safety circuit? Reply YES/NO"
 
   - name: dangerous_overcurrent
     condition: "load_current > rated_capacity * 5.0"
@@ -251,7 +251,7 @@ Pattern consistent with a short circuit, not a temporary surge.
 Active fault propagation detected.
 
 PROPOSED ACTION:
-Trip the main circuit breaker to prevent equipment damage or fire.
+Open the installer-wired safety circuit to cut power to the protected load.
 
 CONFIDENCE: 94%
 
@@ -395,12 +395,12 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 
 ## Roadmap
 
-| Phase  | Status          | Milestone                                                             |
-| ------ | --------------- | --------------------------------------------------------------------- |
-| Core   | ✅ Active Beta  | Core runtime with 6-layer architecture and 4-tier action framework     |
-| PoC    | 🔨 In Progress  | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video. |
-| Launch | 🔨 In Progress  | Skills Hub. CLI tooling. Phone-as-gateway (Termux path live).         |
-| Growth | 🗓️ Planned      | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.          |
+| Phase  | Status         | Milestone                                                             |
+| ------ | -------------- | --------------------------------------------------------------------- |
+| Core   | ✅ Active Beta | Core runtime with 6-layer architecture and 4-tier action framework    |
+| PoC    | 🔨 In Progress | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video. |
+| Launch | 🔨 In Progress | Skills Hub. CLI tooling. Phone-as-gateway (Termux path live).         |
+| Growth | 🗓️ Planned     | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.          |
 
 ---
 

@@ -58,10 +58,10 @@ class _FakeSkill:
     actions: dict = field(
         default_factory=lambda: {
             "available": [
-                {"name": "trip_main_breaker", "tier": "C"},
+                {"name": "open_safety_circuit", "tier": "C"},
                 {"name": "alert_whatsapp", "tier": "A"},
             ],
-            "defaults": {"overcurrent_trip": ["trip_main_breaker", "alert_whatsapp"]},
+            "defaults": {"overcurrent_trip": ["open_safety_circuit", "alert_whatsapp"]},
         }
     )
     prompts: dict = field(default_factory=dict)
@@ -108,7 +108,7 @@ class TestRejectionMemory:
         await store.store_rejection(
             pattern_key="abc123",
             trigger_name="overcurrent_trip",
-            proposed_action="trip_main_breaker",
+            proposed_action="open_safety_circuit",
             operator_response="no scheduled load test",
             device_id="dev-01",
             sensor_type="current_clamp",
@@ -121,7 +121,7 @@ class TestRejectionMemory:
         assert row is not None
         assert row["pattern_key"] == "abc123"
         assert row["trigger_name"] == "overcurrent_trip"
-        assert row["proposed_action"] == "trip_main_breaker"
+        assert row["proposed_action"] == "open_safety_circuit"
         assert row["operator_response"] == "no scheduled load test"
 
     def test_pattern_key_bucketing(self):
@@ -132,13 +132,13 @@ class TestRejectionMemory:
             * 1000
         )
         k1 = StateStore._build_rejection_pattern_key(
-            "current_clamp", "overcurrent_trip", "trip_main_breaker", 10.1, ts
+            "current_clamp", "overcurrent_trip", "open_safety_circuit", 10.1, ts
         )
         k2 = StateStore._build_rejection_pattern_key(
-            "current_clamp", "overcurrent_trip", "trip_main_breaker", 10.2, ts
+            "current_clamp", "overcurrent_trip", "open_safety_circuit", 10.2, ts
         )
         k3 = StateStore._build_rejection_pattern_key(
-            "current_clamp", "overcurrent_trip", "trip_main_breaker", 11.2, ts
+            "current_clamp", "overcurrent_trip", "open_safety_circuit", 11.2, ts
         )
         assert k1 == k2
         assert k1 != k3
@@ -163,13 +163,13 @@ class TestRejectionMemory:
             * 1000
         )
         k_2 = StateStore._build_rejection_pattern_key(
-            "current_clamp", "overcurrent_trip", "trip_main_breaker", 10.0, ts_2am
+            "current_clamp", "overcurrent_trip", "open_safety_circuit", 10.0, ts_2am
         )
         k_3 = StateStore._build_rejection_pattern_key(
-            "current_clamp", "overcurrent_trip", "trip_main_breaker", 10.0, ts_3am
+            "current_clamp", "overcurrent_trip", "open_safety_circuit", 10.0, ts_3am
         )
         k_5 = StateStore._build_rejection_pattern_key(
-            "current_clamp", "overcurrent_trip", "trip_main_breaker", 10.0, ts_5am
+            "current_clamp", "overcurrent_trip", "open_safety_circuit", 10.0, ts_5am
         )
         assert k_2 == k_3
         assert k_2 != k_5
@@ -181,14 +181,14 @@ class TestRejectionMemory:
         pattern_key = store._build_rejection_pattern_key(
             event.reading.sensor_type,
             "overcurrent_trip",
-            "trip_main_breaker",
+            "open_safety_circuit",
             event.reading.value,
             event.timestamp,
         )
         await store.store_rejection(
             pattern_key=pattern_key,
             trigger_name="overcurrent_trip",
-            proposed_action="trip_main_breaker",
+            proposed_action="open_safety_circuit",
             operator_response="scheduled overnight run",
             device_id=event.device_id,
             sensor_type=event.reading.sensor_type,
@@ -200,14 +200,14 @@ class TestRejectionMemory:
 
         llm = AsyncMock()
         llm.reason.return_value = ReasoningResult(
-            text="trip breaker now",
+            text="open safety circuit now",
             tier="local_slm",
             model="qwen",
             tokens_used=10,
             latency_ms=120,
             confidence=0.8,
             action_tier="C",
-            proposed_action="trip_main_breaker",
+            proposed_action="open_safety_circuit",
         )
         elevator = IntelligenceElevator(local_llm=llm, config=_elevator_config())
 
@@ -222,14 +222,14 @@ class TestRejectionMemory:
         pattern_key = store._build_rejection_pattern_key(
             event.reading.sensor_type,
             "overcurrent_trip",
-            "trip_main_breaker",
+            "open_safety_circuit",
             event.reading.value,
             event.timestamp,
         )
         await store.store_rejection(
             pattern_key=pattern_key,
             trigger_name="overcurrent_trip",
-            proposed_action="trip_main_breaker",
+            proposed_action="open_safety_circuit",
             operator_response="old rejection",
             device_id=event.device_id,
             sensor_type=event.reading.sensor_type,
@@ -243,14 +243,14 @@ class TestRejectionMemory:
 
         llm = AsyncMock()
         llm.reason.return_value = ReasoningResult(
-            text="trip breaker now",
+            text="open safety circuit now",
             tier="local_slm",
             model="qwen",
             tokens_used=10,
             latency_ms=120,
             confidence=0.8,
             action_tier="C",
-            proposed_action="trip_main_breaker",
+            proposed_action="open_safety_circuit",
         )
         elevator = IntelligenceElevator(local_llm=llm, config=_elevator_config())
         monkeypatch.setattr("ori.reasoning.elevator._is_offline", lambda: True)
@@ -263,14 +263,14 @@ class TestRejectionMemory:
         pattern_key = store._build_rejection_pattern_key(
             event.reading.sensor_type,
             "overcurrent_trip",
-            "trip_main_breaker",
+            "open_safety_circuit",
             event.reading.value,
             event.timestamp,
         )
         await store.store_rejection(
             pattern_key=pattern_key,
             trigger_name="overcurrent_trip",
-            proposed_action="trip_main_breaker",
+            proposed_action="open_safety_circuit",
             operator_response="scheduled run",
             device_id=event.device_id,
             sensor_type=event.reading.sensor_type,
@@ -289,7 +289,7 @@ class TestRejectionMemory:
             latency_ms=120,
             confidence=0.8,
             action_tier="C",
-            proposed_action="trip_main_breaker",
+            proposed_action="open_safety_circuit",
         )
         elevator = IntelligenceElevator(local_llm=llm, config=_elevator_config())
         monkeypatch.setattr("ori.reasoning.elevator._is_offline", lambda: True)
@@ -318,17 +318,17 @@ class TestRejectionMemory:
             skill=_FakeSkill(), event=_event(value=5.0), state_store=store
         )
         res = ReasoningResult(
-            text="trip breaker",
+            text="open safety circuit",
             tier="local_slm",
             model="qwen",
             tokens_used=8,
             latency_ms=50,
             confidence=0.9,
             action_tier="C",
-            proposed_action="trip_main_breaker",
+            proposed_action="open_safety_circuit",
         )
         await dispatcher.dispatch(
-            action="trip_main_breaker",
+            action="open_safety_circuit",
             tier="C",
             context=ctx,
             result=res,
@@ -354,17 +354,17 @@ class TestRejectionMemory:
         evt.context["__handler_trigger_name"] = "overcurrent_trip"
         ctx = SkillContext(skill=_FakeSkill(), event=evt, state_store=store)
         res = ReasoningResult(
-            text="trip breaker",
+            text="open safety circuit",
             tier="local_slm",
             model="qwen",
             tokens_used=8,
             latency_ms=50,
             confidence=0.9,
             action_tier="C",
-            proposed_action="trip_main_breaker",
+            proposed_action="open_safety_circuit",
         )
         await dispatcher.dispatch(
-            action="trip_main_breaker",
+            action="open_safety_circuit",
             tier="C",
             context=ctx,
             result=res,
@@ -372,7 +372,7 @@ class TestRejectionMemory:
         key = store._build_rejection_pattern_key(
             evt.reading.sensor_type,
             "overcurrent_trip",
-            "trip_main_breaker",
+            "open_safety_circuit",
             evt.reading.value,
             evt.timestamp,
         )

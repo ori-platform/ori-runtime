@@ -21,7 +21,7 @@ Usage
 
     ok = await action.send("Hello", to_number="whatsapp:+234XXXXXXXXXX")
 
-    msg, delivered = await action.send_approval_request(result, "trip_main_breaker",
+    msg, delivered = await action.send_approval_request(result, "open_safety_circuit",
                                                         timeout_seconds=300,
                                                         to_number="whatsapp:+234XXXXXXXXXX")
 
@@ -278,7 +278,7 @@ class WhatsAppAction:
             result: The :class:`~ori.network.events.ReasoningResult` from the
                 Intelligence Elevator.
             action: Human-readable description of the proposed action
-                (e.g. ``"trip_main_breaker"``).
+                (e.g. ``"open_safety_circuit"``).
             timeout_seconds: Seconds before the request auto-cancels.
             to_number: Destination WhatsApp number
                 (e.g. ``"whatsapp:+234XXXXXXXXXX"``).

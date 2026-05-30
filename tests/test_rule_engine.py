@@ -154,9 +154,9 @@ class TestEvaluate:
         engine = RuleEngine()
         result = await engine.evaluate(
             _event(value=15.0),
-            [_rule(condition="value > 10.0", action="trip_breaker")],
+            [_rule(condition="value > 10.0", action="open_safety_circuit")],
         )
-        assert result.action == "trip_breaker"
+        assert result.action == "open_safety_circuit"
 
     @pytest.mark.asyncio
     async def test_result_carries_escalate_to(self):

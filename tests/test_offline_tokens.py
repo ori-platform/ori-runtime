@@ -63,7 +63,7 @@ class TestOfflineTierCTokenVerifier:
             private_key=private_key,
             token_id="tok-01",
             device_id="dev-01",
-            action_scope="trip_main_breaker",
+            action_scope="open_safety_circuit",
             issued_at=now_s - 5,
             expires_at=now_s + 120,
         )
@@ -74,7 +74,7 @@ class TestOfflineTierCTokenVerifier:
             first = await verifier.verify_token(
                 token,
                 expected_device_id="dev-01",
-                expected_action="trip_main_breaker",
+                expected_action="open_safety_circuit",
                 state_store=store,
             )
             assert first.approved is True
@@ -82,7 +82,7 @@ class TestOfflineTierCTokenVerifier:
             second = await verifier.verify_token(
                 token,
                 expected_device_id="dev-01",
-                expected_action="trip_main_breaker",
+                expected_action="open_safety_circuit",
                 state_store=store,
             )
             assert second.approved is False
@@ -103,7 +103,7 @@ class TestOfflineTierCTokenVerifier:
             private_key=private_key,
             token_id="tok-02",
             device_id="dev-a",
-            action_scope="trip_main_breaker",
+            action_scope="open_safety_circuit",
             issued_at=now_s - 5,
             expires_at=now_s + 120,
         )
@@ -114,7 +114,7 @@ class TestOfflineTierCTokenVerifier:
             result = await verifier.verify_token(
                 token,
                 expected_device_id="dev-b",
-                expected_action="trip_main_breaker",
+                expected_action="open_safety_circuit",
                 state_store=store,
             )
             assert result.approved is False

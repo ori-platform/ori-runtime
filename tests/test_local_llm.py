@@ -93,7 +93,7 @@ class TestReasonResult:
         model_file.write_bytes(b"fake")
         llm, _ = _llm_with_mock(str(model_file))
         with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):
-            result = await llm.reason("overcurrent detected — trip breaker?")
+            result = await llm.reason("overcurrent detected — open safety circuit?")
         assert result.action_tier == "A"
 
     async def test_text_stripped(self, tmp_path):

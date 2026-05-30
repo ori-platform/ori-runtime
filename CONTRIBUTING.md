@@ -143,7 +143,7 @@ The **Action Tier Framework** is what makes Ori genuinely agentic:
 | ----- | --------------- | ----------------------------------- | --------------------------------- |
 | **A** | Informational   | Always autonomous                   | WhatsApp alerts, logs             |
 | **B** | Soft Physical   | Autonomous by default               | Source switching, valve control   |
-| **C** | Hard Physical   | Approval required                   | Breaker trips, equipment shutdown |
+| **C** | Hard Physical   | Approval required                   | Relay/contactor-controlled shutdown |
 | **D** | Safety-Critical | Always autonomous, highest priority | Emergency cutoffs                 |
 
 For the complete architecture, read [`CLAUDE.md`](CLAUDE.md).
