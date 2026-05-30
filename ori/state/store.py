@@ -788,7 +788,9 @@ class StateStore:
             item["history_window"] = json.loads(item.pop("history_window_json"))
             item["safe_default_used"] = bool(item["safe_default_used"])
             item["action_executed"] = bool(item["action_executed"])
-            item["final_action_result"] = json.loads(item.pop("final_action_result_json"))
+            item["final_action_result"] = json.loads(
+                item.pop("final_action_result_json")
+            )
             item["later_outcome"] = json.loads(item.pop("later_outcome_json"))
             result.append(item)
         return result
