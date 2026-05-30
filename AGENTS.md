@@ -571,6 +571,8 @@ Violating them creates vulnerabilities that affect physical hardware.
     token, or an equivalent replay-resistant check. Tier D evaluation and
     execution paths must not be disableable by any remote command, including SMS,
     WhatsApp, or cloud API.
+    All remote command handlers must call `RemoteCommandVerifier` before executing
+    or queueing any state-changing command.
 
 ---
 

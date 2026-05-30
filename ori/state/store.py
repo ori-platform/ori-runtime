@@ -150,6 +150,20 @@ CREATE TABLE IF NOT EXISTS inbound_messages (
 CREATE INDEX IF NOT EXISTS idx_inbound_lookup
     ON inbound_messages (channel, from_number, received_at, consumed_at);
 
+CREATE TABLE IF NOT EXISTS remote_command_log (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_id     TEXT    NOT NULL DEFAULT '',
+    channel        TEXT    NOT NULL DEFAULT '',
+    command        TEXT    NOT NULL DEFAULT '',
+    accepted       INTEGER NOT NULL,
+    reason         TEXT    NOT NULL,
+    issued_at_ms   INTEGER,
+    received_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_command_log_command_id
+    ON remote_command_log (command_id, accepted, received_at_ms DESC);
+
 CREATE TABLE IF NOT EXISTS alert_outbox (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     alert_id        TEXT    NOT NULL UNIQUE,
@@ -873,6 +887,98 @@ class StateStore:
         )
         self._conn.commit()
         return str(row["message"])
+
+    # ─── remote_command_log ───────────────────────────────────────────────────
+
+    async def has_remote_command(self, command_id: str) -> bool:
+        return await self._run_read(self._has_remote_command_sync, command_id)
+
+    def _has_remote_command_sync(
+        self, conn: sqlite3.Connection, command_id: str
+    ) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM remote_command_log
+            WHERE command_id = ? AND accepted = 1
+            LIMIT 1
+            """,
+            (str(command_id or ""),),
+        ).fetchone()
+        return row is not None
+
+    async def log_remote_command_attempt(
+        self,
+        *,
+        command_id: str,
+        channel: str,
+        command: str,
+        accepted: bool,
+        reason: str,
+        issued_at_ms: int | None = None,
+        received_at_ms: int | None = None,
+    ) -> None:
+        await self._run_write(
+            self._log_remote_command_attempt_sync,
+            command_id,
+            channel,
+            command,
+            accepted,
+            reason,
+            issued_at_ms,
+            received_at_ms if received_at_ms is not None else now_ms(),
+        )
+
+    def _log_remote_command_attempt_sync(
+        self,
+        command_id: str,
+        channel: str,
+        command: str,
+        accepted: bool,
+        reason: str,
+        issued_at_ms: int | None,
+        received_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO remote_command_log
+                (command_id, channel, command, accepted, reason, issued_at_ms, received_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(command_id or ""),
+                str(channel or ""),
+                str(command or ""),
+                1 if accepted else 0,
+                str(reason or ""),
+                issued_at_ms,
+                received_at_ms,
+            ),
+        )
+        self._conn.commit()
+
+    async def get_remote_command_log(self, limit: int = 50) -> list[dict]:
+        return await self._run_read(self._get_remote_command_log_sync, limit)
+
+    def _get_remote_command_log_sync(
+        self, conn: sqlite3.Connection, limit: int
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT command_id, channel, command, accepted, reason, issued_at_ms, received_at_ms
+            FROM remote_command_log
+            ORDER BY received_at_ms DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["accepted"] = bool(item["accepted"])
+            result.append(item)
+        return result
 
     # ─── alert_outbox ─────────────────────────────────────────────────────────
 

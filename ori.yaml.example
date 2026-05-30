@@ -274,6 +274,12 @@ os_sandbox:
   exec_timeout_ms: 2000
   max_output_bytes: 65536
 
+security:
+  remote_commands:
+    enabled: false                               # state-changing SMS/WhatsApp/cloud commands require HMAC
+    hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
+    max_skew_seconds: 300
+
 actions:
   # For Nigeria: use sms as primary (Africa's Talking — no approval required)
   # For UK/EU:   use whatsapp as primary

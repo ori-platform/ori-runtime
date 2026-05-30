@@ -57,6 +57,7 @@ from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
+from ori.security.remote_commands import RemoteCommandVerifier
 from ori.skills.loader import SkillLoader
 from ori.skills.signing import verify_signed_payload
 from ori.state.store import StateStore
@@ -283,8 +284,13 @@ class OriRuntime:
         await self._state_store.open()
 
         # ── Step C: Instantiate action executors and ActionDispatcher ─────────
+        remote_command_verifier = _build_remote_command_verifier(config)
         whatsapp_action = WhatsAppAction(provider=TwilioProvider())
-        sms_action = SMSAction(state_store=self._state_store, config=config.actions.sms)
+        sms_action = SMSAction(
+            state_store=self._state_store,
+            config=config.actions.sms,
+            remote_command_verifier=remote_command_verifier,
+        )
         coap_action = CoAPAction(config=config.actions.coap)
         self._sms_action = sms_action
         logger_action = LoggerAction()
@@ -1950,6 +1956,31 @@ def _build_offline_token_verifier(actions_cfg: Any) -> OfflineTierCTokenVerifier
     return OfflineTierCTokenVerifier(
         public_key_b64=str(offline_cfg.get("public_key_b64", "")),
         max_clock_skew_s=int(offline_cfg.get("max_clock_skew_s", 300)),
+    )
+
+
+def _build_remote_command_verifier(config: Config) -> RemoteCommandVerifier | None:
+    security_cfg = config.security if isinstance(config.security, dict) else {}
+    remote_cfg = security_cfg.get("remote_commands") or {}
+    if not isinstance(remote_cfg, dict):
+        return None
+    if not is_truthy(remote_cfg.get("enabled", False)):
+        return None
+
+    secret_env = str(
+        remote_cfg.get("hmac_secret_env", "ORI_REMOTE_COMMAND_HMAC_SECRET")
+    ).strip()
+    shared_secret = os.environ.get(secret_env, "")
+    if not shared_secret:
+        logger.warning(
+            "[runtime] remote commands enabled but %s is not set; commands will fail closed.",
+            secret_env,
+        )
+    max_skew_ms = int(remote_cfg.get("max_skew_seconds", 300)) * 1000
+    return RemoteCommandVerifier(
+        device_id=str(config.device.id),
+        shared_secret=shared_secret,
+        max_skew_ms=max_skew_ms,
     )
 
 

@@ -142,6 +142,16 @@ class TestLoadExample:
         assert cfg.health_socket["enabled"] is True
         assert cfg.health_socket["path"] == "/run/ori/health.sock"
         assert cfg.health_socket["mode"] == 0o660
+
+    def test_security_remote_commands_defaults(self):
+        cfg = Config.load(EXAMPLE_YAML)
+        remote = cfg.security["remote_commands"]
+        assert remote["enabled"] is False
+        assert remote["hmac_secret_env"] == "ORI_REMOTE_COMMAND_HMAC_SECRET"
+        assert remote["max_skew_seconds"] == 300
+
+    def test_os_sandbox_defaults(self):
+        cfg = Config.load(EXAMPLE_YAML)
         assert cfg.os_sandbox["enabled"] is True
         assert cfg.os_sandbox["require_for_community"] is False
         assert cfg.os_sandbox["exec_timeout_ms"] == 2000
@@ -417,6 +427,61 @@ class TestDeviceValidation:
             """,
         )
         with pytest.raises(ConfigValidationError, match="country_code"):
+            Config.load(yaml_path)
+
+
+# ─── Security validation ──────────────────────────────────────────────────────
+
+
+class TestSecurityValidation:
+    def test_rejects_non_mapping_security(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security: []
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="security"):
+            Config.load(yaml_path)
+
+    def test_rejects_invalid_remote_command_skew(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                enabled: true
+                hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
+                max_skew_seconds: -1
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="max_skew_seconds"):
             Config.load(yaml_path)
 
 

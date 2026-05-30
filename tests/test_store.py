@@ -90,6 +90,7 @@ class TestLifecycle:
             "tier_c_decision_log",
             "causal_memory",
             "skill_state",
+            "remote_command_log",
             "alert_outbox",
         } <= names
 

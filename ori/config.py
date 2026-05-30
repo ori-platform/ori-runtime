@@ -174,6 +174,7 @@ class Config:
     hal: HalConfig
     logging: LoggingConfig
     device_policy: dict = field(default_factory=dict)
+    security: dict = field(default_factory=dict)
     health_socket: dict = field(default_factory=dict)
     os_sandbox: dict = field(default_factory=dict)
     state: StateConfig = field(default_factory=StateConfig)
@@ -209,6 +210,7 @@ class Config:
         actions = _parse_actions(data.get("actions", {}))
         hal = _parse_hal(data.get("hal"))
         device_policy = _parse_device_policy(data.get("device_policy"))
+        security = _parse_security(data.get("security"))
         health_socket = _parse_health_socket(data.get("health_socket"))
         os_sandbox = _parse_os_sandbox(data.get("os_sandbox"))
         state_cfg = _parse_state(data.get("state"))
@@ -374,6 +376,7 @@ class Config:
             actions=actions,
             hal=hal,
             device_policy=device_policy,
+            security=security,
             health_socket=health_socket,
             os_sandbox=os_sandbox,
             state=state_cfg,
@@ -1053,6 +1056,50 @@ def _parse_device_policy(data: Any) -> dict:
                 "device_policy.public_key_b64 is missing or not properly interpolated."
             )
 
+    return out
+
+
+def _parse_security(data: Any) -> dict:
+    """Parse security controls that are not tied to one action channel."""
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ConfigValidationError("'security' must be a mapping.")
+
+    out = dict(data)
+    remote = out.get("remote_commands") or {}
+    if not isinstance(remote, dict):
+        raise ConfigValidationError("security.remote_commands must be a mapping.")
+
+    try:
+        max_skew_seconds = int(remote.get("max_skew_seconds", 300))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "security.remote_commands.max_skew_seconds must be an integer."
+        ) from exc
+    if max_skew_seconds < 0:
+        raise ConfigValidationError(
+            "security.remote_commands.max_skew_seconds must be >= 0."
+        )
+
+    enabled = (
+        str(remote.get("enabled", "")).strip().lower() == "true"
+        or remote.get("enabled") is True
+    )
+    hmac_secret_env = str(
+        remote.get("hmac_secret_env", "ORI_REMOTE_COMMAND_HMAC_SECRET")
+    ).strip()
+    if enabled and not hmac_secret_env:
+        raise ConfigValidationError(
+            "security.remote_commands.hmac_secret_env is required when enabled."
+        )
+
+    out["remote_commands"] = {
+        **remote,
+        "enabled": enabled,
+        "hmac_secret_env": hmac_secret_env,
+        "max_skew_seconds": max_skew_seconds,
+    }
     return out
 
 

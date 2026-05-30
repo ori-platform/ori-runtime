@@ -29,6 +29,11 @@ import time
 from typing import Any
 
 from ori.bool_utils import is_truthy
+from ori.security.remote_commands import (
+    RemoteCommandVerifier,
+    extract_remote_command_payload,
+    handle_remote_command,
+)
 from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -74,6 +79,7 @@ class SMSAction:
         state_store: Any = None,
         poll_interval_seconds: int = _POLL_INTERVAL_SECONDS,
         config: dict[str, Any] | None = None,
+        remote_command_verifier: RemoteCommandVerifier | None = None,
     ) -> None:
         sms_cfg = config if isinstance(config, dict) else {}
 
@@ -105,6 +111,7 @@ class SMSAction:
             sms_cfg.get("AT_SENDER_ID") or os.environ.get("AT_SENDER_ID", "ORI")
         )
         self._state_store = state_store
+        self._remote_command_verifier = remote_command_verifier
         self._poll_interval_seconds = max(1, int(poll_interval_seconds))
         self._ip_ready = bool(self._api_key)
 
@@ -420,6 +427,45 @@ class SMSAction:
             return False
 
         try:
+            command_payload = extract_remote_command_payload(
+                payload, channel="sms", from_number=from_number
+            )
+            if command_payload is not None:
+                if self._remote_command_verifier is None:
+                    if hasattr(self._state_store, "log_remote_command_attempt"):
+                        await self._state_store.log_remote_command_attempt(
+                            command_id=str(command_payload.get("command_id", "") or ""),
+                            channel="sms",
+                            command=str(command_payload.get("command", "") or ""),
+                            accepted=False,
+                            reason="remote_command_verifier_disabled",
+                            issued_at_ms=_safe_int_or_none(
+                                command_payload.get("issued_at_ms")
+                            ),
+                        )
+                    logger.warning(
+                        "SMSAction.ingest_incoming_webhook: remote command received but verifier is disabled"
+                    )
+                    return False
+                result = await handle_remote_command(
+                    command_payload,
+                    channel="sms",
+                    state_store=self._state_store,
+                    verifier=self._remote_command_verifier,
+                )
+                if not result.accepted:
+                    logger.warning(
+                        "SMSAction.ingest_incoming_webhook: rejected remote command reason=%s",
+                        result.reason,
+                    )
+                    return False
+                logger.info(
+                    "SMSAction.ingest_incoming_webhook: accepted remote command command_id=%s command=%s",
+                    result.command.command_id if result.command else "",
+                    result.command.command if result.command else "",
+                )
+                return True
+
             await self._state_store.store_incoming_message(
                 channel="sms",
                 from_number=from_number,
@@ -483,3 +529,10 @@ class SMSAction:
 def _normalize_phone(value: str) -> str:
     """Normalize a phone number for stable matching."""
     return "".join(ch for ch in value if ch.isdigit() or ch == "+")
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
