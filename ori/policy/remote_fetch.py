@@ -4,6 +4,7 @@
 """Secure remote DevicePolicy fetch and verification helpers."""
 
 import asyncio
+import hashlib
 import json
 import time
 import urllib.error
@@ -119,6 +120,11 @@ def _build_config(raw: dict[str, Any]) -> RemotePolicyFetchConfig:
 
 
 def _http_get_json(cfg: RemotePolicyFetchConfig) -> tuple[str, dict[str, Any]]:
+    body = _http_get_json_bytes(cfg)
+    return _decode_json_body(body)
+
+
+def _http_get_json_bytes(cfg: RemotePolicyFetchConfig) -> bytes:
     req = urllib.request.Request(
         cfg.url,
         headers={
@@ -152,7 +158,10 @@ def _http_get_json(cfg: RemotePolicyFetchConfig) -> tuple[str, dict[str, Any]]:
             "auth_or_http_error",
             f"policy endpoint returned HTTP {status}",
         )
+    return body
 
+
+def _decode_json_body(body: bytes) -> tuple[str, dict[str, Any]]:
     try:
         raw_payload = body.decode("utf-8")
     except Exception as exc:
@@ -270,6 +279,53 @@ async def fetch_remote_device_policy_bundle(
     _validate_fetch_config(cfg)
 
     raw_payload, payload = await asyncio.to_thread(_http_get_json, cfg)
+    verified = _verify_payload(
+        payload,
+        cfg,
+        current_policy_version=current_policy_version,
+    )
+    return FetchedRemotePolicy(
+        policy=verified,
+        raw_payload=raw_payload,
+        payload=payload,
+    )
+
+
+async def fetch_remote_device_policy_bundle_by_reference(
+    raw_config: dict[str, Any],
+    *,
+    url: str,
+    expected_sha256: str,
+    current_policy_version: int | None = None,
+) -> FetchedRemotePolicy:
+    """Fetch a referenced signed DevicePolicy bundle after content-hash check."""
+    ref_url = str(url or "").strip()
+    digest = str(expected_sha256 or "").strip().lower()
+    if not ref_url:
+        raise RemotePolicyFetchError("invalid_config", "policy reference URL is empty")
+    if not ref_url.startswith("https://"):
+        raise RemotePolicyFetchError(
+            "invalid_config",
+            "policy reference URL must start with https://",
+        )
+    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+        raise RemotePolicyFetchError(
+            "invalid_config",
+            "policy reference sha256 must be a 64-character hex digest",
+        )
+
+    cfg = _build_config({**raw_config, "url": ref_url})
+    _validate_fetch_config(cfg)
+
+    body = await asyncio.to_thread(_http_get_json_bytes, cfg)
+    actual_digest = hashlib.sha256(body).hexdigest()
+    if actual_digest != digest:
+        raise RemotePolicyFetchError(
+            "hash_mismatch",
+            "policy reference content hash does not match expected sha256",
+        )
+
+    raw_payload, payload = _decode_json_body(body)
     verified = _verify_payload(
         payload,
         cfg,

@@ -50,6 +50,7 @@ from ori.policy.remote_fetch import (
     RemotePolicyFetchError,
     device_policy_from_payload,
     fetch_remote_device_policy_bundle,
+    fetch_remote_device_policy_bundle_by_reference,
 )
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
@@ -974,6 +975,70 @@ class OriRuntime:
                 executed=False,
             )
 
+        if command.command == "APPLY_POLICY":
+            if self._config is None or self._dispatcher is None:
+                return command_result(
+                    command,
+                    status=STATUS_PRECONDITION_FAILED,
+                    detail="runtime config or dispatcher is unavailable",
+                    executed=False,
+                )
+            policy_cfg = (
+                self._config.device_policy
+                if isinstance(self._config.device_policy, dict)
+                else {}
+            )
+            if not bool(policy_cfg.get("enabled", False)):
+                return command_result(
+                    command,
+                    status=STATUS_PRECONDITION_FAILED,
+                    detail="device_policy is not enabled",
+                    executed=False,
+                )
+
+            reference_url = str(command.args.get("url", "") or "").strip()
+            expected_sha256 = str(command.args.get("sha256") or "").strip()
+            if not reference_url or not expected_sha256:
+                return command_result(
+                    command,
+                    status=STATUS_PRECONDITION_FAILED,
+                    detail="APPLY_POLICY requires args.url and args.sha256",
+                    executed=False,
+                )
+
+            try:
+                fetched = await fetch_remote_device_policy_bundle_by_reference(
+                    policy_cfg,
+                    url=reference_url,
+                    expected_sha256=expected_sha256,
+                    current_policy_version=self._dispatcher.current_policy_version(),
+                )
+                await self._apply_fetched_remote_device_policy(
+                    config=self._config,
+                    fetched=fetched,
+                    dispatcher=self._dispatcher,
+                )
+                return command_result(
+                    command,
+                    status=STATUS_EXECUTED,
+                    detail="referenced DevicePolicy applied",
+                    executed=True,
+                )
+            except RemotePolicyFetchError as exc:
+                await self._audit_policy_rejection(
+                    device_id=self._config.device.id,
+                    reason_code=exc.code,
+                    detail=str(exc),
+                    policy_version=exc.policy_version,
+                    payload_timestamp=exc.payload_timestamp,
+                )
+                return command_result(
+                    command,
+                    status=STATUS_FAILED,
+                    detail=f"referenced DevicePolicy rejected: {exc.code}",
+                    executed=False,
+                )
+
         logger.error(
             "[runtime] remote command policy/handler mismatch command_id=%s command=%s policy_status=%s",
             command.command_id,
@@ -1338,37 +1403,11 @@ class OriRuntime:
                 config.device_policy,
                 current_policy_version=current_version,
             )
-            dispatcher.update_policy(fetched.policy)
-            logger.info(
-                "[runtime] remote DevicePolicy applied — version=%s tier=%s valid_until=%s",
-                fetched.policy.policy_version,
-                fetched.policy.tier,
-                fetched.policy.valid_until,
+            await self._apply_fetched_remote_device_policy(
+                config=config,
+                fetched=fetched,
+                dispatcher=dispatcher,
             )
-            if self._state_store is not None:
-                try:
-                    await self._state_store.upsert_device_policy_cache(
-                        policy_version=fetched.policy.policy_version,
-                        tier=fetched.policy.tier,
-                        relay_b_enabled=fetched.policy.relay_b_enabled,
-                        relay_c_enabled=fetched.policy.relay_c_enabled,
-                        cloud_llm_enabled=fetched.policy.cloud_llm_enabled,
-                        valid_until=fetched.policy.valid_until,
-                        issued_at=fetched.policy.issued_at,
-                        signature=fetched.policy.signature,
-                        raw_payload=fetched.raw_payload,
-                    )
-                except Exception:
-                    logger.exception(
-                        "[runtime] failed to persist verified DevicePolicy cache"
-                    )
-                    await self._audit_policy_rejection(
-                        device_id=config.device.id,
-                        reason_code="cache_write_failed",
-                        detail="verified policy applied but cache persistence failed",
-                        policy_version=fetched.policy.policy_version,
-                        payload_timestamp=int(fetched.payload.get("timestamp", 0)),
-                    )
             return True
         except RemotePolicyFetchError as exc:
             logger.warning(
@@ -1402,6 +1441,45 @@ class OriRuntime:
                 payload_timestamp=None,
             )
             return False
+
+    async def _apply_fetched_remote_device_policy(
+        self,
+        *,
+        config: Config,
+        fetched: Any,
+        dispatcher: ActionDispatcher,
+    ) -> None:
+        """Apply a previously verified remote DevicePolicy and cache it."""
+        dispatcher.update_policy(fetched.policy)
+        logger.info(
+            "[runtime] remote DevicePolicy applied — version=%s tier=%s valid_until=%s",
+            fetched.policy.policy_version,
+            fetched.policy.tier,
+            fetched.policy.valid_until,
+        )
+        if self._state_store is None:
+            return
+        try:
+            await self._state_store.upsert_device_policy_cache(
+                policy_version=fetched.policy.policy_version,
+                tier=fetched.policy.tier,
+                relay_b_enabled=fetched.policy.relay_b_enabled,
+                relay_c_enabled=fetched.policy.relay_c_enabled,
+                cloud_llm_enabled=fetched.policy.cloud_llm_enabled,
+                valid_until=fetched.policy.valid_until,
+                issued_at=fetched.policy.issued_at,
+                signature=fetched.policy.signature,
+                raw_payload=fetched.raw_payload,
+            )
+        except Exception:
+            logger.exception("[runtime] failed to persist verified DevicePolicy cache")
+            await self._audit_policy_rejection(
+                device_id=config.device.id,
+                reason_code="cache_write_failed",
+                detail="verified policy applied but cache persistence failed",
+                policy_version=fetched.policy.policy_version,
+                payload_timestamp=int(fetched.payload.get("timestamp", 0)),
+            )
 
     async def _device_policy_refresh_loop(
         self,

@@ -25,7 +25,16 @@ Rationale:
 - Inline policy application would create a second policy injection surface and
   increase the chance of bypassing existing verification invariants.
 
-Implication:
+Implementation:
 
-- `APPLY_POLICY` remains audit-only until the fetch URL, expected hash, and
-  signed bundle verification flow are implemented and tested.
+- `APPLY_POLICY` may execute only when the authenticated command supplies
+  `args.url` and `args.sha256`.
+- The URL must use HTTPS.
+- The fetched bytes must match the supplied SHA-256 digest before JSON parsing.
+- The decoded bundle must then pass the same signed DevicePolicy verification
+  chain used by remote policy refresh before the runtime applies it.
+- Rejections keep the current policy in place and are audited.
+- The device's policy bearer token is forwarded to the reference URL. The URL
+  must be within the operator's trust boundary. If the HMAC shared secret is
+  ever compromised, an attacker could direct the device to exfiltrate the
+  bearer token by supplying a URL they control.

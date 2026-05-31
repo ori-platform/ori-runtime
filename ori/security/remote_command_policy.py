@@ -22,13 +22,12 @@ STATUS_UNSUPPORTED = "unsupported"
 STATUS_FAILED = "failed"
 STATUS_PRECONDITION_FAILED = "precondition_failed"
 
-EXECUTABLE_COMMANDS = frozenset({"REFRESH_POLICY"})
+EXECUTABLE_COMMANDS = frozenset({"APPLY_POLICY", "REFRESH_POLICY"})
 
 AUDIT_ONLY_COMMANDS = frozenset(
     {
         "UPDATE_CONFIG",
         "UPDATE_SKILL",
-        "APPLY_POLICY",
         "RESTART_RUNTIME",
         "SET_THRESHOLD",
         "SET_RELAY_MODE",
