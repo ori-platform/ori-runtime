@@ -6,6 +6,7 @@ import json
 import pytest
 
 from ori.actions.sms import SMSAction
+from ori.actions.whatsapp import WhatsAppAction
 from ori.security.remote_commands import (
     RemoteCommandVerifier,
     extract_remote_command_payload,
@@ -52,6 +53,34 @@ def _verifier(secret: str = "shared-secret") -> RemoteCommandVerifier:
         shared_secret=secret,
         max_skew_ms=300_000,
     )
+
+
+class _InboxWhatsAppProvider:
+    def __init__(self, inbox: list[str]) -> None:
+        self.inbox = inbox
+
+    async def send(self, to: str, message: str) -> bool:
+        return True
+
+    async def get_incoming(self, from_number: str, since_ms: int) -> list[str]:
+        messages, self.inbox = self.inbox[:], []
+        return messages
+
+
+class _RepeatingWhatsAppProvider:
+    def __init__(self, repeated: str, final: str) -> None:
+        self.repeated = repeated
+        self.final = final
+        self.calls = 0
+
+    async def send(self, to: str, message: str) -> bool:
+        return True
+
+    async def get_incoming(self, from_number: str, since_ms: int) -> list[str]:
+        self.calls += 1
+        if self.calls < 3:
+            return [self.repeated]
+        return [self.repeated, self.final]
 
 
 async def test_accepts_valid_hmac_command(store, fixed_now):
@@ -191,6 +220,22 @@ def test_extract_remote_command_ignores_plain_approval_reply():
     assert result is None
 
 
+def test_extract_remote_command_uses_ingress_channel_not_payload_channel(fixed_now):
+    command = _payload(now=fixed_now)
+    command["channel"] = "sms"
+    payload = {"from": "whatsapp:+2348012345678", "text": json.dumps(command)}
+
+    result = extract_remote_command_payload(
+        payload,
+        channel="whatsapp",
+        from_number="whatsapp:+2348012345678",
+    )
+
+    assert result is not None
+    assert result["channel"] == "whatsapp"
+    assert result["from_number"] == "whatsapp:+2348012345678"
+
+
 async def test_sms_command_handler_rejects_unsigned_config_change(store, fixed_now):
     action = SMSAction(
         state_store=store,
@@ -248,3 +293,102 @@ async def test_sms_handler_accepts_signed_command_without_storing_approval(
     rows = await store.get_remote_command_log()
     assert rows[0]["accepted"] is True
     assert await store.consume_incoming_message("sms", "+2348012345678", 0) is None
+
+
+async def test_whatsapp_approval_yes_no_is_not_treated_as_remote_command(store):
+    provider = _InboxWhatsAppProvider(["YES"])
+    action = WhatsAppAction(provider=provider, state_store=store)
+
+    reply = await action.listen_for_response(
+        from_number="whatsapp:+2348012345678",
+        timeout_seconds=1,
+    )
+
+    assert reply == "YES"
+    assert await store.get_remote_command_log() == []
+
+
+async def test_whatsapp_rejects_unsigned_command_and_continues_to_approval(
+    store, fixed_now
+):
+    command = _payload(now=fixed_now, command_id="wa-unsigned")
+    provider = _InboxWhatsAppProvider([json.dumps(command), "YES"])
+    action = WhatsAppAction(
+        provider=provider,
+        state_store=store,
+        remote_command_verifier=_verifier(),
+    )
+
+    reply = await action.listen_for_response(
+        from_number="whatsapp:+2348012345678",
+        timeout_seconds=1,
+    )
+
+    assert reply == "YES"
+    rows = await store.get_remote_command_log()
+    assert rows[0]["command_id"] == "wa-unsigned"
+    assert rows[0]["channel"] == "whatsapp"
+    assert rows[0]["accepted"] is False
+    assert rows[0]["reason"] == "missing_signature"
+
+
+async def test_whatsapp_accepts_signed_command_without_returning_it_as_approval(
+    store, fixed_now
+):
+    command = _signed(_payload(now=fixed_now, command_id="wa-signed"))
+    provider = _InboxWhatsAppProvider([f"ORI_COMMAND {json.dumps(command)}", "NO"])
+    action = WhatsAppAction(
+        provider=provider,
+        state_store=store,
+        remote_command_verifier=_verifier(),
+    )
+
+    reply = await action.listen_for_response(
+        from_number="whatsapp:+2348012345678",
+        timeout_seconds=1,
+    )
+
+    assert reply == "NO"
+    rows = await store.get_remote_command_log()
+    assert rows[0]["command_id"] == "wa-signed"
+    assert rows[0]["channel"] == "whatsapp"
+    assert rows[0]["accepted"] is True
+
+
+async def test_whatsapp_audits_command_when_verifier_disabled(store, fixed_now):
+    command = _payload(now=fixed_now, command_id="wa-disabled")
+    provider = _InboxWhatsAppProvider([json.dumps(command), "YES"])
+    action = WhatsAppAction(provider=provider, state_store=store)
+
+    reply = await action.listen_for_response(
+        from_number="whatsapp:+2348012345678",
+        timeout_seconds=1,
+    )
+
+    assert reply == "YES"
+    rows = await store.get_remote_command_log()
+    assert rows[0]["command_id"] == "wa-disabled"
+    assert rows[0]["channel"] == "whatsapp"
+    assert rows[0]["accepted"] is False
+    assert rows[0]["reason"] == "remote_command_verifier_disabled"
+
+
+async def test_whatsapp_repeated_poll_result_is_audited_once(store, fixed_now):
+    command = _signed(_payload(now=fixed_now, command_id="wa-repeat"))
+    provider = _RepeatingWhatsAppProvider(json.dumps(command), "YES")
+    action = WhatsAppAction(
+        provider=provider,
+        state_store=store,
+        remote_command_verifier=_verifier(),
+    )
+    action._POLL_INTERVAL_SECONDS = 0
+
+    reply = await action.listen_for_response(
+        from_number="whatsapp:+2348012345678",
+        timeout_seconds=1,
+    )
+
+    assert reply == "YES"
+    rows = await store.get_remote_command_log()
+    assert len([row for row in rows if row["command_id"] == "wa-repeat"]) == 1
+    assert rows[0]["accepted"] is True

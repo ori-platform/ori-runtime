@@ -33,9 +33,14 @@ import asyncio
 import logging
 import os
 import time
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from ori.network.events import ReasoningResult
+from ori.security.remote_commands import (
+    RemoteCommandVerifier,
+    extract_remote_command_payload,
+    verify_extracted_remote_command,
+)
 from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -244,8 +249,16 @@ class WhatsAppAction:
 
     _POLL_INTERVAL_SECONDS: int = 5
 
-    def __init__(self, provider: WhatsAppProvider | None = None) -> None:
+    def __init__(
+        self,
+        provider: WhatsAppProvider | None = None,
+        *,
+        state_store: Any = None,
+        remote_command_verifier: RemoteCommandVerifier | None = None,
+    ) -> None:
         self._provider: WhatsAppProvider = provider or TwilioProvider()
+        self._state_store = state_store
+        self._remote_command_verifier = remote_command_verifier
 
     # ------------------------------------------------------------------
     # Public API
@@ -330,11 +343,46 @@ class WhatsAppAction:
         """
         since_ms = since_ms if since_ms is not None else now_ms()
         deadline = time.monotonic() + timeout_seconds
+        seen_remote_command_ids: set[str] = set()
 
         while time.monotonic() < deadline:
             messages = await self._provider.get_incoming(from_number, since_ms)
-            if messages:
-                reply = messages[0]
+            for reply in messages:
+                command_payload = {"text": reply}
+                extracted_command = extract_remote_command_payload(
+                    command_payload,
+                    channel="whatsapp",
+                    from_number=from_number,
+                )
+                if extracted_command is not None:
+                    command_id = str(extracted_command.get("command_id", "") or "")
+                    if command_id and command_id in seen_remote_command_ids:
+                        continue
+                    if command_id:
+                        seen_remote_command_ids.add(command_id)
+                    command_result = await verify_extracted_remote_command(
+                        extracted_command,
+                        channel="whatsapp",
+                        state_store=self._state_store,
+                        verifier=self._remote_command_verifier,
+                    )
+                    if command_result.accepted:
+                        logger.info(
+                            "WhatsAppAction.listen_for_response: accepted remote command command_id=%s command=%s",
+                            command_result.command.command_id
+                            if command_result.command
+                            else "",
+                            command_result.command.command
+                            if command_result.command
+                            else "",
+                        )
+                    else:
+                        logger.warning(
+                            "WhatsAppAction.listen_for_response: rejected remote command reason=%s",
+                            command_result.reason,
+                        )
+                    continue
+
                 logger.info(
                     "WhatsAppAction.listen_for_response: received reply from %r: %r",
                     from_number,

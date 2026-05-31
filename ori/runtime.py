@@ -285,7 +285,11 @@ class OriRuntime:
 
         # ── Step C: Instantiate action executors and ActionDispatcher ─────────
         remote_command_verifier = _build_remote_command_verifier(config)
-        whatsapp_action = WhatsAppAction(provider=TwilioProvider())
+        whatsapp_action = WhatsAppAction(
+            provider=TwilioProvider(),
+            state_store=self._state_store,
+            remote_command_verifier=remote_command_verifier,
+        )
         sms_action = SMSAction(
             state_store=self._state_store,
             config=config.actions.sms,

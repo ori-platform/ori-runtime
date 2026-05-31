@@ -192,8 +192,71 @@ async def handle_remote_command(
 ) -> CommandVerificationResult:
     """Verify a remote command before any runtime state mutation is allowed."""
     candidate = dict(payload)
-    candidate.setdefault("channel", channel)
+    candidate["channel"] = channel
     return await verifier.verify(candidate, state_store=state_store)
+
+
+async def verify_inbound_remote_command(
+    payload: dict[str, Any],
+    *,
+    channel: str,
+    from_number: str = "",
+    state_store: Any,
+    verifier: RemoteCommandVerifier | None,
+) -> CommandVerificationResult | None:
+    """Extract and verify an inbound remote command for any transport channel.
+
+    Returns:
+        ``None`` when the inbound message is not a structured remote command.
+        A :class:`CommandVerificationResult` when a command was found and either
+        accepted or rejected. Callers must not treat either result as a Tier C
+        approval reply.
+    """
+    command_payload = extract_remote_command_payload(
+        payload,
+        channel=channel,
+        from_number=from_number,
+    )
+    if command_payload is None:
+        return None
+
+    return await verify_extracted_remote_command(
+        command_payload,
+        channel=channel,
+        state_store=state_store,
+        verifier=verifier,
+    )
+
+
+async def verify_extracted_remote_command(
+    command_payload: dict[str, Any],
+    *,
+    channel: str,
+    state_store: Any,
+    verifier: RemoteCommandVerifier | None,
+) -> CommandVerificationResult:
+    """Verify an already-extracted remote command payload.
+
+    This lets pull-based transports deduplicate repeated provider results
+    before invoking verification and audit writes.
+    """
+    if verifier is None:
+        await _audit_without_verifier(
+            command_payload,
+            channel=channel,
+            state_store=state_store,
+        )
+        return CommandVerificationResult(
+            accepted=False,
+            reason="remote_command_verifier_disabled",
+        )
+
+    return await handle_remote_command(
+        command_payload,
+        channel=channel,
+        state_store=state_store,
+        verifier=verifier,
+    )
 
 
 def extract_remote_command_payload(
@@ -213,8 +276,8 @@ def extract_remote_command_payload(
     direct = {key: payload.get(key) for key in _COMMAND_FIELDS if key in payload}
     if _COMMAND_FIELDS <= set(direct):
         result = dict(payload)
-        result.setdefault("channel", channel)
-        result.setdefault("from_number", from_number)
+        result["channel"] = channel
+        result["from_number"] = from_number
         return result
 
     raw = str(payload.get("text") or payload.get("message") or "").strip()
@@ -236,8 +299,8 @@ def extract_remote_command_payload(
     if not _COMMAND_FIELDS <= set(decoded):
         return None
 
-    decoded.setdefault("channel", channel)
-    decoded.setdefault("from_number", from_number)
+    decoded["channel"] = channel
+    decoded["from_number"] = from_number
     return decoded
 
 
@@ -321,6 +384,24 @@ def _safe_int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+async def _audit_without_verifier(
+    payload: dict[str, Any],
+    *,
+    channel: str,
+    state_store: Any,
+) -> None:
+    if state_store is None or not hasattr(state_store, "log_remote_command_attempt"):
+        return
+    await state_store.log_remote_command_attempt(
+        command_id=str(payload.get("command_id", "") or ""),
+        channel=channel,
+        command=str(payload.get("command", "") or ""),
+        accepted=False,
+        reason="remote_command_verifier_disabled",
+        issued_at_ms=_safe_int_or_none(payload.get("issued_at_ms")),
+    )
 
 
 def _contains_forbidden_safety_disable(value: Any) -> bool:
