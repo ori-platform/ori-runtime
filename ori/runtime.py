@@ -57,7 +57,17 @@ from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
-from ori.security.remote_commands import RemoteCommandVerifier
+from ori.security.remote_command_policy import (
+    STATUS_AUDIT_ONLY,
+    STATUS_EXECUTED,
+    STATUS_FAILED,
+    STATUS_PRECONDITION_FAILED,
+    STATUS_UNSUPPORTED,
+    RemoteCommandExecutionResult,
+    classify_remote_command,
+    command_result,
+)
+from ori.security.remote_commands import RemoteCommand, RemoteCommandVerifier
 from ori.skills.loader import SkillLoader
 from ori.skills.signing import verify_signed_payload
 from ori.state.store import StateStore
@@ -112,6 +122,7 @@ class OriRuntime:
 
     def __init__(self, config_path: str = "ori.yaml") -> None:
         self._config_path = config_path
+        self._config: Config | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
         self._adapters: list[BaseAdapter] = []
         self._state_store: StateStore | None = None
@@ -208,6 +219,7 @@ class OriRuntime:
         except ConfigValidationError:
             logger.exception("[runtime] config validation failed — aborting")
             raise
+        self._config = config
 
         from logging.handlers import RotatingFileHandler
 
@@ -289,11 +301,13 @@ class OriRuntime:
             provider=TwilioProvider(),
             state_store=self._state_store,
             remote_command_verifier=remote_command_verifier,
+            remote_command_handler=self._handle_remote_command,
         )
         sms_action = SMSAction(
             state_store=self._state_store,
             config=config.actions.sms,
             remote_command_verifier=remote_command_verifier,
+            remote_command_handler=self._handle_remote_command,
         )
         coap_action = CoAPAction(config=config.actions.coap)
         self._sms_action = sms_action
@@ -879,6 +893,117 @@ class OriRuntime:
             return False
         return await self._sms_action.ingest_incoming_webhook(payload)
 
+    async def _handle_remote_command(
+        self, command: RemoteCommand
+    ) -> RemoteCommandExecutionResult:
+        """Apply runtime-owned execution policy for an authenticated command."""
+        try:
+            result = await self._execute_remote_command(command)
+        except Exception:
+            logger.exception(
+                "[runtime] remote command execution failed unexpectedly command_id=%s command=%s",
+                command.command_id,
+                command.command,
+            )
+            result = command_result(
+                command,
+                status=STATUS_FAILED,
+                detail="unexpected execution error",
+                executed=False,
+            )
+
+        await self._log_remote_command_execution_result(result)
+        return result
+
+    async def _execute_remote_command(
+        self, command: RemoteCommand
+    ) -> RemoteCommandExecutionResult:
+        policy_status = classify_remote_command(command)
+        if policy_status == STATUS_AUDIT_ONLY:
+            return command_result(
+                command,
+                status=STATUS_AUDIT_ONLY,
+                detail="authenticated command accepted but handler is not enabled",
+                executed=False,
+            )
+        if policy_status == STATUS_UNSUPPORTED:
+            return command_result(
+                command,
+                status=STATUS_UNSUPPORTED,
+                detail="authenticated command is not supported by this runtime",
+                executed=False,
+            )
+
+        if command.command == "REFRESH_POLICY":
+            if self._config is None or self._dispatcher is None:
+                return command_result(
+                    command,
+                    status=STATUS_PRECONDITION_FAILED,
+                    detail="runtime config or dispatcher is unavailable",
+                    executed=False,
+                )
+            policy_cfg = (
+                self._config.device_policy
+                if isinstance(self._config.device_policy, dict)
+                else {}
+            )
+            if not bool(policy_cfg.get("enabled", False)):
+                return command_result(
+                    command,
+                    status=STATUS_PRECONDITION_FAILED,
+                    detail="device_policy is not enabled",
+                    executed=False,
+                )
+
+            refreshed = await self._refresh_remote_device_policy_once(
+                config=self._config,
+                dispatcher=self._dispatcher,
+                suppress_transient_audit=False,
+            )
+            if refreshed:
+                return command_result(
+                    command,
+                    status=STATUS_EXECUTED,
+                    detail="remote DevicePolicy refresh completed",
+                    executed=True,
+                )
+            return command_result(
+                command,
+                status=STATUS_FAILED,
+                detail="remote DevicePolicy refresh failed or was rejected",
+                executed=False,
+            )
+
+        logger.error(
+            "[runtime] remote command policy/handler mismatch command_id=%s command=%s policy_status=%s",
+            command.command_id,
+            command.command,
+            policy_status,
+        )
+        return command_result(
+            command,
+            status=STATUS_UNSUPPORTED,
+            detail="execution policy marks command executable but no runtime handler is registered",
+            executed=False,
+        )
+
+    async def _log_remote_command_execution_result(
+        self, result: RemoteCommandExecutionResult
+    ) -> None:
+        if self._state_store is None or not hasattr(
+            self._state_store, "log_remote_command_execution"
+        ):
+            return
+        await self._state_store.log_remote_command_execution(
+            command_id=result.command_id,
+            channel=result.channel,
+            command=result.command,
+            status=result.status,
+            detail=result.detail,
+            executed=result.executed,
+            executed_at_ms=result.executed_at_ms,
+        )
+
     async def _start_sms_webhook_if_enabled(
         self, config: Config
     ) -> asyncio.Task | None:
@@ -1206,7 +1331,7 @@ class OriRuntime:
         config: Config,
         dispatcher: ActionDispatcher,
         suppress_transient_audit: bool,
-    ) -> None:
+    ) -> bool:
         current_version = dispatcher.current_policy_version()
         try:
             fetched = await fetch_remote_device_policy_bundle(
@@ -1244,6 +1369,7 @@ class OriRuntime:
                         policy_version=fetched.policy.policy_version,
                         payload_timestamp=int(fetched.payload.get("timestamp", 0)),
                     )
+            return True
         except RemotePolicyFetchError as exc:
             logger.warning(
                 "[runtime] remote DevicePolicy rejected code=%s detail=%s",
@@ -1257,7 +1383,7 @@ class OriRuntime:
                     detail=str(exc),
                 )
             ):
-                return
+                return False
             await self._audit_policy_rejection(
                 device_id=config.device.id,
                 reason_code=exc.code,
@@ -1265,6 +1391,7 @@ class OriRuntime:
                 policy_version=exc.policy_version,
                 payload_timestamp=exc.payload_timestamp,
             )
+            return False
         except Exception:
             logger.exception("[runtime] unexpected remote DevicePolicy fetch error")
             await self._audit_policy_rejection(
@@ -1274,6 +1401,7 @@ class OriRuntime:
                 policy_version=None,
                 payload_timestamp=None,
             )
+            return False
 
     async def _device_policy_refresh_loop(
         self,

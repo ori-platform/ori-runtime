@@ -573,6 +573,16 @@ Violating them creates vulnerabilities that affect physical hardware.
     WhatsApp, or cloud API.
     All remote command handlers must call `RemoteCommandVerifier` before executing
     or queueing any state-changing command.
+    Verification does not imply execution permission. Authenticated remote commands
+    must pass through `ori.security.remote_command_policy` before any runtime side
+    effect is allowed.
+    `SET_THRESHOLD` must never raise a Tier D trigger threshold above the value
+    configured in `ori.yaml`. After any threshold change, the runtime must
+    immediately re-evaluate active Tier D conditions. A threshold change that
+    would suppress an active Tier D condition must be rejected.
+    Relay fail-safe direction configured in `ori.yaml` is immutable by remote
+    command. `SET_RELAY_MODE` must never change normally-closed to normally-open,
+    or perform any equivalent fail-safe inversion, regardless of authentication.
 
 ---
 

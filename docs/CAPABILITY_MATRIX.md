@@ -39,6 +39,7 @@ This is the authoritative record of what is real versus planned.
 | Energy cost calculator hook                      | Implemented       | skills/energy-anomaly-detector/hooks.py, tests/test_energy_anomaly_skill.py | Deterministic cost math computes both observed window cost and projected `/day` run-rate risk. Currency/voltage inference uses explicit config first, then country-code defaults, with `exact`/`estimated` confidence labeling. |
 | Offline Tier C auth tokens                       | Implemented       | security/offline_tokens.py, action_dispatcher.py, state/store.py | Local-console `TOKEN:<value>` approvals are signature-verified (Ed25519), device/action-bound, expiry-checked, and replay-protected via SQLite token claim table. |
 | Authenticated remote runtime commands            | Implemented       | security/remote_commands.py, actions/sms.py, actions/whatsapp.py, state/store.py, runtime.py | Structured SMS and WhatsApp remote commands are intercepted before approval-message handling, HMAC-SHA256 verified, timestamp checked, replay-protected, audited to SQLite, and fail-closed on Tier D/safety-disabling mutations or direct actuator commands. |
+| Remote command execution policy                  | Implemented       | security/remote_command_policy.py, runtime.py, state/store.py | Authenticated commands pass through a runtime-owned execution policy. `REFRESH_POLICY` is the only executable command and reuses the signed DevicePolicy refresh path; config, skill, threshold, relay-mode, restart, and sync commands are accepted as audit-only until transactional handlers exist. |
 
 ## Recent updates
 
@@ -52,3 +53,4 @@ This is the authoritative record of what is real versus planned.
 - 2026-05-30: Added Tier C decision logging for full proposal, operator decision, safe-default, and outcome context needed for future approval/rejection learning.
 - 2026-05-30: Added authenticated remote command verification with HMAC signatures, timestamp skew checks, replay audit, and Tier D/safety mutation denial.
 - 2026-05-31: Generalized authenticated remote command ingress across SMS and WhatsApp so structured commands cannot be mistaken for Tier C approval replies.
+- 2026-05-31: Added remote command execution policy and execution audit logging; only `REFRESH_POLICY` executes, while other authenticated commands remain audit-only.

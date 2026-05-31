@@ -91,6 +91,7 @@ class TestLifecycle:
             "causal_memory",
             "skill_state",
             "remote_command_log",
+            "remote_command_execution_log",
             "alert_outbox",
         } <= names
 
@@ -800,3 +801,33 @@ class TestInboundMessages:
         )
         assert first == "NO"
         assert second is None
+
+
+# ─── remote_command_execution_log ─────────────────────────────────────────────
+
+
+class TestRemoteCommandExecutionLog:
+    async def test_log_and_retrieve_execution_result(self, store):
+        await store.log_remote_command_execution(
+            command_id="cmd-1",
+            channel="sms",
+            command="REFRESH_POLICY",
+            status="executed",
+            detail="remote DevicePolicy refresh completed",
+            executed=True,
+            executed_at_ms=1234,
+        )
+
+        rows = await store.get_remote_command_execution_log()
+
+        assert rows == [
+            {
+                "command_id": "cmd-1",
+                "channel": "sms",
+                "command": "REFRESH_POLICY",
+                "status": "executed",
+                "detail": "remote DevicePolicy refresh completed",
+                "executed": True,
+                "executed_at_ms": 1234,
+            }
+        ]

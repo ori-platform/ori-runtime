@@ -33,10 +33,12 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
 
 from ori.network.events import ReasoningResult
 from ori.security.remote_commands import (
+    RemoteCommand,
     RemoteCommandVerifier,
     extract_remote_command_payload,
     verify_extracted_remote_command,
@@ -255,10 +257,12 @@ class WhatsAppAction:
         *,
         state_store: Any = None,
         remote_command_verifier: RemoteCommandVerifier | None = None,
+        remote_command_handler: Callable[[RemoteCommand], Awaitable[Any]] | None = None,
     ) -> None:
         self._provider: WhatsAppProvider = provider or TwilioProvider()
         self._state_store = state_store
         self._remote_command_verifier = remote_command_verifier
+        self._remote_command_handler = remote_command_handler
 
     # ------------------------------------------------------------------
     # Public API
@@ -376,6 +380,11 @@ class WhatsAppAction:
                             if command_result.command
                             else "",
                         )
+                        if (
+                            self._remote_command_handler is not None
+                            and command_result.command
+                        ):
+                            await self._remote_command_handler(command_result.command)
                     else:
                         logger.warning(
                             "WhatsAppAction.listen_for_response: rejected remote command reason=%s",

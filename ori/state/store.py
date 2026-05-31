@@ -164,6 +164,20 @@ CREATE TABLE IF NOT EXISTS remote_command_log (
 CREATE INDEX IF NOT EXISTS idx_remote_command_log_command_id
     ON remote_command_log (command_id, accepted, received_at_ms DESC);
 
+CREATE TABLE IF NOT EXISTS remote_command_execution_log (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_id     TEXT    NOT NULL DEFAULT '',
+    channel        TEXT    NOT NULL DEFAULT '',
+    command        TEXT    NOT NULL DEFAULT '',
+    status         TEXT    NOT NULL,
+    detail         TEXT    NOT NULL DEFAULT '',
+    executed       INTEGER NOT NULL,
+    executed_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_command_execution_log_command_id
+    ON remote_command_execution_log (command_id, executed_at_ms DESC);
+
 CREATE TABLE IF NOT EXISTS alert_outbox (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     alert_id        TEXT    NOT NULL UNIQUE,
@@ -977,6 +991,79 @@ class StateStore:
         for row in rows:
             item = dict(row)
             item["accepted"] = bool(item["accepted"])
+            result.append(item)
+        return result
+
+    async def log_remote_command_execution(
+        self,
+        *,
+        command_id: str,
+        channel: str,
+        command: str,
+        status: str,
+        detail: str,
+        executed: bool,
+        executed_at_ms: int | None = None,
+    ) -> None:
+        await self._run_write(
+            self._log_remote_command_execution_sync,
+            command_id,
+            channel,
+            command,
+            status,
+            detail,
+            executed,
+            executed_at_ms if executed_at_ms is not None else now_ms(),
+        )
+
+    def _log_remote_command_execution_sync(
+        self,
+        command_id: str,
+        channel: str,
+        command: str,
+        status: str,
+        detail: str,
+        executed: bool,
+        executed_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO remote_command_execution_log
+                (command_id, channel, command, status, detail, executed, executed_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(command_id or ""),
+                str(channel or ""),
+                str(command or ""),
+                str(status or ""),
+                str(detail or ""),
+                1 if executed else 0,
+                executed_at_ms,
+            ),
+        )
+        self._conn.commit()
+
+    async def get_remote_command_execution_log(self, limit: int = 50) -> list[dict]:
+        return await self._run_read(self._get_remote_command_execution_log_sync, limit)
+
+    def _get_remote_command_execution_log_sync(
+        self, conn: sqlite3.Connection, limit: int
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT command_id, channel, command, status, detail, executed, executed_at_ms
+            FROM remote_command_execution_log
+            ORDER BY executed_at_ms DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["executed"] = bool(item["executed"])
             result.append(item)
         return result
 

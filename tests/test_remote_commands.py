@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -295,6 +296,26 @@ async def test_sms_handler_accepts_signed_command_without_storing_approval(
     assert await store.consume_incoming_message("sms", "+2348012345678", 0) is None
 
 
+async def test_sms_handler_invokes_runtime_command_handler(store, fixed_now):
+    handler = AsyncMock()
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(),
+        remote_command_handler=handler,
+    )
+    command = _signed(_payload(now=fixed_now, command_id="sms-handler"))
+    payload = {"from": "+2348012345678", "text": json.dumps(command)}
+
+    ok = await action.ingest_incoming_webhook(payload)
+
+    assert ok is True
+    handler.assert_awaited_once()
+    handled = handler.await_args.args[0]
+    assert handled.command_id == "sms-handler"
+    assert handled.command == "UPDATE_CONFIG"
+
+
 async def test_whatsapp_approval_yes_no_is_not_treated_as_remote_command(store):
     provider = _InboxWhatsAppProvider(["YES"])
     action = WhatsAppAction(provider=provider, state_store=store)
@@ -353,6 +374,29 @@ async def test_whatsapp_accepts_signed_command_without_returning_it_as_approval(
     assert rows[0]["command_id"] == "wa-signed"
     assert rows[0]["channel"] == "whatsapp"
     assert rows[0]["accepted"] is True
+
+
+async def test_whatsapp_invokes_runtime_command_handler(store, fixed_now):
+    handler = AsyncMock()
+    command = _signed(_payload(now=fixed_now, command_id="wa-handler"))
+    provider = _InboxWhatsAppProvider([json.dumps(command), "NO"])
+    action = WhatsAppAction(
+        provider=provider,
+        state_store=store,
+        remote_command_verifier=_verifier(),
+        remote_command_handler=handler,
+    )
+
+    reply = await action.listen_for_response(
+        from_number="whatsapp:+2348012345678",
+        timeout_seconds=1,
+    )
+
+    assert reply == "NO"
+    handler.assert_awaited_once()
+    handled = handler.await_args.args[0]
+    assert handled.command_id == "wa-handler"
+    assert handled.channel == "whatsapp"
 
 
 async def test_whatsapp_audits_command_when_verifier_disabled(store, fixed_now):

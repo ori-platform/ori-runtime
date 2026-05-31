@@ -26,10 +26,12 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ori.bool_utils import is_truthy
 from ori.security.remote_commands import (
+    RemoteCommand,
     RemoteCommandVerifier,
     verify_inbound_remote_command,
 )
@@ -79,6 +81,7 @@ class SMSAction:
         poll_interval_seconds: int = _POLL_INTERVAL_SECONDS,
         config: dict[str, Any] | None = None,
         remote_command_verifier: RemoteCommandVerifier | None = None,
+        remote_command_handler: Callable[[RemoteCommand], Awaitable[Any]] | None = None,
     ) -> None:
         sms_cfg = config if isinstance(config, dict) else {}
 
@@ -111,6 +114,7 @@ class SMSAction:
         )
         self._state_store = state_store
         self._remote_command_verifier = remote_command_verifier
+        self._remote_command_handler = remote_command_handler
         self._poll_interval_seconds = max(1, int(poll_interval_seconds))
         self._ip_ready = bool(self._api_key)
 
@@ -445,6 +449,8 @@ class SMSAction:
                     command_result.command.command_id if command_result.command else "",
                     command_result.command.command if command_result.command else "",
                 )
+                if self._remote_command_handler is not None and command_result.command:
+                    await self._remote_command_handler(command_result.command)
                 return True
 
             await self._state_store.store_incoming_message(
