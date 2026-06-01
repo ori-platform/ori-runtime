@@ -8,6 +8,12 @@ import pytest
 
 from ori.actions.sms import SMSAction
 from ori.actions.whatsapp import WhatsAppAction
+from ori.security.remote_command_lockout import (
+    LOCKOUT_RISK_CRITICAL,
+    LOCKOUT_RISK_ELEVATED,
+    LOCKOUT_RISK_NORMAL,
+    evaluate_remote_command_lockout,
+)
 from ori.security.remote_command_policy import (
     STATUS_AUDIT_ONLY,
     STATUS_EXECUTED,
@@ -82,6 +88,26 @@ async def _seed_rejected_attempts(
             issued_at_ms=now - 1_000,
             received_at_ms=now - 1_000,
         )
+
+
+async def _seed_security_incident(
+    store: StateStore,
+    *,
+    channel: str,
+    from_number: str,
+    now: int,
+    incident_id: str = "incident-1",
+) -> None:
+    await store.log_remote_command_security_incident(
+        incident_id=incident_id,
+        channel=channel,
+        from_number=from_number,
+        reason="remote_command_rejection_feedback_suppressed",
+        rejection_count=6,
+        threshold=5,
+        window_ms=600_000,
+        created_at_ms=now,
+    )
 
 
 class _InboxWhatsAppProvider:
@@ -508,6 +534,113 @@ async def test_sms_rejection_feedback_is_throttled_after_repeated_failures(
     assert incidents[0]["rejection_count"] == 6
     assert incidents[0]["threshold"] == 5
     assert incidents[0]["window_ms"] == 600_000
+
+
+async def test_remote_command_lockout_risk_is_computed_from_incident_history(
+    store, fixed_now
+):
+    from_number = "+2348012345678"
+    await _seed_security_incident(
+        store,
+        channel="sms",
+        from_number=from_number,
+        now=fixed_now,
+    )
+
+    elevated = await evaluate_remote_command_lockout(
+        state_store=store,
+        channel="sms",
+        from_number=from_number,
+        now_ms_value=fixed_now,
+    )
+
+    assert elevated.risk_level == LOCKOUT_RISK_ELEVATED
+    assert elevated.locked_out is False
+    assert elevated.enforcement_enabled is False
+    assert elevated.incident_count == 1
+
+    for idx in range(2, 4):
+        await _seed_security_incident(
+            store,
+            channel="sms",
+            from_number=from_number,
+            now=fixed_now,
+            incident_id=f"incident-{idx}",
+        )
+
+    critical = await evaluate_remote_command_lockout(
+        state_store=store,
+        channel="sms",
+        from_number=from_number,
+        now_ms_value=fixed_now,
+    )
+
+    assert critical.risk_level == LOCKOUT_RISK_CRITICAL
+    assert critical.locked_out is False
+    assert critical.incident_count == 3
+
+
+async def test_remote_command_lockout_risk_is_normal_for_clean_sender(store, fixed_now):
+    state = await evaluate_remote_command_lockout(
+        state_store=store,
+        channel="sms",
+        from_number="+2348012345678",
+        now_ms_value=fixed_now,
+    )
+
+    assert state.risk_level == LOCKOUT_RISK_NORMAL
+    assert state.locked_out is False
+    assert state.enforcement_enabled is False
+    assert state.incident_count == 0
+    assert state.rejection_count == 0
+    assert state.reason == "below_threshold"
+
+
+async def test_remote_command_lockout_risk_is_computed_from_rejection_volume(
+    store, fixed_now
+):
+    from_number = "+2348012345678"
+    await _seed_rejected_attempts(
+        store,
+        channel="sms",
+        from_number=from_number,
+        now=fixed_now,
+        count=5,
+    )
+
+    elevated = await evaluate_remote_command_lockout(
+        state_store=store,
+        channel="sms",
+        from_number=from_number,
+        now_ms_value=fixed_now,
+    )
+
+    assert elevated.risk_level == LOCKOUT_RISK_ELEVATED
+    assert elevated.locked_out is False
+    assert elevated.incident_count == 0
+    assert elevated.rejection_count == 5
+    assert elevated.reason == "elevated_rejection_volume"
+
+    await _seed_rejected_attempts(
+        store,
+        channel="sms",
+        from_number=from_number,
+        now=fixed_now,
+        count=10,
+    )
+
+    critical = await evaluate_remote_command_lockout(
+        state_store=store,
+        channel="sms",
+        from_number=from_number,
+        now_ms_value=fixed_now,
+    )
+
+    assert critical.risk_level == LOCKOUT_RISK_CRITICAL
+    assert critical.locked_out is False
+    assert critical.incident_count == 0
+    assert critical.rejection_count == 15
+    assert critical.reason == "critical_rejection_volume"
 
 
 async def test_sms_rejection_incident_is_deduped_within_window(store, fixed_now):

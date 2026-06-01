@@ -109,6 +109,36 @@ async def test_refresh_policy_executes_existing_verified_policy_path(store):
     assert rows[0]["executed"] is True
 
 
+async def test_advisory_lockout_risk_does_not_block_valid_signed_command(store):
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._state_store = store
+    runtime._config = SimpleNamespace(device_policy={"enabled": True})
+    runtime._dispatcher = object()
+    runtime._refresh_remote_device_policy_once = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    runtime._remote_command_lockout_states = {
+        "sms:+2348012345678": {
+            "channel": "sms",
+            "from_number": "+2348012345678",
+            "risk_level": "critical",
+            "locked_out": False,
+            "enforcement_enabled": False,
+            "incident_count": 3,
+            "rejection_count": 18,
+            "window_ms": 3_600_000,
+            "checked_at_ms": 1_780_000_000_000,
+            "reason": "critical_incident_volume",
+        }
+    }
+
+    result = await runtime._handle_remote_command(
+        _command("REFRESH_POLICY", command_id="refresh-under-risk")
+    )
+
+    assert result.status == STATUS_EXECUTED
+    assert result.executed is True
+    runtime._refresh_remote_device_policy_once.assert_awaited_once()
+
+
 async def test_unsupported_command_is_logged_without_execution(store):
     runtime = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store

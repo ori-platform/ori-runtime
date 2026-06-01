@@ -3,6 +3,39 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Remote Command Lockout Is Advisory Until Recovery Is Designed
+
+**Status:** Accepted
+
+Remote command abuse incidents now feed a sender risk calculation, but the
+runtime must not enforce command lockout yet. The runtime exposes risk levels so
+operators and local diagnostics can see when a sender is dangerous, while valid
+signed commands remain usable for recovery and maintenance.
+
+Rules:
+
+- Sender lockout risk is calculated from recent rejected command volume and
+  recent `remote_command_security_incident_log` entries.
+- Risk levels are `normal`, `elevated`, and `critical`.
+- `critical` risk does not currently block authenticated commands.
+- `remote_command_lockout.enforcement_enabled` must remain `false` until a
+  future decision defines recovery commands, expiry behavior, operator override,
+  and safe handling when the locked sender is the only available operator path.
+- Runtime health snapshots must expose the current advisory sender risk state.
+- Any future enforcement must preserve Tier D safety and must not prevent
+  authenticated recovery commands from restoring safe operation.
+
+Rationale:
+
+- Locking out the only reachable operator channel can turn an abuse response into
+  an availability or safety failure.
+- Visibility can ship before enforcement. Operators get diagnostic signal now
+  without losing remote recovery access.
+- Enforcement needs a separate safety review because remote commands can update
+  policies and thresholds that may be required to restore safe behavior.
+
+---
+
 ## 2026-06-01 — Remote Command Abuse Incidents Escalate Separately From Throttling
 
 **Status:** Accepted

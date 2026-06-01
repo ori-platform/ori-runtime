@@ -1592,33 +1592,50 @@ class TestAlertOutbox:
         finally:
             await runtime._state_store.close()
 
-    async def test_remote_command_incident_emits_tier_a_alert(self):
+    async def test_remote_command_incident_emits_tier_a_alert(self, tmp_path):
         runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "remote-lockout.db"))
+        await runtime._state_store.open()
         runtime._primary_alert_channel = "sms"
         runtime._operator_contact = "+2340000000000"
         runtime._alert_sender = AsyncMock()
         runtime._send_or_queue_alert = AsyncMock(return_value=True)  # type: ignore[method-assign]
-        decision = RemoteCommandThrottleDecision(
-            send_feedback=False,
-            incident_logged=True,
+        await runtime._state_store.log_remote_command_security_incident(
             incident_id="incident-1",
             channel="sms",
             from_number="+2348012345678",
+            reason="remote_command_rejection_feedback_suppressed",
             rejection_count=6,
             threshold=5,
             window_ms=600_000,
         )
+        try:
+            decision = RemoteCommandThrottleDecision(
+                send_feedback=False,
+                incident_logged=True,
+                incident_id="incident-1",
+                channel="sms",
+                from_number="+2348012345678",
+                rejection_count=6,
+                threshold=5,
+                window_ms=600_000,
+            )
 
-        await runtime._handle_remote_command_incident(decision)
+            await runtime._handle_remote_command_incident(decision)
 
-        runtime._send_or_queue_alert.assert_awaited_once()
-        kwargs = runtime._send_or_queue_alert.await_args.kwargs
-        assert kwargs["channel"] == "sms"
-        assert kwargs["recipient"] == "+2340000000000"
-        assert kwargs["action_tier"] == "A"
-        assert kwargs["trigger_name"] == "remote_command_abuse"
-        assert "repeated rejected remote commands" in kwargs["message"]
-        assert "+2348012345678" in kwargs["message"]
+            runtime._send_or_queue_alert.assert_awaited_once()
+            kwargs = runtime._send_or_queue_alert.await_args.kwargs
+            assert kwargs["channel"] == "sms"
+            assert kwargs["recipient"] == "+2340000000000"
+            assert kwargs["action_tier"] == "A"
+            assert kwargs["trigger_name"] == "remote_command_abuse"
+            assert "repeated rejected remote commands" in kwargs["message"]
+            assert "+2348012345678" in kwargs["message"]
+            states = list(runtime._remote_command_lockout_states.values())
+            assert states[0]["risk_level"] == "elevated"
+            assert states[0]["locked_out"] is False
+        finally:
+            await runtime._state_store.close()
 
 
 class TestRemoteDevicePolicy:

@@ -58,6 +58,10 @@ from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
+from ori.security.remote_command_lockout import (
+    evaluate_remote_command_lockout,
+    remote_command_sender_key,
+)
 from ori.security.remote_command_policy import (
     STATUS_AUDIT_ONLY,
     STATUS_EXECUTED,
@@ -165,6 +169,7 @@ class OriRuntime:
         self._health_socket_path: str = ""
         self._device_policy_enabled: bool = False
         self._device_id: str = ""
+        self._remote_command_lockout_states: dict[str, dict[str, Any]] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -1256,6 +1261,24 @@ class OriRuntime:
             decision.rejection_count,
             decision.threshold,
         )
+        try:
+            lockout_state = await evaluate_remote_command_lockout(
+                state_store=self._state_store,
+                channel=decision.channel,
+                from_number=decision.from_number,
+            )
+            self._remote_command_lockout_states[
+                remote_command_sender_key(
+                    channel=decision.channel,
+                    from_number=decision.from_number,
+                )
+            ] = lockout_state.as_dict()
+        except Exception:
+            logger.exception(
+                "[runtime] remote command lockout risk evaluation failed for channel=%s sender=%r",
+                decision.channel,
+                decision.from_number,
+            )
         if self._alert_sender is None:
             return
         message = (
@@ -1431,6 +1454,10 @@ class OriRuntime:
                 "by_trigger": dict(self._last_alert_timestamps_by_trigger),
             },
             "device_policy": device_policy_state,
+            "remote_command_lockout": {
+                "enforcement_enabled": False,
+                "senders": list(self._remote_command_lockout_states.values()),
+            },
         }
 
     def _unregister_skill_handlers(self) -> None:

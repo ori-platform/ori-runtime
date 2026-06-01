@@ -1143,6 +1143,39 @@ class StateStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    async def count_recent_remote_command_security_incidents(
+        self,
+        *,
+        channel: str,
+        from_number: str,
+        since_ms: int,
+    ) -> int:
+        return await self._run_read(
+            self._count_recent_remote_command_security_incidents_sync,
+            channel,
+            from_number,
+            since_ms,
+        )
+
+    def _count_recent_remote_command_security_incidents_sync(
+        self,
+        conn: sqlite3.Connection,
+        channel: str,
+        from_number: str,
+        since_ms: int,
+    ) -> int:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM remote_command_security_incident_log
+            WHERE channel = ?
+              AND from_number = ?
+              AND created_at_ms >= ?
+            """,
+            (str(channel or ""), str(from_number or ""), int(since_ms)),
+        ).fetchone()
+        return int(row["n"] if row is not None else 0)
+
     async def log_remote_command_execution(
         self,
         *,

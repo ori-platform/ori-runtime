@@ -121,6 +121,20 @@ def test_runtime_health_snapshot_shape():
     runtime._sensor_last_seen_ms = {"sensor-1": now_ms() - 200}
     runtime._last_alert_timestamps_by_channel = {"sms": now_ms() - 100}
     runtime._last_alert_timestamps_by_trigger = {"battery_cycle_stress": now_ms() - 50}
+    runtime._remote_command_lockout_states = {
+        "sms:+2348012345678": {
+            "channel": "sms",
+            "from_number": "+2348012345678",
+            "risk_level": "critical",
+            "locked_out": False,
+            "enforcement_enabled": False,
+            "incident_count": 3,
+            "rejection_count": 18,
+            "window_ms": 3_600_000,
+            "checked_at_ms": now_ms(),
+            "reason": "critical_incident_volume",
+        }
+    }
 
     class _Dispatcher:
         def get_policy_state_snapshot(self):
@@ -148,3 +162,5 @@ def test_runtime_health_snapshot_shape():
     assert snapshot["last_alert_timestamps"]["by_channel"]["sms"] > 0
     assert snapshot["device_policy"]["enabled"] is True
     assert snapshot["device_policy"]["policy_version"] == 3
+    assert snapshot["remote_command_lockout"]["enforcement_enabled"] is False
+    assert snapshot["remote_command_lockout"]["senders"][0]["risk_level"] == "critical"
