@@ -270,6 +270,31 @@ def _rule_get(rule: Any, key: str, default: Any = None) -> Any:
     return getattr(rule, key, default)
 
 
+def _eval_checked_condition(condition: str, namespace: dict[str, Any]) -> bool:
+    return bool(eval(condition, {"__builtins__": {}}, namespace))  # noqa: S307
+
+
+def evaluate_condition_safely(
+    condition: str,
+    context: dict[str, Any],
+    *,
+    history_cache: dict[tuple, Any] | None = None,
+) -> bool:
+    """Validate and evaluate one rule condition with the RuleEngine sandbox.
+
+    This helper is for code paths that need rule-condition semantics without
+    constructing a full :class:`RuleEngine` event evaluation. It applies the
+    same AST whitelist and ``history`` namespace wrapper used by RuleEngine.
+
+    Raises:
+        RuleEngineSafetyError: if the condition contains unsupported syntax.
+        Exception: if evaluation fails because required context is unavailable.
+    """
+    _check_safety_ast(condition)
+    namespace = EvalContext(dict(context), history_cache).as_dict()
+    return _eval_checked_condition(condition, namespace)
+
+
 class RuleEngine:
     """Deterministic, LLM-free rule evaluator — Tier 1 of the Intelligence Elevator.
 
@@ -394,7 +419,7 @@ class RuleEngine:
                 continue
 
             try:
-                matched = bool(eval(condition, {"__builtins__": {}}, namespace))  # noqa: S307
+                matched = _eval_checked_condition(condition, namespace)
             except NameError as exc:
                 # Expected: sensor variable not present in this event's namespace.
                 # The runtime evaluates all triggers on every event; sensors not

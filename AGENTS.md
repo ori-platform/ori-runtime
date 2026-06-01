@@ -576,10 +576,15 @@ Violating them creates vulnerabilities that affect physical hardware.
     Verification does not imply execution permission. Authenticated remote commands
     must pass through `ori.security.remote_command_policy` before any runtime side
     effect is allowed.
-    `SET_THRESHOLD` must never raise a Tier D trigger threshold above the value
-    configured in `ori.yaml`. After any threshold change, the runtime must
-    immediately re-evaluate active Tier D conditions. A threshold change that
-    would suppress an active Tier D condition must be rejected.
+    `SET_THRESHOLD` must never make a Tier D trigger less sensitive than the
+    value configured in `ori.yaml`. For upper-bound conditions such as
+    `value > threshold`, raising the threshold above startup is forbidden. For
+    lower-bound conditions such as `value < threshold`, lowering the threshold
+    below startup is forbidden. If the runtime cannot prove the direction of a
+    Tier D threshold safely, the remote change must be rejected. After any
+    threshold change, the runtime must immediately re-evaluate active Tier D
+    conditions. A threshold change that would suppress an active Tier D
+    condition must be rejected.
     Relay fail-safe direction configured in `ori.yaml` is immutable by remote
     command. `SET_RELAY_MODE` must never change normally-closed to normally-open,
     or perform any equivalent fail-safe inversion, regardless of authentication.

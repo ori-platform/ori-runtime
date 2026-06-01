@@ -44,7 +44,7 @@ from ori.hardware.led_indicator import (
 )
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
-from ori.network.events import OriEvent, compute_fingerprint
+from ori.network.events import OriEvent, SensorReading, compute_fingerprint
 from ori.network.sms_webhook import SMSWebhookServer
 from ori.policy.remote_fetch import (
     RemotePolicyFetchError,
@@ -69,6 +69,12 @@ from ori.security.remote_command_policy import (
     command_result,
 )
 from ori.security.remote_commands import RemoteCommand, RemoteCommandVerifier
+from ori.security.threshold_guard import (
+    all_trigger_condition_refs,
+    check_tier_d_condition_suppression,
+    check_tier_d_startup_sensitivity,
+    tier_d_config_keys,
+)
 from ori.skills.loader import SkillLoader
 from ori.skills.signing import verify_signed_payload
 from ori.state.store import StateStore
@@ -126,6 +132,7 @@ class OriRuntime:
         self._config: Config | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
         self._adapters: list[BaseAdapter] = []
+        self._startup_skill_configs: dict[str, dict] = {}
         self._state_store: StateStore | None = None
         self._background_tasks: list[asyncio.Task] = []
         self._sms_action: SMSAction | None = None
@@ -203,6 +210,8 @@ class OriRuntime:
                 self._skill_subscriptions.extend(subscriptions)
 
             self._loaded_skills = loaded
+            for skill in loaded:
+                self._startup_skill_configs.setdefault(skill.name, dict(skill.config))
             logger.info(
                 "[runtime] skills reloaded — skills=%d triggers=%d source=%s",
                 len(self._loaded_skills),
@@ -1039,6 +1048,9 @@ class OriRuntime:
                     executed=False,
                 )
 
+        if command.command == "SET_THRESHOLD":
+            return await self._execute_set_threshold(command)
+
         logger.error(
             "[runtime] remote command policy/handler mismatch command_id=%s command=%s policy_status=%s",
             command.command_id,
@@ -1051,6 +1063,165 @@ class OriRuntime:
             detail="execution policy marks command executable but no runtime handler is registered",
             executed=False,
         )
+
+    async def _execute_set_threshold(
+        self, command: RemoteCommand
+    ) -> RemoteCommandExecutionResult:
+        import math
+
+        skill_name = str(command.args.get("skill_name", "") or "").strip()
+        threshold_key = str(command.args.get("threshold_key", "") or "").strip()
+        raw_value = command.args.get("value")
+
+        if not skill_name or not threshold_key or raw_value is None:
+            return command_result(
+                command,
+                status=STATUS_PRECONDITION_FAILED,
+                detail="SET_THRESHOLD requires args.skill_name, args.threshold_key, and args.value",
+                executed=False,
+            )
+
+        try:
+            new_value = float(raw_value)
+        except (TypeError, ValueError):
+            return command_result(
+                command,
+                status=STATUS_PRECONDITION_FAILED,
+                detail="args.value must be a number",
+                executed=False,
+            )
+
+        if not math.isfinite(new_value) or new_value <= 0:
+            return command_result(
+                command,
+                status=STATUS_PRECONDITION_FAILED,
+                detail="args.value must be a positive finite number",
+                executed=False,
+            )
+
+        skill = next((s for s in self._loaded_skills if s.name == skill_name), None)
+        if skill is None:
+            return command_result(
+                command,
+                status=STATUS_PRECONDITION_FAILED,
+                detail=f"skill {skill_name!r} is not loaded",
+                executed=False,
+            )
+
+        if threshold_key not in skill.config:
+            return command_result(
+                command,
+                status=STATUS_PRECONDITION_FAILED,
+                detail=f"threshold key {threshold_key!r} does not exist in skill {skill_name!r} config",
+                executed=False,
+            )
+
+        old_value = skill.config[threshold_key]
+
+        if not isinstance(old_value, (int, float)) or not math.isfinite(
+            float(old_value)
+        ):
+            return command_result(
+                command,
+                status=STATUS_PRECONDITION_FAILED,
+                detail=f"threshold key {threshold_key!r} in skill {skill_name!r} is not numeric",
+                executed=False,
+            )
+
+        if threshold_key not in all_trigger_condition_refs(skill):
+            return command_result(
+                command,
+                status=STATUS_PRECONDITION_FAILED,
+                detail=f"threshold key {threshold_key!r} is not referenced by any trigger condition in skill {skill_name!r}",
+                executed=False,
+            )
+
+        if threshold_key in tier_d_config_keys(skill):
+            readings = await self._latest_readings_for_skill(skill)
+            if readings is None:
+                return command_result(
+                    command,
+                    status=STATUS_PRECONDITION_FAILED,
+                    detail="SET_THRESHOLD for a Tier D key requires StateStore to verify no active condition is suppressed",
+                    executed=False,
+                )
+            startup_value = self._startup_skill_configs.get(skill_name, {}).get(
+                threshold_key
+            )
+            ok, detail = check_tier_d_startup_sensitivity(
+                skill,
+                threshold_key=threshold_key,
+                new_value=new_value,
+                startup_value=startup_value,
+            )
+            if not ok:
+                return command_result(
+                    command,
+                    status=STATUS_PRECONDITION_FAILED,
+                    detail=detail,
+                    executed=False,
+                )
+            old_config = dict(skill.config)
+            new_config = {**skill.config, threshold_key: new_value}
+            ok, detail = check_tier_d_condition_suppression(
+                skill, threshold_key, old_config, new_config, readings
+            )
+            if not ok:
+                return command_result(
+                    command,
+                    status=STATUS_PRECONDITION_FAILED,
+                    detail=detail,
+                    executed=False,
+                )
+
+        skill.config[threshold_key] = new_value
+        logger.info(
+            "[runtime] SET_THRESHOLD applied skill=%s key=%s old=%s new=%s command_id=%s",
+            skill_name,
+            threshold_key,
+            old_value,
+            new_value,
+            command.command_id,
+        )
+        return command_result(
+            command,
+            status=STATUS_EXECUTED,
+            detail=f"{threshold_key} updated {old_value} -> {new_value} in skill {skill_name!r}",
+            executed=True,
+        )
+
+    def _sensor_ids_for_skill(self, skill: Any) -> list[str]:
+        """Return config sensor IDs whose type matches any of the skill's sensors_required."""
+        if self._config is None:
+            return []
+        required_types = {
+            str(sr.get("type", "") or "").lower()
+            for sr in (getattr(skill, "sensors_required", None) or [])
+            if sr.get("type")
+        }
+        return [
+            cfg.id
+            for cfg in self._config.sensors
+            if str(cfg.type or "").lower() in required_types
+        ]
+
+    async def _latest_readings_for_skill(
+        self, skill: Any
+    ) -> list[SensorReading] | None:
+        """Return the most recent SensorReading for each skill-associated sensor.
+
+        Returns ``None`` when StateStore is unavailable. Callers performing
+        Tier D suppression checks must treat ``None`` as a precondition failure
+        (fail-closed) rather than assuming no condition is active.
+        """
+        if self._state_store is None:
+            return None
+        readings: list[SensorReading] = []
+        for sensor_id in self._sensor_ids_for_skill(skill):
+            history = await self._state_store.get_history(sensor_id, limit=1)
+            if history:
+                readings.append(history[0])
+        return readings
 
     async def _log_remote_command_execution_result(
         self, result: RemoteCommandExecutionResult
