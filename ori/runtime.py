@@ -59,6 +59,7 @@ from ori.reasoning.local_llm import LocalLLM
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_command_lockout import (
+    DEFAULT_LOCKOUT_STATE_STALE_AFTER_MS,
     evaluate_remote_command_lockout,
     remote_command_sender_key,
 )
@@ -1442,6 +1443,15 @@ class OriRuntime:
                 "is_expired": None,
             }
         device_policy_state["enabled"] = self._device_policy_enabled
+        lockout_stale_after_ms = DEFAULT_LOCKOUT_STATE_STALE_AFTER_MS
+        remote_command_lockout_senders: list[dict[str, Any]] = []
+        for state in self._remote_command_lockout_states.values():
+            item = dict(state)
+            checked_at_ms = int(item.get("checked_at_ms") or 0)
+            item["stale"] = checked_at_ms <= 0 or (
+                now - checked_at_ms > lockout_stale_after_ms
+            )
+            remote_command_lockout_senders.append(item)
 
         return {
             "device_id": self._device_id,
@@ -1456,7 +1466,8 @@ class OriRuntime:
             "device_policy": device_policy_state,
             "remote_command_lockout": {
                 "enforcement_enabled": False,
-                "senders": list(self._remote_command_lockout_states.values()),
+                "stale_after_ms": lockout_stale_after_ms,
+                "senders": remote_command_lockout_senders,
             },
         }
 

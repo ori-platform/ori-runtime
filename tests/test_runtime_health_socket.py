@@ -105,8 +105,9 @@ async def test_health_socket_refuses_non_socket_existing_path(tmp_path):
 
 def test_runtime_health_snapshot_shape():
     runtime = OriRuntime(config_path="ori.yaml")
+    now = now_ms()
     runtime._device_id = "dev-01"
-    runtime._runtime_started_at_ms = now_ms() - 5_000
+    runtime._runtime_started_at_ms = now - 5_000
     runtime._health_socket_path = "/tmp/ori-health.sock"
     runtime._device_policy_enabled = True
     runtime._configured_sensors = [
@@ -118,9 +119,9 @@ def test_runtime_health_snapshot_shape():
         )
     ]
     runtime._connected_sensor_ids = {"sensor-1"}
-    runtime._sensor_last_seen_ms = {"sensor-1": now_ms() - 200}
-    runtime._last_alert_timestamps_by_channel = {"sms": now_ms() - 100}
-    runtime._last_alert_timestamps_by_trigger = {"battery_cycle_stress": now_ms() - 50}
+    runtime._sensor_last_seen_ms = {"sensor-1": now - 200}
+    runtime._last_alert_timestamps_by_channel = {"sms": now - 100}
+    runtime._last_alert_timestamps_by_trigger = {"battery_cycle_stress": now - 50}
     runtime._remote_command_lockout_states = {
         "sms:+2348012345678": {
             "channel": "sms",
@@ -131,9 +132,21 @@ def test_runtime_health_snapshot_shape():
             "incident_count": 3,
             "rejection_count": 18,
             "window_ms": 3_600_000,
-            "checked_at_ms": now_ms(),
+            "checked_at_ms": now,
             "reason": "critical_incident_volume",
-        }
+        },
+        "whatsapp:whatsapp:+2348099999999": {
+            "channel": "whatsapp",
+            "from_number": "whatsapp:+2348099999999",
+            "risk_level": "elevated",
+            "locked_out": False,
+            "enforcement_enabled": False,
+            "incident_count": 1,
+            "rejection_count": 6,
+            "window_ms": 3_600_000,
+            "checked_at_ms": now - 7_200_000,
+            "reason": "recent_security_incident",
+        },
     }
 
     class _Dispatcher:
@@ -163,4 +176,12 @@ def test_runtime_health_snapshot_shape():
     assert snapshot["device_policy"]["enabled"] is True
     assert snapshot["device_policy"]["policy_version"] == 3
     assert snapshot["remote_command_lockout"]["enforcement_enabled"] is False
-    assert snapshot["remote_command_lockout"]["senders"][0]["risk_level"] == "critical"
+    assert snapshot["remote_command_lockout"]["stale_after_ms"] == 3_600_000
+    senders = {
+        item["from_number"]: item
+        for item in snapshot["remote_command_lockout"]["senders"]
+    }
+    assert senders["+2348012345678"]["risk_level"] == "critical"
+    assert senders["+2348012345678"]["stale"] is False
+    assert senders["whatsapp:+2348099999999"]["risk_level"] == "elevated"
+    assert senders["whatsapp:+2348099999999"]["stale"] is True

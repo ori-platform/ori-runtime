@@ -3,6 +3,34 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Remote Command Lockout Health State Can Be Stale
+
+**Status:** Accepted
+
+Advisory remote command lockout state is updated when abuse incidents fire, not
+on every inbound command. Health snapshots must therefore label sender risk
+entries as fresh or stale instead of implying that a cached state is current
+forever.
+
+Rules:
+
+- Runtime health snapshots include `remote_command_lockout.stale_after_ms`.
+- Each sender entry includes `stale`.
+- Stale sender entries remain visible for diagnostics.
+- Stale advisory risk must not be used for enforcement.
+- Enforcement remains disabled until a future recovery-safe lockout decision
+  defines active re-evaluation, expiry, and recovery behavior.
+
+Rationale:
+
+- Re-evaluating lockout risk on every command would add database work to the
+  common path before enforcement exists.
+- Keeping stale entries visible helps operators understand recent abuse history.
+- Explicit freshness metadata prevents health consumers from treating cached
+  advisory risk as a live enforcement signal.
+
+---
+
 ## 2026-06-01 — Remote Command Lockout Is Advisory Until Recovery Is Designed
 
 **Status:** Accepted
