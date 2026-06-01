@@ -59,7 +59,7 @@ from ori.reasoning.local_llm import LocalLLM
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_command_lockout import (
-    DEFAULT_LOCKOUT_STATE_STALE_AFTER_MS,
+    default_remote_command_lockout_config,
     evaluate_remote_command_lockout,
     remote_command_sender_key,
 )
@@ -171,6 +171,9 @@ class OriRuntime:
         self._device_policy_enabled: bool = False
         self._device_id: str = ""
         self._remote_command_lockout_states: dict[str, dict[str, Any]] = {}
+        self._remote_command_lockout_config: dict[str, Any] = (
+            default_remote_command_lockout_config()
+        )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -284,6 +287,7 @@ class OriRuntime:
         self._device_policy_enabled = bool(
             (config.device_policy or {}).get("enabled", False)
         )
+        self._remote_command_lockout_config = _remote_command_lockout_config(config)
 
         status_cfg = (
             config.hal.status_signaling
@@ -1264,8 +1268,7 @@ class OriRuntime:
             decision.threshold,
         )
         try:
-            lockout_state = await evaluate_remote_command_lockout(
-                state_store=self._state_store,
+            lockout_state = await self._evaluate_lockout_for_sender(
                 channel=decision.channel,
                 from_number=decision.from_number,
             )
@@ -1310,12 +1313,13 @@ class OriRuntime:
             return
 
         now = now_ms()
-        since_ms = now - DEFAULT_LOCKOUT_STATE_STALE_AFTER_MS
+        lockout_cfg = self._remote_command_lockout_config
+        since_ms = now - int(lockout_cfg["state_stale_after_ms"])
         try:
             senders = (
                 await self._state_store.get_recent_remote_command_incident_senders(
                     since_ms=since_ms,
-                    limit=50,
+                    limit=int(lockout_cfg["incident_sender_limit"]),
                 )
             )
         except Exception:
@@ -1330,8 +1334,7 @@ class OriRuntime:
             if not channel or not from_number:
                 continue
             try:
-                lockout_state = await evaluate_remote_command_lockout(
-                    state_store=self._state_store,
+                lockout_state = await self._evaluate_lockout_for_sender(
                     channel=channel,
                     from_number=from_number,
                     now_ms_value=now,
@@ -1349,6 +1352,28 @@ class OriRuntime:
                     from_number=from_number,
                 )
             ] = lockout_state.as_dict()
+
+    async def _evaluate_lockout_for_sender(
+        self,
+        *,
+        channel: str,
+        from_number: str,
+        now_ms_value: int | None = None,
+    ):
+        """Evaluate advisory sender risk with the runtime's normalized config."""
+        cfg = self._remote_command_lockout_config
+        return await evaluate_remote_command_lockout(
+            state_store=self._state_store,
+            channel=channel,
+            from_number=from_number,
+            window_ms=int(cfg["risk_window_ms"]),
+            enforcement_enabled=False,
+            elevated_incident_threshold=int(cfg["elevated_incident_threshold"]),
+            critical_incident_threshold=int(cfg["critical_incident_threshold"]),
+            elevated_rejection_threshold=int(cfg["elevated_rejection_threshold"]),
+            critical_rejection_threshold=int(cfg["critical_rejection_threshold"]),
+            now_ms_value=now_ms_value,
+        )
 
     async def _start_sms_webhook_if_enabled(
         self, config: Config
@@ -1494,7 +1519,9 @@ class OriRuntime:
                 "is_expired": None,
             }
         device_policy_state["enabled"] = self._device_policy_enabled
-        lockout_stale_after_ms = DEFAULT_LOCKOUT_STATE_STALE_AFTER_MS
+        lockout_stale_after_ms = int(
+            self._remote_command_lockout_config["state_stale_after_ms"]
+        )
         remote_command_lockout_senders: list[dict[str, Any]] = []
         for state in self._remote_command_lockout_states.values():
             item = dict(state)
@@ -1517,7 +1544,13 @@ class OriRuntime:
             "device_policy": device_policy_state,
             "remote_command_lockout": {
                 "enforcement_enabled": False,
+                "risk_window_ms": int(
+                    self._remote_command_lockout_config["risk_window_ms"]
+                ),
                 "stale_after_ms": lockout_stale_after_ms,
+                "incident_sender_limit": int(
+                    self._remote_command_lockout_config["incident_sender_limit"]
+                ),
                 "senders": remote_command_lockout_senders,
             },
         }
@@ -2487,6 +2520,18 @@ def _build_remote_command_verifier(config: Config) -> RemoteCommandVerifier | No
         shared_secret=shared_secret,
         max_skew_ms=max_skew_ms,
     )
+
+
+def _remote_command_lockout_config(config: Config | None) -> dict[str, Any]:
+    if config is None or not isinstance(config.security, dict):
+        return default_remote_command_lockout_config()
+    remote_cfg = config.security.get("remote_commands") or {}
+    if not isinstance(remote_cfg, dict):
+        return default_remote_command_lockout_config()
+    lockout_cfg = remote_cfg.get("lockout")
+    if not isinstance(lockout_cfg, dict):
+        return default_remote_command_lockout_config()
+    return {**default_remote_command_lockout_config(), **lockout_cfg}
 
 
 def _is_local_slm_available(local_llm: Any) -> bool:

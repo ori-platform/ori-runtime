@@ -11,7 +11,7 @@ valid signed recovery commands until a safe recovery/override policy exists.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from ori.time_utils import now_ms
 
@@ -21,6 +21,7 @@ LOCKOUT_RISK_CRITICAL = "critical"
 
 DEFAULT_LOCKOUT_RISK_WINDOW_MS = 60 * 60 * 1000
 DEFAULT_LOCKOUT_STATE_STALE_AFTER_MS = DEFAULT_LOCKOUT_RISK_WINDOW_MS
+DEFAULT_LOCKOUT_INCIDENT_SENDER_LIMIT = 50
 ELEVATED_INCIDENT_THRESHOLD = 1
 CRITICAL_INCIDENT_THRESHOLD = 3
 ELEVATED_REJECTION_THRESHOLD = 5
@@ -51,6 +52,10 @@ async def evaluate_remote_command_lockout(
     from_number: str,
     window_ms: int = DEFAULT_LOCKOUT_RISK_WINDOW_MS,
     enforcement_enabled: bool = False,
+    elevated_incident_threshold: int = ELEVATED_INCIDENT_THRESHOLD,
+    critical_incident_threshold: int = CRITICAL_INCIDENT_THRESHOLD,
+    elevated_rejection_threshold: int = ELEVATED_REJECTION_THRESHOLD,
+    critical_rejection_threshold: int = CRITICAL_REJECTION_THRESHOLD,
     now_ms_value: int | None = None,
 ) -> RemoteCommandLockoutState:
     """Evaluate sender risk without enforcing lockout by default."""
@@ -81,6 +86,10 @@ async def evaluate_remote_command_lockout(
     risk_level, reason = classify_remote_command_lockout_risk(
         incident_count=incident_count,
         rejection_count=rejection_count,
+        elevated_incident_threshold=elevated_incident_threshold,
+        critical_incident_threshold=critical_incident_threshold,
+        elevated_rejection_threshold=elevated_rejection_threshold,
+        critical_rejection_threshold=critical_rejection_threshold,
     )
     return RemoteCommandLockoutState(
         channel=normalized_channel,
@@ -100,19 +109,87 @@ def classify_remote_command_lockout_risk(
     *,
     incident_count: int,
     rejection_count: int,
+    elevated_incident_threshold: int = ELEVATED_INCIDENT_THRESHOLD,
+    critical_incident_threshold: int = CRITICAL_INCIDENT_THRESHOLD,
+    elevated_rejection_threshold: int = ELEVATED_REJECTION_THRESHOLD,
+    critical_rejection_threshold: int = CRITICAL_REJECTION_THRESHOLD,
 ) -> tuple[str, str]:
     incidents = max(0, int(incident_count))
     rejections = max(0, int(rejection_count))
-    if incidents >= CRITICAL_INCIDENT_THRESHOLD:
+    elevated_incidents = max(1, int(elevated_incident_threshold))
+    critical_incidents = max(elevated_incidents, int(critical_incident_threshold))
+    elevated_rejections = max(1, int(elevated_rejection_threshold))
+    critical_rejections = max(elevated_rejections, int(critical_rejection_threshold))
+    if incidents >= critical_incidents:
         return LOCKOUT_RISK_CRITICAL, "critical_incident_volume"
-    if rejections >= CRITICAL_REJECTION_THRESHOLD:
+    if rejections >= critical_rejections:
         return LOCKOUT_RISK_CRITICAL, "critical_rejection_volume"
-    if incidents >= ELEVATED_INCIDENT_THRESHOLD:
+    if incidents >= elevated_incidents:
         return LOCKOUT_RISK_ELEVATED, "recent_security_incident"
-    if rejections >= ELEVATED_REJECTION_THRESHOLD:
+    if rejections >= elevated_rejections:
         return LOCKOUT_RISK_ELEVATED, "elevated_rejection_volume"
     return LOCKOUT_RISK_NORMAL, "below_threshold"
 
 
 def remote_command_sender_key(*, channel: str, from_number: str) -> str:
     return f"{str(channel or '')}:{str(from_number or '')}"
+
+
+def default_remote_command_lockout_config() -> dict[str, Any]:
+    """Return advisory lockout defaults as a mutable config mapping."""
+    return {
+        "risk_window_ms": DEFAULT_LOCKOUT_RISK_WINDOW_MS,
+        "state_stale_after_ms": DEFAULT_LOCKOUT_STATE_STALE_AFTER_MS,
+        "incident_sender_limit": DEFAULT_LOCKOUT_INCIDENT_SENDER_LIMIT,
+        "elevated_incident_threshold": ELEVATED_INCIDENT_THRESHOLD,
+        "critical_incident_threshold": CRITICAL_INCIDENT_THRESHOLD,
+        "elevated_rejection_threshold": ELEVATED_REJECTION_THRESHOLD,
+        "critical_rejection_threshold": CRITICAL_REJECTION_THRESHOLD,
+        "enforcement_enabled": False,
+    }
+
+
+def normalize_remote_command_lockout_config(data: Any) -> dict[str, Any]:
+    """Validate advisory lockout config while keeping enforcement disabled."""
+    if data is None:
+        data = {}
+    if not isinstance(data, Mapping):
+        raise ValueError("security.remote_commands.lockout must be a mapping.")
+
+    defaults = default_remote_command_lockout_config()
+    out = dict(defaults)
+
+    def _positive_int(key: str) -> int:
+        try:
+            value = int(data.get(key, defaults[key]))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"security.remote_commands.lockout.{key} must be an integer."
+            ) from exc
+        if value < 1:
+            raise ValueError(f"security.remote_commands.lockout.{key} must be >= 1.")
+        return value
+
+    for key in (
+        "risk_window_ms",
+        "state_stale_after_ms",
+        "incident_sender_limit",
+        "elevated_incident_threshold",
+        "critical_incident_threshold",
+        "elevated_rejection_threshold",
+        "critical_rejection_threshold",
+    ):
+        out[key] = _positive_int(key)
+
+    if out["critical_incident_threshold"] < out["elevated_incident_threshold"]:
+        raise ValueError(
+            "security.remote_commands.lockout.critical_incident_threshold "
+            "must be >= elevated_incident_threshold."
+        )
+    if out["critical_rejection_threshold"] < out["elevated_rejection_threshold"]:
+        raise ValueError(
+            "security.remote_commands.lockout.critical_rejection_threshold "
+            "must be >= elevated_rejection_threshold."
+        )
+    out["enforcement_enabled"] = False
+    return out

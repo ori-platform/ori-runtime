@@ -176,7 +176,9 @@ def test_runtime_health_snapshot_shape():
     assert snapshot["device_policy"]["enabled"] is True
     assert snapshot["device_policy"]["policy_version"] == 3
     assert snapshot["remote_command_lockout"]["enforcement_enabled"] is False
+    assert snapshot["remote_command_lockout"]["risk_window_ms"] == 3_600_000
     assert snapshot["remote_command_lockout"]["stale_after_ms"] == 3_600_000
+    assert snapshot["remote_command_lockout"]["incident_sender_limit"] == 50
     senders = {
         item["from_number"]: item
         for item in snapshot["remote_command_lockout"]["senders"]
@@ -185,3 +187,40 @@ def test_runtime_health_snapshot_shape():
     assert senders["+2348012345678"]["stale"] is False
     assert senders["whatsapp:+2348099999999"]["risk_level"] == "elevated"
     assert senders["whatsapp:+2348099999999"]["stale"] is True
+
+
+def test_runtime_health_snapshot_uses_configured_lockout_staleness():
+    runtime = OriRuntime(config_path="ori.yaml")
+    now = now_ms()
+    runtime._remote_command_lockout_config = {
+        "risk_window_ms": 120_000,
+        "state_stale_after_ms": 1_000,
+        "incident_sender_limit": 7,
+        "elevated_incident_threshold": 1,
+        "critical_incident_threshold": 3,
+        "elevated_rejection_threshold": 5,
+        "critical_rejection_threshold": 15,
+        "enforcement_enabled": False,
+    }
+    runtime._remote_command_lockout_states = {
+        "sms:+2348012345678": {
+            "channel": "sms",
+            "from_number": "+2348012345678",
+            "risk_level": "elevated",
+            "locked_out": False,
+            "enforcement_enabled": False,
+            "incident_count": 1,
+            "rejection_count": 0,
+            "window_ms": 120_000,
+            "checked_at_ms": now - 1_500,
+            "reason": "recent_security_incident",
+        }
+    }
+
+    snapshot = runtime._build_health_snapshot()
+
+    assert snapshot["remote_command_lockout"]["enforcement_enabled"] is False
+    assert snapshot["remote_command_lockout"]["risk_window_ms"] == 120_000
+    assert snapshot["remote_command_lockout"]["stale_after_ms"] == 1_000
+    assert snapshot["remote_command_lockout"]["incident_sender_limit"] == 7
+    assert snapshot["remote_command_lockout"]["senders"][0]["stale"] is True

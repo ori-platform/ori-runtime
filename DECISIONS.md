@@ -3,6 +3,42 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Remote Command Lockout Tuning Is Configurable, Enforcement Is Not
+
+**Status:** Accepted
+
+Operators may tune advisory remote command lockout risk windows and thresholds
+through `security.remote_commands.lockout`, but remote command lockout remains
+diagnostic-only. The config exists to adapt health-snapshot sensitivity across
+deployment environments without prematurely introducing command blocking.
+
+Rules:
+
+- `security.remote_commands.lockout.risk_window_ms` controls the rejection and
+  incident lookback window used for sender risk calculation.
+- `state_stale_after_ms` controls when cached sender risk is labelled stale in
+  health snapshots.
+- `incident_sender_limit` bounds how many recent incident senders are rebuilt
+  into runtime health state at startup.
+- Incident and rejection thresholds may be tuned, but critical thresholds must
+  not be lower than their corresponding elevated thresholds.
+- `enforcement_enabled` is accepted only as an explicit no-op. Runtime health
+  must report `remote_command_lockout.enforcement_enabled=false` regardless of
+  YAML until a future recovery-safe enforcement decision exists.
+- Invalid lockout config must fail config validation rather than silently using
+  unsafe values.
+
+Rationale:
+
+- Different deployments may need different advisory sensitivity, especially
+  when SMS delivery quality or operator phone number rotation varies.
+- Tuning diagnostic thresholds does not carry the same safety risk as active
+  lockout.
+- Keeping enforcement hard-disabled prevents a config-only change from blocking
+  the only available recovery channel.
+
+---
+
 ## 2026-06-01 — Remote Command Lockout Health Rebuilds From Persisted Incidents
 
 **Status:** Accepted

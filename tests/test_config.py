@@ -149,6 +149,58 @@ class TestLoadExample:
         assert remote["enabled"] is False
         assert remote["hmac_secret_env"] == "ORI_REMOTE_COMMAND_HMAC_SECRET"
         assert remote["max_skew_seconds"] == 300
+        lockout = remote["lockout"]
+        assert lockout["risk_window_ms"] == 3_600_000
+        assert lockout["state_stale_after_ms"] == 3_600_000
+        assert lockout["incident_sender_limit"] == 50
+        assert lockout["elevated_incident_threshold"] == 1
+        assert lockout["critical_incident_threshold"] == 3
+        assert lockout["elevated_rejection_threshold"] == 5
+        assert lockout["critical_rejection_threshold"] == 15
+        assert lockout["enforcement_enabled"] is False
+
+    def test_security_remote_command_lockout_overrides(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                enabled: false
+                lockout:
+                  risk_window_ms: 120000
+                  state_stale_after_ms: 240000
+                  incident_sender_limit: 7
+                  elevated_incident_threshold: 2
+                  critical_incident_threshold: 4
+                  elevated_rejection_threshold: 8
+                  critical_rejection_threshold: 20
+                  enforcement_enabled: true
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        lockout = cfg.security["remote_commands"]["lockout"]
+        assert lockout["risk_window_ms"] == 120_000
+        assert lockout["state_stale_after_ms"] == 240_000
+        assert lockout["incident_sender_limit"] == 7
+        assert lockout["elevated_incident_threshold"] == 2
+        assert lockout["critical_incident_threshold"] == 4
+        assert lockout["elevated_rejection_threshold"] == 8
+        assert lockout["critical_rejection_threshold"] == 20
+        assert lockout["enforcement_enabled"] is False
 
     def test_os_sandbox_defaults(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -482,6 +534,59 @@ class TestSecurityValidation:
         )
 
         with pytest.raises(ConfigValidationError, match="max_skew_seconds"):
+            Config.load(yaml_path)
+
+    def test_rejects_invalid_remote_command_lockout_value(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                lockout:
+                  risk_window_ms: -1
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="risk_window_ms"):
+            Config.load(yaml_path)
+
+    def test_rejects_remote_command_lockout_critical_below_elevated(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                lockout:
+                  elevated_rejection_threshold: 10
+                  critical_rejection_threshold: 5
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="critical_rejection_threshold"):
             Config.load(yaml_path)
 
 

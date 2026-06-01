@@ -279,6 +279,17 @@ security:
     enabled: false                               # state-changing SMS/WhatsApp/cloud commands require HMAC
     hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
     max_skew_seconds: 300
+    lockout:
+      # Advisory only. Enforcement remains disabled even if set true until a
+      # recovery-safe lockout policy is accepted.
+      enforcement_enabled: false
+      risk_window_ms: 3600000                    # 1h risk calculation window
+      state_stale_after_ms: 3600000              # mark cached sender risk stale after 1h
+      incident_sender_limit: 50                  # max recent senders rebuilt into health at startup
+      elevated_incident_threshold: 1
+      critical_incident_threshold: 3
+      elevated_rejection_threshold: 5
+      critical_rejection_threshold: 15
 
 actions:
   # For Nigeria: use sms as primary (Africa's Talking — no approval required)

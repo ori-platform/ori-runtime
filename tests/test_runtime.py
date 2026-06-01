@@ -1700,6 +1700,39 @@ class TestAlertOutbox:
 
         assert runtime._remote_command_lockout_states == {}
 
+    async def test_load_remote_command_lockout_state_uses_configured_bounds(
+        self, monkeypatch
+    ):
+        class _CapturingIncidentStore:
+            def __init__(self):
+                self.calls: list[dict[str, int]] = []
+
+            async def get_recent_remote_command_incident_senders(
+                self, *, since_ms: int, limit: int
+            ):
+                self.calls.append({"since_ms": since_ms, "limit": limit})
+                return []
+
+        now = 1_780_000_000_000
+        monkeypatch.setattr("ori.runtime.now_ms", lambda: now)
+        store = _CapturingIncidentStore()
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = store
+        runtime._remote_command_lockout_config = {
+            "risk_window_ms": 120_000,
+            "state_stale_after_ms": 240_000,
+            "incident_sender_limit": 7,
+            "elevated_incident_threshold": 2,
+            "critical_incident_threshold": 4,
+            "elevated_rejection_threshold": 8,
+            "critical_rejection_threshold": 20,
+            "enforcement_enabled": False,
+        }
+
+        await runtime._load_remote_command_lockout_state()
+
+        assert store.calls == [{"since_ms": now - 240_000, "limit": 7}]
+
 
 class TestRemoteDevicePolicy:
     def _signed_policy_payload(self):

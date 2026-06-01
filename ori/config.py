@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from ori.hal.protocol_registry import SUPPORTED_SENSOR_PROTOCOLS
+from ori.security.remote_command_lockout import normalize_remote_command_lockout_config
 
 logger = logging.getLogger(__name__)
 
@@ -1094,11 +1095,26 @@ def _parse_security(data: Any) -> dict:
             "security.remote_commands.hmac_secret_env is required when enabled."
         )
 
+    try:
+        lockout = normalize_remote_command_lockout_config(remote.get("lockout"))
+    except ValueError as exc:
+        raise ConfigValidationError(str(exc)) from exc
+    raw_lockout = remote.get("lockout") or {}
+    if isinstance(raw_lockout, dict) and (
+        str(raw_lockout.get("enforcement_enabled", "")).strip().lower() == "true"
+        or raw_lockout.get("enforcement_enabled") is True
+    ):
+        logger.warning(
+            "[config] security.remote_commands.lockout.enforcement_enabled is ignored; "
+            "remote command lockout enforcement is not available yet."
+        )
+
     out["remote_commands"] = {
         **remote,
         "enabled": enabled,
         "hmac_secret_env": hmac_secret_env,
         "max_skew_seconds": max_skew_seconds,
+        "lockout": lockout,
     }
     return out
 
