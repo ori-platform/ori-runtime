@@ -573,6 +573,12 @@ Violating them creates vulnerabilities that affect physical hardware.
     WhatsApp, or cloud API.
     All remote command handlers must call `RemoteCommandVerifier` before executing
     or queueing any state-changing command.
+    Remote command authentication must be bound to the ingress sender. When
+    remote commands are enabled, `security.remote_commands.allowed_senders`
+    must define the approved SMS/WhatsApp sender identities, or
+    `allow_unlisted_senders: true` must be explicitly set for test deployments.
+    A valid signature from an unapproved sender must be rejected and audited as
+    `sender_not_allowed`.
     Verification does not imply execution permission. Authenticated remote commands
     must pass through `ori.security.remote_command_policy` before any runtime side
     effect is allowed.

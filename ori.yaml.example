@@ -279,6 +279,15 @@ security:
     enabled: false                               # state-changing SMS/WhatsApp/cloud commands require HMAC
     hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
     max_skew_seconds: 300
+    # Fail-closed sender binding. When remote_commands.enabled=true, commands
+    # are rejected unless they arrive from one of these channel-specific senders,
+    # or allow_unlisted_senders is explicitly set true for test deployments.
+    allow_unlisted_senders: false
+    allowed_senders:
+      sms:
+        - "${OWNER_PHONE_NUMBER}"
+      whatsapp:
+        - "${OWNER_WHATSAPP_NUMBER}"
     lockout:
       # Advisory only. Enforcement remains disabled even if set true until a
       # recovery-safe lockout policy is accepted.

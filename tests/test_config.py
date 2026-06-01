@@ -22,7 +22,7 @@ def _mock_env_vars_for_examples(monkeypatch):
     monkeypatch.setenv("OWNER_WHATSAPP_NUMBER", "whatsapp:+2340000000000")
     monkeypatch.setenv("AT_API_KEY", "mock_key")
     monkeypatch.setenv("AT_USERNAME", "mock_user")
-    monkeypatch.setenv("OWNER_PHONE_NUMBER", "mock_phone")
+    monkeypatch.setenv("OWNER_PHONE_NUMBER", "+2340000000000")
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -149,6 +149,11 @@ class TestLoadExample:
         assert remote["enabled"] is False
         assert remote["hmac_secret_env"] == "ORI_REMOTE_COMMAND_HMAC_SECRET"
         assert remote["max_skew_seconds"] == 300
+        assert remote["allow_unlisted_senders"] is False
+        assert remote["allowed_senders"] == {
+            "sms": ["+2340000000000"],
+            "whatsapp": ["whatsapp:+2340000000000"],
+        }
         lockout = remote["lockout"]
         assert lockout["risk_window_ms"] == 3_600_000
         assert lockout["state_stale_after_ms"] == 3_600_000
@@ -201,6 +206,45 @@ class TestLoadExample:
         assert lockout["elevated_rejection_threshold"] == 8
         assert lockout["critical_rejection_threshold"] == 20
         assert lockout["enforcement_enabled"] is False
+
+    def test_security_remote_command_allowed_senders_are_normalized(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                enabled: true
+                hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
+                allow_unlisted_senders: true
+                allowed_senders:
+                  sms:
+                    - " +234 801 234 5678 "
+                    - "+2348012345678"
+                  whatsapp:
+                    - " WhatsApp:+2348012345678 "
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        remote = cfg.security["remote_commands"]
+        assert remote["allow_unlisted_senders"] is True
+        assert remote["allowed_senders"] == {
+            "sms": ["+2348012345678"],
+            "whatsapp": ["whatsapp:+2348012345678"],
+        }
 
     def test_os_sandbox_defaults(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -560,6 +604,32 @@ class TestSecurityValidation:
         )
 
         with pytest.raises(ConfigValidationError, match="risk_window_ms"):
+            Config.load(yaml_path)
+
+    def test_rejects_invalid_remote_command_allowed_senders(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                allowed_senders:
+                  sms: "+2348012345678"
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="allowed_senders.sms"):
             Config.load(yaml_path)
 
     def test_rejects_remote_command_lockout_critical_below_elevated(self, tmp_path):

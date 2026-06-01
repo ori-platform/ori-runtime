@@ -14,6 +14,7 @@ import yaml
 
 from ori.hal.protocol_registry import SUPPORTED_SENSOR_PROTOCOLS
 from ori.security.remote_command_lockout import normalize_remote_command_lockout_config
+from ori.security.remote_commands import normalize_remote_command_sender
 
 logger = logging.getLogger(__name__)
 
@@ -1095,6 +1096,19 @@ def _parse_security(data: Any) -> dict:
             "security.remote_commands.hmac_secret_env is required when enabled."
         )
 
+    allowed_senders = _parse_remote_command_allowed_senders(
+        remote.get("allowed_senders")
+    )
+    allow_unlisted_senders = (
+        str(remote.get("allow_unlisted_senders", "")).strip().lower() == "true"
+        or remote.get("allow_unlisted_senders") is True
+    )
+    if enabled and not allow_unlisted_senders and not any(allowed_senders.values()):
+        logger.warning(
+            "[config] remote commands are enabled without allowed_senders; "
+            "all remote command senders will be rejected."
+        )
+
     try:
         lockout = normalize_remote_command_lockout_config(remote.get("lockout"))
     except ValueError as exc:
@@ -1114,9 +1128,39 @@ def _parse_security(data: Any) -> dict:
         "enabled": enabled,
         "hmac_secret_env": hmac_secret_env,
         "max_skew_seconds": max_skew_seconds,
+        "allowed_senders": allowed_senders,
+        "allow_unlisted_senders": allow_unlisted_senders,
         "lockout": lockout,
     }
     return out
+
+
+def _parse_remote_command_allowed_senders(data: Any) -> dict[str, list[str]]:
+    """Parse remote command sender allowlist by ingress channel."""
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ConfigValidationError(
+            "security.remote_commands.allowed_senders must be a mapping."
+        )
+    result: dict[str, list[str]] = {"sms": [], "whatsapp": []}
+    for channel, raw_senders in data.items():
+        normalized_channel = str(channel or "").strip().lower()
+        if not normalized_channel:
+            continue
+        if not isinstance(raw_senders, list):
+            raise ConfigValidationError(
+                f"security.remote_commands.allowed_senders.{normalized_channel} must be a list."
+            )
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for sender in raw_senders:
+            value = normalize_remote_command_sender(normalized_channel, sender)
+            if value and value not in seen:
+                seen.add(value)
+                normalized.append(value)
+        result[normalized_channel] = normalized
+    return result
 
 
 def _parse_health_socket(data: Any) -> dict:

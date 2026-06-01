@@ -2569,6 +2569,10 @@ def _build_remote_command_verifier(config: Config) -> RemoteCommandVerifier | No
         device_id=str(config.device.id),
         shared_secret=shared_secret,
         max_skew_ms=max_skew_ms,
+        allowed_senders=remote_cfg.get("allowed_senders"),
+        allow_unlisted_senders=is_truthy(
+            remote_cfg.get("allow_unlisted_senders", False)
+        ),
     )
 
 

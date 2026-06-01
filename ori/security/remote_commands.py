@@ -15,7 +15,7 @@ import hmac
 import json
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any
+from typing import Any, Mapping
 
 from ori.time_utils import now_ms
 
@@ -70,10 +70,15 @@ class RemoteCommandVerifier:
         device_id: str,
         shared_secret: str | None,
         max_skew_ms: int = 300_000,
+        allowed_senders: Mapping[str, list[str] | set[str] | tuple[str, ...]]
+        | None = None,
+        allow_unlisted_senders: bool = False,
     ) -> None:
         self._device_id = str(device_id or "").strip()
         self._shared_secret = str(shared_secret or "").strip()
         self._max_skew_ms = max(0, int(max_skew_ms))
+        self._allowed_senders = _normalize_allowed_senders(allowed_senders)
+        self._allow_unlisted_senders = bool(allow_unlisted_senders)
 
     async def verify(
         self,
@@ -122,6 +127,9 @@ class RemoteCommandVerifier:
         if not hmac.compare_digest(parsed.signature, expected):
             return await self._reject(state_store, parsed, "invalid_signature")
 
+        if not self._sender_is_allowed(parsed):
+            return await self._reject(state_store, parsed, "sender_not_allowed")
+
         if state_store is None or not hasattr(state_store, "has_remote_command"):
             return await self._reject(state_store, parsed, "state_store_unavailable")
         if await state_store.has_remote_command(parsed.command_id):
@@ -156,6 +164,16 @@ class RemoteCommandVerifier:
             issued_at_ms=command.issued_at_ms,
             command_obj=command,
         )
+
+    def _sender_is_allowed(self, command: RemoteCommand) -> bool:
+        if self._allow_unlisted_senders:
+            return True
+        channel = _normalize_channel(command.channel)
+        sender = normalize_remote_command_sender(channel, command.from_number)
+        if not channel or not sender:
+            return False
+        allowed = self._allowed_senders.get(channel, frozenset())
+        return sender in allowed
 
     async def _audit(
         self,
@@ -384,6 +402,46 @@ def _parse_command(payload: dict[str, Any]) -> tuple[RemoteCommand | None, str]:
 
 def _canonical_json(value: dict[str, Any]) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _normalize_allowed_senders(
+    allowed_senders: Mapping[str, list[str] | set[str] | tuple[str, ...]] | None,
+) -> dict[str, frozenset[str]]:
+    if not isinstance(allowed_senders, Mapping):
+        return {}
+    result: dict[str, frozenset[str]] = {}
+    for channel, senders in allowed_senders.items():
+        normalized_channel = _normalize_channel(channel)
+        if not normalized_channel:
+            continue
+        if not isinstance(senders, list | set | tuple):
+            continue
+        normalized_senders = {
+            normalized
+            for sender in senders
+            if (
+                normalized := normalize_remote_command_sender(
+                    normalized_channel, sender
+                )
+            )
+        }
+        result[normalized_channel] = frozenset(normalized_senders)
+    return result
+
+
+def normalize_remote_command_sender(channel: Any, sender: Any) -> str:
+    """Normalize an ingress sender identity for allowlist matching."""
+    normalized_channel = _normalize_channel(channel)
+    value = str(sender or "").strip()
+    if normalized_channel == "sms":
+        return "".join(ch for ch in value if ch.isdigit() or ch == "+")
+    if normalized_channel == "whatsapp":
+        return "".join(value.lower().split())
+    return value
+
+
+def _normalize_channel(value: Any) -> str:
+    return str(value or "").strip().lower()
 
 
 def _safe_int_or_none(value: Any) -> int | None:

@@ -3,6 +3,40 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Remote Commands Are Bound To Approved Senders
+
+**Status:** Accepted
+
+Remote command authentication requires both a valid command signature and an
+approved ingress sender identity. A leaked HMAC secret must not be sufficient to
+execute runtime commands from an arbitrary phone number or WhatsApp sender.
+
+Rules:
+
+- `security.remote_commands.allowed_senders` defines approved senders by channel.
+- SMS sender identities are normalized to digits and `+`.
+- WhatsApp sender identities are lowercased and whitespace-stripped.
+- When remote commands are enabled and `allow_unlisted_senders=false`, commands
+  from senders outside the channel allowlist must be rejected and audited as
+  `sender_not_allowed`.
+- Missing allowlists fail closed at verification time. Operators may explicitly
+  set `allow_unlisted_senders=true` only for test deployments.
+- Sender identity comes from ingress metadata, not from the signed payload body.
+- The sender allowlist check fires AFTER HMAC verification, not before. Only a
+  caller who already holds the valid shared secret can learn their sender is not
+  on the allowlist. Callers without the secret receive a signature-related
+  rejection regardless of allowlist status, preventing sender enumeration.
+
+Rationale:
+
+- HMAC verifies command authorship but not operator-channel legitimacy.
+- Binding signatures to ingress sender identity limits blast radius if a shared
+  secret leaks.
+- Fail-closed sender binding is safer for physical actuation commands than
+  silently accepting signed commands from unknown phones.
+
+---
+
 ## 2026-06-01 — Remote Command Dry Run Is Verified And Audited
 
 **Status:** Accepted

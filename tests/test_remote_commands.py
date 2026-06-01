@@ -53,6 +53,7 @@ def _payload(*, now: int, command_id: str = "cmd-1", args: dict | None = None):
         "issued_at_ms": now,
         "command": "UPDATE_CONFIG",
         "args": args if args is not None else {"threshold": 42, "sensor_id": "s1"},
+        "from_number": "+2348012345678",
     }
 
 
@@ -62,11 +63,23 @@ def _signed(payload: dict, secret: str = "shared-secret") -> dict:
     return signed
 
 
-def _verifier(secret: str = "shared-secret") -> RemoteCommandVerifier:
+def _verifier(
+    secret: str = "shared-secret",
+    *,
+    allowed_senders: dict | None = None,
+    allow_unlisted_senders: bool = False,
+) -> RemoteCommandVerifier:
     return RemoteCommandVerifier(
         device_id="dev-01",
         shared_secret=secret,
         max_skew_ms=300_000,
+        allowed_senders=allowed_senders
+        if allowed_senders is not None
+        else {
+            "sms": ["+2348012345678"],
+            "whatsapp": ["whatsapp:+2348012345678"],
+        },
+        allow_unlisted_senders=allow_unlisted_senders,
     )
 
 
@@ -158,6 +171,71 @@ async def test_accepts_valid_hmac_command(store, fixed_now):
     assert rows[0]["command_id"] == "cmd-1"
     assert rows[0]["accepted"] is True
     assert rows[0]["from_number"] == "+2348012345678"
+
+
+async def test_rejects_sender_not_allowed_after_hmac_verification(store, fixed_now):
+    # Sender check fires AFTER HMAC so only callers with the valid secret
+    # can learn their sender is not on the allowlist.
+    payload = _signed(_payload(now=fixed_now, command_id="blocked-sender"))
+    payload["from_number"] = "+2348099999999"
+
+    result = await _verifier().verify(payload, state_store=store)
+
+    assert result.accepted is False
+    assert result.reason == "sender_not_allowed"
+    rows = await store.get_remote_command_log()
+    assert rows[0]["command_id"] == "blocked-sender"
+    assert rows[0]["from_number"] == "+2348099999999"
+    assert rows[0]["reason"] == "sender_not_allowed"
+
+
+async def test_unsigned_command_from_non_allowlisted_sender_does_not_reveal_allowlist(
+    store, fixed_now
+):
+    # An attacker without the HMAC secret must not be able to determine whether
+    # their sender is on the allowlist by comparing rejection reasons.
+    payload = _payload(now=fixed_now, command_id="probe-sender")
+    payload["from_number"] = "+2348099999999"
+    payload["signature"] = "hmac-sha256:badhash"
+
+    result = await _verifier().verify(payload, state_store=store)
+
+    assert result.accepted is False
+    assert result.reason == "invalid_signature"  # not "sender_not_allowed"
+
+
+async def test_rejects_all_senders_when_allowlist_is_missing(store, fixed_now):
+    payload = _signed(_payload(now=fixed_now, command_id="missing-allowlist"))
+
+    result = await _verifier(allowed_senders={}).verify(payload, state_store=store)
+
+    assert result.accepted is False
+    assert result.reason == "sender_not_allowed"
+
+
+async def test_allow_unlisted_senders_accepts_signed_command(store, fixed_now):
+    payload = _signed(_payload(now=fixed_now, command_id="unlisted-ok"))
+    payload["from_number"] = "+2348099999999"
+
+    result = await _verifier(
+        allowed_senders={},
+        allow_unlisted_senders=True,
+    ).verify(payload, state_store=store)
+
+    assert result.accepted is True
+    assert result.reason == "accepted"
+
+
+async def test_whatsapp_sender_allowlist_matches_normalized_sender(store, fixed_now):
+    payload = _signed(_payload(now=fixed_now, command_id="wa-allowed"))
+    payload["channel"] = "whatsapp"
+    payload["from_number"] = " WhatsApp:+2348012345678 "
+
+    result = await _verifier().verify(payload, state_store=store)
+
+    assert result.accepted is True
+    assert result.command is not None
+    assert result.command.channel == "whatsapp"
 
 
 async def test_rejects_missing_signature(store, fixed_now):
