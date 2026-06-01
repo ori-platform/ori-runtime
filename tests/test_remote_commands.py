@@ -34,6 +34,7 @@ async def store(tmp_path):
 def fixed_now(monkeypatch):
     now = 1_780_000_000_000
     monkeypatch.setattr("ori.security.remote_commands.now_ms", lambda: now)
+    monkeypatch.setattr("ori.security.remote_command_throttle.now_ms", lambda: now)
     return now
 
 
@@ -60,6 +61,27 @@ def _verifier(secret: str = "shared-secret") -> RemoteCommandVerifier:
         shared_secret=secret,
         max_skew_ms=300_000,
     )
+
+
+async def _seed_rejected_attempts(
+    store: StateStore,
+    *,
+    channel: str,
+    from_number: str,
+    now: int,
+    count: int = 5,
+) -> None:
+    for i in range(count):
+        await store.log_remote_command_attempt(
+            command_id=f"seed-reject-{channel}-{i}",
+            channel=channel,
+            from_number=from_number,
+            command="UPDATE_CONFIG",
+            accepted=False,
+            reason="missing_signature",
+            issued_at_ms=now - 1_000,
+            received_at_ms=now - 1_000,
+        )
 
 
 class _InboxWhatsAppProvider:
@@ -96,15 +118,19 @@ class _RepeatingWhatsAppProvider:
 
 async def test_accepts_valid_hmac_command(store, fixed_now):
     payload = _signed(_payload(now=fixed_now))
+    payload["from_number"] = "+2348012345678"
 
     result = await _verifier().verify(payload, state_store=store)
 
     assert result.accepted is True
     assert result.reason == "accepted"
+    assert result.command is not None
+    assert result.command.from_number == "+2348012345678"
     assert await store.has_remote_command("cmd-1") is True
     rows = await store.get_remote_command_log()
     assert rows[0]["command_id"] == "cmd-1"
     assert rows[0]["accepted"] is True
+    assert rows[0]["from_number"] == "+2348012345678"
 
 
 async def test_rejects_missing_signature(store, fixed_now):
@@ -432,6 +458,122 @@ async def test_sms_handler_sends_generic_rejection_feedback(store, fixed_now):
     assert "missing_signature" not in message
 
 
+async def test_sms_rejection_feedback_is_throttled_after_repeated_failures(
+    store, fixed_now
+):
+    from_number = "+2348012345678"
+    await _seed_rejected_attempts(
+        store,
+        channel="sms",
+        from_number=from_number,
+        now=fixed_now,
+    )
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(),
+    )
+    action.send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    command = _payload(now=fixed_now, command_id="sms-throttled")
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": from_number, "text": json.dumps(command)}
+    )
+
+    assert ok is False
+    action.send.assert_not_awaited()
+    rows = await store.get_remote_command_log()
+    assert rows[0]["command_id"] == "sms-throttled"
+    assert rows[0]["from_number"] == from_number
+    assert rows[0]["accepted"] is False
+    assert (
+        await store.count_recent_remote_command_rejections(
+            channel="sms",
+            from_number=from_number,
+            since_ms=fixed_now - 600_000,
+        )
+        == 6
+    )
+
+
+async def test_sms_rejection_feedback_still_sends_at_threshold_boundary(
+    store, fixed_now
+):
+    from_number = "+2348012345678"
+    await _seed_rejected_attempts(
+        store,
+        channel="sms",
+        from_number=from_number,
+        now=fixed_now,
+        count=4,
+    )
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(),
+    )
+    action.send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    command = _payload(now=fixed_now, command_id="sms-threshold-boundary")
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": from_number, "text": json.dumps(command)}
+    )
+
+    assert ok is False
+    action.send.assert_awaited_once()
+    message, to_number = action.send.await_args.args
+    assert to_number == from_number
+    assert "rejected" in message
+    assert (
+        await store.count_recent_remote_command_rejections(
+            channel="sms",
+            from_number=from_number,
+            since_ms=fixed_now - 600_000,
+        )
+        == 5
+    )
+
+
+async def test_accepted_sms_command_feedback_is_not_rejection_throttled(
+    store, fixed_now
+):
+    from_number = "+2348012345678"
+    await _seed_rejected_attempts(
+        store,
+        channel="sms",
+        from_number=from_number,
+        now=fixed_now,
+    )
+
+    async def handler(command):
+        return command_result(
+            command,
+            status=STATUS_EXECUTED,
+            detail="policy refreshed",
+            executed=True,
+        )
+
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(),
+        remote_command_handler=handler,
+    )
+    action.send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    command = _signed(_payload(now=fixed_now, command_id="sms-accepted-throttle"))
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": from_number, "text": json.dumps(command)}
+    )
+
+    assert ok is True
+    action.send.assert_awaited_once()
+    message, to_number = action.send.await_args.args
+    assert to_number == from_number
+    assert "executed" in message
+    assert "sms-accepted-throttle" in message
+
+
 async def test_sms_feedback_failure_does_not_affect_execution_log(store, fixed_now):
     async def handler(command):
         result = command_result(
@@ -605,6 +747,79 @@ async def test_whatsapp_sends_generic_rejection_feedback(store, fixed_now):
     _to_number, message = provider.sent[0]
     assert "rejected" in message
     assert "missing_signature" not in message
+
+
+async def test_whatsapp_rejection_feedback_is_throttled_after_repeated_failures(
+    store, fixed_now
+):
+    from_number = "whatsapp:+2348012345678"
+    await _seed_rejected_attempts(
+        store,
+        channel="whatsapp",
+        from_number=from_number,
+        now=fixed_now,
+    )
+    command = _payload(now=fixed_now, command_id="wa-throttled")
+    provider = _InboxWhatsAppProvider([json.dumps(command), "YES"])
+    action = WhatsAppAction(
+        provider=provider,
+        state_store=store,
+        remote_command_verifier=_verifier(),
+    )
+
+    reply = await action.listen_for_response(
+        from_number=from_number,
+        timeout_seconds=1,
+    )
+
+    assert reply == "YES"
+    assert provider.sent == []
+    rows = await store.get_remote_command_log()
+    assert rows[0]["command_id"] == "wa-throttled"
+    assert rows[0]["channel"] == "whatsapp"
+    assert rows[0]["from_number"] == from_number
+    assert rows[0]["accepted"] is False
+
+
+async def test_accepted_whatsapp_command_feedback_is_not_rejection_throttled(
+    store, fixed_now
+):
+    from_number = "whatsapp:+2348012345678"
+    await _seed_rejected_attempts(
+        store,
+        channel="whatsapp",
+        from_number=from_number,
+        now=fixed_now,
+    )
+
+    async def handler(command):
+        return command_result(
+            command,
+            status=STATUS_EXECUTED,
+            detail="policy refreshed",
+            executed=True,
+        )
+
+    command = _signed(_payload(now=fixed_now, command_id="wa-accepted-throttle"))
+    provider = _InboxWhatsAppProvider([json.dumps(command), "YES"])
+    action = WhatsAppAction(
+        provider=provider,
+        state_store=store,
+        remote_command_verifier=_verifier(),
+        remote_command_handler=handler,
+    )
+
+    reply = await action.listen_for_response(
+        from_number=from_number,
+        timeout_seconds=1,
+    )
+
+    assert reply == "YES"
+    assert provider.sent
+    to_number, message = provider.sent[0]
+    assert to_number == from_number
+    assert "executed" in message
+    assert "wa-accepted-throttle" in message
 
 
 async def test_whatsapp_audits_command_when_verifier_disabled(store, fixed_now):

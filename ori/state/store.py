@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS remote_command_log (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     command_id     TEXT    NOT NULL DEFAULT '',
     channel        TEXT    NOT NULL DEFAULT '',
+    from_number    TEXT    NOT NULL DEFAULT '',
     command        TEXT    NOT NULL DEFAULT '',
     accepted       INTEGER NOT NULL,
     reason         TEXT    NOT NULL,
@@ -318,6 +319,18 @@ class StateStore:
         ]
         for col, typedef in _new_reasoning_cols:
             self._add_column_if_missing_on_conn(conn, "reasoning_log", col, typedef)
+        self._add_column_if_missing_on_conn(
+            conn,
+            "remote_command_log",
+            "from_number",
+            "TEXT    NOT NULL DEFAULT ''",
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_remote_command_log_sender_rejections
+                ON remote_command_log (channel, from_number, accepted, received_at_ms DESC)
+            """
+        )
         conn.commit()
 
     def _add_column_if_missing(self, table: str, column: str, typedef: str) -> None:
@@ -926,6 +939,7 @@ class StateStore:
         *,
         command_id: str,
         channel: str,
+        from_number: str = "",
         command: str,
         accepted: bool,
         reason: str,
@@ -936,6 +950,7 @@ class StateStore:
             self._log_remote_command_attempt_sync,
             command_id,
             channel,
+            from_number,
             command,
             accepted,
             reason,
@@ -947,6 +962,7 @@ class StateStore:
         self,
         command_id: str,
         channel: str,
+        from_number: str,
         command: str,
         accepted: bool,
         reason: str,
@@ -957,12 +973,13 @@ class StateStore:
         self._conn.execute(
             """
             INSERT INTO remote_command_log
-                (command_id, channel, command, accepted, reason, issued_at_ms, received_at_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (command_id, channel, from_number, command, accepted, reason, issued_at_ms, received_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(command_id or ""),
                 str(channel or ""),
+                str(from_number or ""),
                 str(command or ""),
                 1 if accepted else 0,
                 str(reason or ""),
@@ -980,7 +997,7 @@ class StateStore:
     ) -> list[dict]:
         rows = conn.execute(
             """
-            SELECT command_id, channel, command, accepted, reason, issued_at_ms, received_at_ms
+            SELECT command_id, channel, from_number, command, accepted, reason, issued_at_ms, received_at_ms
             FROM remote_command_log
             ORDER BY received_at_ms DESC, id DESC
             LIMIT ?
@@ -993,6 +1010,40 @@ class StateStore:
             item["accepted"] = bool(item["accepted"])
             result.append(item)
         return result
+
+    async def count_recent_remote_command_rejections(
+        self,
+        *,
+        channel: str,
+        from_number: str,
+        since_ms: int,
+    ) -> int:
+        return await self._run_read(
+            self._count_recent_remote_command_rejections_sync,
+            channel,
+            from_number,
+            since_ms,
+        )
+
+    def _count_recent_remote_command_rejections_sync(
+        self,
+        conn: sqlite3.Connection,
+        channel: str,
+        from_number: str,
+        since_ms: int,
+    ) -> int:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM remote_command_log
+            WHERE channel = ?
+              AND from_number = ?
+              AND accepted = 0
+              AND received_at_ms >= ?
+            """,
+            (str(channel or ""), str(from_number or ""), int(since_ms)),
+        ).fetchone()
+        return int(row["n"] if row is not None else 0)
 
     async def log_remote_command_execution(
         self,

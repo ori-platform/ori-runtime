@@ -34,6 +34,7 @@ from ori.security.remote_command_responses import (
     format_remote_command_execution_response,
     format_remote_command_rejection_response,
 )
+from ori.security.remote_command_throttle import should_send_rejection_feedback
 from ori.security.remote_commands import (
     RemoteCommand,
     RemoteCommandVerifier,
@@ -447,10 +448,15 @@ class SMSAction:
                         "SMSAction.ingest_incoming_webhook: rejected remote command reason=%s",
                         command_result.reason,
                     )
-                    await self._send_remote_command_feedback(
-                        to_number=from_number,
-                        message=format_remote_command_rejection_response(),
-                    )
+                    if await should_send_rejection_feedback(
+                        state_store=self._state_store,
+                        channel="sms",
+                        from_number=from_number,
+                    ):
+                        await self._send_remote_command_feedback(
+                            to_number=from_number,
+                            message=format_remote_command_rejection_response(),
+                        )
                     return False
                 logger.info(
                     "SMSAction.ingest_incoming_webhook: accepted remote command command_id=%s command=%s",

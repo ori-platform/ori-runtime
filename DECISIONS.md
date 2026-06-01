@@ -3,6 +3,37 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Remote Command Rejection Feedback Is Throttled
+
+**Status:** Accepted
+
+Remote command ingress must continue auditing every accepted and rejected command
+attempt, but SMS and WhatsApp should suppress repeated generic rejection replies
+from the same sender once the sender crosses the abuse threshold.
+
+Rules:
+
+- Audit remains authoritative. Every structured remote command attempt is logged
+  to `remote_command_log`, including rejected attempts.
+- Sender identity is part of the audit key: `channel` plus `from_number`.
+- Generic rejection feedback is sent for the first 5 rejected remote commands
+  from the same `channel`/`from_number` within 10 minutes.
+- Once the threshold is crossed, additional generic rejection feedback is
+  suppressed for that sender/window while audit logging continues.
+- Accepted commands, execution feedback, and plain Tier C approval replies
+  (`YES`/`NO`) are not throttled by this rejection-feedback guard.
+- Throttle lookup failures fail open for feedback only. They must not prevent
+  verification, audit logging, or command execution policy evaluation.
+
+Rationale:
+
+- Rejected remote commands can otherwise become an SMS/WhatsApp spam vector or a
+  low-grade verifier oracle.
+- The operator still receives initial rejection feedback for honest mistakes.
+- The audit trail remains complete for incident review and future lockout policy.
+
+---
+
 ## 2026-06-01 — Remote Command Execution Feedback Is Best-Effort
 
 **Status:** Accepted

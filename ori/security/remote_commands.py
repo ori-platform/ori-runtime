@@ -51,6 +51,7 @@ class RemoteCommand:
     command: str
     args: dict[str, Any]
     signature: str | None = None
+    from_number: str = ""
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ class RemoteCommandVerifier:
                 state_store=state_store,
                 command_id=str(payload.get("command_id", "") or ""),
                 channel=str(payload.get("channel", "") or ""),
+                from_number=str(payload.get("from_number", "") or ""),
                 command=str(payload.get("command", "") or ""),
                 accepted=False,
                 reason=parse_reason,
@@ -129,6 +131,7 @@ class RemoteCommandVerifier:
             state_store=state_store,
             command_id=parsed.command_id,
             channel=parsed.channel,
+            from_number=parsed.from_number,
             command=parsed.command,
             accepted=True,
             reason="accepted",
@@ -146,6 +149,7 @@ class RemoteCommandVerifier:
             state_store=state_store,
             command_id=command.command_id,
             channel=command.channel,
+            from_number=command.from_number,
             command=command.command,
             accepted=False,
             reason=reason,
@@ -159,6 +163,7 @@ class RemoteCommandVerifier:
         state_store: Any,
         command_id: str,
         channel: str,
+        from_number: str = "",
         command: str,
         accepted: bool,
         reason: str,
@@ -171,6 +176,7 @@ class RemoteCommandVerifier:
             await state_store.log_remote_command_attempt(
                 command_id=command_id,
                 channel=channel,
+                from_number=from_number,
                 command=command,
                 accepted=accepted,
                 reason=reason,
@@ -370,6 +376,7 @@ def _parse_command(payload: dict[str, Any]) -> tuple[RemoteCommand | None, str]:
             command=command,
             args=args,
             signature=str(payload.get("signature") or "") or None,
+            from_number=str(payload.get("from_number", "") or ""),
         ),
         "ok",
     )
@@ -397,6 +404,7 @@ async def _audit_without_verifier(
     await state_store.log_remote_command_attempt(
         command_id=str(payload.get("command_id", "") or ""),
         channel=channel,
+        from_number=str(payload.get("from_number", "") or ""),
         command=str(payload.get("command", "") or ""),
         accepted=False,
         reason="remote_command_verifier_disabled",
