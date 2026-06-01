@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from ori.security.remote_command_policy import (
     STATUS_AUDIT_ONLY,
+    STATUS_DRY_RUN,
     STATUS_EXECUTED,
     STATUS_FAILED,
     STATUS_PRECONDITION_FAILED,
@@ -38,7 +39,9 @@ def format_remote_command_execution_response(
     command = str(result.command or "command")
     command_id = str(result.command_id or "")
 
-    if result.status == STATUS_EXECUTED and result.executed:
+    if result.status == STATUS_DRY_RUN:
+        message = f"Ori command DRY RUN: {command} ({command_id}). {result.detail}"
+    elif result.status == STATUS_EXECUTED and result.executed:
         message = f"Ori command executed: {command} ({command_id})."
     elif result.status == STATUS_AUDIT_ONLY:
         message = f"Ori command accepted but not executed: {command} is audit-only ({command_id})."

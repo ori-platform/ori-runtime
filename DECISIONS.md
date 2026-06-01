@@ -3,6 +3,38 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Remote Command Dry Run Is Verified And Audited
+
+**Status:** Accepted
+
+Authenticated executable remote commands may request `args.dry_run=true` to test
+operator tooling and runtime preconditions without mutating runtime state. Dry
+run is an execution mode, not a verifier bypass.
+
+Rules:
+
+- Dry-run commands must pass the same HMAC verification, timestamp validation,
+  replay protection, and attempt audit as normal commands.
+- Dry-run execution is allowed only after the command is classified executable
+  and command-specific preconditions pass.
+- Dry-run execution must not fetch/apply DevicePolicy bundles, refresh remote
+  policy, mutate skill config, or write any action-state side effect beyond the
+  normal execution audit row.
+- Execution audit rows use status `dry_run` and `executed=false`.
+- Operator feedback must explicitly say `DRY RUN`.
+- Audit-only and unsupported commands do not become executable through dry run.
+
+Rationale:
+
+- Operators need a safe way to test command signing, routing, and runtime
+  readiness before sending state-changing maintenance commands.
+- Keeping dry run behind the full verifier preserves replay and audit
+  guarantees.
+- Logging dry run as its own status makes it distinguishable from failed,
+  unsupported, and executed commands during incident review.
+
+---
+
 ## 2026-06-01 — Remote Command Lockout Tuning Is Configurable, Enforcement Is Not
 
 **Status:** Accepted

@@ -13,11 +13,13 @@ from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.runtime import OriRuntime
 from ori.security.remote_command_policy import (
     STATUS_AUDIT_ONLY,
+    STATUS_DRY_RUN,
     STATUS_EXECUTED,
     STATUS_FAILED,
     STATUS_PRECONDITION_FAILED,
     STATUS_UNSUPPORTED,
     classify_remote_command,
+    command_requests_dry_run,
 )
 from ori.security.remote_commands import RemoteCommand
 from ori.security.threshold_guard import tier_d_config_keys
@@ -56,6 +58,14 @@ def test_policy_executes_only_refresh_policy():
     assert classify_remote_command(_command("UPDATE_SKILL")) == STATUS_AUDIT_ONLY
 
 
+def test_command_requests_dry_run_from_args():
+    assert command_requests_dry_run(_command("REFRESH_POLICY")) is False
+    assert (
+        command_requests_dry_run(_command("REFRESH_POLICY", args={"dry_run": "true"}))
+        is True
+    )
+
+
 async def test_audit_only_command_is_logged_without_execution(store):
     runtime = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
@@ -73,6 +83,38 @@ async def test_audit_only_command_is_logged_without_execution(store):
     assert rows[0]["command"] == "UPDATE_CONFIG"
     assert rows[0]["status"] == STATUS_AUDIT_ONLY
     assert rows[0]["executed"] is False
+
+
+async def test_audit_only_command_with_dry_run_stays_audit_only(store):
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._state_store = store
+    runtime._config = SimpleNamespace(device_policy={"enabled": True})
+    runtime._dispatcher = object()
+
+    result = await runtime._handle_remote_command(
+        _command("UPDATE_CONFIG", args={"dry_run": True})
+    )
+
+    assert result.status == STATUS_AUDIT_ONLY
+    assert result.executed is False
+    rows = await store.get_remote_command_execution_log()
+    assert rows[0]["status"] == STATUS_AUDIT_ONLY
+
+
+async def test_unsupported_command_with_dry_run_stays_unsupported(store):
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._state_store = store
+    runtime._config = SimpleNamespace(device_policy={"enabled": True})
+    runtime._dispatcher = object()
+
+    result = await runtime._handle_remote_command(
+        _command("UNKNOWN_COMMAND", args={"dry_run": True})
+    )
+
+    assert result.status == STATUS_UNSUPPORTED
+    assert result.executed is False
+    rows = await store.get_remote_command_execution_log()
+    assert rows[0]["status"] == STATUS_UNSUPPORTED
 
 
 async def test_refresh_policy_requires_enabled_device_policy(store):
@@ -107,6 +149,27 @@ async def test_refresh_policy_executes_existing_verified_policy_path(store):
     assert rows[0]["command"] == "REFRESH_POLICY"
     assert rows[0]["status"] == STATUS_EXECUTED
     assert rows[0]["executed"] is True
+
+
+async def test_refresh_policy_dry_run_is_logged_without_refresh(store):
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._state_store = store
+    runtime._config = SimpleNamespace(device_policy={"enabled": True})
+    runtime._dispatcher = object()
+    runtime._refresh_remote_device_policy_once = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    result = await runtime._handle_remote_command(
+        _command("REFRESH_POLICY", command_id="refresh-dry", args={"dry_run": True})
+    )
+
+    assert result.status == STATUS_DRY_RUN
+    assert result.executed is False
+    assert "would refresh" in result.detail
+    runtime._refresh_remote_device_policy_once.assert_not_awaited()
+    rows = await store.get_remote_command_execution_log()
+    assert rows[0]["command_id"] == "refresh-dry"
+    assert rows[0]["status"] == STATUS_DRY_RUN
+    assert rows[0]["executed"] is False
 
 
 async def test_advisory_lockout_risk_does_not_block_valid_signed_command(store):
@@ -282,6 +345,33 @@ async def test_set_threshold_applies_non_tier_d_key(store):
     assert skill.config["warn_threshold"] == 12.0
     rows = await store.get_remote_command_execution_log()
     assert rows[0]["status"] == STATUS_EXECUTED
+
+
+async def test_set_threshold_dry_run_validates_without_mutating(store):
+    skill = _make_skill()
+    runtime = _runtime_with_skill(skill, store)
+
+    result = await runtime._handle_remote_command(
+        _command(
+            "SET_THRESHOLD",
+            command_id="threshold-dry",
+            args={
+                "skill_name": "test-skill",
+                "threshold_key": "warn_threshold",
+                "value": 12.0,
+                "dry_run": True,
+            },
+        )
+    )
+
+    assert result.status == STATUS_DRY_RUN
+    assert result.executed is False
+    assert "would update" in result.detail
+    assert skill.config["warn_threshold"] == 15.0
+    rows = await store.get_remote_command_execution_log()
+    assert rows[0]["command_id"] == "threshold-dry"
+    assert rows[0]["status"] == STATUS_DRY_RUN
+    assert rows[0]["executed"] is False
 
 
 async def test_set_threshold_makes_upper_bound_tier_d_more_sensitive(store):
@@ -686,6 +776,86 @@ async def test_apply_policy_fetches_hash_verifies_and_applies(store, monkeypatch
     rows = await store.get_remote_command_execution_log()
     assert rows[0]["status"] == STATUS_EXECUTED
     assert rows[0]["executed"] is True
+
+
+async def test_apply_policy_dry_run_does_not_fetch_or_apply(store, monkeypatch):
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._state_store = store
+    runtime._config = SimpleNamespace(
+        device=SimpleNamespace(id="dev-01"),
+        device_policy={
+            "enabled": True,
+            "auth_token": "token",
+            "public_key_b64": "public-key",
+        },
+    )
+    runtime._dispatcher = ActionDispatcher()
+    fetch_policy = AsyncMock()
+    monkeypatch.setattr(
+        "ori.runtime.fetch_remote_device_policy_bundle_by_reference",
+        fetch_policy,
+    )
+    command = _command(
+        "APPLY_POLICY",
+        command_id="apply-dry",
+        args={
+            "url": "https://policy.example.com/dev-01.json",
+            "sha256": "a" * 64,
+            "dry_run": True,
+        },
+    )
+
+    result = await runtime._handle_remote_command(command)
+
+    assert result.status == STATUS_DRY_RUN
+    assert result.executed is False
+    assert "would fetch" in result.detail
+    fetch_policy.assert_not_awaited()
+    assert runtime._dispatcher.current_policy_version() == 0
+    assert await store.get_latest_device_policy_cache() is None
+    rows = await store.get_remote_command_execution_log()
+    assert rows[0]["command_id"] == "apply-dry"
+    assert rows[0]["status"] == STATUS_DRY_RUN
+    assert rows[0]["executed"] is False
+
+
+async def test_apply_policy_dry_run_validates_reference_args(store, monkeypatch):
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._state_store = store
+    runtime._config = SimpleNamespace(
+        device=SimpleNamespace(id="dev-01"),
+        device_policy={
+            "enabled": True,
+            "auth_token": "token",
+            "public_key_b64": "public-key",
+        },
+    )
+    runtime._dispatcher = ActionDispatcher()
+    fetch_policy = AsyncMock()
+    monkeypatch.setattr(
+        "ori.runtime.fetch_remote_device_policy_bundle_by_reference",
+        fetch_policy,
+    )
+
+    result = await runtime._handle_remote_command(
+        _command(
+            "APPLY_POLICY",
+            command_id="apply-dry-invalid",
+            args={
+                "url": "http://policy.example.com/dev-01.json",
+                "sha256": "not-a-digest",
+                "dry_run": True,
+            },
+        )
+    )
+
+    assert result.status == STATUS_PRECONDITION_FAILED
+    assert result.executed is False
+    assert "https://" in result.detail
+    fetch_policy.assert_not_awaited()
+    rows = await store.get_remote_command_execution_log()
+    assert rows[0]["command_id"] == "apply-dry-invalid"
+    assert rows[0]["status"] == STATUS_PRECONDITION_FAILED
 
 
 async def test_apply_policy_hash_mismatch_is_rejected_and_logged(store, monkeypatch):

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ori.bool_utils import is_truthy
 from ori.security.remote_commands import RemoteCommand
 from ori.time_utils import now_ms
 
@@ -21,6 +22,7 @@ STATUS_AUDIT_ONLY = "audit_only"
 STATUS_UNSUPPORTED = "unsupported"
 STATUS_FAILED = "failed"
 STATUS_PRECONDITION_FAILED = "precondition_failed"
+STATUS_DRY_RUN = "dry_run"
 
 EXECUTABLE_COMMANDS = frozenset({"APPLY_POLICY", "REFRESH_POLICY", "SET_THRESHOLD"})
 
@@ -54,6 +56,11 @@ def classify_remote_command(command: RemoteCommand) -> str:
     if command_name in AUDIT_ONLY_COMMANDS:
         return STATUS_AUDIT_ONLY
     return STATUS_UNSUPPORTED
+
+
+def command_requests_dry_run(command: RemoteCommand) -> bool:
+    """Return true when an authenticated command requests no-effect execution."""
+    return is_truthy((command.args or {}).get("dry_run", False))
 
 
 def command_result(

@@ -65,12 +65,14 @@ from ori.security.remote_command_lockout import (
 )
 from ori.security.remote_command_policy import (
     STATUS_AUDIT_ONLY,
+    STATUS_DRY_RUN,
     STATUS_EXECUTED,
     STATUS_FAILED,
     STATUS_PRECONDITION_FAILED,
     STATUS_UNSUPPORTED,
     RemoteCommandExecutionResult,
     classify_remote_command,
+    command_requests_dry_run,
     command_result,
 )
 from ori.security.remote_command_throttle import RemoteCommandThrottleDecision
@@ -979,6 +981,14 @@ class OriRuntime:
                     executed=False,
                 )
 
+            if command_requests_dry_run(command):
+                return command_result(
+                    command,
+                    status=STATUS_DRY_RUN,
+                    detail="would refresh remote DevicePolicy using the existing verified fetch path",
+                    executed=False,
+                )
+
             refreshed = await self._refresh_remote_device_policy_once(
                 config=self._config,
                 dispatcher=self._dispatcher,
@@ -1026,6 +1036,25 @@ class OriRuntime:
                     command,
                     status=STATUS_PRECONDITION_FAILED,
                     detail="APPLY_POLICY requires args.url and args.sha256",
+                    executed=False,
+                )
+            reference_error = _validate_remote_policy_reference_args(
+                reference_url,
+                expected_sha256,
+            )
+            if reference_error is not None:
+                return command_result(
+                    command,
+                    status=STATUS_PRECONDITION_FAILED,
+                    detail=reference_error,
+                    executed=False,
+                )
+
+            if command_requests_dry_run(command):
+                return command_result(
+                    command,
+                    status=STATUS_DRY_RUN,
+                    detail="would fetch, hash-check, signature-verify, and apply referenced DevicePolicy",
                     executed=False,
                 )
 
@@ -1187,6 +1216,14 @@ class OriRuntime:
                     detail=detail,
                     executed=False,
                 )
+
+        if command_requests_dry_run(command):
+            return command_result(
+                command,
+                status=STATUS_DRY_RUN,
+                detail=f"would update {threshold_key} {old_value} -> {new_value} in skill {skill_name!r}",
+                executed=False,
+            )
 
         skill.config[threshold_key] = new_value
         logger.info(
@@ -2481,6 +2518,19 @@ def _build_alert_id(
 ) -> str:
     raw = f"{channel}|{recipient}|{action_tier}|{trigger_name}|{original_ts}|{message}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _validate_remote_policy_reference_args(
+    reference_url: str,
+    expected_sha256: str,
+) -> str | None:
+    """Return a precondition error for invalid APPLY_POLICY reference args."""
+    if not str(reference_url or "").strip().startswith("https://"):
+        return "policy reference URL must start with https://"
+    digest = str(expected_sha256 or "").strip().lower()
+    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+        return "policy reference sha256 must be a 64-character hex digest"
+    return None
 
 
 def _build_offline_token_verifier(actions_cfg: Any) -> OfflineTierCTokenVerifier | None:

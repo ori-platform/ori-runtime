@@ -16,6 +16,7 @@ from ori.security.remote_command_lockout import (
 )
 from ori.security.remote_command_policy import (
     STATUS_AUDIT_ONLY,
+    STATUS_DRY_RUN,
     STATUS_EXECUTED,
     STATUS_PRECONDITION_FAILED,
     command_result,
@@ -406,6 +407,42 @@ async def test_sms_handler_sends_execution_feedback(store, fixed_now):
     assert to_number == "+2348012345678"
     assert "executed" in message
     assert "sms-exec" in message
+
+
+async def test_sms_handler_sends_dry_run_feedback(store, fixed_now):
+    async def handler(command):
+        return command_result(
+            command,
+            status=STATUS_DRY_RUN,
+            detail="would update warn_threshold",
+            executed=False,
+        )
+
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(),
+        remote_command_handler=handler,
+    )
+    action.send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    command = _signed(
+        _payload(
+            now=fixed_now,
+            command_id="sms-dry-run",
+            args={"dry_run": True},
+        )
+    )
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": "+2348012345678", "text": json.dumps(command)}
+    )
+
+    assert ok is True
+    message, to_number = action.send.await_args.args
+    assert to_number == "+2348012345678"
+    assert "DRY RUN" in message
+    assert "sms-dry-run" in message
+    assert "would update warn_threshold" in message
 
 
 async def test_sms_handler_sends_precondition_feedback(store, fixed_now):
