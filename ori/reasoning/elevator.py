@@ -42,12 +42,13 @@ logger = logging.getLogger(__name__)
 _HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
 _MAX_HISTORY_PLACEHOLDERS = 16
 _UNRESOLVED_HISTORY_PLACEHOLDER_SENTINEL = "null"
+_DECISION_HISTORY_WINDOW_LIMIT = 10
 
 
-# ── Minimal shared types ──────────────────────────────────────────────────────
-# Skill and ActionDispatcher are implemented in later build steps.
-# SkillContext is defined here so it is available at the EventBus boundary
-# before those modules exist.
+# ── Shared dispatch context ───────────────────────────────────────────────────
+# SkillContext is the lightweight boundary object passed from reasoning into
+# action dispatch. Keep it small and serializable-adjacent; richer runtime data
+# should live on OriEvent.context or in StateStore.
 
 
 @dataclass
@@ -949,6 +950,7 @@ class IntelligenceElevator:
                     )
                     actions = ["log_to_dashboard"]
 
+            await self._attach_decision_history_window(event, state_store)
             context = SkillContext(
                 skill=skill,
                 event=event,
@@ -1067,6 +1069,49 @@ class IntelligenceElevator:
             )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+
+    async def _attach_decision_history_window(
+        self,
+        event: OriEvent,
+        state_store: Any,
+    ) -> None:
+        """Attach recent readings for downstream Tier C decision logging."""
+        if event is None or event.reading is None:
+            return
+        if not isinstance(getattr(event, "context", None), dict):
+            event.context = {}
+        if event.context.get("history_window") is not None:
+            return
+        if state_store is None or not hasattr(state_store, "get_history"):
+            event.context["history_window"] = []
+            return
+        try:
+            readings = await state_store.get_history(
+                event.reading.sensor_id,
+                limit=_DECISION_HISTORY_WINDOW_LIMIT,
+            )
+        except Exception:
+            logger.debug(
+                "IntelligenceElevator: could not attach decision history for %s",
+                event.reading.sensor_id,
+                exc_info=True,
+            )
+            event.context["history_window"] = []
+            return
+
+        history_window: list[dict[str, Any]] = []
+        for reading in readings:
+            history_window.append(
+                {
+                    "sensor_id": getattr(reading, "sensor_id", ""),
+                    "sensor_type": getattr(reading, "sensor_type", ""),
+                    "value": getattr(reading, "value", None),
+                    "unit": getattr(reading, "unit", ""),
+                    "timestamp": getattr(reading, "timestamp", None),
+                    "quality": getattr(reading, "quality", None),
+                }
+            )
+        event.context["history_window"] = history_window
 
     async def _build_prompt(
         self,

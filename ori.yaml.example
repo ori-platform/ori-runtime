@@ -14,6 +14,7 @@ device:
   id: energy-monitor-ikeja-01        # unique, no spaces, no special chars
   name: Ikeja Office Energy Monitor
   location: Lagos, Nigeria
+  site_type: office                 # business context for Tier C logs: office | pharmacy | factory | warehouse
   country_code: NG                  # ISO 3166-1 alpha-2 (e.g. NG, KE, US)
   deployment_type: pi                # pi | phone | server
   rated_capacity_amps: 10.0          # used for Tier D threshold calculations

@@ -6,7 +6,7 @@ import datetime
 import hashlib
 import json
 import sqlite3
-from typing import Optional
+from typing import Any, Optional
 
 from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
 from ori.time_utils import now_ms
@@ -840,16 +840,70 @@ class StateStore:
         ).fetchall()
         result = []
         for row in rows:
-            item = dict(row)
-            item["history_window"] = json.loads(item.pop("history_window_json"))
-            item["safe_default_used"] = bool(item["safe_default_used"])
-            item["action_executed"] = bool(item["action_executed"])
-            item["final_action_result"] = json.loads(
-                item.pop("final_action_result_json")
-            )
-            item["later_outcome"] = json.loads(item.pop("later_outcome_json"))
-            result.append(item)
+            result.append(self._decode_tier_c_decision_row(row))
         return result
+
+    async def export_tier_c_decision_log(
+        self,
+        *,
+        device_id: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return a bounded Tier C decision-log export for cloud sync."""
+        return await self._run_read(
+            self._export_tier_c_decision_log_sync,
+            device_id,
+            since_ms,
+            until_ms,
+            limit,
+        )
+
+    def _export_tier_c_decision_log_sync(
+        self,
+        conn: sqlite3.Connection,
+        device_id: str | None,
+        since_ms: int | None,
+        until_ms: int | None,
+        limit: int,
+    ) -> list[dict]:
+        where = []
+        params: list[Any] = []
+        if device_id:
+            where.append("device_id = ?")
+            params.append(str(device_id))
+        if since_ms is not None:
+            where.append("created_at >= ?")
+            params.append(int(since_ms))
+        if until_ms is not None:
+            where.append("created_at <= ?")
+            params.append(int(until_ms))
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, min(int(limit), 1000)))
+        query = (
+            """
+            SELECT *
+            FROM tier_c_decision_log
+            """
+            + where_sql
+            + """
+            ORDER BY created_at DESC
+            LIMIT ?
+            """
+        )
+        rows = conn.execute(query, tuple(params)).fetchall()
+        return [self._decode_tier_c_decision_row(row) for row in rows]
+
+    @staticmethod
+    def _decode_tier_c_decision_row(row: sqlite3.Row) -> dict:
+        item = dict(row)
+        item["history_window"] = json.loads(item.pop("history_window_json"))
+        item["safe_default_used"] = bool(item["safe_default_used"])
+        item["action_executed"] = bool(item["action_executed"])
+        item["final_action_result"] = json.loads(item.pop("final_action_result_json"))
+        item["later_outcome"] = json.loads(item.pop("later_outcome_json"))
+        return item
 
     # ─── inbound_messages ─────────────────────────────────────────────────────
 

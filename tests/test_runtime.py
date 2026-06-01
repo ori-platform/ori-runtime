@@ -778,6 +778,45 @@ class TestSensorPolling:
         assert isinstance(event.fingerprint, str)
         assert event.fingerprint != ""
 
+    async def test_poll_sensor_sets_site_context_from_device_site_type(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = AsyncMock()
+        runtime._shutdown_event = asyncio.Event()
+
+        reading = SensorReading(
+            sensor_id="cpu-sensor",
+            sensor_type="cpu_percent",
+            value=42.4,
+            unit="percent",
+            timestamp=1_700_000_000_000,
+            quality=1.0,
+            metadata={"source": "psutil"},
+        )
+
+        class _OneShotAdapter:
+            async def read(self, sensor_id: str) -> SensorReading:
+                runtime._shutdown_event.set()
+                return reading
+
+        bus = AsyncMock()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        await runtime._poll_sensor(
+            _OneShotAdapter(),
+            sensor_cfg,
+            bus,
+            "dev-01",
+            device_timezone="Africa/Lagos",
+            device_country_code="NG",
+            device_location="Lagos, Nigeria",
+            device_site_type="pharmacy",
+        )
+
+        event = bus.publish.call_args.args[0]
+        assert event.context["device_timezone"] == "Africa/Lagos"
+        assert event.context["device_country_code"] == "NG"
+        assert event.context["location"] == "Lagos, Nigeria"
+        assert event.context["site_type"] == "pharmacy"
+
     async def test_poll_sensor_fingerprint_stable_across_timestamp_changes(self):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = AsyncMock()

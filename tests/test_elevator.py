@@ -10,8 +10,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from ori.network.events import OriEvent, ReasoningResult, SensorReading
+from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext, _complexity_score
+from ori.state.store import StateStore
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -805,6 +807,78 @@ class TestReasonAndDispatch:
 
         call = mock_dispatcher.dispatch.call_args
         assert call[1]["approval_timeout"] == 60
+
+    async def test_reason_and_dispatch_populates_tier_c_decision_log(self, tmp_path):
+        store = StateStore(db_path=str(tmp_path / "tier-c-flow.db"))
+        await store.open()
+        try:
+            skill = FakeSkill(
+                name="energy-anomaly-detector",
+                triggers=[
+                    {
+                        "name": "overcurrent_shutdown_candidate",
+                        "condition": "value > 3.0",
+                        "action_tier": "C",
+                        "bypass_llm": False,
+                        "cooldown_seconds": 0,
+                        "approval_timeout_seconds": 30,
+                    }
+                ],
+                actions={
+                    "available": [{"name": "open_safety_circuit", "tier": "C"}],
+                    "defaults": {
+                        "overcurrent_shutdown_candidate": ["open_safety_circuit"]
+                    },
+                },
+            )
+            history_reading = _reading(value=4.2)
+            await store.append_history(OriEvent.from_reading(history_reading, "dev-01"))
+            event = _event(value=5.0)
+            event.context = {
+                "__handler_trigger_name": "overcurrent_shutdown_candidate",
+                "site_type": "pharmacy",
+                "location": "Lagos",
+                "device_timezone": "Africa/Lagos",
+            }
+            alert_sender = AsyncMock()
+            alert_sender.send = AsyncMock(return_value=True)
+            alert_sender.listen_for_response = AsyncMock(return_value="YES")
+            dispatcher = ActionDispatcher(
+                state_store=store,
+                alert_sender=alert_sender,
+                config={
+                    "operator_contact": "+2348012345678",
+                    "device_timezone": "Africa/Lagos",
+                    "relay_enabled": True,
+                },
+            )
+            elevator = IntelligenceElevator()
+
+            with patch("ori.reasoning.elevator._is_offline", return_value=True):
+                await elevator.reason_and_dispatch(event, skill, store, dispatcher)
+
+            rows = await store.get_tier_c_decision_log()
+            assert len(rows) == 1
+            row = rows[0]
+            assert row["device_id"] == "dev-01"
+            assert row["site_type"] == "pharmacy"
+            assert row["location"] == "Lagos"
+            assert row["timezone"] == "Africa/Lagos"
+            assert row["sensor_id"] == "load-current"
+            assert row["sensor_type"] == "current_clamp"
+            assert row["reading_value"] == pytest.approx(5.0)
+            assert row["history_window"]
+            assert row["history_window"][0]["sensor_id"] == "load-current"
+            assert row["history_window"][0]["value"] == pytest.approx(4.2)
+            assert row["skill_name"] == "energy-anomaly-detector"
+            assert row["trigger_name"] == "overcurrent_shutdown_candidate"
+            assert row["proposed_action"] == "open_safety_circuit"
+            assert row["operator_decision"] == "approved"
+            assert row["operator_response"] == "YES"
+            assert row["approval_timeout_seconds"] == 30
+            assert row["safe_default_used"] is False
+        finally:
+            await store.close()
 
     async def test_reason_and_dispatch_clamps_result_tier_to_trigger_tier(self):
         mock_dispatcher = AsyncMock()

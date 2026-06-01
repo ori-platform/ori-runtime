@@ -3,6 +3,37 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Tier C Decisions Must Carry Dataset-Ready Context
+
+**Status:** Accepted
+
+Tier C approval records are a safety audit trail and a future supervised
+learning dataset. The runtime must therefore populate them from the real
+reasoning and approval flow, not only from direct dispatcher tests.
+
+Rules:
+
+- Elevator dispatch must attach a bounded recent `history_window` to event
+  context before Tier C approval logging.
+- Runtime sensor events must carry device `site_type`, `location`, and
+  `device_timezone` context.
+- `ActionDispatcher` remains responsible for writing the Tier C decision row,
+  including skill name, trigger name, proposed action, confidence, operator
+  decision, latency, safe-default usage, and final action result.
+- Tier C export queries must be bounded by `limit` and support optional
+  `device_id`, `since_ms`, and `until_ms` filters for future cloud sync.
+
+Rationale:
+
+- Ori Energy and Ori Guard need evidence-quality records of operator decisions,
+  not just action outcomes.
+- Capturing history and site context at runtime avoids fragile reconstruction
+  later in the product layer.
+- A bounded export primitive prepares cloud/reporting sync without giving the
+  product layer direct database access.
+
+---
+
 ## 2026-06-01 — Remote Commands Are Bound To Approved Senders
 
 **Status:** Accepted

@@ -88,6 +88,7 @@ class DeviceConfig:
     timezone: str = "Africa/Lagos"
     country_code: str = ""
     deployment_type: str = "pi"  # 'pi' | 'phone' | 'server'
+    site_type: str = ""  # business/site context, e.g. pharmacy | office | factory
 
 
 @dataclass
@@ -432,6 +433,7 @@ def _parse_device(data: Any) -> DeviceConfig:
         timezone=_resolve_device_timezone(data.get("timezone", "")),
         country_code=country_code,
         deployment_type=deployment_type,
+        site_type=str(data.get("site_type", "") or "").strip(),
     )
 
 

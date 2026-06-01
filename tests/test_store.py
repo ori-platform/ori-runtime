@@ -388,6 +388,51 @@ class TestTierCDecisionLog:
         assert row["final_action_result"] == {"approved": False}
         assert row["later_outcome"] is None
 
+    async def test_export_tier_c_decision_log_filters_bounds(self, store):
+        for idx, device_id in enumerate(("dev-01", "dev-02", "dev-01")):
+            await store.log_tier_c_decision(
+                device_id=device_id,
+                site_type="pharmacy",
+                location="Lagos",
+                timezone="Africa/Lagos",
+                sensor_id="load-current",
+                sensor_type="current_clamp",
+                reading_value=18.5 + idx,
+                reading_unit="ampere",
+                reading_timestamp=1000 + idx,
+                history_window=[{"timestamp": 900 + idx, "value": 10.0 + idx}],
+                skill_name="energy-anomaly-detector",
+                trigger_name="overcurrent",
+                proposed_action="trip_relay",
+                confidence=0.91,
+                reasoning_tier="local_slm",
+                reasoning_model="qwen.gguf",
+                prompt_context_summary="load is high",
+                operator_decision="rejected",
+                operator_response="NO",
+                decision_latency_ms=2500,
+                approval_timeout_seconds=300,
+                safe_default_action="log_to_dashboard",
+                safe_default_used=True,
+                action_taken="log_to_dashboard",
+                action_executed=True,
+                final_action_result={"approved": False, "idx": idx},
+                later_outcome=None,
+                created_at=5000 + idx * 1000,
+            )
+
+        rows = await store.export_tier_c_decision_log(
+            device_id="dev-01",
+            since_ms=5000,
+            until_ms=7000,
+            limit=10,
+        )
+
+        assert [row["created_at"] for row in rows] == [7000, 5000]
+        assert {row["device_id"] for row in rows} == {"dev-01"}
+        assert rows[0]["history_window"] == [{"timestamp": 902, "value": 12.0}]
+        assert rows[0]["final_action_result"] == {"approved": False, "idx": 2}
+
 
 # ─── alert_outbox ─────────────────────────────────────────────────────────────
 

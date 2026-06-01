@@ -715,6 +715,8 @@ class OriRuntime:
                     self._deduplicator,
                     config.device.timezone,
                     config.device.country_code,
+                    config.device.location,
+                    config.device.site_type,
                 ),
                 name=f"poll:{sensor_cfg.id}",
             )
@@ -1611,6 +1613,8 @@ class OriRuntime:
         deduplicator: EventDeduplicator | None = None,
         device_timezone: str = "",
         device_country_code: str = "",
+        device_location: str = "",
+        device_site_type: str = "",
     ) -> None:
         """Read *adapter* at the configured poll interval and publish to *event_bus*."""
         if self._state_store is None:
@@ -1638,6 +1642,8 @@ class OriRuntime:
                 if not isinstance(event.context, dict):
                     event.context = {}
                 event.context["device_timezone"] = device_timezone
+                event.context["location"] = str(device_location or "")
+                event.context["site_type"] = str(device_site_type or "")
                 event.context["device_country_code"] = (
                     str(device_country_code or "").strip().upper()
                 )

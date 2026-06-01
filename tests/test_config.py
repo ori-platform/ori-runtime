@@ -51,6 +51,7 @@ class TestLoadExample:
         assert cfg.device.id == "energy-monitor-ikeja-01"
         assert cfg.device.name == "Ikeja Office Energy Monitor"
         assert cfg.device.location == "Lagos, Nigeria"
+        assert cfg.device.site_type == "office"
         assert cfg.device.rated_capacity_amps == 10.0
         assert cfg.device.country_code == "NG"
 
