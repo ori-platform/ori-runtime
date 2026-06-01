@@ -3,6 +3,41 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Remote Command Abuse Incidents Escalate Separately From Throttling
+
+**Status:** Accepted
+
+Remote command rejection-feedback throttling is an abuse signal, not only a
+transport concern. When the threshold is crossed for a sender/window, the runtime
+must record a durable security incident and, when runtime alerting is available,
+emit a Tier A operator alert.
+
+Rules:
+
+- `remote_command_log` remains the complete per-attempt audit trail.
+- `remote_command_security_incident_log` records first suppression per
+  `channel`/`from_number`/time-window bucket. Duplicate suppressed attempts in
+  the same bucket must not create duplicate incidents.
+- Incident logging is best-effort and must not block command verification,
+  attempt audit, accepted command execution, or Tier C approval replies.
+- Incident escalation must not lock out valid signed commands. Lockout policy is
+  a separate future decision with a higher safety bar.
+- Runtime operator alerting is Tier A. It warns the operator that remote command
+  feedback was throttled because repeated rejected commands were detected.
+- If runtime alerting is unavailable, the durable incident log is still the
+  authoritative escalation record.
+
+Rationale:
+
+- Repeated rejected remote commands may indicate operator misconfiguration,
+  credential probing, or active abuse.
+- Separating per-attempt logs from incident logs avoids alert fatigue while
+  preserving forensic detail.
+- Valid signed commands must remain possible during an incident unless a future
+  lockout policy explicitly defines safe recovery behavior.
+
+---
+
 ## 2026-06-01 — Remote Command Rejection Feedback Is Throttled
 
 **Status:** Accepted

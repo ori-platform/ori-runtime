@@ -68,6 +68,7 @@ from ori.security.remote_command_policy import (
     classify_remote_command,
     command_result,
 )
+from ori.security.remote_command_throttle import RemoteCommandThrottleDecision
 from ori.security.remote_commands import RemoteCommand, RemoteCommandVerifier
 from ori.security.threshold_guard import (
     all_trigger_condition_refs,
@@ -312,12 +313,14 @@ class OriRuntime:
             state_store=self._state_store,
             remote_command_verifier=remote_command_verifier,
             remote_command_handler=self._handle_remote_command,
+            remote_command_incident_handler=self._handle_remote_command_incident,
         )
         sms_action = SMSAction(
             state_store=self._state_store,
             config=config.actions.sms,
             remote_command_verifier=remote_command_verifier,
             remote_command_handler=self._handle_remote_command,
+            remote_command_incident_handler=self._handle_remote_command_incident,
         )
         coap_action = CoAPAction(config=config.actions.coap)
         self._sms_action = sms_action
@@ -1238,6 +1241,38 @@ class OriRuntime:
             detail=result.detail,
             executed=result.executed,
             executed_at_ms=result.executed_at_ms,
+        )
+
+    async def _handle_remote_command_incident(
+        self,
+        decision: RemoteCommandThrottleDecision,
+    ) -> None:
+        """Emit a Tier A operator alert for first-seen remote command abuse."""
+        logger.warning(
+            "[runtime] remote command abuse incident id=%s channel=%s sender=%r count=%d threshold=%d",
+            decision.incident_id,
+            decision.channel,
+            decision.from_number,
+            decision.rejection_count,
+            decision.threshold,
+        )
+        if self._alert_sender is None:
+            return
+        message = (
+            "ORI SECURITY ALERT: repeated rejected remote commands detected "
+            f"from {decision.channel} sender {decision.from_number}. "
+            f"{decision.rejection_count} rejected attempts in "
+            f"{decision.window_ms // 1000}s. Command feedback has been throttled; "
+            "valid signed commands remain allowed."
+        )
+        await self._send_or_queue_alert(
+            channel=self._primary_alert_channel,
+            message=message,
+            recipient=self._operator_contact,
+            action_tier="A",
+            trigger_name="remote_command_abuse",
+            original_ts=now_ms(),
+            alert_sender=self._alert_sender,
         )
 
     async def _start_sms_webhook_if_enabled(

@@ -165,6 +165,21 @@ CREATE TABLE IF NOT EXISTS remote_command_log (
 CREATE INDEX IF NOT EXISTS idx_remote_command_log_command_id
     ON remote_command_log (command_id, accepted, received_at_ms DESC);
 
+CREATE TABLE IF NOT EXISTS remote_command_security_incident_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id     TEXT    NOT NULL UNIQUE,
+    channel         TEXT    NOT NULL DEFAULT '',
+    from_number     TEXT    NOT NULL DEFAULT '',
+    reason          TEXT    NOT NULL DEFAULT '',
+    rejection_count INTEGER NOT NULL DEFAULT 0,
+    threshold       INTEGER NOT NULL DEFAULT 0,
+    window_ms       INTEGER NOT NULL DEFAULT 0,
+    created_at_ms   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_command_security_incident_sender
+    ON remote_command_security_incident_log (channel, from_number, created_at_ms DESC);
+
 CREATE TABLE IF NOT EXISTS remote_command_execution_log (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     command_id     TEXT    NOT NULL DEFAULT '',
@@ -1044,6 +1059,89 @@ class StateStore:
             (str(channel or ""), str(from_number or ""), int(since_ms)),
         ).fetchone()
         return int(row["n"] if row is not None else 0)
+
+    async def log_remote_command_security_incident(
+        self,
+        *,
+        incident_id: str,
+        channel: str,
+        from_number: str,
+        reason: str,
+        rejection_count: int,
+        threshold: int,
+        window_ms: int,
+        created_at_ms: int | None = None,
+    ) -> bool:
+        return await self._run_write(
+            self._log_remote_command_security_incident_sync,
+            incident_id,
+            channel,
+            from_number,
+            reason,
+            rejection_count,
+            threshold,
+            window_ms,
+            created_at_ms if created_at_ms is not None else now_ms(),
+        )
+
+    def _log_remote_command_security_incident_sync(
+        self,
+        incident_id: str,
+        channel: str,
+        from_number: str,
+        reason: str,
+        rejection_count: int,
+        threshold: int,
+        window_ms: int,
+        created_at_ms: int,
+    ) -> bool:
+        assert self._conn is not None
+        cursor = self._conn.execute(
+            """
+            INSERT OR IGNORE INTO remote_command_security_incident_log
+                (incident_id, channel, from_number, reason, rejection_count,
+                 threshold, window_ms, created_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(incident_id or ""),
+                str(channel or ""),
+                str(from_number or ""),
+                str(reason or ""),
+                int(rejection_count),
+                int(threshold),
+                int(window_ms),
+                int(created_at_ms),
+            ),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_remote_command_security_incidents(
+        self,
+        limit: int = 50,
+    ) -> list[dict]:
+        return await self._run_read(
+            self._get_remote_command_security_incidents_sync,
+            limit,
+        )
+
+    def _get_remote_command_security_incidents_sync(
+        self,
+        conn: sqlite3.Connection,
+        limit: int,
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT incident_id, channel, from_number, reason, rejection_count,
+                   threshold, window_ms, created_at_ms
+            FROM remote_command_security_incident_log
+            ORDER BY created_at_ms DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     async def log_remote_command_execution(
         self,

@@ -91,6 +91,7 @@ class TestLifecycle:
             "causal_memory",
             "skill_state",
             "remote_command_log",
+            "remote_command_security_incident_log",
             "remote_command_execution_log",
             "alert_outbox",
         } <= names

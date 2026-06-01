@@ -462,6 +462,7 @@ async def test_sms_rejection_feedback_is_throttled_after_repeated_failures(
     store, fixed_now
 ):
     from_number = "+2348012345678"
+    incident_handler = AsyncMock()
     await _seed_rejected_attempts(
         store,
         channel="sms",
@@ -472,6 +473,7 @@ async def test_sms_rejection_feedback_is_throttled_after_repeated_failures(
         state_store=store,
         config={},
         remote_command_verifier=_verifier(),
+        remote_command_incident_handler=incident_handler,
     )
     action.send = AsyncMock(return_value=True)  # type: ignore[method-assign]
     command = _payload(now=fixed_now, command_id="sms-throttled")
@@ -482,6 +484,11 @@ async def test_sms_rejection_feedback_is_throttled_after_repeated_failures(
 
     assert ok is False
     action.send.assert_not_awaited()
+    incident_handler.assert_awaited_once()
+    decision = incident_handler.await_args.args[0]
+    assert decision.channel == "sms"
+    assert decision.from_number == from_number
+    assert decision.rejection_count == 6
     rows = await store.get_remote_command_log()
     assert rows[0]["command_id"] == "sms-throttled"
     assert rows[0]["from_number"] == from_number
@@ -494,6 +501,44 @@ async def test_sms_rejection_feedback_is_throttled_after_repeated_failures(
         )
         == 6
     )
+    incidents = await store.get_remote_command_security_incidents()
+    assert len(incidents) == 1
+    assert incidents[0]["channel"] == "sms"
+    assert incidents[0]["from_number"] == from_number
+    assert incidents[0]["rejection_count"] == 6
+    assert incidents[0]["threshold"] == 5
+    assert incidents[0]["window_ms"] == 600_000
+
+
+async def test_sms_rejection_incident_is_deduped_within_window(store, fixed_now):
+    from_number = "+2348012345678"
+    incident_handler = AsyncMock()
+    await _seed_rejected_attempts(
+        store,
+        channel="sms",
+        from_number=from_number,
+        now=fixed_now,
+    )
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(),
+        remote_command_incident_handler=incident_handler,
+    )
+    action.send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    for command_id in ("sms-throttled-1", "sms-throttled-2"):
+        command = _payload(now=fixed_now, command_id=command_id)
+        ok = await action.ingest_incoming_webhook(
+            {"from": from_number, "text": json.dumps(command)}
+        )
+        assert ok is False
+
+    action.send.assert_not_awaited()
+    incident_handler.assert_awaited_once()
+    incidents = await store.get_remote_command_security_incidents()
+    assert len(incidents) == 1
+    assert incidents[0]["rejection_count"] == 6
 
 
 async def test_sms_rejection_feedback_still_sends_at_threshold_boundary(
@@ -521,6 +566,7 @@ async def test_sms_rejection_feedback_still_sends_at_threshold_boundary(
 
     assert ok is False
     action.send.assert_awaited_once()
+    assert await store.get_remote_command_security_incidents() == []
     message, to_number = action.send.await_args.args
     assert to_number == from_number
     assert "rejected" in message
@@ -753,6 +799,7 @@ async def test_whatsapp_rejection_feedback_is_throttled_after_repeated_failures(
     store, fixed_now
 ):
     from_number = "whatsapp:+2348012345678"
+    incident_handler = AsyncMock()
     await _seed_rejected_attempts(
         store,
         channel="whatsapp",
@@ -765,6 +812,7 @@ async def test_whatsapp_rejection_feedback_is_throttled_after_repeated_failures(
         provider=provider,
         state_store=store,
         remote_command_verifier=_verifier(),
+        remote_command_incident_handler=incident_handler,
     )
 
     reply = await action.listen_for_response(
@@ -774,11 +822,54 @@ async def test_whatsapp_rejection_feedback_is_throttled_after_repeated_failures(
 
     assert reply == "YES"
     assert provider.sent == []
+    incident_handler.assert_awaited_once()
     rows = await store.get_remote_command_log()
     assert rows[0]["command_id"] == "wa-throttled"
     assert rows[0]["channel"] == "whatsapp"
     assert rows[0]["from_number"] == from_number
     assert rows[0]["accepted"] is False
+    incidents = await store.get_remote_command_security_incidents()
+    assert len(incidents) == 1
+    assert incidents[0]["channel"] == "whatsapp"
+    assert incidents[0]["from_number"] == from_number
+
+
+async def test_whatsapp_rejection_incident_is_deduped_within_window(store, fixed_now):
+    from_number = "whatsapp:+2348012345678"
+    incident_handler = AsyncMock()
+    await _seed_rejected_attempts(
+        store,
+        channel="whatsapp",
+        from_number=from_number,
+        now=fixed_now,
+    )
+    provider = _InboxWhatsAppProvider(
+        [
+            json.dumps(_payload(now=fixed_now, command_id="wa-throttled-1")),
+            json.dumps(_payload(now=fixed_now, command_id="wa-throttled-2")),
+            "YES",
+        ]
+    )
+    action = WhatsAppAction(
+        provider=provider,
+        state_store=store,
+        remote_command_verifier=_verifier(),
+        remote_command_incident_handler=incident_handler,
+    )
+
+    reply = await action.listen_for_response(
+        from_number=from_number,
+        timeout_seconds=1,
+    )
+
+    assert reply == "YES"
+    assert provider.sent == []
+    incident_handler.assert_awaited_once()
+    incidents = await store.get_remote_command_security_incidents()
+    assert len(incidents) == 1
+    assert incidents[0]["channel"] == "whatsapp"
+    assert incidents[0]["from_number"] == from_number
+    assert incidents[0]["rejection_count"] == 6
 
 
 async def test_accepted_whatsapp_command_feedback_is_not_rejection_throttled(

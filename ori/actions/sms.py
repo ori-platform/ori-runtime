@@ -34,7 +34,10 @@ from ori.security.remote_command_responses import (
     format_remote_command_execution_response,
     format_remote_command_rejection_response,
 )
-from ori.security.remote_command_throttle import should_send_rejection_feedback
+from ori.security.remote_command_throttle import (
+    RemoteCommandThrottleDecision,
+    evaluate_rejection_feedback,
+)
 from ori.security.remote_commands import (
     RemoteCommand,
     RemoteCommandVerifier,
@@ -87,6 +90,10 @@ class SMSAction:
         config: dict[str, Any] | None = None,
         remote_command_verifier: RemoteCommandVerifier | None = None,
         remote_command_handler: Callable[[RemoteCommand], Awaitable[Any]] | None = None,
+        remote_command_incident_handler: Callable[
+            [RemoteCommandThrottleDecision], Awaitable[Any]
+        ]
+        | None = None,
     ) -> None:
         sms_cfg = config if isinstance(config, dict) else {}
 
@@ -120,6 +127,7 @@ class SMSAction:
         self._state_store = state_store
         self._remote_command_verifier = remote_command_verifier
         self._remote_command_handler = remote_command_handler
+        self._remote_command_incident_handler = remote_command_incident_handler
         self._poll_interval_seconds = max(1, int(poll_interval_seconds))
         self._ip_ready = bool(self._api_key)
 
@@ -448,11 +456,14 @@ class SMSAction:
                         "SMSAction.ingest_incoming_webhook: rejected remote command reason=%s",
                         command_result.reason,
                     )
-                    if await should_send_rejection_feedback(
+                    throttle_decision = await evaluate_rejection_feedback(
                         state_store=self._state_store,
                         channel="sms",
                         from_number=from_number,
-                    ):
+                    )
+                    if throttle_decision.incident_logged:
+                        await self._notify_remote_command_incident(throttle_decision)
+                    if throttle_decision.send_feedback:
                         await self._send_remote_command_feedback(
                             to_number=from_number,
                             message=format_remote_command_rejection_response(),
@@ -554,6 +565,17 @@ class SMSAction:
                 to_number,
             )
         return bool(sent)
+
+    async def _notify_remote_command_incident(
+        self,
+        decision: RemoteCommandThrottleDecision,
+    ) -> None:
+        if self._remote_command_incident_handler is None:
+            return
+        try:
+            await self._remote_command_incident_handler(decision)
+        except Exception:
+            logger.exception("SMSAction: remote command incident handler failed")
 
 
 def _normalize_phone(value: str) -> str:

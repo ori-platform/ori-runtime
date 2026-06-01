@@ -38,6 +38,7 @@ from ori.runtime import (
     _resolve_dispatcher_approval_timeout,
     _resolve_local_model_file,
 )
+from ori.security.remote_command_throttle import RemoteCommandThrottleDecision
 from ori.skills.signing import canonical_signed_payload
 from ori.state.store import StateStore
 
@@ -1590,6 +1591,34 @@ class TestAlertOutbox:
             assert queued[0]["status"] == "pending"
         finally:
             await runtime._state_store.close()
+
+    async def test_remote_command_incident_emits_tier_a_alert(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._primary_alert_channel = "sms"
+        runtime._operator_contact = "+2340000000000"
+        runtime._alert_sender = AsyncMock()
+        runtime._send_or_queue_alert = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        decision = RemoteCommandThrottleDecision(
+            send_feedback=False,
+            incident_logged=True,
+            incident_id="incident-1",
+            channel="sms",
+            from_number="+2348012345678",
+            rejection_count=6,
+            threshold=5,
+            window_ms=600_000,
+        )
+
+        await runtime._handle_remote_command_incident(decision)
+
+        runtime._send_or_queue_alert.assert_awaited_once()
+        kwargs = runtime._send_or_queue_alert.await_args.kwargs
+        assert kwargs["channel"] == "sms"
+        assert kwargs["recipient"] == "+2340000000000"
+        assert kwargs["action_tier"] == "A"
+        assert kwargs["trigger_name"] == "remote_command_abuse"
+        assert "repeated rejected remote commands" in kwargs["message"]
+        assert "+2348012345678" in kwargs["message"]
 
 
 class TestRemoteDevicePolicy:
