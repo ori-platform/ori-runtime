@@ -1637,6 +1637,69 @@ class TestAlertOutbox:
         finally:
             await runtime._state_store.close()
 
+    async def test_load_remote_command_lockout_state_from_persisted_incidents(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "remote-lockout-load.db"))
+        await runtime._state_store.open()
+        now = 1_780_000_000_000
+        monkeypatch.setattr("ori.runtime.now_ms", lambda: now)
+        try:
+            await runtime._state_store.log_remote_command_security_incident(
+                incident_id="incident-recent",
+                channel="sms",
+                from_number="+2348012345678",
+                reason="remote_command_rejection_feedback_suppressed",
+                rejection_count=6,
+                threshold=5,
+                window_ms=600_000,
+                created_at_ms=now - 1_000,
+            )
+            await runtime._state_store.log_remote_command_security_incident(
+                incident_id="incident-old",
+                channel="whatsapp",
+                from_number="whatsapp:+2348099999999",
+                reason="remote_command_rejection_feedback_suppressed",
+                rejection_count=6,
+                threshold=5,
+                window_ms=600_000,
+                created_at_ms=now - 7_200_000,
+            )
+
+            await runtime._load_remote_command_lockout_state()
+
+            assert set(runtime._remote_command_lockout_states) == {"sms:+2348012345678"}
+            state = runtime._remote_command_lockout_states["sms:+2348012345678"]
+            assert state["risk_level"] == "elevated"
+            assert state["incident_count"] == 1
+            assert state["locked_out"] is False
+            snapshot = runtime._build_health_snapshot()
+            senders = snapshot["remote_command_lockout"]["senders"]
+            assert len(senders) == 1
+            assert senders[0]["from_number"] == "+2348012345678"
+            assert senders[0]["stale"] is False
+        finally:
+            await runtime._state_store.close()
+
+    async def test_load_remote_command_lockout_state_failure_is_non_blocking(self):
+        class _FailingIncidentStore:
+            async def get_recent_remote_command_incident_senders(
+                self, *, since_ms: int, limit: int
+            ):
+                raise RuntimeError("incident query failed")
+
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = _FailingIncidentStore()
+        runtime._remote_command_lockout_states["sms:+2348012345678"] = {
+            "channel": "sms",
+            "from_number": "+2348012345678",
+        }
+
+        await runtime._load_remote_command_lockout_state()
+
+        assert runtime._remote_command_lockout_states == {}
+
 
 class TestRemoteDevicePolicy:
     def _signed_policy_payload(self):

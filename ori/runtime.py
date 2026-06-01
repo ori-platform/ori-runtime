@@ -311,6 +311,7 @@ class OriRuntime:
         db_path: str = config.raw.get("database", {}).get("path", "ori_state.db")
         self._state_store = StateStore(db_path=db_path)
         await self._state_store.open()
+        await self._load_remote_command_lockout_state()
 
         # ── Step C: Instantiate action executors and ActionDispatcher ─────────
         remote_command_verifier = _build_remote_command_verifier(config)
@@ -1298,6 +1299,56 @@ class OriRuntime:
             original_ts=now_ms(),
             alert_sender=self._alert_sender,
         )
+
+    async def _load_remote_command_lockout_state(self) -> None:
+        """Rebuild advisory sender risk from persisted incident history."""
+        self._remote_command_lockout_states.clear()
+        if self._state_store is None or not hasattr(
+            self._state_store,
+            "get_recent_remote_command_incident_senders",
+        ):
+            return
+
+        now = now_ms()
+        since_ms = now - DEFAULT_LOCKOUT_STATE_STALE_AFTER_MS
+        try:
+            senders = (
+                await self._state_store.get_recent_remote_command_incident_senders(
+                    since_ms=since_ms,
+                    limit=50,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "[runtime] failed to load remote command lockout state from incidents"
+            )
+            return
+
+        for sender in senders:
+            channel = str(sender.get("channel", "") or "")
+            from_number = str(sender.get("from_number", "") or "")
+            if not channel or not from_number:
+                continue
+            try:
+                lockout_state = await evaluate_remote_command_lockout(
+                    state_store=self._state_store,
+                    channel=channel,
+                    from_number=from_number,
+                    now_ms_value=now,
+                )
+            except Exception:
+                logger.exception(
+                    "[runtime] remote command lockout risk bootstrap failed for channel=%s sender=%r",
+                    channel,
+                    from_number,
+                )
+                continue
+            self._remote_command_lockout_states[
+                remote_command_sender_key(
+                    channel=channel,
+                    from_number=from_number,
+                )
+            ] = lockout_state.as_dict()
 
     async def _start_sms_webhook_if_enabled(
         self, config: Config

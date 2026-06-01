@@ -3,6 +3,37 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Remote Command Lockout Health Rebuilds From Persisted Incidents
+
+**Status:** Accepted
+
+Advisory remote command lockout state is cached in memory for health snapshots,
+but the source of truth for abuse history is the persisted
+`remote_command_security_incident_log`. On runtime startup, recent persisted
+incident senders must be reloaded and re-evaluated so diagnostics survive
+process restarts.
+
+Rules:
+
+- Runtime startup rebuilds `_remote_command_lockout_states` after `StateStore`
+  opens and before health snapshots are served.
+- Only recent incident senders within the advisory lockout risk window are
+  reloaded.
+- Rebuilt states remain advisory. Enforcement stays disabled.
+- Rebuild failures must not prevent runtime startup.
+- Health freshness metadata still applies to rebuilt sender states.
+
+Rationale:
+
+- Losing advisory abuse state on restart makes diagnostics misleading after a
+  crash, power loss, or operator-initiated restart.
+- The persisted incident log already contains the sender identities needed to
+  rebuild risk without scanning every remote command attempt.
+- Keeping the rebuild bounded to recent incidents avoids unbounded health
+  snapshot growth.
+
+---
+
 ## 2026-06-01 — Remote Command Lockout Health State Can Be Stale
 
 **Status:** Accepted

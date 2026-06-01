@@ -807,6 +807,69 @@ class TestInboundMessages:
 # ─── remote_command_execution_log ─────────────────────────────────────────────
 
 
+class TestRemoteCommandSecurityIncidentLog:
+    async def test_recent_incident_senders_are_grouped_by_sender(self, store):
+        await store.log_remote_command_security_incident(
+            incident_id="incident-1",
+            channel="sms",
+            from_number="+234800000001",
+            reason="remote_command_rejection_feedback_suppressed",
+            rejection_count=6,
+            threshold=5,
+            window_ms=600_000,
+            created_at_ms=2_000,
+        )
+        await store.log_remote_command_security_incident(
+            incident_id="incident-2",
+            channel="sms",
+            from_number="+234800000001",
+            reason="remote_command_rejection_feedback_suppressed",
+            rejection_count=7,
+            threshold=5,
+            window_ms=600_000,
+            created_at_ms=3_000,
+        )
+        await store.log_remote_command_security_incident(
+            incident_id="incident-3",
+            channel="whatsapp",
+            from_number="whatsapp:+234800000002",
+            reason="remote_command_rejection_feedback_suppressed",
+            rejection_count=6,
+            threshold=5,
+            window_ms=600_000,
+            created_at_ms=4_000,
+        )
+        await store.log_remote_command_security_incident(
+            incident_id="old-incident",
+            channel="sms",
+            from_number="+234800000003",
+            reason="remote_command_rejection_feedback_suppressed",
+            rejection_count=6,
+            threshold=5,
+            window_ms=600_000,
+            created_at_ms=500,
+        )
+
+        senders = await store.get_recent_remote_command_incident_senders(
+            since_ms=1_000,
+        )
+
+        assert senders == [
+            {
+                "channel": "whatsapp",
+                "from_number": "whatsapp:+234800000002",
+                "last_incident_at_ms": 4_000,
+                "incident_count": 1,
+            },
+            {
+                "channel": "sms",
+                "from_number": "+234800000001",
+                "last_incident_at_ms": 3_000,
+                "incident_count": 2,
+            },
+        ]
+
+
 class TestRemoteCommandExecutionLog:
     async def test_log_and_retrieve_execution_result(self, store):
         await store.log_remote_command_execution(
