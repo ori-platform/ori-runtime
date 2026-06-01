@@ -56,6 +56,8 @@ def _action_result(
     approved: bool | None = None,
     action_taken: str = "alert_whatsapp",
     operator_response: str | None = None,
+    proposal_id: str | None = None,
+    safe_default_used: bool = False,
     timestamp: int | None = None,
 ) -> ActionResult:
     return ActionResult(
@@ -66,6 +68,8 @@ def _action_result(
         action_taken=action_taken,
         timestamp=timestamp or _ms(),
         operator_response=operator_response,
+        proposal_id=proposal_id,
+        safe_default_used=safe_default_used,
     )
 
 
@@ -276,6 +280,63 @@ class TestAverages:
         avg = await store.avg_last_hours("s-missing", hours=24)
         assert avg is None
 
+    async def test_export_sensor_history_unions_raw_and_compacted_tiers(self, store):
+        await store.append_history(
+            _event(
+                _reading(
+                    sensor_id="s1",
+                    sensor_type="current_clamp",
+                    value=4.2,
+                    unit="ampere",
+                    timestamp=1_000,
+                    quality=0.98,
+                )
+            )
+        )
+        await store._run_write(
+            lambda: store._conn.execute(
+                """
+                INSERT INTO sensor_history_5min
+                    (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                ("s1", "current_clamp", 2_000, 5.5, "ampere", 12),
+            )
+        )
+        await store._run_write(store._conn.commit)
+
+        rows = await store.export_sensor_history(
+            sensor_id="s1",
+            start_ms=0,
+            end_ms=3_000,
+            limit=10,
+        )
+
+        assert [row["tier"] for row in rows] == ["raw", "5min"]
+        assert rows[0]["timestamp"] == 1_000
+        assert rows[0]["value"] == pytest.approx(4.2)
+        assert rows[0]["quality"] == pytest.approx(0.98)
+        assert rows[0]["sample_count"] == 1
+        assert rows[1]["timestamp"] == 2_000
+        assert rows[1]["value"] == pytest.approx(5.5)
+        assert rows[1]["quality"] is None
+        assert rows[1]["sample_count"] == 12
+
+    async def test_export_sensor_history_filters_sensor_and_bounds(self, store):
+        await store.append_history(_event(_reading(sensor_id="s1", timestamp=1_000)))
+        await store.append_history(_event(_reading(sensor_id="s1", timestamp=2_000)))
+        await store.append_history(_event(_reading(sensor_id="s2", timestamp=2_000)))
+
+        rows = await store.export_sensor_history(
+            sensor_id="s1",
+            start_ms=1_500,
+            end_ms=2_500,
+        )
+
+        assert len(rows) == 1
+        assert rows[0]["sensor_id"] == "s1"
+        assert rows[0]["timestamp"] == 2_000
+
 
 # ─── action_log ───────────────────────────────────────────────────────────────
 
@@ -337,6 +398,56 @@ class TestActionLog:
     async def test_get_action_log_empty(self, store):
         log = await store.get_action_log()
         assert log == []
+
+    async def test_export_action_log_filters_and_includes_reporting_fields(self, store):
+        base = _ms()
+        await store.log_action_for_event(
+            _action_result(
+                action_name="open_safety_circuit",
+                tier="C",
+                executed=True,
+                approved=False,
+                action_taken="log_to_dashboard",
+                operator_response="NO",
+                proposal_id="AB12CD34",
+                safe_default_used=True,
+                timestamp=base,
+            ),
+            trigger_name="overcurrent",
+            device_id="dev-01",
+            sensor_id="load-current",
+            sensor_type="current_clamp",
+        )
+        await store.log_action_for_event(
+            _action_result(
+                action_name="alert_whatsapp",
+                tier="A",
+                timestamp=base + 1_000,
+            ),
+            trigger_name="voltage_warning",
+            device_id="dev-02",
+            sensor_id="voltage-main",
+            sensor_type="voltage",
+        )
+
+        rows = await store.export_action_log(
+            device_id="dev-01",
+            since_ms=base - 1,
+            until_ms=base + 1,
+            tier="C",
+            limit=10,
+        )
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["action_name"] == "open_safety_circuit"
+        assert row["tier"] == "C"
+        assert row["device_id"] == "dev-01"
+        assert row["sensor_id"] == "load-current"
+        assert row["sensor_type"] == "current_clamp"
+        assert row["trigger_name"] == "overcurrent"
+        assert row["safe_default_used"] is True
+        assert row["proposal_id"] == "AB12CD34"
 
 
 class TestTierCDecisionLog:

@@ -79,6 +79,7 @@ def _result(
 def _mock_store() -> AsyncMock:
     store = AsyncMock()
     store.log_action = AsyncMock(return_value=None)
+    store.log_action_for_event = AsyncMock(return_value=None)
     store.log_tier_c_decision = AsyncMock(return_value=None)
     return store
 
@@ -197,7 +198,7 @@ class TestTierA:
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=store)
         d = ActionDispatcher()
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
-        store.log_action.assert_awaited_once()
+        store.log_action_for_event.assert_awaited_once()
 
     async def test_returns_action_result_instance(self):
         d = ActionDispatcher()
@@ -655,7 +656,7 @@ class TestTierC:
                 approval_timeout_seconds=10,
             )
 
-        store.log_action.assert_awaited_once()
+        store.log_action_for_event.assert_awaited_once()
 
     async def test_tier_c_decision_logged_with_context(self):
         store = _mock_store()
@@ -976,7 +977,7 @@ class TestFailedAction:
 
     async def test_failed_log_does_not_raise(self):
         store = AsyncMock()
-        store.log_action.side_effect = RuntimeError("db locked")
+        store.log_action_for_event.side_effect = RuntimeError("db locked")
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=store)
         d = ActionDispatcher()
         # Must not raise even when logging fails
@@ -995,7 +996,7 @@ class TestLogging:
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=None)
         d = ActionDispatcher(state_store=store)
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
-        store.log_action.assert_awaited_once()
+        store.log_action_for_event.assert_awaited_once()
 
     async def test_context_store_takes_priority(self):
         ctx_store = _mock_store()
@@ -1003,8 +1004,8 @@ class TestLogging:
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=ctx_store)
         d = ActionDispatcher(state_store=dispatcher_store)
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
-        ctx_store.log_action.assert_awaited_once()
-        dispatcher_store.log_action.assert_not_awaited()
+        ctx_store.log_action_for_event.assert_awaited_once()
+        dispatcher_store.log_action_for_event.assert_not_awaited()
 
     async def test_no_store_does_not_raise(self):
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=None)
@@ -1024,7 +1025,7 @@ class TestLogging:
 
         d.register_executor("alert_whatsapp", boom)
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
-        store.log_action.assert_awaited_once()
+        store.log_action_for_event.assert_awaited_once()
 
 
 # ─── Approval message format ─────────────────────────────────────────────────

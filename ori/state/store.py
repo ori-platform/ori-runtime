@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS action_log (
     action_taken      TEXT    NOT NULL,
     operator_response TEXT,
     proposal_id       TEXT    NOT NULL DEFAULT '',
+    safe_default_used INTEGER NOT NULL DEFAULT 0,
+    device_id         TEXT    NOT NULL DEFAULT '',
+    sensor_id         TEXT    NOT NULL DEFAULT '',
+    sensor_type       TEXT    NOT NULL DEFAULT '',
     trigger_name      TEXT    NOT NULL,
     timestamp         INTEGER NOT NULL
 );
@@ -342,6 +346,13 @@ class StateStore:
             "proposal_id",
             "TEXT    NOT NULL DEFAULT ''",
         )
+        for col, typedef in (
+            ("safe_default_used", "INTEGER NOT NULL DEFAULT 0"),
+            ("device_id", "TEXT    NOT NULL DEFAULT ''"),
+            ("sensor_id", "TEXT    NOT NULL DEFAULT ''"),
+            ("sensor_type", "TEXT    NOT NULL DEFAULT ''"),
+        ):
+            self._add_column_if_missing_on_conn(conn, "action_log", col, typedef)
         self._add_column_if_missing_on_conn(
             conn,
             "tier_c_decision_log",
@@ -715,13 +726,160 @@ class StateStore:
         ).fetchall()
         return [(row["ts"], row["val"]) for row in rows]
 
+    async def export_sensor_history(
+        self,
+        *,
+        sensor_id: str,
+        start_ms: int,
+        end_ms: int,
+        limit: int = 10_000,
+    ) -> list[dict]:
+        """Return bounded sensor history across raw and compacted tiers.
+
+        The gateway/reporting layer should use this method instead of reaching
+        into SQLite table names. Rows are ordered oldest-first and include the
+        compaction tier so report generators can decide how to aggregate.
+        """
+        return await self._run_read(
+            self._export_sensor_history_sync,
+            sensor_id,
+            start_ms,
+            end_ms,
+            limit,
+        )
+
+    def _export_sensor_history_sync(
+        self,
+        conn: sqlite3.Connection,
+        sensor_id: str,
+        start_ms: int,
+        end_ms: int,
+        limit: int,
+    ) -> list[dict]:
+        if int(end_ms) < int(start_ms):
+            return []
+
+        capped_limit = max(1, min(int(limit), 10_000))
+        params: tuple[Any, ...] = (
+            str(sensor_id),
+            int(start_ms),
+            int(end_ms),
+            str(sensor_id),
+            int(start_ms),
+            int(end_ms),
+            str(sensor_id),
+            int(start_ms),
+            int(end_ms),
+            str(sensor_id),
+            int(start_ms),
+            int(end_ms),
+            capped_limit,
+        )
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM (
+                SELECT
+                    sensor_id,
+                    sensor_type,
+                    timestamp AS timestamp,
+                    value AS value,
+                    unit,
+                    quality,
+                    1 AS sample_count,
+                    'raw' AS tier
+                FROM sensor_history
+                WHERE sensor_id = ? AND timestamp BETWEEN ? AND ?
+                UNION ALL
+                SELECT
+                    sensor_id,
+                    sensor_type,
+                    bucket_ms AS timestamp,
+                    avg_value AS value,
+                    unit,
+                    NULL AS quality,
+                    sample_count,
+                    '5min' AS tier
+                FROM sensor_history_5min
+                WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
+                UNION ALL
+                SELECT
+                    sensor_id,
+                    sensor_type,
+                    bucket_ms AS timestamp,
+                    avg_value AS value,
+                    unit,
+                    NULL AS quality,
+                    sample_count,
+                    'hourly' AS tier
+                FROM sensor_history_hourly
+                WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
+                UNION ALL
+                SELECT
+                    sensor_id,
+                    sensor_type,
+                    bucket_ms AS timestamp,
+                    avg_value AS value,
+                    unit,
+                    NULL AS quality,
+                    sample_count,
+                    'daily' AS tier
+                FROM sensor_history_daily
+                WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
+            )
+            ORDER BY timestamp ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [
+            {
+                "sensor_id": row["sensor_id"],
+                "sensor_type": row["sensor_type"],
+                "timestamp": row["timestamp"],
+                "value": row["value"],
+                "unit": row["unit"],
+                "quality": row["quality"],
+                "sample_count": row["sample_count"],
+                "tier": row["tier"],
+            }
+            for row in rows
+        ]
+
     # ─── action_log ───────────────────────────────────────────────────────────
 
     async def log_action(self, result: ActionResult, trigger_name: str) -> None:
-        await self._run_write(self._log_action_sync, result, trigger_name)
+        await self._run_write(self._log_action_sync, result, trigger_name, None)
 
-    def _log_action_sync(self, result: ActionResult, trigger_name: str) -> None:
+    async def log_action_for_event(
+        self,
+        result: ActionResult,
+        *,
+        trigger_name: str,
+        device_id: str = "",
+        sensor_id: str = "",
+        sensor_type: str = "",
+    ) -> None:
+        """Persist action result with sensor/device context for reporting."""
+        await self._run_write(
+            self._log_action_sync,
+            result,
+            trigger_name,
+            {
+                "device_id": device_id,
+                "sensor_id": sensor_id,
+                "sensor_type": sensor_type,
+            },
+        )
+
+    def _log_action_sync(
+        self,
+        result: ActionResult,
+        trigger_name: str,
+        context_fields: dict | None = None,
+    ) -> None:
         assert self._conn is not None
+        context_fields = context_fields or {}
         approved_int: Optional[int] = None
         if result.approved is not None:
             approved_int = 1 if result.approved else 0
@@ -729,8 +887,9 @@ class StateStore:
             """
             INSERT INTO action_log
                 (action_name, tier, executed, approved, action_taken,
-                 operator_response, proposal_id, trigger_name, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 operator_response, proposal_id, safe_default_used, device_id,
+                 sensor_id, sensor_type, trigger_name, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.action_name,
@@ -740,6 +899,10 @@ class StateStore:
                 result.action_taken,
                 result.operator_response,
                 result.proposal_id or "",
+                1 if result.safe_default_used else 0,
+                str(context_fields.get("device_id", "") or ""),
+                str(context_fields.get("sensor_id", "") or ""),
+                str(context_fields.get("sensor_type", "") or ""),
                 trigger_name,
                 result.timestamp,
             ),
@@ -753,7 +916,8 @@ class StateStore:
         rows = conn.execute(
             """
             SELECT action_name, tier, executed, approved, action_taken,
-                   operator_response, proposal_id, trigger_name, timestamp
+                   operator_response, proposal_id, safe_default_used, device_id,
+                   sensor_id, sensor_type, trigger_name, timestamp
             FROM action_log
             ORDER BY timestamp DESC
             LIMIT ?
@@ -774,10 +938,83 @@ class StateStore:
                     "action_taken": row["action_taken"],
                     "operator_response": row["operator_response"],
                     "proposal_id": row["proposal_id"],
+                    "safe_default_used": bool(row["safe_default_used"]),
+                    "device_id": row["device_id"],
+                    "sensor_id": row["sensor_id"],
+                    "sensor_type": row["sensor_type"],
                     "trigger_name": row["trigger_name"],
                     "timestamp": row["timestamp"],
                 }
             )
+        return result
+
+    async def export_action_log(
+        self,
+        *,
+        device_id: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        tier: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return a bounded action-log export for gateway/reporting sync."""
+        return await self._run_read(
+            self._export_action_log_sync,
+            device_id,
+            since_ms,
+            until_ms,
+            tier,
+            limit,
+        )
+
+    def _export_action_log_sync(
+        self,
+        conn: sqlite3.Connection,
+        device_id: str | None,
+        since_ms: int | None,
+        until_ms: int | None,
+        tier: str | None,
+        limit: int,
+    ) -> list[dict]:
+        where = []
+        params: list[Any] = []
+        if device_id:
+            where.append("device_id = ?")
+            params.append(str(device_id))
+        if since_ms is not None:
+            where.append("timestamp >= ?")
+            params.append(int(since_ms))
+        if until_ms is not None:
+            where.append("timestamp <= ?")
+            params.append(int(until_ms))
+        if tier:
+            where.append("tier = ?")
+            params.append(str(tier).upper())
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, min(int(limit), 1000)))
+        query = (
+            """
+            SELECT action_name, tier, executed, approved, action_taken,
+                   operator_response, proposal_id, safe_default_used, device_id,
+                   sensor_id, sensor_type, trigger_name, timestamp
+            FROM action_log
+            """
+            + where_sql
+            + """
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """
+        )
+        rows = conn.execute(query, tuple(params)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["executed"] = bool(item["executed"])
+            item["approved"] = (
+                bool(item["approved"]) if item["approved"] is not None else None
+            )
+            item["safe_default_used"] = bool(item["safe_default_used"])
+            result.append(item)
         return result
 
     # ─── tier_c_decision_log ───────────────────────────────────────────────────

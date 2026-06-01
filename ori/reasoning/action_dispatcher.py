@@ -826,6 +826,7 @@ class ActionDispatcher:
                 timestamp=completed_at,
                 operator_response=operator_response,
                 proposal_id=proposal_id,
+                safe_default_used=not bool(approved),
             )
             await self._log_tier_c_decision(
                 store=store,
@@ -1324,7 +1325,17 @@ class ActionDispatcher:
 
         trigger_name = context.event.sensor_id if context.event else ""
         try:
-            await store.log_action(action_result, trigger_name)
+            if hasattr(store, "log_action_for_event"):
+                reading = context.event.reading if context.event else None
+                await store.log_action_for_event(
+                    action_result,
+                    trigger_name=trigger_name,
+                    device_id=context.event.device_id if context.event else "",
+                    sensor_id=reading.sensor_id if reading is not None else "",
+                    sensor_type=reading.sensor_type if reading is not None else "",
+                )
+            else:
+                await store.log_action(action_result, trigger_name)
         except Exception:
             logger.exception(
                 "ActionDispatcher: failed to log action=%r to action_log",

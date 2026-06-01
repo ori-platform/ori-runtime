@@ -3,6 +3,34 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Runtime Exposes Data, Gateway Owns Cloud (AI) SDKs
+
+**Status:** Accepted
+
+Cloud SDKs like Gemini belong in the gateway and product layer, not in the
+safety-critical runtime.
+
+Rules:
+
+- The runtime must not depend on cloud SDKs.
+- `ori.yaml.example` must not contain cloud API configuration.
+- Gateway/product services own cloud API keys, weekly report
+  generation, and Tier C proposal enrichment.
+- Runtime responsibility is to expose bounded, provider-neutral export
+  primitives: Tier C decision log, action log, sensor history, and health
+  status.
+- Export methods must be bounded by time/window and/or `limit` so product-layer
+  sync cannot accidentally dump unbounded SQLite state.
+
+Rationale:
+
+- Weekly reports and Tier C decision enrichment via cloud AI are
+  customer-visible, auditable, and naturally network-dependent.
+- Keeping cloud SDKs out of runtime preserves offline-first operation and avoids
+  coupling physical safety paths to a cloud provider.
+
+---
+
 ## 2026-06-01 — Approval Replies Are Not Remote Commands
 
 **Status:** Accepted

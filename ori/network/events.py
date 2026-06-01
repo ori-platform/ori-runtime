@@ -56,6 +56,7 @@ class ActionResult:
     timestamp: int
     operator_response: str | None = None
     proposal_id: str | None = None
+    safe_default_used: bool = False
 
 
 @dataclass
