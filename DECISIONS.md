@@ -3,6 +3,37 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Remote Command Execution Feedback Is Best-Effort
+
+**Status:** Accepted
+
+After an authenticated remote command is handed to the runtime execution policy,
+SMS and WhatsApp ingress should send a concise operator-facing response that
+states whether the command executed, failed preconditions, failed execution,
+is unsupported, or remains audit-only.
+
+Rules:
+
+- Execution/audit state is authoritative in `remote_command_execution_log`.
+- Feedback delivery is best-effort and must not change the command execution
+  result.
+- Authentication failures receive only a generic rejection response. Channel
+  responses must not reveal exact verifier reasons such as `missing_signature`,
+  `invalid_signature`, or `replay_detected`.
+- Plain Tier C approval replies (`YES`/`NO`) must remain unaffected.
+- Response messages must be short enough for SMS transport and safe for
+  WhatsApp reuse.
+
+Rationale:
+
+- Operators need closure for state-changing remote commands.
+- A failed notification must not cause a successfully executed command to be
+  marked failed.
+- Generic rejection responses avoid giving attackers an oracle for verifier
+  internals.
+
+---
+
 ## 2026-05-31 — SET_THRESHOLD Remote Command Handler Spec
 
 **Status:** Accepted

@@ -8,6 +8,12 @@ import pytest
 
 from ori.actions.sms import SMSAction
 from ori.actions.whatsapp import WhatsAppAction
+from ori.security.remote_command_policy import (
+    STATUS_AUDIT_ONLY,
+    STATUS_EXECUTED,
+    STATUS_PRECONDITION_FAILED,
+    command_result,
+)
 from ori.security.remote_commands import (
     RemoteCommandVerifier,
     extract_remote_command_payload,
@@ -59,8 +65,10 @@ def _verifier(secret: str = "shared-secret") -> RemoteCommandVerifier:
 class _InboxWhatsAppProvider:
     def __init__(self, inbox: list[str]) -> None:
         self.inbox = inbox
+        self.sent: list[tuple[str, str]] = []
 
     async def send(self, to: str, message: str) -> bool:
+        self.sent.append((to, message))
         return True
 
     async def get_incoming(self, from_number: str, since_ms: int) -> list[str]:
@@ -73,8 +81,10 @@ class _RepeatingWhatsAppProvider:
         self.repeated = repeated
         self.final = final
         self.calls = 0
+        self.sent: list[tuple[str, str]] = []
 
     async def send(self, to: str, message: str) -> bool:
+        self.sent.append((to, message))
         return True
 
     async def get_incoming(self, from_number: str, since_ms: int) -> list[str]:
@@ -316,6 +326,152 @@ async def test_sms_handler_invokes_runtime_command_handler(store, fixed_now):
     assert handled.command == "UPDATE_CONFIG"
 
 
+async def test_sms_handler_sends_execution_feedback(store, fixed_now):
+    async def handler(command):
+        return command_result(
+            command,
+            status=STATUS_EXECUTED,
+            detail="threshold updated",
+            executed=True,
+        )
+
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(),
+        remote_command_handler=handler,
+    )
+    action.send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    command = _signed(_payload(now=fixed_now, command_id="sms-exec"))
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": "+2348012345678", "text": json.dumps(command)}
+    )
+
+    assert ok is True
+    action.send.assert_awaited_once()
+    message, to_number = action.send.await_args.args
+    assert to_number == "+2348012345678"
+    assert "executed" in message
+    assert "sms-exec" in message
+
+
+async def test_sms_handler_sends_precondition_feedback(store, fixed_now):
+    async def handler(command):
+        return command_result(
+            command,
+            status=STATUS_PRECONDITION_FAILED,
+            detail="skill 'missing' is not loaded",
+            executed=False,
+        )
+
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(),
+        remote_command_handler=handler,
+    )
+    action.send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    command = _signed(_payload(now=fixed_now, command_id="sms-precondition"))
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": "+2348012345678", "text": json.dumps(command)}
+    )
+
+    assert ok is True
+    message, _to_number = action.send.await_args.args
+    assert "precondition failed" in message
+    assert "sms-precondition" in message
+
+
+async def test_sms_handler_sends_audit_only_feedback(store, fixed_now):
+    async def handler(command):
+        return command_result(
+            command,
+            status=STATUS_AUDIT_ONLY,
+            detail="handler is not enabled",
+            executed=False,
+        )
+
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(),
+        remote_command_handler=handler,
+    )
+    action.send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    command = _signed(_payload(now=fixed_now, command_id="sms-audit"))
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": "+2348012345678", "text": json.dumps(command)}
+    )
+
+    assert ok is True
+    message, _to_number = action.send.await_args.args
+    assert "audit-only" in message
+
+
+async def test_sms_handler_sends_generic_rejection_feedback(store, fixed_now):
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(),
+    )
+    action.send = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    command = _payload(now=fixed_now, command_id="sms-unsigned")
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": "+2348012345678", "text": json.dumps(command)}
+    )
+
+    assert ok is False
+    action.send.assert_awaited_once()
+    message, to_number = action.send.await_args.args
+    assert to_number == "+2348012345678"
+    assert "rejected" in message
+    assert "missing_signature" not in message
+
+
+async def test_sms_feedback_failure_does_not_affect_execution_log(store, fixed_now):
+    async def handler(command):
+        result = command_result(
+            command,
+            status=STATUS_EXECUTED,
+            detail="threshold updated",
+            executed=True,
+        )
+        await store.log_remote_command_execution(
+            command_id=result.command_id,
+            channel=result.channel,
+            command=result.command,
+            status=result.status,
+            detail=result.detail,
+            executed=result.executed,
+            executed_at_ms=result.executed_at_ms,
+        )
+        return result
+
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(),
+        remote_command_handler=handler,
+    )
+    action.send = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    command = _signed(_payload(now=fixed_now, command_id="sms-feedback-fails"))
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": "+2348012345678", "text": json.dumps(command)}
+    )
+
+    assert ok is True
+    action.send.assert_awaited_once()
+    rows = await store.get_remote_command_execution_log()
+    assert rows[0]["command_id"] == "sms-feedback-fails"
+    assert rows[0]["status"] == STATUS_EXECUTED
+    assert rows[0]["executed"] is True
+
+
 async def test_whatsapp_approval_yes_no_is_not_treated_as_remote_command(store):
     provider = _InboxWhatsAppProvider(["YES"])
     action = WhatsAppAction(provider=provider, state_store=store)
@@ -397,6 +553,58 @@ async def test_whatsapp_invokes_runtime_command_handler(store, fixed_now):
     handled = handler.await_args.args[0]
     assert handled.command_id == "wa-handler"
     assert handled.channel == "whatsapp"
+
+
+async def test_whatsapp_sends_execution_feedback(store, fixed_now):
+    async def handler(command):
+        return command_result(
+            command,
+            status=STATUS_EXECUTED,
+            detail="threshold updated",
+            executed=True,
+        )
+
+    command = _signed(_payload(now=fixed_now, command_id="wa-exec"))
+    provider = _InboxWhatsAppProvider([json.dumps(command), "YES"])
+    action = WhatsAppAction(
+        provider=provider,
+        state_store=store,
+        remote_command_verifier=_verifier(),
+        remote_command_handler=handler,
+    )
+
+    reply = await action.listen_for_response(
+        from_number="whatsapp:+2348012345678",
+        timeout_seconds=1,
+    )
+
+    assert reply == "YES"
+    assert provider.sent
+    to_number, message = provider.sent[0]
+    assert to_number == "whatsapp:+2348012345678"
+    assert "executed" in message
+    assert "wa-exec" in message
+
+
+async def test_whatsapp_sends_generic_rejection_feedback(store, fixed_now):
+    command = _payload(now=fixed_now, command_id="wa-unsigned-feedback")
+    provider = _InboxWhatsAppProvider([json.dumps(command), "YES"])
+    action = WhatsAppAction(
+        provider=provider,
+        state_store=store,
+        remote_command_verifier=_verifier(),
+    )
+
+    reply = await action.listen_for_response(
+        from_number="whatsapp:+2348012345678",
+        timeout_seconds=1,
+    )
+
+    assert reply == "YES"
+    assert provider.sent
+    _to_number, message = provider.sent[0]
+    assert "rejected" in message
+    assert "missing_signature" not in message
 
 
 async def test_whatsapp_audits_command_when_verifier_disabled(store, fixed_now):

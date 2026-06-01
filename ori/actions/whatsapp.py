@@ -37,6 +37,10 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
 
 from ori.network.events import ReasoningResult
+from ori.security.remote_command_responses import (
+    format_remote_command_execution_response,
+    format_remote_command_rejection_response,
+)
 from ori.security.remote_commands import (
     RemoteCommand,
     RemoteCommandVerifier,
@@ -384,11 +388,23 @@ class WhatsAppAction:
                             self._remote_command_handler is not None
                             and command_result.command
                         ):
-                            await self._remote_command_handler(command_result.command)
+                            execution_result = await self._remote_command_handler(
+                                command_result.command
+                            )
+                            await self._send_remote_command_feedback(
+                                to_number=from_number,
+                                message=format_remote_command_execution_response(
+                                    execution_result
+                                ),
+                            )
                     else:
                         logger.warning(
                             "WhatsAppAction.listen_for_response: rejected remote command reason=%s",
                             command_result.reason,
+                        )
+                        await self._send_remote_command_feedback(
+                            to_number=from_number,
+                            message=format_remote_command_rejection_response(),
                         )
                     continue
 
@@ -411,3 +427,24 @@ class WhatsAppAction:
             from_number,
         )
         return None
+
+    async def _send_remote_command_feedback(
+        self,
+        *,
+        to_number: str,
+        message: str,
+    ) -> bool:
+        try:
+            sent = await self.send(message, to_number)
+        except Exception:
+            logger.exception(
+                "WhatsAppAction: remote command feedback send raised for to=%r",
+                to_number,
+            )
+            return False
+        if not sent:
+            logger.warning(
+                "WhatsAppAction: failed to send remote command feedback to %r",
+                to_number,
+            )
+        return bool(sent)

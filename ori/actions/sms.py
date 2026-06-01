@@ -30,6 +30,10 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ori.bool_utils import is_truthy
+from ori.security.remote_command_responses import (
+    format_remote_command_execution_response,
+    format_remote_command_rejection_response,
+)
 from ori.security.remote_commands import (
     RemoteCommand,
     RemoteCommandVerifier,
@@ -443,6 +447,10 @@ class SMSAction:
                         "SMSAction.ingest_incoming_webhook: rejected remote command reason=%s",
                         command_result.reason,
                     )
+                    await self._send_remote_command_feedback(
+                        to_number=from_number,
+                        message=format_remote_command_rejection_response(),
+                    )
                     return False
                 logger.info(
                     "SMSAction.ingest_incoming_webhook: accepted remote command command_id=%s command=%s",
@@ -450,7 +458,15 @@ class SMSAction:
                     command_result.command.command if command_result.command else "",
                 )
                 if self._remote_command_handler is not None and command_result.command:
-                    await self._remote_command_handler(command_result.command)
+                    execution_result = await self._remote_command_handler(
+                        command_result.command
+                    )
+                    await self._send_remote_command_feedback(
+                        to_number=from_number,
+                        message=format_remote_command_execution_response(
+                            execution_result
+                        ),
+                    )
                 return True
 
             await self._state_store.store_incoming_message(
@@ -511,6 +527,27 @@ class SMSAction:
             await asyncio.sleep(min(self._poll_interval_seconds, remaining))
 
         return None
+
+    async def _send_remote_command_feedback(
+        self,
+        *,
+        to_number: str,
+        message: str,
+    ) -> bool:
+        try:
+            sent = await self.send(message, to_number)
+        except Exception:
+            logger.exception(
+                "SMSAction: remote command feedback send raised for to=%r",
+                to_number,
+            )
+            return False
+        if not sent:
+            logger.warning(
+                "SMSAction: failed to send remote command feedback to %r",
+                to_number,
+            )
+        return bool(sent)
 
 
 def _normalize_phone(value: str) -> str:
