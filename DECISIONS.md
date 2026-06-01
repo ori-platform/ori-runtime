@@ -3,6 +3,52 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+## 2026-06-01 — Approval Replies Are Not Remote Commands
+
+**Status:** Accepted
+
+Inbound text channels carry two different kinds of operator input: Tier C
+approval replies and authenticated remote runtime commands. These must stay
+separate because approval replies answer an already-created proposal, while
+remote commands attempt to mutate runtime state.
+
+Rules:
+
+- Plain approval replies such as `YES`, `NO`, and equivalent approval tokens
+  may remain unauthenticated because they are scoped to the pending Tier C
+  proposal.
+- Tier C approval messages must include a short `proposal_id`. Scoped replies
+  such as `YES-AB12CD34` and `NO-AB12CD34` are valid only when the suffix
+  matches the active proposal. Bare `YES`/`NO` remains accepted for the active
+  pending proposal for operator usability.
+- Offline local-console `TOKEN:<value>` approvals remain allowed, but must pass
+  the offline token verifier before approving Tier C.
+- Structured remote command payloads (`ORI_COMMAND {json}` or raw JSON objects
+  containing the remote-command field set) must never be stored or returned as
+  approval replies.
+- SMS and WhatsApp ingress must route structured commands through
+  `RemoteCommandVerifier` and `remote_command_policy` before any runtime side
+  effect.
+- The local-console approval channel is not a remote command ingress. Structured
+  commands found there must be consumed, durably audited, and ignored for
+  approval purposes.
+- Local-console approval input is strict: `YES`, `NO`, scoped `YES-<proposal_id>`,
+  scoped `NO-<proposal_id>`, and `TOKEN:<value>` are the only valid forms.
+  Unrecognised input must be logged and ignored until the proposal times out.
+
+Rationale:
+
+- A command payload must not be able to masquerade as an approval reply and
+  accidentally approve a Tier C physical action.
+- Proposal IDs reduce the chance that delayed replies intended for one Tier C
+  proposal affect another proposal.
+- Keeping local-console approval narrow preserves the offline recovery path
+  without creating a second unauthenticated command channel.
+- The boundary supports Ori Energy and Ori Guard deployments where SMS,
+  WhatsApp, and local fallback may all be active under degraded connectivity.
+
+---
+
 ## 2026-06-01 — Tier C Decisions Must Carry Dataset-Ready Context
 
 **Status:** Accepted

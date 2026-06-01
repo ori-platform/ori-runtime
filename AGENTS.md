@@ -594,6 +594,16 @@ Violating them creates vulnerabilities that affect physical hardware.
     Relay fail-safe direction configured in `ori.yaml` is immutable by remote
     command. `SET_RELAY_MODE` must never change normally-closed to normally-open,
     or perform any equivalent fail-safe inversion, regardless of authentication.
+    Tier C approval replies and remote commands are separate input classes.
+    Approval messages must carry a short `proposal_id`; scoped replies such as
+    `YES-<proposal_id>` and `NO-<proposal_id>` must match the active proposal
+    before approving or rejecting it. Structured remote command payloads
+    (`ORI_COMMAND {json}` or raw JSON with the remote-command field set) must
+    never be treated as approval replies. The local-console approval channel is
+    not a remote command ingress; structured commands there must be consumed,
+    durably audited, and ignored for approval purposes. Unrecognised
+    local-console approval input must be logged and ignored until timeout, not
+    silently converted to NO.
 
 ---
 

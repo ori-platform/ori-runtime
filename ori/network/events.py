@@ -55,6 +55,7 @@ class ActionResult:
     action_taken: str  # actual action executed (may be safe_default)
     timestamp: int
     operator_response: str | None = None
+    proposal_id: str | None = None
 
 
 @dataclass

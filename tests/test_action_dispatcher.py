@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, patch
@@ -14,10 +15,14 @@ from ori.network.events import (
     SensorReading,
 )
 from ori.policy.device_policy import DevicePolicy
-from ori.reasoning.action_dispatcher import ActionDispatcher, _parse_approval_response
+from ori.reasoning.action_dispatcher import (
+    ActionDispatcher,
+    _classify_approval_response,
+)
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
 from ori.security.offline_tokens import TokenVerificationResult
+from ori.state.store import StateStore
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -78,41 +83,65 @@ def _mock_store() -> AsyncMock:
     return store
 
 
-# ─── _parse_approval_response (module-level) ──────────────────────────────────
+def _structured_remote_command_text(command_id: str = "local-command") -> str:
+    return json.dumps(
+        {
+            "command_id": command_id,
+            "device_id": "dev-01",
+            "issued_at_ms": 1_000,
+            "command": "UPDATE_CONFIG",
+            "args": {"threshold": 42},
+        }
+    )
+
+
+# ─── _classify_approval_response (module-level) ───────────────────────────────
 
 
 class TestParseApprovalResponse:
     def test_yes_returns_true(self):
-        assert _parse_approval_response("YES") is True
+        assert _classify_approval_response("YES") == "approve"
+
+    def test_scoped_yes_matching_proposal_returns_true(self):
+        assert (
+            _classify_approval_response("YES-AB12CD34", proposal_id="AB12CD34")
+            == "approve"
+        )
+
+    def test_scoped_yes_wrong_proposal_returns_false(self):
+        assert (
+            _classify_approval_response("YES-WRONG999", proposal_id="AB12CD34")
+            == "invalid"
+        )
 
     def test_y_returns_true(self):
-        assert _parse_approval_response("Y") is True
+        assert _classify_approval_response("Y") == "approve"
 
     def test_approve_returns_true(self):
-        assert _parse_approval_response("approve") is True
+        assert _classify_approval_response("approve") == "approve"
 
     def test_go_returns_true(self):
-        assert _parse_approval_response("go") is True
+        assert _classify_approval_response("go") == "approve"
 
     def test_no_returns_false(self):
-        assert _parse_approval_response("NO") is False
+        assert _classify_approval_response("NO") == "reject"
 
     def test_cancel_returns_false(self):
-        assert _parse_approval_response("cancel") is False
+        assert _classify_approval_response("cancel") == "reject"
 
     def test_none_returns_false(self):
-        assert _parse_approval_response(None) is False
+        assert _classify_approval_response(None) == "invalid"
 
     def test_gibberish_returns_false(self):
-        assert _parse_approval_response("maybe") is False
+        assert _classify_approval_response("maybe") == "invalid"
 
     def test_case_insensitive(self):
-        assert _parse_approval_response("Yes") is True
-        assert _parse_approval_response("YES") is True
-        assert _parse_approval_response("yes") is True
+        assert _classify_approval_response("Yes") == "approve"
+        assert _classify_approval_response("YES") == "approve"
+        assert _classify_approval_response("yes") == "approve"
 
     def test_strips_whitespace(self):
-        assert _parse_approval_response("  yes  ") is True
+        assert _classify_approval_response("  yes  ") == "approve"
 
 
 # ─── Tier A — executes immediately ────────────────────────────────────────────
@@ -536,6 +565,82 @@ class TestTierC:
 
         assert result.operator_response == "YES"
 
+    async def test_tier_c_scoped_yes_matches_proposal_id_and_is_logged(self, tmp_path):
+        store = StateStore(db_path=str(tmp_path / "proposal-id.db"))
+        await store.open()
+        try:
+            sender = AsyncMock()
+            d = ActionDispatcher(
+                state_store=store,
+                alert_sender=sender,
+                config={"operator_contact": "+234800000000"},
+            )
+            exec_mock = AsyncMock()
+            d.register_executor("open_safety_circuit", exec_mock)
+
+            with (
+                patch(
+                    "ori.reasoning.action_dispatcher._generate_proposal_id",
+                    return_value="AB12CD34",
+                ),
+                patch.object(
+                    d,
+                    "_listen_for_response",
+                    new=AsyncMock(return_value="YES-AB12CD34"),
+                ),
+            ):
+                result = await d.dispatch(
+                    "open_safety_circuit",
+                    ActionTier.HARD_PHYSICAL,
+                    _context(),
+                    _result(action_tier="C"),
+                    approval_timeout_seconds=10,
+                )
+
+            assert result.approved is True
+            assert result.proposal_id == "AB12CD34"
+            exec_mock.assert_awaited_once()
+            sent_message = sender.send.await_args.kwargs["message"]
+            assert "Proposal ID: AB12CD34" in sent_message
+            assert "YES-AB12CD34" in sent_message
+            action_rows = await store.get_action_log()
+            assert action_rows[0]["proposal_id"] == "AB12CD34"
+            decision_rows = await store.get_tier_c_decision_log()
+            assert decision_rows[0]["proposal_id"] == "AB12CD34"
+        finally:
+            await store.close()
+
+    async def test_tier_c_wrong_scoped_yes_does_not_approve(self):
+        d = ActionDispatcher()
+        safe_default = AsyncMock()
+        d.register_executor("log_to_dashboard", safe_default)
+
+        with (
+            patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                return_value="AB12CD34",
+            ),
+            patch.object(
+                d,
+                "_listen_for_response",
+                new=AsyncMock(return_value="YES-WRONG999"),
+            ),
+        ):
+            result = await d.dispatch(
+                "open_safety_circuit",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(action_tier="C"),
+                safe_default_action="log_to_dashboard",
+                approval_timeout_seconds=10,
+            )
+
+        assert result.approved is False
+        assert result.operator_response == "YES-WRONG999"
+        assert result.action_taken == "log_to_dashboard"
+        assert result.proposal_id == "AB12CD34"
+        safe_default.assert_awaited_once()
+
     async def test_tier_c_logged_to_store(self):
         store = _mock_store()
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=store)
@@ -688,6 +793,113 @@ class TestTierC:
 
         assert result.approved is False
         assert result.action_taken == "log_to_dashboard"
+
+    async def test_local_console_ignores_structured_command_before_approval(
+        self, tmp_path
+    ):
+        store = StateStore(db_path=str(tmp_path / "local-console-boundary.db"))
+        await store.open()
+        try:
+            operator = "+234800000000"
+            await store.store_incoming_message(
+                channel="local_console",
+                from_number=operator,
+                message=_structured_remote_command_text("local-ignored-command"),
+                received_at_ms=10_000,
+            )
+            await store.store_incoming_message(
+                channel="local_console",
+                from_number=operator,
+                message="maybe",
+                received_at_ms=10_001,
+            )
+            await store.store_incoming_message(
+                channel="local_console",
+                from_number=operator,
+                message="YES-AB12CD34",
+                received_at_ms=10_002,
+            )
+
+            d = ActionDispatcher(
+                state_store=store,
+                config={
+                    "operator_contact": operator,
+                    "local_console_enabled": True,
+                    "local_console_poll_interval_ms": 100,
+                    "local_console_channel_id": "local_console",
+                },
+            )
+            exec_mock = AsyncMock()
+            d.register_executor("open_safety_circuit", exec_mock)
+
+            with (
+                patch("ori.reasoning.action_dispatcher.now_ms", return_value=10_000),
+                patch(
+                    "ori.reasoning.action_dispatcher._generate_proposal_id",
+                    return_value="AB12CD34",
+                ),
+            ):
+                result = await d.dispatch(
+                    "open_safety_circuit",
+                    ActionTier.HARD_PHYSICAL,
+                    _context(),
+                    _result(action_tier="C"),
+                    approval_timeout_seconds=1,
+                )
+
+            assert result.approved is True
+            assert result.operator_response == "LOCAL:YES-AB12CD34"
+            assert result.proposal_id == "AB12CD34"
+            exec_mock.assert_awaited_once()
+            command_rows = await store.get_remote_command_log()
+            assert command_rows[0]["command_id"] == "local-ignored-command"
+            assert command_rows[0]["channel"] == "local_console"
+            assert command_rows[0]["reason"] == "local_console_command_not_supported"
+        finally:
+            await store.close()
+
+    async def test_local_console_structured_command_alone_does_not_approve(
+        self, tmp_path
+    ):
+        store = StateStore(db_path=str(tmp_path / "local-console-no-approval.db"))
+        await store.open()
+        try:
+            operator = "+234800000000"
+            await store.store_incoming_message(
+                channel="local_console",
+                from_number=operator,
+                message=f"ORI_COMMAND {_structured_remote_command_text('local-only-command')}",
+                received_at_ms=10_000,
+            )
+
+            d = ActionDispatcher(
+                state_store=store,
+                config={
+                    "operator_contact": operator,
+                    "local_console_enabled": True,
+                    "local_console_poll_interval_ms": 100,
+                    "local_console_channel_id": "local_console",
+                },
+            )
+            safe_default = AsyncMock()
+            d.register_executor("log_to_dashboard", safe_default)
+
+            with patch("ori.reasoning.action_dispatcher.now_ms", return_value=10_000):
+                result = await d.dispatch(
+                    "open_safety_circuit",
+                    ActionTier.HARD_PHYSICAL,
+                    _context(),
+                    _result(action_tier="C"),
+                    safe_default_action="log_to_dashboard",
+                    approval_timeout_seconds=0,
+                )
+
+            assert result.approved is False
+            assert result.operator_response is None
+            assert result.action_taken == "log_to_dashboard"
+            safe_default.assert_awaited_once()
+        finally:
+            await store.close()
 
     async def test_tier_c_uses_remote_listener_when_comms_available(self):
         mock_sender = AsyncMock()

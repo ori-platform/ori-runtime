@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS action_log (
     approved          INTEGER,            -- NULL for Tiers A/B/D, 0/1 for C
     action_taken      TEXT    NOT NULL,
     operator_response TEXT,
+    proposal_id       TEXT    NOT NULL DEFAULT '',
     trigger_name      TEXT    NOT NULL,
     timestamp         INTEGER NOT NULL
 );
@@ -94,6 +95,7 @@ CREATE TABLE IF NOT EXISTS tier_c_decision_log (
     action_executed          INTEGER NOT NULL DEFAULT 0,
     final_action_result_json TEXT    NOT NULL DEFAULT '{}',
     later_outcome_json       TEXT    NOT NULL DEFAULT 'null',
+    proposal_id              TEXT    NOT NULL DEFAULT '',
     created_at               INTEGER NOT NULL
 );
 
@@ -334,6 +336,18 @@ class StateStore:
         ]
         for col, typedef in _new_reasoning_cols:
             self._add_column_if_missing_on_conn(conn, "reasoning_log", col, typedef)
+        self._add_column_if_missing_on_conn(
+            conn,
+            "action_log",
+            "proposal_id",
+            "TEXT    NOT NULL DEFAULT ''",
+        )
+        self._add_column_if_missing_on_conn(
+            conn,
+            "tier_c_decision_log",
+            "proposal_id",
+            "TEXT    NOT NULL DEFAULT ''",
+        )
         self._add_column_if_missing_on_conn(
             conn,
             "remote_command_log",
@@ -715,8 +729,8 @@ class StateStore:
             """
             INSERT INTO action_log
                 (action_name, tier, executed, approved, action_taken,
-                 operator_response, trigger_name, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 operator_response, proposal_id, trigger_name, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.action_name,
@@ -725,6 +739,7 @@ class StateStore:
                 approved_int,
                 result.action_taken,
                 result.operator_response,
+                result.proposal_id or "",
                 trigger_name,
                 result.timestamp,
             ),
@@ -738,7 +753,7 @@ class StateStore:
         rows = conn.execute(
             """
             SELECT action_name, tier, executed, approved, action_taken,
-                   operator_response, trigger_name, timestamp
+                   operator_response, proposal_id, trigger_name, timestamp
             FROM action_log
             ORDER BY timestamp DESC
             LIMIT ?
@@ -758,6 +773,7 @@ class StateStore:
                     "approved": approved_val,
                     "action_taken": row["action_taken"],
                     "operator_response": row["operator_response"],
+                    "proposal_id": row["proposal_id"],
                     "trigger_name": row["trigger_name"],
                     "timestamp": row["timestamp"],
                 }
@@ -787,8 +803,8 @@ class StateStore:
                  operator_decision, operator_response, decision_latency_ms,
                  approval_timeout_seconds, safe_default_action, safe_default_used,
                  action_taken, action_executed, final_action_result_json,
-                 later_outcome_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 later_outcome_json, proposal_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(fields.get("device_id", "") or ""),
@@ -818,6 +834,7 @@ class StateStore:
                 1 if fields.get("action_executed") else 0,
                 json.dumps(fields.get("final_action_result", {}), sort_keys=True),
                 json.dumps(fields.get("later_outcome"), sort_keys=True),
+                str(fields.get("proposal_id", "") or ""),
                 int(fields.get("created_at") or now_ms()),
             ),
         )

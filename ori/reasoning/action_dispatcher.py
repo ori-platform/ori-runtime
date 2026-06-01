@@ -20,6 +20,8 @@ must never crash the runtime.
 import asyncio
 import datetime
 import logging
+import secrets
+import string
 from typing import Any
 
 from ori.actions.logger import LoggerAction
@@ -28,6 +30,7 @@ from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
+from ori.security.remote_commands import extract_remote_command_payload
 from ori.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,7 @@ _NO_TOKENS = frozenset({"no", "n", "cancel", "stop", "reject", "deny"})
 
 _DEFAULT_APPROVAL_TIMEOUT = 300  # seconds
 _DEFAULT_SAFE_DEFAULT_ACTION = "log_to_dashboard"
+_PROPOSAL_ID_ALPHABET = string.ascii_uppercase + string.digits
 _TIER_RANK: dict[str, int] = {
     ActionTier.INFORMATIONAL: 1,
     ActionTier.SOFT_PHYSICAL: 2,
@@ -45,21 +49,76 @@ _TIER_RANK: dict[str, int] = {
 }
 
 
-def _parse_approval_response(response: str | None) -> bool:
-    """Return ``True`` if *response* is an affirmative approval token.
+def _generate_proposal_id(length: int = 8) -> str:
+    """Generate a short human-readable identifier for a Tier C proposal."""
+    return "".join(secrets.choice(_PROPOSAL_ID_ALPHABET) for _ in range(length))
 
-    Args:
-        response: Raw operator reply string, or ``None``.
 
-    Returns:
-        ``True`` if the response is YES/Y/approve/go/ok/confirm
-        (case-insensitive).  ``False`` for NO tokens, ``None``, or
-        anything unrecognised.
-    """
+def _normalize_proposal_id(value: str | None) -> str:
+    return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _classify_approval_response(
+    response: str | None,
+    *,
+    proposal_id: str | None = None,
+    allow_offline_token: bool = False,
+) -> str:
+    """Classify a Tier C response as approve, reject, token, or invalid."""
     if response is None:
-        return False
-    token = response.strip().lower()
-    return token in _YES_TOKENS
+        return "invalid"
+
+    raw = response.strip()
+    if not raw:
+        return "invalid"
+    upper = raw.upper()
+    if allow_offline_token and upper.startswith("TOKEN:"):
+        return "token"
+
+    token = raw.lower()
+    if token in _YES_TOKENS:
+        return "approve"
+    if token in _NO_TOKENS:
+        return "reject"
+
+    if "-" not in raw:
+        return "invalid"
+
+    head, suffix = raw.split("-", 1)
+    expected = _normalize_proposal_id(proposal_id)
+    if not expected or _normalize_proposal_id(suffix) != expected:
+        return "invalid"
+
+    head_token = head.strip().lower()
+    if head_token in _YES_TOKENS:
+        return "approve"
+    if head_token in _NO_TOKENS:
+        return "reject"
+    return "invalid"
+
+
+def _extract_structured_remote_command_text(
+    response: str | None,
+    *,
+    channel: str,
+    from_number: str,
+) -> dict[str, Any] | None:
+    """Return the command payload when a local approval reply is a command."""
+    if response is None:
+        return None
+    payload = {"text": response}
+    return extract_remote_command_payload(
+        payload,
+        channel=channel,
+        from_number=from_number,
+    )
 
 
 def _tier_rank(tier: str) -> int:
@@ -572,10 +631,12 @@ class ActionDispatcher:
             ``True`` / ``False`` based on the operator response.
         """
         approval_started_at = now_ms()
+        proposal_id = _generate_proposal_id()
         if self._log_approval_workflow:
             logger.info(
-                "ActionDispatcher: triggering Tier C approval workflow for action=%r",
+                "ActionDispatcher: triggering Tier C approval workflow for action=%r proposal_id=%s",
                 action,
+                proposal_id,
             )
         has_comms = self._tier_c_comms_available()
         if self._status_indicator is not None:
@@ -589,6 +650,7 @@ class ActionDispatcher:
             action=action,
             timeout_seconds=approval_timeout_seconds,
             device_timezone=self._config.get("device_timezone", "Africa/Lagos"),
+            proposal_id=proposal_id,
         )
 
         # Send approval request (best-effort only when comms are available).
@@ -616,6 +678,7 @@ class ActionDispatcher:
                 store=store,
                 from_number=local_from_number,
                 timeout_seconds=approval_timeout_seconds,
+                proposal_id=proposal_id,
             )
             parsed_operator_response = operator_response
             if operator_response is not None:
@@ -674,11 +737,24 @@ class ActionDispatcher:
 
         try:
             # Parse response
-            approved = _parse_approval_response(parsed_operator_response)
+            response_kind = _classify_approval_response(
+                parsed_operator_response,
+                proposal_id=proposal_id,
+                allow_offline_token=local_console_mode,
+            )
+            if response_kind == "invalid" and parsed_operator_response is not None:
+                logger.warning(
+                    "ActionDispatcher: invalid Tier C approval response for "
+                    "proposal_id=%s action=%r response=%r",
+                    proposal_id,
+                    action,
+                    parsed_operator_response,
+                )
+            approved = response_kind == "approve"
             if (
                 local_console_mode
                 and parsed_operator_response is not None
-                and parsed_operator_response.strip().upper().startswith("TOKEN:")
+                and response_kind == "token"
             ):
                 token_value = parsed_operator_response.split(":", 1)[1].strip()
                 if self._offline_token_verifier is None:
@@ -749,6 +825,7 @@ class ActionDispatcher:
                 action_taken=action_taken,
                 timestamp=completed_at,
                 operator_response=operator_response,
+                proposal_id=proposal_id,
             )
             await self._log_tier_c_decision(
                 store=store,
@@ -847,8 +924,10 @@ class ActionDispatcher:
                     "approved": action_result.approved,
                     "action_taken": action_result.action_taken,
                     "operator_response": action_result.operator_response,
+                    "proposal_id": action_result.proposal_id,
                     "timestamp": action_result.timestamp,
                 },
+                proposal_id=action_result.proposal_id,
                 later_outcome=None,
                 created_at=completed_at,
             )
@@ -864,6 +943,7 @@ class ActionDispatcher:
         store: Any,
         from_number: str,
         timeout_seconds: int,
+        proposal_id: str,
     ) -> str | None:
         """Poll local inbound channel for Tier C approval replies."""
         if store is None or not hasattr(store, "consume_incoming_message"):
@@ -887,10 +967,68 @@ class ActionDispatcher:
                 )
                 return None
             if response is not None:
+                command_payload = _extract_structured_remote_command_text(
+                    response,
+                    channel=channel,
+                    from_number=from_number,
+                )
+                if command_payload is not None:
+                    await self._audit_ignored_local_console_command(
+                        store=store,
+                        command_payload=command_payload,
+                    )
+                    logger.warning(
+                        "ActionDispatcher: ignored structured remote command "
+                        "on local console approval channel"
+                    )
+                    if now_ms() >= deadline_ms:
+                        return None
+                    continue
+                response_kind = _classify_approval_response(
+                    response,
+                    proposal_id=proposal_id,
+                    allow_offline_token=True,
+                )
+                if response_kind == "invalid":
+                    logger.warning(
+                        "ActionDispatcher: unrecognised local console approval "
+                        "input for proposal_id=%s: %r. Reply YES-%s or NO-%s.",
+                        proposal_id,
+                        response,
+                        proposal_id,
+                        proposal_id,
+                    )
+                    if now_ms() >= deadline_ms:
+                        return None
+                    continue
                 return response
             if now_ms() >= deadline_ms:
                 return None
             await asyncio.sleep(poll_s)
+
+    async def _audit_ignored_local_console_command(
+        self,
+        *,
+        store: Any,
+        command_payload: dict[str, Any],
+    ) -> None:
+        """Durably audit command payloads rejected from local approval input."""
+        if store is None or not hasattr(store, "log_remote_command_attempt"):
+            return
+        try:
+            await store.log_remote_command_attempt(
+                command_id=str(command_payload.get("command_id", "") or ""),
+                channel=str(command_payload.get("channel", "") or "local_console"),
+                from_number=str(command_payload.get("from_number", "") or ""),
+                command=str(command_payload.get("command", "") or ""),
+                accepted=False,
+                reason="local_console_command_not_supported",
+                issued_at_ms=_safe_int_or_none(command_payload.get("issued_at_ms")),
+            )
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: failed to audit ignored local console command"
+            )
 
     async def _store_rejection_pattern(
         self,
@@ -1003,6 +1141,7 @@ class ActionDispatcher:
         action: str,
         timeout_seconds: int,
         device_timezone: str = "Africa/Lagos",
+        proposal_id: str | None = None,
     ) -> str:
         """Format the WhatsApp/SMS approval request message.
 
@@ -1015,6 +1154,8 @@ class ActionDispatcher:
             device_timezone: IANA timezone name for local time display
                 (e.g. ``"Africa/Lagos"``).  Defaults to WAT so operators in
                 Nigeria see their local time, not UTC.
+            proposal_id: Short identifier operators can include in scoped
+                replies such as ``YES-AB12CD34``.
 
         Returns:
             Formatted approval message string matching the README template.
@@ -1027,10 +1168,19 @@ class ActionDispatcher:
 
         observation = result.text
         reasoning = result.reasoning if result.reasoning else result.text
+        proposal_line = ""
+        reply_line = "Reply YES to approve  |  Reply NO to cancel"
+        if proposal_id:
+            proposal_line = f"Proposal ID: {proposal_id}\n"
+            reply_line = (
+                f"Reply YES-{proposal_id} to approve  |  "
+                f"Reply NO-{proposal_id} to cancel"
+            )
 
         return (
             f"ORI ALERT — Action Required\n"
             f"Device: {device_id}\n"
+            f"{proposal_line}"
             f"Time: {formatted_time}\n"
             f"\n"
             f"OBSERVATION:\n"
@@ -1044,7 +1194,8 @@ class ActionDispatcher:
             f"\n"
             f"CONFIDENCE: {result.confidence:.0%}\n"
             f"\n"
-            f"Reply YES to approve  |  Reply NO to cancel\n"
+            f"{reply_line}\n"
+            f"Bare YES/NO is accepted only for the active pending proposal.\n"
             f"Auto-cancel in {timeout_seconds} seconds if no response."
         )
 
