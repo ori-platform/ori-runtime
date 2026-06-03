@@ -32,6 +32,7 @@ from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.bool_utils import is_truthy
 from ori.config import Config, ConfigValidationError
+from ori.gateway_export import GatewayExportResponder, MqttGatewayExportServer
 from ori.hal.base import AdapterReadError, BaseAdapter
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
 from ori.hardware.led_indicator import (
@@ -169,6 +170,7 @@ class OriRuntime:
         self._last_alert_timestamps_by_channel: dict[str, int] = {}
         self._last_alert_timestamps_by_trigger: dict[str, int] = {}
         self._health_socket_server: RuntimeHealthSocketServer | None = None
+        self._gateway_export_server: MqttGatewayExportServer | None = None
         self._health_socket_path: str = ""
         self._device_policy_enabled: bool = False
         self._device_id: str = ""
@@ -840,6 +842,10 @@ class OriRuntime:
         if webhook_task is not None:
             self._background_tasks.append(webhook_task)
 
+        gateway_export_task = self._start_gateway_export_responder_if_enabled(config)
+        if gateway_export_task is not None:
+            self._background_tasks.append(gateway_export_task)
+
         await self._start_health_socket_if_enabled(config)
 
         if status_indicator is not None:
@@ -889,7 +895,15 @@ class OriRuntime:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        # 2b. Stop local health socket service.
+        # 2b. Stop gateway export responder.
+        if self._gateway_export_server is not None:
+            try:
+                await self._gateway_export_server.close()
+            except Exception:
+                logger.exception("[shutdown] error closing gateway export responder")
+            self._gateway_export_server = None
+
+        # 2c. Stop local health socket service.
         if self._health_socket_server is not None:
             try:
                 await self._health_socket_server.close()
@@ -1452,6 +1466,35 @@ class OriRuntime:
         return asyncio.create_task(
             self._sms_webhook_server.serve_until(self._shutdown_event),
             name="sms-webhook",
+        )
+
+    def _start_gateway_export_responder_if_enabled(
+        self, config: Config
+    ) -> asyncio.Task[None] | None:
+        if not bool(config.gateway.enabled):
+            return None
+        if self._state_store is None:
+            logger.warning(
+                "[gateway-export] state store unavailable; skipping MQTT export responder"
+            )
+            return None
+        try:
+            responder = GatewayExportResponder(
+                device_id=config.device.id,
+                state_store=self._state_store,
+                health_snapshot_provider=self._build_health_snapshot,
+            )
+            server = MqttGatewayExportServer(
+                broker_url=config.gateway.broker_url,
+                responder=responder,
+            )
+        except Exception:
+            logger.exception("[gateway-export] invalid responder configuration")
+            return None
+        self._gateway_export_server = server
+        return asyncio.create_task(
+            server.serve_until(self._shutdown_event),
+            name="gateway-export-responder",
         )
 
     async def _start_health_socket_if_enabled(self, config: Config) -> None:

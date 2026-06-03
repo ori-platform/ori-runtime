@@ -251,7 +251,7 @@ reasoning:
 
 
 gateway:
-  enabled: false                     # set true when gateway Pi is on the LAN
+  enabled: false                     # starts MQTT export responder for gateway reports
   broker_url: mqtt://192.168.1.10:1883
 
 device_policy:

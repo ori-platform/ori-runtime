@@ -19,8 +19,15 @@ Rules:
 - Runtime responsibility is to expose bounded, provider-neutral export
   primitives: Tier C decision log, action log, sensor history, and health
   status.
+- Gateway export transport uses MQTT request/response on
+  `ori/{device_id}/export/request` and
+  `ori/{device_id}/export/response/{request_id}`. HTTP export endpoints are not
+  part of the runtime boundary.
 - Export methods must be bounded by time/window and/or `limit` so product-layer
   sync cannot accidentally dump unbounded SQLite state.
+- Bulk exports must support pagination. Sensor-history exports may use
+  `bucket_ms` aggregation so weekly report generation does not require raw
+  per-reading transfer.
 
 Rationale:
 
@@ -28,6 +35,9 @@ Rationale:
   customer-visible, auditable, and naturally network-dependent.
 - Keeping cloud SDKs out of runtime preserves offline-first operation and avoids
   coupling physical safety paths to a cloud provider.
+- MQTT keeps gateway integration aligned with the existing LAN broker
+  architecture and remains viable when one gateway aggregates multiple edge
+  runtimes.
 
 ---
 
