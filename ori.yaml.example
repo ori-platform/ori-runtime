@@ -36,6 +36,11 @@ sensors:
     poll_interval_ms: 1000
     calibration:
       sensitivity: 0.1              # SCT-013-030: 1A per 10mV output
+      # Optional deterministic gateway-escalation guardrails.
+      # When gateway reasoning transport is available, readings outside these
+      # bounds escalate before local SLM inference.
+      # min_value: 0.0
+      # max_value: 30.0
 
   # ─── Grid voltage sensor on ADS1115 channel 1 ───────────────────────────
   - id: grid-voltage
@@ -230,7 +235,7 @@ reasoning:
   local_model: qwen2.5-0.5b-instruct-q4_k_m  # basename or full .gguf filename/path
   model_path: /home/pi/models/       # directory containing local GGUF models
   offline_fallback: rule             # tier to use when network unavailable
-  escalation_threshold: 0.70        # escalate if confidence below this
+  escalation_threshold: 0.70        # complexity threshold; local SLM confidence is non-authoritative
   capability_posture:
     enabled: true
     probe_interval_seconds: 30      # must be <=30; posture refresh cadence

@@ -799,7 +799,11 @@ class TestSensorPolling:
                 return reading
 
         bus = AsyncMock()
-        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        sensor_cfg = SimpleNamespace(
+            id="cpu-sensor",
+            poll_interval_ms=1,
+            calibration={"min_value": 0.0, "max_value": 100.0},
+        )
         await runtime._poll_sensor(
             _OneShotAdapter(),
             sensor_cfg,
@@ -816,6 +820,10 @@ class TestSensorPolling:
         assert event.context["device_country_code"] == "NG"
         assert event.context["location"] == "Lagos, Nigeria"
         assert event.context["site_type"] == "pharmacy"
+        assert event.context["sensor_calibration"] == {
+            "min_value": 0.0,
+            "max_value": 100.0,
+        }
 
     async def test_poll_sensor_fingerprint_stable_across_timestamp_changes(self):
         runtime = OriRuntime(config_path="ori.yaml")

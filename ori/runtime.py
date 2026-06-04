@@ -1690,6 +1690,9 @@ class OriRuntime:
                 event.context["device_country_code"] = (
                     str(device_country_code or "").strip().upper()
                 )
+                calibration = getattr(sensor_cfg, "calibration", None)
+                if isinstance(calibration, dict) and calibration:
+                    event.context["sensor_calibration"] = dict(calibration)
                 # Keep source explicit in the poll path; adapters must publish
                 # protocol provenance through reading.metadata["source"].
                 event.source = reading.metadata.get("source", "")

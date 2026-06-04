@@ -425,17 +425,24 @@ that are hard to debug.
 4. Tier D actions NEVER invoke an LLM.
    bypass_llm: true is set automatically. Do not add LLM calls to Tier D paths.
 
-5. Action executors never raise exceptions.
+5. Local SLM confidence is non-authoritative.
+   It may be logged as telemetry, but it must never be the sole reason to keep
+   reasoning on-device or to escalate to gateway/cloud. Gateway escalation must
+   be driven by deterministic signals evaluated before local SLM inference:
+   explicit `escalate_to: gateway`, missing baseline, history query failure,
+   calibrated range breach, or related-sensor conflict.
+
+6. Action executors never raise exceptions.
    They return False. The runtime must survive a failed action.
 
-6. The event loop is never blocked.
+7. The event loop is never blocked.
    time.sleep(), requests.get(), and any synchronous I/O are forbidden
    in async code paths.
 
-7. SQLite queries are always parameterised.
+8. SQLite queries are always parameterised.
    f-string or .format() SQL is a security and correctness error.
 
-8. ori.yaml is never committed to the repository.
+9. ori.yaml is never committed to the repository.
    It is in .gitignore. The example file is ori.yaml.example.
 ```
 

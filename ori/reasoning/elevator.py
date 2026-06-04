@@ -32,6 +32,10 @@ from ori.reasoning.capability_posture import (
     probe_internet_available,
 )
 from ori.reasoning.causal_memory import CausalMemory
+from ori.reasoning.escalation_policy import (
+    attach_gateway_escalation_context,
+    evaluate_gateway_escalation,
+)
 from ori.reasoning.rule_engine import RuleEngine, RuleEngineSafetyError
 from ori.time_utils import now_ms
 
@@ -160,10 +164,12 @@ class IntelligenceElevator:
     def __init__(
         self,
         local_llm: Any = None,
+        gateway_reasoner: Any = None,
         rule_engine: RuleEngine | None = None,
         config: Any = None,
     ) -> None:
         self._local_llm = local_llm
+        self._gateway_reasoner = gateway_reasoner
         self._rule_engine = rule_engine or RuleEngine()
         self._config = (
             config  # ReasoningConfig from ori.yaml; None in test environments
@@ -304,6 +310,36 @@ class IntelligenceElevator:
                 ),
                 rule_result,
             )
+
+        if tier == "gateway" and self._gateway_reasoner is not None:
+            prompt = await self._build_prompt(
+                event,
+                skill,
+                state_store=state_store,
+                trigger_name=rule_result.rule_name if rule_result.matched else None,
+                rejection_note=rejection_note,
+            )
+            try:
+                result = await self._gateway_reasoner.reason(prompt)
+                result.tier = "gateway"
+                result.prompt = prompt
+                if (
+                    rule_result.matched
+                    and result.action_tier != "D"
+                    and rejection_record is None
+                ):
+                    result.action_tier = rule_result.action_tier
+                if rejection_record is not None:
+                    result.action_tier = "A"
+                result.proposed_action = result.proposed_action or rule_result.action
+                return result, rule_result
+            except Exception:
+                logger.exception(
+                    "IntelligenceElevator: gateway inference failed for "
+                    "sensor_id=%s — falling back to local_slm/stub",
+                    event.sensor_id if event else "unknown",
+                )
+                tier = "local_slm"
 
         if tier in ("local_slm",) and self._local_llm is not None:
             pattern_key: str | None = None
@@ -493,6 +529,7 @@ class IntelligenceElevator:
         current_value = event.reading.value if event.reading else 0.0
         avg_24h: float | None = None
         history: list[float] = []
+        history_query_failed = False
 
         if state_store is not None and event.reading is not None:
             try:
@@ -502,10 +539,37 @@ class IntelligenceElevator:
                 )
                 history = [r.value for r in readings]
             except Exception:
+                history_query_failed = True
                 logger.debug(
                     "IntelligenceElevator: could not fetch history for %s",
                     event.sensor_id,
                 )
+        else:
+            history_query_failed = event.reading is not None
+
+        gateway_available = self._gateway_reasoning_available()
+        gateway_decision = evaluate_gateway_escalation(
+            event=event,
+            rule_result=rule_result,
+            avg_24h=avg_24h,
+            history=history,
+            history_query_failed=history_query_failed,
+        )
+        trigger_floor_gateway = any(
+            signal.code == "trigger_declares_gateway"
+            for signal in gateway_decision.signals
+        )
+        offline = await self._is_offline_async()
+        if gateway_decision.should_escalate:
+            selected = trigger_floor_gateway or (gateway_available and not offline)
+            attach_gateway_escalation_context(
+                event,
+                gateway_decision,
+                selected=selected,
+                gateway_available=gateway_available,
+            )
+            if selected:
+                return "gateway"
 
         complexity = _complexity_score(
             current_value, avg_24h, history, _hour_now(event)
@@ -535,6 +599,14 @@ class IntelligenceElevator:
 
         # Future: return "cloud" if complexity >= threshold and internet available
         return _apply_floor("local_slm")
+
+    def _gateway_reasoning_available(self) -> bool:
+        """Return True only when gateway transport and fresh reachability exist."""
+        if self._gateway_reasoner is None:
+            return False
+        if self._capability_posture is None or self._capability_posture.is_stale():
+            return False
+        return bool(self._capability_posture.gateway_reachable)
 
     def _energy_aware_cfg(self) -> dict[str, Any]:
         """Return energy-aware throttle config from either dataclass or dict."""

@@ -13,6 +13,7 @@ from ori.network.events import OriEvent, ReasoningResult, SensorReading
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext, _complexity_score
+from ori.reasoning.escalation_policy import GATEWAY_ESCALATION_CONTEXT_KEY
 from ori.state.store import StateStore
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -40,6 +41,20 @@ def _reading(
 def _event(value: float = 5.0, sensor_type: str = "current_clamp") -> OriEvent:
     return OriEvent.from_reading(
         _reading(value=value, sensor_type=sensor_type), "dev-01"
+    )
+
+
+def _fresh_gateway_posture() -> CapabilityPosture:
+    return CapabilityPosture(
+        sms_available=True,
+        whatsapp_available=True,
+        gateway_reachable=True,
+        local_slm_loaded=True,
+        relay_connected=False,
+        internet_available=True,
+        checked_at_ms=_ms(),
+        expires_at_ms=_ms() + 60_000,
+        gateway_last_heartbeat_ms=_ms(),
     )
 
 
@@ -280,6 +295,110 @@ class TestSelectTier:
             tier = await elevator.select_tier(_event(value=5.0), FakeSkill(), None)
         assert tier == "local_slm"
 
+    async def test_trigger_declares_gateway_is_authoritative_floor(self):
+        elevator = IntelligenceElevator()
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "needs_gateway",
+                    "condition": "value > 3.0",
+                    "action_tier": "A",
+                    "escalate_to": "gateway",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                }
+            ]
+        )
+        event = _event(value=5.0)
+        store = _mock_state_store(avg=5.0, history=[5.0, 5.0])
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=False):
+            tier = await elevator.select_tier(event, skill, store)
+
+        assert tier == "gateway"
+        ctx = event.context[GATEWAY_ESCALATION_CONTEXT_KEY]
+        assert ctx["selected"] is True
+        assert ctx["signals"][0]["code"] == "trigger_declares_gateway"
+
+    async def test_no_baseline_escalates_when_gateway_reasoning_available(self):
+        gateway = AsyncMock()
+        elevator = IntelligenceElevator(gateway_reasoner=gateway)
+        elevator.update_capability_posture(_fresh_gateway_posture())
+        event = _event(value=5.0)
+        skill = FakeSkill()
+        store = _mock_state_store(avg=None, history=[])
+
+        tier = await elevator.select_tier(event, skill, store)
+
+        assert tier == "gateway"
+        ctx = event.context[GATEWAY_ESCALATION_CONTEXT_KEY]
+        assert ctx["gateway_available"] is True
+        assert {signal["code"] for signal in ctx["signals"]} == {
+            "no_baseline_available"
+        }
+
+    async def test_history_query_failure_escalates_when_gateway_available(self):
+        gateway = AsyncMock()
+        elevator = IntelligenceElevator(gateway_reasoner=gateway)
+        elevator.update_capability_posture(_fresh_gateway_posture())
+        event = _event(value=5.0)
+        skill = FakeSkill()
+        store = _mock_state_store()
+        store.avg_last_hours.side_effect = RuntimeError("db unavailable")
+
+        tier = await elevator.select_tier(event, skill, store)
+
+        assert tier == "gateway"
+        ctx = event.context[GATEWAY_ESCALATION_CONTEXT_KEY]
+        assert ctx["signals"][0]["code"] == "history_query_failed"
+
+    async def test_calibrated_range_breach_escalates_when_gateway_available(self):
+        gateway = AsyncMock()
+        elevator = IntelligenceElevator(gateway_reasoner=gateway)
+        elevator.update_capability_posture(_fresh_gateway_posture())
+        event = _event(value=42.0)
+        event.context["sensor_calibration"] = {"min_value": 0.0, "max_value": 10.0}
+        skill = FakeSkill()
+        store = _mock_state_store(avg=5.0, history=[5.0, 5.0])
+
+        tier = await elevator.select_tier(event, skill, store)
+
+        assert tier == "gateway"
+        ctx = event.context[GATEWAY_ESCALATION_CONTEXT_KEY]
+        assert ctx["signals"][0]["code"] == "sensor_outside_calibrated_range"
+
+    async def test_related_sensor_conflict_escalates_when_gateway_available(self):
+        gateway = AsyncMock()
+        elevator = IntelligenceElevator(gateway_reasoner=gateway)
+        elevator.update_capability_posture(_fresh_gateway_posture())
+        event = _event(value=12.0)
+        event.context["related_sensor_readings"] = [
+            {"sensor_id": "load-current-backup", "value": 5.0}
+        ]
+        event.context["related_sensor_conflict_tolerance"] = 2.0
+        skill = FakeSkill()
+        store = _mock_state_store(avg=10.0, history=[10.0, 10.2, 9.8])
+
+        tier = await elevator.select_tier(event, skill, store)
+
+        assert tier == "gateway"
+        ctx = event.context[GATEWAY_ESCALATION_CONTEXT_KEY]
+        assert ctx["signals"][0]["code"] == "conflicting_related_sensor_reading"
+
+    async def test_gateway_signal_without_gateway_reasoner_records_fallback(self):
+        elevator = IntelligenceElevator()
+        elevator.update_capability_posture(_fresh_gateway_posture())
+        event = _event(value=5.0)
+        skill = FakeSkill()
+        store = _mock_state_store(avg=None, history=[])
+
+        tier = await elevator.select_tier(event, skill, store)
+
+        assert tier == "local_slm"
+        ctx = event.context[GATEWAY_ESCALATION_CONTEXT_KEY]
+        assert ctx["selected"] is False
+        assert ctx["gateway_available"] is False
+
 
 # ─── reason ───────────────────────────────────────────────────────────────────
 
@@ -317,6 +436,71 @@ class TestReason:
         mock_llm.reason.assert_called_once()
         assert result.tier == "local_slm"
         assert result.text == "Load is anomalous."
+
+    async def test_gateway_escalation_skips_local_slm_when_reasoner_available(self):
+        local_llm = AsyncMock()
+        gateway = AsyncMock()
+        gateway.reason.return_value = ReasoningResult(
+            text="Gateway analysis completed.",
+            tier="gateway",
+            model="llama-gateway",
+            tokens_used=42,
+            latency_ms=120,
+            confidence=0.7,
+        )
+        elevator = IntelligenceElevator(
+            local_llm=local_llm,
+            gateway_reasoner=gateway,
+            config=type("obj", (object,), {"offline_fallback": "local_slm"})(),
+        )
+        elevator.update_capability_posture(_fresh_gateway_posture())
+        event = _event(value=5.0)
+        skill = FakeSkill()
+        store = _mock_state_store(avg=None, history=[])
+
+        result = await elevator.reason(event, skill, store)
+
+        gateway.reason.assert_awaited_once()
+        local_llm.reason.assert_not_called()
+        assert result.tier == "gateway"
+        assert result.text == "Gateway analysis completed."
+
+    async def test_explicit_gateway_floor_without_reasoner_returns_gateway_stub(self):
+        local_llm = AsyncMock()
+        elevator = IntelligenceElevator(
+            local_llm=local_llm,
+            config=type("obj", (object,), {"offline_fallback": "local_slm"})(),
+        )
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "needs_gateway",
+                    "condition": "value > 3.0",
+                    "action_tier": "C",
+                    "escalate_to": "gateway",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                }
+            ],
+            actions={
+                "available": [{"name": "alert_whatsapp", "tier": "C"}],
+                "defaults": {"needs_gateway": ["alert_whatsapp"]},
+            },
+        )
+        event = _event(value=5.0)
+        store = _mock_state_store(avg=5.0, history=[5.0, 5.0])
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=False):
+            result = await elevator.reason(event, skill, store)
+
+        local_llm.reason.assert_not_called()
+        assert result.tier == "gateway"
+        assert result.model == "stub"
+        assert result.action_tier == "C"
+        assert "gateway unavailable" in result.text
+        ctx = event.context[GATEWAY_ESCALATION_CONTEXT_KEY]
+        assert ctx["selected"] is True
+        assert ctx["gateway_available"] is False
 
     async def test_causal_memory_hit_short_circuits_local_llm(self):
         mock_llm = AsyncMock()

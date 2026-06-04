@@ -41,6 +41,41 @@ Rationale:
 
 ---
 
+## 2026-06-04 — Local SLM Confidence Is Non-Authoritative
+
+**Status:** Accepted
+
+The local SLM does not provide a trustworthy confidence signal. Base completion
+models do not expose calibrated epistemic uncertainty, and the runtime must not
+depend on model honesty for safety or escalation decisions.
+
+Rules:
+
+- Local SLM confidence may be used only as an advisory telemetry signal.
+- Gateway escalation is governed by deterministic escalation policy, not by
+  model-reported confidence.
+- Deterministic escalation signals are evaluated before local SLM inference.
+- Signals include: matched trigger declares `escalate_to: gateway`, no baseline
+  is available, sensor history query fails, a reading is outside calibrated
+  sensor range, or related sensor readings conflict beyond configured
+  tolerance.
+- Action tier remains trigger-authoritative. The model cannot escalate its own
+  physical action authority beyond the tier declared in skill YAML.
+- Tier D bypasses LLM entirely.
+- Until the runtime MQTT gateway-reasoning client is wired, deterministic
+  gateway escalation records its signals and falls back to local reasoning
+  unless the trigger explicitly declares `escalate_to: gateway`.
+
+Rationale:
+
+- Safety properties must not depend on model self-assessment.
+- Observable runtime conditions are better escalation inputs than generated
+  confidence values.
+- Evaluating deterministic escalation before local inference avoids wasting
+  edge resources on inputs already known to need gateway reasoning.
+
+---
+
 ## 2026-06-01 — Approval Replies Are Not Remote Commands
 
 **Status:** Accepted
