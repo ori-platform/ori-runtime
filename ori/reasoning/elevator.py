@@ -18,6 +18,7 @@ and returns a :class:`~ori.network.events.ReasoningResult`.
 import ast
 import asyncio
 import datetime
+import inspect
 import json
 import logging
 import re
@@ -33,6 +34,7 @@ from ori.reasoning.capability_posture import (
 )
 from ori.reasoning.causal_memory import CausalMemory
 from ori.reasoning.escalation_policy import (
+    GATEWAY_ESCALATION_CONTEXT_KEY,
     attach_gateway_escalation_context,
     evaluate_gateway_escalation,
 )
@@ -149,7 +151,7 @@ class IntelligenceElevator:
     1. **Rule engine** — microseconds, always evaluated first.
        If a Tier D rule fires, returns immediately without LLM.
     2. **Local SLM** — 3–8 seconds, offline capable.
-    3. **Gateway LLM** — 1–3 seconds, LAN required (not yet wired).
+    3. **Gateway LLM** — 1–3 seconds, LAN/MQTT gateway required.
     4. **Cloud LLM** — 2–5 seconds, internet required (not yet wired).
 
     Fallback is always ``local_slm``.
@@ -320,7 +322,12 @@ class IntelligenceElevator:
                 rejection_note=rejection_note,
             )
             try:
-                result = await self._gateway_reasoner.reason(prompt)
+                result = await self._call_gateway_reasoner(
+                    prompt=prompt,
+                    event=event,
+                    rule_result=rule_result,
+                    state_store=state_store,
+                )
                 result.tier = "gateway"
                 result.prompt = prompt
                 if (
@@ -336,9 +343,21 @@ class IntelligenceElevator:
             except Exception:
                 logger.exception(
                     "IntelligenceElevator: gateway inference failed for "
-                    "sensor_id=%s — falling back to local_slm/stub",
+                    "sensor_id=%s — falling back according to gateway policy",
                     event.sensor_id if event else "unknown",
                 )
+                if self._gateway_floor_selected(event):
+                    stub = self._stub_result("gateway", event)
+                    if (
+                        rule_result.matched
+                        and stub.action_tier != "D"
+                        and rejection_record is None
+                    ):
+                        stub.action_tier = rule_result.action_tier
+                        stub.proposed_action = rule_result.action
+                    if rejection_record is not None:
+                        stub.action_tier = "A"
+                    return stub, rule_result
                 tier = "local_slm"
 
         if tier in ("local_slm",) and self._local_llm is not None:
@@ -383,7 +402,7 @@ class IntelligenceElevator:
                     event.sensor_id if event else "unknown",
                 )
 
-        # Fallback stub — gateway/cloud tiers not yet wired
+        # Fallback stub for unavailable reasoning tiers.
         stub = self._stub_result(tier, event)
         if rule_result.matched and stub.action_tier != "D" and rejection_record is None:
             stub.action_tier = rule_result.action_tier
@@ -400,6 +419,50 @@ class IntelligenceElevator:
         ):
             return not self._capability_posture.internet_available
         return await asyncio.to_thread(_is_offline)
+
+    async def _call_gateway_reasoner(
+        self,
+        *,
+        prompt: str,
+        event: OriEvent,
+        rule_result: Any,
+        state_store: Any,
+    ) -> ReasoningResult:
+        """Call rich gateway reasoners with context, prompt-only mocks without it."""
+        reason = self._gateway_reasoner.reason
+        try:
+            signature = inspect.signature(reason)
+        except (TypeError, ValueError):
+            return await reason(prompt)
+        params = signature.parameters
+        accepts_context = any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
+        ) or {"event", "rule_result", "state_store"}.issubset(params)
+        if accepts_context:
+            return await reason(
+                prompt,
+                event=event,
+                rule_result=rule_result,
+                state_store=state_store,
+            )
+        return await reason(prompt)
+
+    @staticmethod
+    def _gateway_floor_selected(event: OriEvent) -> bool:
+        """Return True when a trigger-declared gateway floor selected Tier 3."""
+        if not isinstance(getattr(event, "context", None), dict):
+            return False
+        ctx = event.context.get(GATEWAY_ESCALATION_CONTEXT_KEY)
+        if not isinstance(ctx, dict) or not bool(ctx.get("selected", False)):
+            return False
+        signals = ctx.get("signals")
+        if not isinstance(signals, list):
+            return False
+        return any(
+            isinstance(signal, dict)
+            and signal.get("code") == "trigger_declares_gateway"
+            for signal in signals
+        )
 
     async def _evaluate_rules_with_hooks(
         self, event: OriEvent, skill: Any, state_store: Any

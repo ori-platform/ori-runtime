@@ -430,7 +430,13 @@ that are hard to debug.
    reasoning on-device or to escalate to gateway/cloud. Gateway escalation must
    be driven by deterministic signals evaluated before local SLM inference:
    explicit `escalate_to: gateway`, missing baseline, history query failure,
-   calibrated range breach, or related-sensor conflict.
+   calibrated range breach, or related-sensor conflict. Gateway reasoning uses
+   MQTT request/response on `ori/{device_id}/reasoning/request` and
+   `ori/{device_id}/reasoning/response`; it must remain provider-neutral and
+   must not introduce cloud SDK dependencies into the runtime.
+   For matched triggers, action tier is trigger-authoritative. Unmatched
+   gateway reasoning must not be used to create autonomous physical action
+   authority; Tier C remains approval-gated and Tier D remains rule-only.
 
 6. Action executors never raise exceptions.
    They return False. The runtime must survive a failed action.

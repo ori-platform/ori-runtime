@@ -256,8 +256,11 @@ reasoning:
 
 
 gateway:
-  enabled: false                     # starts MQTT export responder for gateway reports
+  enabled: false                     # starts MQTT gateway integration over the LAN broker
   broker_url: mqtt://192.168.1.10:1883
+  reasoning:
+    enabled: true                    # Tier 3 request/response on ori/{device_id}/reasoning/*
+    timeout_ms: 10000                # per-phase timeout: connect/subscribe and response wait
 
 device_policy:
   enabled: false

@@ -33,6 +33,7 @@ from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.bool_utils import is_truthy
 from ori.config import Config, ConfigValidationError
 from ori.gateway_export import GatewayExportResponder, MqttGatewayExportServer
+from ori.gateway_reasoning import MqttGatewayReasoner
 from ori.hal.base import AdapterReadError, BaseAdapter
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
 from ori.hardware.led_indicator import (
@@ -581,7 +582,12 @@ class OriRuntime:
             self._capability_posture_tracker = posture_tracker
 
         local_llm = _build_local_llm(config.reasoning, self._config_path)
-        elevator = IntelligenceElevator(local_llm=local_llm, config=config.reasoning)
+        gateway_reasoner = _build_gateway_reasoner(config)
+        elevator = IntelligenceElevator(
+            local_llm=local_llm,
+            gateway_reasoner=gateway_reasoner,
+            config=config.reasoning,
+        )
 
         # ── Step E: EventBus ──────────────────────────────────────────────────
         event_bus = EventBus()
@@ -2796,6 +2802,31 @@ def _build_local_llm(reasoning_cfg: Any, config_path: str) -> LocalLLM | None:
         context_window,
     )
     return local_llm
+
+
+def _build_gateway_reasoner(config: Config) -> MqttGatewayReasoner | None:
+    """Instantiate the MQTT Tier 3 gateway reasoner when configured."""
+    if not bool(config.gateway.enabled):
+        return None
+    reasoning_cfg = (
+        config.gateway.reasoning if isinstance(config.gateway.reasoning, dict) else {}
+    )
+    if not bool(reasoning_cfg.get("enabled", True)):
+        return None
+    try:
+        reasoner = MqttGatewayReasoner(
+            broker_url=config.gateway.broker_url,
+            device_id=config.device.id,
+            timeout_ms=int(reasoning_cfg.get("timeout_ms", 10_000)),
+        )
+    except Exception:
+        logger.exception("[runtime] invalid gateway reasoning configuration")
+        return None
+    logger.info(
+        "[runtime] MQTT gateway reasoning enabled on ori/%s/reasoning/request",
+        config.device.id,
+    )
+    return reasoner
 
 
 def _process_target_from_context(ctx: SkillContext) -> tuple[int | None, str]:

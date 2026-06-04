@@ -107,6 +107,62 @@ class TestLoadExample:
         cfg = Config.load(EXAMPLE_YAML)
         assert cfg.gateway.enabled is False
         assert "192.168.1.10" in cfg.gateway.broker_url
+        assert cfg.gateway.reasoning["enabled"] is True
+        assert cfg.gateway.reasoning["timeout_ms"] == 10_000
+
+    def test_gateway_reasoning_timeout_must_be_at_least_100ms(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              reasoning:
+                enabled: true
+                timeout_ms: 50
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.reasoning.timeout_ms"):
+            Config.load(yaml_path)
+
+    def test_gateway_reasoning_timeout_must_be_integer(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              reasoning:
+                enabled: true
+                timeout_ms: not-a-number
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.reasoning.timeout_ms"):
+            Config.load(yaml_path)
 
     def test_actions_primary_channel(self):
         cfg = Config.load(EXAMPLE_YAML)

@@ -124,6 +124,7 @@ class ReasoningConfig:
 class GatewayConfig:
     enabled: bool
     broker_url: str
+    reasoning: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -690,10 +691,28 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
 def _parse_gateway(data: Any) -> GatewayConfig:
     if not isinstance(data, dict):
         raise ConfigValidationError("'gateway' section must be a mapping.")
+    reasoning_raw = data.get("reasoning") or {}
+    if not isinstance(reasoning_raw, dict):
+        raise ConfigValidationError("'gateway.reasoning' section must be a mapping.")
+    reasoning = dict(reasoning_raw)
+    reasoning["enabled"] = (
+        str(reasoning.get("enabled", "true")).strip().lower() == "true"
+        or reasoning.get("enabled") is True
+    )
+    try:
+        timeout_ms = int(reasoning.get("timeout_ms", 10_000))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "gateway.reasoning.timeout_ms must be an integer"
+        ) from exc
+    if timeout_ms < 100:
+        raise ConfigValidationError("gateway.reasoning.timeout_ms must be >= 100")
+    reasoning["timeout_ms"] = timeout_ms
 
     return GatewayConfig(
         enabled=bool(data.get("enabled", False)),
         broker_url=str(data.get("broker_url", "")),
+        reasoning=reasoning,
     )
 
 

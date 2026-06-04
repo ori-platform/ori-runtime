@@ -502,6 +502,45 @@ class TestReason:
         assert ctx["selected"] is True
         assert ctx["gateway_available"] is False
 
+    async def test_explicit_gateway_floor_transport_failure_returns_gateway_stub(self):
+        local_llm = AsyncMock()
+        gateway = AsyncMock()
+        gateway.reason.side_effect = RuntimeError("mqtt unavailable")
+        elevator = IntelligenceElevator(
+            local_llm=local_llm,
+            gateway_reasoner=gateway,
+            config=type("obj", (object,), {"offline_fallback": "local_slm"})(),
+        )
+        elevator.update_capability_posture(_fresh_gateway_posture())
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "needs_gateway",
+                    "condition": "value > 3.0",
+                    "action_tier": "C",
+                    "escalate_to": "gateway",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                }
+            ],
+            actions={
+                "available": [{"name": "alert_whatsapp", "tier": "C"}],
+                "defaults": {"needs_gateway": ["alert_whatsapp"]},
+            },
+        )
+        event = _event(value=5.0)
+        store = _mock_state_store(avg=5.0, history=[5.0, 5.0])
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=False):
+            result = await elevator.reason(event, skill, store)
+
+        gateway.reason.assert_awaited_once()
+        local_llm.reason.assert_not_called()
+        assert result.tier == "gateway"
+        assert result.model == "stub"
+        assert result.action_tier == "C"
+        assert "gateway unavailable" in result.text
+
     async def test_causal_memory_hit_short_circuits_local_llm(self):
         mock_llm = AsyncMock()
         mock_llm.reason.return_value = ReasoningResult(

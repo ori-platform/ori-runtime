@@ -59,12 +59,24 @@ Rules:
   is available, sensor history query fails, a reading is outside calibrated
   sensor range, or related sensor readings conflict beyond configured
   tolerance.
-- Action tier remains trigger-authoritative. The model cannot escalate its own
-  physical action authority beyond the tier declared in skill YAML.
+- For matched triggers, action tier remains trigger-authoritative. The model
+  cannot escalate its own physical action authority beyond the tier declared in
+  skill YAML.
+- If gateway reasoning is invoked when no deterministic trigger matched, the
+  gateway response may supply an action tier, but Tier C still requires the
+  approval workflow and Tier D remains unreachable through LLM reasoning. Skills
+  must not rely on unmatched gateway reasoning for autonomous physical actions.
 - Tier D bypasses LLM entirely.
-- Until the runtime MQTT gateway-reasoning client is wired, deterministic
-  gateway escalation records its signals and falls back to local reasoning
-  unless the trigger explicitly declares `escalate_to: gateway`.
+- Gateway escalation uses MQTT request/response on
+  `ori/{device_id}/reasoning/request` and
+  `ori/{device_id}/reasoning/response`. Non-explicit deterministic signals may
+  fall back to local reasoning when gateway transport is unavailable; triggers
+  that explicitly declare `escalate_to: gateway` return a gateway-unavailable
+  stub instead of silently downgrading to local SLM.
+- `gateway.reasoning.timeout_ms` is a per-phase MQTT timeout: one budget for
+  connect/subscribe readiness and one budget for the correlated response after
+  publish. The worst-case elapsed time may therefore approach 2x the configured
+  value.
 
 Rationale:
 

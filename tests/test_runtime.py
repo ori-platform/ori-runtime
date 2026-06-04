@@ -30,6 +30,7 @@ from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import SkillContext
 from ori.runtime import (
     OriRuntime,
+    _build_gateway_reasoner,
     _build_local_llm,
     _coap_command_from_context,
     _maybe_autoload_dotenv,
@@ -225,8 +226,9 @@ class TestLocalSLMWiring:
 
         monkeypatch.setattr("ori.runtime._build_local_llm", lambda *_: sentinel)
 
-        def _elevator_factory(local_llm=None, config=None):
+        def _elevator_factory(local_llm=None, gateway_reasoner=None, config=None):
             captured["local_llm"] = local_llm
+            captured["gateway_reasoner"] = gateway_reasoner
             return _RealElevator(local_llm=local_llm, config=config)
 
         monkeypatch.setattr("ori.runtime.IntelligenceElevator", _elevator_factory)
@@ -239,6 +241,43 @@ class TestLocalSLMWiring:
 
         await asyncio.gather(runtime.start(), _stop())
         assert captured["local_llm"] is sentinel
+        assert captured["gateway_reasoner"] is None
+
+    def test_build_gateway_reasoner_returns_none_when_gateway_disabled(self):
+        cfg = SimpleNamespace(
+            gateway=SimpleNamespace(enabled=False, broker_url="", reasoning={}),
+            device=SimpleNamespace(id="test-device-01"),
+        )
+
+        assert _build_gateway_reasoner(cfg) is None
+
+    def test_build_gateway_reasoner_constructs_when_enabled(self, monkeypatch):
+        captured = {}
+
+        class _FakeGatewayReasoner:
+            def __init__(self, *, broker_url, device_id, timeout_ms):
+                captured["broker_url"] = broker_url
+                captured["device_id"] = device_id
+                captured["timeout_ms"] = timeout_ms
+
+        monkeypatch.setattr("ori.runtime.MqttGatewayReasoner", _FakeGatewayReasoner)
+        cfg = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=True,
+                broker_url="mqtt://broker.local:1884",
+                reasoning={"enabled": True, "timeout_ms": 2500},
+            ),
+            device=SimpleNamespace(id="test-device-01"),
+        )
+
+        reasoner = _build_gateway_reasoner(cfg)
+
+        assert isinstance(reasoner, _FakeGatewayReasoner)
+        assert captured == {
+            "broker_url": "mqtt://broker.local:1884",
+            "device_id": "test-device-01",
+            "timeout_ms": 2500,
+        }
 
 
 class TestDotenvAutoload:
