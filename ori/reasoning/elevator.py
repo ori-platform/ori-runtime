@@ -1138,7 +1138,9 @@ class IntelligenceElevator:
 
         approval_timeout_seconds = self._approval_timeout_seconds(skill, rule_result)
         action_tiers = self._action_tiers(skill)
-        tier_b_actions = [action for action in actions if action_tiers.get(action) == "B"]
+        tier_b_actions = [
+            action for action in actions if action_tiers.get(action) == "B"
+        ]
         physical_failed = False
         for action in tier_b_actions:
             try:
