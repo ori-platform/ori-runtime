@@ -44,6 +44,12 @@ CREATE TABLE IF NOT EXISTS reasoning_log (
     timestamp      INTEGER NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_reasoning_log_device_timestamp
+    ON reasoning_log (device_id, timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_reasoning_log_correlation_id
+    ON reasoning_log (correlation_id, timestamp DESC);
+
 CREATE TABLE IF NOT EXISTS override_log (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     trigger_name      TEXT    NOT NULL,
@@ -1976,6 +1982,84 @@ class StateStore:
             ),
         )
         self._conn.commit()
+
+    async def export_reasoning_log(
+        self,
+        *,
+        device_id: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        tier_used: str | None = None,
+        action_tier: str | None = None,
+        reasoning_status: str | None = None,
+        correlation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return a bounded reasoning-log export for gateway/cloud sync."""
+        return await self._run_read(
+            self._export_reasoning_log_sync,
+            device_id,
+            since_ms,
+            until_ms,
+            tier_used,
+            action_tier,
+            reasoning_status,
+            correlation_id,
+            limit,
+        )
+
+    def _export_reasoning_log_sync(
+        self,
+        conn: sqlite3.Connection,
+        device_id: str | None,
+        since_ms: int | None,
+        until_ms: int | None,
+        tier_used: str | None,
+        action_tier: str | None,
+        reasoning_status: str | None,
+        correlation_id: str | None,
+        limit: int,
+    ) -> list[dict]:
+        where = []
+        params: list[Any] = []
+        if device_id:
+            where.append("device_id = ?")
+            params.append(str(device_id))
+        if since_ms is not None:
+            where.append("timestamp >= ?")
+            params.append(int(since_ms))
+        if until_ms is not None:
+            where.append("timestamp <= ?")
+            params.append(int(until_ms))
+        if tier_used:
+            where.append("tier_used = ?")
+            params.append(str(tier_used))
+        if action_tier:
+            where.append("action_tier = ?")
+            params.append(str(action_tier).upper())
+        if reasoning_status:
+            where.append("reasoning_status = ?")
+            params.append(str(reasoning_status))
+        if correlation_id:
+            where.append("correlation_id = ?")
+            params.append(str(correlation_id))
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, min(int(limit), 1000)))
+        query = (
+            """
+            SELECT trigger_name, tier_used, prompt, response, confidence,
+                   action_tier, device_id, model, tokens_used, latency_ms,
+                   proposed_action, reasoning_status, correlation_id, timestamp
+            FROM reasoning_log
+            """
+            + where_sql
+            + """
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """
+        )
+        rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
 
     # ─── override_log ─────────────────────────────────────────────────────────
 

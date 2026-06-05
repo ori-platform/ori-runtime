@@ -33,6 +33,7 @@ SUPPORTED_EXPORT_TYPES = {
     "health",
     "sensor_history",
     "action_log",
+    "reasoning_log",
     "tier_c_decision_log",
 }
 MAX_EXPORT_LIMIT = 1000
@@ -200,6 +201,19 @@ class GatewayExportResponder:
                 since_ms=since_ms,
                 until_ms=until_ms,
                 tier=str(params.get("tier", "") or "") or None,
+                limit=min(MAX_EXPORT_LIMIT, limit + offset + 1),
+            )
+            return self._paged_response(request_id, export_type, rows, limit, offset)
+
+        if export_type == "reasoning_log":
+            rows = await self._state_store.export_reasoning_log(
+                device_id=self._device_id,
+                since_ms=since_ms,
+                until_ms=until_ms,
+                tier_used=str(params.get("tier_used", "") or "") or None,
+                action_tier=str(params.get("action_tier", "") or "") or None,
+                reasoning_status=str(params.get("reasoning_status", "") or "") or None,
+                correlation_id=str(params.get("correlation_id", "") or "") or None,
                 limit=min(MAX_EXPORT_LIMIT, limit + offset + 1),
             )
             return self._paged_response(request_id, export_type, rows, limit, offset)

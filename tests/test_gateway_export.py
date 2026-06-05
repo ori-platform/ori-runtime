@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -13,6 +14,7 @@ from ori.gateway_export import (
     _parse_broker_url,
 )
 from ori.network.events import ActionResult, OriEvent, SensorReading
+from ori.reasoning.elevator import ReasoningResult
 from ori.state.store import StateStore
 
 
@@ -188,6 +190,48 @@ async def test_action_log_export_uses_runtime_store_boundary(store):
     assert response.items[0]["action_name"] == "alert_whatsapp"
     assert response.items[0]["device_id"] == "dev-01"
     assert response.items[0]["trigger_name"] == "voltage_warning"
+
+
+async def test_reasoning_log_export_uses_runtime_store_boundary(store):
+    result = ReasoningResult(
+        text="Grid voltage pattern is unstable.",
+        tier="gateway",
+        model="llama.cpp",
+        tokens_used=64,
+        latency_ms=250,
+        confidence=0.0,
+        action_tier="B",
+        prompt="Explain the post-action source switch.",
+        reasoning_status="complete",
+        correlation_id="corr-tier-b-1",
+    )
+    with patch("ori.state.store.now_ms", return_value=2_000):
+        await store.log_reasoning(
+            result=result,
+            trigger_name="grid_instability",
+            device_id="dev-01",
+        )
+
+    response = await _responder(store).handle_request(
+        _request(
+            "reasoning_log",
+            since_ms=1_000,
+            until_ms=3_000,
+            params={
+                "tier_used": "gateway",
+                "action_tier": "B",
+                "reasoning_status": "complete",
+                "correlation_id": "corr-tier-b-1",
+            },
+        )
+    )
+
+    assert response.error is None
+    assert response.items[0]["trigger_name"] == "grid_instability"
+    assert response.items[0]["tier_used"] == "gateway"
+    assert response.items[0]["reasoning_status"] == "complete"
+    assert response.items[0]["correlation_id"] == "corr-tier-b-1"
+    assert response.items[0]["timestamp"] == 2_000
 
 
 async def test_tier_c_decision_log_export_uses_runtime_store_boundary(store):

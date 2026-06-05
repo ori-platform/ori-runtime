@@ -17,14 +17,17 @@ Rules:
 - Gateway/product services own cloud API keys, weekly report
   generation, and Tier C proposal enrichment.
 - Runtime responsibility is to expose bounded, provider-neutral export
-  primitives: Tier C decision log, action log, sensor history, and health
-  status.
+  primitives: Tier C decision log, action log, reasoning log, sensor history,
+  and health status.
 - Gateway export transport uses MQTT request/response on
   `ori/{device_id}/export/request` and
   `ori/{device_id}/export/response/{request_id}`. HTTP export endpoints are not
   part of the runtime boundary.
 - Export methods must be bounded by time/window and/or `limit` so product-layer
   sync cannot accidentally dump unbounded SQLite state.
+- Reasoning-log exports must include structured `reasoning_status` and
+  `correlation_id` fields so gateway/cloud sync can join Tier B action results
+  with post-action reasoning enrichment without reading SQLite directly.
 - Bulk exports must support pagination. Sensor-history exports may use
   `bucket_ms` aggregation so weekly report generation does not require raw
   per-reading transfer.

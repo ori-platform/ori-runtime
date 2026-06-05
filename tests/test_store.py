@@ -4,6 +4,7 @@
 import json
 import sqlite3
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -872,6 +873,35 @@ def _reasoning_result(
 
 
 class TestReasoningLog:
+    async def _insert_reasoning(
+        self,
+        store,
+        *,
+        trigger_name: str = "load-current",
+        device_id: str = "dev-01",
+        timestamp: int = 1_000,
+        tier: str = "local_slm",
+        action_tier: str = "A",
+        reasoning_status: str = "",
+        correlation_id: str = "",
+        prompt: str = "prompt",
+        text: str = "response",
+    ) -> None:
+        result = _reasoning_result(
+            prompt=prompt,
+            reasoning_status=reasoning_status,
+            correlation_id=correlation_id,
+        )
+        result.tier = tier
+        result.action_tier = action_tier
+        result.text = text
+        with patch("ori.state.store.now_ms", return_value=timestamp):
+            await store.log_reasoning(
+                result=result,
+                trigger_name=trigger_name,
+                device_id=device_id,
+            )
+
     async def test_log_reasoning_persists_row(self, store):
         await store.log_reasoning(
             result=_reasoning_result(),
@@ -946,6 +976,129 @@ class TestReasoningLog:
             ).fetchone()
         )
         assert row["correlation_id"] == "corr-reasoning-123"
+
+    async def test_export_reasoning_log_returns_bounded_rows_with_fields(self, store):
+        await self._insert_reasoning(
+            store,
+            trigger_name="grid_instability",
+            device_id="dev-01",
+            timestamp=1_000,
+            tier="gateway",
+            action_tier="B",
+            reasoning_status="complete",
+            correlation_id="corr-1",
+            prompt="Prompt text",
+            text="Response text",
+        )
+
+        rows = await store.export_reasoning_log(limit=10)
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["trigger_name"] == "grid_instability"
+        assert row["tier_used"] == "gateway"
+        assert row["prompt"] == "Prompt text"
+        assert row["response"] == "Response text"
+        assert row["confidence"] == pytest.approx(0.9)
+        assert row["action_tier"] == "B"
+        assert row["device_id"] == "dev-01"
+        assert row["model"] == "qwen2.5"
+        assert row["tokens_used"] == 42
+        assert row["latency_ms"] == 150
+        assert row["proposed_action"] is None
+        assert row["reasoning_status"] == "complete"
+        assert row["correlation_id"] == "corr-1"
+        assert row["timestamp"] == 1_000
+
+    async def test_export_reasoning_log_filters_by_device_time_and_tier(self, store):
+        await self._insert_reasoning(
+            store,
+            device_id="dev-01",
+            timestamp=1_000,
+            tier="local_slm",
+            action_tier="A",
+        )
+        await self._insert_reasoning(
+            store,
+            device_id="dev-02",
+            timestamp=2_000,
+            tier="gateway",
+            action_tier="B",
+        )
+        await self._insert_reasoning(
+            store,
+            device_id="dev-02",
+            timestamp=3_000,
+            tier="gateway",
+            action_tier="C",
+        )
+
+        rows = await store.export_reasoning_log(
+            device_id="dev-02",
+            since_ms=1_500,
+            until_ms=2_500,
+            tier_used="gateway",
+            action_tier="B",
+            limit=10,
+        )
+
+        assert len(rows) == 1
+        assert rows[0]["device_id"] == "dev-02"
+        assert rows[0]["timestamp"] == 2_000
+        assert rows[0]["action_tier"] == "B"
+
+    async def test_export_reasoning_log_filters_by_status_and_correlation(self, store):
+        await self._insert_reasoning(
+            store,
+            timestamp=1_000,
+            reasoning_status="complete",
+            correlation_id="corr-keep",
+        )
+        await self._insert_reasoning(
+            store,
+            timestamp=2_000,
+            reasoning_status="incomplete",
+            correlation_id="corr-keep",
+        )
+        await self._insert_reasoning(
+            store,
+            timestamp=3_000,
+            reasoning_status="incomplete",
+            correlation_id="corr-other",
+        )
+
+        rows = await store.export_reasoning_log(
+            reasoning_status="incomplete",
+            correlation_id="corr-keep",
+            limit=10,
+        )
+
+        assert len(rows) == 1
+        assert rows[0]["reasoning_status"] == "incomplete"
+        assert rows[0]["correlation_id"] == "corr-keep"
+        assert rows[0]["timestamp"] == 2_000
+
+    async def test_export_reasoning_log_orders_most_recent_first(self, store):
+        await self._insert_reasoning(store, timestamp=1_000, correlation_id="old")
+        await self._insert_reasoning(store, timestamp=3_000, correlation_id="new")
+        await self._insert_reasoning(store, timestamp=2_000, correlation_id="middle")
+
+        rows = await store.export_reasoning_log(limit=10)
+
+        assert [row["correlation_id"] for row in rows] == ["new", "middle", "old"]
+
+    async def test_export_reasoning_log_caps_limit_at_1000(self, store):
+        for i in range(1005):
+            await self._insert_reasoning(
+                store,
+                timestamp=i,
+                correlation_id=f"corr-{i}",
+            )
+
+        rows = await store.export_reasoning_log(limit=5_000)
+
+        assert len(rows) == 1000
+        assert rows[0]["correlation_id"] == "corr-1004"
 
 
 # ─── inbound_messages ─────────────────────────────────────────────────────────
