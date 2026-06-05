@@ -1,7 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-from ori.bool_utils import is_truthy
+from ori.utils.bool_utils import is_truthy
 
 
 def test_is_truthy_accepts_common_enabled_strings():

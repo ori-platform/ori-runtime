@@ -31,7 +31,7 @@ from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_commands import extract_remote_command_payload
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 

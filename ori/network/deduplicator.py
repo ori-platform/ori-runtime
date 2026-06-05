@@ -4,7 +4,7 @@
 from dataclasses import dataclass
 
 from ori.network.events import OriEvent, compute_fingerprint
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 _WINDOW_MS = 5_000  # suppress duplicates seen within this window
 _TTL_MS = 30_000  # evict records older than this from the cache

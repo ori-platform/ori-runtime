@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import ori.gateway_reasoning as gateway_reasoning
-from ori.gateway_reasoning import GatewayReasoningError, MqttGatewayReasoner
+import ori.gateway.reasoning as gateway_reasoning
+from ori.gateway.reasoning import GatewayReasoningError, MqttGatewayReasoner
 from ori.network.events import OriEvent, SensorReading
 
 

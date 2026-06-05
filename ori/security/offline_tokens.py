@@ -12,7 +12,7 @@ from typing import Any
 
 from ori.skills.sandbox import SkillSecurityError
 from ori.skills.signing import verify_signed_payload
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 
 @dataclass

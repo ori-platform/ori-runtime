@@ -14,7 +14,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from ori.network.events import OriEvent, ReasoningResult
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 try:
     import paho.mqtt.client as mqtt

@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 LOCKOUT_RISK_NORMAL = "normal"
 LOCKOUT_RISK_ELEVATED = "elevated"

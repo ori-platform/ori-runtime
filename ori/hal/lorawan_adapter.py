@@ -7,7 +7,7 @@ from typing import Any
 from ori.hal.base import AdapterConnectionError, AdapterReadError
 from ori.hal.mqtt_base import MqttCachedAdapter
 from ori.network.events import SensorReading
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 _DEFAULT_PORT = 1883
 

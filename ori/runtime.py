@@ -30,10 +30,9 @@ from ori.actions.relay import RelayAction
 from ori.actions.sms import SMSAction
 from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
-from ori.bool_utils import is_truthy
 from ori.config import Config, ConfigValidationError
-from ori.gateway_export import GatewayExportResponder, MqttGatewayExportServer
-from ori.gateway_reasoning import MqttGatewayReasoner
+from ori.gateway.export import GatewayExportResponder, MqttGatewayExportServer
+from ori.gateway.reasoning import MqttGatewayReasoner
 from ori.hal.base import AdapterReadError, BaseAdapter
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
 from ori.hardware.led_indicator import (
@@ -88,7 +87,8 @@ from ori.security.threshold_guard import (
 from ori.skills.loader import SkillLoader
 from ori.skills.signing import verify_signed_payload
 from ori.state.store import StateStore
-from ori.time_utils import now_ms
+from ori.utils.bool_utils import is_truthy
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 

@@ -11,7 +11,7 @@ import asyncio
 import socket
 from dataclasses import dataclass
 
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 
 def probe_internet_available(host: str, port: int, timeout_ms: int) -> bool:

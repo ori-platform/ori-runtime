@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 

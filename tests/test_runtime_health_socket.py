@@ -11,7 +11,7 @@ import pytest
 
 from ori.runtime import OriRuntime
 from ori.runtime_health_socket import RuntimeHealthSocketServer
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 
 def _short_socket_path(suffix: str) -> str:

@@ -9,7 +9,7 @@ import sqlite3
 from typing import Any, Optional
 
 from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS sensor_history (

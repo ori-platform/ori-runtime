@@ -7,7 +7,7 @@ import os
 import re
 
 from ori.network.events import ReasoningResult
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 

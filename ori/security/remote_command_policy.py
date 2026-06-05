@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ori.bool_utils import is_truthy
 from ori.security.remote_commands import RemoteCommand
-from ori.time_utils import now_ms
+from ori.utils.bool_utils import is_truthy
+from ori.utils.time_utils import now_ms
 
 STATUS_EXECUTED = "executed"
 STATUS_AUDIT_ONLY = "audit_only"

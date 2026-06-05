@@ -45,6 +45,8 @@ ori/                    Python package — the runtime
 ├── reasoning/          Layer 4: LLM tiers + action dispatcher
 ├── skills/             Layer 5: skill loader and sandbox
 ├── actions/            Action executors called by the dispatcher
+├── gateway/            Runtime-side MQTT gateway export/reasoning clients
+├── utils/              Small shared helpers
 ├── state/              SQLite state store
 ├── config.py           ori.yaml loader
 └── runtime.py          Main event loop — ties everything together

@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-import ori.gateway_export as gateway_export
-from ori.gateway_export import (
+import ori.gateway.export as gateway_export
+from ori.gateway.export import (
     GatewayExportResponder,
     MqttGatewayExportServer,
     _parse_broker_url,

@@ -231,7 +231,14 @@ ori/
 │   ├── __init__.py
 │   ├── runtime.py             ← main event loop — build last
 │   ├── config.py              ← ori.yaml loader and validator
-│   ├── time_utils.py
+│   │
+│   ├── utils/
+│   │   ├── bool_utils.py
+│   │   └── time_utils.py
+│   │
+│   ├── gateway/
+│   │   ├── export.py          ← MQTT export responder for gateway data requests
+│   │   └── reasoning.py       ← MQTT request/response client for Tier 3 reasoning
 │   │
 │   ├── hal/                   ← Hardware Abstraction Layer (Layer 1)
 │   │   ├── __init__.py

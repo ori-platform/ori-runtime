@@ -51,7 +51,7 @@ from ori.security.remote_commands import (
     extract_remote_command_payload,
     verify_extracted_remote_command,
 )
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 

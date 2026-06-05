@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Mapping
 
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 _ALLOWED_COMMANDS = {
     "UPDATE_CONFIG",

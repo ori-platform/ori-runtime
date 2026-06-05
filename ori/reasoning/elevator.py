@@ -39,7 +39,7 @@ from ori.reasoning.escalation_policy import (
     evaluate_gateway_escalation,
 )
 from ori.reasoning.rule_engine import RuleEngine, RuleEngineSafetyError
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 if TYPE_CHECKING:
     pass

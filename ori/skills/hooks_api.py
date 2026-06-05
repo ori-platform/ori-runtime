@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ori.network.events import OriEvent
-from ori.time_utils import now_ms
+from ori.utils.time_utils import now_ms
 
 
 class HookHistoryAdapter:
