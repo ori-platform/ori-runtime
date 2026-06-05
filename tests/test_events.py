@@ -308,6 +308,7 @@ def test_action_result_tier_a_approved_is_none() -> None:
     )
     assert result.approved is None
     assert result.operator_response is None
+    assert result.correlation_id == ""
 
 
 def test_action_result_tier_c_approved_true() -> None:
@@ -385,6 +386,17 @@ def test_reasoning_result_reasoning_status_defaults_to_empty() -> None:
         latency_ms=0,
     )
     assert result.reasoning_status == ""
+
+
+def test_reasoning_result_correlation_id_defaults_to_empty() -> None:
+    result = ReasoningResult(
+        text="All nominal.",
+        tier="rule",
+        model="rule_engine",
+        tokens_used=0,
+        latency_ms=0,
+    )
+    assert result.correlation_id == ""
 
 
 def test_reasoning_result_explicit_fields() -> None:

@@ -1191,6 +1191,42 @@ class TestReasonAndDispatch:
 
         store.log_reasoning.assert_called_once()
 
+    async def test_tier_a_action_and_reasoning_share_correlation_id(self, tmp_path):
+        async def successful_notification(_action, _context):
+            return True
+
+        store = StateStore(db_path=str(tmp_path / "tier-a-correlation.db"))
+        await store.open()
+        try:
+            dispatcher = ActionDispatcher()
+            dispatcher.register_executor("alert_whatsapp", successful_notification)
+            local_llm = AsyncMock()
+            local_llm.reason.return_value = ReasoningResult(
+                text="Current draw is above baseline.",
+                tier="local_slm",
+                model="qwen.gguf",
+                tokens_used=8,
+                latency_ms=10,
+                action_tier="A",
+            )
+            elevator = IntelligenceElevator(local_llm=local_llm)
+
+            with patch("ori.reasoning.elevator._is_offline", return_value=True):
+                await elevator.reason_and_dispatch(
+                    _event(value=5.0), _tier_a_skill(), store, dispatcher
+                )
+
+            actions = await store.get_action_log()
+            row = await store._run(
+                lambda: store._conn.execute(
+                    "SELECT correlation_id FROM reasoning_log"
+                ).fetchone()
+            )
+            assert actions[0]["correlation_id"] == row["correlation_id"]
+            assert row["correlation_id"].startswith("corr-")
+        finally:
+            await store.close()
+
     async def test_tier_b_post_action_dispatches_before_reasoning(self):
         calls: list[tuple[str, str]] = []
         local_llm = AsyncMock()
@@ -1228,24 +1264,38 @@ class TestReasonAndDispatch:
         assert logged.reasoning_status == "complete"
         assert logged.text == "Grid voltage dipped below safe operating range."
 
-    async def test_tier_b_post_action_reasoning_failure_logs_incomplete(self):
+    async def test_tier_b_post_action_reasoning_failure_logs_incomplete(self, tmp_path):
+        async def successful_executor(_action, _context):
+            return True
+
         local_llm = AsyncMock()
         local_llm.reason.side_effect = RuntimeError("model failed")
-        dispatcher = AsyncMock()
-        store = _mock_state_store(avg=4.0, history=[4.0, 4.1])
-        elevator = IntelligenceElevator(local_llm=local_llm)
+        store = StateStore(db_path=str(tmp_path / "tier-b-incomplete.db"))
+        await store.open()
+        try:
+            dispatcher = ActionDispatcher()
+            dispatcher.register_executor("switch_power_source", successful_executor)
+            dispatcher.register_executor("alert_whatsapp", successful_executor)
+            elevator = IntelligenceElevator(local_llm=local_llm)
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(
-                _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
+            with patch("ori.reasoning.elevator._is_offline", return_value=True):
+                await elevator.reason_and_dispatch(
+                    _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
+                )
+
+            actions = await store.get_action_log()
+            correlations = {row["correlation_id"] for row in actions}
+            row = await store._run(
+                lambda: store._conn.execute(
+                    "SELECT reasoning_status, response, correlation_id FROM reasoning_log"
+                ).fetchone()
             )
-
-        logged = store.log_reasoning.call_args.kwargs["result"]
-        assert logged.reasoning_status == "incomplete"
-        assert logged.text == "Action executed. Explanation unavailable."
-        follow_up = dispatcher.dispatch.call_args_list[-1].kwargs
-        assert follow_up["tier"] == "A"
-        assert follow_up["result"].reasoning_status == "incomplete"
+            assert row["reasoning_status"] == "incomplete"
+            assert row["response"] == "Action executed. Explanation unavailable."
+            assert correlations == {row["correlation_id"]}
+            assert row["correlation_id"].startswith("corr-")
+        finally:
+            await store.close()
 
     async def test_tier_b_post_action_no_reasoner_logs_incomplete(self):
         dispatcher = AsyncMock()
@@ -1298,14 +1348,19 @@ class TestReasonAndDispatch:
             assert by_action["alert_whatsapp"]["executed"] is True
             assert by_action["switch_power_source"]["tier"] == "B"
             assert by_action["switch_power_source"]["executed"] is False
+            action_correlation_ids = {
+                row["correlation_id"] for row in by_action.values()
+            }
             row = await store._run(
                 lambda: store._conn.execute(
-                    "SELECT reasoning_status, response, model FROM reasoning_log"
+                    "SELECT reasoning_status, response, model, correlation_id FROM reasoning_log"
                 ).fetchone()
             )
             assert row["reasoning_status"] == "skipped"
             assert row["response"] == "Action failed. Explanation skipped."
             assert row["model"] == "post_action_skipped"
+            assert action_correlation_ids == {row["correlation_id"]}
+            assert row["correlation_id"].startswith("corr-")
         finally:
             await store.close()
 
@@ -1351,13 +1406,18 @@ class TestReasonAndDispatch:
             assert by_action["switch_power_source"]["executed"] is True
             assert by_action["alert_whatsapp"]["tier"] == "A"
             assert by_action["alert_whatsapp"]["executed"] is False
+            action_correlation_ids = {
+                row["correlation_id"] for row in by_action.values()
+            }
             row = await store._run(
                 lambda: store._conn.execute(
-                    "SELECT reasoning_status, response FROM reasoning_log"
+                    "SELECT reasoning_status, response, correlation_id FROM reasoning_log"
                 ).fetchone()
             )
             assert row["reasoning_status"] == "complete"
             assert row["response"] == "Grid voltage dipped below safe operating range."
+            assert action_correlation_ids == {row["correlation_id"]}
+            assert row["correlation_id"].startswith("corr-")
         finally:
             await store.close()
 

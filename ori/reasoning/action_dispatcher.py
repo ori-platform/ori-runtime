@@ -1343,6 +1343,16 @@ class ActionDispatcher:
         if store is None:
             return
 
+        if not action_result.correlation_id and context.event is not None:
+            event_context = (
+                context.event.context
+                if isinstance(getattr(context.event, "context", None), dict)
+                else {}
+            )
+            action_result.correlation_id = str(
+                event_context.get("correlation_id") or ""
+            )
+
         trigger_name = context.event.sensor_id if context.event else ""
         try:
             if hasattr(store, "log_action_for_event"):

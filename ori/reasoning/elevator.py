@@ -1032,6 +1032,17 @@ class IntelligenceElevator:
         tiers = self._action_tiers(skill)
         return [action for action in actions if tiers.get(action, "A") == "A"]
 
+    @staticmethod
+    def _ensure_correlation_id(event: OriEvent) -> str:
+        if not isinstance(getattr(event, "context", None), dict):
+            event.context = {}
+        existing = str(event.context.get("correlation_id") or "").strip()
+        if existing:
+            return existing
+        correlation_id = f"corr-{uuid.uuid4().hex}"
+        event.context["correlation_id"] = correlation_id
+        return correlation_id
+
     def _approval_timeout_seconds(self, skill: Any, rule_result: Any) -> int:
         matched_trigger = self._matched_trigger(skill, rule_result)
         raw_timeout = self._trigger_value(
@@ -1110,6 +1121,7 @@ class IntelligenceElevator:
         rule_result: Any,
     ) -> None:
         """Execute Tier B action first, then enrich audit/operator text."""
+        correlation_id = self._ensure_correlation_id(event)
         immediate_result = ReasoningResult(
             text="Action executed. Explanation pending.",
             tier="rule",
@@ -1120,6 +1132,7 @@ class IntelligenceElevator:
             action_tier="B",
             proposed_action=getattr(rule_result, "action", None),
             reasoning_status="pending",
+            correlation_id=correlation_id,
         )
         actions = self._actions_for_rule_result(
             skill=skill, result=immediate_result, rule_result=rule_result
@@ -1168,6 +1181,7 @@ class IntelligenceElevator:
 
         if physical_failed:
             skipped = self._post_action_skipped_result(rule_result, event)
+            skipped.correlation_id = correlation_id
             if isinstance(getattr(event, "context", None), dict):
                 event.context["operator_message"] = str(skipped.text or "")
             tier_a_actions = self._tier_a_actions(skill, actions)
@@ -1193,6 +1207,7 @@ class IntelligenceElevator:
             state_store=state_store,
             rule_result=rule_result,
         )
+        enrichment.correlation_id = correlation_id
         if isinstance(getattr(event, "context", None), dict):
             event.context["operator_message"] = str(enrichment.text or "")
 
@@ -1237,13 +1252,16 @@ class IntelligenceElevator:
                 precomputed_rule_result=rule_result,
             )
             if result.model == "stub":
-                return self._post_action_incomplete_result(rule_result, event)
+                incomplete = self._post_action_incomplete_result(rule_result, event)
+                incomplete.correlation_id = self._ensure_correlation_id(event)
+                return incomplete
             self._clamp_result_to_rule(
                 result=result,
                 rule_result=rule_result,
                 rejection_capped=False,
             )
             result.reasoning_status = "complete"
+            result.correlation_id = self._ensure_correlation_id(event)
             result.proposed_action = result.proposed_action or getattr(
                 rule_result, "action", None
             )
@@ -1253,7 +1271,9 @@ class IntelligenceElevator:
                 "IntelligenceElevator: post-action reasoning failed for trigger=%r",
                 getattr(rule_result, "rule_name", ""),
             )
-            return self._post_action_incomplete_result(rule_result, event)
+            incomplete = self._post_action_incomplete_result(rule_result, event)
+            incomplete.correlation_id = self._ensure_correlation_id(event)
+            return incomplete
 
     @staticmethod
     def _post_action_incomplete_result(
@@ -1317,6 +1337,7 @@ class IntelligenceElevator:
                 handler_trigger_name = str(
                     event.context.get("__handler_trigger_name") or ""
                 )
+            correlation_id = self._ensure_correlation_id(event)
 
             pre_rule_result, _ = await self._evaluate_rules_with_hooks(
                 event, skill, state_store
@@ -1347,6 +1368,7 @@ class IntelligenceElevator:
                 state_store=state_store,
                 precomputed_rule_result=pre_rule_result,
             )
+            result.correlation_id = correlation_id
 
             # Clamp any model-produced tier to the matched trigger's declared tier.
             # Trigger tier is the authority; model output must not escalate or
@@ -1478,6 +1500,7 @@ class IntelligenceElevator:
 
             # Persist reasoning result
             if state_store is not None and hasattr(state_store, "log_reasoning"):
+                result.correlation_id = correlation_id
                 await state_store.log_reasoning(
                     result=result,
                     trigger_name=event.sensor_id,

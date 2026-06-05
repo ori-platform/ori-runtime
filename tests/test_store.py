@@ -58,6 +58,7 @@ def _action_result(
     operator_response: str | None = None,
     proposal_id: str | None = None,
     safe_default_used: bool = False,
+    correlation_id: str = "",
     timestamp: int | None = None,
 ) -> ActionResult:
     return ActionResult(
@@ -70,6 +71,7 @@ def _action_result(
         operator_response=operator_response,
         proposal_id=proposal_id,
         safe_default_used=safe_default_used,
+        correlation_id=correlation_id,
     )
 
 
@@ -366,6 +368,14 @@ class TestActionLog:
         assert log[0]["approved"] is True
         assert log[0]["operator_response"] == "YES"
 
+    async def test_log_action_persists_correlation_id(self, store):
+        await store.log_action(
+            _action_result(correlation_id="corr-test-123"),
+            trigger_name="anomalous_draw",
+        )
+        log = await store.get_action_log()
+        assert log[0]["correlation_id"] == "corr-test-123"
+
     async def test_log_tier_c_rejected(self, store):
         result = _action_result(
             tier="C",
@@ -411,6 +421,7 @@ class TestActionLog:
                 operator_response="NO",
                 proposal_id="AB12CD34",
                 safe_default_used=True,
+                correlation_id="corr-export-1",
                 timestamp=base,
             ),
             trigger_name="overcurrent",
@@ -448,6 +459,7 @@ class TestActionLog:
         assert row["trigger_name"] == "overcurrent"
         assert row["safe_default_used"] is True
         assert row["proposal_id"] == "AB12CD34"
+        assert row["correlation_id"] == "corr-export-1"
 
 
 class TestTierCDecisionLog:
@@ -843,6 +855,7 @@ def _reasoning_result(
     prompt: str = "",
     confidence: float = 0.9,
     reasoning_status: str = "",
+    correlation_id: str = "",
 ) -> ReasoningResult:
     return ReasoningResult(
         text="Anomaly detected.",
@@ -854,6 +867,7 @@ def _reasoning_result(
         action_tier="A",
         prompt=prompt,
         reasoning_status=reasoning_status,
+        correlation_id=correlation_id,
     )
 
 
@@ -919,6 +933,19 @@ class TestReasoningLog:
             ).fetchone()
         )
         assert row["reasoning_status"] == "incomplete"
+
+    async def test_log_reasoning_persists_correlation_id(self, store):
+        await store.log_reasoning(
+            result=_reasoning_result(correlation_id="corr-reasoning-123"),
+            trigger_name="t",
+            device_id="ikeja-01",
+        )
+        row = await store._run(
+            lambda: store._conn.execute(
+                "SELECT correlation_id FROM reasoning_log"
+            ).fetchone()
+        )
+        assert row["correlation_id"] == "corr-reasoning-123"
 
 
 # ─── inbound_messages ─────────────────────────────────────────────────────────

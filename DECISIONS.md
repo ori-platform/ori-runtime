@@ -126,12 +126,12 @@ Rationale:
 - Audit records must distinguish "action executed but explanation incomplete"
   from a missing enrichment record.
 
-Known follow-up:
+Cloud sync contract:
 
-- Before ori-cloud sync depends on joining Tier B `action_log` and
-  `reasoning_log` records, add a shared correlation ID written to both rows for
-  the same event. Timestamp proximity matching is acceptable for local review
-  but too fragile for multi-device cloud sync.
+- Tier B `action_log` and `reasoning_log` records generated from the same
+  event carry the same `correlation_id`. Gateway and ori-cloud sync must use
+  this structured ID rather than timestamp proximity matching when joining
+  action execution and reasoning enrichment records.
 
 ---
 

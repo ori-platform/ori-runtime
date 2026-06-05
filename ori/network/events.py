@@ -57,6 +57,7 @@ class ActionResult:
     operator_response: str | None = None
     proposal_id: str | None = None
     safe_default_used: bool = False
+    correlation_id: str = ""
 
 
 @dataclass
@@ -76,6 +77,7 @@ class ReasoningResult:
         ""  # fuller explanation for Tier C approval messages; falls back to text
     )
     reasoning_status: str = ""  # "complete" | "incomplete" | "skipped"
+    correlation_id: str = ""
 
 
 class ActionTier:

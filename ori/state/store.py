@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS reasoning_log (
     latency_ms     INTEGER NOT NULL DEFAULT 0,
     proposed_action TEXT,
     reasoning_status TEXT NOT NULL DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
     timestamp      INTEGER NOT NULL
 );
 
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS action_log (
     device_id         TEXT    NOT NULL DEFAULT '',
     sensor_id         TEXT    NOT NULL DEFAULT '',
     sensor_type       TEXT    NOT NULL DEFAULT '',
+    correlation_id    TEXT    NOT NULL DEFAULT '',
     trigger_name      TEXT    NOT NULL,
     timestamp         INTEGER NOT NULL
 );
@@ -339,6 +341,7 @@ class StateStore:
             ("latency_ms", "INTEGER NOT NULL DEFAULT 0"),
             ("proposed_action", "TEXT"),
             ("reasoning_status", "TEXT NOT NULL DEFAULT ''"),
+            ("correlation_id", "TEXT NOT NULL DEFAULT ''"),
         ]
         for col, typedef in _new_reasoning_cols:
             self._add_column_if_missing_on_conn(conn, "reasoning_log", col, typedef)
@@ -353,6 +356,7 @@ class StateStore:
             ("device_id", "TEXT    NOT NULL DEFAULT ''"),
             ("sensor_id", "TEXT    NOT NULL DEFAULT ''"),
             ("sensor_type", "TEXT    NOT NULL DEFAULT ''"),
+            ("correlation_id", "TEXT    NOT NULL DEFAULT ''"),
         ):
             self._add_column_if_missing_on_conn(conn, "action_log", col, typedef)
         self._add_column_if_missing_on_conn(
@@ -890,8 +894,8 @@ class StateStore:
             INSERT INTO action_log
                 (action_name, tier, executed, approved, action_taken,
                  operator_response, proposal_id, safe_default_used, device_id,
-                 sensor_id, sensor_type, trigger_name, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 sensor_id, sensor_type, correlation_id, trigger_name, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.action_name,
@@ -905,6 +909,7 @@ class StateStore:
                 str(context_fields.get("device_id", "") or ""),
                 str(context_fields.get("sensor_id", "") or ""),
                 str(context_fields.get("sensor_type", "") or ""),
+                result.correlation_id,
                 trigger_name,
                 result.timestamp,
             ),
@@ -919,7 +924,7 @@ class StateStore:
             """
             SELECT action_name, tier, executed, approved, action_taken,
                    operator_response, proposal_id, safe_default_used, device_id,
-                   sensor_id, sensor_type, trigger_name, timestamp
+                   sensor_id, sensor_type, correlation_id, trigger_name, timestamp
             FROM action_log
             ORDER BY timestamp DESC
             LIMIT ?
@@ -944,6 +949,7 @@ class StateStore:
                     "device_id": row["device_id"],
                     "sensor_id": row["sensor_id"],
                     "sensor_type": row["sensor_type"],
+                    "correlation_id": row["correlation_id"],
                     "trigger_name": row["trigger_name"],
                     "timestamp": row["timestamp"],
                 }
@@ -998,7 +1004,7 @@ class StateStore:
             """
             SELECT action_name, tier, executed, approved, action_taken,
                    operator_response, proposal_id, safe_default_used, device_id,
-                   sensor_id, sensor_type, trigger_name, timestamp
+                   sensor_id, sensor_type, correlation_id, trigger_name, timestamp
             FROM action_log
             """
             + where_sql
@@ -1949,8 +1955,8 @@ class StateStore:
             INSERT INTO reasoning_log
                 (trigger_name, tier_used, prompt, response, confidence,
                  action_tier, device_id, model, tokens_used, latency_ms,
-                 proposed_action, reasoning_status, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 proposed_action, reasoning_status, correlation_id, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trigger_name,
@@ -1965,6 +1971,7 @@ class StateStore:
                 result.latency_ms,
                 result.proposed_action,
                 result.reasoning_status,
+                result.correlation_id,
                 now_ms(),
             ),
         )
