@@ -88,6 +88,53 @@ Rationale:
 
 ---
 
+## 2026-06-04 — Tier B Post-Action Reasoning Policy
+
+**Status:** Accepted
+
+Tier B soft-physical actions are deterministic actions with physical
+consequences. They must not wait on local SLM explanation generation unless a
+skill author explicitly chooses an approval workflow.
+
+Rules:
+
+- `bypass_llm: true` remains exclusively reserved for Tier D safety-critical
+  triggers.
+- Physical Tier B triggers must declare either `requires_approval: true` or
+  `reasoning_policy: post_action`.
+- `reasoning_policy: post_action` is valid only for Tier B triggers.
+- With `post_action`, the runtime dispatches deterministic Tier B default
+  actions before invoking local or gateway reasoning.
+- `post_action` Tier B triggers must include at least one Tier A default action
+  so the runtime has a declared operator follow-up path for successful or
+  incomplete explanations.
+- Post-action reasoning enriches operator text and audit logs only. It must not
+  alter, retry, roll back, or obscure the already-recorded action result.
+- If post-action reasoning fails, times out, or no reasoner is available, the
+  reasoning audit record must contain `reasoning_status: incomplete` and the
+  operator-facing fallback is "Action executed. Explanation unavailable."
+- If the Tier B physical action fails, post-action reasoning is skipped, the
+  action failure remains in `action_log`, and the reasoning audit record
+  contains `reasoning_status: skipped`.
+- Tier C and Tier D behavior is unchanged.
+
+Rationale:
+
+- Tier B physical response latency should not depend on LLM latency or model
+  availability.
+- Tier B needs explicit semantics separate from Tier D's safety bypass.
+- Audit records must distinguish "action executed but explanation incomplete"
+  from a missing enrichment record.
+
+Known follow-up:
+
+- Before ori-cloud sync depends on joining Tier B `action_log` and
+  `reasoning_log` records, add a shared correlation ID written to both rows for
+  the same event. Timestamp proximity matching is acceptable for local review
+  but too fragile for multi-device cloud sync.
+
+---
+
 ## 2026-06-01 — Approval Replies Are Not Remote Commands
 
 **Status:** Accepted

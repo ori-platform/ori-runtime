@@ -947,6 +947,344 @@ class IntelligenceElevator:
                 filtered.append(action_name)
         return filtered
 
+    @staticmethod
+    def _matched_trigger(skill: Any, rule_result: Any) -> Any | None:
+        if not getattr(rule_result, "matched", False):
+            return None
+        rule_name = str(getattr(rule_result, "rule_name", "") or "")
+        if not rule_name:
+            return None
+        for trigger in getattr(skill, "triggers", []):
+            trigger_name = (
+                trigger.get("name")
+                if isinstance(trigger, dict)
+                else getattr(trigger, "name", None)
+            )
+            if trigger_name == rule_name:
+                return trigger
+        return None
+
+    @staticmethod
+    def _trigger_value(trigger: Any, key: str, default: Any = None) -> Any:
+        if trigger is None:
+            return default
+        if isinstance(trigger, dict):
+            return trigger.get(key, default)
+        return getattr(trigger, key, default)
+
+    def _actions_for_rule_result(
+        self,
+        *,
+        skill: Any,
+        result: ReasoningResult,
+        rule_result: Any,
+    ) -> list[str]:
+        actions: list[str] = []
+        if getattr(rule_result, "matched", False) and getattr(
+            rule_result, "rule_name", None
+        ):
+            if hasattr(skill, "get_default_actions_for_trigger"):
+                actions = skill.get_default_actions_for_trigger(rule_result.rule_name)
+            elif hasattr(skill, "actions") and isinstance(skill.actions, dict):
+                defaults = skill.actions.get("defaults") or {}
+                if isinstance(defaults, dict):
+                    maybe_actions = defaults.get(rule_result.rule_name, [])
+                    if isinstance(maybe_actions, list):
+                        actions = maybe_actions
+        elif result.proposed_action:
+            proposed = result.proposed_action
+            if hasattr(skill, "is_action_declared"):
+                if skill.is_action_declared(proposed):
+                    actions = [proposed]
+            elif (
+                hasattr(skill, "actions")
+                and isinstance(skill.actions, dict)
+                and isinstance(skill.actions.get("available"), list)
+            ):
+                available = skill.actions.get("available") or []
+                for entry in available:
+                    if isinstance(entry, dict) and entry.get("name") == proposed:
+                        actions = [proposed]
+                        break
+        return [action for action in actions if isinstance(action, str) and action]
+
+    @staticmethod
+    def _action_tiers(skill: Any) -> dict[str, str]:
+        available = []
+        if hasattr(skill, "actions") and isinstance(skill.actions, dict):
+            available = skill.actions.get("available") or []
+        tiers: dict[str, str] = {}
+        for entry in available if isinstance(available, list) else []:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                tier = str(entry.get("tier", "A")).upper()
+                if isinstance(name, str) and name:
+                    tiers[name] = tier
+            elif isinstance(entry, str):
+                tiers[entry] = "A"
+        return tiers
+
+    def _tier_b_first(self, skill: Any, actions: list[str]) -> list[str]:
+        tiers = self._action_tiers(skill)
+        return sorted(actions, key=lambda action: 0 if tiers.get(action) == "B" else 1)
+
+    def _tier_a_actions(self, skill: Any, actions: list[str]) -> list[str]:
+        tiers = self._action_tiers(skill)
+        return [action for action in actions if tiers.get(action, "A") == "A"]
+
+    def _approval_timeout_seconds(self, skill: Any, rule_result: Any) -> int:
+        matched_trigger = self._matched_trigger(skill, rule_result)
+        raw_timeout = self._trigger_value(
+            matched_trigger, "approval_timeout_seconds", 300
+        )
+        try:
+            return int(raw_timeout)
+        except (TypeError, ValueError):
+            return 300
+
+    @staticmethod
+    def _clamp_result_to_rule(
+        *,
+        result: ReasoningResult,
+        rule_result: Any,
+        rejection_capped: bool,
+    ) -> None:
+        if not (
+            getattr(rule_result, "matched", False)
+            and rule_result.action_tier in {"A", "B", "C", "D"}
+        ):
+            return
+        allow_rejection_downgrade = (
+            rejection_capped
+            and result.action_tier == "A"
+            and rule_result.action_tier != "D"
+        )
+        if result.action_tier == rule_result.action_tier or allow_rejection_downgrade:
+            return
+        logger.warning(
+            "IntelligenceElevator: clamping action tier from %s to %s for trigger=%r",
+            result.action_tier,
+            rule_result.action_tier,
+            rule_result.rule_name,
+        )
+        result.action_tier = rule_result.action_tier
+
+    async def _run_post_reasoning_hook(
+        self,
+        *,
+        result: ReasoningResult,
+        event: OriEvent,
+        skill: Any,
+        state_store: Any,
+        rule_result: Any,
+    ) -> None:
+        if not (hasattr(skill, "hooks") and hasattr(skill.hooks, "post_reasoning")):
+            return
+        from ori.skills.hooks_api import HookContext
+
+        pt_ctx = HookContext.build(
+            event,
+            state_store,
+            getattr(skill, "name", "unknown"),
+            skill_config=getattr(skill, "config", None),
+        )
+        pt_ctx.trigger_name = rule_result.rule_name if rule_result.matched else ""
+
+        try:
+            maybe = skill.hooks.post_reasoning(result, pt_ctx)
+            if asyncio.iscoroutine(maybe):
+                await maybe
+        except Exception:
+            logger.exception(
+                "IntelligenceElevator: post_reasoning hook failed for %r",
+                getattr(skill, "name", "unknown"),
+            )
+
+    async def _handle_tier_b_post_action(
+        self,
+        *,
+        event: OriEvent,
+        skill: Any,
+        state_store: Any,
+        dispatcher: Any,
+        rule_result: Any,
+    ) -> None:
+        """Execute Tier B action first, then enrich audit/operator text."""
+        immediate_result = ReasoningResult(
+            text="Action executed. Explanation pending.",
+            tier="rule",
+            model="post_action",
+            tokens_used=0,
+            latency_ms=0,
+            confidence=float(getattr(rule_result, "confidence", 1.0) or 1.0),
+            action_tier="B",
+            proposed_action=getattr(rule_result, "action", None),
+            reasoning_status="pending",
+        )
+        actions = self._actions_for_rule_result(
+            skill=skill, result=immediate_result, rule_result=rule_result
+        )
+        actions = self._tier_b_first(skill, actions)
+
+        await self._attach_decision_history_window(event, state_store)
+        context = SkillContext(
+            skill=skill,
+            event=event,
+            state_store=state_store,
+            trigger_name=rule_result.rule_name if rule_result.matched else "",
+        )
+        if isinstance(getattr(event, "context", None), dict):
+            event.context["operator_message"] = immediate_result.text
+
+        approval_timeout_seconds = self._approval_timeout_seconds(skill, rule_result)
+        action_tiers = self._action_tiers(skill)
+        tier_b_actions = [action for action in actions if action_tiers.get(action) == "B"]
+        physical_failed = False
+        for action in tier_b_actions:
+            try:
+                action_result = await dispatcher.dispatch(
+                    action=action,
+                    tier=action_tiers.get(action, "B"),
+                    context=context,
+                    result=immediate_result,
+                    approval_timeout=approval_timeout_seconds,
+                )
+            except Exception:
+                physical_failed = True
+                logger.exception(
+                    "IntelligenceElevator: Tier B post-action dispatch failed for "
+                    "action=%r trigger=%r",
+                    action,
+                    getattr(rule_result, "rule_name", ""),
+                )
+                break
+            if action_tiers.get(action) == "B" and not bool(
+                getattr(action_result, "executed", True)
+            ):
+                physical_failed = True
+                break
+
+        if physical_failed:
+            skipped = self._post_action_skipped_result(rule_result, event)
+            if isinstance(getattr(event, "context", None), dict):
+                event.context["operator_message"] = str(skipped.text or "")
+            tier_a_actions = self._tier_a_actions(skill, actions)
+            for action in tier_a_actions:
+                await dispatcher.dispatch(
+                    action=action,
+                    tier="A",
+                    context=context,
+                    result=skipped,
+                    approval_timeout=approval_timeout_seconds,
+                )
+            if state_store is not None and hasattr(state_store, "log_reasoning"):
+                await state_store.log_reasoning(
+                    result=skipped,
+                    trigger_name=event.sensor_id,
+                    device_id=event.device_id,
+                )
+            return
+
+        enrichment = await self._post_action_enrichment_result(
+            event=event,
+            skill=skill,
+            state_store=state_store,
+            rule_result=rule_result,
+        )
+        if isinstance(getattr(event, "context", None), dict):
+            event.context["operator_message"] = str(enrichment.text or "")
+
+        await self._run_post_reasoning_hook(
+            result=enrichment,
+            event=event,
+            skill=skill,
+            state_store=state_store,
+            rule_result=rule_result,
+        )
+
+        tier_a_actions = self._tier_a_actions(skill, actions)
+        for action in tier_a_actions:
+            await dispatcher.dispatch(
+                action=action,
+                tier="A",
+                context=context,
+                result=enrichment,
+                approval_timeout=approval_timeout_seconds,
+            )
+
+        if state_store is not None and hasattr(state_store, "log_reasoning"):
+            await state_store.log_reasoning(
+                result=enrichment,
+                trigger_name=event.sensor_id,
+                device_id=event.device_id,
+            )
+
+    async def _post_action_enrichment_result(
+        self,
+        *,
+        event: OriEvent,
+        skill: Any,
+        state_store: Any,
+        rule_result: Any,
+    ) -> ReasoningResult:
+        try:
+            result, _ = await self._reason_with_rule_result(
+                event=event,
+                skill=skill,
+                state_store=state_store,
+                precomputed_rule_result=rule_result,
+            )
+            if result.model == "stub":
+                return self._post_action_incomplete_result(rule_result, event)
+            self._clamp_result_to_rule(
+                result=result,
+                rule_result=rule_result,
+                rejection_capped=False,
+            )
+            result.reasoning_status = "complete"
+            result.proposed_action = result.proposed_action or getattr(
+                rule_result, "action", None
+            )
+            return result
+        except Exception:
+            logger.exception(
+                "IntelligenceElevator: post-action reasoning failed for trigger=%r",
+                getattr(rule_result, "rule_name", ""),
+            )
+            return self._post_action_incomplete_result(rule_result, event)
+
+    @staticmethod
+    def _post_action_incomplete_result(
+        rule_result: Any, event: OriEvent
+    ) -> ReasoningResult:
+        return ReasoningResult(
+            text="Action executed. Explanation unavailable.",
+            tier="post_action",
+            model="post_action_fallback",
+            tokens_used=0,
+            latency_ms=0,
+            confidence=0.0,
+            action_tier=str(getattr(rule_result, "action_tier", "B") or "B"),
+            proposed_action=getattr(rule_result, "action", None),
+            reasoning_status="incomplete",
+        )
+
+    @staticmethod
+    def _post_action_skipped_result(
+        rule_result: Any, event: OriEvent
+    ) -> ReasoningResult:
+        return ReasoningResult(
+            text="Action failed. Explanation skipped.",
+            tier="post_action",
+            model="post_action_skipped",
+            tokens_used=0,
+            latency_ms=0,
+            confidence=0.0,
+            action_tier=str(getattr(rule_result, "action_tier", "B") or "B"),
+            proposed_action=getattr(rule_result, "action", None),
+            reasoning_status="skipped",
+        )
+
     async def reason_and_dispatch(
         self,
         event: OriEvent,
@@ -978,15 +1316,28 @@ class IntelligenceElevator:
                     event.context.get("__handler_trigger_name") or ""
                 )
 
-            pre_rule_result = None
+            pre_rule_result, _ = await self._evaluate_rules_with_hooks(
+                event, skill, state_store
+            )
             if handler_trigger_name:
-                pre_rule_result, _ = await self._evaluate_rules_with_hooks(
-                    event, skill, state_store
-                )
                 if not pre_rule_result.matched:
                     return
                 if pre_rule_result.rule_name != handler_trigger_name:
                     return
+
+            if (
+                pre_rule_result.matched
+                and pre_rule_result.action_tier == "B"
+                and getattr(pre_rule_result, "reasoning_policy", "") == "post_action"
+            ):
+                await self._handle_tier_b_post_action(
+                    event=event,
+                    skill=skill,
+                    state_store=state_store,
+                    dispatcher=dispatcher,
+                    rule_result=pre_rule_result,
+                )
+                return
 
             result, rule_res = await self._reason_with_rule_result(
                 event=event,

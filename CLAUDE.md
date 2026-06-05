@@ -81,10 +81,11 @@ Tier A  INFORMATIONAL        Always autonomous. No approval. No override.
         These ARE agent actions. When Ori sends a reasoned WhatsApp message,
         no human approved it first. The agent reasoned and acted.
 
-Tier B  SOFT PHYSICAL        Autonomous by default. Operator can require approval.
+Tier B  SOFT PHYSICAL        Explicit approval or post-action policy.
         Switching power sources, adjusting thermostat setpoints,
         opening irrigation valves, dimming lights.
-        Reversible, low-consequence. Config flag: requires_approval: true.
+        Reversible, low-consequence. Use requires_approval: true or
+        reasoning_policy: post_action on physical Tier B triggers.
 
 Tier C  HARD PHYSICAL        Approval workflow. Always. No exception.
         Opening relay/contactor-controlled safety circuits,
@@ -108,7 +109,7 @@ Sensor reading arrives
 RULE ENGINE — First: Is this Tier D?
     YES → Execute Tier D action immediately. No LLM. Full stop.
     NO  → Evaluate normal rules
-          Rule matched, bypass_llm: true → Execute Tier A/B action, return
+          Rule matched, bypass_llm: true → Execute Tier D action, return
           Rule matched, bypass_llm: false → Escalate to SLM with tier hint
           No rule matched → Escalate to LOCAL SLM
     │
@@ -118,7 +119,8 @@ LOCAL SLM — Returns: reasoning text, confidence, recommended action tier
     ▼
 ACTION DISPATCHER
     Tier A → Execute informational action immediately
-    Tier B → Execute soft physical action (or approval workflow if configured)
+    Tier B → Execute soft physical action before explanation when
+             reasoning_policy: post_action, or use approval workflow
     Tier C → Run approval workflow. Send WhatsApp. Wait for YES/NO.
     Tier D → Already handled above. Never reaches dispatcher.
 ```
@@ -446,12 +448,13 @@ triggers:
     escalate_to: local_slm
     action_tier: A
 
-  # Tier B: Soft physical — switch source autonomously
+  # Tier B: Soft physical — switch source, explain after action
   - name: source_switch_recommended
     condition: "grid_voltage < 180 and inverter_battery > 0.4"
     cooldown_seconds: 60
     escalate_to: rule
     action_tier: B
+    reasoning_policy: post_action
 
   # Tier C: Hard physical — propose relay/contactor-controlled shutdown, await approval
   - name: critical_fault

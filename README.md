@@ -168,9 +168,9 @@ Tier 4  CLOUD LLM      2-5 seconds  · internet          · deep analysis + repo
 Tier A  INFORMATIONAL       Always autonomous
         Alerts, logs, reports — the agent acts without asking
 
-Tier B  SOFT PHYSICAL        Autonomous by default, configurable
+Tier B  SOFT PHYSICAL        Explicit approval or post-action policy
         Power source switching, thermostat adjustments, irrigation valves
-        The agent acts and tells you what it did
+        The agent either asks first or acts first and explains after
 
 Tier C  HARD PHYSICAL        Approval workflow — always
         Relay/contactor-controlled shutdown, high-consequence control
@@ -215,7 +215,8 @@ triggers:
 
   - name: grid_instability
     condition: "grid_voltage < 180 and inverter_battery > 0.4"
-    action_tier: B # → switches source, tells you after
+    action_tier: B
+    reasoning_policy: post_action # → switches source, explains after
 
   - name: critical_fault
     condition: "load_current > rated_capacity * 3.0"

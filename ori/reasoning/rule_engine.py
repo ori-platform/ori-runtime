@@ -76,6 +76,8 @@ class RuleResult:
     rule_name: str | None = None
     escalate_to: str | None = None  # 'rule' | 'local_slm' | 'gateway' | 'cloud'
     bypass_llm: bool = False
+    reasoning_policy: str | None = None  # e.g. 'post_action' for Tier B triggers
+    requires_approval: bool = False
     action: str | None = None
     confidence: float = 1.0
 
@@ -412,6 +414,8 @@ class RuleEngine:
             bypass_llm: bool = bool(_rule_get(rule, "bypass_llm", False))
             action_tier: str = str(_rule_get(rule, "action_tier", "A"))
             escalate_to: str | None = _rule_get(rule, "escalate_to")
+            reasoning_policy: str | None = _rule_get(rule, "reasoning_policy")
+            requires_approval: bool = bool(_rule_get(rule, "requires_approval", False))
             action: str | None = _rule_get(rule, "action")
             cooldown_s: int = int(_rule_get(rule, "cooldown_seconds", 0))
 
@@ -471,6 +475,8 @@ class RuleEngine:
                 rule_name=name,
                 escalate_to=escalate_to,
                 bypass_llm=bypass_llm,
+                reasoning_policy=reasoning_policy,
+                requires_approval=requires_approval,
                 action=action,
                 action_tier=action_tier,
                 confidence=1.0,

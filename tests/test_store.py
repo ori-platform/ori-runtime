@@ -839,7 +839,11 @@ class TestSkillState:
 # ─── reasoning_log ────────────────────────────────────────────────────────────
 
 
-def _reasoning_result(prompt: str = "", confidence: float = 0.9) -> ReasoningResult:
+def _reasoning_result(
+    prompt: str = "",
+    confidence: float = 0.9,
+    reasoning_status: str = "",
+) -> ReasoningResult:
     return ReasoningResult(
         text="Anomaly detected.",
         tier="local_slm",
@@ -849,6 +853,7 @@ def _reasoning_result(prompt: str = "", confidence: float = 0.9) -> ReasoningRes
         confidence=confidence,
         action_tier="A",
         prompt=prompt,
+        reasoning_status=reasoning_status,
     )
 
 
@@ -901,6 +906,19 @@ class TestReasoningLog:
         )
         assert row["device_id"] == "ikeja-01"
         assert row["model"] == "qwen2.5"
+
+    async def test_log_reasoning_persists_reasoning_status(self, store):
+        await store.log_reasoning(
+            result=_reasoning_result(reasoning_status="incomplete"),
+            trigger_name="t",
+            device_id="ikeja-01",
+        )
+        row = await store._run(
+            lambda: store._conn.execute(
+                "SELECT reasoning_status FROM reasoning_log"
+            ).fetchone()
+        )
+        assert row["reasoning_status"] == "incomplete"
 
 
 # ─── inbound_messages ─────────────────────────────────────────────────────────

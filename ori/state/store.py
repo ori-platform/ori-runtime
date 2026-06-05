@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS reasoning_log (
     tokens_used    INTEGER NOT NULL DEFAULT 0,
     latency_ms     INTEGER NOT NULL DEFAULT 0,
     proposed_action TEXT,
+    reasoning_status TEXT NOT NULL DEFAULT '',
     timestamp      INTEGER NOT NULL
 );
 
@@ -337,6 +338,7 @@ class StateStore:
             ("tokens_used", "INTEGER NOT NULL DEFAULT 0"),
             ("latency_ms", "INTEGER NOT NULL DEFAULT 0"),
             ("proposed_action", "TEXT"),
+            ("reasoning_status", "TEXT NOT NULL DEFAULT ''"),
         ]
         for col, typedef in _new_reasoning_cols:
             self._add_column_if_missing_on_conn(conn, "reasoning_log", col, typedef)
@@ -1947,8 +1949,8 @@ class StateStore:
             INSERT INTO reasoning_log
                 (trigger_name, tier_used, prompt, response, confidence,
                  action_tier, device_id, model, tokens_used, latency_ms,
-                 proposed_action, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 proposed_action, reasoning_status, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trigger_name,
@@ -1962,6 +1964,7 @@ class StateStore:
                 result.tokens_used,
                 result.latency_ms,
                 result.proposed_action,
+                result.reasoning_status,
                 now_ms(),
             ),
         )

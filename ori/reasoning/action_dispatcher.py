@@ -415,11 +415,7 @@ class ActionDispatcher:
                 action_result = await self._execute_immediately(action, tier, context)
 
             elif tier == ActionTier.SOFT_PHYSICAL:
-                requires_approval = False
-                if hasattr(context, "skill") and hasattr(context.skill, "config"):
-                    requires_approval = bool(
-                        context.skill.config.get("requires_approval", False)
-                    )
+                requires_approval = self._tier_b_requires_approval(context)
                 if requires_approval:
                     action_result = await self._approval_workflow(
                         action,
@@ -491,6 +487,30 @@ class ActionDispatcher:
 
         await self._log_action(action_result, context)
         return action_result
+
+    @staticmethod
+    def _tier_b_requires_approval(context: Any) -> bool:
+        """Return True when the matched Tier B trigger explicitly requires approval."""
+        trigger_name = str(getattr(context, "trigger_name", "") or "")
+        skill = getattr(context, "skill", None)
+        if skill is not None and trigger_name:
+            for trigger in getattr(skill, "triggers", []):
+                name = (
+                    trigger.get("name")
+                    if isinstance(trigger, dict)
+                    else getattr(trigger, "name", None)
+                )
+                if name != trigger_name:
+                    continue
+                return bool(
+                    trigger.get("requires_approval", False)
+                    if isinstance(trigger, dict)
+                    else getattr(trigger, "requires_approval", False)
+                )
+
+        if hasattr(context, "skill") and hasattr(context.skill, "config"):
+            return bool(context.skill.config.get("requires_approval", False))
+        return False
 
     # ── Built-in executors ────────────────────────────────────────────────────
 

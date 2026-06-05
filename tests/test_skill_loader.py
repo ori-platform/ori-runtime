@@ -230,6 +230,66 @@ class TestLoadOne:
         skill = loader.load_one(skill_dir)
         assert skill.triggers[0].action_tier == "B"
 
+    def test_trigger_reasoning_policy_parsed(self, tmp_path):
+        skill_dir = tmp_path / "s"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: test-skill
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+                protocol: i2c
+            triggers:
+              - name: over_threshold
+                condition: "value > 5.0"
+                action_tier: B
+                reasoning_policy: post_action
+            actions:
+              available:
+                - name: switch_power_source
+                  tier: B
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [switch_power_source, alert_whatsapp]
+            """,
+        )
+        loader = SkillLoader()
+        skill = loader.load_one(skill_dir)
+        assert skill.triggers[0].reasoning_policy == "post_action"
+
+    def test_trigger_requires_approval_parsed(self, tmp_path):
+        skill_dir = tmp_path / "s"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: test-skill
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+                protocol: i2c
+            triggers:
+              - name: over_threshold
+                condition: "value > 5.0"
+                action_tier: B
+                requires_approval: true
+            actions:
+              available:
+                - name: switch_power_source
+                  tier: B
+              defaults:
+                over_threshold: [switch_power_source]
+            """,
+        )
+        loader = SkillLoader()
+        skill = loader.load_one(skill_dir)
+        assert skill.triggers[0].requires_approval is True
+
     def test_tier_d_forces_bypass_llm_true(self, tmp_path):
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml(action_tier="D"))
@@ -592,6 +652,123 @@ class TestValidation:
         loader = SkillLoader()
         with pytest.raises(
             SkillValidationError, match="bypass_llm is reserved for Tier D"
+        ):
+            loader.load_one(skill_dir)
+
+    def test_post_action_without_tier_b_raises(self, tmp_path):
+        skill_dir = tmp_path / "bad-post-action"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: bad-post-action
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: A
+                reasoning_policy: post_action
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [alert_whatsapp]
+            """,
+        )
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="post_action is reserved"):
+            loader.load_one(skill_dir)
+
+    def test_invalid_reasoning_policy_raises(self, tmp_path):
+        skill_dir = tmp_path / "bad-reasoning-policy"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: bad-reasoning-policy
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: B
+                reasoning_policy: wait_for_reasoning
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [alert_whatsapp]
+            """,
+        )
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="invalid reasoning_policy"):
+            loader.load_one(skill_dir)
+
+    def test_physical_tier_b_without_explicit_policy_raises(self, tmp_path):
+        skill_dir = tmp_path / "bad-tier-b"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: bad-tier-b
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: B
+            actions:
+              available:
+                - name: switch_power_source
+                  tier: B
+              defaults:
+                over_threshold: [switch_power_source]
+            """,
+        )
+        loader = SkillLoader()
+        with pytest.raises(
+            SkillValidationError,
+            match="declares neither requires_approval=true nor reasoning_policy=post_action",
+        ):
+            loader.load_one(skill_dir)
+
+    def test_post_action_tier_b_without_tier_a_notification_raises(self, tmp_path):
+        skill_dir = tmp_path / "bad-post-action-notification"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: bad-post-action-notification
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: B
+                reasoning_policy: post_action
+            actions:
+              available:
+                - name: switch_power_source
+                  tier: B
+              defaults:
+                over_threshold: [switch_power_source]
+            """,
+        )
+        loader = SkillLoader()
+        with pytest.raises(
+            SkillValidationError,
+            match="no Tier A default action for post-action operator notification",
         ):
             loader.load_one(skill_dir)
 

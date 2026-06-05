@@ -376,6 +376,17 @@ def test_reasoning_result_proposed_action_defaults_to_none() -> None:
     assert result.proposed_action is None
 
 
+def test_reasoning_result_reasoning_status_defaults_to_empty() -> None:
+    result = ReasoningResult(
+        text="All nominal.",
+        tier="rule",
+        model="rule_engine",
+        tokens_used=0,
+        latency_ms=0,
+    )
+    assert result.reasoning_status == ""
+
+
 def test_reasoning_result_explicit_fields() -> None:
     result = ReasoningResult(
         text="Overcurrent detected.",

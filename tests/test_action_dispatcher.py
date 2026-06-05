@@ -50,14 +50,27 @@ def _event() -> OriEvent:
 class FakeSkill:
     name: str = "test-skill"
     config: dict = field(default_factory=dict)
+    triggers: list = field(default_factory=list)
     actions: dict = field(default_factory=dict)
 
 
 def _context(
-    skill_config: dict | None = None, actions: dict | None = None
+    skill_config: dict | None = None,
+    actions: dict | None = None,
+    triggers: list | None = None,
+    trigger_name: str = "",
 ) -> SkillContext:
-    skill = FakeSkill(config=skill_config or {}, actions=actions or {})
-    return SkillContext(skill=skill, event=_event(), state_store=None)
+    skill = FakeSkill(
+        config=skill_config or {},
+        actions=actions or {},
+        triggers=triggers or [],
+    )
+    return SkillContext(
+        skill=skill,
+        event=_event(),
+        state_store=None,
+        trigger_name=trigger_name,
+    )
 
 
 def _result(
@@ -351,6 +364,43 @@ class TestTierBWithApproval:
     async def test_calls_approval_workflow_when_configured(self):
         d = ActionDispatcher()
         ctx = _context(skill_config={"requires_approval": True})
+
+        with patch.object(
+            d,
+            "_approval_workflow",
+            new=AsyncMock(
+                return_value=ActionResult(
+                    action_name="switch_power_source",
+                    tier=ActionTier.SOFT_PHYSICAL,
+                    executed=True,
+                    approved=True,
+                    action_taken="switch_power_source",
+                    timestamp=_ms(),
+                )
+            ),
+        ) as mock_wf:
+            result = await d.dispatch(
+                "switch_power_source",
+                ActionTier.SOFT_PHYSICAL,
+                ctx,
+                _result(),
+            )
+
+        mock_wf.assert_awaited_once()
+        assert result.approved is True
+
+    async def test_calls_approval_workflow_when_trigger_requires_approval(self):
+        d = ActionDispatcher()
+        ctx = _context(
+            triggers=[
+                {
+                    "name": "soft_switch",
+                    "action_tier": "B",
+                    "requires_approval": True,
+                }
+            ],
+            trigger_name="soft_switch",
+        )
 
         with patch.object(
             d,

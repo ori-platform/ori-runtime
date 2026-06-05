@@ -120,6 +120,28 @@ def _tier_a_skill() -> FakeSkill:
     )
 
 
+def _tier_b_post_action_skill() -> FakeSkill:
+    return FakeSkill(
+        triggers=[
+            {
+                "name": "soft_switch",
+                "condition": "value > 3.0",
+                "action_tier": "B",
+                "reasoning_policy": "post_action",
+                "bypass_llm": False,
+                "cooldown_seconds": 0,
+            }
+        ],
+        actions={
+            "available": [
+                {"name": "switch_power_source", "tier": "B"},
+                {"name": "alert_whatsapp", "tier": "A"},
+            ],
+            "defaults": {"soft_switch": ["alert_whatsapp", "switch_power_source"]},
+        },
+    )
+
+
 def _mock_state_store(
     avg: float | None = None, history: list | None = None
 ) -> AsyncMock:
@@ -1168,6 +1190,176 @@ class TestReasonAndDispatch:
             )
 
         store.log_reasoning.assert_called_once()
+
+    async def test_tier_b_post_action_dispatches_before_reasoning(self):
+        calls: list[tuple[str, str]] = []
+        local_llm = AsyncMock()
+
+        async def reason_after_action(_prompt: str) -> ReasoningResult:
+            assert calls and calls[0] == ("switch_power_source", "B")
+            return ReasoningResult(
+                text="Grid voltage dipped below safe operating range.",
+                tier="local_slm",
+                model="qwen.gguf",
+                tokens_used=12,
+                latency_ms=20,
+                action_tier="B",
+            )
+
+        async def record_dispatch(**kwargs):
+            calls.append((kwargs["action"], kwargs["tier"]))
+
+        local_llm.reason.side_effect = reason_after_action
+        dispatcher = AsyncMock()
+        dispatcher.dispatch.side_effect = record_dispatch
+        store = _mock_state_store(avg=4.0, history=[4.0, 4.1])
+        elevator = IntelligenceElevator(local_llm=local_llm)
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            await elevator.reason_and_dispatch(
+                _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
+            )
+
+        assert calls == [
+            ("switch_power_source", "B"),
+            ("alert_whatsapp", "A"),
+        ]
+        logged = store.log_reasoning.call_args.kwargs["result"]
+        assert logged.reasoning_status == "complete"
+        assert logged.text == "Grid voltage dipped below safe operating range."
+
+    async def test_tier_b_post_action_reasoning_failure_logs_incomplete(self):
+        local_llm = AsyncMock()
+        local_llm.reason.side_effect = RuntimeError("model failed")
+        dispatcher = AsyncMock()
+        store = _mock_state_store(avg=4.0, history=[4.0, 4.1])
+        elevator = IntelligenceElevator(local_llm=local_llm)
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            await elevator.reason_and_dispatch(
+                _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
+            )
+
+        logged = store.log_reasoning.call_args.kwargs["result"]
+        assert logged.reasoning_status == "incomplete"
+        assert logged.text == "Action executed. Explanation unavailable."
+        follow_up = dispatcher.dispatch.call_args_list[-1].kwargs
+        assert follow_up["tier"] == "A"
+        assert follow_up["result"].reasoning_status == "incomplete"
+
+    async def test_tier_b_post_action_no_reasoner_logs_incomplete(self):
+        dispatcher = AsyncMock()
+        store = _mock_state_store(avg=4.0, history=[4.0, 4.1])
+        elevator = IntelligenceElevator(local_llm=None)
+
+        with patch("ori.reasoning.elevator._is_offline", return_value=True):
+            await elevator.reason_and_dispatch(
+                _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
+            )
+
+        logged = store.log_reasoning.call_args.kwargs["result"]
+        assert logged.reasoning_status == "incomplete"
+        assert logged.model == "post_action_fallback"
+
+    async def test_tier_b_post_action_failure_records_action_and_skips_reasoning(
+        self, tmp_path
+    ):
+        async def fail_executor(_action, _context):
+            return False
+
+        store = StateStore(db_path=str(tmp_path / "tier-b-failure.db"))
+        await store.open()
+        try:
+            dispatcher = ActionDispatcher()
+            dispatcher.register_executor("switch_power_source", fail_executor)
+            local_llm = AsyncMock()
+            local_llm.reason.return_value = ReasoningResult(
+                text="This should not run.",
+                tier="local_slm",
+                model="qwen.gguf",
+                tokens_used=1,
+                latency_ms=1,
+                action_tier="B",
+            )
+            elevator = IntelligenceElevator(local_llm=local_llm)
+
+            with patch("ori.reasoning.elevator._is_offline", return_value=True):
+                await elevator.reason_and_dispatch(
+                    _event(value=5.0),
+                    _tier_b_post_action_skill(),
+                    store,
+                    dispatcher,
+                )
+
+            local_llm.reason.assert_not_called()
+            actions = await store.get_action_log()
+            by_action = {row["action_name"]: row for row in actions}
+            assert by_action["alert_whatsapp"]["tier"] == "A"
+            assert by_action["alert_whatsapp"]["executed"] is True
+            assert by_action["switch_power_source"]["tier"] == "B"
+            assert by_action["switch_power_source"]["executed"] is False
+            row = await store._run(
+                lambda: store._conn.execute(
+                    "SELECT reasoning_status, response, model FROM reasoning_log"
+                ).fetchone()
+            )
+            assert row["reasoning_status"] == "skipped"
+            assert row["response"] == "Action failed. Explanation skipped."
+            assert row["model"] == "post_action_skipped"
+        finally:
+            await store.close()
+
+    async def test_tier_b_post_action_notification_failure_does_not_taint_action(
+        self, tmp_path
+    ):
+        async def successful_physical_action(_action, _context):
+            return True
+
+        async def failed_notification(_action, _context):
+            return False
+
+        store = StateStore(db_path=str(tmp_path / "tier-b-notification-failure.db"))
+        await store.open()
+        try:
+            dispatcher = ActionDispatcher()
+            dispatcher.register_executor(
+                "switch_power_source", successful_physical_action
+            )
+            dispatcher.register_executor("alert_whatsapp", failed_notification)
+            local_llm = AsyncMock()
+            local_llm.reason.return_value = ReasoningResult(
+                text="Grid voltage dipped below safe operating range.",
+                tier="local_slm",
+                model="qwen.gguf",
+                tokens_used=12,
+                latency_ms=20,
+                action_tier="B",
+            )
+            elevator = IntelligenceElevator(local_llm=local_llm)
+
+            with patch("ori.reasoning.elevator._is_offline", return_value=True):
+                await elevator.reason_and_dispatch(
+                    _event(value=5.0),
+                    _tier_b_post_action_skill(),
+                    store,
+                    dispatcher,
+                )
+
+            actions = await store.get_action_log()
+            by_action = {row["action_name"]: row for row in actions}
+            assert by_action["switch_power_source"]["tier"] == "B"
+            assert by_action["switch_power_source"]["executed"] is True
+            assert by_action["alert_whatsapp"]["tier"] == "A"
+            assert by_action["alert_whatsapp"]["executed"] is False
+            row = await store._run(
+                lambda: store._conn.execute(
+                    "SELECT reasoning_status, response FROM reasoning_log"
+                ).fetchone()
+            )
+            assert row["reasoning_status"] == "complete"
+            assert row["response"] == "Grid voltage dipped below safe operating range."
+        finally:
+            await store.close()
 
     async def test_no_actions_dispatcher_not_called(self):
         """If the skill has no default actions, dispatch is never called."""

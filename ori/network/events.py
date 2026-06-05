@@ -75,6 +75,7 @@ class ReasoningResult:
     reasoning: str = (
         ""  # fuller explanation for Tier C approval messages; falls back to text
     )
+    reasoning_status: str = ""  # "complete" | "incomplete" | "skipped"
 
 
 class ActionTier:

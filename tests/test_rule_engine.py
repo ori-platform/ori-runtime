@@ -52,6 +52,8 @@ def _rule(
     bypass_llm: bool = False,
     action: str | None = "alert_whatsapp",
     escalate_to: str | None = None,
+    reasoning_policy: str | None = None,
+    requires_approval: bool = False,
     cooldown_seconds: int = 0,
 ) -> dict:
     r: dict = {
@@ -65,6 +67,10 @@ def _rule(
         r["action"] = action
     if escalate_to is not None:
         r["escalate_to"] = escalate_to
+    if reasoning_policy is not None:
+        r["reasoning_policy"] = reasoning_policy
+    if requires_approval:
+        r["requires_approval"] = True
     return r
 
 
@@ -166,6 +172,24 @@ class TestEvaluate:
             [_rule(condition="value > 10.0", escalate_to="local_slm")],
         )
         assert result.escalate_to == "local_slm"
+
+    @pytest.mark.asyncio
+    async def test_result_carries_reasoning_policy(self):
+        engine = RuleEngine()
+        result = await engine.evaluate(
+            _event(value=15.0),
+            [_rule(condition="value > 10.0", reasoning_policy="post_action")],
+        )
+        assert result.reasoning_policy == "post_action"
+
+    @pytest.mark.asyncio
+    async def test_result_carries_requires_approval(self):
+        engine = RuleEngine()
+        result = await engine.evaluate(
+            _event(value=15.0),
+            [_rule(condition="value > 10.0", requires_approval=True)],
+        )
+        assert result.requires_approval is True
 
     @pytest.mark.asyncio
     async def test_confidence_is_1_for_rule_match(self):

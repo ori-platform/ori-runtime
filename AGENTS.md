@@ -25,7 +25,7 @@ Ori is NOT a monitoring system.
 Ori is an agent that reasons about physical signals and acts on them.
 
 Tier A actions  — always autonomous (alerts, logs)
-Tier B actions  — autonomous by default (source switching, valve control)
+Tier B actions  — soft physical; explicit approval or post-action policy required
 Tier C actions  — approval required (relay/contactor-controlled shutdowns)
 Tier D actions  — always autonomous, highest priority (safety cutoffs)
 ```
@@ -200,6 +200,9 @@ actions:
 - `action_tier` is REQUIRED on every trigger. Missing tier = validation error.
 - `bypass_llm: true` MUST be paired with `action_tier: D`. Never one without
   the other.
+- Physical Tier B triggers MUST declare either `requires_approval: true` or
+  `reasoning_policy: post_action`. Tier B immediate execution never uses
+  `bypass_llm: true`.
 - Tier C triggers MUST declare `safe_default_action`.
 - Prompts must be in plain language — no technical jargon in the output.
   The end user is a Lagos SME owner, not a systems engineer.
@@ -425,7 +428,21 @@ that are hard to debug.
 4. Tier D actions NEVER invoke an LLM.
    bypass_llm: true is set automatically. Do not add LLM calls to Tier D paths.
 
-5. Local SLM confidence is non-authoritative.
+5. Tier B immediate execution uses `reasoning_policy: post_action`, never
+   `bypass_llm: true`.
+   Physical Tier B triggers must explicitly choose either operator approval
+   (`requires_approval: true`) or post-action reasoning
+   (`reasoning_policy: post_action`). With `post_action`, the deterministic
+   Tier B action executes first, then reasoning enriches operator/audit text.
+   A `post_action` trigger must include a Tier A default action for follow-up
+   operator notification.
+   If enrichment fails, times out, or no reasoner is available, audit data must
+   record `reasoning_status: incomplete`; the already-executed physical action
+   result must not be rolled back, retried, or obscured. If the Tier B physical
+   action itself fails, post-action reasoning must be skipped and audit data
+   must record `reasoning_status: skipped`.
+
+6. Local SLM confidence is non-authoritative.
    It may be logged as telemetry, but it must never be the sole reason to keep
    reasoning on-device or to escalate to gateway/cloud. Gateway escalation must
    be driven by deterministic signals evaluated before local SLM inference:
@@ -438,17 +455,17 @@ that are hard to debug.
    gateway reasoning must not be used to create autonomous physical action
    authority; Tier C remains approval-gated and Tier D remains rule-only.
 
-6. Action executors never raise exceptions.
+7. Action executors never raise exceptions.
    They return False. The runtime must survive a failed action.
 
-7. The event loop is never blocked.
+8. The event loop is never blocked.
    time.sleep(), requests.get(), and any synchronous I/O are forbidden
    in async code paths.
 
-8. SQLite queries are always parameterised.
+9. SQLite queries are always parameterised.
    f-string or .format() SQL is a security and correctness error.
 
-9. ori.yaml is never committed to the repository.
+10. ori.yaml is never committed to the repository.
    It is in .gitignore. The example file is ori.yaml.example.
 ```
 

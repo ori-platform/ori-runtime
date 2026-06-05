@@ -66,6 +66,11 @@ class Trigger:
         escalate_to: ``'rule'`` | ``'local_slm'`` | ``'gateway'`` | ``'cloud'``.
         bypass_llm: If ``True``, the rule engine handles this trigger without
             any LLM call.  Always ``True`` for Tier D triggers (enforced).
+        requires_approval: If ``True``, Tier B trigger dispatch uses the approval
+            workflow instead of autonomous execution.
+        reasoning_policy: Optional execution/reasoning policy. ``post_action`` is
+            valid only for Tier B and executes the deterministic action before
+            asynchronous advisory reasoning.
         approval_timeout_seconds: Seconds to wait for operator approval (Tier C).
         safe_default_action: Action executed on approval timeout / NO response
             (Tier C).
@@ -77,6 +82,8 @@ class Trigger:
     cooldown_seconds: int = 0
     escalate_to: str = "local_slm"
     bypass_llm: bool = False
+    requires_approval: bool = False
+    reasoning_policy: str = ""
     approval_timeout_seconds: int = 300
     safe_default_action: str = "log_to_dashboard"
 
@@ -297,6 +304,11 @@ class SkillLoader:
             actions,
             raw.get("name", "<unknown>"),
             trigger_names=[t.name for t in triggers],
+        )
+        self._validate_tier_b_trigger_policies(
+            triggers,
+            actions,
+            raw.get("name", "<unknown>"),
         )
         prompts = raw.get("prompts") or {}
         self._validate_history_placeholder_count(
@@ -558,6 +570,8 @@ class SkillLoader:
                 )
 
             bypass_llm = bool(raw.get("bypass_llm", False))
+            requires_approval = bool(raw.get("requires_approval", False))
+            reasoning_policy = str(raw.get("reasoning_policy") or "").strip()
 
             # Tier D: enforce bypass_llm — safety-critical actions never reach LLM
             if action_tier == "D":
@@ -569,6 +583,20 @@ class SkillLoader:
                     f"Skill '{skill_name}' trigger '{name}' sets bypass_llm=true but "
                     f"action_tier={action_tier!r}. bypass_llm is reserved for Tier D "
                     f"safety-critical triggers only."
+                )
+
+            if reasoning_policy and reasoning_policy != "post_action":
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' trigger '{name}' has invalid "
+                    f"reasoning_policy={reasoning_policy!r}. Supported values: "
+                    "post_action."
+                )
+
+            if reasoning_policy == "post_action" and action_tier != "B":
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' trigger '{name}' sets "
+                    "reasoning_policy=post_action but is not Tier B. post_action is "
+                    "reserved for Tier B soft physical triggers."
                 )
 
             safe_default_action = raw.get("safe_default_action", "log_to_dashboard")
@@ -589,6 +617,8 @@ class SkillLoader:
                     cooldown_seconds=int(raw.get("cooldown_seconds", 0)),
                     escalate_to=raw.get("escalate_to", "local_slm"),
                     bypass_llm=bypass_llm,
+                    requires_approval=requires_approval,
+                    reasoning_policy=reasoning_policy,
                     approval_timeout_seconds=int(
                         raw.get("approval_timeout_seconds", 300)
                     ),
@@ -596,6 +626,55 @@ class SkillLoader:
                 )
             )
         return triggers
+
+    def _validate_tier_b_trigger_policies(
+        self,
+        triggers: list[Trigger],
+        actions_dict: dict,
+        skill_name: str,
+    ) -> None:
+        """Require explicit execution policy for physical Tier B triggers."""
+        defaults = actions_dict.get("defaults") or {}
+        available = actions_dict.get("available") or []
+        action_tiers: dict[str, str] = {}
+        for entry in available:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                tier = str(entry.get("tier", "A")).upper()
+                if isinstance(name, str) and name:
+                    action_tiers[name] = tier
+
+        for trigger in triggers:
+            if trigger.action_tier != "B":
+                continue
+            default_actions = defaults.get(trigger.name, [])
+            physical_default = any(
+                action_tiers.get(str(action_name), "") == "B"
+                for action_name in default_actions
+                if isinstance(action_name, str)
+            )
+            if not physical_default:
+                continue
+            if trigger.requires_approval or trigger.reasoning_policy == "post_action":
+                if trigger.reasoning_policy == "post_action":
+                    has_notification_default = any(
+                        action_tiers.get(str(action_name), "A") == "A"
+                        for action_name in default_actions
+                        if isinstance(action_name, str)
+                    )
+                    if not has_notification_default:
+                        raise SkillValidationError(
+                            f"Skill '{skill_name}' trigger '{trigger.name}' uses "
+                            "reasoning_policy=post_action but has no Tier A default "
+                            "action for post-action operator notification."
+                        )
+                continue
+            raise SkillValidationError(
+                f"Skill '{skill_name}' trigger '{trigger.name}' is Tier B with "
+                "Tier B default action(s) but declares neither requires_approval=true "
+                "nor reasoning_policy=post_action. Physical Tier B triggers must "
+                "choose an explicit execution policy."
+            )
 
     def _validate_history_placeholder_count(
         self,
