@@ -168,9 +168,9 @@ annotated-types==0.7.0 \
     # via
     #   -r requirements.txt
     #   pydantic
-anthropic==0.100.0 \
-    --hash=sha256:1c15769efa15d8fd5c1ebf900e25c57e3ee540f8554a29aa56e4edefffe2951d \
-    --hash=sha256:650dee9e023afb16395939ee4104bbc21f966b380210119fb91122c12099c79a
+anthropic==0.105.2 \
+    --hash=sha256:0e26b90841c2dced7cc6e98d21d5517d0be33f1876b8e779f478202e28bcaa07 \
+    --hash=sha256:e53ed5f6bf36fb1ecb9b25d8634cfd30e02fab9fb3374a0c2d5c585874757230
     # via -r requirements.txt
 anyio==4.13.0 \
     --hash=sha256:08b310f9e24a9594186fd75b4f73f4a4152069e3853f1ed8bfbf58369f4ad708 \
