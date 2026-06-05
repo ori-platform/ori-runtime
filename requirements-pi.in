@@ -1,0 +1,5 @@
+# Raspberry Pi hardware dependencies. Keep these out of requirements.in so
+# phone and generic Linux deployments do not install Pi GPIO packages.
+gpiozero>=2.0
+smbus2>=0.4
+RPi.GPIO>=0.7
