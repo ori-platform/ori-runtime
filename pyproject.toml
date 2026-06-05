@@ -52,9 +52,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
     "pre-commit>=3.7",
-    "black>=24.0",
     "ruff>=0.4",
-    "mypy>=1.10",
 ]
 
 [project.scripts]
@@ -75,10 +73,6 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 
-[tool.black]
-line-length = 88
-target-version = ["py311"]
-
 [tool.ruff]
 line-length = 88
 target-version = "py311"
@@ -86,10 +80,3 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
 ignore = ["E501"]
-
-
-[tool.mypy]
-python_version = "3.11"
-strict = false
-warn_return_any = true
-warn_unused_imports = true
