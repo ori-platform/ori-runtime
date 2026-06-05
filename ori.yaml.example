@@ -231,7 +231,7 @@ skills:
 
 
 reasoning:
-  default_tier: local                # rule | local (gateway/cloud are post-v1)
+  default_tier: local                # rule | local (gateway selected by escalation policy)
   local_model: qwen2.5-0.5b-instruct-q4_k_m  # basename or full .gguf filename/path
   model_path: /home/pi/models/       # directory containing local GGUF models
   offline_fallback: rule             # tier to use when network unavailable

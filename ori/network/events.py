@@ -65,7 +65,7 @@ class ReasoningResult:
     """Returned by the Intelligence Elevator after every reasoning call."""
 
     text: str
-    tier: str  # 'rule' | 'local_slm' | 'gateway' | 'cloud'
+    tier: str  # 'rule' | 'local_slm' | 'gateway'
     model: str
     tokens_used: int
     latency_ms: int

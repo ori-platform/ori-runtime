@@ -7,8 +7,8 @@ asyncua>=1.1
 wait-for2==0.3.2; python_version < "3.12"
 aiofiles>=23.0
 aiohttp>=3.14.0
+httpx>=0.28
 twilio>=9.0
 africastalking>=1.0
 python-dotenv>=1.0
-anthropic>=0.28
 urllib3>=2.7.0

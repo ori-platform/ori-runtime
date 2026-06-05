@@ -74,7 +74,7 @@ class RuleResult:
     matched: bool
     action_tier: str  # 'A' | 'B' | 'C' | 'D'
     rule_name: str | None = None
-    escalate_to: str | None = None  # 'rule' | 'local_slm' | 'gateway' | 'cloud'
+    escalate_to: str | None = None  # 'rule' | 'local_slm' | 'gateway'
     bypass_llm: bool = False
     reasoning_policy: str | None = None  # e.g. 'post_action' for Tier B triggers
     requires_approval: bool = False

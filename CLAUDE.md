@@ -57,14 +57,14 @@ the approval model before execution.
 ```text
 Tier 1  RULE ENGINE    microseconds  always available  safety-critical + Tier D actions
 Tier 2  LOCAL SLM      3-8 seconds   offline-capable   most everyday reasoning
-Tier 3  GATEWAY LLM    1-3 seconds   LAN required      cross-device reasoning
-Tier 4  CLOUD LLM      2-5 seconds   internet          deep analysis + reports
+Tier 3  GATEWAY LLM    1-3 seconds   LAN required      cross-device or cloud-backed reasoning
 ```
 
 The runtime selects the cheapest tier that can answer the question.
-Tier 1 is always evaluated first. Tier 4 is only reached if Tiers 1–3 are
-insufficient or unavailable. The reasoning tier and action tier are selected
-together — they are not independent decisions.
+Tier 1 is always evaluated first. Gateway reasoning is reached only through
+deterministic escalation policy or an explicit trigger floor. Cloud reasoning,
+when used, is a gateway backend, not a runtime dependency. The reasoning tier
+and action tier are selected together — they are not independent decisions.
 
 ---
 
@@ -188,7 +188,7 @@ class ActionResult:
 class ReasoningResult:
     """Returned by the Intelligence Elevator after every reasoning call."""
     text:          str
-    tier:          str          # 'rule' | 'local_slm' | 'gateway' | 'cloud'
+    tier:          str          # 'rule' | 'local_slm' | 'gateway'
     model:         str
     tokens_used:   int
     latency_ms:    int
@@ -734,8 +734,8 @@ that must be de-energised on failure.
 async def test_tier_a_fires_immediately():
     ...
 
-# Test Tier B default: soft physical fires without approval
-async def test_tier_b_autonomous_by_default():
+# Test Tier B post-action: soft physical executes before reasoning
+async def test_tier_b_post_action_dispatches_before_reasoning():
     ...
 
 # Test Tier B configured: soft physical requests approval when requires_approval: true
@@ -783,8 +783,7 @@ AT_API_KEY=
 AT_USERNAME=
 AT_SENDER_ID=ORI
 
-# Cloud LLM (Tier 4 reasoning)
-ANTHROPIC_API_KEY=
+# Cloud provider keys belong in the gateway/product environment, not runtime.
 
 # Relay control (if physical relay wired)
 RELAY_GPIO_PIN=26

@@ -152,9 +152,9 @@ class IntelligenceElevator:
        If a Tier D rule fires, returns immediately without LLM.
     2. **Local SLM** — 3–8 seconds, offline capable.
     3. **Gateway LLM** — 1–3 seconds, LAN/MQTT gateway required.
-    4. **Cloud LLM** — 2–5 seconds, internet required (not yet wired).
 
     Fallback is always ``local_slm``.
+    Cloud reasoning, when used, is a gateway backend, not a runtime tier.
 
     Args:
         local_llm: A :class:`~ori.reasoning.local_llm.LocalLLM` instance
@@ -505,15 +505,14 @@ class IntelligenceElevator:
         skill: Any,
         state_store: Any,
     ) -> str:
-        """Choose ``'rule'`` | ``'local_slm'`` | ``'gateway'`` | ``'cloud'``.
+        """Choose ``'rule'`` | ``'local_slm'`` | ``'gateway'``.
 
         Selection logic:
 
         1. Run the rule engine.  If Tier D fires → ``'rule'`` immediately.
         2. Score complexity (0.0–1.0) from deviation, volatility, hour.
         3. ``complexity < 0.3`` OR offline → ``'local_slm'``
-           ``complexity < 0.7`` AND LAN available → ``'gateway'`` (future)
-           internet available → ``'cloud'`` (future)
+           deterministic gateway signals → ``'gateway'`` when reachable
            fallback → ``'local_slm'``
         """
         rule_result, _ = await self._evaluate_rules_with_hooks(
@@ -573,7 +572,6 @@ class IntelligenceElevator:
             "rule": 1,
             "local_slm": 2,
             "gateway": 3,
-            "cloud": 4,
         }
         tier_floor = "local_slm"
         if rule_result.matched:
@@ -657,10 +655,10 @@ class IntelligenceElevator:
             return _apply_floor("local_slm")
 
         if complexity < threshold:
-            # Future: return "gateway" if LAN available
+            # Gateway selection is deterministic, not confidence/complexity-only.
             return _apply_floor("local_slm")
 
-        # Future: return "cloud" if complexity >= threshold and internet available
+        # Cloud reasoning, when used, is a gateway backend.
         return _apply_floor("local_slm")
 
     def _gateway_reasoning_available(self) -> bool:

@@ -177,7 +177,7 @@ triggers:
   - name: your_trigger_name
     condition: "value > 30.0"
     cooldown_seconds: 300
-    escalate_to: local_slm # rule | local_slm | gateway | cloud
+    escalate_to: local_slm # rule | local_slm | gateway
     action_tier: A # A | B | C | D — REQUIRED, no default
 
 prompts:
@@ -444,13 +444,13 @@ that are hard to debug.
 
 6. Local SLM confidence is non-authoritative.
    It may be logged as telemetry, but it must never be the sole reason to keep
-   reasoning on-device or to escalate to gateway/cloud. Gateway escalation must
+   reasoning on-device or to escalate to gateway. Gateway escalation must
    be driven by deterministic signals evaluated before local SLM inference:
    explicit `escalate_to: gateway`, missing baseline, history query failure,
    calibrated range breach, or related-sensor conflict. Gateway reasoning uses
    MQTT request/response on `ori/{device_id}/reasoning/request` and
    `ori/{device_id}/reasoning/response`; it must remain provider-neutral and
-   must not introduce cloud SDK dependencies into the runtime.
+   must not introduce cloud SDK dependencies into the runtime. Cloud reasoning, when used, is a gateway backend, not a runtime dependency.
    For matched triggers, action tier is trigger-authoritative. Unmatched
    gateway reasoning must not be used to create autonomous physical action
    authority; Tier C remains approval-gated and Tier D remains rule-only.

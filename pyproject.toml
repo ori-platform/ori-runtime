@@ -31,10 +31,10 @@ dependencies = [
     "pyserial>=3.5",
     "asyncua>=1.1",
     "aiofiles>=23.0",
+    "httpx>=0.28",
     "twilio>=9.0",
     "africastalking>=1.0",
     "python-dotenv>=1.0",
-    "anthropic>=0.28",
     "urllib3>=2.7.0",
 ]
 
@@ -46,6 +46,9 @@ pi = [
 ]
 llm = [
     "llama-cpp-python>=0.2",
+]
+cloud = [
+    "anthropic>=0.28",
 ]
 dev = [
     "pytest>=8.0",

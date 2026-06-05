@@ -63,7 +63,7 @@ class Trigger:
         condition: Python expression evaluated by the rule engine.
         action_tier: Required. One of ``'A'`` | ``'B'`` | ``'C'`` | ``'D'``.
         cooldown_seconds: Minimum seconds between consecutive fires. Default 0.
-        escalate_to: ``'rule'`` | ``'local_slm'`` | ``'gateway'`` | ``'cloud'``.
+        escalate_to: ``'rule'`` | ``'local_slm'`` | ``'gateway'``.
         bypass_llm: If ``True``, the rule engine handles this trigger without
             any LLM call.  Always ``True`` for Tier D triggers (enforced).
         requires_approval: If ``True``, Tier B trigger dispatch uses the approval
@@ -572,6 +572,14 @@ class SkillLoader:
             bypass_llm = bool(raw.get("bypass_llm", False))
             requires_approval = bool(raw.get("requires_approval", False))
             reasoning_policy = str(raw.get("reasoning_policy") or "").strip()
+            escalate_to = str(raw.get("escalate_to", "local_slm")).strip().lower()
+            if escalate_to not in {"rule", "local_slm", "gateway"}:
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' trigger '{name}' has invalid "
+                    f"escalate_to={escalate_to!r}. Supported runtime tiers: rule, "
+                    "local_slm, gateway. Cloud reasoning is a gateway backend; "
+                    "use escalate_to: gateway."
+                )
 
             # Tier D: enforce bypass_llm — safety-critical actions never reach LLM
             if action_tier == "D":
@@ -615,7 +623,7 @@ class SkillLoader:
                     condition=raw.get("condition", ""),
                     action_tier=action_tier,
                     cooldown_seconds=int(raw.get("cooldown_seconds", 0)),
-                    escalate_to=raw.get("escalate_to", "local_slm"),
+                    escalate_to=escalate_to,
                     bypass_llm=bypass_llm,
                     requires_approval=requires_approval,
                     reasoning_policy=reasoning_policy,

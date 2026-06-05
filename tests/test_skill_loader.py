@@ -290,6 +290,35 @@ class TestLoadOne:
         skill = loader.load_one(skill_dir)
         assert skill.triggers[0].requires_approval is True
 
+    def test_rejects_cloud_escalation_tier(self, tmp_path):
+        skill_dir = tmp_path / "s"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: test-skill
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+                protocol: i2c
+            triggers:
+              - name: over_threshold
+                condition: "value > 5.0"
+                action_tier: A
+                escalate_to: cloud
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [alert_whatsapp]
+            """,
+        )
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="use escalate_to: gateway"):
+            loader.load_one(skill_dir)
+
     def test_tier_d_forces_bypass_llm_true(self, tmp_path):
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml(action_tier="D"))

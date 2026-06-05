@@ -10,7 +10,7 @@ class DevicePolicy:
     tier: str
     relay_b_enabled: bool  # Tier B relay actions permitted
     relay_c_enabled: bool  # Tier C relay actions permitted
-    cloud_llm_enabled: bool  # Tier 4 reasoning permitted
+    cloud_llm_enabled: bool  # Gateway/cloud reasoning entitlement permitted
     valid_until: int  # unix seconds (14-day lease from ori-cloud)
     policy_version: int  # monotonically increasing
     issued_at: int

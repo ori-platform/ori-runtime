@@ -673,7 +673,7 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
     if default_tier not in {"rule", "local"}:
         raise ConfigValidationError(
             "reasoning.default_tier must be one of: rule, local. "
-            "gateway/cloud tiers are not supported in v1 runtime."
+            "gateway is selected by escalation policy; cloud is a gateway backend."
         )
 
     return ReasoningConfig(

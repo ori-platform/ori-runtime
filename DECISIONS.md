@@ -44,6 +44,37 @@ Rationale:
 
 ---
 
+## 2026-06-05 — Cloud Reasoning Is a Gateway Backend
+
+**Status:** Accepted
+
+The runtime Intelligence Elevator has three reasoning tiers: rule engine, local
+SLM, and gateway reasoning. Cloud reasoning is not a runtime-owned tier.
+
+Rules:
+
+- Runtime reasoning tiers are `rule`, `local_slm`, and `gateway`.
+- Skill triggers must not declare `escalate_to: cloud`; they use
+  `escalate_to: gateway` when higher reasoning is required.
+- The gateway decides whether a gateway reasoning request is answered by a LAN
+  model, a cloud provider, or a hybrid provider router.
+- The runtime must not depend on cloud provider SDKs by default.
+- If direct runtime cloud reasoning is ever needed for a special deployment, it
+  must be exposed as an explicit optional extra, not as a default dependency.
+
+Rationale:
+
+- The runtime only sends MQTT reasoning requests and receives provider-neutral
+  structured responses. It does not need to know whether the gateway used
+  Claude, Gemini, OpenAI, llama.cpp, or another backend.
+- Removing runtime-owned cloud reasoning keeps the edge node offline-first,
+  provider-neutral, and smaller for Pi and phone deployments.
+- Safety properties remain local: Tier D is rule-only, Tier C is
+  approval-gated, and gateway availability affects explanation quality, not
+  safety authority.
+
+---
+
 ## 2026-06-04 — Local SLM Confidence Is Non-Authoritative
 
 **Status:** Accepted
