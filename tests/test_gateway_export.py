@@ -11,8 +11,8 @@ import ori.gateway.export as gateway_export
 from ori.gateway.export import (
     GatewayExportResponder,
     MqttGatewayExportServer,
-    _parse_broker_url,
 )
+from ori.gateway.mqtt_security import parse_gateway_broker_url
 from ori.network.events import ActionResult, OriEvent, SensorReading
 from ori.reasoning.elevator import ReasoningResult
 from ori.security.gateway_messages import (
@@ -325,14 +325,12 @@ async def test_tier_c_decision_log_export_uses_runtime_store_boundary(store):
 
 
 def test_parse_broker_url_accepts_mqtt_urls():
-    parsed = _parse_broker_url("mqtt://operator:secret@broker.local:1884")
+    parsed = parse_gateway_broker_url("mqtt://operator:secret@broker.local:1884")
 
-    assert parsed == {
-        "host": "broker.local",
-        "port": 1884,
-        "username": "operator",
-        "password": "secret",
-    }
+    assert parsed.host == "broker.local"
+    assert parsed.port == 1884
+    assert parsed.username == "operator"
+    assert parsed.password == "secret"
 
 
 async def test_mqtt_server_publishes_response_on_request_topic(store):
@@ -421,9 +419,13 @@ async def test_mqtt_server_subscribes_to_device_request_topic(store):
             self.loop_started = False
             self.loop_stopped = False
             self.disconnected = False
+            self.tls_context = None
 
         def username_pw_set(self, username, password):
             pass
+
+        def tls_set_context(self, context):
+            self.tls_context = context
 
         def connect(self, host, port, keepalive):
             self.connected = (host, port, keepalive)
@@ -444,7 +446,7 @@ async def test_mqtt_server_subscribes_to_device_request_topic(store):
     fake = _FakeClient()
     shutdown = asyncio.Event()
     server = MqttGatewayExportServer(
-        broker_url="mqtt://localhost:1884",
+        broker_url="mqtts://localhost",
         responder=_responder(store),
         client_factory=lambda **_: fake,
     )
@@ -455,7 +457,8 @@ async def test_mqtt_server_subscribes_to_device_request_topic(store):
 
     await asyncio.gather(server.serve_until(shutdown), _stop())
 
-    assert fake.connected == ("localhost", 1884, 60)
+    assert fake.connected == ("localhost", 8883, 60)
+    assert fake.tls_context is not None
     assert fake.subscribed == ["ori/dev-01/export/request"]
     assert fake.loop_started is True
     assert fake.loop_stopped is True

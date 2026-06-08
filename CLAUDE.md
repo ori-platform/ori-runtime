@@ -76,6 +76,8 @@ responses and export requests before using them.
 Broker hardening is documented in `docs/MQTT_SECURITY.md`. Production brokers
 must disable anonymous access, use separate runtime/gateway MQTT users, and
 apply per-device topic ACLs.
+Runtime-gateway transport supports `mqtts://` and `gateway.tls`; TLS is
+defense-in-depth and does not replace HMAC envelope authentication.
 
 ---
 
@@ -579,6 +581,12 @@ reasoning:
 gateway:
   enabled: false
   broker_url: mqtt://192.168.1.10:1883
+  tls:
+    enabled: false
+    ca_certfile: ""
+    certfile: ""
+    keyfile: ""
+    keyfile_password_env: ""
   auth:
     enabled: false
     shared_secret_env: GATEWAY_SHARED_SECRET

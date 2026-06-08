@@ -258,6 +258,12 @@ reasoning:
 gateway:
   enabled: false                     # starts MQTT gateway integration over the LAN broker
   broker_url: mqtt://192.168.1.10:1883
+  tls:
+    enabled: false                   # use mqtts:// or set true when broker TLS is required
+    ca_certfile: ""                  # e.g. /etc/ori/certs/site-ca.crt
+    certfile: ""                     # optional client certificate
+    keyfile: ""                      # optional client private key
+    keyfile_password_env: ""         # env var name only, if keyfile is encrypted
   auth:
     enabled: false                   # production sites should enable HMAC envelopes
     shared_secret_env: GATEWAY_SHARED_SECRET # env var name only; never put the secret in ori.yaml

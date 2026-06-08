@@ -56,9 +56,13 @@ class _FakeClient:
         self.loop_started = False
         self.loop_stopped = False
         self.disconnected = False
+        self.tls_context = None
 
     def username_pw_set(self, username, password):
         self.credentials = (username, password)
+
+    def tls_set_context(self, context):
+        self.tls_context = context
 
     def connect(self, host, port, keepalive):
         self.connected = (host, port, keepalive)
@@ -150,6 +154,33 @@ async def test_mqtt_gateway_reasoner_publishes_contract_payload():
         "action_tier_hint": "C",
         "timeout_ms": 1000,
     }
+
+
+async def test_mqtt_gateway_reasoner_applies_tls_for_mqtts_url():
+    fake = _FakeClient(
+        response_builder=lambda req: {
+            "request_id": req["request_id"],
+            "text": "Gateway TLS analysis completed.",
+            "model": "llama-gateway",
+            "tokens_used": 10,
+            "latency_ms": 50,
+            "confidence": 0.5,
+            "action_tier": "A",
+            "proposed_action": None,
+        }
+    )
+    reasoner = MqttGatewayReasoner(
+        broker_url="mqtts://broker.local",
+        device_id="site-a",
+        timeout_ms=1000,
+        client_factory=lambda **_: fake,
+        request_id_factory=lambda: "req-tls",
+    )
+
+    await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+
+    assert fake.connected == ("broker.local", 8883, 60)
+    assert fake.tls_context is not None
 
 
 async def test_mqtt_gateway_reasoner_raises_on_gateway_error():

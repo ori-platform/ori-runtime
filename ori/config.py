@@ -126,6 +126,7 @@ class GatewayConfig:
     broker_url: str
     reasoning: dict = field(default_factory=dict)
     auth: dict = field(default_factory=dict)
+    tls: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -738,11 +739,35 @@ def _parse_gateway(data: Any) -> GatewayConfig:
     auth["max_clock_skew_ms"] = max_clock_skew_ms
     auth["replay_ttl_ms"] = replay_ttl_ms
 
+    tls_raw = data.get("tls") or {}
+    if not isinstance(tls_raw, dict):
+        raise ConfigValidationError("'gateway.tls' section must be a mapping.")
+    tls = dict(tls_raw)
+    if "insecure_skip_verify" in tls or "insecure" in tls:
+        raise ConfigValidationError(
+            "gateway.tls.insecure_skip_verify is not supported; configure ca_certfile for self-signed brokers"
+        )
+    tls["enabled"] = (
+        str(tls.get("enabled", "false")).strip().lower() == "true"
+        or tls.get("enabled") is True
+    )
+    for key in ("ca_certfile", "certfile", "keyfile", "keyfile_password_env"):
+        tls[key] = str(tls.get(key, "") or "").strip()
+    if tls["keyfile"] and not tls["certfile"]:
+        raise ConfigValidationError(
+            "gateway.tls.certfile is required when gateway.tls.keyfile is set"
+        )
+    if tls["keyfile_password_env"] and not tls["keyfile"]:
+        raise ConfigValidationError(
+            "gateway.tls.keyfile is required when gateway.tls.keyfile_password_env is set"
+        )
+
     return GatewayConfig(
         enabled=bool(data.get("enabled", False)),
         broker_url=str(data.get("broker_url", "")),
         reasoning=reasoning,
         auth=auth,
+        tls=tls,
     )
 
 

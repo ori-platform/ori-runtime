@@ -113,6 +113,93 @@ class TestLoadExample:
         assert cfg.gateway.auth["shared_secret_env"] == "GATEWAY_SHARED_SECRET"
         assert cfg.gateway.auth["max_clock_skew_ms"] == 300_000
         assert cfg.gateway.auth["replay_ttl_ms"] == 300_000
+        assert cfg.gateway.tls["enabled"] is False
+        assert cfg.gateway.tls["ca_certfile"] == ""
+        assert cfg.gateway.tls["certfile"] == ""
+        assert cfg.gateway.tls["keyfile"] == ""
+        assert cfg.gateway.tls["keyfile_password_env"] == ""
+
+    def test_gateway_tls_keyfile_requires_certfile(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local
+              tls:
+                enabled: true
+                keyfile: /etc/ori/certs/runtime.key
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.tls.certfile"):
+            Config.load(yaml_path)
+
+    def test_gateway_tls_key_password_requires_keyfile(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local
+              tls:
+                enabled: true
+                certfile: /etc/ori/certs/runtime.crt
+                keyfile_password_env: MQTT_KEY_PASSWORD
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.tls.keyfile"):
+            Config.load(yaml_path)
+
+    def test_gateway_tls_rejects_insecure_skip_verify(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local
+              tls:
+                enabled: true
+                insecure_skip_verify: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="insecure_skip_verify"):
+            Config.load(yaml_path)
 
     def test_gateway_auth_requires_secret_env_when_enabled(self, tmp_path):
         yaml_path = _write_yaml(

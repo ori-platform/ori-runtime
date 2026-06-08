@@ -296,10 +296,19 @@ class TestLocalSLMWiring:
         captured = {}
 
         class _FakeGatewayReasoner:
-            def __init__(self, *, broker_url, device_id, timeout_ms, message_auth=None):
+            def __init__(
+                self,
+                *,
+                broker_url,
+                device_id,
+                timeout_ms,
+                tls_config=None,
+                message_auth=None,
+            ):
                 captured["broker_url"] = broker_url
                 captured["device_id"] = device_id
                 captured["timeout_ms"] = timeout_ms
+                captured["tls_config"] = tls_config
                 captured["message_auth"] = message_auth
 
         monkeypatch.setattr("ori.runtime.MqttGatewayReasoner", _FakeGatewayReasoner)
@@ -308,6 +317,7 @@ class TestLocalSLMWiring:
                 enabled=True,
                 broker_url="mqtt://broker.local:1884",
                 reasoning={"enabled": True, "timeout_ms": 2500},
+                tls={},
             ),
             device=SimpleNamespace(id="test-device-01"),
         )
@@ -319,6 +329,7 @@ class TestLocalSLMWiring:
             "broker_url": "mqtt://broker.local:1884",
             "device_id": "test-device-01",
             "timeout_ms": 2500,
+            "tls_config": {},
             "message_auth": None,
         }
 

@@ -121,6 +121,33 @@ Rationale:
 
 ---
 
+## 2026-06-06 — Runtime-Gateway MQTT TLS Is Transport Defense-in-Depth
+
+**Status:** Accepted
+
+Runtime-gateway MQTT clients support TLS via `mqtts://` broker URLs and the
+`gateway.tls` config block. TLS protects transport confidentiality on the site
+LAN, but it does not replace broker ACLs or HMAC envelope authentication.
+
+Rules:
+
+- `mqtts://` defaults to port `8883`; `mqtt://` and `tcp://` default to `1883`.
+- TLS certificate paths may be configured under `gateway.tls`.
+- Private-key passwords are read from the environment variable named by
+  `gateway.tls.keyfile_password_env`; the password value itself must not appear
+  in `ori.yaml`.
+- The runtime does not expose an `insecure_skip_verify` production config flag
+  for gateway transport.
+
+Rationale:
+
+- TLS prevents passive LAN sniffing of gateway reasoning/export traffic.
+- HMAC remains the message authenticity and replay boundary.
+- Avoiding an insecure verification toggle prevents accidental permanent test
+  settings on safety-critical deployments.
+
+---
+
 ## 2026-06-04 — Local SLM Confidence Is Non-Authoritative
 
 **Status:** Accepted

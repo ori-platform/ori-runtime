@@ -11,8 +11,8 @@ import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import urlparse
 
+from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.network.events import OriEvent, ReasoningResult
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
@@ -90,13 +90,14 @@ class MqttGatewayReasoner:
         broker_url: str,
         device_id: str,
         timeout_ms: int = DEFAULT_GATEWAY_REASONING_TIMEOUT_MS,
+        tls_config: dict[str, Any] | None = None,
         client_factory: Callable[..., Any] | None = None,
         request_id_factory: Callable[[], str] | None = None,
         message_auth: GatewayMessageAuthenticator | None = None,
     ) -> None:
         if not _PAHO_AVAILABLE or mqtt is None:
             raise RuntimeError("paho-mqtt is not installed")
-        self._broker = _parse_broker_url(broker_url)
+        self._broker = parse_gateway_broker_url(broker_url, tls_config=tls_config)
         self._device_id = _validate_topic_segment(
             device_id,
             "device_id",
@@ -238,14 +239,15 @@ class MqttGatewayReasoner:
         client.on_message = _on_message
 
         try:
-            username = self._broker.get("username")
-            password = self._broker.get("password")
+            username = self._broker.username
+            password = self._broker.password
             if username:
                 client.username_pw_set(username, password)
+            apply_tls_context(client, self._broker)
             await asyncio.to_thread(
                 client.connect,
-                self._broker["host"],
-                int(self._broker["port"]),
+                self._broker.host,
+                int(self._broker.port),
                 60,
             )
             await asyncio.to_thread(client.loop_start)
@@ -369,25 +371,6 @@ def _default_client_factory(*, client_id: str) -> Any:
     except TypeError:
         kwargs.pop("callback_api_version", None)
         return mqtt.Client(**kwargs)
-
-
-def _parse_broker_url(broker_url: str) -> dict[str, Any]:
-    raw = str(broker_url or "").strip()
-    if not raw:
-        raise ValueError(
-            "gateway.broker_url is required when gateway reasoning is enabled"
-        )
-    parsed = urlparse(raw if "://" in raw else f"mqtt://{raw}")
-    if parsed.scheme not in {"mqtt", "tcp"}:
-        raise ValueError("gateway.broker_url must use mqtt:// or tcp://")
-    if not parsed.hostname:
-        raise ValueError("gateway.broker_url must include a broker host")
-    return {
-        "host": parsed.hostname,
-        "port": parsed.port or 1883,
-        "username": parsed.username or "",
-        "password": parsed.password or "",
-    }
 
 
 def _validate_topic_segment(

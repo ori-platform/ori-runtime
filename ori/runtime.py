@@ -1498,6 +1498,7 @@ class OriRuntime:
             server = MqttGatewayExportServer(
                 broker_url=config.gateway.broker_url,
                 responder=responder,
+                tls_config=getattr(config.gateway, "tls", {}),
             )
         except Exception:
             logger.exception("[gateway-export] invalid responder configuration")
@@ -2823,6 +2824,7 @@ def _build_gateway_reasoner(config: Config) -> MqttGatewayReasoner | None:
             broker_url=config.gateway.broker_url,
             device_id=config.device.id,
             timeout_ms=int(reasoning_cfg.get("timeout_ms", 10_000)),
+            tls_config=getattr(config.gateway, "tls", {}),
             message_auth=_build_gateway_message_auth(config),
         )
     except Exception:

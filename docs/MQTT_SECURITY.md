@@ -33,7 +33,13 @@ Production deployments should enable gateway message authentication:
 ```yaml
 gateway:
   enabled: true
-  broker_url: mqtt://ori-runtime:${ORI_RUNTIME_MQTT_PASSWORD}@192.168.1.10:1883
+  broker_url: mqtts://ori-runtime:${ORI_RUNTIME_MQTT_PASSWORD}@192.168.1.10:8883
+  tls:
+    enabled: true
+    ca_certfile: /etc/ori/certs/site-ca.crt
+    certfile: ""
+    keyfile: ""
+    keyfile_password_env: ""
   auth:
     enabled: true
     shared_secret_env: GATEWAY_SHARED_SECRET
@@ -153,8 +159,8 @@ require_certificate false
 ```
 
 Runtime MQTT adapter TLS options are available for sensor adapters. Runtime
-gateway reasoning/export transport TLS support is tracked separately and should
-follow the same broker/credential boundary.
+gateway reasoning/export transport also supports `mqtts://` broker URLs and the
+`gateway.tls` config block shown above.
 
 ## Deployment Checklist
 

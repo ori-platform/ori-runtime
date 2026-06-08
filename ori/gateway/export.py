@@ -15,8 +15,8 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
-from urllib.parse import urlparse
 
+from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
@@ -390,11 +390,12 @@ class MqttGatewayExportServer:
         *,
         broker_url: str,
         responder: GatewayExportResponder,
+        tls_config: dict[str, Any] | None = None,
         client_factory: Callable[..., Any] | None = None,
     ) -> None:
         if not _PAHO_AVAILABLE or mqtt is None:
             raise RuntimeError("paho-mqtt is not installed")
-        self._broker = _parse_broker_url(broker_url)
+        self._broker = parse_gateway_broker_url(broker_url, tls_config=tls_config)
         self._responder = responder
         self._client_factory = client_factory or _default_client_factory
         self._client: Any = None
@@ -409,22 +410,23 @@ class MqttGatewayExportServer:
         client.on_connect = self._on_connect
         client.on_message = self._on_message
         try:
-            username = self._broker.get("username")
-            password = self._broker.get("password")
+            username = self._broker.username
+            password = self._broker.password
             if username:
                 client.username_pw_set(username, password)
+            apply_tls_context(client, self._broker)
             await asyncio.to_thread(
                 client.connect,
-                self._broker["host"],
-                int(self._broker["port"]),
+                self._broker.host,
+                int(self._broker.port),
                 60,
             )
             await asyncio.to_thread(client.loop_start)
             logger.info(
                 "[gateway-export] MQTT responder listening on %s via %s:%s",
                 self._responder.request_topic,
-                self._broker["host"],
-                self._broker["port"],
+                self._broker.host,
+                self._broker.port,
             )
             await shutdown_event.wait()
         except asyncio.CancelledError:
@@ -503,23 +505,6 @@ def _default_client_factory(*, client_id: str) -> Any:
     except TypeError:
         kwargs.pop("callback_api_version", None)
         return mqtt.Client(**kwargs)
-
-
-def _parse_broker_url(broker_url: str) -> dict[str, Any]:
-    raw = str(broker_url or "").strip()
-    if not raw:
-        raise ValueError("gateway.broker_url is required when gateway.enabled is true")
-    parsed = urlparse(raw if "://" in raw else f"mqtt://{raw}")
-    if parsed.scheme not in {"mqtt", "tcp"}:
-        raise ValueError("gateway.broker_url must use mqtt:// or tcp://")
-    if not parsed.hostname:
-        raise ValueError("gateway.broker_url must include a broker host")
-    return {
-        "host": parsed.hostname,
-        "port": parsed.port or 1883,
-        "username": parsed.username or "",
-        "password": parsed.password or "",
-    }
 
 
 def _required_text(request: dict[str, Any], key: str) -> str:
