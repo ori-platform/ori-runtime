@@ -354,9 +354,7 @@ def test_tier_c_safe_default_is_informational_not_physical():
     tier_c = next(
         t for t in skill.triggers if t.name == "empty_business_hours_high_power"
     )
-    available_by_name = {
-        a["name"]: a for a in skill.actions.get("available", [])
-    }
+    available_by_name = {a["name"]: a for a in skill.actions.get("available", [])}
     safe_default = tier_c.safe_default_action
     assert safe_default == "log_to_dashboard"
     assert available_by_name[safe_default]["tier"] == "A"
