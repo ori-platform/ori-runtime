@@ -244,6 +244,7 @@ When Ori proposes a hard physical action, this is what the operator receives:
 ```text
 ORI ALERT — Action Required
 Device: energy-monitor-ikeja-office-01
+Proposal ID: AB12CD34
 Time: Wednesday 14:32
 
 OBSERVATION:
@@ -259,9 +260,14 @@ Open the installer-wired safety circuit to cut power to the protected load.
 
 CONFIDENCE: 94%
 
-Reply YES to approve  |  Reply NO to cancel
+Reply YES-AB12CD34 to approve  |  Reply NO-AB12CD34 to cancel
+Bare YES/NO is accepted only for the active pending proposal.
 Auto-cancel in 5 minutes if no response.
 ```
+
+The message is delivered over SMS (primary for Nigeria deployments) with automatic
+failover to WhatsApp when SMS is unavailable, or WhatsApp-first when configured.
+The same message format is used on both channels.
 
 The agent does the diagnosis. The operator approves or rejects a specific, fully-reasoned proposal.
 
