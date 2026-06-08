@@ -810,3 +810,34 @@ The product claim that Ori learns a site's rhythm should be backed by cheap,
 explainable local history. A recurring Monday-morning AC load can be treated
 differently from the same draw at an unusual time without asking an LLM to
 guess or trusting model-reported confidence.
+
+---
+
+## 2026-06-08 — Retail Occupancy Optimizer Uses Occupancy-Gated Actuation
+
+**Status:** Accepted
+
+Retail energy optimisation combines occupancy and total-power context before
+requesting or executing physical energy actions. The runtime treats occupancy
+as an actuation guard, not as a safety override.
+
+Rules:
+
+- Business-hours empty/high-load conditions are Tier C. The runtime requests
+  operator approval before eco-mode or similar hard physical changes.
+- Off-hours empty/high-load conditions may be Tier B with
+  `reasoning_policy: post_action`. The deterministic load-shed action executes
+  first and reasoning enriches the operator/audit message after execution.
+- The Tier B path must include a Tier A follow-up notification default.
+- Missing occupancy state, stale power state, or missing power baseline history
+  fails closed and does not trigger physical actuation.
+- Deployment-specific physical actions such as HVAC eco mode or non-critical
+  load shedding are explicit skill capabilities and must be mapped to real
+  executors in site configuration before production use.
+- Tier D safety remains unrelated and cannot be suppressed by occupancy context.
+
+Rationale:
+
+The skill makes Ori commercially useful for SMEs by reducing wasted overnight
+energy while preserving actuation trust during business hours, where occupancy
+sensors can be wrong and customers may still be using the space.

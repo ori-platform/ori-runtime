@@ -331,6 +331,9 @@ ori/
 │   ├── energy-anomaly-detector/
 │   │   ├── skill.yaml
 │   │   └── hooks.py
+│   ├── retail-occupancy-optimizer/
+│   │   ├── skill.yaml
+│   │   └── hooks.py
 │   ├── hvac-refrigerant-monitor/
 │   │   ├── skill.yaml
 │   │   └── hooks.py
