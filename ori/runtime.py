@@ -61,6 +61,8 @@ from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
+    GatewayMessageEncryptionConfig,
+    GatewayMessageEncryptor,
 )
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_command_lockout import (
@@ -1494,6 +1496,7 @@ class OriRuntime:
                 state_store=self._state_store,
                 health_snapshot_provider=self._build_health_snapshot,
                 message_auth=_build_gateway_message_auth(config),
+                message_encryptor=_build_gateway_message_encryptor(config),
             )
             server = MqttGatewayExportServer(
                 broker_url=config.gateway.broker_url,
@@ -2856,6 +2859,25 @@ def _build_gateway_message_auth(config: Config) -> GatewayMessageAuthenticator |
             replay_ttl_ms=int(auth_cfg.get("replay_ttl_ms", 300_000)),
         )
     )
+
+
+def _build_gateway_message_encryptor(config: Config) -> GatewayMessageEncryptor | None:
+    """Build optional AES-GCM encryption for sensitive export payloads."""
+    raw_encryption = getattr(config.gateway, "encryption", {})
+    encryption_cfg = raw_encryption if isinstance(raw_encryption, dict) else {}
+    if not bool(encryption_cfg.get("enabled", False)):
+        return None
+    raw_auth = getattr(config.gateway, "auth", {})
+    auth_cfg = raw_auth if isinstance(raw_auth, dict) else {}
+    if not bool(auth_cfg.get("enabled", False)):
+        raise ValueError("gateway encryption requires gateway auth")
+    env_name = str(auth_cfg.get("shared_secret_env", "") or "").strip()
+    secret = os.environ.get(env_name, "") if env_name else ""
+    if not secret:
+        raise ValueError(
+            f"gateway encryption is enabled but environment variable {env_name!r} is empty"
+        )
+    return GatewayMessageEncryptor(GatewayMessageEncryptionConfig(shared_secret=secret))
 
 
 def _process_target_from_context(ctx: SkillContext) -> tuple[int | None, str]:

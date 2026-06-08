@@ -20,6 +20,7 @@ from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_ur
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
+    GatewayMessageEncryptor,
 )
 
 try:
@@ -36,6 +37,12 @@ EXPORT_REQUEST_TOPIC_TEMPLATE = "ori/{device_id}/export/request"
 EXPORT_RESPONSE_TOPIC_TEMPLATE = "ori/{device_id}/export/response/{request_id}"
 SUPPORTED_EXPORT_TYPES = {
     "health",
+    "sensor_history",
+    "action_log",
+    "reasoning_log",
+    "tier_c_decision_log",
+}
+SENSITIVE_EXPORT_TYPES = {
     "sensor_history",
     "action_log",
     "reasoning_log",
@@ -68,9 +75,18 @@ class ExportResponse:
         }
 
     def to_json_bytes(
-        self, message_auth: GatewayMessageAuthenticator | None = None
+        self,
+        message_auth: GatewayMessageAuthenticator | None = None,
+        message_encryptor: GatewayMessageEncryptor | None = None,
     ) -> bytes:
         payload = self.as_dict()
+        if message_encryptor is not None and self.export_type in SENSITIVE_EXPORT_TYPES:
+            if message_auth is None:
+                raise ValueError("gateway export encryption requires message_auth")
+            payload = message_encryptor.encrypt(
+                payload,
+                message_type="export_response",
+            )
         if message_auth is not None:
             payload = message_auth.sign(payload, message_type="export_response")
         return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
@@ -88,11 +104,15 @@ class GatewayExportResponder:
         state_store: Any,
         health_snapshot_provider: Callable[[], dict[str, Any]],
         message_auth: GatewayMessageAuthenticator | None = None,
+        message_encryptor: GatewayMessageEncryptor | None = None,
     ) -> None:
+        if message_encryptor is not None and message_auth is None:
+            raise ValueError("gateway export encryption requires message_auth")
         self._device_id = str(device_id)
         self._state_store = state_store
         self._health_snapshot_provider = health_snapshot_provider
         self._message_auth = message_auth
+        self._message_encryptor = message_encryptor
 
     @property
     def request_topic(self) -> str:
@@ -475,7 +495,10 @@ class MqttGatewayExportServer:
         await asyncio.to_thread(
             client.publish,
             topic,
-            response.to_json_bytes(self._responder._message_auth),
+            response.to_json_bytes(
+                self._responder._message_auth,
+                self._responder._message_encryptor,
+            ),
             qos=1,
         )
 

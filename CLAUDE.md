@@ -73,6 +73,13 @@ secret is separate from remote-command secrets. Authenticated deployments sign
 runtime reasoning requests and export responses, and verify gateway reasoning
 responses and export requests before using them.
 
+Sensitive runtime export responses can also be encrypted with
+`gateway.encryption.enabled: true`. Encryption requires authenticated gateway
+envelopes and applies to `sensor_history`, `action_log`, `reasoning_log`, and
+`tier_c_decision_log` responses. The runtime derives a separate AES-GCM key from
+the gateway shared secret with HKDF domain separation; TLS remains transport
+defense-in-depth, not a replacement for HMAC or payload encryption.
+
 Broker hardening is documented in `docs/MQTT_SECURITY.md`. Production brokers
 must disable anonymous access, use separate runtime/gateway MQTT users, and
 apply per-device topic ACLs.
@@ -592,6 +599,8 @@ gateway:
     shared_secret_env: GATEWAY_SHARED_SECRET
     max_clock_skew_ms: 300000
     replay_ttl_ms: 300000
+  encryption:
+    enabled: false
   reasoning:
     enabled: true
     timeout_ms: 10000
@@ -818,7 +827,7 @@ AT_USERNAME=
 AT_SENDER_ID=ORI
 
 # Cloud provider keys belong in the gateway/product environment, not runtime.
-GATEWAY_SHARED_SECRET=  # Site-local MQTT envelope HMAC secret.
+GATEWAY_SHARED_SECRET=  # Site-local MQTT envelope HMAC/encryption root secret.
 
 # Relay control (if physical relay wired)
 RELAY_GPIO_PIN=26

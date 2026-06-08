@@ -269,6 +269,8 @@ gateway:
     shared_secret_env: GATEWAY_SHARED_SECRET # env var name only; never put the secret in ori.yaml
     max_clock_skew_ms: 300000
     replay_ttl_ms: 300000
+  encryption:
+    enabled: false                   # encrypt sensitive export responses; requires gateway.auth.enabled
   reasoning:
     enabled: true                    # Tier 3 request/response on ori/{device_id}/reasoning/*
     timeout_ms: 10000                # per-phase timeout: connect/subscribe and response wait

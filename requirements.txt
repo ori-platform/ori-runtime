@@ -441,6 +441,7 @@ cryptography==46.0.7 \
     --hash=sha256:fdd1736fed309b4300346f88f74cd120c27c56852c3838cab416e7a166f67298 \
     --hash=sha256:ffca7aa1d00cf7d6469b988c581598f2259e46215e0140af408966a24cf086ce
     # via
+    #   -r requirements.in
     #   asyncua
     #   pyopenssl
 frozenlist==1.8.0 \

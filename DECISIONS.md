@@ -715,3 +715,37 @@ Implementation:
   must be within the operator's trust boundary. If the HMAC shared secret is
   ever compromised, an attacker could direct the device to exfiltrate the
   bearer token by supplying a URL they control.
+
+---
+
+## 2026-06-06 — Sensitive MQTT Export Payloads Are Encrypted Above Broker Layer
+
+**Status:** Accepted
+
+Runtime-gateway export responses that carry historical or audit data must be
+optionally encrypted at the application layer before publishing to MQTT.
+
+Rules:
+
+- `gateway.encryption.enabled` requires `gateway.auth.enabled`. Encryption
+  without authenticated, replay-checked envelopes is not a supported runtime
+  posture.
+- Sensitive export responses are `sensor_history`, `action_log`,
+  `reasoning_log`, and `tier_c_decision_log`.
+- Sensitive export payloads are encrypted with AES-GCM before the HMAC envelope
+  is applied. The broker sees routing metadata and ciphertext, not `items` or
+  audit rows.
+- The AES-GCM key is derived from the gateway shared secret using HKDF domain
+  separation. The raw HMAC key is not reused directly as the encryption key.
+- Health export responses may remain plaintext operational posture.
+- Gateway support must decrypt the encrypted response envelope before this is
+  enabled in production deployments.
+
+Rationale:
+
+TLS protects the network pipe, but a broker or broker credential compromise can
+still expose plaintext JSON routed through MQTT. HMAC proves authenticity and
+freshness, but does not hide data. Application-layer encryption protects
+historical sensor readings, action logs, reasoning logs, and Tier C approval
+audit rows from broker-side plaintext exposure while keeping the runtime-gateway
+contract provider-neutral and LAN-compatible.

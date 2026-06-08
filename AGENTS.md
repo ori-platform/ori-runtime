@@ -650,6 +650,15 @@ Violating them creates vulnerabilities that affect physical hardware.
     local-console approval input must be logged and ignored until timeout, not
     silently converted to NO.
 
+14. Runtime-gateway MQTT encryption protects sensitive export payloads only
+    when authenticated gateway envelopes are enabled. Do not enable
+    `gateway.encryption.enabled` without `gateway.auth.enabled`. Sensitive
+    export responses (`sensor_history`, `action_log`, `reasoning_log`, and
+    `tier_c_decision_log`) must be encrypted before HMAC signing so the broker
+    cannot read historical business/audit data and the gateway can still verify
+    ciphertext authenticity and replay freshness. Health exports may remain
+    plaintext operational posture.
+
 ---
 
 ## Supply Chain Security Invariants

@@ -32,6 +32,7 @@ from ori.reasoning.elevator import SkillContext
 from ori.runtime import (
     OriRuntime,
     _build_gateway_message_auth,
+    _build_gateway_message_encryptor,
     _build_gateway_reasoner,
     _build_local_llm,
     _coap_command_from_context,
@@ -93,6 +94,57 @@ def test_build_gateway_message_auth_rejects_missing_env_secret(monkeypatch):
 
     with pytest.raises(ValueError, match="GATEWAY_SHARED_SECRET"):
         _build_gateway_message_auth(config)
+
+
+def test_build_gateway_message_encryptor_uses_gateway_secret(monkeypatch):
+    monkeypatch.setenv("GATEWAY_SHARED_SECRET", "site-local-secret")
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+            },
+            encryption={"enabled": True},
+        )
+    )
+
+    encryptor = _build_gateway_message_encryptor(config)
+
+    assert encryptor is not None
+
+
+def test_build_gateway_message_encryptor_rejects_missing_env_secret(monkeypatch):
+    monkeypatch.delenv("GATEWAY_SHARED_SECRET", raising=False)
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+            },
+            encryption={"enabled": True},
+        )
+    )
+
+    with pytest.raises(ValueError, match="GATEWAY_SHARED_SECRET"):
+        _build_gateway_message_encryptor(config)
+
+
+def test_build_gateway_message_encryptor_requires_auth_enabled():
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={"enabled": False},
+            encryption={"enabled": True},
+        )
+    )
+
+    with pytest.raises(ValueError, match="gateway auth"):
+        _build_gateway_message_encryptor(config)
 
 
 @pytest.fixture

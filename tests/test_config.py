@@ -118,6 +118,7 @@ class TestLoadExample:
         assert cfg.gateway.tls["certfile"] == ""
         assert cfg.gateway.tls["keyfile"] == ""
         assert cfg.gateway.tls["keyfile_password_env"] == ""
+        assert cfg.gateway.encryption["enabled"] is False
 
     def test_gateway_tls_keyfile_requires_certfile(self, tmp_path):
         yaml_path = _write_yaml(
@@ -228,6 +229,63 @@ class TestLoadExample:
             ConfigValidationError, match="gateway.auth.shared_secret_env"
         ):
             Config.load(yaml_path)
+
+    def test_gateway_encryption_requires_auth_enabled(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.auth.enabled"):
+            Config.load(yaml_path)
+
+    def test_gateway_encryption_loads_when_auth_enabled(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.gateway.auth["enabled"] is True
+        assert cfg.gateway.encryption["enabled"] is True
 
     def test_gateway_auth_bounds_must_be_positive(self, tmp_path):
         yaml_path = _write_yaml(

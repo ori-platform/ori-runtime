@@ -18,6 +18,8 @@ from ori.reasoning.elevator import ReasoningResult
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
+    GatewayMessageEncryptionConfig,
+    GatewayMessageEncryptor,
 )
 from ori.state.store import StateStore
 
@@ -32,7 +34,7 @@ async def store(tmp_path):
         await state.close()
 
 
-def _responder(store, *, device_id="dev-01", message_auth=None):
+def _responder(store, *, device_id="dev-01", message_auth=None, message_encryptor=None):
     return GatewayExportResponder(
         device_id=device_id,
         state_store=store,
@@ -42,6 +44,7 @@ def _responder(store, *, device_id="dev-01", message_auth=None):
             "sensors": [],
         },
         message_auth=message_auth,
+        message_encryptor=message_encryptor,
     )
 
 
@@ -407,6 +410,131 @@ async def test_mqtt_server_signs_export_response_when_auth_configured(store):
         expected_request_id="req-001",
     )
     assert verified["items"][0]["device_id"] == "dev-01"
+
+
+async def test_mqtt_server_encrypts_sensitive_export_response_when_configured(store):
+    await store.log_action_for_event(
+        ActionResult(
+            action_name="alert_whatsapp",
+            tier="A",
+            executed=True,
+            approved=None,
+            action_taken="alert_whatsapp",
+            timestamp=2_000,
+        ),
+        trigger_name="voltage_warning",
+        device_id="dev-01",
+        sensor_id="voltage-main",
+        sensor_type="voltage",
+    )
+    request_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    )
+    response_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    )
+    encryptor = GatewayMessageEncryptor(
+        GatewayMessageEncryptionConfig(shared_secret="gateway-secret")
+    )
+    published = []
+
+    class _FakeClient:
+        def publish(self, topic, payload, qos=0):
+            decoded = json.loads(payload.decode("utf-8"))
+            published.append((topic, decoded, qos, payload.decode("utf-8")))
+
+    responder = _responder(
+        store,
+        message_auth=response_auth,
+        message_encryptor=encryptor,
+    )
+    server = MqttGatewayExportServer(
+        broker_url="mqtt://localhost",
+        responder=responder,
+        client_factory=lambda **_: _FakeClient(),
+    )
+    signed_request = request_auth.sign(
+        _request("action_log", since_ms=1_000, until_ms=3_000),
+        message_type="export_request",
+    )
+
+    await server._publish_response(
+        _FakeClient(),
+        json.dumps(signed_request).encode("utf-8"),
+    )
+
+    topic, payload, qos, raw_payload = published[0]
+    assert topic == "ori/dev-01/export/response/req-001"
+    assert qos == 1
+    assert payload["encrypted"] is True
+    assert "items" not in payload
+    assert "alert_whatsapp" not in raw_payload
+
+    verified = request_auth.verify(
+        payload,
+        message_type="export_response",
+        expected_device_id="dev-01",
+        expected_request_id="req-001",
+    )
+    decrypted = encryptor.decrypt(
+        verified,
+        message_type="export_response",
+        expected_device_id="dev-01",
+        expected_request_id="req-001",
+    )
+    assert decrypted["items"][0]["action_name"] == "alert_whatsapp"
+
+
+async def test_health_export_response_remains_plaintext_when_encryption_configured(
+    store,
+):
+    auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    )
+    encryptor = GatewayMessageEncryptor(
+        GatewayMessageEncryptionConfig(shared_secret="gateway-secret")
+    )
+    response = await _responder(
+        store,
+        message_auth=auth,
+        message_encryptor=encryptor,
+    ).handle_request(_request("health"))
+    payload = json.loads(
+        response.to_json_bytes(message_auth=auth, message_encryptor=encryptor)
+    )
+    verified = auth.verify(
+        payload,
+        message_type="export_response",
+        expected_device_id="dev-01",
+        expected_request_id="req-001",
+    )
+
+    assert "encryption" not in payload
+    assert verified["items"][0]["device_id"] == "dev-01"
+
+
+def test_export_responder_rejects_encryption_without_auth(store):
+    encryptor = GatewayMessageEncryptor(
+        GatewayMessageEncryptionConfig(shared_secret="gateway-secret")
+    )
+
+    with pytest.raises(ValueError, match="requires message_auth"):
+        _responder(store, message_encryptor=encryptor)
+
+
+def test_sensitive_export_response_rejects_encryption_without_auth():
+    encryptor = GatewayMessageEncryptor(
+        GatewayMessageEncryptionConfig(shared_secret="gateway-secret")
+    )
+    response = gateway_export.ExportResponse(
+        request_id="req-001",
+        export_type="action_log",
+        device_id="dev-01",
+        items=[{"action_name": "alert_whatsapp"}],
+    )
+
+    with pytest.raises(ValueError, match="requires message_auth"):
+        response.to_json_bytes(message_encryptor=encryptor)
 
 
 async def test_mqtt_server_subscribes_to_device_request_topic(store):

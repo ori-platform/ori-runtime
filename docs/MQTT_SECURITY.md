@@ -15,16 +15,20 @@ Use layered controls:
 
 1. **Payload authentication**: enable `gateway.auth` so reasoning/export
    envelopes are HMAC signed and replay-checked.
-2. **Broker authentication and ACLs**: require MQTT usernames/passwords and
+2. **Payload encryption**: enable `gateway.encryption` so sensitive runtime
+   export responses are AES-GCM encrypted before the broker sees them.
+3. **Broker authentication and ACLs**: require MQTT usernames/passwords and
    restrict each client to the smallest topic set it needs.
-3. **Network isolation**: keep the broker on the site LAN/VLAN, never exposed to
+4. **Network isolation**: keep the broker on the site LAN/VLAN, never exposed to
    the public internet.
-4. **TLS where practical**: use MQTT over TLS for deployments where certificate
+5. **TLS where practical**: use MQTT over TLS for deployments where certificate
    provisioning is operationally manageable.
 
 Broker credentials authenticate a client to the broker. HMAC envelopes
 authenticate the JSON message content end-to-end between runtime and gateway.
-Both are required for production deployments.
+AES-GCM encryption hides sensitive export response bodies from a broker that can
+observe routed messages. TLS encrypts the transport pipe. All are separate
+controls; TLS is not a substitute for HMAC or payload encryption.
 
 ## Runtime Config
 
@@ -45,6 +49,8 @@ gateway:
     shared_secret_env: GATEWAY_SHARED_SECRET
     max_clock_skew_ms: 300000
     replay_ttl_ms: 300000
+  encryption:
+    enabled: true
   reasoning:
     enabled: true
     timeout_ms: 10000
@@ -58,6 +64,14 @@ export GATEWAY_SHARED_SECRET='replace-with-site-local-random-secret'
 
 Do not reuse remote-command secrets. `GATEWAY_SHARED_SECRET` is for site-local
 runtime-gateway MQTT envelopes only.
+
+`gateway.encryption.enabled` requires `gateway.auth.enabled`. The runtime derives
+a separate AES-GCM key from `GATEWAY_SHARED_SECRET` with HKDF domain separation;
+the raw HMAC key is not reused as the encryption key. Encryption currently
+applies to sensitive export responses: `sensor_history`, `action_log`,
+`reasoning_log`, and `tier_c_decision_log`. Health export responses remain
+plaintext so basic operational posture can be inspected without decrypting
+historical business/audit data.
 
 ## Topic Contract
 

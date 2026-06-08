@@ -32,6 +32,7 @@ dependencies = [
     "asyncua>=1.1",
     "aiofiles>=23.0",
     "httpx>=0.28",
+    "cryptography>=46.0.7",
     "twilio>=9.0",
     "africastalking>=1.0",
     "python-dotenv>=1.0",

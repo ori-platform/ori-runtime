@@ -127,6 +127,7 @@ class GatewayConfig:
     reasoning: dict = field(default_factory=dict)
     auth: dict = field(default_factory=dict)
     tls: dict = field(default_factory=dict)
+    encryption: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -762,12 +763,26 @@ def _parse_gateway(data: Any) -> GatewayConfig:
             "gateway.tls.keyfile is required when gateway.tls.keyfile_password_env is set"
         )
 
+    encryption_raw = data.get("encryption") or {}
+    if not isinstance(encryption_raw, dict):
+        raise ConfigValidationError("'gateway.encryption' section must be a mapping.")
+    encryption = dict(encryption_raw)
+    encryption["enabled"] = (
+        str(encryption.get("enabled", "false")).strip().lower() == "true"
+        or encryption.get("enabled") is True
+    )
+    if encryption["enabled"] and not auth["enabled"]:
+        raise ConfigValidationError(
+            "gateway.encryption.enabled requires gateway.auth.enabled"
+        )
+
     return GatewayConfig(
         enabled=bool(data.get("enabled", False)),
         broker_url=str(data.get("broker_url", "")),
         reasoning=reasoning,
         auth=auth,
         tls=tls,
+        encryption=encryption,
     )
 
 

@@ -7,6 +7,9 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
+    GatewayMessageEncryptionConfig,
+    GatewayMessageEncryptionError,
+    GatewayMessageEncryptor,
     GatewayReplayCache,
 )
 
@@ -138,4 +141,72 @@ def test_signature_is_bound_to_message_type():
             expected_device_id="dev-01",
             expected_request_id="req-001",
             now_ms_value=10_000,
+        )
+
+
+def test_encrypt_and_decrypt_returns_original_payload():
+    encryptor = GatewayMessageEncryptor(
+        GatewayMessageEncryptionConfig(shared_secret="site-local-secret")
+    )
+
+    encrypted = encryptor.encrypt(
+        _payload() | {"items": [{"value": 42.0}]},
+        message_type="export_response",
+        nonce=b"0" * 12,
+    )
+
+    assert encrypted["encrypted"] is True
+    assert encrypted["request_id"] == "req-001"
+    assert encrypted["device_id"] == "dev-01"
+    assert encrypted["export_type"] == "health"
+    assert "items" not in encrypted
+
+    decrypted = encryptor.decrypt(
+        encrypted,
+        message_type="export_response",
+        expected_device_id="dev-01",
+        expected_request_id="req-001",
+    )
+    assert decrypted == _payload() | {"items": [{"value": 42.0}]}
+
+
+def test_decrypt_rejects_wrong_secret():
+    encrypted = GatewayMessageEncryptor(
+        GatewayMessageEncryptionConfig(shared_secret="right-secret")
+    ).encrypt(
+        _payload() | {"items": [{"value": 42.0}]},
+        message_type="export_response",
+        nonce=b"1" * 12,
+    )
+
+    with pytest.raises(GatewayMessageEncryptionError, match="decryption_failed"):
+        GatewayMessageEncryptor(
+            GatewayMessageEncryptionConfig(shared_secret="wrong-secret")
+        ).decrypt(
+            encrypted,
+            message_type="export_response",
+            expected_device_id="dev-01",
+            expected_request_id="req-001",
+        )
+
+
+def test_decrypt_rejects_tampered_ciphertext():
+    encryptor = GatewayMessageEncryptor(
+        GatewayMessageEncryptionConfig(shared_secret="site-local-secret")
+    )
+    encrypted = encryptor.encrypt(
+        _payload() | {"items": [{"value": 42.0}]},
+        message_type="export_response",
+        nonce=b"2" * 12,
+    )
+    ciphertext = encrypted["encryption"]["ciphertext"]
+    replacement = "A" if ciphertext[-1] != "A" else "B"
+    encrypted["encryption"]["ciphertext"] = ciphertext[:-1] + replacement
+
+    with pytest.raises(GatewayMessageEncryptionError, match="decryption_failed"):
+        encryptor.decrypt(
+            encrypted,
+            message_type="export_response",
+            expected_device_id="dev-01",
+            expected_request_id="req-001",
         )
