@@ -607,6 +607,11 @@ gateway:
 
 actions:
   primary_alert_channel: sms # 'sms' | 'whatsapp' — use sms for Nigeria
+  alert_outbox:
+    retry_interval_minutes: 0.5
+    max_non_tier_d_attempts: 10
+    tier_d_critical_warning_threshold: 3
+    batch_size: 50
   whatsapp:
     enabled: true
     to_number: "${OWNER_WHATSAPP_NUMBER}"

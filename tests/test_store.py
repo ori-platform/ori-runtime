@@ -638,6 +638,49 @@ class TestAlertOutbox:
         rows = await store.get_retryable_alerts(limit=10)
         assert rows == []
 
+    async def test_alert_outbox_summary_counts_retryable_oldest(self, store):
+        empty = await store.get_alert_outbox_summary()
+        assert empty == {
+            "backlog_count": 0,
+            "oldest_queued_original_ts": None,
+        }
+
+        await store.enqueue_alert(
+            alert_id="newer",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=2000,
+        )
+        await store.enqueue_alert(
+            alert_id="older",
+            channel="whatsapp",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="B",
+            trigger_name="high_draw",
+            original_ts=1000,
+        )
+        await store.enqueue_alert(
+            alert_id="delivered",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=500,
+        )
+        await store.mark_alert_delivered("delivered")
+
+        summary = await store.get_alert_outbox_summary()
+
+        assert summary == {
+            "backlog_count": 2,
+            "oldest_queued_original_ts": 1000,
+        }
+
     async def test_mark_abandoned_removes_from_retryable(self, store):
         await store.enqueue_alert(
             alert_id="ab1",

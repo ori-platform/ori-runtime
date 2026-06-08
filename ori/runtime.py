@@ -185,6 +185,14 @@ class OriRuntime:
         self._remote_command_lockout_config: dict[str, Any] = (
             default_remote_command_lockout_config()
         )
+        self._alert_outbox_retry_interval_s: float = ALERT_OUTBOX_RETRY_INTERVAL_S
+        self._alert_outbox_batch_size: int = ALERT_OUTBOX_BATCH_SIZE
+        self._alert_outbox_max_non_tier_d_attempts: int = (
+            ALERT_OUTBOX_MAX_ATTEMPTS_NON_TIER_D
+        )
+        self._alert_outbox_tier_d_critical_threshold: int = (
+            ALERT_OUTBOX_TIER_D_CRITICAL_THRESHOLD
+        )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -394,6 +402,7 @@ class OriRuntime:
         primary_alert_channel = config.actions.primary_alert_channel
         self._primary_alert_channel = primary_alert_channel
         self._operator_contact = _operator_contact
+        self._configure_alert_outbox(config.actions.alert_outbox)
         alert_sender = AlertFailoverSender(
             primary_channel=primary_alert_channel,
             sms_sender=sms_action,
@@ -1538,7 +1547,20 @@ class OriRuntime:
         self._health_socket_path = bound_path
         logger.info("[runtime] health socket ready at %s", bound_path)
 
-    def _build_health_snapshot(self) -> dict[str, Any]:
+    def _configure_alert_outbox(self, alert_outbox_cfg: dict[str, Any]) -> None:
+        cfg = alert_outbox_cfg if isinstance(alert_outbox_cfg, dict) else {}
+        self._alert_outbox_retry_interval_s = (
+            float(cfg.get("retry_interval_minutes", 0.5)) * 60.0
+        )
+        self._alert_outbox_batch_size = int(cfg.get("batch_size", 50))
+        self._alert_outbox_max_non_tier_d_attempts = int(
+            cfg.get("max_non_tier_d_attempts", 10)
+        )
+        self._alert_outbox_tier_d_critical_threshold = int(
+            cfg.get("tier_d_critical_warning_threshold", 3)
+        )
+
+    async def _build_health_snapshot(self) -> dict[str, Any]:
         now = now_ms()
         uptime_s = (
             max(0.0, (now - self._runtime_started_at_ms) / 1000.0)
@@ -1628,6 +1650,8 @@ class OriRuntime:
             )
             remote_command_lockout_senders.append(item)
 
+        alert_outbox = await self._build_alert_outbox_health(now)
+
         return {
             "device_id": self._device_id,
             "uptime_s": uptime_s,
@@ -1638,6 +1662,7 @@ class OriRuntime:
                 "by_channel": dict(self._last_alert_timestamps_by_channel),
                 "by_trigger": dict(self._last_alert_timestamps_by_trigger),
             },
+            "alert_outbox": alert_outbox,
             "device_policy": device_policy_state,
             "remote_command_lockout": {
                 "enforcement_enabled": False,
@@ -1650,6 +1675,36 @@ class OriRuntime:
                 ),
                 "senders": remote_command_lockout_senders,
             },
+        }
+
+    async def _build_alert_outbox_health(self, now: int) -> dict[str, Any]:
+        summary = {
+            "backlog_count": 0,
+            "oldest_queued_original_ts": None,
+            "oldest_queued_age_ms": None,
+        }
+        if self._state_store is not None:
+            try:
+                raw_summary = await self._state_store.get_alert_outbox_summary()
+                oldest_ts = raw_summary.get("oldest_queued_original_ts")
+                summary = {
+                    "backlog_count": int(raw_summary.get("backlog_count") or 0),
+                    "oldest_queued_original_ts": int(oldest_ts)
+                    if oldest_ts is not None
+                    else None,
+                    "oldest_queued_age_ms": max(0, now - int(oldest_ts))
+                    if oldest_ts is not None
+                    else None,
+                }
+            except Exception:
+                logger.exception("[runtime] alert outbox health summary failed")
+
+        return {
+            **summary,
+            "retry_interval_minutes": self._alert_outbox_retry_interval_s / 60.0,
+            "max_non_tier_d_attempts": self._alert_outbox_max_non_tier_d_attempts,
+            "tier_d_critical_warning_threshold": self._alert_outbox_tier_d_critical_threshold,
+            "batch_size": self._alert_outbox_batch_size,
         }
 
     def _unregister_skill_handlers(self) -> None:
@@ -2375,7 +2430,7 @@ class OriRuntime:
             try:
                 await asyncio.wait_for(
                     self._shutdown_event.wait(),
-                    timeout=ALERT_OUTBOX_RETRY_INTERVAL_S,
+                    timeout=self._alert_outbox_retry_interval_s,
                 )
                 break
             except asyncio.TimeoutError:
@@ -2386,7 +2441,7 @@ class OriRuntime:
 
             try:
                 pending = await self._state_store.get_retryable_alerts(
-                    ALERT_OUTBOX_BATCH_SIZE
+                    self._alert_outbox_batch_size
                 )
             except Exception:
                 logger.exception("[runtime] alert outbox fetch failed")
@@ -2464,7 +2519,7 @@ class OriRuntime:
                 )
 
                 if action_tier == "D":
-                    if attempts_after >= ALERT_OUTBOX_TIER_D_CRITICAL_THRESHOLD:
+                    if attempts_after >= self._alert_outbox_tier_d_critical_threshold:
                         logger.critical(
                             "[runtime] Tier D notification delivery still failing id=%s "
                             "channel=%s attempts=%d (will keep retrying)",
@@ -2474,7 +2529,7 @@ class OriRuntime:
                         )
                     continue
 
-                if attempts_after >= ALERT_OUTBOX_MAX_ATTEMPTS_NON_TIER_D:
+                if attempts_after >= self._alert_outbox_max_non_tier_d_attempts:
                     await self._state_store.mark_alert_abandoned(alert_id)
                     logger.warning(
                         "[runtime] abandoning queued alert id=%s channel=%s after %d attempts",

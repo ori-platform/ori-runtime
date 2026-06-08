@@ -1866,7 +1866,7 @@ class TestAlertOutbox:
             assert state["risk_level"] == "elevated"
             assert state["incident_count"] == 1
             assert state["locked_out"] is False
-            snapshot = runtime._build_health_snapshot()
+            snapshot = await runtime._build_health_snapshot()
             senders = snapshot["remote_command_lockout"]["senders"]
             assert len(senders) == 1
             assert senders[0]["from_number"] == "+2348012345678"
@@ -2260,13 +2260,11 @@ class TestRemoteDevicePolicy:
         finally:
             await runtime._state_store.close()
 
-    async def test_alert_delivery_loop_delivers_queued_alert(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_alert_delivery_loop_delivers_queued_alert(self, tmp_path):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "outbox-deliver.db"))
         await runtime._state_store.open()
-        monkeypatch.setattr("ori.runtime.ALERT_OUTBOX_RETRY_INTERVAL_S", 0.01)
+        runtime._alert_outbox_retry_interval_s = 0.01
 
         await runtime._state_store.enqueue_alert(
             alert_id="deliver-1",
@@ -2294,13 +2292,11 @@ class TestRemoteDevicePolicy:
         finally:
             await runtime._state_store.close()
 
-    async def test_alert_delivery_loop_tier_d_never_abandons(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_alert_delivery_loop_tier_d_never_abandons(self, tmp_path):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "outbox-tierd.db"))
         await runtime._state_store.open()
-        monkeypatch.setattr("ori.runtime.ALERT_OUTBOX_RETRY_INTERVAL_S", 0.01)
+        runtime._alert_outbox_retry_interval_s = 0.01
 
         await runtime._state_store.enqueue_alert(
             alert_id="tierd-1",
@@ -2332,13 +2328,11 @@ class TestRemoteDevicePolicy:
         finally:
             await runtime._state_store.close()
 
-    async def test_alert_delivery_loop_abandons_non_tier_d_at_threshold(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_alert_delivery_loop_abandons_non_tier_d_at_threshold(self, tmp_path):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "outbox-abandon.db"))
         await runtime._state_store.open()
-        monkeypatch.setattr("ori.runtime.ALERT_OUTBOX_RETRY_INTERVAL_S", 0.01)
+        runtime._alert_outbox_retry_interval_s = 0.01
 
         await runtime._state_store.enqueue_alert(
             alert_id="aband-1",

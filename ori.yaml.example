@@ -328,6 +328,11 @@ actions:
   primary_alert_channel: sms
   operator_contact: "${OWNER_PHONE_NUMBER}"          # Unified: WHO to contact for Tier-C Approvals
   secondary_contact: ""                              # Optional escalation contact
+  alert_outbox:
+    retry_interval_minutes: 0.5        # current default: retry queued alerts every 30 seconds
+    max_non_tier_d_attempts: 10        # non-critical alerts are abandoned after this many failed retries
+    tier_d_critical_warning_threshold: 3  # Tier D alerts keep retrying; log CRITICAL after this many failures
+    batch_size: 50                     # max queued alerts retried per outbox cycle
 
   whatsapp:
     enabled: true

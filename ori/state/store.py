@@ -1686,6 +1686,33 @@ class StateStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    async def get_alert_outbox_summary(self) -> dict[str, int | None]:
+        """Return a bounded health summary for pending/failed outbound alerts."""
+        return await self._run_read(self._get_alert_outbox_summary_sync)
+
+    def _get_alert_outbox_summary_sync(
+        self,
+        conn: sqlite3.Connection,
+    ) -> dict[str, int | None]:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS backlog_count,
+                   MIN(original_ts) AS oldest_queued_original_ts
+            FROM alert_outbox
+            WHERE status IN ('pending', 'failed')
+            """
+        ).fetchone()
+        backlog_count = int(row["backlog_count"] or 0)
+        oldest_ts = (
+            int(row["oldest_queued_original_ts"])
+            if row["oldest_queued_original_ts"] is not None
+            else None
+        )
+        return {
+            "backlog_count": backlog_count,
+            "oldest_queued_original_ts": oldest_ts,
+        }
+
     async def mark_alert_delivered(
         self, alert_id: str, delivered_ts_ms: int | None = None
     ) -> None:

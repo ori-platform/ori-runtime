@@ -141,6 +141,7 @@ class ActionChannelConfig:
     coap: dict = field(default_factory=dict)
     local_console: dict = field(default_factory=dict)
     offline_tokens: dict = field(default_factory=dict)
+    alert_outbox: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -902,6 +903,65 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
                 "actions.offline_tokens.enabled=true requires actions.offline_tokens.public_key_b64."
             )
 
+    alert_outbox_raw = data.get("alert_outbox") or {}
+    if not isinstance(alert_outbox_raw, dict):
+        raise ConfigValidationError(
+            "'actions.alert_outbox' must be a mapping when provided."
+        )
+    try:
+        retry_interval_minutes = float(
+            alert_outbox_raw.get("retry_interval_minutes", 0.5)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "actions.alert_outbox.retry_interval_minutes must be a number."
+        ) from exc
+    try:
+        max_non_tier_d_attempts = int(
+            alert_outbox_raw.get("max_non_tier_d_attempts", 10)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "actions.alert_outbox.max_non_tier_d_attempts must be an integer."
+        ) from exc
+    try:
+        tier_d_critical_warning_threshold = int(
+            alert_outbox_raw.get("tier_d_critical_warning_threshold", 3)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "actions.alert_outbox.tier_d_critical_warning_threshold must be an integer."
+        ) from exc
+    try:
+        batch_size = int(alert_outbox_raw.get("batch_size", 50))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "actions.alert_outbox.batch_size must be an integer."
+        ) from exc
+
+    alert_outbox = {
+        "retry_interval_minutes": retry_interval_minutes,
+        "max_non_tier_d_attempts": max_non_tier_d_attempts,
+        "tier_d_critical_warning_threshold": tier_d_critical_warning_threshold,
+        "batch_size": batch_size,
+    }
+    if alert_outbox["retry_interval_minutes"] <= 0:
+        raise ConfigValidationError(
+            "actions.alert_outbox.retry_interval_minutes must be > 0."
+        )
+    if alert_outbox["max_non_tier_d_attempts"] < 1:
+        raise ConfigValidationError(
+            "actions.alert_outbox.max_non_tier_d_attempts must be >= 1."
+        )
+    if alert_outbox["tier_d_critical_warning_threshold"] < 1:
+        raise ConfigValidationError(
+            "actions.alert_outbox.tier_d_critical_warning_threshold must be >= 1."
+        )
+    if not 1 <= alert_outbox["batch_size"] <= 1000:
+        raise ConfigValidationError(
+            "actions.alert_outbox.batch_size must be between 1 and 1000."
+        )
+
     return ActionChannelConfig(
         primary_alert_channel=primary,
         operator_contact=str(data.get("operator_contact") or ""),
@@ -912,6 +972,7 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         coap=coap,
         local_console=local_console,
         offline_tokens=offline_tokens,
+        alert_outbox=alert_outbox,
     )
 
 

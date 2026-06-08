@@ -749,3 +749,32 @@ freshness, but does not hide data. Application-layer encryption protects
 historical sensor readings, action logs, reasoning logs, and Tier C approval
 audit rows from broker-side plaintext exposure while keeping the runtime-gateway
 contract provider-neutral and LAN-compatible.
+
+---
+
+## 2026-06-08 — Alert Outbox Health Is Runtime Health
+
+**Status:** Accepted
+
+Failed operator notifications are queued locally and retried by the runtime.
+The retry policy and backlog state are part of runtime health because delayed
+alerts affect operator visibility even when physical safety actions remain
+local and deterministic.
+
+Rules:
+
+- `actions.alert_outbox` owns retry interval, retry batch size, non-Tier-D
+  abandonment threshold, and Tier D critical warning threshold.
+- Runtime health snapshots expose retry policy, pending/failed backlog count,
+  oldest queued alert timestamp, and oldest queued alert age.
+- Empty outbox snapshots report zero backlog and `null` oldest age/timestamp.
+- Tier D action execution never depends on notification delivery. Tier D alerts
+  keep retrying and log critical warnings after the configured threshold.
+- Non-Tier-D alerts may be abandoned after the configured failed-attempt limit.
+
+Rationale:
+
+Internet reachability affects operator visibility, not action authority. The
+gateway needs a structured health signal to surface degraded notification
+delivery at site level without inferring it from logs or reading SQLite
+directly.

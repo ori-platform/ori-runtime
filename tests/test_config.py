@@ -372,6 +372,91 @@ class TestLoadExample:
     def test_actions_primary_channel(self):
         cfg = Config.load(EXAMPLE_YAML)
         assert cfg.actions.primary_alert_channel == "sms"
+        assert cfg.actions.alert_outbox["retry_interval_minutes"] == pytest.approx(0.5)
+        assert cfg.actions.alert_outbox["max_non_tier_d_attempts"] == 10
+        assert cfg.actions.alert_outbox["tier_d_critical_warning_threshold"] == 3
+        assert cfg.actions.alert_outbox["batch_size"] == 50
+
+    def test_alert_outbox_config_defaults(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: test-device
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: ""
+              model_path: ""
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.actions.alert_outbox == {
+            "retry_interval_minutes": 0.5,
+            "max_non_tier_d_attempts": 10,
+            "tier_d_critical_warning_threshold": 3,
+            "batch_size": 50,
+        }
+
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("retry_interval_minutes", 0, "retry_interval_minutes"),
+            ("max_non_tier_d_attempts", 0, "max_non_tier_d_attempts"),
+            (
+                "tier_d_critical_warning_threshold",
+                0,
+                "tier_d_critical_warning_threshold",
+            ),
+            ("batch_size", 0, "batch_size"),
+            ("batch_size", 1001, "batch_size"),
+            ("batch_size", "not-a-number", "batch_size"),
+        ],
+    )
+    def test_alert_outbox_config_rejects_invalid_values(
+        self, tmp_path, field, value, message
+    ):
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: test-device
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: ""
+              model_path: ""
+              offline_fallback: rule
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              alert_outbox:
+                {field}: {value}
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match=message):
+            Config.load(yaml_path)
 
     def test_actions_relay(self):
         cfg = Config.load(EXAMPLE_YAML)

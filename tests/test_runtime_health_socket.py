@@ -11,6 +11,7 @@ import pytest
 
 from ori.runtime import OriRuntime
 from ori.runtime_health_socket import RuntimeHealthSocketServer
+from ori.state.store import StateStore
 from ori.utils.time_utils import now_ms
 
 
@@ -103,7 +104,8 @@ async def test_health_socket_refuses_non_socket_existing_path(tmp_path):
         await server.start()
 
 
-def test_runtime_health_snapshot_shape():
+@pytest.mark.asyncio
+async def test_runtime_health_snapshot_shape():
     runtime = OriRuntime(config_path="ori.yaml")
     now = now_ms()
     runtime._device_id = "dev-01"
@@ -164,7 +166,7 @@ def test_runtime_health_snapshot_shape():
             }
 
     runtime._dispatcher = _Dispatcher()
-    snapshot = runtime._build_health_snapshot()
+    snapshot = await runtime._build_health_snapshot()
 
     assert snapshot["device_id"] == "dev-01"
     assert snapshot["uptime_s"] >= 5.0
@@ -173,6 +175,15 @@ def test_runtime_health_snapshot_shape():
     assert isinstance(snapshot["sensors"], list)
     assert snapshot["sensors"][0]["id"] == "sensor-1"
     assert snapshot["last_alert_timestamps"]["by_channel"]["sms"] > 0
+    assert snapshot["alert_outbox"] == {
+        "backlog_count": 0,
+        "oldest_queued_original_ts": None,
+        "oldest_queued_age_ms": None,
+        "retry_interval_minutes": 0.5,
+        "max_non_tier_d_attempts": 10,
+        "tier_d_critical_warning_threshold": 3,
+        "batch_size": 50,
+    }
     assert snapshot["device_policy"]["enabled"] is True
     assert snapshot["device_policy"]["policy_version"] == 3
     assert snapshot["remote_command_lockout"]["enforcement_enabled"] is False
@@ -189,7 +200,8 @@ def test_runtime_health_snapshot_shape():
     assert senders["whatsapp:+2348099999999"]["stale"] is True
 
 
-def test_runtime_health_snapshot_uses_configured_lockout_staleness():
+@pytest.mark.asyncio
+async def test_runtime_health_snapshot_uses_configured_lockout_staleness():
     runtime = OriRuntime(config_path="ori.yaml")
     now = now_ms()
     runtime._remote_command_lockout_config = {
@@ -217,10 +229,53 @@ def test_runtime_health_snapshot_uses_configured_lockout_staleness():
         }
     }
 
-    snapshot = runtime._build_health_snapshot()
+    snapshot = await runtime._build_health_snapshot()
 
     assert snapshot["remote_command_lockout"]["enforcement_enabled"] is False
     assert snapshot["remote_command_lockout"]["risk_window_ms"] == 120_000
     assert snapshot["remote_command_lockout"]["stale_after_ms"] == 1_000
     assert snapshot["remote_command_lockout"]["incident_sender_limit"] == 7
     assert snapshot["remote_command_lockout"]["senders"][0]["stale"] is True
+
+
+@pytest.mark.asyncio
+async def test_health_snapshot_includes_alert_outbox_empty(tmp_path):
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._state_store = StateStore(str(tmp_path / "health-empty.db"))
+    await runtime._state_store.open()
+
+    try:
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["alert_outbox"]["backlog_count"] == 0
+        assert snapshot["alert_outbox"]["oldest_queued_original_ts"] is None
+        assert snapshot["alert_outbox"]["oldest_queued_age_ms"] is None
+    finally:
+        await runtime._state_store.close()
+
+
+@pytest.mark.asyncio
+async def test_health_snapshot_includes_alert_outbox_backlog(tmp_path):
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._state_store = StateStore(str(tmp_path / "health-backlog.db"))
+    await runtime._state_store.open()
+    original_ts = now_ms() - 12_000
+
+    try:
+        await runtime._state_store.enqueue_alert(
+            alert_id="health-backlog-1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="queued",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=original_ts,
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["alert_outbox"]["backlog_count"] == 1
+        assert snapshot["alert_outbox"]["oldest_queued_original_ts"] == original_ts
+        assert snapshot["alert_outbox"]["oldest_queued_age_ms"] >= 0
+    finally:
+        await runtime._state_store.close()

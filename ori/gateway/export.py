@@ -11,10 +11,11 @@ requests are bounded, device-scoped, and routed through StateStore export APIs.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.security.gateway_messages import (
@@ -102,7 +103,9 @@ class GatewayExportResponder:
         *,
         device_id: str,
         state_store: Any,
-        health_snapshot_provider: Callable[[], dict[str, Any]],
+        health_snapshot_provider: Callable[
+            [], dict[str, Any] | Awaitable[dict[str, Any]]
+        ],
         message_auth: GatewayMessageAuthenticator | None = None,
         message_encryptor: GatewayMessageEncryptor | None = None,
     ) -> None:
@@ -229,7 +232,10 @@ class GatewayExportResponder:
             )
 
         if export_type == "health":
-            items = [dict(self._health_snapshot_provider())]
+            snapshot = self._health_snapshot_provider()
+            if inspect.isawaitable(snapshot):
+                snapshot = await snapshot
+            items = [dict(snapshot)]
             return ExportResponse(
                 request_id=request_id,
                 export_type=export_type,
