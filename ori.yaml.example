@@ -253,6 +253,11 @@ reasoning:
     enabled: false
     min_confidence_to_store: 0.0
     rejection_expiry_days: 30      # 0 = never expire
+  context_enricher:
+    enabled: false                 # disabled by default; opt-in per deployment
+    staleness_window_ms: 60000     # exclude readings older than 60 s at prompt-build time
+    max_entries: 5                 # hard cap on snapshot size (1–20)
+    include_sources: []            # empty = all adapter sources; e.g. ["i2c", "mqtt"]
 
 
 gateway:

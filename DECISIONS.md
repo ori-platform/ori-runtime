@@ -841,3 +841,55 @@ Rationale:
 The skill makes Ori commercially useful for SMEs by reducing wasted overnight
 energy while preserving actuation trust during business hours, where occupancy
 sensors can be wrong and customers may still be using the space.
+
+---
+
+## 2026-06-08 — ContextEnricher Enriches Prompts, Not Safety Decisions
+
+**Status:** Accepted
+
+The runtime ContextEnricher appends a bounded snapshot of recent peer-sensor
+readings to prompts before local SLM or gateway inference. It improves
+reasoning quality by giving the model cross-sensor context, but it must never
+influence safety decisions or Tier D behaviour.
+
+Rules:
+
+- `reasoning.context_enricher.enabled` defaults to `false`. Enrichment is
+  opt-in per deployment.
+- Staleness is evaluated at prompt-build time, not at sensor-event-emit time.
+  A reading that was fresh when it fired may be stale by the time the prompt
+  is assembled; `staleness_window_ms` enforces the freshness window at the
+  moment the LLM is called.
+- The snapshot is bounded by `max_entries` (1–20, default 5). The DB query
+  returns at most `max_entries` rows ordered by `sensor_id` for deterministic
+  prompt output.
+- `include_sources` is applied in Python after the DB query. An empty list
+  admits all sources; a non-empty list admits only the named adapter sources.
+  This avoids JSON extraction in SQLite and keeps the query consistent with
+  existing `metadata` handling.
+- All injected field values (sensor_id, sensor_type, value, unit, quality)
+  are sanitised with `re.sub(r"[^\w\s\-\./°%]", "", ...)` before insertion,
+  matching the sanitisation applied to triggering-event fields in
+  `_build_prompt`.
+- Enrichment failure is unconditionally silent: any exception logs a WARNING
+  and returns the original prompt. The runtime must never halt or degrade
+  safety behaviour because a snapshot query failed.
+- Tier D triggers exit the rule engine with `bypass_llm: true` before
+  `_build_prompt` is called. The enricher is therefore never invoked on
+  safety-critical paths by construction, not by an explicit guard.
+- The enricher does not fetch internet data, does not call any LLM, and does
+  not add cloud SDK dependencies to the runtime.
+
+Rationale:
+
+- A multi-sensor site (current + voltage + temperature) yields better
+  reasoning when the model knows all three values, not just the one that
+  triggered the event. Cross-sensor snapshots give the SLM and gateway
+  reasoner context comparable to what a human operator would consider.
+- Prompt-build-time freshness is the correct semantic: a stale peer reading
+  could mislead the model into reasoning about a state that no longer exists.
+  Event-emit-time freshness would allow arbitrarily old readings into the
+  prompt if the event loop is busy.
+- Bounded, deterministic output (ORDER BY sensor_id, LIMIT max_entries)
+  prevents prompt length from growing unboundedly as a deployment adds sensors.

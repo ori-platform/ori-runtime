@@ -55,6 +55,7 @@ from ori.policy.remote_fetch import (
 )
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
+from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfig
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.runtime_health_socket import RuntimeHealthSocketServer
@@ -602,6 +603,7 @@ class OriRuntime:
             local_llm=local_llm,
             gateway_reasoner=gateway_reasoner,
             config=config.reasoning,
+            context_enricher=_build_context_enricher(config),
         )
 
         # ── Step E: EventBus ──────────────────────────────────────────────────
@@ -2933,6 +2935,26 @@ def _build_gateway_message_encryptor(config: Config) -> GatewayMessageEncryptor 
             f"gateway encryption is enabled but environment variable {env_name!r} is empty"
         )
     return GatewayMessageEncryptor(GatewayMessageEncryptionConfig(shared_secret=secret))
+
+
+def _build_context_enricher(config: Config) -> ContextEnricher | None:
+    """Build ContextEnricher from reasoning.context_enricher config block."""
+    enricher_raw = getattr(config.reasoning, "context_enricher", {}) or {}
+    if not bool(enricher_raw.get("enabled", False)):
+        return None
+    try:
+        cfg = ContextEnricherConfig(
+            enabled=True,
+            staleness_window_ms=int(enricher_raw.get("staleness_window_ms", 60_000)),
+            max_entries=int(enricher_raw.get("max_entries", 5)),
+            include_sources=list(enricher_raw.get("include_sources") or []),
+        )
+        return ContextEnricher(cfg)
+    except Exception:
+        logger.exception(
+            "[runtime] failed to construct ContextEnricher — enrichment disabled"
+        )
+        return None
 
 
 def _process_target_from_context(ctx: SkillContext) -> tuple[int | None, str]:

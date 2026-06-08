@@ -319,7 +319,9 @@ class TestLocalSLMWiring:
 
         monkeypatch.setattr("ori.runtime._build_local_llm", lambda *_: sentinel)
 
-        def _elevator_factory(local_llm=None, gateway_reasoner=None, config=None):
+        def _elevator_factory(
+            local_llm=None, gateway_reasoner=None, config=None, **_kw
+        ):
             captured["local_llm"] = local_llm
             captured["gateway_reasoner"] = gateway_reasoner
             return _RealElevator(local_llm=local_llm, config=config)

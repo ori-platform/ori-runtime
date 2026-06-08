@@ -824,6 +824,69 @@ class StateStore:
             "tier": "hourly",
         }
 
+    async def get_latest_readings_snapshot(
+        self,
+        exclude_sensor_id: str,
+        since_ms: int,
+        max_entries: int,
+    ) -> list[SensorReading]:
+        """Return the most-recent reading per sensor_id fresher than since_ms.
+
+        The triggering sensor (exclude_sensor_id) is always excluded.
+        Results are bounded to max_entries, ordered by sensor_id for
+        deterministic prompt output across calls.
+        """
+        return await self._run_read(
+            self._get_latest_readings_snapshot_sync,
+            exclude_sensor_id,
+            since_ms,
+            max_entries,
+        )
+
+    def _get_latest_readings_snapshot_sync(
+        self,
+        conn: sqlite3.Connection,
+        exclude_sensor_id: str,
+        since_ms: int,
+        max_entries: int,
+    ) -> list[SensorReading]:
+        # Uses a derived-table join rather than a correlated subquery so the
+        # planner resolves each sensor's MAX(timestamp) in a single index pass
+        # over (sensor_id, timestamp DESC) before joining back to the full row.
+        # The correlated-subquery form re-executes the inner SELECT for every
+        # outer candidate row — O(N_candidates × log N_table) vs O(N_candidates).
+        rows = conn.execute(
+            """
+            SELECT h.sensor_id, h.sensor_type, h.value, h.unit,
+                   h.timestamp, h.quality, h.metadata
+            FROM sensor_history AS h
+            INNER JOIN (
+                SELECT sensor_id, MAX(timestamp) AS max_ts
+                FROM sensor_history
+                WHERE sensor_id != ?
+                  AND timestamp >= ?
+                GROUP BY sensor_id
+            ) AS latest
+              ON h.sensor_id = latest.sensor_id
+             AND h.timestamp = latest.max_ts
+            ORDER BY h.sensor_id
+            LIMIT ?
+            """,
+            (exclude_sensor_id, since_ms, max(1, max_entries)),
+        ).fetchall()
+        return [
+            SensorReading(
+                sensor_id=row["sensor_id"],
+                sensor_type=row["sensor_type"],
+                value=row["value"],
+                unit=row["unit"],
+                timestamp=row["timestamp"],
+                quality=row["quality"],
+                metadata=json.loads(row["metadata"]),
+            )
+            for row in rows
+        ]
+
     async def get_timeseries(
         self, sensor_id: str, start_ms: int, end_ms: int
     ) -> list[tuple[int, float]]:

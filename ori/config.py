@@ -118,6 +118,7 @@ class ReasoningConfig:
     energy_aware_reasoning: dict = field(default_factory=dict)
     capability_posture: dict = field(default_factory=dict)
     causal_memory: dict = field(default_factory=dict)
+    context_enricher: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -680,6 +681,44 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
             "gateway is selected by escalation policy; cloud is a gateway backend."
         )
 
+    context_enricher = data.get("context_enricher") or {}
+    if not isinstance(context_enricher, dict):
+        raise ConfigValidationError(
+            "'reasoning.context_enricher' must be a mapping when provided."
+        )
+    if context_enricher:
+        try:
+            ce_staleness = int(context_enricher.get("staleness_window_ms", 60_000))
+            ce_max_entries = int(context_enricher.get("max_entries", 5))
+        except (TypeError, ValueError) as exc:
+            raise ConfigValidationError(
+                "reasoning.context_enricher numeric fields must be valid integers."
+            ) from exc
+        if ce_staleness < 100:
+            raise ConfigValidationError(
+                "reasoning.context_enricher.staleness_window_ms must be >= 100."
+            )
+        if not (1 <= ce_max_entries <= 20):
+            raise ConfigValidationError(
+                "reasoning.context_enricher.max_entries must be between 1 and 20."
+            )
+        ce_sources = context_enricher.get("include_sources") or []
+        if not isinstance(ce_sources, list) or not all(
+            isinstance(s, str) for s in ce_sources
+        ):
+            raise ConfigValidationError(
+                "reasoning.context_enricher.include_sources must be a list of strings."
+            )
+        context_enricher = {
+            "enabled": (
+                str(context_enricher.get("enabled", "false")).strip().lower() == "true"
+                or context_enricher.get("enabled") is True
+            ),
+            "staleness_window_ms": ce_staleness,
+            "max_entries": ce_max_entries,
+            "include_sources": list(ce_sources),
+        }
+
     return ReasoningConfig(
         default_tier=default_tier,
         local_model=str(data.get("local_model", "")),
@@ -689,6 +728,7 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
         energy_aware_reasoning=energy_aware,
         capability_posture=capability_posture_cfg,
         causal_memory=causal_memory,
+        context_enricher=context_enricher,
     )
 
 

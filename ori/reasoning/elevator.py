@@ -33,6 +33,7 @@ from ori.reasoning.capability_posture import (
     probe_internet_available,
 )
 from ori.reasoning.causal_memory import CausalMemory
+from ori.reasoning.context_enricher import ContextEnricher
 from ori.reasoning.escalation_policy import (
     GATEWAY_ESCALATION_CONTEXT_KEY,
     attach_gateway_escalation_context,
@@ -169,6 +170,7 @@ class IntelligenceElevator:
         gateway_reasoner: Any = None,
         rule_engine: RuleEngine | None = None,
         config: Any = None,
+        context_enricher: ContextEnricher | None = None,
     ) -> None:
         self._local_llm = local_llm
         self._gateway_reasoner = gateway_reasoner
@@ -176,6 +178,7 @@ class IntelligenceElevator:
         self._config = (
             config  # ReasoningConfig from ori.yaml; None in test environments
         )
+        self._context_enricher = context_enricher
         self._event_bus: Any = None
         self._last_power_mode: str = "normal"
         self._capability_posture: CapabilityPosture | None = None
@@ -1707,7 +1710,10 @@ class IntelligenceElevator:
         if rejection_note:
             lines.append("")
             lines.append(rejection_note)
-        return "\n".join(lines)
+        prompt = "\n".join(lines)
+        if self._context_enricher is not None:
+            prompt = await self._context_enricher.enrich(prompt, event, state_store)
+        return prompt
 
     async def _interpolate_history_placeholders(
         self,
