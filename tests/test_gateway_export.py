@@ -15,6 +15,10 @@ from ori.gateway.export import (
 )
 from ori.network.events import ActionResult, OriEvent, SensorReading
 from ori.reasoning.elevator import ReasoningResult
+from ori.security.gateway_messages import (
+    GatewayMessageAuthConfig,
+    GatewayMessageAuthenticator,
+)
 from ori.state.store import StateStore
 
 
@@ -28,7 +32,7 @@ async def store(tmp_path):
         await state.close()
 
 
-def _responder(store, *, device_id="dev-01"):
+def _responder(store, *, device_id="dev-01", message_auth=None):
     return GatewayExportResponder(
         device_id=device_id,
         state_store=store,
@@ -37,6 +41,7 @@ def _responder(store, *, device_id="dev-01"):
             "uptime_s": 12.5,
             "sensors": [],
         },
+        message_auth=message_auth,
     )
 
 
@@ -129,6 +134,15 @@ async def test_sensor_history_requires_bounds_and_sensor_id(store):
     assert response.request_id == "req-001"
 
 
+async def test_export_rejects_request_id_with_mqtt_topic_separators(store):
+    response = await _responder(store).handle_request(
+        _request("health", request_id="bad/request")
+    )
+
+    assert response.request_id == "invalid"
+    assert response.error == "request_id must not contain MQTT separators or wildcards"
+
+
 async def test_malformed_json_payload_returns_error_response(store):
     response = await _responder(store).handle_payload(b"{not-json")
 
@@ -136,6 +150,39 @@ async def test_malformed_json_payload_returns_error_response(store):
     assert response.export_type == "unknown"
     assert response.error == "request payload must be JSON"
     assert response.items == []
+
+
+async def test_export_responder_verifies_signed_request(store):
+    request_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    )
+    responder = _responder(
+        store,
+        message_auth=GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
+    )
+    signed = request_auth.sign(_request("health"), message_type="export_request")
+
+    response = await responder.handle_payload(signed)
+
+    assert response.error is None
+    assert response.items[0]["device_id"] == "dev-01"
+
+
+async def test_export_responder_rejects_unsigned_request_when_auth_configured(store):
+    responder = _responder(
+        store,
+        message_auth=GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
+    )
+
+    response = await responder.handle_payload(_request("health"))
+
+    assert response.request_id == "req-001"
+    assert response.export_type == "health"
+    assert response.error == "auth_failed: missing_auth"
 
 
 async def test_pagination_keeps_next_token_at_source_limit_boundary(store):
@@ -321,6 +368,47 @@ async def test_mqtt_server_publishes_response_on_request_topic(store):
             1,
         )
     ]
+
+
+async def test_mqtt_server_signs_export_response_when_auth_configured(store):
+    response_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    )
+    request_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    )
+    published = []
+
+    class _FakeClient:
+        def publish(self, topic, payload, qos=0):
+            decoded = json.loads(payload.decode("utf-8"))
+            published.append((topic, decoded, qos))
+
+    responder = _responder(store, message_auth=response_auth)
+    server = MqttGatewayExportServer(
+        broker_url="mqtt://localhost",
+        responder=responder,
+        client_factory=lambda **_: _FakeClient(),
+    )
+    signed_request = request_auth.sign(
+        _request("health"), message_type="export_request"
+    )
+
+    await server._publish_response(
+        _FakeClient(),
+        json.dumps(signed_request).encode("utf-8"),
+    )
+
+    topic, payload, qos = published[0]
+    assert topic == "ori/dev-01/export/response/req-001"
+    assert qos == 1
+    verified = request_auth.verify(
+        payload,
+        message_type="export_response",
+        expected_device_id="dev-01",
+        expected_request_id="req-001",
+    )
+    assert verified["items"][0]["device_id"] == "dev-01"
 
 
 async def test_mqtt_server_subscribes_to_device_request_topic(store):

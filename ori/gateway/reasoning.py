@@ -14,6 +14,10 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from ori.network.events import OriEvent, ReasoningResult
+from ori.security.gateway_messages import (
+    GatewayMessageAuthenticator,
+    GatewayMessageAuthError,
+)
 from ori.utils.time_utils import now_ms
 
 try:
@@ -60,8 +64,13 @@ class GatewayReasoningRequest:
             "timeout_ms": self.timeout_ms,
         }
 
-    def to_json_bytes(self) -> bytes:
-        return json.dumps(self.as_dict(), separators=(",", ":"), sort_keys=True).encode(
+    def to_json_bytes(
+        self, message_auth: GatewayMessageAuthenticator | None = None
+    ) -> bytes:
+        payload = self.as_dict()
+        if message_auth is not None:
+            payload = message_auth.sign(payload, message_type="reasoning_request")
+        return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
             "utf-8"
         )
 
@@ -83,6 +92,7 @@ class MqttGatewayReasoner:
         timeout_ms: int = DEFAULT_GATEWAY_REASONING_TIMEOUT_MS,
         client_factory: Callable[..., Any] | None = None,
         request_id_factory: Callable[[], str] | None = None,
+        message_auth: GatewayMessageAuthenticator | None = None,
     ) -> None:
         if not _PAHO_AVAILABLE or mqtt is None:
             raise RuntimeError("paho-mqtt is not installed")
@@ -95,6 +105,7 @@ class MqttGatewayReasoner:
         self._timeout_ms = max(1, int(timeout_ms))
         self._client_factory = client_factory or _default_client_factory
         self._request_id_factory = request_id_factory or (lambda: uuid.uuid4().hex)
+        self._message_auth = message_auth
 
     @property
     def request_topic(self) -> str:
@@ -202,6 +213,25 @@ class MqttGatewayReasoner:
                 return
             if str(payload.get("request_id", "")) != request.request_id:
                 return
+            if self._message_auth is not None:
+                try:
+                    payload = self._message_auth.verify(
+                        payload,
+                        message_type="reasoning_response",
+                        expected_device_id=self._device_id,
+                        expected_request_id=request.request_id,
+                    )
+                except GatewayMessageAuthError as exc:
+                    logger.warning(
+                        "[gateway-reasoning] rejecting unauthenticated response: %s",
+                        exc,
+                    )
+                    loop.call_soon_threadsafe(
+                        _set_future_exception,
+                        response,
+                        GatewayReasoningError(f"gateway response auth failed: {exc}"),
+                    )
+                    return
             loop.call_soon_threadsafe(_set_future_result, response, payload)
 
         client.on_connect = _on_connect
@@ -223,7 +253,7 @@ class MqttGatewayReasoner:
             publish_info = await asyncio.to_thread(
                 client.publish,
                 self.request_topic,
-                request.to_json_bytes(),
+                request.to_json_bytes(self._message_auth),
                 1,
                 False,
             )

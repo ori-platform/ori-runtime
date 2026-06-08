@@ -109,6 +109,66 @@ class TestLoadExample:
         assert "192.168.1.10" in cfg.gateway.broker_url
         assert cfg.gateway.reasoning["enabled"] is True
         assert cfg.gateway.reasoning["timeout_ms"] == 10_000
+        assert cfg.gateway.auth["enabled"] is False
+        assert cfg.gateway.auth["shared_secret_env"] == "GATEWAY_SHARED_SECRET"
+        assert cfg.gateway.auth["max_clock_skew_ms"] == 300_000
+        assert cfg.gateway.auth["replay_ttl_ms"] == 300_000
+
+    def test_gateway_auth_requires_secret_env_when_enabled(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              auth:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(
+            ConfigValidationError, match="gateway.auth.shared_secret_env"
+        ):
+            Config.load(yaml_path)
+
+    def test_gateway_auth_bounds_must_be_positive(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+                max_clock_skew_ms: 999
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="max_clock_skew_ms"):
+            Config.load(yaml_path)
 
     def test_gateway_reasoning_timeout_must_be_at_least_100ms(self, tmp_path):
         yaml_path = _write_yaml(
@@ -220,6 +280,15 @@ class TestLoadExample:
         assert lockout["elevated_rejection_threshold"] == 5
         assert lockout["critical_rejection_threshold"] == 15
         assert lockout["enforcement_enabled"] is False
+
+    def test_gateway_message_secret_separate_from_remote_command_secret(self):
+        cfg = Config.load(EXAMPLE_YAML)
+
+        assert cfg.gateway.auth["shared_secret_env"] == "GATEWAY_SHARED_SECRET"
+        assert (
+            cfg.gateway.auth["shared_secret_env"]
+            != cfg.security["remote_commands"]["hmac_secret_env"]
+        )
 
     def test_security_remote_command_lockout_overrides(self, tmp_path):
         yaml_path = _write_yaml(

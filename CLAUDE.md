@@ -66,6 +66,13 @@ deterministic escalation policy or an explicit trigger floor. Cloud reasoning,
 when used, is a gateway backend, not a runtime dependency. The reasoning tier
 and action tier are selected together — they are not independent decisions.
 
+Runtime-gateway MQTT envelopes are optionally HMAC-authenticated. Production
+sites set `gateway.auth.enabled: true` and provide the shared secret through the
+environment variable named by `gateway.auth.shared_secret_env`. The gateway
+secret is separate from remote-command secrets. Authenticated deployments sign
+runtime reasoning requests and export responses, and verify gateway reasoning
+responses and export requests before using them.
+
 ---
 
 ## The Action Tier Framework (Layer 4) — The Agent's Authority
@@ -568,6 +575,14 @@ reasoning:
 gateway:
   enabled: false
   broker_url: mqtt://192.168.1.10:1883
+  auth:
+    enabled: false
+    shared_secret_env: GATEWAY_SHARED_SECRET
+    max_clock_skew_ms: 300000
+    replay_ttl_ms: 300000
+  reasoning:
+    enabled: true
+    timeout_ms: 10000
 
 actions:
   primary_alert_channel: sms # 'sms' | 'whatsapp' — use sms for Nigeria
@@ -791,6 +806,7 @@ AT_USERNAME=
 AT_SENDER_ID=ORI
 
 # Cloud provider keys belong in the gateway/product environment, not runtime.
+GATEWAY_SHARED_SECRET=  # Site-local MQTT envelope HMAC secret.
 
 # Relay control (if physical relay wired)
 RELAY_GPIO_PIN=26

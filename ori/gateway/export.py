@@ -17,6 +17,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import urlparse
 
+from ori.security.gateway_messages import (
+    GatewayMessageAuthenticator,
+    GatewayMessageAuthError,
+)
+
 try:
     import paho.mqtt.client as mqtt
 
@@ -62,8 +67,13 @@ class ExportResponse:
             "error": self.error,
         }
 
-    def to_json_bytes(self) -> bytes:
-        return json.dumps(self.as_dict(), separators=(",", ":"), sort_keys=True).encode(
+    def to_json_bytes(
+        self, message_auth: GatewayMessageAuthenticator | None = None
+    ) -> bytes:
+        payload = self.as_dict()
+        if message_auth is not None:
+            payload = message_auth.sign(payload, message_type="export_response")
+        return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
             "utf-8"
         )
 
@@ -77,17 +87,19 @@ class GatewayExportResponder:
         device_id: str,
         state_store: Any,
         health_snapshot_provider: Callable[[], dict[str, Any]],
+        message_auth: GatewayMessageAuthenticator | None = None,
     ) -> None:
         self._device_id = str(device_id)
         self._state_store = state_store
         self._health_snapshot_provider = health_snapshot_provider
+        self._message_auth = message_auth
 
     @property
     def request_topic(self) -> str:
         return EXPORT_REQUEST_TOPIC_TEMPLATE.format(device_id=self._device_id)
 
     def response_topic(self, request_id: str) -> str:
-        safe_request_id = str(request_id).strip() or "invalid"
+        safe_request_id = _safe_topic_segment(str(request_id).strip()) or "invalid"
         return EXPORT_RESPONSE_TOPIC_TEMPLATE.format(
             device_id=self._device_id,
             request_id=safe_request_id,
@@ -98,7 +110,22 @@ class GatewayExportResponder:
     ) -> ExportResponse:
         try:
             request = self._decode_payload(payload)
+            if self._message_auth is not None:
+                expected_request_id = str(request.get("request_id", "") or "")
+                request = self._message_auth.verify(
+                    request,
+                    message_type="export_request",
+                    expected_device_id=self._device_id,
+                    expected_request_id=expected_request_id or None,
+                )
             return await self.handle_request(request)
+        except GatewayMessageAuthError as exc:
+            request = self._decode_payload_for_error(payload)
+            return self._error_response(
+                request_id=str(request.get("request_id", "invalid") or "invalid"),
+                export_type=str(request.get("export_type", "unknown") or "unknown"),
+                error=f"auth_failed: {exc}",
+            )
         except _ExportRequestError as exc:
             return self._error_response(
                 request_id=exc.request_id,
@@ -134,6 +161,12 @@ class GatewayExportResponder:
 
     async def _handle_request(self, request: dict[str, Any]) -> ExportResponse:
         request_id = _required_text(request, "request_id")
+        if _safe_topic_segment(request_id) != request_id:
+            raise _ExportRequestError(
+                "request_id must not contain MQTT separators or wildcards",
+                request_id="invalid",
+                export_type=str(request.get("export_type", "unknown") or "unknown"),
+            )
         export_type = _required_text(request, "export_type")
         if export_type not in SUPPORTED_EXPORT_TYPES:
             raise _ExportRequestError(
@@ -323,6 +356,14 @@ class GatewayExportResponder:
             raise _ExportRequestError("request payload must be a JSON object")
         return decoded
 
+    def _decode_payload_for_error(
+        self, payload: bytes | str | dict[str, Any]
+    ) -> dict[str, Any]:
+        try:
+            return self._decode_payload(payload)
+        except Exception:
+            return {}
+
     def _error_response(
         self,
         *,
@@ -429,7 +470,12 @@ class MqttGatewayExportServer:
     async def _publish_response(self, client: Any, payload: bytes) -> None:
         response = await self._responder.handle_payload(payload)
         topic = self._responder.response_topic(response.request_id)
-        await asyncio.to_thread(client.publish, topic, response.to_json_bytes(), qos=1)
+        await asyncio.to_thread(
+            client.publish,
+            topic,
+            response.to_json_bytes(self._responder._message_auth),
+            qos=1,
+        )
 
 
 class _ExportRequestError(ValueError):
@@ -482,6 +528,15 @@ def _required_text(request: dict[str, Any], key: str) -> str:
         raise _ExportRequestError(f"{key} is required")
     if len(value) > 128:
         raise _ExportRequestError(f"{key} is too long")
+    return value
+
+
+def _safe_topic_segment(value: str) -> str:
+    value = str(value or "").strip()
+    if not value or len(value) > 128:
+        return ""
+    if any(ch in value for ch in "/+#"):
+        return ""
     return value
 
 

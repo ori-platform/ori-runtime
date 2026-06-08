@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ori.config import GatewayConfig
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
@@ -30,6 +31,7 @@ from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import SkillContext
 from ori.runtime import (
     OriRuntime,
+    _build_gateway_message_auth,
     _build_gateway_reasoner,
     _build_local_llm,
     _coap_command_from_context,
@@ -52,6 +54,45 @@ except Exception:  # pragma: no cover - environment without cryptography support
     PublicFormat = None
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
+
+def test_build_gateway_message_auth_uses_configured_env_secret(monkeypatch):
+    monkeypatch.setenv("GATEWAY_SHARED_SECRET", "site-local-secret")
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+                "max_clock_skew_ms": 300_000,
+                "replay_ttl_ms": 300_000,
+            },
+        )
+    )
+
+    auth = _build_gateway_message_auth(config)
+
+    assert auth is not None
+
+
+def test_build_gateway_message_auth_rejects_missing_env_secret(monkeypatch):
+    monkeypatch.delenv("GATEWAY_SHARED_SECRET", raising=False)
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+                "max_clock_skew_ms": 300_000,
+                "replay_ttl_ms": 300_000,
+            },
+        )
+    )
+
+    with pytest.raises(ValueError, match="GATEWAY_SHARED_SECRET"):
+        _build_gateway_message_auth(config)
 
 
 @pytest.fixture
@@ -255,10 +296,11 @@ class TestLocalSLMWiring:
         captured = {}
 
         class _FakeGatewayReasoner:
-            def __init__(self, *, broker_url, device_id, timeout_ms):
+            def __init__(self, *, broker_url, device_id, timeout_ms, message_auth=None):
                 captured["broker_url"] = broker_url
                 captured["device_id"] = device_id
                 captured["timeout_ms"] = timeout_ms
+                captured["message_auth"] = message_auth
 
         monkeypatch.setattr("ori.runtime.MqttGatewayReasoner", _FakeGatewayReasoner)
         cfg = SimpleNamespace(
@@ -277,6 +319,7 @@ class TestLocalSLMWiring:
             "broker_url": "mqtt://broker.local:1884",
             "device_id": "test-device-01",
             "timeout_ms": 2500,
+            "message_auth": None,
         }
 
 

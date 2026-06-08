@@ -457,17 +457,27 @@ that are hard to debug.
    gateway reasoning must not be used to create autonomous physical action
    authority; Tier C remains approval-gated and Tier D remains rule-only.
 
-7. Action executors never raise exceptions.
+7. Runtime-gateway MQTT envelopes are authenticated when gateway auth is enabled.
+   The runtime signs gateway reasoning requests and export responses, and
+   verifies gateway reasoning responses and export requests, using the dedicated
+   gateway HMAC secret configured by `gateway.auth.shared_secret_env`. Do not
+   reuse remote-command secrets for gateway MQTT. Replay protection for gateway
+   MQTT is in-memory and TTL-bounded; do not copy the remote-command SQLite
+   audit/replay pattern into this higher-frequency path. MQTT gateway messages
+   must never mutate runtime config, policy, update intent, relay state, or
+   actuator settings outside the separate authenticated remote-command path.
+
+8. Action executors never raise exceptions.
    They return False. The runtime must survive a failed action.
 
-8. The event loop is never blocked.
+9. The event loop is never blocked.
    time.sleep(), requests.get(), and any synchronous I/O are forbidden
    in async code paths.
 
-9. SQLite queries are always parameterised.
+10. SQLite queries are always parameterised.
    f-string or .format() SQL is a security and correctness error.
 
-10. ori.yaml is never committed to the repository.
+11. ori.yaml is never committed to the repository.
    It is in .gitignore. The example file is ori.yaml.example.
 ```
 

@@ -125,6 +125,7 @@ class GatewayConfig:
     enabled: bool
     broker_url: str
     reasoning: dict = field(default_factory=dict)
+    auth: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -709,10 +710,39 @@ def _parse_gateway(data: Any) -> GatewayConfig:
         raise ConfigValidationError("gateway.reasoning.timeout_ms must be >= 100")
     reasoning["timeout_ms"] = timeout_ms
 
+    auth_raw = data.get("auth") or {}
+    if not isinstance(auth_raw, dict):
+        raise ConfigValidationError("'gateway.auth' section must be a mapping.")
+    auth = dict(auth_raw)
+    auth["enabled"] = (
+        str(auth.get("enabled", "false")).strip().lower() == "true"
+        or auth.get("enabled") is True
+    )
+    shared_secret_env = str(auth.get("shared_secret_env", "") or "").strip()
+    if auth["enabled"] and not shared_secret_env:
+        raise ConfigValidationError(
+            "gateway.auth.shared_secret_env is required when gateway.auth.enabled is true"
+        )
+    auth["shared_secret_env"] = shared_secret_env
+    try:
+        max_clock_skew_ms = int(auth.get("max_clock_skew_ms", 300_000))
+        replay_ttl_ms = int(auth.get("replay_ttl_ms", 300_000))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "gateway.auth.max_clock_skew_ms and gateway.auth.replay_ttl_ms must be integers"
+        ) from exc
+    if max_clock_skew_ms < 1_000:
+        raise ConfigValidationError("gateway.auth.max_clock_skew_ms must be >= 1000")
+    if replay_ttl_ms < 1_000:
+        raise ConfigValidationError("gateway.auth.replay_ttl_ms must be >= 1000")
+    auth["max_clock_skew_ms"] = max_clock_skew_ms
+    auth["replay_ttl_ms"] = replay_ttl_ms
+
     return GatewayConfig(
         enabled=bool(data.get("enabled", False)),
         broker_url=str(data.get("broker_url", "")),
         reasoning=reasoning,
+        auth=auth,
     )
 
 

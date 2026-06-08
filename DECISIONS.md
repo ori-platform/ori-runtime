@@ -75,6 +75,52 @@ Rationale:
 
 ---
 
+## 2026-06-06 — Runtime-Gateway MQTT Envelopes Are Authenticated
+
+**Status:** Accepted
+
+Runtime-gateway MQTT messages must support payload-level HMAC authentication
+with timestamp skew checks and short-lived replay protection. Broker ACLs and
+TLS remain important deployment hardening, but message authenticity is enforced
+at the JSON envelope layer so a misconfigured broker or leaked MQTT credential
+does not automatically grant message-forgery authority.
+
+Rules:
+
+- Authenticated deployments configure `gateway.auth.enabled: true` and store only
+  the env-var name in `ori.yaml`; the shared secret value lives in the runtime
+  environment.
+- The gateway MQTT shared secret is separate from remote-command secrets. A
+  compromise of SMS/WhatsApp command auth must not compromise site-local gateway
+  traffic, and vice versa.
+- Runtime reasoning requests, gateway reasoning responses, gateway export
+  requests, and runtime export responses use an `auth` envelope containing
+  `scheme`, `signed_at_ms`, and `signature`.
+- MQTT gateway heartbeat authentication is deferred because gateway heartbeat
+  posture currently uses the runtime's in-process `EventBus`
+  (`ori/gateway/health`) and has no MQTT producer/consumer transport to
+  authenticate. When a real MQTT gateway heartbeat topic is added, it must use
+  the same gateway envelope authentication and include a rejection test for
+  unsigned/stale/replayed heartbeat payloads.
+- Replay protection for gateway MQTT messages is in-memory and TTL-bounded.
+  Remote commands remain durably audited in SQLite because they are rare and
+  state-mutating; gateway messages are short-lived and higher frequency.
+- MQTT messages remain read-only for runtime export paths and provider-neutral
+  for reasoning paths. They must never mutate runtime config, policy, update
+  intent, relay state, or actuator settings outside the separate authenticated
+  remote-command path.
+
+Rationale:
+
+- HMAC protects the message even when transport security or broker ACLs are
+  imperfect.
+- Timestamp and replay checks reduce spoofing and repeated-message risk without
+  adding SQLite write pressure to the reasoning/export hot path.
+- Verifying gateway-bound requests before provider invocation prevents
+  cost-amplification attacks against cloud-backed gateway reasoning.
+
+---
+
 ## 2026-06-04 — Local SLM Confidence Is Non-Authoritative
 
 **Status:** Accepted

@@ -10,6 +10,10 @@ import pytest
 import ori.gateway.reasoning as gateway_reasoning
 from ori.gateway.reasoning import GatewayReasoningError, MqttGatewayReasoner
 from ori.network.events import OriEvent, SensorReading
+from ori.security.gateway_messages import (
+    GatewayMessageAuthConfig,
+    GatewayMessageAuthenticator,
+)
 
 
 def _reading(value: float = 14.2) -> SensorReading:
@@ -196,6 +200,82 @@ async def test_mqtt_gateway_reasoner_rejects_invalid_response_action_tier():
     )
 
     with pytest.raises(GatewayReasoningError, match="action_tier is invalid"):
+        await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+
+
+async def test_mqtt_gateway_reasoner_signs_request_and_verifies_response():
+    request_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    )
+    response_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    )
+
+    def _response(req):
+        verified_req = response_auth.verify(
+            req,
+            message_type="reasoning_request",
+            expected_device_id="site-a",
+            expected_request_id="req-auth",
+        )
+        assert verified_req["prompt"] == "Prompt"
+        return response_auth.sign(
+            {
+                "request_id": req["request_id"],
+                "device_id": req["device_id"],
+                "text": "Authenticated gateway analysis.",
+                "model": "llama-gateway",
+                "tokens_used": 12,
+                "latency_ms": 20,
+                "confidence": 0.7,
+                "action_tier": "A",
+                "proposed_action": None,
+            },
+            message_type="reasoning_response",
+        )
+
+    fake = _FakeClient(response_builder=_response)
+    reasoner = MqttGatewayReasoner(
+        broker_url="mqtt://broker.local",
+        device_id="site-a",
+        timeout_ms=1000,
+        client_factory=lambda **_: fake,
+        request_id_factory=lambda: "req-auth",
+        message_auth=request_auth,
+    )
+
+    result = await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+
+    assert result.text == "Authenticated gateway analysis."
+    assert "auth" in fake.published[0][1]
+
+
+async def test_mqtt_gateway_reasoner_rejects_unsigned_response_when_auth_configured():
+    fake = _FakeClient(
+        response_builder=lambda req: {
+            "request_id": req["request_id"],
+            "device_id": req["device_id"],
+            "text": "Unsigned response",
+            "model": "gateway",
+            "tokens_used": 1,
+            "latency_ms": 1,
+            "confidence": 0.1,
+            "action_tier": "A",
+            "proposed_action": None,
+        }
+    )
+    reasoner = MqttGatewayReasoner(
+        broker_url="mqtt://broker.local",
+        device_id="site-a",
+        timeout_ms=1000,
+        client_factory=lambda **_: fake,
+        request_id_factory=lambda: "req-unsigned",
+        message_auth=GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
+    )
+
+    with pytest.raises(GatewayReasoningError, match="auth failed: missing_auth"):
         await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
 
 

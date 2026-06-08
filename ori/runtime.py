@@ -58,6 +58,10 @@ from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostur
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.runtime_health_socket import RuntimeHealthSocketServer
+from ori.security.gateway_messages import (
+    GatewayMessageAuthConfig,
+    GatewayMessageAuthenticator,
+)
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_command_lockout import (
     default_remote_command_lockout_config,
@@ -1489,6 +1493,7 @@ class OriRuntime:
                 device_id=config.device.id,
                 state_store=self._state_store,
                 health_snapshot_provider=self._build_health_snapshot,
+                message_auth=_build_gateway_message_auth(config),
             )
             server = MqttGatewayExportServer(
                 broker_url=config.gateway.broker_url,
@@ -2818,6 +2823,7 @@ def _build_gateway_reasoner(config: Config) -> MqttGatewayReasoner | None:
             broker_url=config.gateway.broker_url,
             device_id=config.device.id,
             timeout_ms=int(reasoning_cfg.get("timeout_ms", 10_000)),
+            message_auth=_build_gateway_message_auth(config),
         )
     except Exception:
         logger.exception("[runtime] invalid gateway reasoning configuration")
@@ -2827,6 +2833,27 @@ def _build_gateway_reasoner(config: Config) -> MqttGatewayReasoner | None:
         config.device.id,
     )
     return reasoner
+
+
+def _build_gateway_message_auth(config: Config) -> GatewayMessageAuthenticator | None:
+    """Build optional HMAC auth for runtime-gateway MQTT envelopes."""
+    raw_auth = getattr(config.gateway, "auth", {})
+    auth_cfg = raw_auth if isinstance(raw_auth, dict) else {}
+    if not bool(auth_cfg.get("enabled", False)):
+        return None
+    env_name = str(auth_cfg.get("shared_secret_env", "") or "").strip()
+    secret = os.environ.get(env_name, "") if env_name else ""
+    if not secret:
+        raise ValueError(
+            f"gateway auth is enabled but environment variable {env_name!r} is empty"
+        )
+    return GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(
+            shared_secret=secret,
+            max_skew_ms=int(auth_cfg.get("max_clock_skew_ms", 300_000)),
+            replay_ttl_ms=int(auth_cfg.get("replay_ttl_ms", 300_000)),
+        )
+    )
 
 
 def _process_target_from_context(ctx: SkillContext) -> tuple[int | None, str]:
