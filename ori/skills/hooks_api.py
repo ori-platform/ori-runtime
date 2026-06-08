@@ -11,8 +11,16 @@ from ori.utils.time_utils import now_ms
 class HookHistoryAdapter:
     """Synchronous adapter to wrap StateStore for skill hooks."""
 
-    def __init__(self, store: Any):
+    def __init__(
+        self,
+        store: Any,
+        *,
+        reference_timestamp_ms: int | None = None,
+        timezone: str = "UTC",
+    ):
         self._store = store
+        self._reference_timestamp_ms = reference_timestamp_ms
+        self._timezone = str(timezone or "UTC")
 
     def _read(self, method_name: str, *args: Any) -> Any:
         """Execute a stable StateStore hook-sync method."""
@@ -65,6 +73,32 @@ class HookHistoryAdapter:
             }
             for r in history
         ]
+
+    def same_weekday_hour_baseline(
+        self,
+        sensor_id: str,
+        lookback_weeks: int = 8,
+        min_weeks: int = 3,
+    ) -> dict[str, Any]:
+        if not self._store or self._reference_timestamp_ms is None:
+            return {
+                "sensor_id": str(sensor_id),
+                "avg_value": None,
+                "sample_count": 0,
+                "covered_weeks": 0,
+                "usable": False,
+                "reason": "no_reference_timestamp",
+                "tier": "hourly",
+            }
+        result = self._read(
+            "hooks_time_of_week_baseline",
+            sensor_id,
+            self._reference_timestamp_ms,
+            self._timezone,
+            lookback_weeks,
+            min_weeks,
+        )
+        return result if isinstance(result, dict) else {}
 
 
 class HookStateAdapter:
@@ -125,6 +159,14 @@ class HookContext:
         skill_config: dict[str, Any] | None = None,
     ) -> "HookContext":
         readings = {}
+        event_context = (
+            event.context if event and isinstance(event.context, dict) else {}
+        )
+        tz_name = (
+            str(event_context.get("device_timezone") or "").strip()
+            or str((skill_config or {}).get("timezone") or "").strip()
+            or "UTC"
+        )
         if event and event.reading:
             readings[event.reading.sensor_id] = event.reading.value
             # Also spread meta into readings for easy trigger addressing
@@ -135,7 +177,11 @@ class HookContext:
             event=event,
             trigger_name="",
             readings=readings,
-            history=HookHistoryAdapter(store),
+            history=HookHistoryAdapter(
+                store,
+                reference_timestamp_ms=event.timestamp if event else None,
+                timezone=tz_name,
+            ),
             state=HookStateAdapter(store, skill_name),
             timestamp=event.timestamp if event else now_ms(),
             config=skill_config if isinstance(skill_config, dict) else {},

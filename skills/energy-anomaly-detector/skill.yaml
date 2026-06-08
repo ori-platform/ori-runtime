@@ -14,19 +14,19 @@ sensors_required:
 
 triggers:
   - name: sustained_overdraw
-    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and deviation_percent >= overdraw_threshold_percent and sustained_high_ratio >= sustained_ratio_threshold"
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and deviation_percent >= overdraw_threshold_percent and sustained_high_ratio >= sustained_ratio_threshold"
     cooldown_seconds: 600
     escalate_to: local_slm
     action_tier: A
 
   - name: sudden_load_spike
-    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and spike_ratio >= spike_ratio_threshold and deviation_percent >= (overdraw_threshold_percent / 2.0)"
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and spike_ratio >= spike_ratio_threshold and deviation_percent >= (overdraw_threshold_percent / 2.0)"
     cooldown_seconds: 300
     escalate_to: local_slm
     action_tier: A
 
   - name: unstable_power_draw
-    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and recent_volatility_percent >= volatility_threshold_percent and deviation_percent >= (overdraw_threshold_percent / 3.0)"
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and recent_volatility_percent >= volatility_threshold_percent and deviation_percent >= (overdraw_threshold_percent / 3.0)"
     cooldown_seconds: 600
     escalate_to: local_slm
     action_tier: A

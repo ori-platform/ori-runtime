@@ -381,6 +381,21 @@ class OSSandboxHookRunner:
                 n = int(params.get("n", 0))
                 return self._history_read_response("hooks_avg_last_n", sensor_id, n)
 
+            if method == "history.same_weekday_hour_baseline":
+                sensor_id = str(params.get("sensor_id", ""))
+                reference_timestamp_ms = int(params.get("reference_timestamp_ms", 0))
+                timezone = str(params.get("timezone", "UTC") or "UTC")
+                lookback_weeks = int(params.get("lookback_weeks", 8))
+                min_weeks = int(params.get("min_weeks", 3))
+                return self._history_read_response(
+                    "hooks_time_of_week_baseline",
+                    sensor_id,
+                    reference_timestamp_ms,
+                    timezone,
+                    lookback_weeks,
+                    min_weeks,
+                )
+
             if method in {
                 "history.last_value",
                 "history.last_timestamp",
@@ -517,8 +532,16 @@ class _RPCStateProxy:
 
 
 class _RPCHistoryProxy:
-    def __init__(self, rpc: Callable[[str, dict[str, Any]], Any]):
+    def __init__(
+        self,
+        rpc: Callable[[str, dict[str, Any]], Any],
+        *,
+        reference_timestamp_ms: int = 0,
+        timezone: str = "UTC",
+    ):
         self._rpc = rpc
+        self._reference_timestamp_ms = int(reference_timestamp_ms)
+        self._timezone = str(timezone or "UTC")
 
     def avg_hours(self, sensor_id: str, hours: int) -> Any:
         return self._rpc(
@@ -539,6 +562,23 @@ class _RPCHistoryProxy:
             "history.fetch_history", {"sensor_id": sensor_id, "limit": int(limit)}
         )
 
+    def same_weekday_hour_baseline(
+        self,
+        sensor_id: str,
+        lookback_weeks: int = 8,
+        min_weeks: int = 3,
+    ) -> Any:
+        return self._rpc(
+            "history.same_weekday_hour_baseline",
+            {
+                "sensor_id": sensor_id,
+                "reference_timestamp_ms": self._reference_timestamp_ms,
+                "timezone": self._timezone,
+                "lookback_weeks": int(lookback_weeks),
+                "min_weeks": int(min_weeks),
+            },
+        )
+
 
 class _ChildHookContext:
     def __init__(self, raw: dict[str, Any], rpc: Callable[[str, dict[str, Any]], Any]):
@@ -547,10 +587,17 @@ class _ChildHookContext:
         self.timestamp = int(raw.get("timestamp", 0) or 0)
         self.config = dict(raw.get("config") or {})
         self.derived = dict(raw.get("derived") or {})
-        self.history = _RPCHistoryProxy(rpc)
+        event_raw = raw.get("event")
+        event_context = (
+            dict(event_raw.get("context") or {}) if isinstance(event_raw, dict) else {}
+        )
+        self.history = _RPCHistoryProxy(
+            rpc,
+            reference_timestamp_ms=self.timestamp,
+            timezone=str(event_context.get("device_timezone") or "UTC"),
+        )
         self.state = _RPCStateProxy(rpc)
 
-        event_raw = raw.get("event")
         reading_raw = raw.get("reading")
         reading = None
         if isinstance(reading_raw, dict):

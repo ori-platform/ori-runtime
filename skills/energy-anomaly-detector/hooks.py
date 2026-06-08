@@ -245,6 +245,11 @@ def pre_trigger_eval(context):
 
     context.derived["baseline_24h"] = 0.0
     context.derived["baseline_valid"] = 0
+    context.derived["time_of_week_baseline"] = 0.0
+    context.derived["time_of_week_baseline_usable"] = 0
+    context.derived["time_of_week_covered_weeks"] = 0
+    context.derived["time_of_week_deviation_percent"] = 0.0
+    context.derived["context_aware_suppression"] = 0
     context.derived["deviation_percent"] = 0.0
     context.derived["spike_ratio"] = 0.0
     context.derived["sustained_high_ratio"] = 0.0
@@ -274,6 +279,29 @@ def pre_trigger_eval(context):
 
     context.derived["baseline_24h"] = baseline_24h
     context.derived["baseline_valid"] = baseline_valid
+
+    tow_baseline = context.history.same_weekday_hour_baseline(
+        sensor_id,
+        lookback_weeks=as_int(cfg.get("time_of_week_lookback_weeks", 8), 8),
+        min_weeks=as_int(cfg.get("time_of_week_min_weeks", 3), 3),
+    )
+    if isinstance(tow_baseline, dict) and tow_baseline.get("usable"):
+        tow_avg = as_float(tow_baseline.get("avg_value"), 0.0)
+        context.derived["time_of_week_baseline"] = tow_avg
+        context.derived["time_of_week_baseline_usable"] = 1
+        context.derived["time_of_week_covered_weeks"] = as_int(
+            tow_baseline.get("covered_weeks", 0),
+            0,
+        )
+        if tow_avg > 0.0:
+            tow_deviation = ((current_value - tow_avg) / tow_avg) * 100.0
+            context.derived["time_of_week_deviation_percent"] = tow_deviation
+            tolerance_percent = as_float(
+                cfg.get("time_of_week_suppression_tolerance_percent", 10.0),
+                10.0,
+            )
+            if tow_deviation <= tolerance_percent:
+                context.derived["context_aware_suppression"] = 1
 
     if baseline_valid == 1:
         context.derived["deviation_percent"] = (

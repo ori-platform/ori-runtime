@@ -126,3 +126,53 @@ async def test_unified_read_paths(store, monkeypatch):
     ts = await store.get_timeseries("s1", NOW_MS - 86400_000 * 10, NOW_MS)
     assert len(ts) == 1
     assert ts[0][1] == 20.0
+
+
+@pytest.mark.asyncio
+async def test_compaction_uses_weighted_average_for_hourly(store, monkeypatch):
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    bucket = NOW_MS - 86400_000 * 40
+    hour_bucket = (bucket // 3_600_000) * 3_600_000
+    store._conn.execute(
+        "INSERT INTO sensor_history_5min (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", hour_bucket, 10.0, "c", 1),
+    )
+    store._conn.execute(
+        "INSERT INTO sensor_history_5min (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", hour_bucket + 300_000, 20.0, "c", 9),
+    )
+    store._conn.commit()
+
+    await store.compact_history()
+
+    hourly = store._conn.execute(
+        "SELECT avg_value, sample_count FROM sensor_history_hourly WHERE sensor_id = ?",
+        ("s1",),
+    ).fetchone()
+    assert hourly["avg_value"] == pytest.approx(19.0)
+    assert hourly["sample_count"] == 10
+
+
+@pytest.mark.asyncio
+async def test_compaction_uses_weighted_average_for_daily(store, monkeypatch):
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    bucket = NOW_MS - 86400_000 * 400
+    day_bucket = (bucket // 86_400_000) * 86_400_000
+    store._conn.execute(
+        "INSERT INTO sensor_history_hourly (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", day_bucket, 10.0, "c", 1),
+    )
+    store._conn.execute(
+        "INSERT INTO sensor_history_hourly (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", day_bucket + 3_600_000, 20.0, "c", 9),
+    )
+    store._conn.commit()
+
+    await store.compact_history()
+
+    daily = store._conn.execute(
+        "SELECT avg_value, sample_count FROM sensor_history_daily WHERE sensor_id = ?",
+        ("s1",),
+    ).fetchone()
+    assert daily["avg_value"] == pytest.approx(19.0)
+    assert daily["sample_count"] == 10

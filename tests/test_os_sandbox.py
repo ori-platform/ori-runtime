@@ -9,7 +9,11 @@ import pytest
 from ori.network.events import OriEvent, SensorReading
 from ori.reasoning.elevator import IntelligenceElevator
 from ori.skills.loader import Trigger
-from ori.skills.os_sandbox import OSSandboxSupport, load_community_hooks
+from ori.skills.os_sandbox import (
+    OSSandboxSupport,
+    _RPCHistoryProxy,
+    load_community_hooks,
+)
 from ori.skills.sandbox import SkillSecurityError
 
 
@@ -72,6 +76,40 @@ def test_load_community_hooks_strict_mode_rejects_when_unsupported(
             skill_name="community-skill",
             os_sandbox_config={"enabled": True, "require_for_community": True},
         )
+
+
+def test_rpc_history_proxy_exposes_time_of_week_baseline():
+    calls: list[tuple[str, dict]] = []
+
+    def _rpc(method: str, params: dict):
+        calls.append((method, params))
+        return {"usable": True, "avg_value": 12.0}
+
+    history = _RPCHistoryProxy(
+        _rpc,
+        reference_timestamp_ms=1_717_925_400_000,
+        timezone="Africa/Lagos",
+    )
+
+    result = history.same_weekday_hour_baseline(
+        "load-current",
+        lookback_weeks=8,
+        min_weeks=3,
+    )
+
+    assert result == {"usable": True, "avg_value": 12.0}
+    assert calls == [
+        (
+            "history.same_weekday_hour_baseline",
+            {
+                "sensor_id": "load-current",
+                "reference_timestamp_ms": 1_717_925_400_000,
+                "timezone": "Africa/Lagos",
+                "lookback_weeks": 8,
+                "min_weeks": 3,
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

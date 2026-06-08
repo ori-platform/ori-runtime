@@ -778,3 +778,35 @@ Internet reachability affects operator visibility, not action authority. The
 gateway needs a structured health signal to surface degraded notification
 delivery at site level without inferring it from logs or reading SQLite
 directly.
+
+---
+
+## 2026-06-08 — Context-Aware Suppression Uses Deterministic History
+
+**Status:** Accepted
+
+Ori may suppress or soften false-positive anomaly reasoning when a reading
+matches the site's historical rhythm for the same local weekday and hour. This
+is implemented as a bounded StateStore history primitive, not as an NN
+classifier, LLM confidence signal, or cloud reasoning call.
+
+Rules:
+
+- Same-weekday/hour baselines use site-local timezone semantics, not UTC
+  SQLite bucketing.
+- Multi-week comparisons use the hourly compaction tier. Raw history is too
+  short-lived and daily compaction is too coarse for hour-of-day patterns.
+- Baseline results include `usable`, `covered_weeks`, and `sample_count` so
+  skills fail closed when coverage is weak.
+- Compaction from 5-minute to hourly and hourly to daily must use weighted
+  averages: `SUM(avg_value * sample_count) / SUM(sample_count)`.
+- The weighted compaction fix applies to future compaction runs only; the
+  runtime does not retroactively recompute existing compacted rows.
+- Tier D safety cutoffs are never suppressed by contextual baselines.
+
+Rationale:
+
+The product claim that Ori learns a site's rhythm should be backed by cheap,
+explainable local history. A recurring Monday-morning AC load can be treated
+differently from the same draw at an unusual time without asking an LLM to
+guess or trusting model-reported confidence.

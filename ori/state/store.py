@@ -7,6 +7,7 @@ import hashlib
 import json
 import sqlite3
 from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
 from ori.utils.time_utils import now_ms
@@ -533,7 +534,7 @@ class StateStore:
             (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
             SELECT sensor_id, sensor_type,
                    (bucket_ms / 3600000) * 3600000,
-                   AVG(avg_value), unit, SUM(sample_count)
+                   SUM(avg_value * sample_count) / SUM(sample_count), unit, SUM(sample_count)
             FROM sensor_history_5min
             WHERE bucket_ms < ?
             GROUP BY sensor_id, (bucket_ms / 3600000)
@@ -551,7 +552,7 @@ class StateStore:
             (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
             SELECT sensor_id, sensor_type,
                    (bucket_ms / 86400000) * 86400000,
-                   AVG(avg_value), unit, SUM(sample_count)
+                   SUM(avg_value * sample_count) / SUM(sample_count), unit, SUM(sample_count)
             FROM sensor_history_hourly
             WHERE bucket_ms < ?
             GROUP BY sensor_id, (bucket_ms / 86400000)
@@ -703,6 +704,125 @@ class StateStore:
             ),
         ).fetchone()
         return row["avg_val"] if row and row["avg_val"] is not None else None
+
+    async def time_of_week_baseline(
+        self,
+        *,
+        sensor_id: str,
+        reference_timestamp_ms: int,
+        timezone: str = "UTC",
+        lookback_weeks: int = 8,
+        min_weeks: int = 3,
+    ) -> dict[str, Any]:
+        """Return a site-local same-weekday/hour baseline from hourly history."""
+        return await self._run_read(
+            self._time_of_week_baseline_sync,
+            sensor_id,
+            reference_timestamp_ms,
+            timezone,
+            lookback_weeks,
+            min_weeks,
+        )
+
+    def hooks_time_of_week_baseline(
+        self,
+        sensor_id: str,
+        reference_timestamp_ms: int,
+        timezone: str = "UTC",
+        lookback_weeks: int = 8,
+        min_weeks: int = 3,
+    ) -> dict[str, Any]:
+        """Stable sync facade for hook site-local baseline lookups."""
+        return self._run_read_with_conn(
+            self._time_of_week_baseline_sync,
+            sensor_id,
+            reference_timestamp_ms,
+            timezone,
+            lookback_weeks,
+            min_weeks,
+        )
+
+    def _time_of_week_baseline_sync(
+        self,
+        conn: sqlite3.Connection,
+        sensor_id: str,
+        reference_timestamp_ms: int,
+        timezone: str,
+        lookback_weeks: int,
+        min_weeks: int,
+    ) -> dict[str, Any]:
+        lookback = max(1, min(int(lookback_weeks), 52))
+        min_required_weeks = max(1, min(int(min_weeks), lookback))
+        reference_ms = int(reference_timestamp_ms)
+        tz_name = str(timezone or "UTC").strip() or "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            tz_name = "UTC"
+            tz = ZoneInfo("UTC")
+
+        reference_dt = datetime.datetime.fromtimestamp(reference_ms / 1000.0, tz=tz)
+        target_weekday = int(reference_dt.weekday())
+        target_hour = int(reference_dt.hour)
+        start_ms = reference_ms - (lookback * 7 * 24 * 3_600_000)
+
+        rows = conn.execute(
+            """
+            SELECT bucket_ms, avg_value, sample_count, unit
+            FROM sensor_history_hourly
+            WHERE sensor_id = ?
+              AND bucket_ms >= ?
+              AND bucket_ms < ?
+            ORDER BY bucket_ms ASC
+            """,
+            (str(sensor_id), int(start_ms), reference_ms),
+        ).fetchall()
+
+        total = 0.0
+        sample_count = 0
+        covered_weeks: set[tuple[int, int]] = set()
+        unit = ""
+        for row in rows:
+            bucket_ms = int(row["bucket_ms"])
+            local_dt = datetime.datetime.fromtimestamp(bucket_ms / 1000.0, tz=tz)
+            if local_dt.weekday() != target_weekday or local_dt.hour != target_hour:
+                continue
+            count = max(0, int(row["sample_count"] or 0))
+            if count <= 0:
+                continue
+            value = float(row["avg_value"])
+            total += value * count
+            sample_count += count
+            iso = local_dt.isocalendar()
+            covered_weeks.add((int(iso.year), int(iso.week)))
+            unit = str(row["unit"] or unit)
+
+        covered_week_count = len(covered_weeks)
+        avg_value = (total / sample_count) if sample_count > 0 else None
+        usable = sample_count > 0 and covered_week_count >= min_required_weeks
+        if sample_count <= 0:
+            reason = "no_history"
+        elif not usable:
+            reason = "low_coverage"
+        else:
+            reason = "ok"
+
+        return {
+            "sensor_id": str(sensor_id),
+            "reference_timestamp_ms": reference_ms,
+            "timezone": tz_name,
+            "target_weekday": target_weekday,
+            "target_hour": target_hour,
+            "lookback_weeks": lookback,
+            "min_weeks": min_required_weeks,
+            "avg_value": avg_value,
+            "unit": unit,
+            "sample_count": sample_count,
+            "covered_weeks": covered_week_count,
+            "usable": usable,
+            "reason": reason,
+            "tier": "hourly",
+        }
 
     async def get_timeseries(
         self, sensor_id: str, start_ms: int, end_ms: int

@@ -244,7 +244,17 @@ context.history.avg_last_n(sensor_id, count)  # -> float | None
 context.history.last_value(sensor_id)         # -> float | None
 context.history.last_timestamp(sensor_id)     # -> int | None
 context.history.fetch_history(sensor_id, limit=1)  # -> list[dict]
+context.history.same_weekday_hour_baseline(
+    sensor_id,
+    lookback_weeks=8,
+    min_weeks=3,
+)  # -> dict with avg_value, covered_weeks, sample_count, usable, reason
 ```
+
+`same_weekday_hour_baseline()` uses the event's site-local timezone and hourly
+retained history. It is for deterministic context-aware suppression such as
+"Monday 9 AM AC draw is normal for this building"; it must not suppress Tier D
+safety cutoffs.
 
 **HookStateAdapter methods** (state is isolated per skill — no cross-skill leakage):
 

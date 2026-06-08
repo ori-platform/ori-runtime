@@ -14,6 +14,7 @@ from ori.skills.loader import SkillLoader
 class _Store:
     def __init__(self) -> None:
         self._history: dict[str, list[SensorReading]] = {}
+        self.time_of_week_baseline: dict | None = None
 
     def add_history(self, sensor_id: str, reading: SensorReading) -> None:
         self._history.setdefault(sensor_id, []).insert(0, reading)
@@ -38,6 +39,20 @@ class _Store:
         if not rows:
             return None
         return sum(r.value for r in rows) / len(rows)
+
+    def hooks_time_of_week_baseline(
+        self,
+        sensor_id: str,
+        reference_timestamp_ms: int,
+        timezone: str,
+        lookback_weeks: int,
+        min_weeks: int,
+    ) -> dict:
+        assert sensor_id
+        assert reference_timestamp_ms > 0
+        assert timezone
+        assert lookback_weeks >= min_weeks
+        return self.time_of_week_baseline or {}
 
 
 def _skill_dir() -> Path:
@@ -116,6 +131,55 @@ def test_hook_computes_baseline_and_deviation():
     assert hook_ctx.derived["deviation_percent"] == pytest.approx(40.0)
 
 
+def test_hook_marks_contextually_normal_time_of_week_draw():
+    skill = _load_skill()
+    store = _Store()
+    store.time_of_week_baseline = {
+        "avg_value": 12.0,
+        "covered_weeks": 4,
+        "sample_count": 48,
+        "usable": True,
+        "reason": "ok",
+        "tier": "hourly",
+    }
+
+    event = _event(value=12.8, timestamp=1_717_925_400_000)
+    event.context = {"device_timezone": "Africa/Lagos"}
+    hook_ctx, _ = _ctx(skill, event, store)
+
+    assert hook_ctx.derived["time_of_week_baseline_usable"] == 1
+    assert hook_ctx.derived["time_of_week_baseline"] == pytest.approx(12.0)
+    assert hook_ctx.derived["time_of_week_covered_weeks"] == 4
+    assert hook_ctx.derived["time_of_week_deviation_percent"] == pytest.approx(
+        ((12.8 - 12.0) / 12.0) * 100.0
+    )
+    assert hook_ctx.derived["context_aware_suppression"] == 1
+
+
+@pytest.mark.asyncio
+async def test_contextual_suppression_does_not_suppress_tier_d():
+    skill = _load_skill()
+    store = _Store()
+    store.time_of_week_baseline = {
+        "avg_value": 30.0,
+        "covered_weeks": 4,
+        "sample_count": 48,
+        "usable": True,
+        "reason": "ok",
+        "tier": "hourly",
+    }
+    event = _event(value=30.5, quality=0.95)
+    event.context = {"device_timezone": "Africa/Lagos"}
+    _, context = _ctx(skill, event, store)
+    trigger = next(t for t in skill.triggers if t.name == "dangerous_overcurrent")
+
+    result = await RuleEngine().evaluate(event, [trigger], context=context)
+
+    assert context["context_aware_suppression"] == 1
+    assert result.matched is True
+    assert trigger.action_tier == "D"
+
+
 @pytest.mark.asyncio
 async def test_rule_matches_sustained_overdraw():
     skill = _load_skill()
@@ -132,6 +196,37 @@ async def test_rule_matches_sustained_overdraw():
     result = await RuleEngine().evaluate(event, [trigger], context=context)
     assert result.matched is True
     assert result.rule_name == "sustained_overdraw"
+
+
+@pytest.mark.asyncio
+async def test_contextual_suppression_blocks_sustained_overdraw_tier_a():
+    skill = _load_skill()
+    skill.config["overdraw_threshold_percent"] = 7.0
+    skill.config["sustained_ratio_threshold"] = 0.6
+    store = _Store()
+    store.time_of_week_baseline = {
+        "avg_value": 14.0,
+        "covered_weeks": 5,
+        "sample_count": 60,
+        "usable": True,
+        "reason": "ok",
+        "tier": "hourly",
+    }
+    sensor_id = "load-current-01"
+    _seed_history(store, sensor_id, [14.0, 13.5, 14.2, 14.1, 13.7, 13.9, 10.0, 10.1])
+
+    event = _event(sensor_id=sensor_id, value=14.4, quality=0.95)
+    event.context = {"device_timezone": "Africa/Lagos"}
+    _, context = _ctx(skill, event, store)
+    trigger = next(t for t in skill.triggers if t.name == "sustained_overdraw")
+
+    result = await RuleEngine().evaluate(event, [trigger], context=context)
+
+    assert context["baseline_valid"] == 1
+    assert context["deviation_percent"] >= skill.config["overdraw_threshold_percent"]
+    assert context["sustained_high_ratio"] >= skill.config["sustained_ratio_threshold"]
+    assert context["context_aware_suppression"] == 1
+    assert result.matched is False
 
 
 @pytest.mark.asyncio

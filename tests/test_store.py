@@ -4,7 +4,9 @@
 import json
 import sqlite3
 import time
+from datetime import datetime, timedelta
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -282,6 +284,90 @@ class TestAverages:
     async def test_avg_last_hours_no_data(self, store):
         avg = await store.avg_last_hours("s-missing", hours=24)
         assert avg is None
+
+    def _insert_hourly(
+        self,
+        store,
+        *,
+        sensor_id: str,
+        local_dt: datetime,
+        value: float,
+        sample_count: int = 12,
+    ) -> None:
+        bucket_ms = int(local_dt.timestamp() * 1000)
+        store._conn.execute(
+            """
+            INSERT INTO sensor_history_hourly
+                (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (sensor_id, "current_clamp", bucket_ms, value, "ampere", sample_count),
+        )
+
+    async def test_time_of_week_baseline_uses_site_local_weekday_hour(self, store):
+        tz = ZoneInfo("Africa/Lagos")
+        reference = datetime(2026, 6, 8, 9, 15, tzinfo=tz)  # Monday 09:15 local.
+        sensor_id = "ac-current"
+        for weeks_ago, value in [(1, 11.0), (2, 12.0), (3, 13.0), (4, 14.0)]:
+            self._insert_hourly(
+                store,
+                sensor_id=sensor_id,
+                local_dt=reference.replace(minute=0, second=0, microsecond=0)
+                - timedelta(weeks=weeks_ago),
+                value=value,
+                sample_count=12,
+            )
+
+        # Same sensor, wrong local hour. This would pollute a naive broad query.
+        self._insert_hourly(
+            store,
+            sensor_id=sensor_id,
+            local_dt=reference.replace(hour=10, minute=0, second=0, microsecond=0)
+            - timedelta(weeks=1),
+            value=99.0,
+        )
+        store._conn.commit()
+
+        baseline = await store.time_of_week_baseline(
+            sensor_id=sensor_id,
+            reference_timestamp_ms=int(reference.timestamp() * 1000),
+            timezone="Africa/Lagos",
+            lookback_weeks=8,
+            min_weeks=3,
+        )
+
+        assert baseline["usable"] is True
+        assert baseline["target_weekday"] == 0
+        assert baseline["target_hour"] == 9
+        assert baseline["covered_weeks"] == 4
+        assert baseline["sample_count"] == 48
+        assert baseline["avg_value"] == pytest.approx(12.5)
+        assert baseline["unit"] == "ampere"
+        assert baseline["tier"] == "hourly"
+
+    async def test_time_of_week_baseline_fails_closed_on_low_coverage(self, store):
+        tz = ZoneInfo("Africa/Lagos")
+        reference = datetime(2026, 6, 8, 9, 0, tzinfo=tz)
+        self._insert_hourly(
+            store,
+            sensor_id="ac-current",
+            local_dt=reference - timedelta(weeks=1),
+            value=11.0,
+        )
+        store._conn.commit()
+
+        baseline = await store.time_of_week_baseline(
+            sensor_id="ac-current",
+            reference_timestamp_ms=int(reference.timestamp() * 1000),
+            timezone="Africa/Lagos",
+            lookback_weeks=8,
+            min_weeks=3,
+        )
+
+        assert baseline["usable"] is False
+        assert baseline["reason"] == "low_coverage"
+        assert baseline["covered_weeks"] == 1
+        assert baseline["avg_value"] == pytest.approx(11.0)
 
     async def test_export_sensor_history_unions_raw_and_compacted_tiers(self, store):
         await store.append_history(

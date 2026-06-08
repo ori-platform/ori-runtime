@@ -1782,7 +1782,12 @@ class IntelligenceElevator:
             )
             return None
 
-        adapter = HookHistoryAdapter(state_store)
+        event_context = event.context if isinstance(event.context, dict) else {}
+        adapter = HookHistoryAdapter(
+            state_store,
+            reference_timestamp_ms=event.timestamp,
+            timezone=str(event_context.get("device_timezone") or "UTC"),
+        )
         try:
             raw = await asyncio.to_thread(
                 self._execute_history_call_sync,

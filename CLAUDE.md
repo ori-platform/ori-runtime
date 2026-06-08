@@ -637,6 +637,11 @@ logging:
   file: ori.log
 ```
 
+Hook history helpers include `same_weekday_hour_baseline(sensor_id,
+lookback_weeks=8, min_weeks=3)`, which returns a bounded, site-local baseline
+from hourly retained history. Use it for deterministic context-aware anomaly
+suppression, not for Tier D safety cutoffs and not as a model-confidence proxy.
+
 ---
 
 ## Coding Conventions
