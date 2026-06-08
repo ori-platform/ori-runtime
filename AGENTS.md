@@ -466,6 +466,9 @@ that are hard to debug.
    audit/replay pattern into this higher-frequency path. MQTT gateway messages
    must never mutate runtime config, policy, update intent, relay state, or
    actuator settings outside the separate authenticated remote-command path.
+   Production broker deployments must also follow `docs/MQTT_SECURITY.md`:
+   no anonymous clients, per-device topic ACLs, LAN/VLAN isolation, and separate
+   runtime/gateway MQTT users.
 
 8. Action executors never raise exceptions.
    They return False. The runtime must survive a failed action.

@@ -160,6 +160,9 @@ Tier 3  GATEWAY LLM    1-3 seconds  · LAN only          · cross-device or clou
 - Tier 1 (Rule Engine) and Tier 2 (Local SLM) are fully implemented and available offline.
 - Tier 3 (Gateway LLM) is implemented over MQTT request/response and remains optional.
 - Cloud reasoning, when used, is a gateway backend, not a runtime dependency.
+- Production runtime-gateway MQTT deployments should follow
+  [`docs/MQTT_SECURITY.md`](docs/MQTT_SECURITY.md) for broker ACLs, network
+  isolation, and HMAC envelope configuration.
 - The runtime is correctly described as an offline-capable safety runtime. Tier 1 and Tier D safety paths are available with zero network dependency.
 
 ### The Action Tier Framework — _What should I do about it?_

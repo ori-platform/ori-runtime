@@ -73,6 +73,10 @@ secret is separate from remote-command secrets. Authenticated deployments sign
 runtime reasoning requests and export responses, and verify gateway reasoning
 responses and export requests before using them.
 
+Broker hardening is documented in `docs/MQTT_SECURITY.md`. Production brokers
+must disable anonymous access, use separate runtime/gateway MQTT users, and
+apply per-device topic ACLs.
+
 ---
 
 ## The Action Tier Framework (Layer 4) — The Agent's Authority
