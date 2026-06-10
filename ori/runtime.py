@@ -612,12 +612,6 @@ class OriRuntime:
         elevator.attach_event_bus(event_bus)
         self._event_bus = event_bus
         if posture_tracker is not None:
-
-            async def _on_gateway_health(event: OriEvent) -> None:
-                posture_tracker.record_gateway_heartbeat(event.timestamp)
-
-            event_bus.subscribe("ori/gateway/health", _on_gateway_health)
-
             # Build an initial posture snapshot before processing events.
             posture = await posture_tracker.refresh(
                 sms_available=is_truthy(config.actions.sms.get("enabled", False)),
@@ -870,7 +864,11 @@ class OriRuntime:
         if gateway_export_task is not None:
             self._background_tasks.append(gateway_export_task)
 
-        hb_subscriber = _build_gateway_heartbeat_subscriber(config, event_bus)
+        hb_subscriber = (
+            _build_gateway_heartbeat_subscriber(config, posture_tracker)
+            if posture_tracker is not None
+            else None
+        )
         if hb_subscriber is not None:
             self._background_tasks.append(
                 asyncio.create_task(
@@ -2949,7 +2947,7 @@ def _build_gateway_message_encryptor(config: Config) -> GatewayMessageEncryptor 
 
 def _build_gateway_heartbeat_subscriber(
     config: Config,
-    event_bus: EventBus,
+    posture_tracker: CapabilityPostureTracker,
 ) -> MqttGatewayHeartbeatSubscriber | None:
     """Instantiate the MQTT gateway heartbeat subscriber when configured."""
     if not bool(config.gateway.enabled):
@@ -2957,7 +2955,7 @@ def _build_gateway_heartbeat_subscriber(
     try:
         subscriber = MqttGatewayHeartbeatSubscriber(
             broker_url=config.gateway.broker_url,
-            event_bus=event_bus,
+            posture_tracker=posture_tracker,
             device_id=config.device.id,
             tls_config=getattr(config.gateway, "tls", {}),
             authenticator=_build_gateway_message_auth(config),

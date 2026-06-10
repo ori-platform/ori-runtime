@@ -15,7 +15,6 @@ from ori.gateway.heartbeat import (
     GATEWAY_HEALTH_TOPIC,
     MqttGatewayHeartbeatSubscriber,
 )
-from ori.network.event_bus import EventBus
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
@@ -25,14 +24,14 @@ from ori.utils.time_utils import now_ms as _now_ms
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-class _CollectingEventBus:
-    """Minimal EventBus stand-in that records published events."""
+class _FakePostureTracker:
+    """Minimal posture-tracker stand-in that records record_gateway_heartbeat calls."""
 
     def __init__(self) -> None:
-        self.published: list = []
+        self.recorded: list[int] = []
 
-    async def publish(self, event) -> None:
-        self.published.append(event)
+    def record_gateway_heartbeat(self, timestamp_ms: int | None = None) -> None:
+        self.recorded.append(timestamp_ms if timestamp_ms is not None else 0)
 
 
 def _auth(
@@ -48,7 +47,7 @@ def _auth(
 
 
 def _subscriber(
-    event_bus=None,
+    posture_tracker=None,
     *,
     device_id: str = "dev-01",
     broker_url: str = "mqtt://localhost",
@@ -57,7 +56,7 @@ def _subscriber(
 ):
     return MqttGatewayHeartbeatSubscriber(
         broker_url=broker_url,
-        event_bus=event_bus or _CollectingEventBus(),
+        posture_tracker=posture_tracker or _FakePostureTracker(),
         device_id=device_id,
         authenticator=authenticator,
         client_factory=client_factory or (lambda **_: _FakeClient()),
@@ -123,60 +122,40 @@ class _FakeClient:
         self.disconnected = True
 
 
-# ── _on_message → EventBus routing tests ─────────────────────────────────────
+# ── _on_message → posture tracker update tests ───────────────────────────────
 #
-# _on_message posts to the event loop via call_soon_threadsafe + create_task,
-# so each test must be async (asyncio_mode = "auto") and await asyncio.sleep(0)
-# twice: once to schedule the task, once to execute the coroutine.
+# _on_message posts to the event loop via call_soon_threadsafe, so each async
+# test must await asyncio.sleep(0) once to let the scheduled callback execute.
 
 
-async def test_valid_heartbeat_publishes_event_to_event_bus():
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus)
+async def test_valid_heartbeat_calls_record_gateway_heartbeat():
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
     sub._on_message(None, None, _message(_heartbeat_payload(timestamp_ms=9_876_543)))
     await asyncio.sleep(0)
-    await asyncio.sleep(0)
 
-    assert len(bus.published) == 1
-    event = bus.published[0]
-    assert event.event_type == GATEWAY_HEALTH_TOPIC
-    assert event.timestamp == 9_876_543
-    assert event.device_id == "dev-01"
-    assert event.reading is None
-    assert event.source == "mqtt"
+    assert len(tracker.recorded) == 1
+    assert tracker.recorded[0] == 9_876_543
 
 
-async def test_event_bus_receives_correct_device_id():
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus, device_id="energy-monitor-ikeja-01")
-    sub._loop = asyncio.get_running_loop()
-
-    sub._on_message(None, None, _message(_heartbeat_payload()))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-
-    assert bus.published[0].device_id == "energy-monitor-ikeja-01"
-
-
-async def test_degraded_status_still_publishes():
-    """A gateway reporting 'degraded' is still alive — event must be published."""
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus)
+async def test_degraded_status_still_updates_posture():
+    """A gateway reporting 'degraded' is still alive — posture must be updated."""
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
     sub._on_message(None, None, _message(_heartbeat_payload(status="degraded")))
     await asyncio.sleep(0)
-    await asyncio.sleep(0)
 
-    assert len(bus.published) == 1
+    assert len(tracker.recorded) == 1
 
 
-async def test_unknown_status_still_publishes():
-    """Forward-compatibility: unknown status values must not suppress event publishing."""
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus)
+async def test_unknown_status_still_updates_posture():
+    """Forward-compatibility: unknown status values must not suppress posture update."""
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
     payload = json.dumps(
@@ -184,58 +163,55 @@ async def test_unknown_status_still_publishes():
     ).encode()
     sub._on_message(None, None, _message(payload))
     await asyncio.sleep(0)
-    await asyncio.sleep(0)
 
-    assert len(bus.published) == 1
-    assert bus.published[0].timestamp == 5
+    assert len(tracker.recorded) == 1
+    assert tracker.recorded[0] == 5
 
 
 async def test_missing_timestamp_ms_falls_back_to_now(monkeypatch):
     """When timestamp_ms is absent the subscriber uses the local clock."""
     monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 42_000)
 
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus)
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
     payload = json.dumps({"status": "healthy", "uptime_s": 1.0}).encode()
     sub._on_message(None, None, _message(payload))
     await asyncio.sleep(0)
-    await asyncio.sleep(0)
 
-    assert bus.published[0].timestamp == 42_000
+    assert tracker.recorded[0] == 42_000
 
 
 async def test_non_numeric_timestamp_ms_falls_back_to_now(monkeypatch):
     monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 99_000)
 
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus)
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
     payload = json.dumps({"status": "healthy", "timestamp_ms": "not-a-number"}).encode()
     sub._on_message(None, None, _message(payload))
     await asyncio.sleep(0)
-    await asyncio.sleep(0)
 
-    assert bus.published[0].timestamp == 99_000
+    assert tracker.recorded[0] == 99_000
 
 
 async def test_malformed_json_silently_discarded():
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus)
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
     sub._on_message(None, None, _message(b"not json at all {{{"))
     await asyncio.sleep(0)
 
-    assert bus.published == []
+    assert tracker.recorded == []
 
 
 async def test_non_dict_json_silently_discarded():
     """A JSON array or scalar must be discarded — only objects are valid."""
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus)
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
     sub._on_message(None, None, _message(b'["healthy", 12.5]'))
@@ -243,18 +219,18 @@ async def test_non_dict_json_silently_discarded():
     sub._on_message(None, None, _message(b"null"))
     await asyncio.sleep(0)
 
-    assert bus.published == []
+    assert tracker.recorded == []
 
 
 async def test_empty_payload_silently_discarded():
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus)
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
     sub._on_message(None, None, _message(b""))
     await asyncio.sleep(0)
 
-    assert bus.published == []
+    assert tracker.recorded == []
 
 
 def test_message_before_loop_set_logs_warning(caplog):
@@ -272,49 +248,46 @@ def test_message_before_loop_set_logs_warning(caplog):
 
 
 async def test_auth_disabled_accepts_unsigned_heartbeat():
-    """No authenticator set → unsigned heartbeats are accepted without auth block."""
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus, authenticator=None)
+    """No authenticator set → unsigned heartbeats update posture without auth block."""
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker, authenticator=None)
     sub._loop = asyncio.get_running_loop()
 
     sub._on_message(None, None, _message(_heartbeat_payload()))
     await asyncio.sleep(0)
-    await asyncio.sleep(0)
 
-    assert len(bus.published) == 1
+    assert len(tracker.recorded) == 1
 
 
 async def test_auth_enabled_accepts_valid_signed_heartbeat():
-    """Valid HMAC envelope → heartbeat is accepted and published."""
+    """Valid HMAC envelope → heartbeat updates posture."""
     authenticator = _auth()
     raw = json.loads(_heartbeat_payload().decode())
-    # Sign with the real current timestamp so verify_broadcast skew check passes.
     signed = authenticator.sign(
         raw, message_type=_HEARTBEAT_MESSAGE_TYPE, signed_at_ms=_now_ms()
     )
 
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus, authenticator=_auth())
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker, authenticator=_auth())
     sub._loop = asyncio.get_running_loop()
 
     sub._on_message(None, None, _message(json.dumps(signed).encode()))
     await asyncio.sleep(0)
-    await asyncio.sleep(0)
 
-    assert len(bus.published) == 1
+    assert len(tracker.recorded) == 1
 
 
 async def test_auth_enabled_rejects_unsigned_heartbeat(caplog):
     """Auth enabled but no auth block in payload → discarded with WARNING."""
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus, authenticator=_auth())
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker, authenticator=_auth())
     sub._loop = asyncio.get_running_loop()
 
     with caplog.at_level(logging.WARNING, logger="ori.gateway.heartbeat"):
         sub._on_message(None, None, _message(_heartbeat_payload()))
         await asyncio.sleep(0)
 
-    assert bus.published == []
+    assert tracker.recorded == []
     assert "rejected heartbeat" in caplog.text
 
 
@@ -327,8 +300,8 @@ async def test_auth_enabled_rejects_tampered_payload(caplog):
     )
     signed["uptime_s"] = 9999.0  # tamper after signing
 
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus, authenticator=_auth())
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker, authenticator=_auth())
     sub._loop = asyncio.get_running_loop()
 
     with caplog.at_level(logging.WARNING, logger="ori.gateway.heartbeat"):
@@ -336,7 +309,7 @@ async def test_auth_enabled_rejects_tampered_payload(caplog):
             sub._on_message(None, None, _message(json.dumps(signed).encode()))
             await asyncio.sleep(0)
 
-    assert bus.published == []
+    assert tracker.recorded == []
     assert "rejected heartbeat" in caplog.text
 
 
@@ -344,27 +317,25 @@ async def test_auth_enabled_rejects_replayed_heartbeat(caplog):
     """Same signed heartbeat delivered twice → second delivery rejected as replay."""
     authenticator = _auth()
     raw = json.loads(_heartbeat_payload().decode())
-    # Sign with real current time so skew check passes for both deliveries.
     signed = authenticator.sign(
         raw, message_type=_HEARTBEAT_MESSAGE_TYPE, signed_at_ms=_now_ms()
     )
     signed_bytes = json.dumps(signed).encode()
 
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus, authenticator=authenticator)
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker, authenticator=authenticator)
     sub._loop = asyncio.get_running_loop()
 
     sub._on_message(None, None, _message(signed_bytes))
     await asyncio.sleep(0)
-    await asyncio.sleep(0)
 
-    assert len(bus.published) == 1
+    assert len(tracker.recorded) == 1
 
     with caplog.at_level(logging.WARNING, logger="ori.gateway.heartbeat"):
         sub._on_message(None, None, _message(signed_bytes))
         await asyncio.sleep(0)
 
-    assert len(bus.published) == 1  # second delivery rejected
+    assert len(tracker.recorded) == 1  # second delivery rejected
     assert "rejected heartbeat" in caplog.text
 
 
@@ -376,8 +347,8 @@ async def test_auth_enabled_rejects_stale_heartbeat(caplog):
         raw, message_type=_HEARTBEAT_MESSAGE_TYPE, signed_at_ms=0
     )
 
-    bus = _CollectingEventBus()
-    sub = _subscriber(bus, authenticator=authenticator)
+    tracker = _FakePostureTracker()
+    sub = _subscriber(tracker, authenticator=authenticator)
     sub._loop = asyncio.get_running_loop()
 
     with caplog.at_level(logging.WARNING, logger="ori.gateway.heartbeat"):
@@ -385,7 +356,7 @@ async def test_auth_enabled_rejects_stale_heartbeat(caplog):
             sub._on_message(None, None, _message(json.dumps(signed).encode()))
             await asyncio.sleep(0)
 
-    assert bus.published == []
+    assert tracker.recorded == []
     assert "rejected heartbeat" in caplog.text
 
 
@@ -447,7 +418,7 @@ async def test_serve_until_tls_applies_context():
 
     sub = MqttGatewayHeartbeatSubscriber(
         broker_url="mqtts://localhost",
-        event_bus=_CollectingEventBus(),
+        posture_tracker=_FakePostureTracker(),
         device_id="dev-01",
         client_factory=lambda **_: fake,
     )
@@ -463,17 +434,11 @@ async def test_serve_until_tls_applies_context():
     assert tls_contexts[0] is not None
 
 
-async def test_serve_until_heartbeat_routes_through_real_event_bus():
-    """End-to-end: MQTT heartbeat → EventBus → posture tracker."""
+async def test_serve_until_heartbeat_updates_posture_tracker():
+    """End-to-end: MQTT heartbeat → posture tracker updated directly."""
     from ori.reasoning.capability_posture import CapabilityPostureTracker
 
     tracker = CapabilityPostureTracker(gateway_heartbeat_ttl_seconds=60)
-    bus = EventBus()
-
-    async def _on_gateway_health(event):
-        tracker.record_gateway_heartbeat(event.timestamp)
-
-    bus.subscribe("ori/gateway/health", _on_gateway_health)
 
     class _ActiveFakeClient(_FakeClient):
         def loop_start(self):
@@ -485,15 +450,14 @@ async def test_serve_until_heartbeat_routes_through_real_event_bus():
 
     sub = MqttGatewayHeartbeatSubscriber(
         broker_url="mqtt://localhost",
-        event_bus=bus,
+        posture_tracker=tracker,
         device_id="dev-01",
         client_factory=lambda **_: _ActiveFakeClient(),
     )
     shutdown = asyncio.Event()
 
     async def _stop():
-        # Two yields: one to schedule the task, one to run the coroutine.
-        await asyncio.sleep(0)
+        # One yield: call_soon_threadsafe schedules a direct synchronous call.
         await asyncio.sleep(0)
         shutdown.set()
 
@@ -510,6 +474,6 @@ def test_paho_unavailable_raises():
         with pytest.raises(RuntimeError, match="paho-mqtt is not installed"):
             MqttGatewayHeartbeatSubscriber(
                 broker_url="mqtt://localhost",
-                event_bus=_CollectingEventBus(),
+                posture_tracker=_FakePostureTracker(),
                 device_id="dev-01",
             )

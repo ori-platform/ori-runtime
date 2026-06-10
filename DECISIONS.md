@@ -904,16 +904,14 @@ Rationale:
 Rules:
 
 - `MqttGatewayHeartbeatSubscriber` subscribes to `ori/gateway/health` and
-  publishes an `OriEvent(event_type="ori/gateway/health", reading=None)` onto
-  the internal EventBus for each valid heartbeat received.
-- The `event_bus.subscribe("ori/gateway/health", _on_gateway_health)` subscription
-  established in PR #51 is the single call site for `record_gateway_heartbeat`.
-  The MQTT subscriber fills in the publisher side of this channel; the EventBus
-  subscription remains the authoritative receiver.
+  calls `CapabilityPostureTracker.record_gateway_heartbeat(timestamp_ms)`
+  directly via `loop.call_soon_threadsafe` for each valid heartbeat received.
+  The sensor `EventBus` is not used; the heartbeat is an infrastructure liveness
+  signal, not sensor data.
 - When `gateway.auth.enabled: true`, each heartbeat payload is verified by
-  `GatewayMessageAuthenticator.verify_broadcast` before the EventBus event is
-  published. Heartbeats that fail HMAC verification, timestamp skew, or replay
-  checks are discarded with a WARNING; no EventBus event is published for them.
+  `GatewayMessageAuthenticator.verify_broadcast` before posture is updated.
+  Heartbeats that fail HMAC verification, timestamp skew, or replay checks are
+  discarded with a WARNING.
 - When `gateway.auth.enabled: false`, unsigned heartbeats are accepted. Broker
   ACLs (see `docs/MQTT_SECURITY.md`) are the access control layer.
 - `verify_broadcast` uses the same shared secret as `verify` but omits
@@ -930,14 +928,13 @@ Rationale:
   runtime does not initiate any probe to verify gateway health. The heartbeat
   subscription is the only signal path for `gateway_reachable` in
   `CapabilityPosture`. Without it, the elevator silently misroutes Tier 3
-  escalations to a non-existent gateway on idle sites where no recent reasoning
-  calls have fired — the TTL expires with no implicit liveness signal.
-- The EventBus channel (`ori/gateway/health`) was established in PR #51 as
-  the runtime's own internal mechanism for tracking gateway health. The MQTT
-  subscriber bridges the LAN heartbeat into this channel rather than calling
-  `record_gateway_heartbeat` directly, preserving the single call-site invariant
-  and keeping the update path consistent with how the rest of the runtime
-  consumes posture events.
+  escalations on idle sites — the TTL expires with no implicit liveness signal.
+- The gateway is a separate process on a separate machine. The heartbeat is a
+  cross-process infrastructure signal; routing it through the sensor `EventBus`
+  would conflate two semantically different event streams and expose it to
+  wildcard skill subscribers that assume `event.reading` is set. The direct call
+  to `record_gateway_heartbeat` is the correct interface — the heartbeat module
+  is in the gateway package and knows exactly what it is updating.
 - `verify_broadcast` is a distinct method from `verify` because the two
   verification paths have different trust models: per-device reasoning and export
   envelopes bind to `device_id` to prevent cross-device replay; a site-wide

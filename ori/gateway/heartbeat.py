@@ -4,11 +4,16 @@
 """MQTT subscriber for the gateway LAN health heartbeat.
 
 The gateway publishes a JSON heartbeat to ``ori/gateway/health`` every 30 s
-(default).  This module maintains a persistent MQTT subscription and routes
-each received heartbeat onto the internal EventBus so the
-``_on_gateway_health`` handler in the runtime can call
-``CapabilityPostureTracker.record_gateway_heartbeat`` exactly as it does for
-in-process events — preserving the single call-site invariant.
+(default).  This module maintains a persistent MQTT subscription and calls
+``CapabilityPostureTracker.record_gateway_heartbeat`` directly on the asyncio
+event loop via ``loop.call_soon_threadsafe`` whenever a heartbeat arrives.
+
+The gateway is a separate process on a separate machine; the heartbeat is an
+infrastructure liveness signal, not sensor data.  Routing it through the
+sensor ``EventBus`` would conflate two semantically different event streams and
+expose it to wildcard skill subscribers.  The direct call is the correct
+interface — the heartbeat module is in the gateway package and knows exactly
+what it is updating.
 
 When ``gateway.auth.enabled: true`` the heartbeat payload must carry a valid
 HMAC ``auth`` envelope (see ``GatewayMessageAuthenticator.verify_broadcast``).
@@ -32,12 +37,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
 from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
-from ori.network.event_bus import EventBus
-from ori.network.events import OriEvent
+from ori.reasoning.capability_posture import CapabilityPostureTracker
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
@@ -54,8 +57,7 @@ except ImportError:  # pragma: no cover — paho is always installed in producti
 
 logger = logging.getLogger(__name__)
 
-# Matches contracts.GatewayHealthTopic in ori-gateway and the EventBus subscription
-# key in runtime.py (_on_gateway_health).
+# Matches contracts.GatewayHealthTopic in ori-gateway.
 GATEWAY_HEALTH_TOPIC = "ori/gateway/health"
 
 _VALID_STATUSES = frozenset({"starting", "healthy", "degraded"})
@@ -65,26 +67,21 @@ _HEARTBEAT_MESSAGE_TYPE = "gateway.heartbeat"
 
 
 class MqttGatewayHeartbeatSubscriber:
-    """Persistent MQTT subscriber that routes gateway heartbeats onto the EventBus.
+    """Persistent MQTT subscriber that feeds gateway heartbeats into the posture tracker.
 
     Follows the same paho threading model as
     :class:`~ori.gateway.export.MqttGatewayExportServer`: paho runs its
     network I/O in a background thread started by ``loop_start``; the
-    ``_on_message`` callback marshals the EventBus publish back to the asyncio
-    event loop via ``loop.call_soon_threadsafe`` + ``loop.create_task`` so it
-    executes on the correct thread without blocking paho's network thread.
-
-    The ``_on_gateway_health`` handler registered in ``runtime.py`` receives
-    the published event and calls
-    ``CapabilityPostureTracker.record_gateway_heartbeat``, keeping it the
-    single call site for posture updates from gateway liveness.
+    ``_on_message`` callback marshals the call back to the asyncio event loop
+    via ``loop.call_soon_threadsafe`` so it executes on the correct thread
+    without blocking paho's network thread.
     """
 
     def __init__(
         self,
         *,
         broker_url: str,
-        event_bus: EventBus,
+        posture_tracker: CapabilityPostureTracker,
         device_id: str,
         tls_config: dict[str, Any] | None = None,
         authenticator: GatewayMessageAuthenticator | None = None,
@@ -93,7 +90,7 @@ class MqttGatewayHeartbeatSubscriber:
         if not _PAHO_AVAILABLE or mqtt is None:
             raise RuntimeError("paho-mqtt is not installed")
         self._broker = parse_gateway_broker_url(broker_url, tls_config=tls_config)
-        self._event_bus = event_bus
+        self._posture_tracker = posture_tracker
         self._device_id = str(device_id)
         self._authenticator = authenticator
         self._client_factory = client_factory or _default_client_factory
@@ -107,7 +104,7 @@ class MqttGatewayHeartbeatSubscriber:
         so the runtime can manage both servers with the same lifecycle pattern.
         """
         self._loop = asyncio.get_running_loop()
-        client = self._client_factory(client_id="ori-gateway-heartbeat")
+        client = self._client_factory(client_id=f"ori-hb-{self._device_id}")
         self._client = client
         client.on_connect = self._on_connect
         client.on_message = self._on_message
@@ -166,7 +163,7 @@ class MqttGatewayHeartbeatSubscriber:
         client.subscribe(GATEWAY_HEALTH_TOPIC)
 
     def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
-        """Parse a heartbeat payload and publish a gateway-health event onto the EventBus."""
+        """Parse a heartbeat payload and update gateway posture directly."""
         loop = self._loop
         if loop is None:
             logger.warning(
@@ -212,19 +209,11 @@ class MqttGatewayHeartbeatSubscriber:
             "[gateway-heartbeat] received status=%r ts=%d", status, timestamp_ms
         )
 
-        event = OriEvent(
-            event_id=str(uuid.uuid4()),
-            event_type=GATEWAY_HEALTH_TOPIC,
-            device_id=self._device_id,
-            sensor_id="gateway-health",
-            timestamp=timestamp_ms,
-            reading=None,
-            source="mqtt",
+        # call_soon_threadsafe is required: _on_message fires on paho's network
+        # thread; record_gateway_heartbeat must run on the asyncio event loop.
+        loop.call_soon_threadsafe(
+            self._posture_tracker.record_gateway_heartbeat, timestamp_ms
         )
-        # call_soon_threadsafe + create_task is required: _on_message fires on
-        # paho's network thread; EventBus.publish is a coroutine that must run
-        # on the asyncio event loop.
-        loop.call_soon_threadsafe(loop.create_task, self._event_bus.publish(event))
 
 
 # ── paho client factory ───────────────────────────────────────────────────────
