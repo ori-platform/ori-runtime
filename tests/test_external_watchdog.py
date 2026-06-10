@@ -71,7 +71,6 @@ def _write_runtime_config(tmp_path: Path, hal_block: str = "") -> Path:
               default_tier: local
               local_model: ""
               model_path: ""
-              offline_fallback: rule
 
             gateway:
               enabled: false

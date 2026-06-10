@@ -243,27 +243,24 @@ class TestSelectTier:
         assert tier == "rule"
 
     async def test_offline_returns_local_slm(self):
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(config=conf)
         skill = FakeSkill()
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            tier = await elevator.select_tier(_event(), skill, None)
+        tier = await elevator.select_tier(_event(), skill, None)
         assert tier == "local_slm"
 
     async def test_low_complexity_returns_local_slm(self):
         elevator = IntelligenceElevator()
         skill = FakeSkill()
         store = _mock_state_store(avg=5.0, history=[5.0, 5.0, 5.0])
-        with patch("ori.reasoning.elevator._is_offline", return_value=False):
-            with patch("ori.reasoning.elevator._hour_now", return_value=12):
-                tier = await elevator.select_tier(_event(value=5.1), skill, store)
+        with patch("ori.reasoning.elevator._hour_now", return_value=12):
+            tier = await elevator.select_tier(_event(value=5.1), skill, store)
         assert tier == "local_slm"
 
     async def test_no_state_store_returns_local_slm(self):
         elevator = IntelligenceElevator()
         skill = FakeSkill()
-        with patch("ori.reasoning.elevator._is_offline", return_value=False):
-            tier = await elevator.select_tier(_event(), skill, None)
+        tier = await elevator.select_tier(_event(), skill, None)
         assert tier == "local_slm"
 
     async def test_tier_d_does_not_reach_state_store(self):
@@ -274,10 +271,10 @@ class TestSelectTier:
         # History not fetched for Tier D — returns immediately
         store.avg_last_hours.assert_not_called()
 
-    async def test_escalate_to_local_slm_floors_tier_when_offline_fallback_is_rule(
+    async def test_escalate_to_local_slm_trigger_returns_local_slm(
         self,
     ):
-        conf = type("obj", (object,), {"offline_fallback": "rule"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(config=conf)
         skill = FakeSkill(
             triggers=[
@@ -291,12 +288,14 @@ class TestSelectTier:
                 }
             ]
         )
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            tier = await elevator.select_tier(_event(value=5.0), skill, None)
+        tier = await elevator.select_tier(_event(value=5.0), skill, None)
         assert tier == "local_slm"
 
     async def test_fresh_capability_posture_is_used_without_probe(self):
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        # Verify gateway_reachable=False + local_slm_loaded=True → local_slm
+        # with no internet probe. The internet gate was removed in issue #145:
+        # an air-gapped site with a reachable gateway must still escalate.
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(config=conf)
         posture = CapabilityPosture(
             sms_available=True,
@@ -310,12 +309,42 @@ class TestSelectTier:
             gateway_last_heartbeat_ms=None,
         )
         elevator.update_capability_posture(posture)
-        with patch(
-            "ori.reasoning.elevator._is_offline",
-            side_effect=AssertionError("offline probe should not run"),
-        ):
-            tier = await elevator.select_tier(_event(value=5.0), FakeSkill(), None)
+        tier = await elevator.select_tier(_event(value=5.0), FakeSkill(), None)
         assert tier == "local_slm"
+
+    async def test_gateway_selected_on_airgapped_site(self):
+        # Air-gapped site: gateway is on LAN but there is no internet.
+        # Before issue #145 the internet gate (_is_offline_async) would block
+        # gateway escalation here, falling back to local_slm incorrectly.
+        # The correct behaviour: gateway_available=True → "gateway", regardless
+        # of internet_available.
+        elevator = IntelligenceElevator()
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "airgap_trigger",
+                    "condition": "value > 1.0",
+                    "action_tier": "A",
+                    "escalate_to": "gateway",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                }
+            ]
+        )
+        posture = CapabilityPosture(
+            sms_available=True,
+            whatsapp_available=True,
+            gateway_reachable=True,
+            local_slm_loaded=True,
+            relay_connected=False,
+            internet_available=False,
+            checked_at_ms=_ms(),
+            expires_at_ms=_ms() + 60_000,
+            gateway_last_heartbeat_ms=_ms() - 5_000,
+        )
+        elevator.update_capability_posture(posture)
+        tier = await elevator.select_tier(_event(value=5.0), skill, None)
+        assert tier == "gateway"
 
     async def test_trigger_declares_gateway_is_authoritative_floor(self):
         elevator = IntelligenceElevator()
@@ -334,8 +363,7 @@ class TestSelectTier:
         event = _event(value=5.0)
         store = _mock_state_store(avg=5.0, history=[5.0, 5.0])
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=False):
-            tier = await elevator.select_tier(event, skill, store)
+        tier = await elevator.select_tier(event, skill, store)
 
         assert tier == "gateway"
         ctx = event.context[GATEWAY_ESCALATION_CONTEXT_KEY]
@@ -448,12 +476,11 @@ class TestReason:
             tokens_used=20,
             latency_ms=500,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = FakeSkill()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(_event(), skill, None)
+        result = await elevator.reason(_event(), skill, None)
 
         mock_llm.reason.assert_called_once()
         assert result.tier == "local_slm"
@@ -473,7 +500,7 @@ class TestReason:
         elevator = IntelligenceElevator(
             local_llm=local_llm,
             gateway_reasoner=gateway,
-            config=type("obj", (object,), {"offline_fallback": "local_slm"})(),
+            config=type("obj", (object,), {})(),
         )
         elevator.update_capability_posture(_fresh_gateway_posture())
         event = _event(value=5.0)
@@ -491,7 +518,7 @@ class TestReason:
         local_llm = AsyncMock()
         elevator = IntelligenceElevator(
             local_llm=local_llm,
-            config=type("obj", (object,), {"offline_fallback": "local_slm"})(),
+            config=type("obj", (object,), {})(),
         )
         skill = FakeSkill(
             triggers=[
@@ -512,8 +539,7 @@ class TestReason:
         event = _event(value=5.0)
         store = _mock_state_store(avg=5.0, history=[5.0, 5.0])
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=False):
-            result = await elevator.reason(event, skill, store)
+        result = await elevator.reason(event, skill, store)
 
         local_llm.reason.assert_not_called()
         assert result.tier == "gateway"
@@ -531,7 +557,7 @@ class TestReason:
         elevator = IntelligenceElevator(
             local_llm=local_llm,
             gateway_reasoner=gateway,
-            config=type("obj", (object,), {"offline_fallback": "local_slm"})(),
+            config=type("obj", (object,), {})(),
         )
         elevator.update_capability_posture(_fresh_gateway_posture())
         skill = FakeSkill(
@@ -553,8 +579,7 @@ class TestReason:
         event = _event(value=5.0)
         store = _mock_state_store(avg=5.0, history=[5.0, 5.0])
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=False):
-            result = await elevator.reason(event, skill, store)
+        result = await elevator.reason(event, skill, store)
 
         gateway.reason.assert_awaited_once()
         local_llm.reason.assert_not_called()
@@ -576,7 +601,6 @@ class TestReason:
             "obj",
             (object,),
             {
-                "offline_fallback": "local_slm",
                 "causal_memory": {"enabled": True},
             },
         )()
@@ -585,8 +609,7 @@ class TestReason:
         store = _mock_state_store()
         store.lookup_causal_memory.return_value = "Cached known-good resolution."
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(_event(value=5.0), skill, store)
+        result = await elevator.reason(_event(value=5.0), skill, store)
 
         assert result.model == "causal_memory"
         assert result.text == "Cached known-good resolution."
@@ -607,7 +630,6 @@ class TestReason:
             "obj",
             (object,),
             {
-                "offline_fallback": "local_slm",
                 "causal_memory": {
                     "enabled": True,
                     "min_confidence_to_store": 0.5,
@@ -619,8 +641,7 @@ class TestReason:
         store = _mock_state_store()
         store.lookup_causal_memory.return_value = None
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(_event(value=5.0), skill, store)
+        result = await elevator.reason(_event(value=5.0), skill, store)
 
         assert result.text == "Fresh LLM resolution."
         store.store_causal_memory.assert_awaited_once()
@@ -638,12 +659,11 @@ class TestReason:
             tokens_used=20,
             latency_ms=500,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = FakeSkill()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(_event(), skill, None)
+        result = await elevator.reason(_event(), skill, None)
 
         assert result.prompt != ""
         assert "load-current" in result.prompt  # sensor_id appears in prompt
@@ -657,7 +677,7 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
         skill.prompts = {
@@ -665,8 +685,7 @@ class TestReason:
             "current_clamp": "SENSOR_PROMPT",
         }
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(_event(value=5.0), skill, None)
+        result = await elevator.reason(_event(value=5.0), skill, None)
 
         assert "TRIGGER_PROMPT" in result.prompt
         assert "SENSOR_PROMPT" not in result.prompt
@@ -680,13 +699,12 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
         skill.prompts = {"current_clamp": "SENSOR_PROMPT"}
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(_event(value=5.0), skill, None)
+        result = await elevator.reason(_event(value=5.0), skill, None)
 
         assert "SENSOR_PROMPT" in result.prompt
 
@@ -699,7 +717,7 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
         skill.prompts = {"anomalous_draw": "Value is {value}{unit} on {device_id}"}
@@ -715,8 +733,7 @@ class TestReason:
             "ikeja-01",
         )
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(event, skill, None)
+        result = await elevator.reason(event, skill, None)
 
         assert "Value is 8.2A on ikeja-01" in result.prompt
 
@@ -729,7 +746,7 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
         skill.prompts = {
@@ -737,8 +754,7 @@ class TestReason:
         }
         store = _PromptHistoryStore({"load-current": [12.4, 12.5, 12.6]})
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(_event(value=8.2), skill, store)
+        result = await elevator.reason(_event(value=8.2), skill, store)
 
         assert "{history.last_n('load-current', 6)}" not in result.prompt
         assert "[12.4,12.5,12.6]" in result.prompt
@@ -752,7 +768,7 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
         skill.prompts = {
@@ -760,9 +776,8 @@ class TestReason:
         }
         store = _PromptHistoryStore({"load-current": [1.0, 2.0]})
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            with caplog.at_level(logging.WARNING):
-                result = await elevator.reason(_event(value=8.2), skill, store)
+        with caplog.at_level(logging.WARNING):
+            result = await elevator.reason(_event(value=8.2), skill, store)
 
         assert "{history.not_a_method('load-current', 2)}" not in result.prompt
         assert "Check: null" in result.prompt
@@ -777,7 +792,7 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
         skill.prompts = {
@@ -785,9 +800,8 @@ class TestReason:
         }
         store = _PromptHistoryStore({"load-current": [10.0, 14.0]})
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            with caplog.at_level(logging.WARNING):
-                result = await elevator.reason(_event(value=8.2), skill, store)
+        with caplog.at_level(logging.WARNING):
+            result = await elevator.reason(_event(value=8.2), skill, store)
 
         assert "{history.last_n(sensor_id='load-current', n=2)}" not in result.prompt
         assert "Broken: null" in result.prompt
@@ -802,7 +816,7 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
         skill.prompts = {
@@ -810,8 +824,7 @@ class TestReason:
         }
         store = _PromptHistoryStore({"load-current": [10.0, 14.0]})
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(_event(value=8.2), skill, store)
+        result = await elevator.reason(_event(value=8.2), skill, store)
 
         assert '{history.avg_hours("load-current", 24)}' not in result.prompt
         assert "24h avg: 12.0" in result.prompt
@@ -825,7 +838,7 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
         skill.prompts = {
@@ -833,8 +846,7 @@ class TestReason:
         }
         store = _PromptHistoryStore({"load-current": [10.0, 14.0]})
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(_event(value=8.2), skill, store)
+        result = await elevator.reason(_event(value=8.2), skill, store)
 
         assert "{history.last_n(sensor_id='load-current', n=2)}" not in result.prompt
         assert "Broken: null" in result.prompt
@@ -848,16 +860,15 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
         skill.prompts = {
             "anomalous_draw": "No store: {history.last_n('load-current', 3)}"
         }
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            with caplog.at_level(logging.WARNING):
-                result = await elevator.reason(_event(value=8.2), skill, None)
+        with caplog.at_level(logging.WARNING):
+            result = await elevator.reason(_event(value=8.2), skill, None)
 
         assert "{history.last_n('load-current', 3)}" not in result.prompt
         assert "No store: null" in result.prompt
@@ -872,7 +883,7 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
         skill.prompts = {"anomalous_draw": "Sensor reference: {sensor_id}"}
@@ -888,8 +899,7 @@ class TestReason:
             "ikeja-01",
         )
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(event, skill, None)
+        result = await elevator.reason(event, skill, None)
 
         assert "{malicious: inject}" not in result.prompt
         assert "malicious inject" in result.prompt
@@ -903,17 +913,16 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            with patch.object(
-                elevator,
-                "_lookup_rejection_record",
-                new=AsyncMock(return_value={"operator_response": "<override safety>"}),
-            ):
-                result = await elevator.reason(_event(value=5.0), skill, None)
+        with patch.object(
+            elevator,
+            "_lookup_rejection_record",
+            new=AsyncMock(return_value={"operator_response": "<override safety>"}),
+        ):
+            result = await elevator.reason(_event(value=5.0), skill, None)
 
         assert "<override safety>" not in result.prompt
         assert "override safety" in result.prompt
@@ -927,19 +936,18 @@ class TestReason:
             tokens_used=12,
             latency_ms=100,
         )
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = _tier_a_skill()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            with patch.object(
-                elevator,
-                "_lookup_rejection_record",
-                new=AsyncMock(
-                    return_value={"operator_response": "yes, proceed with caution"}
-                ),
-            ):
-                result = await elevator.reason(_event(value=5.0), skill, None)
+        with patch.object(
+            elevator,
+            "_lookup_rejection_record",
+            new=AsyncMock(
+                return_value={"operator_response": "yes, proceed with caution"}
+            ),
+        ):
+            result = await elevator.reason(_event(value=5.0), skill, None)
 
         assert "yes, proceed with caution" in result.prompt
 
@@ -961,24 +969,22 @@ class TestReason:
     async def test_local_slm_failure_falls_back_to_stub(self):
         mock_llm = AsyncMock()
         mock_llm.reason.side_effect = RuntimeError("model crashed")
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=mock_llm, config=conf)
         skill = FakeSkill()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(_event(), skill, None)
+        result = await elevator.reason(_event(), skill, None)
 
         # Must not raise — returns a stub result
         assert result.model == "stub"
         assert result.action_tier == "A"
 
     async def test_no_llm_returns_stub(self):
-        conf = type("obj", (object,), {"offline_fallback": "local_slm"})()
+        conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(local_llm=None, config=conf)
         skill = FakeSkill()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            result = await elevator.reason(_event(), skill, None)
+        result = await elevator.reason(_event(), skill, None)
 
         assert result.model == "stub"
 
@@ -997,10 +1003,9 @@ class TestReasonAndDispatch:
         skill = _tier_a_skill()
         elevator = IntelligenceElevator()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(
-                _event(value=5.0), skill, None, mock_dispatcher
-            )
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), skill, None, mock_dispatcher
+        )
 
         mock_dispatcher.dispatch.assert_called_once()
         call = mock_dispatcher.dispatch.call_args
@@ -1047,8 +1052,7 @@ class TestReasonAndDispatch:
         event = _event(value=5.0)
         event.context = {"__handler_trigger_name": "sleep_blocked_terminate_candidate"}
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(event, skill, None, mock_dispatcher)
+        await elevator.reason_and_dispatch(event, skill, None, mock_dispatcher)
 
         call = mock_dispatcher.dispatch.call_args
         assert call[1]["approval_timeout"] == 60
@@ -1099,8 +1103,7 @@ class TestReasonAndDispatch:
             )
             elevator = IntelligenceElevator()
 
-            with patch("ori.reasoning.elevator._is_offline", return_value=True):
-                await elevator.reason_and_dispatch(event, skill, store, dispatcher)
+            await elevator.reason_and_dispatch(event, skill, store, dispatcher)
 
             rows = await store.get_tier_c_decision_log()
             assert len(rows) == 1
@@ -1172,11 +1175,10 @@ class TestReasonAndDispatch:
         skill = _tier_a_skill()
         elevator = IntelligenceElevator()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            # Must not raise
-            await elevator.reason_and_dispatch(
-                _event(value=5.0), skill, None, mock_dispatcher
-            )
+        # Must not raise
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), skill, None, mock_dispatcher
+        )
 
     async def test_reasoning_logged_when_store_has_log_reasoning(self):
         store = _mock_state_store()
@@ -1184,10 +1186,9 @@ class TestReasonAndDispatch:
         elevator = IntelligenceElevator()
         mock_dispatcher = AsyncMock()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(
-                _event(value=5.0), skill, store, mock_dispatcher
-            )
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), skill, store, mock_dispatcher
+        )
 
         store.log_reasoning.assert_called_once()
 
@@ -1211,10 +1212,9 @@ class TestReasonAndDispatch:
             )
             elevator = IntelligenceElevator(local_llm=local_llm)
 
-            with patch("ori.reasoning.elevator._is_offline", return_value=True):
-                await elevator.reason_and_dispatch(
-                    _event(value=5.0), _tier_a_skill(), store, dispatcher
-                )
+            await elevator.reason_and_dispatch(
+                _event(value=5.0), _tier_a_skill(), store, dispatcher
+            )
 
             actions = await store.get_action_log()
             row = await store._run(
@@ -1251,10 +1251,9 @@ class TestReasonAndDispatch:
         store = _mock_state_store(avg=4.0, history=[4.0, 4.1])
         elevator = IntelligenceElevator(local_llm=local_llm)
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(
-                _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
-            )
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
+        )
 
         assert calls == [
             ("switch_power_source", "B"),
@@ -1278,10 +1277,9 @@ class TestReasonAndDispatch:
             dispatcher.register_executor("alert_whatsapp", successful_executor)
             elevator = IntelligenceElevator(local_llm=local_llm)
 
-            with patch("ori.reasoning.elevator._is_offline", return_value=True):
-                await elevator.reason_and_dispatch(
-                    _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
-                )
+            await elevator.reason_and_dispatch(
+                _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
+            )
 
             actions = await store.get_action_log()
             correlations = {row["correlation_id"] for row in actions}
@@ -1302,10 +1300,9 @@ class TestReasonAndDispatch:
         store = _mock_state_store(avg=4.0, history=[4.0, 4.1])
         elevator = IntelligenceElevator(local_llm=None)
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(
-                _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
-            )
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
+        )
 
         logged = store.log_reasoning.call_args.kwargs["result"]
         assert logged.reasoning_status == "incomplete"
@@ -1333,13 +1330,12 @@ class TestReasonAndDispatch:
             )
             elevator = IntelligenceElevator(local_llm=local_llm)
 
-            with patch("ori.reasoning.elevator._is_offline", return_value=True):
-                await elevator.reason_and_dispatch(
-                    _event(value=5.0),
-                    _tier_b_post_action_skill(),
-                    store,
-                    dispatcher,
-                )
+            await elevator.reason_and_dispatch(
+                _event(value=5.0),
+                _tier_b_post_action_skill(),
+                store,
+                dispatcher,
+            )
 
             local_llm.reason.assert_not_called()
             actions = await store.get_action_log()
@@ -1392,13 +1388,12 @@ class TestReasonAndDispatch:
             )
             elevator = IntelligenceElevator(local_llm=local_llm)
 
-            with patch("ori.reasoning.elevator._is_offline", return_value=True):
-                await elevator.reason_and_dispatch(
-                    _event(value=5.0),
-                    _tier_b_post_action_skill(),
-                    store,
-                    dispatcher,
-                )
+            await elevator.reason_and_dispatch(
+                _event(value=5.0),
+                _tier_b_post_action_skill(),
+                store,
+                dispatcher,
+            )
 
             actions = await store.get_action_log()
             by_action = {row["action_name"]: row for row in actions}
@@ -1427,8 +1422,7 @@ class TestReasonAndDispatch:
         skill = FakeSkill()  # no _actions configured
         elevator = IntelligenceElevator()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(_event(), skill, None, mock_dispatcher)
+        await elevator.reason_and_dispatch(_event(), skill, None, mock_dispatcher)
 
         mock_dispatcher.dispatch.assert_not_called()
 
@@ -1467,8 +1461,7 @@ class TestReasonAndDispatch:
         # Ensure "major" is the matched rule for this event.
         event.context = {"__handler_trigger_name": "major"}
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(event, skill, None, mock_dispatcher)
+        await elevator.reason_and_dispatch(event, skill, None, mock_dispatcher)
 
         call = mock_dispatcher.dispatch.call_args
         assert call[1]["action"] == "log_to_dashboard"
@@ -1494,8 +1487,7 @@ class TestReasonAndDispatch:
         event = _event(value=5.0)
         event.context = {"__handler_trigger_name": "never"}
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(event, skill, None, mock_dispatcher)
+        await elevator.reason_and_dispatch(event, skill, None, mock_dispatcher)
 
         mock_dispatcher.dispatch.assert_not_called()
 
@@ -1505,10 +1497,9 @@ class TestReasonAndDispatch:
         elevator = IntelligenceElevator()
         store = _mock_state_store()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            await elevator.reason_and_dispatch(
-                _event(value=5.0), skill, store, mock_dispatcher
-            )
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), skill, store, mock_dispatcher
+        )
 
         call = mock_dispatcher.dispatch.call_args
         ctx = call[1]["context"]
@@ -1521,11 +1512,10 @@ class TestReasonAndDispatch:
         skill = FakeSkill()
         elevator = IntelligenceElevator()
 
-        with patch("ori.reasoning.elevator._is_offline", return_value=True):
-            task = asyncio.create_task(
-                elevator.reason_and_dispatch(_event(), skill, None, mock_dispatcher)
-            )
-            await task  # must complete without raising
+        task = asyncio.create_task(
+            elevator.reason_and_dispatch(_event(), skill, None, mock_dispatcher)
+        )
+        await task  # must complete without raising
 
     async def test_reason_and_dispatch_catches_safety_error_and_dispatches_tier_a(self):
         """A RuleEngineSafetyError must be caught and routed as a Tier A synthetic event."""

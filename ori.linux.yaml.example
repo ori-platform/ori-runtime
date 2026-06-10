@@ -49,7 +49,6 @@ reasoning:
   # ─── Local SLM (optional — uncomment after downloading a GGUF model) ─
   # local_model: qwen2.5-0.5b-instruct-q4_k_m
   # model_path: /home/<user>/models/   # directory containing your .gguf file
-  offline_fallback: rule
   escalation_threshold: 0.70
   energy_aware_reasoning:
     enabled: false

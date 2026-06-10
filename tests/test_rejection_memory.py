@@ -95,7 +95,6 @@ def _elevator_config() -> object:
         "Cfg",
         (object,),
         {
-            "offline_fallback": "local_slm",
             "escalation_threshold": 0.7,
             "causal_memory": {"rejection_expiry_days": 30},
         },
@@ -210,8 +209,6 @@ class TestRejectionMemory:
             proposed_action="open_safety_circuit",
         )
         elevator = IntelligenceElevator(local_llm=llm, config=_elevator_config())
-
-        monkeypatch.setattr("ori.reasoning.elevator._is_offline", lambda: True)
         result = await elevator.reason(event, skill, store)
         assert result.action_tier == "A"
 
@@ -253,7 +250,6 @@ class TestRejectionMemory:
             proposed_action="open_safety_circuit",
         )
         elevator = IntelligenceElevator(local_llm=llm, config=_elevator_config())
-        monkeypatch.setattr("ori.reasoning.elevator._is_offline", lambda: True)
         result = await elevator.reason(event, skill, store)
         assert result.action_tier == "C"
 
@@ -292,8 +288,6 @@ class TestRejectionMemory:
             proposed_action="open_safety_circuit",
         )
         elevator = IntelligenceElevator(local_llm=llm, config=_elevator_config())
-        monkeypatch.setattr("ori.reasoning.elevator._is_offline", lambda: True)
-
         result = await elevator.reason(event, _FakeSkill(), store)
         assert "previously rejected by the operator" in result.prompt
         assert "scheduled run" in result.prompt

@@ -198,7 +198,6 @@ def minimal_config(tmp_path: Path) -> Path:
               default_tier: local
               local_model: ""
               model_path: ""
-              offline_fallback: rule
 
             gateway:
               enabled: false
@@ -457,7 +456,6 @@ class TestAdapterProtocol:
                   default_tier: local
                   local_model: ""
                   model_path: ""
-                  offline_fallback: rule
                 gateway:
                   enabled: false
                   broker_url: ""
@@ -599,7 +597,6 @@ class TestLifecycle:
                   default_tier: local
                   local_model: ""
                   model_path: ""
-                  offline_fallback: rule
                 gateway:
                   enabled: false
                   broker_url: ""
@@ -1525,7 +1522,6 @@ class TestWebhookServerStartup:
                   default_tier: local
                   local_model: ""
                   model_path: ""
-                  offline_fallback: rule
 
                 gateway:
                   enabled: false
@@ -1629,7 +1625,6 @@ class TestWebhookServerStartup:
                   default_tier: local
                   local_model: ""
                   model_path: ""
-                  offline_fallback: rule
 
                 gateway:
                   enabled: false
@@ -1727,7 +1722,6 @@ class TestWebhookServerStartup:
                   default_tier: local
                   local_model: ""
                   model_path: ""
-                  offline_fallback: rule
                 gateway:
                   enabled: false
                   broker_url: ""

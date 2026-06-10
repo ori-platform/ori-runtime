@@ -30,7 +30,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ori.network.events import OriEvent, ReasoningResult
 from ori.reasoning.capability_posture import (
     CapabilityPosture,
-    probe_internet_available,
 )
 from ori.reasoning.causal_memory import CausalMemory
 from ori.reasoning.context_enricher import ContextEnricher
@@ -87,15 +86,6 @@ def _hour_now(event: OriEvent | None = None) -> int:
                 tz_name,
             )
     return datetime.datetime.now(datetime.timezone.utc).hour
-
-
-def _is_offline() -> bool:
-    """Return ``True`` if no internet connectivity is detectable."""
-    return not probe_internet_available(
-        host="one.one.one.one",
-        port=53,
-        timeout_ms=1000,
-    )
 
 
 def _complexity_score(
@@ -414,15 +404,6 @@ class IntelligenceElevator:
             stub.action_tier = "A"
         return stub, rule_result
 
-    async def _is_offline_async(self) -> bool:
-        """Run connectivity probe in a worker thread to avoid blocking the loop."""
-        if (
-            self._capability_posture is not None
-            and not self._capability_posture.is_stale()
-        ):
-            return not self._capability_posture.internet_available
-        return await asyncio.to_thread(_is_offline)
-
     async def _call_gateway_reasoner(
         self,
         *,
@@ -514,7 +495,7 @@ class IntelligenceElevator:
 
         1. Run the rule engine.  If Tier D fires → ``'rule'`` immediately.
         2. Score complexity (0.0–1.0) from deviation, volatility, hour.
-        3. ``complexity < 0.3`` OR offline → ``'local_slm'``
+        3. ``complexity < 0.3`` → ``'local_slm'``
            deterministic gateway signals → ``'gateway'`` when reachable
            fallback → ``'local_slm'``
         """
@@ -623,9 +604,8 @@ class IntelligenceElevator:
             signal.code == "trigger_declares_gateway"
             for signal in gateway_decision.signals
         )
-        offline = await self._is_offline_async()
         if gateway_decision.should_escalate:
-            selected = trigger_floor_gateway or (gateway_available and not offline)
+            selected = trigger_floor_gateway or gateway_available
             attach_gateway_escalation_context(
                 event,
                 gateway_decision,
@@ -639,20 +619,11 @@ class IntelligenceElevator:
             current_value, avg_24h, history, _hour_now(event)
         )
 
-        offline = await self._is_offline_async()
-        fallback = (
-            getattr(self._config, "offline_fallback", "rule")
-            if self._config
-            else "rule"
-        )
         threshold = (
             getattr(self._config, "escalation_threshold", 0.70)
             if self._config
             else 0.70
         )
-
-        if offline:
-            return _apply_floor(fallback)
 
         if complexity < 0.3:
             return _apply_floor("local_slm")

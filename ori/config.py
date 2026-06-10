@@ -113,7 +113,6 @@ class ReasoningConfig:
     default_tier: str
     local_model: str
     model_path: str
-    offline_fallback: str
     escalation_threshold: float = 0.70
     energy_aware_reasoning: dict = field(default_factory=dict)
     capability_posture: dict = field(default_factory=dict)
@@ -723,7 +722,6 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
         default_tier=default_tier,
         local_model=str(data.get("local_model", "")),
         model_path=str(data.get("model_path", "")),
-        offline_fallback=str(data.get("offline_fallback", "rule")),
         escalation_threshold=float(data.get("escalation_threshold", 0.70)),
         energy_aware_reasoning=energy_aware,
         capability_posture=capability_posture_cfg,

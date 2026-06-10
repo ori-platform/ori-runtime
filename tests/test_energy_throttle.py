@@ -105,7 +105,6 @@ def _cfg(enabled: bool = True) -> object:
         "C",
         (object,),
         {
-            "offline_fallback": "local_slm",
             "escalation_threshold": 0.70,
             "energy_aware_reasoning": (
                 {
@@ -155,20 +154,18 @@ class TestEnergyAwareThrottle:
         conf = type(
             "C",
             (object,),
-            {"offline_fallback": "local_slm", "escalation_threshold": 0.70},
+            {"escalation_threshold": 0.70},
         )()
         elevator = IntelligenceElevator(config=conf)
         store = _state_store(battery_pct=5.0)
-        with patch("ori.reasoning.elevator._is_offline", return_value=False):
-            tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
+        tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
         assert tier == "local_slm"
 
     @pytest.mark.asyncio
     async def test_battery_above_threshold_normal(self):
         elevator = IntelligenceElevator(config=_cfg(enabled=True))
         store = _state_store(battery_pct=50.0)
-        with patch("ori.reasoning.elevator._is_offline", return_value=False):
-            tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
+        tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
         assert tier == "local_slm"
 
     @pytest.mark.asyncio
@@ -234,6 +231,5 @@ class TestEnergyAwareThrottle:
         cfg.energy_aware_reasoning["battery_sensor_id"] = "inverter-battery"
         elevator = IntelligenceElevator(config=cfg)
         store = _state_store(battery_pct=None)
-        with patch("ori.reasoning.elevator._is_offline", return_value=False):
-            tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
+        tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
         assert tier == "local_slm"

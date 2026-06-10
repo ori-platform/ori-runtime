@@ -100,7 +100,6 @@ class TestLoadExample:
         r = cfg.reasoning
         assert r.default_tier == "local"
         assert r.local_model == "qwen2.5-0.5b-instruct-q4_k_m"
-        assert r.offline_fallback == "rule"
         assert r.escalation_threshold == pytest.approx(0.70)
 
     def test_gateway_disabled(self):
@@ -391,7 +390,6 @@ class TestLoadExample:
               default_tier: local
               local_model: ""
               model_path: ""
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: ""
@@ -442,7 +440,6 @@ class TestLoadExample:
               default_tier: local
               local_model: ""
               model_path: ""
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: ""
@@ -628,7 +625,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -652,7 +648,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -677,7 +672,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -703,7 +697,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -735,7 +728,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -763,7 +755,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -792,7 +783,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -818,7 +808,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -844,7 +833,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -870,7 +858,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -1033,7 +1020,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -1225,7 +1211,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -1259,7 +1244,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -1294,7 +1278,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -1322,7 +1305,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -1356,7 +1338,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -1391,7 +1372,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -1471,7 +1451,6 @@ class TestReasoningConfig:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -1496,7 +1475,6 @@ class TestReasoningConfig:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
               escalation_threshold: 0.85
             gateway:
               enabled: false
@@ -1522,7 +1500,6 @@ class TestReasoningConfig:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
               energy_aware_reasoning:
                 enabled: true
                 throttle_threshold_percent: 20
@@ -1555,7 +1532,6 @@ class TestReasoningConfig:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
               causal_memory:
                 rejection_expiry_days: 30
             gateway:
@@ -1583,7 +1559,6 @@ class TestReasoningConfig:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -1611,7 +1586,6 @@ class TestReasoningConfig:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
               capability_posture:
                 enabled: true
                 probe_interval_seconds: 20
@@ -1648,7 +1622,6 @@ class TestReasoningConfig:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
               capability_posture:
                 probe_interval_seconds: 31
             gateway:
@@ -1683,7 +1656,6 @@ class TestActionsValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -1708,7 +1680,6 @@ class TestActionsValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -1738,7 +1709,6 @@ class TestActionsValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -1766,7 +1736,6 @@ class TestActionsValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -1809,7 +1778,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -1986,7 +1954,6 @@ class TestEnvExpansion:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -2017,7 +1984,6 @@ class TestEnvExpansion:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -2062,7 +2028,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -2320,7 +2285,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -2436,7 +2400,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -2495,7 +2458,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -2541,7 +2503,6 @@ reasoning:
   default_tier: {tier}
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
