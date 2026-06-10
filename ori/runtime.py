@@ -2952,6 +2952,16 @@ def _build_gateway_heartbeat_subscriber(
     """Instantiate the MQTT gateway heartbeat subscriber when configured."""
     if not bool(config.gateway.enabled):
         return None
+    auth_cfg = getattr(config.gateway, "auth", {}) or {}
+    auth_enabled = bool(auth_cfg.get("enabled", False))
+    if not auth_enabled:
+        logger.warning(
+            "[gateway-heartbeat] gateway.auth.enabled is false — heartbeat "
+            "payloads are accepted without HMAC verification. A spoofed "
+            "heartbeat can corrupt gateway liveness state and cause the "
+            "elevator to burn escalation timeout budget on a non-existent "
+            "gateway. Enable gateway.auth for all production deployments."
+        )
     try:
         subscriber = MqttGatewayHeartbeatSubscriber(
             broker_url=config.gateway.broker_url,
@@ -2964,8 +2974,9 @@ def _build_gateway_heartbeat_subscriber(
         logger.exception("[runtime] invalid gateway heartbeat configuration")
         return None
     logger.info(
-        "[runtime] MQTT gateway heartbeat subscriber enabled on %s",
+        "[runtime] MQTT gateway heartbeat subscriber enabled on %s (auth=%s)",
         "ori/gateway/health",
+        "enabled" if auth_enabled else "disabled",
     )
     return subscriber
 

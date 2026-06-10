@@ -97,12 +97,13 @@ Rules:
   requests, and runtime export responses use an `auth` envelope containing
   `scheme`, `signed_at_ms`, and `signature`.
 - MQTT gateway heartbeat authentication uses `GatewayMessageAuthenticator.verify_broadcast`
-  when `gateway.auth.enabled: true`. The heartbeat payload carries no `device_id`
-  and uses a LAN-broadcast topic; `verify_broadcast` omits device binding but
-  retains HMAC, timestamp skew, and replay-TTL protection. When
-  `gateway.auth.enabled: false` (the default for LAN deployments), unsigned
-  heartbeats are accepted and broker ACLs are the access control layer. See
-  the 2026-06-10 entry for the authentication and routing rationale.
+  when `gateway.auth.enabled: true` (the production recommendation). The
+  heartbeat payload carries no `device_id` and uses a LAN-broadcast topic;
+  `verify_broadcast` omits device binding but retains HMAC, timestamp skew, and
+  replay-TTL protection. When `gateway.auth.enabled: false` (a convenience
+  default for initial LAN setup only), unsigned heartbeats are accepted; the
+  security guarantee is then conditional on correct broker ACL configuration.
+  See the 2026-06-10 entry for the full authentication and routing rationale.
 - Replay protection for gateway MQTT messages is in-memory and TTL-bounded.
   Remote commands remain durably audited in SQLite because they are rare and
   state-mutating; gateway messages are short-lived and higher frequency.
@@ -912,8 +913,17 @@ Rules:
   `GatewayMessageAuthenticator.verify_broadcast` before posture is updated.
   Heartbeats that fail HMAC verification, timestamp skew, or replay checks are
   discarded with a WARNING.
-- When `gateway.auth.enabled: false`, unsigned heartbeats are accepted. Broker
-  ACLs (see `docs/MQTT_SECURITY.md`) are the access control layer.
+- `gateway.auth.enabled: true` is the production recommendation. When enabled,
+  unsigned heartbeats are rejected in code regardless of broker configuration.
+- When `gateway.auth.enabled: false` (the default for initial LAN setup),
+  unsigned heartbeats are accepted. The security guarantee is then conditional
+  on the broker ACL being correctly configured to restrict `topic write
+  ori/gateway/health` to the gateway's MQTT user only (see
+  `docs/MQTT_SECURITY.md`). A misconfigured or absent ACL allows any LAN client
+  to spoof a heartbeat and cause reasoning-quality degradation (gateway escalation
+  times out, falls back to local SLM). This is not a safety failure — Tier D and
+  action tier authority are unaffected — but `auth.enabled: false` is a
+  convenience default, not a production-endorsed posture.
 - `verify_broadcast` uses the same shared secret as `verify` but omits
   `device_id` binding. Replay key: `message_type + signed_at_ms + signature`.
   Device binding is not required on a site-wide broadcast topic: the threat is
@@ -942,13 +952,20 @@ Rationale:
   key and replay cache, so a compromise of one does not require changes to the
   other.
 
-Security posture when `gateway.auth.enabled: false`:
+Security posture when `gateway.auth.enabled: false` (not recommended for production):
 
-- The heartbeat topic is read-only for posture tracking. A spoofed heartbeat
-  can only advance `_last_gateway_heartbeat_ms`; it cannot write to SQLite,
-  change config, trigger actions, or escalate action tiers.
-- A spoofed heartbeat that passes broker ACLs could cause the runtime to route
-  a Tier 2 escalation to a non-existent gateway. The gateway reasoner times out
-  and falls back to local SLM. This is a degradation of reasoning quality, not
-  a safety failure.
-- Tier D is unaffected by gateway availability by construction.
+- A spoofed heartbeat corrupts `_last_gateway_heartbeat_ms` and makes the
+  elevator treat the gateway as reachable when it is not. The elevator then
+  attempts Tier 3 escalation, burns the full reasoning timeout budget, and
+  falls back to local SLM. This is a functional attack on reasoning quality:
+  gateway escalation exists precisely to improve reasoning; the only acceptable
+  cause of escalation failure is genuine gateway unavailability within timeout
+  limits, not a forged liveness signal.
+- Tier D is unaffected by gateway availability by construction; physical safety
+  is not compromised. But reasoning quality is the operational value of Tier 3,
+  and corrupting gateway liveness state undermines it in a way that is
+  indistinguishable from a real outage.
+- `auth.enabled: false` is only appropriate for controlled initial setup on a
+  site where broker ACL correctness is guaranteed and the gateway is not yet
+  configured to sign heartbeats. Any deployment where gateway reasoning quality
+  matters must enable auth.
