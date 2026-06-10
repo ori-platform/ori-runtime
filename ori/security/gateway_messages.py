@@ -190,6 +190,57 @@ class GatewayMessageAuthenticator:
             raise GatewayMessageAuthError("replay_detected")
         return unsigned_payload
 
+    def verify_broadcast(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        message_type: str,
+        now_ms_value: int | None = None,
+    ) -> dict[str, Any]:
+        """Verify a site-broadcast MQTT payload and return a copy without the auth block.
+
+        Identical to :meth:`verify` except no ``device_id`` or ``request_id``
+        binding is performed.  Broadcast messages (e.g. gateway heartbeats) are
+        addressed to the entire site, not to a specific runtime.  HMAC correctness,
+        timestamp skew, and replay protection are still fully enforced.
+
+        The replay key is ``message_type + signed_at_ms + signature`` — unique per
+        signed message without needing per-device scoping.
+        """
+        auth = payload.get(AUTH_FIELD)
+        if not isinstance(auth, Mapping):
+            raise GatewayMessageAuthError("missing_auth")
+        scheme = str(auth.get("scheme", "") or "")
+        if scheme != AUTH_SCHEME:
+            raise GatewayMessageAuthError("unsupported_auth_scheme")
+        signature = str(auth.get("signature", "") or "")
+        if not signature.startswith(SIGNATURE_PREFIX):
+            raise GatewayMessageAuthError("missing_signature")
+        try:
+            signed_at_ms = int(auth.get("signed_at_ms", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            raise GatewayMessageAuthError("invalid_signed_at_ms") from exc
+
+        current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
+        if signed_at_ms < current_ms - self._max_skew_ms:
+            raise GatewayMessageAuthError("stale_timestamp")
+        if signed_at_ms > current_ms + self._max_skew_ms:
+            raise GatewayMessageAuthError("future_timestamp")
+
+        unsigned_payload = _payload_without_auth(payload)
+        expected = self._signature(
+            payload=unsigned_payload,
+            message_type=message_type,
+            signed_at_ms=signed_at_ms,
+        )
+        if not hmac.compare_digest(signature, expected):
+            raise GatewayMessageAuthError("invalid_signature")
+
+        replay_key = "\n".join([message_type, str(signed_at_ms), signature])
+        if not self._replay_cache.mark_seen(replay_key, now_ms_value=current_ms):
+            raise GatewayMessageAuthError("replay_detected")
+        return unsigned_payload
+
     def _signature(
         self,
         *,

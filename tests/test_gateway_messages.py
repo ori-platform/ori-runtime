@@ -210,3 +210,118 @@ def test_decrypt_rejects_tampered_ciphertext():
             expected_device_id="dev-01",
             expected_request_id="req-001",
         )
+
+
+# ── verify_broadcast tests ────────────────────────────────────────────────────
+
+
+def _broadcast_payload() -> dict:
+    return {
+        "status": "healthy",
+        "uptime_s": 12.5,
+        "provider": "echo",
+        "sim_available": False,
+        "timestamp_ms": 1_000_000,
+    }
+
+
+def test_verify_broadcast_accepts_valid_signed_payload():
+    auth = _auth()
+    signed = auth.sign(
+        _broadcast_payload(), message_type="gateway.heartbeat", signed_at_ms=10_000
+    )
+
+    verified = auth.verify_broadcast(
+        signed, message_type="gateway.heartbeat", now_ms_value=10_000
+    )
+
+    assert verified == _broadcast_payload()
+
+
+def test_verify_broadcast_rejects_missing_auth():
+    with pytest.raises(GatewayMessageAuthError, match="missing_auth"):
+        _auth().verify_broadcast(_broadcast_payload(), message_type="gateway.heartbeat")
+
+
+def test_verify_broadcast_rejects_tampered_payload():
+    auth = _auth()
+    signed = auth.sign(
+        _broadcast_payload(), message_type="gateway.heartbeat", signed_at_ms=10_000
+    )
+    signed["uptime_s"] = 9999.0
+
+    with pytest.raises(GatewayMessageAuthError, match="invalid_signature"):
+        auth.verify_broadcast(
+            signed, message_type="gateway.heartbeat", now_ms_value=10_000
+        )
+
+
+def test_verify_broadcast_rejects_stale_timestamp():
+    auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(
+            shared_secret="s", max_skew_ms=1_000, replay_ttl_ms=5_000
+        )
+    )
+    signed = auth.sign(
+        _broadcast_payload(), message_type="gateway.heartbeat", signed_at_ms=0
+    )
+
+    with pytest.raises(GatewayMessageAuthError, match="stale_timestamp"):
+        auth.verify_broadcast(
+            signed, message_type="gateway.heartbeat", now_ms_value=10_000
+        )
+
+
+def test_verify_broadcast_rejects_replay():
+    auth = _auth()
+    signed = auth.sign(
+        _broadcast_payload(), message_type="gateway.heartbeat", signed_at_ms=10_000
+    )
+
+    auth.verify_broadcast(signed, message_type="gateway.heartbeat", now_ms_value=10_000)
+
+    with pytest.raises(GatewayMessageAuthError, match="replay_detected"):
+        auth.verify_broadcast(
+            signed, message_type="gateway.heartbeat", now_ms_value=10_001
+        )
+
+
+def test_verify_broadcast_replay_key_is_independent_of_device_id():
+    """Broadcast replay key must not include device_id — two runtimes with different
+    device_ids must each be able to accept the same site heartbeat once."""
+    auth1 = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(
+            shared_secret="s", max_skew_ms=5_000, replay_ttl_ms=5_000
+        )
+    )
+    auth2 = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(
+            shared_secret="s", max_skew_ms=5_000, replay_ttl_ms=5_000
+        )
+    )
+    signed = auth1.sign(
+        _broadcast_payload(), message_type="gateway.heartbeat", signed_at_ms=10_000
+    )
+
+    # Each authenticator has its own replay cache — both accept the same heartbeat.
+    r1 = auth1.verify_broadcast(
+        signed, message_type="gateway.heartbeat", now_ms_value=10_000
+    )
+    r2 = auth2.verify_broadcast(
+        signed, message_type="gateway.heartbeat", now_ms_value=10_000
+    )
+
+    assert r1 == _broadcast_payload()
+    assert r2 == _broadcast_payload()
+
+
+def test_verify_broadcast_signature_bound_to_message_type():
+    auth = _auth()
+    signed = auth.sign(
+        _broadcast_payload(), message_type="gateway.heartbeat", signed_at_ms=10_000
+    )
+
+    with pytest.raises(GatewayMessageAuthError, match="invalid_signature"):
+        auth.verify_broadcast(
+            signed, message_type="gateway.other_type", now_ms_value=10_000
+        )

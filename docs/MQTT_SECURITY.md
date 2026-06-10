@@ -83,6 +83,14 @@ For a runtime with `device_id=dev-01`, the gateway integration uses:
 | Reasoning response | gateway | runtime | `ori/dev-01/reasoning/response` |
 | Export request | gateway | runtime | `ori/dev-01/export/request` |
 | Export response | runtime | gateway | `ori/dev-01/export/response/+` |
+| Gateway heartbeat | gateway | all runtimes | `ori/gateway/health` |
+
+`ori/gateway/health` is a site-wide broadcast topic (not device-scoped).  All
+runtimes at the site subscribe to it.  The gateway publishes to it every 30 s
+(configurable).  When `gateway.auth.enabled: true`, the heartbeat payload must
+carry a valid HMAC ``auth`` envelope verified by
+``GatewayMessageAuthenticator.verify_broadcast``; unsigned heartbeats are
+discarded with a WARNING.
 
 Do not grant normal clients broad `#` wildcard access. Use exact topics where
 possible and `+` only where the protocol requires a request ID segment.
@@ -101,6 +109,11 @@ Publishers must set `retain=false` for:
 - `ori/{device_id}/reasoning/response`
 - `ori/{device_id}/export/request`
 - `ori/{device_id}/export/response/{request_id}`
+- `ori/gateway/health`
+
+A retained `ori/gateway/health` message would make a freshly-connected runtime
+believe the gateway is alive based on a stale heartbeat, defeating the TTL-based
+liveness window in ``CapabilityPostureTracker``.
 
 The runtime already publishes gateway reasoning requests with `retain=false`,
 and export responses use the MQTT library default (`retain=false`). Gateway
@@ -140,6 +153,7 @@ topic write ori/dev-01/reasoning/request
 topic read  ori/dev-01/reasoning/response
 topic read  ori/dev-01/export/request
 topic write ori/dev-01/export/response/+
+topic read  ori/gateway/health
 
 # Gateway for the same site/device.
 user ori-gateway-site-a
@@ -147,6 +161,7 @@ topic read  ori/dev-01/reasoning/request
 topic write ori/dev-01/reasoning/response
 topic write ori/dev-01/export/request
 topic read  ori/dev-01/export/response/+
+topic write ori/gateway/health
 ```
 
 For a multi-device site, repeat the runtime block for each device and grant the
@@ -182,8 +197,11 @@ gateway reasoning/export transport also supports `mqtts://` broker URLs and the
 - [ ] `allow_anonymous false`.
 - [ ] Runtime and gateway use separate MQTT users.
 - [ ] ACLs grant only the exact `ori/{device_id}/...` topics needed.
+- [ ] Runtime ACL includes `topic read ori/gateway/health`; gateway ACL includes
+      `topic write ori/gateway/health`.
 - [ ] Retained publishes are forbidden by client policy or broker policy on
-      `ori/{device_id}/reasoning/*` and `ori/{device_id}/export/*` topics.
+      `ori/{device_id}/reasoning/*`, `ori/{device_id}/export/*`, and
+      `ori/gateway/health` topics.
 - [ ] `gateway.auth.enabled: true` in production.
 - [ ] `GATEWAY_SHARED_SECRET` is unique per site and separate from remote-command
       secrets.

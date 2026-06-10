@@ -96,12 +96,13 @@ Rules:
 - Runtime reasoning requests, gateway reasoning responses, gateway export
   requests, and runtime export responses use an `auth` envelope containing
   `scheme`, `signed_at_ms`, and `signature`.
-- MQTT gateway heartbeat authentication is deferred because gateway heartbeat
-  posture currently uses the runtime's in-process `EventBus`
-  (`ori/gateway/health`) and has no MQTT producer/consumer transport to
-  authenticate. When a real MQTT gateway heartbeat topic is added, it must use
-  the same gateway envelope authentication and include a rejection test for
-  unsigned/stale/replayed heartbeat payloads.
+- MQTT gateway heartbeat authentication uses `GatewayMessageAuthenticator.verify_broadcast`
+  when `gateway.auth.enabled: true`. The heartbeat payload carries no `device_id`
+  and uses a LAN-broadcast topic; `verify_broadcast` omits device binding but
+  retains HMAC, timestamp skew, and replay-TTL protection. When
+  `gateway.auth.enabled: false` (the default for LAN deployments), unsigned
+  heartbeats are accepted and broker ACLs are the access control layer. See
+  the 2026-06-10 entry for the authentication and routing rationale.
 - Replay protection for gateway MQTT messages is in-memory and TTL-bounded.
   Remote commands remain durably audited in SQLite because they are rare and
   state-mutating; gateway messages are short-lived and higher frequency.
@@ -893,3 +894,64 @@ Rationale:
   prompt if the event loop is busy.
 - Bounded, deterministic output (ORDER BY sensor_id, LIMIT max_entries)
   prevents prompt length from growing unboundedly as a deployment adds sensors.
+
+---
+
+## 2026-06-10 — Gateway Heartbeat MQTT Subscription and Auth
+
+**Status:** Accepted
+
+Rules:
+
+- `MqttGatewayHeartbeatSubscriber` subscribes to `ori/gateway/health` and
+  publishes an `OriEvent(event_type="ori/gateway/health", reading=None)` onto
+  the internal EventBus for each valid heartbeat received.
+- The `event_bus.subscribe("ori/gateway/health", _on_gateway_health)` subscription
+  established in PR #51 is the single call site for `record_gateway_heartbeat`.
+  The MQTT subscriber fills in the publisher side of this channel; the EventBus
+  subscription remains the authoritative receiver.
+- When `gateway.auth.enabled: true`, each heartbeat payload is verified by
+  `GatewayMessageAuthenticator.verify_broadcast` before the EventBus event is
+  published. Heartbeats that fail HMAC verification, timestamp skew, or replay
+  checks are discarded with a WARNING; no EventBus event is published for them.
+- When `gateway.auth.enabled: false`, unsigned heartbeats are accepted. Broker
+  ACLs (see `docs/MQTT_SECURITY.md`) are the access control layer.
+- `verify_broadcast` uses the same shared secret as `verify` but omits
+  `device_id` binding. Replay key: `message_type + signed_at_ms + signature`.
+  Device binding is not required on a site-wide broadcast topic: the threat is
+  stale replay (making the runtime believe the gateway is alive when it is not),
+  which is addressed by timestamp skew and replay TTL.
+- Rejection tests for unsigned, stale, and replayed heartbeats are in
+  `tests/test_gateway_heartbeat.py`.
+
+Rationale:
+
+- Gateway liveness is tracked via TTL-based `_is_gateway_reachable`: the
+  runtime does not initiate any probe to verify gateway health. The heartbeat
+  subscription is the only signal path for `gateway_reachable` in
+  `CapabilityPosture`. Without it, the elevator silently misroutes Tier 3
+  escalations to a non-existent gateway on idle sites where no recent reasoning
+  calls have fired — the TTL expires with no implicit liveness signal.
+- The EventBus channel (`ori/gateway/health`) was established in PR #51 as
+  the runtime's own internal mechanism for tracking gateway health. The MQTT
+  subscriber bridges the LAN heartbeat into this channel rather than calling
+  `record_gateway_heartbeat` directly, preserving the single call-site invariant
+  and keeping the update path consistent with how the rest of the runtime
+  consumes posture events.
+- `verify_broadcast` is a distinct method from `verify` because the two
+  verification paths have different trust models: per-device reasoning and export
+  envelopes bind to `device_id` to prevent cross-device replay; a site-wide
+  broadcast does not require device scoping. Both methods share the same HMAC
+  key and replay cache, so a compromise of one does not require changes to the
+  other.
+
+Security posture when `gateway.auth.enabled: false`:
+
+- The heartbeat topic is read-only for posture tracking. A spoofed heartbeat
+  can only advance `_last_gateway_heartbeat_ms`; it cannot write to SQLite,
+  change config, trigger actions, or escalate action tiers.
+- A spoofed heartbeat that passes broker ACLs could cause the runtime to route
+  a Tier 2 escalation to a non-existent gateway. The gateway reasoner times out
+  and falls back to local SLM. This is a degradation of reasoning quality, not
+  a safety failure.
+- Tier D is unaffected by gateway availability by construction.

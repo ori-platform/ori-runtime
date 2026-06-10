@@ -32,6 +32,7 @@ from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import Config, ConfigValidationError
 from ori.gateway.export import GatewayExportResponder, MqttGatewayExportServer
+from ori.gateway.heartbeat import MqttGatewayHeartbeatSubscriber
 from ori.gateway.reasoning import MqttGatewayReasoner
 from ori.hal.base import AdapterReadError, BaseAdapter
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
@@ -868,6 +869,15 @@ class OriRuntime:
         gateway_export_task = self._start_gateway_export_responder_if_enabled(config)
         if gateway_export_task is not None:
             self._background_tasks.append(gateway_export_task)
+
+        hb_subscriber = _build_gateway_heartbeat_subscriber(config, event_bus)
+        if hb_subscriber is not None:
+            self._background_tasks.append(
+                asyncio.create_task(
+                    hb_subscriber.serve_until(self._shutdown_event),
+                    name="gateway-heartbeat",
+                )
+            )
 
         await self._start_health_socket_if_enabled(config)
 
@@ -2935,6 +2945,31 @@ def _build_gateway_message_encryptor(config: Config) -> GatewayMessageEncryptor 
             f"gateway encryption is enabled but environment variable {env_name!r} is empty"
         )
     return GatewayMessageEncryptor(GatewayMessageEncryptionConfig(shared_secret=secret))
+
+
+def _build_gateway_heartbeat_subscriber(
+    config: Config,
+    event_bus: EventBus,
+) -> MqttGatewayHeartbeatSubscriber | None:
+    """Instantiate the MQTT gateway heartbeat subscriber when configured."""
+    if not bool(config.gateway.enabled):
+        return None
+    try:
+        subscriber = MqttGatewayHeartbeatSubscriber(
+            broker_url=config.gateway.broker_url,
+            event_bus=event_bus,
+            device_id=config.device.id,
+            tls_config=getattr(config.gateway, "tls", {}),
+            authenticator=_build_gateway_message_auth(config),
+        )
+    except Exception:
+        logger.exception("[runtime] invalid gateway heartbeat configuration")
+        return None
+    logger.info(
+        "[runtime] MQTT gateway heartbeat subscriber enabled on %s",
+        "ori/gateway/health",
+    )
+    return subscriber
 
 
 def _build_context_enricher(config: Config) -> ContextEnricher | None:
