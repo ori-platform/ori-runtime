@@ -38,7 +38,7 @@ Traditional IoT assumes perfect conditions and throws a fatal stack trace when h
 
 _Offline-first is the requirement, not a feature._
 
-Most of the world's physical infrastructure does not have reliable internet connectivity. Building an agent runtime that requires the cloud for continuous reasoning is building for the wrong world. The Intelligence Elevator keeps an offline-capable safety core through Tier 1 deterministic rules and local Tier 2 reasoning. Cloud LLM is Tier 4 — a localized enhancement, not a fundamental dependency. Every safety-critical function must execute cleanly at 2:00 AM during a power and internet outage.
+Most of the world's physical infrastructure does not have reliable internet connectivity. Building an agent runtime that requires the cloud for continuous reasoning is building for the wrong world. The runtime Intelligence Elevator keeps an offline-capable safety core through Tier 1 deterministic rules, local Tier 2 reasoning, and optional Tier 3 LAN gateway reasoning. Cloud reasoning, when used, is a gateway backend, not a runtime tier or dependency. Every safety-critical function must execute cleanly at 2:00 AM during a power and internet outage.
 
 ## 6. The Lens of Explicit Capability
 

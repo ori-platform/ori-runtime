@@ -604,6 +604,9 @@ gateway:
     replay_ttl_ms: 300000
   encryption:
     enabled: false
+  node_heartbeat:
+    enabled: true
+    interval_seconds: 30
   reasoning:
     enabled: true
     timeout_ms: 10000

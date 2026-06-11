@@ -108,6 +108,8 @@ class TestLoadExample:
         assert "192.168.1.10" in cfg.gateway.broker_url
         assert cfg.gateway.reasoning["enabled"] is True
         assert cfg.gateway.reasoning["timeout_ms"] == 10_000
+        assert cfg.gateway.node_heartbeat["enabled"] is True
+        assert cfg.gateway.node_heartbeat["interval_seconds"] == 30
         assert cfg.gateway.auth["enabled"] is False
         assert cfg.gateway.auth["shared_secret_env"] == "GATEWAY_SHARED_SECRET"
         assert cfg.gateway.auth["max_clock_skew_ms"] == 300_000
@@ -118,6 +120,62 @@ class TestLoadExample:
         assert cfg.gateway.tls["keyfile"] == ""
         assert cfg.gateway.tls["keyfile_password_env"] == ""
         assert cfg.gateway.encryption["enabled"] is False
+
+    def test_gateway_node_heartbeat_interval_must_be_numeric(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              node_heartbeat:
+                enabled: true
+                interval_seconds: often
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(
+            ConfigValidationError, match="gateway.node_heartbeat.interval_seconds"
+        ):
+            Config.load(yaml_path)
+
+    def test_gateway_node_heartbeat_interval_must_be_at_least_one(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              node_heartbeat:
+                enabled: true
+                interval_seconds: 0
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="must be >= 1"):
+            Config.load(yaml_path)
 
     def test_gateway_tls_keyfile_requires_certfile(self, tmp_path):
         yaml_path = _write_yaml(

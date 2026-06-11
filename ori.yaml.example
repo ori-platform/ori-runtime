@@ -275,6 +275,9 @@ gateway:
     replay_ttl_ms: 300000
   encryption:
     enabled: false                   # encrypt sensitive export responses; requires gateway.auth.enabled
+  node_heartbeat:
+    enabled: true                    # publish runtime liveness to ori/{device_id}/runtime/heartbeat
+    interval_seconds: 30
   reasoning:
     enabled: true                    # Tier 3 request/response on ori/{device_id}/reasoning/*
     timeout_ms: 10000                # per-phase timeout: connect/subscribe and response wait

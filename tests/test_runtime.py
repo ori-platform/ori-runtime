@@ -35,6 +35,7 @@ from ori.runtime import (
     _build_gateway_message_encryptor,
     _build_gateway_reasoner,
     _build_local_llm,
+    _build_runtime_node_heartbeat_publisher,
     _coap_command_from_context,
     _maybe_autoload_dotenv,
     _message_from_context,
@@ -384,6 +385,81 @@ class TestLocalSLMWiring:
             "timeout_ms": 2500,
             "tls_config": {},
             "message_auth": None,
+        }
+
+    def test_build_runtime_node_heartbeat_returns_none_when_gateway_disabled(self):
+        cfg = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=False,
+                broker_url="",
+                node_heartbeat={"enabled": True, "interval_seconds": 30},
+            ),
+            device=SimpleNamespace(id="test-device-01"),
+        )
+
+        assert _build_runtime_node_heartbeat_publisher(cfg, lambda: {}) is None
+
+    def test_build_runtime_node_heartbeat_returns_none_when_disabled(self):
+        cfg = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=True,
+                broker_url="mqtt://broker.local",
+                node_heartbeat={"enabled": False, "interval_seconds": 30},
+            ),
+            device=SimpleNamespace(id="test-device-01"),
+        )
+
+        assert _build_runtime_node_heartbeat_publisher(cfg, lambda: {}) is None
+
+    def test_build_runtime_node_heartbeat_constructs_when_enabled(self, monkeypatch):
+        captured = {}
+
+        class _FakePublisher:
+            def __init__(
+                self,
+                *,
+                broker_url,
+                device_id,
+                health_snapshot_provider,
+                interval_seconds,
+                tls_config=None,
+                authenticator=None,
+            ):
+                captured["broker_url"] = broker_url
+                captured["device_id"] = device_id
+                captured["health_snapshot_provider"] = health_snapshot_provider
+                captured["interval_seconds"] = interval_seconds
+                captured["tls_config"] = tls_config
+                captured["authenticator"] = authenticator
+
+        monkeypatch.setattr(
+            "ori.runtime.MqttRuntimeNodeHeartbeatPublisher", _FakePublisher
+        )
+
+        def provider():
+            return {"status": "healthy"}
+
+        cfg = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=True,
+                broker_url="mqtt://broker.local:1884",
+                node_heartbeat={"enabled": True, "interval_seconds": 15},
+                auth={"enabled": False},
+                tls={},
+            ),
+            device=SimpleNamespace(id="test-device-01"),
+        )
+
+        publisher = _build_runtime_node_heartbeat_publisher(cfg, provider)
+
+        assert isinstance(publisher, _FakePublisher)
+        assert captured == {
+            "broker_url": "mqtt://broker.local:1884",
+            "device_id": "test-device-01",
+            "health_snapshot_provider": provider,
+            "interval_seconds": 15.0,
+            "tls_config": {},
+            "authenticator": None,
         }
 
 

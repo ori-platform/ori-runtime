@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import signal
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import Config, ConfigValidationError
 from ori.gateway.export import GatewayExportResponder, MqttGatewayExportServer
 from ori.gateway.heartbeat import MqttGatewayHeartbeatSubscriber
+from ori.gateway.node_heartbeat import MqttRuntimeNodeHeartbeatPublisher
 from ori.gateway.reasoning import MqttGatewayReasoner
 from ori.hal.base import AdapterReadError, BaseAdapter
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
@@ -180,6 +182,9 @@ class OriRuntime:
         self._last_alert_timestamps_by_trigger: dict[str, int] = {}
         self._health_socket_server: RuntimeHealthSocketServer | None = None
         self._gateway_export_server: MqttGatewayExportServer | None = None
+        self._runtime_node_heartbeat_publisher: (
+            MqttRuntimeNodeHeartbeatPublisher | None
+        ) = None
         self._health_socket_path: str = ""
         self._device_policy_enabled: bool = False
         self._device_id: str = ""
@@ -877,6 +882,19 @@ class OriRuntime:
                 )
             )
 
+        node_heartbeat = _build_runtime_node_heartbeat_publisher(
+            config,
+            self._build_health_snapshot,
+        )
+        if node_heartbeat is not None:
+            self._runtime_node_heartbeat_publisher = node_heartbeat
+            self._background_tasks.append(
+                asyncio.create_task(
+                    node_heartbeat.serve_until(self._shutdown_event),
+                    name="runtime-node-heartbeat",
+                )
+            )
+
         await self._start_health_socket_if_enabled(config)
 
         if status_indicator is not None:
@@ -934,7 +952,15 @@ class OriRuntime:
                 logger.exception("[shutdown] error closing gateway export responder")
             self._gateway_export_server = None
 
-        # 2c. Stop local health socket service.
+        # 2c. Stop runtime node heartbeat publisher.
+        if self._runtime_node_heartbeat_publisher is not None:
+            try:
+                await self._runtime_node_heartbeat_publisher.close()
+            except Exception:
+                logger.exception("[shutdown] error closing runtime node heartbeat")
+            self._runtime_node_heartbeat_publisher = None
+
+        # 2d. Stop local health socket service.
         if self._health_socket_server is not None:
             try:
                 await self._health_socket_server.close()
@@ -2979,6 +3005,48 @@ def _build_gateway_heartbeat_subscriber(
         "enabled" if auth_enabled else "disabled",
     )
     return subscriber
+
+
+def _build_runtime_node_heartbeat_publisher(
+    config: Config,
+    health_snapshot_provider: Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]],
+) -> MqttRuntimeNodeHeartbeatPublisher | None:
+    """Instantiate the runtime-to-gateway node heartbeat publisher when configured."""
+    if not bool(config.gateway.enabled):
+        return None
+    heartbeat_cfg = (
+        config.gateway.node_heartbeat
+        if isinstance(getattr(config.gateway, "node_heartbeat", {}), dict)
+        else {}
+    )
+    if not bool(heartbeat_cfg.get("enabled", True)):
+        return None
+    auth_cfg = getattr(config.gateway, "auth", {}) or {}
+    auth_enabled = bool(auth_cfg.get("enabled", False))
+    if not auth_enabled:
+        logger.warning(
+            "[runtime-heartbeat] gateway.auth.enabled is false — node heartbeat "
+            "payloads are published without HMAC. Enable gateway.auth for "
+            "production deployments."
+        )
+    try:
+        publisher = MqttRuntimeNodeHeartbeatPublisher(
+            broker_url=config.gateway.broker_url,
+            device_id=config.device.id,
+            health_snapshot_provider=health_snapshot_provider,
+            interval_seconds=float(heartbeat_cfg.get("interval_seconds", 30)),
+            tls_config=getattr(config.gateway, "tls", {}),
+            authenticator=_build_gateway_message_auth(config),
+        )
+    except Exception:
+        logger.exception("[runtime] invalid runtime node heartbeat configuration")
+        return None
+    logger.info(
+        "[runtime] MQTT runtime node heartbeat publisher enabled on ori/%s/runtime/heartbeat (auth=%s)",
+        config.device.id,
+        "enabled" if auth_enabled else "disabled",
+    )
+    return publisher
 
 
 def _build_context_enricher(config: Config) -> ContextEnricher | None:

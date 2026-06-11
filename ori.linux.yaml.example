@@ -58,6 +58,9 @@ reasoning:
 gateway:
   enabled: false
   broker_url: ""
+  node_heartbeat:
+    enabled: false
+    interval_seconds: 30
 
 actions:
   primary_alert_channel: sms           # 'sms' | 'whatsapp'

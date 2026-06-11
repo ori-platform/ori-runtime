@@ -969,3 +969,36 @@ Security posture when `gateway.auth.enabled: false` (not recommended for product
   site where broker ACL correctness is guaranteed and the gateway is not yet
   configured to sign heartbeats. Any deployment where gateway reasoning quality
   matters must enable auth.
+
+---
+
+## 2026-06-11 — Runtime Node Heartbeat Is Gateway Infrastructure, Not Sensor Data
+
+**Status:** Accepted
+
+Rules:
+
+- The gateway heartbeat (`ori/gateway/health`) tells each runtime whether the
+  gateway is reachable.
+- The runtime node heartbeat (`ori/{device_id}/runtime/heartbeat`) tells the
+  gateway whether a runtime node is alive.
+- Runtime node heartbeat payloads are device-scoped and include `device_id`,
+  `status`, `last_seen_ms`, `gateway_seen_ms`, and `active_triggers`.
+  `gateway_seen_ms` is set to `0` by the runtime and stamped by the gateway when
+  it receives the payload.
+- Runtime node heartbeat is not routed through the sensor `EventBus`. It is
+  gateway infrastructure, not skill input or sensor data.
+- When `gateway.auth.enabled: true`, runtime node heartbeat payloads are signed
+  with the regular device-bound gateway HMAC envelope using message type
+  `runtime.heartbeat`.
+- Heartbeat publishes must use `retain=false`; a retained node heartbeat can
+  make the gateway believe a disconnected runtime is still alive.
+
+Rationale:
+
+Gateway reachability and runtime liveness are opposite directions of the same
+site-health relationship, but they are not the same signal. Keeping them on
+separate MQTT topics avoids conflating posture consumed by the runtime with node
+state consumed by the gateway. Keeping both out of the sensor EventBus preserves
+the sensor/skill boundary and avoids wildcard skill handlers seeing
+infrastructure-only payloads.

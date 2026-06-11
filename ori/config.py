@@ -125,6 +125,7 @@ class GatewayConfig:
     enabled: bool
     broker_url: str
     reasoning: dict = field(default_factory=dict)
+    node_heartbeat: dict = field(default_factory=dict)
     auth: dict = field(default_factory=dict)
     tls: dict = field(default_factory=dict)
     encryption: dict = field(default_factory=dict)
@@ -733,6 +734,28 @@ def _parse_reasoning(data: Any) -> ReasoningConfig:
 def _parse_gateway(data: Any) -> GatewayConfig:
     if not isinstance(data, dict):
         raise ConfigValidationError("'gateway' section must be a mapping.")
+    node_heartbeat_raw = data.get("node_heartbeat") or {}
+    if not isinstance(node_heartbeat_raw, dict):
+        raise ConfigValidationError(
+            "'gateway.node_heartbeat' section must be a mapping."
+        )
+    node_heartbeat = dict(node_heartbeat_raw)
+    node_heartbeat["enabled"] = (
+        str(node_heartbeat.get("enabled", "true")).strip().lower() == "true"
+        or node_heartbeat.get("enabled") is True
+    )
+    try:
+        interval_seconds = float(node_heartbeat.get("interval_seconds", 30))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "gateway.node_heartbeat.interval_seconds must be a number"
+        ) from exc
+    if interval_seconds < 1:
+        raise ConfigValidationError(
+            "gateway.node_heartbeat.interval_seconds must be >= 1"
+        )
+    node_heartbeat["interval_seconds"] = interval_seconds
+
     reasoning_raw = data.get("reasoning") or {}
     if not isinstance(reasoning_raw, dict):
         raise ConfigValidationError("'gateway.reasoning' section must be a mapping.")
@@ -819,6 +842,7 @@ def _parse_gateway(data: Any) -> GatewayConfig:
         enabled=bool(data.get("enabled", False)),
         broker_url=str(data.get("broker_url", "")),
         reasoning=reasoning,
+        node_heartbeat=node_heartbeat,
         auth=auth,
         tls=tls,
         encryption=encryption,

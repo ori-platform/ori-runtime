@@ -468,9 +468,10 @@ that are hard to debug.
    authority; Tier C remains approval-gated and Tier D remains rule-only.
 
 7. Runtime-gateway MQTT envelopes are authenticated when gateway auth is enabled.
-   The runtime signs gateway reasoning requests and export responses, and
-   verifies gateway reasoning responses and export requests, using the dedicated
-   gateway HMAC secret configured by `gateway.auth.shared_secret_env`. Do not
+   The runtime signs gateway reasoning requests, export responses, and
+   runtime-node heartbeat payloads, and verifies gateway reasoning responses,
+   export requests, and gateway heartbeat payloads, using the dedicated gateway
+   HMAC secret configured by `gateway.auth.shared_secret_env`. Do not
    reuse remote-command secrets for gateway MQTT. Replay protection for gateway
    MQTT is in-memory and TTL-bounded; do not copy the remote-command SQLite
    audit/replay pattern into this higher-frequency path. MQTT gateway messages
