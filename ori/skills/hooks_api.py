@@ -31,22 +31,36 @@ class HookHistoryAdapter:
             return method(*args)
         return None
 
+    @staticmethod
+    def _optional_float(value: Any) -> Optional[float]:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    @staticmethod
+    def _optional_int(value: Any) -> Optional[int]:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return int(value)
+
     def avg_hours(self, sensor_id: str, hours: int) -> Optional[float]:
         if not self._store:
             return None
-        return self._read("hooks_avg_last_hours", sensor_id, hours)
+        return self._optional_float(
+            self._read("hooks_avg_last_hours", sensor_id, hours)
+        )
 
     def avg_last_n(self, sensor_id: str, n: int) -> Optional[float]:
         if not self._store:
             return None
-        return self._read("hooks_avg_last_n", sensor_id, n)
+        return self._optional_float(self._read("hooks_avg_last_n", sensor_id, n))
 
     def last_value(self, sensor_id: str) -> Optional[float]:
         if not self._store:
             return None
         history = self._read("hooks_get_history", sensor_id, 1) or []
         if history:
-            return history[0].value
+            return self._optional_float(getattr(history[0], "value", None))
         return None
 
     def last_timestamp(self, sensor_id: str) -> Optional[int]:
@@ -54,7 +68,7 @@ class HookHistoryAdapter:
             return None
         history = self._read("hooks_get_history", sensor_id, 1) or []
         if history:
-            return history[0].timestamp
+            return self._optional_int(getattr(history[0], "timestamp", None))
         return None
 
     def fetch_history(self, sensor_id: str, limit: int = 1) -> list[dict[str, Any]]:
@@ -120,7 +134,8 @@ class HookStateAdapter:
     def get(self, key: str) -> Optional[str]:
         if not self._store or not self._skill_name:
             return None
-        return self._read("hooks_get_skill_state", self._skill_name, key)
+        value = self._read("hooks_get_skill_state", self._skill_name, key)
+        return value if isinstance(value, str) else None
 
     def set(self, key: str, value: str) -> None:
         if not self._store or not self._skill_name:

@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -107,11 +108,11 @@ class Skill:
     name: str
     version: str
     author: str
-    sensors_required: list[dict] = field(default_factory=list)
+    sensors_required: list[dict[str, Any]] = field(default_factory=list)
     triggers: list[Trigger] = field(default_factory=list)
     prompts: dict[str, str] = field(default_factory=dict)
-    actions: dict = field(default_factory=dict)
-    config: dict = field(default_factory=dict)
+    actions: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
     hooks: Any = None  # loaded module or None
 
     def get_default_actions_for_trigger(self, trigger_name: str) -> list[str]:
@@ -138,7 +139,11 @@ class Skill:
         """
         defaults: dict[str, list[str]] = self.actions.get("defaults") or {}
         # Find triggers that match sensor_type via sensors_required
-        matching_sensor_types = {s.get("type") for s in self.sensors_required}
+        matching_sensor_types: set[str] = set()
+        for sensor in self.sensors_required:
+            declared_sensor_type = sensor.get("type")
+            if isinstance(declared_sensor_type, str):
+                matching_sensor_types.add(declared_sensor_type)
         for trigger in self.triggers:
             if sensor_type in matching_sensor_types:
                 actions = defaults.get(trigger.name, [])
@@ -428,12 +433,14 @@ class SkillLoader:
             Callers can reuse this list to unsubscribe the exact handlers later.
         """
         tracker = _CooldownTracker()
-        subscriptions: list[tuple[str, Any]] = []
+        subscriptions: list[tuple[str, Callable[[OriEvent], Awaitable[None]]]] = []
 
         for trigger in skill.triggers:
-            sensor_types = [
-                s.get("type") for s in skill.sensors_required if s.get("type")
-            ]
+            sensor_types: list[str] = []
+            for sensor in skill.sensors_required:
+                sensor_type = sensor.get("type")
+                if isinstance(sensor_type, str) and sensor_type:
+                    sensor_types.append(sensor_type)
             if not sensor_types:
                 # Subscribe to wildcard if no sensor types declared
                 sensor_types = ["*"]
@@ -781,7 +788,7 @@ class SkillLoader:
         skill: Skill,
         trigger: Trigger,
         tracker: _CooldownTracker,
-    ):
+    ) -> Callable[[OriEvent], Awaitable[None]]:
         """Return a coroutine function suitable for EventBus subscription.
 
         The returned handler:
