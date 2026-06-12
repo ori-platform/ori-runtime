@@ -354,6 +354,11 @@ ORI_PRETTY_LOGS=false bash scripts/smoke-runtime-local.sh
 # Live host-health report (real psutil readings + skill trigger evaluation)
 ORI_PRETTY_LOGS=true .venv/bin/python scripts/pc_health_report.py
 
+# Release wheel smoke test
+# Builds the wheel, installs it into a clean venv, verifies bundled skills are
+# packaged, and runs a real Tier D rule evaluation through ori.integration.
+bash scripts/smoke-release-wheel.sh
+
 # Local SLM quality smoke test (without starting full runtime)
 python - <<'PY'
 import asyncio
@@ -393,9 +398,18 @@ Troubleshooting:
 pytest tests/ -v                              # Full suite
 pytest tests/test_rule_engine.py -v           # Specific module
 pytest tests/ --cov=ori --cov-report=term-missing  # With coverage
+bash scripts/typecheck-boundaries.sh          # Scoped mypy gate for public/runtime contracts
+bash scripts/smoke-release-wheel.sh           # Installed-wheel release readiness smoke
 ```
 
 The test suite covers all layers — HAL adapters, event bus, rule engine (with AST safety validation), action dispatcher (all four tiers), skill loader, state store, and runtime.
+
+Run `scripts/smoke-release-wheel.sh` before tagging a runtime release. It is
+deliberately stricter than an editable install: it builds the wheel, installs
+runtime dependencies from hash-locked requirements, installs the wheel with
+`--no-deps`, then verifies the public `ori.integration` rule-evaluation boundary
+can resolve bundled skill data from the installed artifact. This protects the
+`ori-energy` demo/API path from source-checkout-only packaging mistakes.
 
 ## Security
 

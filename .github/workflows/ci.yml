@@ -155,6 +155,10 @@ jobs:
           print('All bundled skills loaded cleanly.')
           "
 
+      - name: Release wheel smoke test
+        if: matrix.python-version == '3.12'
+        run: bash scripts/smoke-release-wheel.sh
+
       - name: Upload coverage report
         uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
         if: matrix.python-version == '3.11'
