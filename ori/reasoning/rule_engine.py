@@ -107,11 +107,21 @@ class EvalContext:
 
     def avg_24h(self, sensor_id: str) -> float:
         """Return 24-hour rolling average for *sensor_id* (0.0 if unavailable)."""
-        return self._cache.get(("avg_24h", sensor_id), 0.0)
+        value = self._cache.get(("avg_24h", sensor_id), 0.0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        return float(value)
 
     def last_n(self, sensor_id: str, n: int) -> list[float]:
         """Return the last *n* values for *sensor_id* (empty list if unavailable)."""
-        return self._cache.get(("last_n", sensor_id, n), [])
+        values = self._cache.get(("last_n", sensor_id, n), [])
+        if not isinstance(values, list):
+            return []
+        return [
+            float(value)
+            for value in values
+            if not isinstance(value, bool) and isinstance(value, (int, float))
+        ]
 
     def as_dict(self) -> dict[str, Any]:
         """Return the namespace dict used for ``eval``."""
@@ -233,7 +243,7 @@ def _check_safety_ast(condition: str) -> None:
             continue
 
         # ast.Call — only permit history.method(...) calls.
-        if node_type is ast.Call:
+        if isinstance(node, ast.Call):
             func = node.func
             if (
                 isinstance(func, ast.Attribute)
@@ -248,11 +258,9 @@ def _check_safety_ast(condition: str) -> None:
             )
 
         # ast.Attribute — only permit access on the history object.
-        if node_type is ast.Attribute:
-            if (
-                isinstance(node.value, ast.Name)
-                and node.value.id in _ALLOWED_ATTRIBUTE_ROOTS
-            ):
+        if isinstance(node, ast.Attribute):
+            value = node.value
+            if isinstance(value, ast.Name) and value.id in _ALLOWED_ATTRIBUTE_ROOTS:
                 continue
             raise RuleEngineSafetyError(
                 f"Rule condition contains forbidden attribute access: {condition!r}"
@@ -365,16 +373,16 @@ class RuleEngine:
         # Pre-fetch history if needed to safely inject into synchronous eval.
         history_cache: dict[tuple, Any] = {}
         for rule in rules:
-            condition = _rule_get(rule, "condition", "")
-            if not condition:
+            prefetch_condition = _rule_get(rule, "condition", "")
+            if not prefetch_condition:
                 continue
-            _check_safety_ast(condition)
-            history_calls = _extract_history_calls(condition)
+            _check_safety_ast(prefetch_condition)
+            history_calls = _extract_history_calls(prefetch_condition)
             if state_store is None:
                 continue
             for method, args in history_calls:
                 if method == "avg_24h":
-                    key = ("avg_24h", args[0])
+                    key: tuple[Any, ...] = ("avg_24h", args[0])
                     if key in history_cache:
                         continue
                     try:

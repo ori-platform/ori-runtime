@@ -14,6 +14,10 @@ fi
 
 "${MYPY[@]}" \
   ori/network/events.py \
+  ori/reasoning/rule_engine.py \
+  ori/skills/hooks_api.py \
+  ori/skills/loader.py \
+  ori/integration/rule_evaluation.py \
   ori/security/gateway_messages.py \
   ori/security/remote_commands.py \
   ori/policy/device_policy.py \

@@ -70,6 +70,41 @@ Repository = "https://github.com/ori-platform/ori-runtime"
 Documentation = "https://github.com/ori-platform/ori-runtime#readme"
 Issues = "https://github.com/ori-platform/ori-runtime/issues"
 
+
+[tool.setuptools.data-files]
+"share/ori-runtime/skills/battery-lifecycle-observer" = [
+    "skills/battery-lifecycle-observer/skill.yaml",
+    "skills/battery-lifecycle-observer/hooks.py",
+]
+"share/ori-runtime/skills/energy-anomaly-detector" = [
+    "skills/energy-anomaly-detector/skill.yaml",
+    "skills/energy-anomaly-detector/hooks.py",
+]
+"share/ori-runtime/skills/hvac-refrigerant-monitor" = [
+    "skills/hvac-refrigerant-monitor/skill.yaml",
+    "skills/hvac-refrigerant-monitor/hooks.py",
+]
+"share/ori-runtime/skills/pc-network-threat-monitor" = [
+    "skills/pc-network-threat-monitor/skill.yaml",
+    "skills/pc-network-threat-monitor/hooks.py",
+]
+"share/ori-runtime/skills/pc-system-health" = [
+    "skills/pc-system-health/skill.yaml",
+    "skills/pc-system-health/hooks.py",
+]
+"share/ori-runtime/skills/retail-occupancy-optimizer" = [
+    "skills/retail-occupancy-optimizer/skill.yaml",
+    "skills/retail-occupancy-optimizer/hooks.py",
+]
+"share/ori-runtime/skills/site-safety-ppe" = [
+    "skills/site-safety-ppe/skill.yaml",
+    "skills/site-safety-ppe/hooks.py",
+]
+"share/ori-runtime/skills/solar-performance-monitor" = [
+    "skills/solar-performance-monitor/skill.yaml",
+    "skills/solar-performance-monitor/hooks.py",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ori*"]
@@ -101,7 +136,11 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 module = [
     "ori.gateway.*",
+    "ori.integration.*",
     "ori.network.events",
+    "ori.reasoning.rule_engine",
+    "ori.skills.hooks_api",
+    "ori.skills.loader",
     "ori.policy.*",
     "ori.reasoning.capability_posture",
     "ori.reasoning.escalation_policy",
@@ -115,6 +154,11 @@ module = [
     "ori.hal.*",
     "ori.hardware.*",
     "ori.skills.sandbox",
+    "ori.skills.os_sandbox",
     "tests.*",
 ]
 ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["yaml"]
+ignore_missing_imports = true
