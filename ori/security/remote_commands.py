@@ -343,7 +343,12 @@ def sign_remote_command(
         command_id = str(command.get("command_id", "") or "")
         issued_at_ms = int(command.get("issued_at_ms", 0) or 0)
         command_name = str(command.get("command", "") or "").strip().upper()
-        args = command.get("args") if isinstance(command.get("args"), dict) else {}
+        raw_args = command.get("args")
+        args = (
+            {str(key): value for key, value in raw_args.items()}
+            if isinstance(raw_args, dict)
+            else {}
+        )
 
     signed = "\n".join(
         [

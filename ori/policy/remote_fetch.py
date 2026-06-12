@@ -136,7 +136,8 @@ def _http_get_json_bytes(cfg: RemotePolicyFetchConfig) -> bytes:
     timeout_s = max(0.1, cfg.request_timeout_ms / 1000.0)
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            body = resp.read()
+            raw_body = resp.read()
+            body = raw_body if isinstance(raw_body, bytes) else bytes(raw_body)
             status = int(getattr(resp, "status", 200))
     except urllib.error.HTTPError as exc:
         raise RemotePolicyFetchError(

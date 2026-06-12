@@ -53,6 +53,12 @@ repos:
         entry: python scripts/check_workflows.py
         pass_filenames: false
 
+      - id: runtime-boundary-typecheck
+        name: Runtime boundary typecheck
+        language: system
+        entry: bash scripts/typecheck-boundaries.sh
+        pass_filenames: false
+
   # ── Commit message format ────────────────────────────────────────────────────
   - repo: local
     hooks:

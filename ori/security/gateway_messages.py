@@ -82,7 +82,7 @@ class GatewayReplayCache:
             return False
         if len(self._seen_until_ms) >= self._max_entries:
             # Oldest expiry is the cheapest deterministic eviction strategy.
-            oldest = min(self._seen_until_ms, key=self._seen_until_ms.get)
+            oldest = min(self._seen_until_ms.items(), key=lambda item: item[1])[0]
             self._seen_until_ms.pop(oldest, None)
         self._seen_until_ms[key] = current_ms + self._ttl_ms
         return True

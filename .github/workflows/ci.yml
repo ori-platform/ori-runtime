@@ -47,6 +47,9 @@ jobs:
           python -m pip install --require-hashes -r requirements-dev.txt
           python -m pip install --no-deps -e .
 
+      - name: Type check runtime contract boundaries
+        run: bash scripts/typecheck-boundaries.sh
+
       - name: Pre-commit (lint + format + hygiene)
         env:
           SKIP: no-commit-to-branch

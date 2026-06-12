@@ -57,6 +57,8 @@ dev = [
     "pytest-cov>=5.0",
     "pre-commit>=3.7",
     "ruff>=0.4",
+    "mypy>=1.18",
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]
@@ -84,3 +86,35 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
 ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+ignore_missing_imports = true
+no_implicit_optional = true
+pretty = true
+show_error_codes = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = [
+    "ori.gateway.*",
+    "ori.network.events",
+    "ori.policy.*",
+    "ori.reasoning.capability_posture",
+    "ori.reasoning.escalation_policy",
+    "ori.security.gateway_messages",
+    "ori.security.remote_commands",
+]
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "ori.hal.*",
+    "ori.hardware.*",
+    "ori.skills.sandbox",
+    "tests.*",
+]
+ignore_errors = true

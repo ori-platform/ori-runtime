@@ -184,7 +184,10 @@ def _conflicting_related_sensor_signal(
         if not isinstance(item, dict):
             continue
         try:
-            related_value = float(item.get("value"))
+            raw_value = item.get("value")
+            if raw_value is None:
+                continue
+            related_value = float(raw_value)
         except (TypeError, ValueError):
             continue
         if abs(current_value - related_value) > tolerance:

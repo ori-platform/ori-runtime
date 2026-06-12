@@ -4,7 +4,7 @@
 import hashlib
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -15,7 +15,7 @@ class SensorReading:
     unit: str  # 'celsius' | 'ampere' | 'volt' | 'percent' etc.
     timestamp: int  # unix milliseconds, always UTC
     quality: float  # 0.0 to 1.0
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     raw: Optional[bytes] = None
 
 
@@ -27,7 +27,7 @@ class OriEvent:
     sensor_id: str
     timestamp: int  # unix milliseconds, always UTC
     reading: Optional[SensorReading]
-    context: dict = field(default_factory=dict)
+    context: dict[str, Any] = field(default_factory=dict)
     source: str = ""  # 'gpio' | 'i2c' | 'serial' | 'mqtt' | 'sysfs' | 'psutil'
     fingerprint: str = ""
 
