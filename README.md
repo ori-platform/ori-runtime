@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-1E6B4A?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-1E6B4A?style=flat-square)](https://python.org)
 [![CI](https://github.com/ori-platform/ori-runtime/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ori-platform/ori-runtime/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-beta-1E6B4A?style=flat-square)](#release-status)
+[![Release](https://img.shields.io/badge/release-v1.0.0-1E6B4A?style=flat-square)](#release-status)
 [![Platform](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%20·%20Linux%20·%20macOS-C8A951?style=flat-square)](#)
 
 </div>
@@ -24,13 +24,13 @@ Built for the world's majority condition — unreliable power, intermittent conn
 
 ## Release Status
 
-**Current channel: Beta (`0.9.x`)**
+**Current channel: Stable (`1.0.x`)**
 
-- Runtime core is feature-complete for imminent PoC deployment.
+- Runtime core is v1-stable for PoC, demo API, and controlled field deployment.
 - Safety invariants (tier guards, strict skill validation, sandbox boundaries) are CI-enforced on every PR.
-- APIs/config are expected to stabilize during beta; minor contract refinements may still occur before `1.0.0`.
-- Recommended use today: pilots, PoCs, and controlled deployments.
-- Release notes: [`docs/releases/v0.9.0-beta.1.md`](docs/releases/v0.9.0-beta.1.md)
+- Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary.
+- Recommended use today: pilots, PoCs, controlled deployments, and the `ori-energy` demo/API integration.
+- Release notes: [`docs/releases/v1.0.0.md`](docs/releases/v1.0.0.md)
 
 Related repos in the org:
 
@@ -421,7 +421,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 
 | Phase  | Status         | Milestone                                                             |
 | ------ | -------------- | --------------------------------------------------------------------- |
-| Core   | ✅ Active Beta | Core runtime with 6-layer architecture and 4-tier action framework    |
+| Core   | ✅ Stable v1   | Core runtime with 6-layer architecture and 4-tier action framework    |
 | PoC    | 🔨 In Progress | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video. |
 | Launch | 🔨 In Progress | Skills Hub. CLI tooling. Phone-as-gateway (Termux path live).         |
 | Growth | 🗓️ Planned     | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.          |

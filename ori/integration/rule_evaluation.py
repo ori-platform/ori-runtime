@@ -31,6 +31,9 @@ _THRESHOLD_LITERAL_RE = re.compile(
     r"\bvalue\s*(?:>=|>|<=|<)\s*(-?(?:\d+(?:\.\d*)?|\.\d+))\b"
 )
 _DEFAULT_SKILLS_DATA_DIR = Path("share") / "ori-runtime" / "skills"
+# Process-local sessions intentionally preserve cooldown state for default
+# demo/API evaluations. Tests that assert cooldown behavior should construct an
+# explicit RuleEvaluationSession to avoid cross-test coupling.
 _DEFAULT_SESSIONS: dict[tuple[str, str | None], "RuleEvaluationSession"] = {}
 
 
