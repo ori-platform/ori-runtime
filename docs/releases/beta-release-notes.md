@@ -1,5 +1,9 @@
 # Ori Runtime — Beta Release Notes
 
+Beta series archive. Current release channel is stable:
+
+- [`docs/releases/stable-release-notes.md`](stable-release-notes.md)
+
 ## Versioned Notes
 
 - [`v0.9.0-beta.2`](v0.9.0-beta.2.md) — v1-readiness hardening and transport/config safeguards
