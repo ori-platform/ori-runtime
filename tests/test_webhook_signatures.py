@@ -14,7 +14,7 @@ from ori.state.store import StateStore
 
 @pytest.mark.asyncio
 async def test_webhook_signature_accepts_valid_raw_body() -> None:
-    body = b'from=%2B2348000000000&text=YES-AB12CD34'
+    body = b"from=%2B2348000000000&text=YES-AB12CD34"
     signature = sign_webhook_body(
         body, shared_secret="secret", signed_at_ms=1_000, nonce="nonce-1"
     )
@@ -43,8 +43,8 @@ async def test_webhook_signature_accepts_valid_raw_body() -> None:
 
 @pytest.mark.asyncio
 async def test_webhook_signature_rejects_tampered_body() -> None:
-    signed_body = b'from=%2B2348000000000&text=YES-AB12CD34'
-    tampered_body = b'from=%2B2348000000000&text=YES-WRONG999'
+    signed_body = b"from=%2B2348000000000&text=YES-AB12CD34"
+    tampered_body = b"from=%2B2348000000000&text=YES-WRONG999"
     signature = sign_webhook_body(
         signed_body, shared_secret="secret", signed_at_ms=1_000, nonce="nonce-2"
     )
@@ -67,11 +67,13 @@ async def test_webhook_signature_rejects_tampered_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_webhook_signature_rejects_replayed_nonce_with_state_store(tmp_path) -> None:
+async def test_webhook_signature_rejects_replayed_nonce_with_state_store(
+    tmp_path,
+) -> None:
     store = StateStore(str(tmp_path / "webhook-replay.db"))
     await store.open()
     try:
-        body = b'from=%2B2348000000000&text=YES-AB12CD34'
+        body = b"from=%2B2348000000000&text=YES-AB12CD34"
         signature = sign_webhook_body(
             body, shared_secret="secret", signed_at_ms=1_000, nonce="nonce-3"
         )
