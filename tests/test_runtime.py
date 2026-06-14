@@ -1686,6 +1686,8 @@ class TestWebhookServerStartup:
                       host: "127.0.0.1"
                       port: 0
                       path: "/webhooks/sms/africastalking"
+                      allowed_source_cidrs:
+                        - "127.0.0.1/32"
                       token: "test-token"
                   relay:
                     enabled: false
@@ -1717,6 +1719,7 @@ class TestWebhookServerStartup:
             await asyncio.gather(runtime.start(), _stop())
 
         cls.assert_called_once()
+        assert cls.call_args.kwargs["allowed_source_cidrs"] == ["127.0.0.1/32"]
         fake_instance.serve_until.assert_awaited_once()
 
     async def test_runtime_webhook_defaults_host_to_localhost(

@@ -6,6 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from ipaddress import ip_network
 from typing import Any
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -355,6 +356,9 @@ class Config:
                     or incoming.get("enabled") is True
                 )
                 if webhook_enabled:
+                    _validate_sms_webhook_source_cidrs(
+                        incoming.get("allowed_source_cidrs")
+                    )
                     signature_cfg = incoming.get("signature") or {}
                     if signature_cfg and not isinstance(signature_cfg, dict):
                         raise ConfigValidationError(
@@ -1543,6 +1547,13 @@ def _validate_production_security_posture(
     if isinstance(incoming, dict) and is_truthy(incoming.get("enabled", False)):
         host = str(incoming.get("host", "127.0.0.1") or "").strip()
         if not _is_loopback_host(host):
+            allowed_source_cidrs = incoming.get("allowed_source_cidrs")
+            if not _sms_webhook_source_cidrs_present(allowed_source_cidrs):
+                raise ConfigValidationError(
+                    "production posture requires "
+                    "actions.sms.incoming_webhook.allowed_source_cidrs for public "
+                    "SMS webhook ingress"
+                )
             signature = incoming.get("signature") or {}
             mode = (
                 str(signature.get("mode", "token_only")).strip().lower()
@@ -1558,7 +1569,42 @@ def _validate_production_security_posture(
 
 def _is_loopback_host(host: str | None) -> bool:
     value = str(host or "").strip().lower()
-    return value in {"", "localhost", "::1"} or value.startswith("127.")
+    return value in {"localhost", "::1"} or value.startswith("127.")
+
+
+def _validate_sms_webhook_source_cidrs(data: Any) -> None:
+    """Validate optional SMS webhook source CIDR allowlist."""
+    if data is None:
+        return
+    if not isinstance(data, list):
+        raise ConfigValidationError(
+            "actions.sms.incoming_webhook.allowed_source_cidrs must be a list."
+        )
+    for index, item in enumerate(data):
+        cidr = str(item).strip()
+        if not cidr:
+            raise ConfigValidationError(
+                "actions.sms.incoming_webhook.allowed_source_cidrs entries "
+                "must not be empty."
+            )
+        try:
+            network = ip_network(cidr, strict=False)
+        except ValueError as exc:
+            raise ConfigValidationError(
+                "actions.sms.incoming_webhook.allowed_source_cidrs "
+                f"entry {index} is not a valid IP/CIDR: {cidr!r}"
+            ) from exc
+        if network.prefixlen == 0:
+            raise ConfigValidationError(
+                "actions.sms.incoming_webhook.allowed_source_cidrs must not "
+                "contain a catch-all network."
+            )
+
+
+def _sms_webhook_source_cidrs_present(data: Any) -> bool:
+    if not isinstance(data, list):
+        return False
+    return any(str(item).strip() for item in data)
 
 
 def _parse_remote_command_allowed_senders(data: Any) -> dict[str, list[str]]:

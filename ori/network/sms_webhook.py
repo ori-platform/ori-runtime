@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from ipaddress import ip_address, ip_network
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -42,6 +43,7 @@ class SMSWebhookServer:
         token: str = "",
         signature_verifier: WebhookSignatureVerifier | None = None,
         state_store: Any = None,
+        allowed_source_cidrs: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         self._sms_action = sms_action
         self._host = host
@@ -52,6 +54,11 @@ class SMSWebhookServer:
         self._state_store = state_store
         self._server: asyncio.AbstractServer | None = None
         self._ip_request_log: dict[str, list[float]] = {}
+        self._allowed_source_networks = tuple(
+            ip_network(str(cidr).strip(), strict=False)
+            for cidr in (allowed_source_cidrs or [])
+            if str(cidr).strip()
+        )
 
     @property
     def port(self) -> int:
@@ -101,6 +108,16 @@ class SMSWebhookServer:
         self._ip_request_log[peer_ip] = history
         return True
 
+    def _source_allowed(self, peer_ip: str) -> bool:
+        """Return True when peer_ip is allowed by configured source CIDRs."""
+        if not self._allowed_source_networks:
+            return True
+        try:
+            address = ip_address(peer_ip)
+        except ValueError:
+            return False
+        return any(address in network for network in self._allowed_source_networks)
+
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
@@ -108,6 +125,14 @@ class SMSWebhookServer:
         peer = get_extra("peername") if callable(get_extra) else None
         peer_ip = str(peer[0]) if peer else "unknown"
         try:
+            if not self._source_allowed(peer_ip):
+                logger.warning(
+                    "SMSWebhookServer: rejected request from disallowed source %s",
+                    peer_ip,
+                )
+                await self._respond(writer, 403, "forbidden")
+                return
+
             if not self._rate_check(peer_ip):
                 logger.warning("SMSWebhookServer: rate limit exceeded for %s", peer_ip)
                 await self._respond(writer, 429, "too many requests")
@@ -228,6 +253,7 @@ class SMSWebhookServer:
             200: "OK",
             400: "Bad Request",
             401: "Unauthorized",
+            403: "Forbidden",
             404: "Not Found",
             405: "Method Not Allowed",
             429: "Too Many Requests",

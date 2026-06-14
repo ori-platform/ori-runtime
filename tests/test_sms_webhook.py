@@ -16,12 +16,18 @@ from ori.utils.time_utils import now_ms
 
 
 class _FakeWriter:
-    def __init__(self) -> None:
+    def __init__(self, peername: tuple[str, int] = ("127.0.0.1", 12345)) -> None:
         self.buffer = bytearray()
         self.closed = False
+        self.peername = peername
 
     def write(self, data: bytes) -> None:
         self.buffer.extend(data)
+
+    def get_extra_info(self, name: str):
+        if name == "peername":
+            return self.peername
+        return None
 
     async def drain(self) -> None:
         return None
@@ -45,6 +51,40 @@ async def test_authorized_accepts_header_and_bearer():
 def test_default_host_is_loopback():
     server = SMSWebhookServer(sms_action=AsyncMock(), token="secret-token")
     assert server._host == "127.0.0.1"
+
+
+def test_source_allowed_enforces_configured_cidrs():
+    server = SMSWebhookServer(
+        sms_action=AsyncMock(),
+        token="secret-token",
+        allowed_source_cidrs=["203.0.113.0/24", "2001:db8::/32"],
+    )
+
+    assert server._source_allowed("203.0.113.9") is True
+    assert server._source_allowed("2001:db8::1") is True
+    assert server._source_allowed("198.51.100.9") is False
+    assert server._source_allowed("unknown") is False
+
+
+@pytest.mark.asyncio
+async def test_handle_client_rejects_disallowed_source_before_parsing():
+    sms_action = AsyncMock()
+    sms_action.ingest_incoming_webhook.return_value = True
+    server = SMSWebhookServer(
+        sms_action=sms_action,
+        token="secret-token",
+        allowed_source_cidrs=["203.0.113.0/24"],
+    )
+    server._read_request = AsyncMock()
+    reader = asyncio.StreamReader()
+    writer = _FakeWriter(peername=("198.51.100.10", 12345))
+
+    await server._handle_client(reader, writer)
+
+    text = writer.buffer.decode("utf-8", errors="replace")
+    assert "403 Forbidden" in text
+    server._read_request.assert_not_called()
+    sms_action.ingest_incoming_webhook.assert_not_called()
 
 
 @pytest.mark.asyncio
