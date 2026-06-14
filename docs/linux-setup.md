@@ -139,6 +139,13 @@ AT_USERNAME=your_username_here
 OWNER_PHONE_NUMBER=+234XXXXXXXXXX
 ```
 
+If you enable inbound SMS webhooks for Tier C approvals, keep the runtime
+listener on `127.0.0.1` unless a reverse proxy or signing bridge is in front of
+it. Public Africa's Talking webhook ingress must follow
+[`SMS_WEBHOOK_SECURITY.md`](SMS_WEBHOOK_SECURITY.md): use raw-body HMAC,
+source CIDR allowlisting, and operator sender allowlisting. Runtime sender
+checks do not prove carrier-origin identity by themselves.
+
 Then set `ORI_AUTOLOAD_DOTENV=true` before starting Ori so it picks up the `.env` file automatically:
 
 ```bash

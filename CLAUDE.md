@@ -88,6 +88,11 @@ apply per-device topic ACLs.
 Runtime-gateway transport supports `mqtts://` and `gateway.tls`; TLS is
 defense-in-depth and does not replace HMAC envelope authentication.
 
+SMS webhook ingress hardening is documented in `docs/SMS_WEBHOOK_SECURITY.md`.
+Runtime sender allowlisting is necessary but cannot prove carrier-origin
+identity. Internet-exposed Africa's Talking ingress must use source CIDR
+allowlisting plus an HMAC signing bridge or equivalent raw-body signing path.
+
 ---
 
 ## The Action Tier Framework (Layer 4) — The Agent's Authority

@@ -388,6 +388,7 @@ actions:
       host: "127.0.0.1"
       port: 8080
       path: "/webhooks/sms/africastalking"
+      # Public ingress: see docs/SMS_WEBHOOK_SECURITY.md before binding non-loopback.
       allowed_source_cidrs: []       # public webhooks should restrict provider/reverse-proxy IP ranges
       token: "${ORI_SMS_WEBHOOK_TOKEN}"  # required unless signature.mode=hmac_required
       signature:

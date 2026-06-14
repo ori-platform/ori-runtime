@@ -20,6 +20,7 @@ import logging
 import os
 import signal
 from collections.abc import Awaitable, Callable
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -883,6 +884,7 @@ class OriRuntime:
             self._background_tasks.append(webhook_task)
 
         _warn_gateway_security_posture(config)
+        _warn_sms_webhook_security_posture(config)
 
         gateway_export_task = self._start_gateway_export_responder_if_enabled(config)
         if gateway_export_task is not None:
@@ -3454,6 +3456,59 @@ def _warn_gateway_security_posture(config: Config) -> None:
             "Payloads are authenticated but visible in transit on the LAN. "
             "Enable gateway.tls for defense-in-depth."
         )
+
+
+def _warn_sms_webhook_security_posture(config: Config) -> None:
+    """Emit startup warnings for public SMS webhook ingress gaps.
+
+    Production/staging posture fails config load for these conditions. This
+    warning path exists for development configs that bind the webhook on a
+    non-loopback interface before production posture is enabled.
+    """
+    sms_cfg = config.actions.sms if isinstance(config.actions.sms, dict) else {}
+    webhook_cfg = sms_cfg.get("incoming_webhook") or {}
+    if not isinstance(webhook_cfg, dict):
+        return
+    if not is_truthy(webhook_cfg.get("enabled", False)):
+        return
+
+    host = str(webhook_cfg.get("host", "127.0.0.1") or "").strip()
+    if _is_loopback_bind_host(host):
+        return
+
+    signature_cfg = webhook_cfg.get("signature") or {}
+    signature_mode = (
+        str(signature_cfg.get("mode", "token_only") or "token_only").strip().lower()
+        if isinstance(signature_cfg, dict)
+        else "token_only"
+    )
+    if signature_mode == "token_only":
+        logger.error(
+            "[runtime-security] SMS_WEBHOOK: incoming_webhook.host=%r is not "
+            "loopback and signature.mode=token_only. Public SMS webhook ingress "
+            "must be fronted by a signing bridge or configured with "
+            "signature.mode=token_and_hmac/hmac_required.",
+            host,
+        )
+
+    source_cidrs = webhook_cfg.get("allowed_source_cidrs") or []
+    if not source_cidrs:
+        logger.warning(
+            "[runtime-security] SMS_WEBHOOK: incoming_webhook.host=%r is not "
+            "loopback and allowed_source_cidrs is empty. Restrict ingress to "
+            "Africa's Talking provider IP ranges or a trusted reverse proxy.",
+            host,
+        )
+
+
+def _is_loopback_bind_host(host: str | None) -> bool:
+    value = str(host or "").strip().lower()
+    if value in {"localhost", "::1"}:
+        return True
+    try:
+        return ip_address(value).is_loopback
+    except ValueError:
+        return False
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

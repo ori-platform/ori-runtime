@@ -163,6 +163,11 @@ Tier 3  GATEWAY LLM    1-3 seconds  · LAN only          · cross-device or clou
 - Production runtime-gateway MQTT deployments should follow
   [`docs/MQTT_SECURITY.md`](docs/MQTT_SECURITY.md) for broker ACLs, network
   isolation, and HMAC envelope configuration.
+- Public SMS webhook deployments should follow
+  [`docs/SMS_WEBHOOK_SECURITY.md`](docs/SMS_WEBHOOK_SECURITY.md). Runtime
+  sender allowlisting is necessary, but carrier-level sender spoofing requires
+  deployment controls such as a signing bridge, source CIDR allowlisting, or a
+  trusted reverse proxy.
 - The runtime is correctly described as an offline-capable safety runtime. Tier 1 and Tier D safety paths are available with zero network dependency.
 
 ### The Action Tier Framework — _What should I do about it?_

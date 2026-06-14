@@ -592,7 +592,7 @@ Violating them creates vulnerabilities that affect physical hardware.
    files. All secrets go in .env (gitignored).
 
 6. Production deployments must enable production posture enforcement.
-   Set `device.deployment_profile: staging|production` or
+   Set `device.deployment_profile: staging\|production` or
    `security.enforce_production_posture: true`. Staging and production profiles
    cannot opt out. In production posture the runtime must fail config load for
    unsafe network/security settings:
@@ -701,7 +701,9 @@ Violating them creates vulnerabilities that affect physical hardware.
     reverse-proxy source IP ranges, and must configure
     `actions.sms.incoming_webhook.signature.mode: token_and_hmac` or
     `hmac_required`, with HMAC verified over the raw HTTP body before payload
-    parsing and nonce replay recorded in `StateStore`.
+    parsing and nonce replay recorded in `StateStore`. Runtime sender
+    allowlisting is necessary but cannot prove carrier-origin identity; public
+    provider ingress must follow `docs/SMS_WEBHOOK_SECURITY.md`.
     HMAC previous-secret fields are verify-only rotation aids. New outbound
     signatures must use the current secret; accepted remote commands signed
     with a previous secret must be audited distinctly.
