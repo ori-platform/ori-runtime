@@ -108,6 +108,9 @@ Issues = "https://github.com/ori-platform/ori-runtime/issues"
 where = ["."]
 include = ["ori*"]
 
+[tool.setuptools.package-data]
+ori = ["py.typed"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

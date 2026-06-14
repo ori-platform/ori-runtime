@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import ori
 from ori.integration.rule_evaluation import (
     RuleEvaluationRequest,
     RuleEvaluationSession,
@@ -128,6 +129,12 @@ def test_bundled_skill_path_resolves_energy_anomaly_detector() -> None:
     assert path.name == "energy-anomaly-detector"
     assert (path / "skill.yaml").is_file()
     assert (path / "hooks.py").is_file()
+
+
+def test_runtime_package_declares_pep561_typed_marker() -> None:
+    marker = Path(ori.__file__).resolve().parent / "py.typed"
+
+    assert marker.is_file()
 
 
 @pytest.mark.parametrize("bad_name", ["", "../energy-anomaly-detector", "a/b", "a\\b"])
