@@ -927,6 +927,8 @@ class TestLoadExample:
                 incoming_webhook:
                   enabled: true
                   host: "0.0.0.0"
+                  allowed_source_cidrs:
+                    - "203.0.113.0/24"
                   token: "token"
                   signature:
                     mode: token_only
@@ -938,6 +940,80 @@ class TestLoadExample:
         )
 
         with pytest.raises(ConfigValidationError, match="token_only"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_public_sms_webhook_without_source_cidrs(
+        self, tmp_path
+    ):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: true
+                transport: ip
+                AT_API_KEY: "key"
+                AT_USERNAME: "user"
+                incoming_webhook:
+                  enabled: true
+                  host: "0.0.0.0"
+                  token: "token"
+                  signature:
+                    mode: token_and_hmac
+                    shared_secret: "hmac-secret"
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="allowed_source_cidrs"):
+            Config.load(yaml_path)
+
+    def test_production_posture_treats_empty_sms_webhook_host_as_public(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: true
+                transport: ip
+                AT_API_KEY: "key"
+                AT_USERNAME: "user"
+                incoming_webhook:
+                  enabled: true
+                  host: ""
+                  token: "token"
+                  signature:
+                    mode: token_and_hmac
+                    shared_secret: "hmac-secret"
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="allowed_source_cidrs"):
             Config.load(yaml_path)
 
     def test_production_posture_rejects_remote_command_test_allowlist(self, tmp_path):
@@ -999,6 +1075,8 @@ class TestLoadExample:
                 incoming_webhook:
                   enabled: true
                   host: "0.0.0.0"
+                  allowed_source_cidrs:
+                    - "203.0.113.0/24"
                   token: "token"
                   signature:
                     mode: token_and_hmac
@@ -2748,6 +2826,46 @@ actions:
         )
         cfg = Config.load(yaml_path)
         assert cfg.actions.sms["incoming_webhook"]["token"] == "super-secret-token"
+
+    def test_sms_incoming_webhook_allowed_source_cidrs_are_validated(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      allowed_source_cidrs:\n"
+                "        - 'not-a-cidr'\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="allowed_source_cidrs"):
+            Config.load(yaml_path)
+
+    def test_sms_incoming_webhook_rejects_catch_all_source_cidr(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      allowed_source_cidrs:\n"
+                "        - '0.0.0.0/0'\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="catch-all"):
+            Config.load(yaml_path)
 
     def test_sms_incoming_webhook_hmac_missing_secret_raises(self, tmp_path):
         yaml_path = _write_yaml(

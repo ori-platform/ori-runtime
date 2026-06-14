@@ -597,9 +597,10 @@ Violating them creates vulnerabilities that affect physical hardware.
    cannot opt out. In production posture the runtime must fail config load for
    unsafe network/security settings:
    non-loopback gateway brokers require TLS, gateway HMAC auth, and encrypted
-   sensitive exports; public SMS webhook ingress must use HMAC mode, not
-   token-only mode; remote commands must not allow unlisted senders; and
-   local/non-core skills must require Ed25519 signatures.
+   sensitive exports; public SMS webhook ingress must use HMAC mode plus
+   source IP/CIDR allowlisting, not token-only mode; remote commands must not
+   allow unlisted senders; and local/non-core skills must require Ed25519
+   signatures.
 
 7. Never add a GitHub Actions workflow that processes untrusted
    input (issue titles, PR comments) with shell access.
@@ -686,6 +687,8 @@ Violating them creates vulnerabilities that affect physical hardware.
     silently converted to NO.
     Public SMS webhook ingress must use token-only mode only for loopback or
     trusted provider paths. Internet-exposed deployments must configure
+    `actions.sms.incoming_webhook.allowed_source_cidrs` for provider or
+    reverse-proxy source IP ranges, and must configure
     `actions.sms.incoming_webhook.signature.mode: token_and_hmac` or
     `hmac_required`, with HMAC verified over the raw HTTP body before payload
     parsing and nonce replay recorded in `StateStore`.

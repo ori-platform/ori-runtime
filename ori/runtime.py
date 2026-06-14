@@ -1552,6 +1552,7 @@ class OriRuntime:
             token=token,
             signature_verifier=signature_verifier,
             state_store=self._state_store,
+            allowed_source_cidrs=list(webhook_cfg.get("allowed_source_cidrs") or []),
         )
         return asyncio.create_task(
             self._sms_webhook_server.serve_until(self._shutdown_event),
