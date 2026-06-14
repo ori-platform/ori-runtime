@@ -1215,3 +1215,46 @@ Non-goal:
 
 - This is not live automatic key rotation. ori-cloud/gateway-managed rotation,
   key version IDs, and fleet-wide rollout status remain future platform work.
+
+---
+
+## 2026-06-14 — SMS Webhook Carrier Identity Is A Deployment Boundary
+
+**Status:** Accepted
+
+Runtime SMS webhook verification is split across two layers:
+
+- Runtime-owned HTTP envelope controls: header token auth, optional raw-body
+  HMAC, timestamp skew checks, nonce replay protection, source CIDR
+  allowlisting, request-size limits, and sender allowlisting for approval
+  messages.
+- Deployment-owned carrier/provider controls: firewall allowlists, reverse
+  proxies, provider-origin verification, and optional signing bridges.
+
+Africa's Talking does not natively provide an Ori HMAC signature header, and the
+`from` field delivered by carrier infrastructure is not a cryptographic proof of
+operator identity. Runtime sender allowlisting is still mandatory, but it cannot
+by itself defeat carrier-level sender spoofing.
+
+The preferred production topology is therefore:
+
+```text
+Africa's Talking -> signing bridge/reverse proxy -> runtime localhost webhook
+```
+
+The signing bridge verifies provider/network constraints, forwards the raw body
+to the runtime, and adds Ori HMAC headers. Direct public runtime webhook ingress
+is allowed only when production posture uses HMAC mode plus source CIDR
+allowlisting.
+
+Production/staging posture fails closed for public token-only webhook ingress.
+Development configs remain warning-only so local and constrained test setups can
+run, but startup logs flag non-loopback token-only or non-allowlisted webhook
+hosts as unsafe.
+
+Non-goals:
+
+- The runtime does not validate Africa's Talking account configuration.
+- The runtime does not maintain provider IP range lists automatically.
+- The runtime does not prove carrier-origin sender identity.
+- The runtime does not replace firewall or reverse-proxy controls.

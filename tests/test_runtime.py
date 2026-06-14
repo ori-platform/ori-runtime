@@ -43,6 +43,7 @@ from ori.runtime import (
     _process_target_from_context,
     _resolve_dispatcher_approval_timeout,
     _resolve_local_model_file,
+    _warn_sms_webhook_security_posture,
 )
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
@@ -81,6 +82,58 @@ def test_build_gateway_message_auth_uses_configured_env_secret(monkeypatch):
     auth = _build_gateway_message_auth(config)
 
     assert auth is not None
+
+
+def _sms_webhook_posture_config(
+    *,
+    host: str,
+    signature_mode: str = "token_only",
+    allowed_source_cidrs: list[str] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        actions=SimpleNamespace(
+            sms={
+                "incoming_webhook": {
+                    "enabled": True,
+                    "host": host,
+                    "allowed_source_cidrs": allowed_source_cidrs or [],
+                    "signature": {"mode": signature_mode},
+                }
+            }
+        )
+    )
+
+
+def test_sms_webhook_security_posture_warns_for_public_token_only(caplog):
+    config = _sms_webhook_posture_config(host="0.0.0.0")
+
+    with caplog.at_level(logging.WARNING):
+        _warn_sms_webhook_security_posture(config)
+
+    assert "signature.mode=token_only" in caplog.text
+    assert "allowed_source_cidrs is empty" in caplog.text
+
+
+def test_sms_webhook_security_posture_accepts_loopback_token_only(caplog):
+    config = _sms_webhook_posture_config(host="127.0.0.1")
+
+    with caplog.at_level(logging.WARNING):
+        _warn_sms_webhook_security_posture(config)
+
+    assert "SMS_WEBHOOK" not in caplog.text
+
+
+def test_sms_webhook_security_posture_accepts_public_signed_allowlisted(caplog):
+    config = _sms_webhook_posture_config(
+        host="192.0.2.10",
+        signature_mode="token_and_hmac",
+        allowed_source_cidrs=["203.0.113.0/24"],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        _warn_sms_webhook_security_posture(config)
+
+    assert "SMS_WEBHOOK" not in caplog.text
 
 
 def test_build_gateway_message_auth_accepts_previous_env_secret(monkeypatch):
