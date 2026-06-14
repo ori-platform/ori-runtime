@@ -593,6 +593,15 @@ security:
   skills:
     require_signed: false # true => local/non-core skills must use ed25519 signatures
 
+database:
+  path: ori_state.db # production should place this under an encrypted mount
+
+state:
+  encryption:
+    mode: disabled # disabled | filesystem_required
+    encrypted_path_prefixes: [] # e.g. ["/var/lib/ori-encrypted"]
+    marker_file: "" # optional existing marker; startup fails if missing
+
 reasoning:
   default_tier: local
   local_model: qwen2.5-0.5b-instruct-q4_k_m

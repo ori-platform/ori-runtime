@@ -102,6 +102,7 @@ from ori.skills.loader import SkillLoader
 from ori.skills.signing import verify_signed_payload
 from ori.state.store import StateStore
 from ori.utils.bool_utils import is_truthy
+from ori.utils.path_utils import path_is_relative_to
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -1767,6 +1768,7 @@ class OriRuntime:
             "uptime_s": uptime_s,
             "health_socket_path": self._health_socket_path,
             "capability_posture": capability_posture,
+            "state_store_encryption": self._state_store_encryption_health(),
             "sensors": sensors,
             "last_alert_timestamps": {
                 "by_channel": dict(self._last_alert_timestamps_by_channel),
@@ -1785,6 +1787,38 @@ class OriRuntime:
                 ),
                 "senders": remote_command_lockout_senders,
             },
+        }
+
+    def _state_store_encryption_health(self) -> dict[str, Any]:
+        if self._config is None:
+            return {
+                "available": False,
+                "mode": "unknown",
+                "satisfied": False,
+                "marker_configured": False,
+                "path_prefix_configured": False,
+            }
+
+        encryption = self._config.state.encryption
+        marker_ok = bool(
+            encryption.marker_file
+            and Path(encryption.marker_file).expanduser().is_file()
+        )
+        db_path = Path(self._config.database_path).expanduser().resolve(strict=False)
+        prefix_ok = any(
+            path_is_relative_to(
+                db_path,
+                Path(prefix).expanduser().resolve(strict=False),
+            )
+            for prefix in encryption.encrypted_path_prefixes
+        )
+        return {
+            "available": True,
+            "mode": encryption.mode,
+            "satisfied": bool(encryption.mode == "filesystem_required")
+            and (marker_ok or prefix_ok),
+            "marker_configured": bool(encryption.marker_file),
+            "path_prefix_configured": bool(encryption.encrypted_path_prefixes),
         }
 
     async def _build_alert_outbox_health(self, now: int) -> dict[str, Any]:
