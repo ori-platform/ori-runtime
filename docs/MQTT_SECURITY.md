@@ -38,6 +38,11 @@ Production deployments should enable gateway message authentication:
 gateway:
   enabled: true
   broker_url: mqtts://ori-runtime:${ORI_RUNTIME_MQTT_PASSWORD}@192.168.1.10:8883
+  broker_posture:
+    deployment_check: required
+    anonymous_access: disabled
+    require_credentials: true
+    acl_policy: per_device_required
   tls:
     enabled: true
     ca_certfile: /etc/ori/certs/site-ca.crt
@@ -65,6 +70,11 @@ export GATEWAY_SHARED_SECRET='replace-with-site-local-random-secret'
 
 Do not reuse remote-command secrets. `GATEWAY_SHARED_SECRET` is for site-local
 runtime-gateway MQTT envelopes only.
+
+`gateway.broker_posture` is a production declaration that the deployment has
+disabled anonymous clients, requires per-device ACLs, and requires MQTT
+credentials. It is not broker introspection; production operators must still
+apply the Mosquitto configuration below or equivalent broker-side controls.
 
 For gateway HMAC rotation, set `previous_shared_secret_env` to the old secret's
 environment variable while `shared_secret_env` points at the new secret. The

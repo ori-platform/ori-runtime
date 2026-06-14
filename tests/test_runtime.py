@@ -2030,6 +2030,11 @@ class TestAlertOutbox:
         runtime._device_id = "dev-01"
         database_path = encrypted_dir / "ori_state.db"
         runtime._config = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=False,
+                broker_url="",
+                broker_posture={},
+            ),
             state=SimpleNamespace(
                 encryption=SimpleNamespace(
                     mode="filesystem_required",
@@ -2051,6 +2056,45 @@ class TestAlertOutbox:
             "path_prefix_configured": True,
         }
         assert str(encrypted_dir) not in json.dumps(posture)
+
+    async def test_health_snapshot_reports_gateway_broker_posture(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._device_id = "dev-01"
+        runtime._config = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=True,
+                broker_url="mqtts://operator:secret@broker.local:8883",
+                broker_posture={
+                    "deployment_check": "required",
+                    "anonymous_access": "disabled",
+                    "require_credentials": True,
+                    "acl_policy": "per_device_required",
+                },
+            ),
+            state=SimpleNamespace(
+                encryption=SimpleNamespace(
+                    mode="disabled",
+                    encrypted_path_prefixes=[],
+                    marker_file="",
+                )
+            ),
+            database_path="ori_state.db",
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        posture = snapshot["gateway_broker_posture"]
+        assert posture == {
+            "available": True,
+            "gateway_enabled": True,
+            "deployment_check": "required",
+            "anonymous_access": "disabled",
+            "acl_policy": "per_device_required",
+            "require_credentials": True,
+            "credentials_configured": True,
+            "requires_acl_hardening": False,
+        }
+        assert "secret" not in json.dumps(posture)
 
     async def test_load_remote_command_lockout_state_failure_is_non_blocking(self):
         class _FailingIncidentStore:

@@ -134,6 +134,7 @@ class GatewayConfig:
     auth: dict = field(default_factory=dict)
     tls: dict = field(default_factory=dict)
     encryption: dict = field(default_factory=dict)
+    broker_posture: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -943,6 +944,8 @@ def _parse_gateway(data: Any) -> GatewayConfig:
             "gateway.encryption.enabled requires gateway.auth.enabled"
         )
 
+    broker_posture = _parse_gateway_broker_posture(data.get("broker_posture"))
+
     return GatewayConfig(
         enabled=bool(data.get("enabled", False)),
         broker_url=str(data.get("broker_url", "")),
@@ -951,7 +954,41 @@ def _parse_gateway(data: Any) -> GatewayConfig:
         auth=auth,
         tls=tls,
         encryption=encryption,
+        broker_posture=broker_posture,
     )
+
+
+def _parse_gateway_broker_posture(data: Any) -> dict[str, Any]:
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ConfigValidationError(
+            "'gateway.broker_posture' section must be a mapping."
+        )
+
+    deployment_check = str(data.get("deployment_check", "warning")).strip().lower()
+    if deployment_check not in {"warning", "required"}:
+        raise ConfigValidationError(
+            "gateway.broker_posture.deployment_check must be 'warning' or 'required'."
+        )
+    anonymous_access = str(data.get("anonymous_access", "unknown")).strip().lower()
+    if anonymous_access not in {"unknown", "disabled"}:
+        raise ConfigValidationError(
+            "gateway.broker_posture.anonymous_access must be 'unknown' or 'disabled'."
+        )
+    acl_policy = str(data.get("acl_policy", "unknown")).strip().lower()
+    if acl_policy not in {"unknown", "per_device_required"}:
+        raise ConfigValidationError(
+            "gateway.broker_posture.acl_policy must be 'unknown' or 'per_device_required'."
+        )
+
+    return {
+        **data,
+        "deployment_check": deployment_check,
+        "anonymous_access": anonymous_access,
+        "acl_policy": acl_policy,
+        "require_credentials": is_truthy(data.get("require_credentials", False)),
+    }
 
 
 def _parse_actions(data: Any) -> ActionChannelConfig:
@@ -1557,6 +1594,36 @@ def _validate_production_security_posture(
                 raise ConfigValidationError(
                     "production posture requires gateway.encryption.enabled: true "
                     "for non-loopback brokers"
+                )
+            broker_posture = gateway.broker_posture
+            if broker_posture.get("deployment_check") != "required":
+                raise ConfigValidationError(
+                    "production posture requires "
+                    "gateway.broker_posture.deployment_check: required "
+                    "for non-loopback brokers"
+                )
+            if broker_posture.get("anonymous_access") != "disabled":
+                raise ConfigValidationError(
+                    "production posture requires "
+                    "gateway.broker_posture.anonymous_access: disabled "
+                    "for non-loopback brokers"
+                )
+            if broker_posture.get("acl_policy") != "per_device_required":
+                raise ConfigValidationError(
+                    "production posture requires "
+                    "gateway.broker_posture.acl_policy: per_device_required "
+                    "for non-loopback brokers"
+                )
+            if not is_truthy(broker_posture.get("require_credentials", False)):
+                raise ConfigValidationError(
+                    "production posture requires "
+                    "gateway.broker_posture.require_credentials: true "
+                    "for non-loopback brokers"
+                )
+            if not parsed.username or not parsed.password:
+                raise ConfigValidationError(
+                    "production posture requires gateway.broker_url to include "
+                    "MQTT username and password for non-loopback brokers"
                 )
 
     sms_cfg = actions.sms if isinstance(actions.sms, dict) else {}

@@ -264,6 +264,11 @@ reasoning:
 gateway:
   enabled: false                     # starts MQTT gateway integration over the LAN broker
   broker_url: mqtt://192.168.1.10:1883
+  broker_posture:
+    deployment_check: warning        # warning | required; production non-loopback requires required
+    anonymous_access: unknown        # unknown | disabled; production non-loopback requires disabled
+    require_credentials: false       # true => broker_url must include username and password
+    acl_policy: unknown              # unknown | per_device_required; production non-loopback requires per_device_required
   tls:
     enabled: false                   # use mqtts:// or set true when broker TLS is required
     ca_certfile: ""                  # e.g. /etc/ori/certs/site-ca.crt

@@ -915,6 +915,79 @@ class TestLoadExample:
         with pytest.raises(ConfigValidationError, match="gateway.encryption.enabled"):
             Config.load(yaml_path)
 
+    def test_production_posture_rejects_gateway_without_broker_posture(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://operator:secret@broker.local:8883
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="broker_posture"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_gateway_without_broker_credentials(
+        self, tmp_path
+    ):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local:8883
+              broker_posture:
+                deployment_check: required
+                anonymous_access: disabled
+                require_credentials: true
+                acl_policy: per_device_required
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="username and password"):
+            Config.load(yaml_path)
+
     def test_production_posture_rejects_public_token_only_sms_webhook(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
@@ -1223,7 +1296,12 @@ class TestLoadExample:
             reasoning: {{}}
             gateway:
               enabled: true
-              broker_url: mqtts://broker.local:8883
+              broker_url: mqtts://operator:secret@broker.local:8883
+              broker_posture:
+                deployment_check: required
+                anonymous_access: disabled
+                require_credentials: true
+                acl_policy: per_device_required
               auth:
                 enabled: true
                 shared_secret_env: GATEWAY_SHARED_SECRET
@@ -1266,6 +1344,7 @@ class TestLoadExample:
 
         assert cfg.device.deployment_profile == "production"
         assert cfg.security["skills"]["require_signed"] is True
+        assert cfg.gateway.broker_posture["acl_policy"] == "per_device_required"
 
     def test_gateway_message_secret_separate_from_remote_command_secret(self):
         cfg = Config.load(EXAMPLE_YAML)
