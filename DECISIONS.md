@@ -1134,6 +1134,41 @@ Non-goals:
 
 ---
 
+## 2026-06-14 — Gateway Broker Posture Is Declared, Not Probed
+
+**Status:** Accepted
+
+The runtime cannot reliably prove Mosquitto or another MQTT broker has
+anonymous clients disabled, per-device ACLs loaded, retained-message policy
+correct, or network isolation in place. Those are broker/deployment controls.
+
+Production/staging posture therefore requires an explicit broker posture
+declaration for non-loopback gateway brokers:
+
+- `gateway.broker_posture.deployment_check: required`
+- `gateway.broker_posture.anonymous_access: disabled`
+- `gateway.broker_posture.require_credentials: true`
+- `gateway.broker_posture.acl_policy: per_device_required`
+- `gateway.broker_url` must include MQTT username and password
+
+This is an operator/deployment attestation. It prevents accidental production
+configs that use a LAN broker as if it were hardened while still preserving the
+runtime/gateway boundary: the runtime does not read Mosquitto files, inspect
+broker ACLs, or require broker-specific APIs.
+
+Runtime health exports the declared posture without exposing credentials so the
+gateway/cloud layer can surface incomplete broker hardening at site level.
+
+Non-goals:
+
+- This does not validate the broker ACL file contents.
+- This does not prove anonymous access is disabled at the broker process.
+- This does not replace `docs/MQTT_SECURITY.md` deployment hardening.
+- Gateway/deployment tooling should still implement real broker config checks
+  where it has access to broker files or admin APIs.
+
+---
+
 ## 2026-06-14 — HMAC Secret Rotation Uses Verify-Only Previous Secrets
 
 **Status:** Accepted

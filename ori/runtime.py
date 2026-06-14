@@ -22,6 +22,7 @@ import signal
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from ori.actions.alert_failover import AlertFailoverSender
 from ori.actions.coap import CoAPAction
@@ -1768,6 +1769,7 @@ class OriRuntime:
             "uptime_s": uptime_s,
             "health_socket_path": self._health_socket_path,
             "capability_posture": capability_posture,
+            "gateway_broker_posture": self._gateway_broker_posture_health(),
             "state_store_encryption": self._state_store_encryption_health(),
             "sensors": sensors,
             "last_alert_timestamps": {
@@ -1787,6 +1789,43 @@ class OriRuntime:
                 ),
                 "senders": remote_command_lockout_senders,
             },
+        }
+
+    def _gateway_broker_posture_health(self) -> dict[str, Any]:
+        if self._config is None:
+            return {
+                "available": False,
+                "gateway_enabled": False,
+                "deployment_check": "unknown",
+                "anonymous_access": "unknown",
+                "acl_policy": "unknown",
+                "require_credentials": False,
+                "credentials_configured": False,
+                "requires_acl_hardening": True,
+            }
+        broker_posture = self._config.gateway.broker_posture
+        broker_url = str(self._config.gateway.broker_url or "").strip()
+        parsed = urlparse(broker_url if "://" in broker_url else f"mqtt://{broker_url}")
+        credentials_configured = bool(parsed.username and parsed.password)
+        hardened = (
+            broker_posture.get("deployment_check") == "required"
+            and broker_posture.get("anonymous_access") == "disabled"
+            and broker_posture.get("acl_policy") == "per_device_required"
+            and is_truthy(broker_posture.get("require_credentials", False))
+            and credentials_configured
+        )
+        return {
+            "available": True,
+            "gateway_enabled": bool(self._config.gateway.enabled),
+            "deployment_check": str(broker_posture.get("deployment_check", "warning")),
+            "anonymous_access": str(broker_posture.get("anonymous_access", "unknown")),
+            "acl_policy": str(broker_posture.get("acl_policy", "unknown")),
+            "require_credentials": is_truthy(
+                broker_posture.get("require_credentials", False)
+            ),
+            "credentials_configured": credentials_configured,
+            "requires_acl_hardening": bool(self._config.gateway.enabled)
+            and not hardened,
         }
 
     def _state_store_encryption_health(self) -> dict[str, Any]:

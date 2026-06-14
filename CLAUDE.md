@@ -611,6 +611,11 @@ reasoning:
 gateway:
   enabled: false
   broker_url: mqtt://192.168.1.10:1883
+  broker_posture:
+    deployment_check: warning
+    anonymous_access: unknown
+    require_credentials: false
+    acl_policy: unknown
   tls:
     enabled: false
     ca_certfile: ""

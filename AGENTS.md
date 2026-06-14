@@ -596,10 +596,11 @@ Violating them creates vulnerabilities that affect physical hardware.
    `security.enforce_production_posture: true`. Staging and production profiles
    cannot opt out. In production posture the runtime must fail config load for
    unsafe network/security settings:
-   non-loopback gateway brokers require TLS, gateway HMAC auth, and encrypted
-   sensitive exports; public SMS webhook ingress must use HMAC mode plus
-   source IP/CIDR allowlisting, not token-only mode; remote commands must not
-   allow unlisted senders; local/non-core skills must require Ed25519
+   non-loopback gateway brokers require TLS, MQTT credentials, declared
+   anonymous-client disablement, per-device ACL posture, gateway HMAC auth, and
+   encrypted sensitive exports; public SMS webhook ingress must use HMAC mode
+   plus source IP/CIDR allowlisting, not token-only mode; remote commands must
+   not allow unlisted senders; local/non-core skills must require Ed25519
    signatures; and SQLite state must live under an operator-declared encrypted
    filesystem posture (`state.encryption.mode: filesystem_required`).
 
