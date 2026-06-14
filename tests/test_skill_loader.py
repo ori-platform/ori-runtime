@@ -557,6 +557,28 @@ class TestLoadOne:
             skill = loader.load_one(skill_dir)
         assert skill.name == "bundled-unsigned"
 
+    def test_require_signed_allows_core_bundled_sentinel(self, tmp_path):
+        skill_dir = tmp_path / "core-bundled"
+        _write_skill_yaml(skill_dir, _minimal_yaml(name="core-bundled"))
+        loader = SkillLoader(require_signed=True)
+        with (
+            patch.object(loader, "_is_bundled_skill", return_value=True),
+            patch.object(loader, "_is_core_bundled_skill", return_value=True),
+        ):
+            skill = loader.load_one(skill_dir)
+        assert skill.name == "core-bundled"
+
+    def test_require_signed_rejects_non_core_bundled_sentinel(self, tmp_path):
+        skill_dir = tmp_path / "local-unsigned"
+        _write_skill_yaml(skill_dir, _minimal_yaml(name="local-unsigned"))
+        loader = SkillLoader(require_signed=True)
+        with (
+            patch.object(loader, "_is_bundled_skill", return_value=True),
+            patch.object(loader, "_is_core_bundled_skill", return_value=False),
+            pytest.raises(SkillSecurityError, match="security.skills.require_signed"),
+        ):
+            loader.load_one(skill_dir)
+
     def test_bundled_skill_rejects_unknown_signature_sentinel(self, tmp_path):
         skill_dir = tmp_path / "bundled-bad-signature"
         raw = _minimal_yaml(name="bundled-bad-signature").replace(

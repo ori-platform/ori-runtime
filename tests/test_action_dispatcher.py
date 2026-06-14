@@ -116,6 +116,31 @@ class TestParseApprovalResponse:
     def test_yes_returns_true(self):
         assert _classify_approval_response("YES") == "approve"
 
+    def test_bare_yes_invalid_when_scoped_required(self):
+        assert (
+            _classify_approval_response(
+                "YES", proposal_id="AB12CD34", require_scoped=True
+            )
+            == "invalid"
+        )
+
+    async def test_string_false_scoped_reply_config_allows_legacy_bare_yes(self):
+        d = ActionDispatcher(config={"approval_require_scoped_replies": "false"})
+        exec_mock = AsyncMock()
+        d.register_executor("open_safety_circuit", exec_mock)
+
+        with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="YES")):
+            result = await d.dispatch(
+                "open_safety_circuit",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(action_tier="C"),
+                approval_timeout_seconds=10,
+            )
+
+        assert result.approved is True
+        exec_mock.assert_awaited_once()
+
     def test_scoped_yes_matching_proposal_returns_true(self):
         assert (
             _classify_approval_response("YES-AB12CD34", proposal_id="AB12CD34")
@@ -473,7 +498,17 @@ class TestTierC:
         d._config = {"operator_contact": "+234800000000"}
         ctx = _context()
 
-        with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="YES")):
+        with (
+            patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                return_value="AB12CD34",
+            ),
+            patch.object(
+                d,
+                "_listen_for_response",
+                new=AsyncMock(return_value="YES-AB12CD34"),
+            ),
+        ):
             result = await d.dispatch(
                 "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
@@ -590,7 +625,17 @@ class TestTierC:
         d = ActionDispatcher()
         ctx = _context()
 
-        with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="yes")):
+        with (
+            patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                return_value="AB12CD34",
+            ),
+            patch.object(
+                d,
+                "_listen_for_response",
+                new=AsyncMock(return_value="YES-AB12CD34"),
+            ),
+        ):
             result = await d.dispatch(
                 "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
@@ -605,7 +650,17 @@ class TestTierC:
         d = ActionDispatcher()
         ctx = _context()
 
-        with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="YES")):
+        with (
+            patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                return_value="AB12CD34",
+            ),
+            patch.object(
+                d,
+                "_listen_for_response",
+                new=AsyncMock(return_value="YES-AB12CD34"),
+            ),
+        ):
             result = await d.dispatch(
                 "open_safety_circuit",
                 ActionTier.HARD_PHYSICAL,
@@ -614,7 +669,7 @@ class TestTierC:
                 approval_timeout_seconds=10,
             )
 
-        assert result.operator_response == "YES"
+        assert result.operator_response == "YES-AB12CD34"
 
     async def test_tier_c_scoped_yes_matches_proposal_id_and_is_logged(self, tmp_path):
         store = StateStore(db_path=str(tmp_path / "proposal-id.db"))
@@ -688,6 +743,37 @@ class TestTierC:
 
         assert result.approved is False
         assert result.operator_response == "YES-WRONG999"
+        assert result.action_taken == "log_to_dashboard"
+        assert result.proposal_id == "AB12CD34"
+        safe_default.assert_awaited_once()
+
+    async def test_tier_c_bare_remote_yes_does_not_approve_by_default(self):
+        d = ActionDispatcher()
+        safe_default = AsyncMock()
+        d.register_executor("log_to_dashboard", safe_default)
+
+        with (
+            patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                return_value="AB12CD34",
+            ),
+            patch.object(
+                d,
+                "_listen_for_response",
+                new=AsyncMock(return_value="YES"),
+            ),
+        ):
+            result = await d.dispatch(
+                "open_safety_circuit",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(action_tier="C"),
+                safe_default_action="log_to_dashboard",
+                approval_timeout_seconds=10,
+            )
+
+        assert result.approved is False
+        assert result.operator_response == "YES"
         assert result.action_taken == "log_to_dashboard"
         assert result.proposal_id == "AB12CD34"
         safe_default.assert_awaited_once()
@@ -780,10 +866,14 @@ class TestTierC:
         ctx = _context()
 
         with (
+            patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                return_value="AB12CD34",
+            ),
             patch.object(
                 d,
                 "_listen_for_local_console_response",
-                new=AsyncMock(return_value="YES"),
+                new=AsyncMock(return_value="YES-AB12CD34"),
             ) as local_listener,
             patch.object(
                 d,
@@ -802,7 +892,7 @@ class TestTierC:
         local_listener.assert_awaited_once()
         remote_listener.assert_not_awaited()
         assert result.approved is True
-        assert result.operator_response == "LOCAL:YES"
+        assert result.operator_response == "LOCAL:YES-AB12CD34"
         assert result.action_taken == "open_safety_circuit"
 
     async def test_tier_c_local_console_no_response_runs_safe_default(self):
@@ -963,10 +1053,14 @@ class TestTierC:
         )
         ctx = _context()
         with (
+            patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                return_value="AB12CD34",
+            ),
             patch.object(
                 d,
                 "_listen_for_response",
-                new=AsyncMock(return_value="YES"),
+                new=AsyncMock(return_value="YES-AB12CD34"),
             ) as remote_listener,
             patch.object(
                 d,

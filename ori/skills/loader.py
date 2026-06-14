@@ -205,6 +205,7 @@ class SkillLoader:
         dispatcher: Any = None,
         os_sandbox_config: dict[str, Any] | None = None,
         community_trust_anchor_public_key_b64: str | None = None,
+        require_signed: bool = False,
     ) -> None:
         self._elevator = elevator
         self._state_store = state_store
@@ -217,6 +218,7 @@ class SkillLoader:
             if isinstance(community_trust_anchor_public_key_b64, str)
             else None
         )
+        self._require_signed = bool(require_signed)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -342,7 +344,9 @@ class SkillLoader:
         skill_dir: Path,
     ) -> None:
         """Verify signatures for community-installed skills only."""
-        if self._is_bundled_skill(skill_dir):
+        if self._is_core_bundled_skill(skill_dir):
+            return
+        if self._is_bundled_skill(skill_dir) and not self._require_signed:
             return
 
         signature = str(raw.get("signature") or "").strip()
@@ -401,6 +405,19 @@ class SkillLoader:
 
         if self._is_bundled_skill(skill_dir):
             signature = str(raw.get("signature") or "").strip()
+            if self._require_signed:
+                if (
+                    signature == _BUNDLED_SIGNATURE_SENTINEL
+                    and self._is_core_bundled_skill(skill_dir)
+                ):
+                    return
+                if not signature.startswith("ed25519:"):
+                    raise SkillSecurityError(
+                        f"Skill {name!r}: security.skills.require_signed is enabled — "
+                        f"non-bundled skills must carry an 'ed25519:' signature. "
+                        f"Got {signature!r}. Sign the skill before loading."
+                    )
+                return
             if not signature:
                 return
             if signature == _BUNDLED_SIGNATURE_SENTINEL:
@@ -744,6 +761,15 @@ class SkillLoader:
             return False  # Under ~/.ori/skills/ — community skill
         except ValueError:
             return True  # Not under user home — bundled skill
+
+    def _is_core_bundled_skill(self, skill_dir: Path) -> bool:
+        """Return True for first-party skills shipped in this repository."""
+        repo_skills_dir = Path(__file__).resolve().parents[2] / "skills"
+        try:
+            skill_dir.resolve().relative_to(repo_skills_dir.resolve())
+            return True
+        except ValueError:
+            return False
 
     def _load_hooks_direct(self, hooks_path: Path) -> Any:
         # Used for core team reviewed bundled skills only.

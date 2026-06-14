@@ -437,6 +437,48 @@ async def test_sms_handler_accepts_signed_command_without_storing_approval(
     assert await store.consume_incoming_message("sms", "+2348012345678", 0) is None
 
 
+async def test_sms_approval_allowlist_does_not_bypass_remote_command_audit(
+    store, fixed_now
+):
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(allowed_senders={"sms": ["+2348012345678"]}),
+        allowed_senders={"+2349999999999"},
+    )
+    command = _signed(_payload(now=fixed_now))
+    payload = {"from": "+2348012345678", "text": json.dumps(command)}
+
+    ok = await action.ingest_incoming_webhook(payload)
+
+    assert ok is True
+    rows = await store.get_remote_command_log()
+    assert rows[0]["accepted"] is True
+    assert rows[0]["reason"] == "accepted"
+    assert await store.consume_incoming_message("sms", "+2348012345678", 0) is None
+
+
+async def test_sms_approval_allowlist_preserves_remote_command_sender_audit(
+    store, fixed_now
+):
+    action = SMSAction(
+        state_store=store,
+        config={},
+        remote_command_verifier=_verifier(allowed_senders={"sms": ["+234000"]}),
+        allowed_senders={"+2349999999999"},
+    )
+    command = _signed(_payload(now=fixed_now))
+    payload = {"from": "+2348012345678", "text": json.dumps(command)}
+
+    ok = await action.ingest_incoming_webhook(payload)
+
+    assert ok is False
+    rows = await store.get_remote_command_log()
+    assert rows[0]["accepted"] is False
+    assert rows[0]["reason"] == "sender_not_allowed"
+    assert await store.consume_incoming_message("sms", "+2348012345678", 0) is None
+
+
 async def test_sms_handler_invokes_runtime_command_handler(store, fixed_now):
     handler = AsyncMock()
     action = SMSAction(

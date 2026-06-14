@@ -200,12 +200,19 @@ actions:
 **Rules:**
 
 - `action_tier` is REQUIRED on every trigger. Missing tier = validation error.
+- Production deployments can set `security.skills.require_signed: true`.
+  In that mode, only first-party skills shipped in the repository may use
+  `signature: bundled`; local/non-core skills must carry an `ed25519:`
+  signature that verifies against the configured Hub trust anchor.
 - `bypass_llm: true` MUST be paired with `action_tier: D`. Never one without
   the other.
 - Physical Tier B triggers MUST declare either `requires_approval: true` or
   `reasoning_policy: post_action`. Tier B immediate execution never uses
   `bypass_llm: true`.
 - Tier C triggers MUST declare `safe_default_action`.
+- Tier C approval replies are scoped by default. Operators reply
+  `YES-<proposal_id>` or `NO-<proposal_id>`; bare remote `YES`/`NO` is legacy
+  compatibility only and must not be used in new flows.
 - Prompts must be in plain language — no technical jargon in the output.
   The end user is a Lagos SME owner, not a systems engineer.
 - `hooks.py` is optional. Only add it for calculations that cannot be
@@ -436,6 +443,9 @@ that are hard to debug.
 3. Tier C actions ALWAYS run the approval workflow.
    There is no config flag to skip it. If you find yourself writing code
    to bypass Tier C approval, you are implementing this wrong.
+   Remote replies must be scoped to the active proposal ID by default
+   (`YES-<proposal_id>` or `NO-<proposal_id>`). Bare `YES`/`NO` is not an
+   approval under the hardened default.
 
 4. Tier D actions NEVER invoke an LLM.
    bypass_llm: true is set automatically. Do not add LLM calls to Tier D paths.
@@ -653,13 +663,20 @@ Violating them creates vulnerabilities that affect physical hardware.
     Tier C approval replies and remote commands are separate input classes.
     Approval messages must carry a short `proposal_id`; scoped replies such as
     `YES-<proposal_id>` and `NO-<proposal_id>` must match the active proposal
-    before approving or rejecting it. Structured remote command payloads
+    before approving or rejecting it. Bare remote `YES`/`NO` replies must not
+    approve Tier C unless a deployment explicitly opts into legacy
+    `actions.approval_require_scoped_replies: false`. Structured remote command payloads
     (`ORI_COMMAND {json}` or raw JSON with the remote-command field set) must
     never be treated as approval replies. The local-console approval channel is
     not a remote command ingress; structured commands there must be consumed,
     durably audited, and ignored for approval purposes. Unrecognised
     local-console approval input must be logged and ignored until timeout, not
     silently converted to NO.
+    Public SMS webhook ingress must use token-only mode only for loopback or
+    trusted provider paths. Internet-exposed deployments must configure
+    `actions.sms.incoming_webhook.signature.mode: token_and_hmac` or
+    `hmac_required`, with HMAC verified over the raw HTTP body before payload
+    parsing and nonce replay recorded in `StateStore`.
 
 14. Runtime-gateway MQTT encryption protects sensitive export payloads only
     when authenticated gateway envelopes are enabled. Do not enable

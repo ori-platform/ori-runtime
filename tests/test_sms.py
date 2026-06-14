@@ -258,6 +258,20 @@ async def test_ingest_incoming_webhook_persists_message(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ingest_incoming_webhook_rejects_unlisted_approval_sender(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
+    action = SMSAction(state_store=store, allowed_senders={"+2348000000000"})
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": "+234 811 111 1111", "text": "YES-AB12CD34"}
+    )
+
+    assert ok is False
+    assert not store.store_incoming_message.called
+
+
+@pytest.mark.asyncio
 async def test_ingest_incoming_webhook_rejects_invalid_payload(monkeypatch):
     monkeypatch.delenv("AT_API_KEY", raising=False)
     store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))

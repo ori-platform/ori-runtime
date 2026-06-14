@@ -6,15 +6,20 @@
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+
+from ori.security.webhook_signatures import WebhookSignatureVerifier
 
 logger = logging.getLogger(__name__)
 
 _MAX_HEADER_BYTES = 64 * 1024
 _MAX_BODY_BYTES = 64 * 1024
 _CHUNK_BYTES = 4096
+_RATE_WINDOW_SECONDS: float = 60.0
+_RATE_MAX_REQUESTS: int = 20
 
 
 @dataclass
@@ -35,18 +40,25 @@ class SMSWebhookServer:
         port: int = 8080,
         path: str = "/webhooks/sms/africastalking",
         token: str = "",
+        signature_verifier: WebhookSignatureVerifier | None = None,
+        state_store: Any = None,
     ) -> None:
         self._sms_action = sms_action
         self._host = host
         self._port = int(port)
         self._path = path
         self._token = token
+        self._signature_verifier = signature_verifier
+        self._state_store = state_store
         self._server: asyncio.AbstractServer | None = None
+        self._ip_request_log: dict[str, list[float]] = {}
 
     @property
     def port(self) -> int:
-        if self._server and self._server.sockets:
-            return int(self._server.sockets[0].getsockname()[1])
+        server = self._server
+        sockets = getattr(server, "sockets", None) if server is not None else None
+        if sockets:
+            return int(sockets[0].getsockname()[1])
         return self._port
 
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
@@ -76,10 +88,31 @@ class SMSWebhookServer:
         await self._server.wait_closed()
         self._server = None
 
+    def _rate_check(self, peer_ip: str) -> bool:
+        """Return True when the request is within rate limits, False to reject."""
+        now = time.monotonic()
+        cutoff = now - _RATE_WINDOW_SECONDS
+        history = self._ip_request_log.get(peer_ip) or []
+        history = [t for t in history if t > cutoff]
+        if len(history) >= _RATE_MAX_REQUESTS:
+            self._ip_request_log[peer_ip] = history
+            return False
+        history.append(now)
+        self._ip_request_log[peer_ip] = history
+        return True
+
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        get_extra = getattr(writer, "get_extra_info", None)
+        peer = get_extra("peername") if callable(get_extra) else None
+        peer_ip = str(peer[0]) if peer else "unknown"
         try:
+            if not self._rate_check(peer_ip):
+                logger.warning("SMSWebhookServer: rate limit exceeded for %s", peer_ip)
+                await self._respond(writer, 429, "too many requests")
+                return
+
             request = await self._read_request(reader)
             if request is None:
                 await self._respond(writer, 400, "bad request")
@@ -92,10 +125,23 @@ class SMSWebhookServer:
             if url.path != self._path:
                 await self._respond(writer, 404, "not found")
                 return
-            query = parse_qs(url.query, keep_blank_values=True)
-            if self._token and not self._authorized(request.headers, query):
+            if self._token and not self._authorized(request.headers):
                 await self._respond(writer, 401, "unauthorized")
                 return
+            if self._signature_verifier is not None:
+                verification = await self._signature_verifier.verify(
+                    headers=request.headers,
+                    body=request.body,
+                    state_store=self._state_store,
+                    source="sms_webhook",
+                )
+                if not verification.accepted:
+                    logger.warning(
+                        "SMSWebhookServer: rejected unsigned or replayed webhook reason=%s",
+                        verification.reason,
+                    )
+                    await self._respond(writer, 401, "unauthorized")
+                    return
 
             payload = self._decode_payload(request.headers, request.body)
             ok = await self._sms_action.ingest_incoming_webhook(payload)
@@ -155,22 +201,13 @@ class SMSWebhookServer:
 
         return _HttpRequest(method=method, path=path, headers=headers, body=body)
 
-    def _authorized(
-        self, headers: dict[str, str], query: dict[str, list[str]] | None = None
-    ) -> bool:
+    def _authorized(self, headers: dict[str, str]) -> bool:
         token_header = headers.get("x-ori-webhook-token", "")
         if token_header == self._token:
             return True
         auth = headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             return auth[7:].strip() == self._token
-        if query:
-            token_values = query.get("token") or []
-            if token_values and token_values[0] == self._token:
-                logger.warning(
-                    "SMSWebhookServer: authenticated inbound webhook via query token fallback"
-                )
-                return True
         return False
 
     def _decode_payload(self, headers: dict[str, str], body: bytes) -> dict[str, Any]:
@@ -193,6 +230,7 @@ class SMSWebhookServer:
             401: "Unauthorized",
             404: "Not Found",
             405: "Method Not Allowed",
+            429: "Too Many Requests",
             500: "Internal Server Error",
         }.get(status, "OK")
         body = message.encode("utf-8")

@@ -14,6 +14,7 @@ from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext, _complexity_score
 from ori.reasoning.escalation_policy import GATEWAY_ESCALATION_CONTEXT_KEY
+from ori.reasoning.rule_engine import RuleResult
 from ori.state.store import StateStore
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1057,6 +1058,50 @@ class TestReasonAndDispatch:
         call = mock_dispatcher.dispatch.call_args
         assert call[1]["approval_timeout"] == 60
 
+    async def test_unmatched_proposed_physical_action_falls_back_to_tier_a_log(self):
+        mock_dispatcher = AsyncMock()
+        skill = FakeSkill(
+            actions={
+                "available": [{"name": "open_safety_circuit", "tier": "C"}],
+                "defaults": {},
+            },
+        )
+        elevator = IntelligenceElevator()
+        unmatched = RuleResult(matched=False, action_tier="A")
+        proposed = ReasoningResult(
+            text="Gateway suggested a hard physical action.",
+            tier="gateway",
+            model="gateway",
+            tokens_used=0,
+            latency_ms=0,
+            confidence=0.0,
+            action_tier="C",
+            proposed_action="open_safety_circuit",
+        )
+
+        with (
+            patch.object(
+                elevator,
+                "_evaluate_rules_with_hooks",
+                new=AsyncMock(return_value=(unmatched, None)),
+            ),
+            patch.object(
+                elevator,
+                "_reason_with_rule_result",
+                new=AsyncMock(return_value=(proposed, unmatched)),
+            ),
+        ):
+            await elevator.reason_and_dispatch(
+                _event(value=1.0), skill, None, mock_dispatcher
+            )
+
+        mock_dispatcher.dispatch.assert_awaited_once()
+        call = mock_dispatcher.dispatch.call_args.kwargs
+        assert call["action"] == "log_to_dashboard"
+        assert call["tier"] == "A"
+        assert proposed.action_tier == "A"
+        assert proposed.proposed_action == "log_to_dashboard"
+
     async def test_reason_and_dispatch_populates_tier_c_decision_log(self, tmp_path):
         store = StateStore(db_path=str(tmp_path / "tier-c-flow.db"))
         await store.open()
@@ -1091,7 +1136,7 @@ class TestReasonAndDispatch:
             }
             alert_sender = AsyncMock()
             alert_sender.send = AsyncMock(return_value=True)
-            alert_sender.listen_for_response = AsyncMock(return_value="YES")
+            alert_sender.listen_for_response = AsyncMock(return_value="YES-AB12CD34")
             dispatcher = ActionDispatcher(
                 state_store=store,
                 alert_sender=alert_sender,
@@ -1103,7 +1148,11 @@ class TestReasonAndDispatch:
             )
             elevator = IntelligenceElevator()
 
-            await elevator.reason_and_dispatch(event, skill, store, dispatcher)
+            with patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                return_value="AB12CD34",
+            ):
+                await elevator.reason_and_dispatch(event, skill, store, dispatcher)
 
             rows = await store.get_tier_c_decision_log()
             assert len(rows) == 1
@@ -1122,7 +1171,7 @@ class TestReasonAndDispatch:
             assert row["trigger_name"] == "overcurrent_shutdown_candidate"
             assert row["proposed_action"] == "open_safety_circuit"
             assert row["operator_decision"] == "approved"
-            assert row["operator_response"] == "YES"
+            assert row["operator_response"] == "YES-AB12CD34"
             assert row["approval_timeout_seconds"] == 30
             assert row["safe_default_used"] is False
         finally:

@@ -244,6 +244,35 @@ Cloud sync contract:
 
 ---
 
+## 2026-06-13 — Public SMS Webhook Ingress Requires Signed Bridge Mode
+
+**Status:** Accepted
+
+The runtime keeps token-only SMS webhook authentication for loopback and
+existing Africa's Talking deployments, but production public ingress must use a
+signed bridge/proxy path. The bridge receives the provider callback and forwards
+the raw body to Ori with `x-ori-webhook-signature`,
+`x-ori-webhook-timestamp`, and `x-ori-webhook-nonce`.
+
+Rules:
+
+- `actions.sms.incoming_webhook.signature.mode` defaults to `token_only`.
+- Public production deployments should use `token_and_hmac` or
+  `hmac_required`; HMAC verification happens over the raw HTTP body before JSON
+  or form parsing.
+- Nonces are replay-protected through `StateStore` when available. The
+  in-memory replay cache is only a fallback for tests or ephemeral deployments.
+- Remote-command verification remains separate. Webhook HMAC authenticates the
+  HTTP envelope; `RemoteCommandVerifier` authenticates state-mutating commands
+  inside SMS/WhatsApp payloads.
+
+Rationale: Africa's Talking callbacks do not provide an end-to-end HMAC that
+Ori can verify directly. A small signed bridge gives public webhook ingress
+message authenticity and replay protection without changing the SMS provider or
+weakening offline GSM fallback paths.
+
+---
+
 ## 2026-06-01 — Approval Replies Are Not Remote Commands
 
 **Status:** Accepted
@@ -255,13 +284,12 @@ remote commands attempt to mutate runtime state.
 
 Rules:
 
-- Plain approval replies such as `YES`, `NO`, and equivalent approval tokens
-  may remain unauthenticated because they are scoped to the pending Tier C
-  proposal.
 - Tier C approval messages must include a short `proposal_id`. Scoped replies
   such as `YES-AB12CD34` and `NO-AB12CD34` are valid only when the suffix
-  matches the active proposal. Bare `YES`/`NO` remains accepted for the active
-  pending proposal for operator usability.
+  matches the active proposal.
+- Bare remote `YES`/`NO` replies do not approve Tier C by default. They may only
+  be accepted in an explicit legacy/test deployment with
+  `actions.approval_require_scoped_replies: false`.
 - Offline local-console `TOKEN:<value>` approvals remain allowed, but must pass
   the offline token verifier before approving Tier C.
 - Structured remote command payloads (`ORI_COMMAND {json}` or raw JSON objects
@@ -273,16 +301,17 @@ Rules:
 - The local-console approval channel is not a remote command ingress. Structured
   commands found there must be consumed, durably audited, and ignored for
   approval purposes.
-- Local-console approval input is strict: `YES`, `NO`, scoped `YES-<proposal_id>`,
-  scoped `NO-<proposal_id>`, and `TOKEN:<value>` are the only valid forms.
-  Unrecognised input must be logged and ignored until the proposal times out.
+- Local-console approval input is strict: scoped `YES-<proposal_id>`, scoped
+  `NO-<proposal_id>`, and `TOKEN:<value>` are the only valid forms under the
+  hardened default. Unrecognised input must be logged and ignored until the
+  proposal times out.
 
 Rationale:
 
 - A command payload must not be able to masquerade as an approval reply and
   accidentally approve a Tier C physical action.
-- Proposal IDs reduce the chance that delayed replies intended for one Tier C
-  proposal affect another proposal.
+- Proposal IDs prevent delayed replies intended for one Tier C proposal from
+  affecting another proposal.
 - Keeping local-console approval narrow preserves the offline recovery path
   without creating a second unauthenticated command channel.
 - The boundary supports Ori Energy and Ori Guard deployments where SMS,
@@ -598,7 +627,8 @@ Rules:
 - Authentication failures receive only a generic rejection response. Channel
   responses must not reveal exact verifier reasons such as `missing_signature`,
   `invalid_signature`, or `replay_detected`.
-- Plain Tier C approval replies (`YES`/`NO`) must remain unaffected.
+- Scoped Tier C approval replies (`YES-<proposal_id>`/`NO-<proposal_id>`) must
+  remain unaffected.
 - Response messages must be short enough for SMS transport and safe for
   WhatsApp reuse.
 
