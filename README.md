@@ -354,8 +354,9 @@ ORI_PRETTY_LOGS=false bash scripts/smoke-runtime-local.sh
 ORI_PRETTY_LOGS=true .venv/bin/python scripts/pc_health_report.py
 
 # Release wheel smoke test
-# Builds the wheel, installs it into a clean venv, verifies bundled skills are
-# packaged, and runs a real Tier D rule evaluation through ori.integration.
+# Builds the wheel, installs it into a clean venv, verifies PEP 561 typing,
+# bundled skill packaging, and a real Tier D rule evaluation through
+# ori.integration.
 bash scripts/smoke-release-wheel.sh
 
 # Local SLM quality smoke test (without starting full runtime)
@@ -407,8 +408,9 @@ Run `scripts/smoke-release-wheel.sh` before tagging a runtime release. It is
 deliberately stricter than an editable install: it builds the wheel, installs
 runtime dependencies from hash-locked requirements, installs the wheel with
 `--no-deps`, then verifies the public `ori.integration` rule-evaluation boundary
-can resolve bundled skill data from the installed artifact. This protects the
-`ori-energy` demo/API path from source-checkout-only packaging mistakes.
+is typed (`ori/py.typed`) and can resolve bundled skill data from the installed
+artifact. This protects the `ori-energy` demo/API path from type-checker ignores
+and source-checkout-only packaging mistakes.
 
 ## Security
 

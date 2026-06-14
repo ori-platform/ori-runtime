@@ -76,6 +76,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import ori
+
 from ori.integration import (
     RuleEvaluationRequest,
     bundled_skill_path,
@@ -84,6 +86,10 @@ from ori.integration import (
 
 
 async def main() -> None:
+    typed_marker = Path(ori.__file__).resolve().parent / "py.typed"
+    if not typed_marker.is_file():
+        raise AssertionError(f"missing packaged PEP 561 marker: {typed_marker}")
+
     skill_path = bundled_skill_path("energy-anomaly-detector")
     path_text = str(skill_path)
     if "share/ori-runtime/skills/energy-anomaly-detector" not in path_text:
@@ -116,6 +122,7 @@ async def main() -> None:
 
     print(json.dumps({
         "skill_path": path_text,
+        "typed_marker": str(typed_marker),
         "trigger": result.trigger_name,
         "tier": result.action_tier,
         "threshold": result.proof_threshold,
