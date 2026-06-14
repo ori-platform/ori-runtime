@@ -965,6 +965,7 @@ class IntelligenceElevator:
                         actions = maybe_actions
         elif result.proposed_action:
             proposed = result.proposed_action
+            action_tiers = self._action_tiers(skill)
             if hasattr(skill, "is_action_declared"):
                 if skill.is_action_declared(proposed):
                     actions = [proposed]
@@ -978,6 +979,16 @@ class IntelligenceElevator:
                     if isinstance(entry, dict) and entry.get("name") == proposed:
                         actions = [proposed]
                         break
+            if actions and action_tiers.get(proposed, "A") != "A":
+                logger.warning(
+                    "IntelligenceElevator: dropping unmatched proposed physical "
+                    "action=%r tier=%s; physical authority requires a matched trigger",
+                    proposed,
+                    action_tiers.get(proposed, "unknown"),
+                )
+                result.action_tier = "A"
+                result.proposed_action = "log_to_dashboard"
+                actions = ["log_to_dashboard"]
         return [action for action in actions if isinstance(action, str) and action]
 
     @staticmethod
@@ -1396,31 +1407,9 @@ class IntelligenceElevator:
                     getattr(result, "text", "") or ""
                 )
 
-            actions: list[str] = []
-            if rule_res.matched and rule_res.rule_name:
-                if hasattr(skill, "get_default_actions_for_trigger"):
-                    actions = skill.get_default_actions_for_trigger(rule_res.rule_name)
-                elif hasattr(skill, "actions") and isinstance(skill.actions, dict):
-                    defaults = skill.actions.get("defaults") or {}
-                    if isinstance(defaults, dict):
-                        maybe_actions = defaults.get(rule_res.rule_name, [])
-                        if isinstance(maybe_actions, list):
-                            actions = maybe_actions
-            elif result.proposed_action:
-                proposed = result.proposed_action
-                if hasattr(skill, "is_action_declared"):
-                    if skill.is_action_declared(proposed):
-                        actions = [proposed]
-                elif (
-                    hasattr(skill, "actions")
-                    and isinstance(skill.actions, dict)
-                    and isinstance(skill.actions.get("available"), list)
-                ):
-                    available = skill.actions.get("available") or []
-                    for entry in available:
-                        if isinstance(entry, dict) and entry.get("name") == proposed:
-                            actions = [proposed]
-                            break
+            actions = self._actions_for_rule_result(
+                skill=skill, result=result, rule_result=rule_res
+            )
 
             if rejection_capped and actions:
                 actions = self._filter_actions_by_max_tier(skill, actions, max_tier="A")
@@ -1462,9 +1451,12 @@ class IntelligenceElevator:
                     except (TypeError, ValueError):
                         approval_timeout_seconds = 300
             for action in actions:
+                dispatch_tier = result.action_tier
+                if not rule_res.matched:
+                    dispatch_tier = self._action_tiers(skill).get(action, "A")
                 await dispatcher.dispatch(
                     action=action,
-                    tier=result.action_tier,
+                    tier=dispatch_tier,
                     context=context,
                     result=result,
                     approval_timeout=approval_timeout_seconds,

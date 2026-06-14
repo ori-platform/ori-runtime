@@ -166,6 +166,18 @@ CREATE TABLE IF NOT EXISTS inbound_messages (
 CREATE INDEX IF NOT EXISTS idx_inbound_lookup
     ON inbound_messages (channel, from_number, received_at, consumed_at);
 
+CREATE TABLE IF NOT EXISTS webhook_replay_log (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    source         TEXT    NOT NULL DEFAULT '',
+    nonce          TEXT    NOT NULL,
+    received_at_ms INTEGER NOT NULL,
+    expires_at_ms  INTEGER NOT NULL,
+    UNIQUE(source, nonce)
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_replay_log_expiry
+    ON webhook_replay_log (expires_at_ms);
+
 CREATE TABLE IF NOT EXISTS remote_command_log (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     command_id     TEXT    NOT NULL DEFAULT '',
@@ -1434,6 +1446,53 @@ class StateStore:
         )
         self._conn.commit()
         return str(row["message"])
+
+    # ─── webhook_replay_log ───────────────────────────────────────────────────
+
+    async def record_webhook_nonce(
+        self,
+        *,
+        source: str,
+        nonce: str,
+        received_at_ms: int,
+        expires_at_ms: int,
+    ) -> bool:
+        """Record a webhook nonce and return False when it is a replay."""
+        return await self._run_write(
+            self._record_webhook_nonce_sync,
+            source,
+            nonce,
+            received_at_ms,
+            expires_at_ms,
+        )
+
+    def _record_webhook_nonce_sync(
+        self,
+        source: str,
+        nonce: str,
+        received_at_ms: int,
+        expires_at_ms: int,
+    ) -> bool:
+        assert self._conn is not None
+        self._conn.execute(
+            "DELETE FROM webhook_replay_log WHERE expires_at_ms <= ?",
+            (int(received_at_ms),),
+        )
+        cursor = self._conn.execute(
+            """
+            INSERT OR IGNORE INTO webhook_replay_log
+                (source, nonce, received_at_ms, expires_at_ms)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                str(source or ""),
+                str(nonce or ""),
+                int(received_at_ms),
+                int(expires_at_ms),
+            ),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     # ─── remote_command_log ───────────────────────────────────────────────────
 

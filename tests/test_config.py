@@ -548,6 +548,7 @@ class TestLoadExample:
     def test_security_remote_commands_defaults(self):
         cfg = Config.load(EXAMPLE_YAML)
         remote = cfg.security["remote_commands"]
+        skills = cfg.security["skills"]
         assert remote["enabled"] is False
         assert remote["hmac_secret_env"] == "ORI_REMOTE_COMMAND_HMAC_SECRET"
         assert remote["max_skew_seconds"] == 300
@@ -565,6 +566,57 @@ class TestLoadExample:
         assert lockout["elevated_rejection_threshold"] == 5
         assert lockout["critical_rejection_threshold"] == 15
         assert lockout["enforcement_enabled"] is False
+        assert skills["require_signed"] is False
+
+    def test_security_skills_require_signed_parses_truthy(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              skills:
+                require_signed: "yes"
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.security["skills"]["require_signed"] is True
+
+    def test_security_skills_rejects_non_mapping(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              skills: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="security.skills"):
+            Config.load(yaml_path)
 
     def test_gateway_message_secret_separate_from_remote_command_secret(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -2266,6 +2318,98 @@ actions:
         )
         cfg = Config.load(yaml_path)
         assert cfg.actions.sms["incoming_webhook"]["token"] == "super-secret-token"
+
+    def test_sms_incoming_webhook_hmac_missing_secret_raises(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      signature:\n"
+                "        mode: token_and_hmac\n"
+                "        shared_secret: '${ORI_SMS_WEBHOOK_HMAC_SECRET}'\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="ORI_SMS_WEBHOOK_HMAC_SECRET"):
+            Config.load(yaml_path)
+
+    def test_sms_incoming_webhook_hmac_secret_set_is_valid(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      signature:\n"
+                "        mode: token_and_hmac\n"
+                "        shared_secret: 'hmac-secret'\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert (
+            cfg.actions.sms["incoming_webhook"]["signature"]["shared_secret"]
+            == "hmac-secret"
+        )
+
+    def test_sms_incoming_webhook_hmac_required_without_token_is_valid(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: ''\n"
+                "      signature:\n"
+                "        mode: hmac_required\n"
+                "        shared_secret: 'hmac-secret'\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.sms["incoming_webhook"]["token"] == ""
+        assert cfg.actions.sms["incoming_webhook"]["signature"]["mode"] == (
+            "hmac_required"
+        )
+
+    def test_approval_require_scoped_replies_parses_truthy_strings(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  approval_require_scoped_replies: 'yes'\n"
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: false\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.approval_require_scoped_replies is True
+
+    def test_approval_require_scoped_replies_parses_integer_one(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  approval_require_scoped_replies: 1\n"
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: false\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.approval_require_scoped_replies is True
 
     def test_local_console_defaults(self, tmp_path):
         yaml_path = _write_yaml(

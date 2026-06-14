@@ -15,6 +15,7 @@ import yaml
 from ori.hal.protocol_registry import SUPPORTED_SENSOR_PROTOCOLS
 from ori.security.remote_command_lockout import normalize_remote_command_lockout_config
 from ori.security.remote_commands import normalize_remote_command_sender
+from ori.utils.bool_utils import is_truthy
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,7 @@ class ActionChannelConfig:
     primary_alert_channel: str  # 'sms' | 'whatsapp'
     operator_contact: str = ""  # phone number for Tier C approvals and emergency SMS
     secondary_contact: str = ""  # escalation contact if operator doesn't respond
+    approval_require_scoped_replies: bool = True
     whatsapp: dict = field(default_factory=dict)
     sms: dict = field(default_factory=dict)
     relay: dict = field(default_factory=dict)
@@ -346,13 +348,53 @@ class Config:
                     or incoming.get("enabled") is True
                 )
                 if webhook_enabled:
+                    signature_cfg = incoming.get("signature") or {}
+                    if signature_cfg and not isinstance(signature_cfg, dict):
+                        raise ConfigValidationError(
+                            "actions.sms.incoming_webhook.signature must be a mapping."
+                        )
+                    mode = "token_only"
+                    if isinstance(signature_cfg, dict):
+                        mode = (
+                            str(signature_cfg.get("mode", "token_only")).strip().lower()
+                        )
+                        if mode not in {
+                            "token_only",
+                            "hmac_required",
+                            "token_and_hmac",
+                        }:
+                            raise ConfigValidationError(
+                                "actions.sms.incoming_webhook.signature.mode must be one of: "
+                                "token_only, hmac_required, token_and_hmac."
+                            )
                     token = str(incoming.get("token", ""))
-                    if not token or "${" in token:
+                    if mode != "hmac_required" and (not token or "${" in token):
                         resolved_value = incoming.get("token", "")
                         raise ConfigValidationError(
                             f"Environment variable not set: {resolved_value}. "
                             f"Set it in your .env file before starting Ori."
                         )
+                    if isinstance(signature_cfg, dict):
+                        if mode != "token_only":
+                            secret = str(signature_cfg.get("shared_secret", ""))
+                            if not secret or "${" in secret:
+                                resolved_value = signature_cfg.get("shared_secret", "")
+                                raise ConfigValidationError(
+                                    f"Environment variable not set: {resolved_value}. "
+                                    f"Set it in your .env file before starting Ori."
+                                )
+                        for key in ("max_skew_seconds", "replay_ttl_seconds"):
+                            if key in signature_cfg:
+                                try:
+                                    value = int(signature_cfg.get(key))
+                                except (TypeError, ValueError) as exc:
+                                    raise ConfigValidationError(
+                                        f"actions.sms.incoming_webhook.signature.{key} must be an integer."
+                                    ) from exc
+                                if value < 0:
+                                    raise ConfigValidationError(
+                                        f"actions.sms.incoming_webhook.signature.{key} must be >= 0."
+                                    )
 
         if device.deployment_type == "phone":
             logger.info(
@@ -1024,10 +1066,15 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
             "actions.alert_outbox.batch_size must be between 1 and 1000."
         )
 
+    approval_require_scoped_replies = is_truthy(
+        data.get("approval_require_scoped_replies", True)
+    )
+
     return ActionChannelConfig(
         primary_alert_channel=primary,
         operator_contact=str(data.get("operator_contact") or ""),
         secondary_contact=str(data.get("secondary_contact") or ""),
+        approval_require_scoped_replies=approval_require_scoped_replies,
         whatsapp=data.get("whatsapp") or {},
         sms=data.get("sms") or {},
         relay=relay,
@@ -1345,6 +1392,14 @@ def _parse_security(data: Any) -> dict:
         "allowed_senders": allowed_senders,
         "allow_unlisted_senders": allow_unlisted_senders,
         "lockout": lockout,
+    }
+
+    skills_security = out.get("skills") or {}
+    if not isinstance(skills_security, dict):
+        raise ConfigValidationError("security.skills must be a mapping.")
+    out["skills"] = {
+        **skills_security,
+        "require_signed": is_truthy(skills_security.get("require_signed", False)),
     }
     return out
 

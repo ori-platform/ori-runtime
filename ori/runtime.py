@@ -94,6 +94,10 @@ from ori.security.threshold_guard import (
     check_tier_d_startup_sensitivity,
     tier_d_config_keys,
 )
+from ori.security.webhook_signatures import (
+    WebhookSignatureConfig,
+    WebhookSignatureVerifier,
+)
 from ori.skills.loader import SkillLoader
 from ori.skills.signing import verify_signed_payload
 from ori.state.store import StateStore
@@ -358,6 +362,7 @@ class OriRuntime:
             remote_command_verifier=remote_command_verifier,
             remote_command_handler=self._handle_remote_command,
             remote_command_incident_handler=self._handle_remote_command_incident,
+            allowed_senders=_build_sms_allowed_senders(config),
         )
         coap_action = CoAPAction(config=config.actions.coap)
         self._sms_action = sms_action
@@ -439,6 +444,9 @@ class OriRuntime:
                 "log_approval_workflow": config.logging.log_approval_workflow,
                 "relay_enabled": relay_enabled,
                 "rejection_expiry_days": rejection_expiry_days,
+                "approval_require_scoped_replies": (
+                    config.actions.approval_require_scoped_replies
+                ),
                 "local_console_enabled": bool(
                     config.actions.local_console.get("enabled", False)
                 ),
@@ -641,11 +649,18 @@ class OriRuntime:
             str(Path(self._config_path).parent / "skills"),
         )
         self._skills_dir = skills_dir
+        skills_security = config.security.get("skills")
+        skills_require_signed = is_truthy(
+            skills_security.get("require_signed", False)
+            if isinstance(skills_security, dict)
+            else False
+        )
         loader = SkillLoader(
             elevator=elevator,
             state_store=self._state_store,
             dispatcher=dispatcher,
             os_sandbox_config=config.os_sandbox,
+            require_signed=skills_require_signed,
         )
         self._skill_loader = loader
         await self.reload_skills()
@@ -864,6 +879,8 @@ class OriRuntime:
         webhook_task = await self._start_sms_webhook_if_enabled(config)
         if webhook_task is not None:
             self._background_tasks.append(webhook_task)
+
+        _warn_gateway_security_posture(config)
 
         gateway_export_task = self._start_gateway_export_responder_if_enabled(config)
         if gateway_export_task is not None:
@@ -1501,17 +1518,31 @@ class OriRuntime:
             logger.warning("[runtime] SMS webhook enabled but SMSAction is unavailable")
             return None
 
+        host = str(webhook_cfg.get("host", "127.0.0.1"))
+        port = int(webhook_cfg.get("port", 8080))
+        path = str(webhook_cfg.get("path", "/webhooks/sms/africastalking"))
+        signature_cfg = webhook_cfg.get("signature") or {}
+        signature_mode = (
+            str(signature_cfg.get("mode", "token_only") or "token_only").lower()
+            if isinstance(signature_cfg, dict)
+            else "token_only"
+        )
         token = str(webhook_cfg.get("token", "") or "").strip()
-        if not token:
+        if signature_mode != "hmac_required" and not token:
             logger.warning(
                 "[runtime] SMS webhook enabled but incoming_webhook.token is empty; "
                 "refusing to start unauthenticated public ingress"
             )
             return None
 
-        host = str(webhook_cfg.get("host", "127.0.0.1"))
-        port = int(webhook_cfg.get("port", 8080))
-        path = str(webhook_cfg.get("path", "/webhooks/sms/africastalking"))
+        signature_verifier = self._build_sms_webhook_signature_verifier(webhook_cfg)
+        if signature_mode != "token_only" and signature_verifier is None:
+            logger.warning(
+                "[runtime] SMS webhook signature mode=%s is configured but verifier "
+                "could not be built; refusing to start public ingress",
+                signature_mode,
+            )
+            return None
 
         self._sms_webhook_server = SMSWebhookServer(
             sms_action=self._sms_action,
@@ -1519,11 +1550,50 @@ class OriRuntime:
             port=port,
             path=path,
             token=token,
+            signature_verifier=signature_verifier,
+            state_store=self._state_store,
         )
         return asyncio.create_task(
             self._sms_webhook_server.serve_until(self._shutdown_event),
             name="sms-webhook",
         )
+
+    def _build_sms_webhook_signature_verifier(
+        self, webhook_cfg: dict[str, Any]
+    ) -> WebhookSignatureVerifier | None:
+        signature_cfg = webhook_cfg.get("signature") or {}
+        if not isinstance(signature_cfg, dict):
+            return None
+        mode = str(signature_cfg.get("mode", "token_only") or "token_only").lower()
+        if mode == "token_only":
+            return None
+        try:
+            config = WebhookSignatureConfig(
+                mode=mode,
+                shared_secret=str(signature_cfg.get("shared_secret", "") or ""),
+                signature_header=str(
+                    signature_cfg.get("signature_header", "x-ori-webhook-signature")
+                    or "x-ori-webhook-signature"
+                ),
+                timestamp_header=str(
+                    signature_cfg.get("timestamp_header", "x-ori-webhook-timestamp")
+                    or "x-ori-webhook-timestamp"
+                ),
+                nonce_header=str(
+                    signature_cfg.get("nonce_header", "x-ori-webhook-nonce")
+                    or "x-ori-webhook-nonce"
+                ),
+                max_skew_ms=int(signature_cfg.get("max_skew_seconds", 300)) * 1000,
+                replay_ttl_ms=int(signature_cfg.get("replay_ttl_seconds", 300)) * 1000,
+                require_nonce=is_truthy(signature_cfg.get("require_nonce", True)),
+            )
+            return WebhookSignatureVerifier(config)
+        except Exception:
+            logger.exception(
+                "[runtime] invalid SMS webhook signature configuration; refusing to "
+                "start signed webhook ingress"
+            )
+            return None
 
     def _start_gateway_export_responder_if_enabled(
         self, config: Config
@@ -3217,6 +3287,74 @@ def _coap_command_from_context(ctx: SkillContext) -> tuple[str, str | None]:
                     command_name = default_command.strip()
 
     return command_name, payload_override
+
+
+def _build_sms_allowed_senders(config: Config) -> set[str]:
+    """Return the normalized set of phone numbers permitted to send inbound SMS.
+
+    Built from ``actions.operator_contact`` and ``actions.secondary_contact``.
+    An empty set means no allowlist is enforced (open to any sender).
+    """
+    senders: set[str] = set()
+    for raw in (config.actions.operator_contact, config.actions.secondary_contact):
+        normalized = "".join(ch for ch in str(raw or "") if ch.isdigit() or ch == "+")
+        if normalized:
+            senders.add(normalized)
+    return senders
+
+
+def _warn_gateway_security_posture(config: Config) -> None:
+    """Emit startup warnings for gateway security posture gaps.
+
+    Called once during runtime startup after all gateway components are built.
+    Does not raise — posture issues are warnings, not startup failures, because
+    loopback-only sites are intentionally configured without TLS or auth.
+    """
+    if not bool(config.gateway.enabled):
+        return
+
+    auth_cfg = getattr(config.gateway, "auth", {}) or {}
+    tls_cfg = getattr(config.gateway, "tls", {}) or {}
+    broker_url = str(getattr(config.gateway, "broker_url", "") or "")
+
+    auth_enabled = bool(auth_cfg.get("enabled", False))
+    tls_enabled = bool(tls_cfg.get("enabled", False))
+    is_loopback = any(
+        broker_url.startswith(p)
+        for p in (
+            "mqtt://127.",
+            "mqtt://localhost",
+            "mqtts://127.",
+            "mqtts://localhost",
+        )
+    )
+
+    if not auth_enabled:
+        if not is_loopback:
+            logger.error(
+                "[runtime-security] GATEWAY: gateway.auth.enabled is false and broker "
+                "is not loopback — MQTT traffic is unauthenticated. "
+                "Set gateway.auth.enabled: true and provide GATEWAY_SHARED_SECRET."
+            )
+        else:
+            logger.warning(
+                "[runtime-security] gateway.auth.enabled is false — HMAC envelope "
+                "authentication disabled. Acceptable for loopback-only deployments only."
+            )
+
+    if not tls_enabled and not is_loopback:
+        logger.warning(
+            "[runtime-security] GATEWAY: gateway.tls.enabled is false and broker is "
+            "not loopback — MQTT payloads are unencrypted on the network. "
+            "Enable TLS for any non-loopback gateway deployment."
+        )
+
+    if auth_enabled and not tls_enabled and not is_loopback:
+        logger.warning(
+            "[runtime-security] GATEWAY: HMAC auth is enabled but TLS is not. "
+            "Payloads are authenticated but visible in transit on the LAN. "
+            "Enable gateway.tls for defense-in-depth."
+        )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

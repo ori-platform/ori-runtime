@@ -63,8 +63,8 @@ Every existing IoT platform does the same thing: collect data, apply a threshold
 inverter power automatically." ← Acted. Then told you.
 
 ✅ Ori (Tier C): "Critical fault detected on main circuit. I am
-proposing to open the protected-load safety circuit. Reply YES to approve
-or NO to cancel. Auto-cancel in 5 minutes."
+proposing to open the protected-load safety circuit. Reply YES-AB12CD34
+to approve or NO-AB12CD34 to cancel. Auto-cancel in 5 minutes."
 ← Reasoned. Proposed. Awaiting you.
 
 ✅ Ori (Tier D): [Installer-wired relay/contactor opens immediately]
@@ -223,7 +223,7 @@ triggers:
 
   - name: critical_fault
     condition: "load_current > rated_capacity * 3.0"
-    action_tier: C # → "Open protected load safety circuit? Reply YES/NO"
+    action_tier: C # → "Open protected load safety circuit? Reply YES-<proposal_id>/NO-<proposal_id>"
 
   - name: dangerous_overcurrent
     condition: "load_current > rated_capacity * 5.0"
@@ -261,7 +261,6 @@ Open the installer-wired safety circuit to cut power to the protected load.
 CONFIDENCE: 94%
 
 Reply YES-AB12CD34 to approve  |  Reply NO-AB12CD34 to cancel
-Bare YES/NO is accepted only for the active pending proposal.
 Auto-cancel in 5 minutes if no response.
 ```
 

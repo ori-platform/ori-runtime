@@ -31,6 +31,7 @@ from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_commands import extract_remote_command_payload
+from ori.utils.bool_utils import is_truthy
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ def _classify_approval_response(
     *,
     proposal_id: str | None = None,
     allow_offline_token: bool = False,
+    require_scoped: bool = False,
 ) -> str:
     """Classify a Tier C response as approve, reject, token, or invalid."""
     if response is None:
@@ -83,13 +85,16 @@ def _classify_approval_response(
         return "token"
 
     token = raw.lower()
-    if token in _YES_TOKENS:
-        return "approve"
-    if token in _NO_TOKENS:
-        return "reject"
-
-    if "-" not in raw:
-        return "invalid"
+    if require_scoped:
+        if "-" not in raw:
+            return "invalid"
+    else:
+        if token in _YES_TOKENS:
+            return "approve"
+        if token in _NO_TOKENS:
+            return "reject"
+        if "-" not in raw:
+            return "invalid"
 
     head, suffix = raw.split("-", 1)
     expected = _normalize_proposal_id(proposal_id)
@@ -173,6 +178,8 @@ class ActionDispatcher:
         self._local_console_channel_id = str(
             self._config.get("local_console_channel_id", "local_console")
         )
+        scoped_replies = self._config.get("approval_require_scoped_replies", True)
+        self._approval_require_scoped_replies = is_truthy(scoped_replies)
         self._policy: DevicePolicy | None = DevicePolicy.unrestricted()
         self._capability_posture: CapabilityPosture | None = None
         self._status_indicator = status_indicator
@@ -761,6 +768,7 @@ class ActionDispatcher:
                 parsed_operator_response,
                 proposal_id=proposal_id,
                 allow_offline_token=local_console_mode,
+                require_scoped=self._approval_require_scoped_replies,
             )
             if response_kind == "invalid" and parsed_operator_response is not None:
                 logger.warning(
@@ -1009,6 +1017,7 @@ class ActionDispatcher:
                     response,
                     proposal_id=proposal_id,
                     allow_offline_token=True,
+                    require_scoped=self._approval_require_scoped_replies,
                 )
                 if response_kind == "invalid":
                     logger.warning(

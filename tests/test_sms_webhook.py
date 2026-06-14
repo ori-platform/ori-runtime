@@ -7,6 +7,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ori.network.sms_webhook import SMSWebhookServer, _HttpRequest
+from ori.security.webhook_signatures import (
+    WebhookSignatureConfig,
+    WebhookSignatureVerifier,
+    sign_webhook_body,
+)
+from ori.utils.time_utils import now_ms
 
 
 class _FakeWriter:
@@ -32,8 +38,8 @@ async def test_authorized_accepts_header_and_bearer():
     server = SMSWebhookServer(sms_action=AsyncMock(), token="secret-token")
     assert server._authorized({"x-ori-webhook-token": "secret-token"}) is True
     assert server._authorized({"authorization": "Bearer secret-token"}) is True
-    assert server._authorized({}, {"token": ["secret-token"]}) is True
     assert server._authorized({"x-ori-webhook-token": "wrong"}) is False
+    assert server._authorized({}) is False
 
 
 def test_default_host_is_loopback():
@@ -153,7 +159,8 @@ async def test_handle_client_returns_200_for_valid_request():
 
 
 @pytest.mark.asyncio
-async def test_handle_client_accepts_query_token_fallback():
+async def test_handle_client_rejects_query_token_fallback():
+    """Query-string token is no longer accepted; only header tokens are valid."""
     sms_action = AsyncMock()
     sms_action.ingest_incoming_webhook.return_value = True
     server = SMSWebhookServer(sms_action=sms_action, token="secret-token")
@@ -173,7 +180,83 @@ async def test_handle_client_accepts_query_token_fallback():
     await server._handle_client(reader, writer)
 
     text = writer.buffer.decode("utf-8", errors="replace")
+    assert "401 Unauthorized" in text
+    sms_action.ingest_incoming_webhook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_client_rejects_unsigned_hmac_webhook_before_parsing():
+    sms_action = AsyncMock()
+    sms_action.ingest_incoming_webhook.return_value = True
+    server = SMSWebhookServer(
+        sms_action=sms_action,
+        token="secret-token",
+        signature_verifier=WebhookSignatureVerifier(
+            WebhookSignatureConfig(mode="hmac_required", shared_secret="hmac-secret")
+        ),
+    )
+    server._read_request = AsyncMock(
+        return_value=_HttpRequest(
+            method="POST",
+            path="/webhooks/sms/africastalking",
+            headers={
+                "x-ori-webhook-token": "secret-token",
+                "content-type": "application/json",
+            },
+            body=b'{"from":"+2348000000000","text":"YES-AB12CD34"}',
+        )
+    )
+    reader = asyncio.StreamReader()
+    writer = _FakeWriter()
+
+    await server._handle_client(reader, writer)
+
+    text = writer.buffer.decode("utf-8", errors="replace")
+    assert "401 Unauthorized" in text
+    sms_action.ingest_incoming_webhook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_client_accepts_signed_hmac_webhook():
+    sms_action = AsyncMock()
+    sms_action.ingest_incoming_webhook.return_value = True
+    body = b"from=%2B2348000000000&text=YES-AB12CD34"
+    signed_at_ms = now_ms()
+    signature = sign_webhook_body(
+        body, shared_secret="hmac-secret", signed_at_ms=signed_at_ms, nonce="nonce-1"
+    )
+    server = SMSWebhookServer(
+        sms_action=sms_action,
+        token="secret-token",
+        signature_verifier=WebhookSignatureVerifier(
+            WebhookSignatureConfig(
+                mode="token_and_hmac",
+                shared_secret="hmac-secret",
+                max_skew_ms=10_000_000_000,
+            )
+        ),
+    )
+    server._read_request = AsyncMock(
+        return_value=_HttpRequest(
+            method="POST",
+            path="/webhooks/sms/africastalking",
+            headers={
+                "x-ori-webhook-token": "secret-token",
+                "x-ori-webhook-signature": signature,
+                "x-ori-webhook-timestamp": str(signed_at_ms),
+                "x-ori-webhook-nonce": "nonce-1",
+                "content-type": "application/x-www-form-urlencoded",
+            },
+            body=body,
+        )
+    )
+    reader = asyncio.StreamReader()
+    writer = _FakeWriter()
+
+    await server._handle_client(reader, writer)
+
+    text = writer.buffer.decode("utf-8", errors="replace")
     assert "200 OK" in text
     sms_action.ingest_incoming_webhook.assert_awaited_once_with(
-        {"from": "+2348000000000", "text": "YES"}
+        {"from": "+2348000000000", "text": "YES-AB12CD34"}
     )

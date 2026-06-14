@@ -304,6 +304,10 @@ os_sandbox:
   max_output_bytes: 65536
 
 security:
+  skills:
+    # Production deployments may require Ed25519 signatures for local/non-core
+    # skills. First-party repo-bundled skills may still use signature: bundled.
+    require_signed: false
   remote_commands:
     enabled: false                               # state-changing SMS/WhatsApp/cloud commands require HMAC
     hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
@@ -333,6 +337,7 @@ actions:
   # For Nigeria: use sms as primary (Africa's Talking — no approval required)
   # For UK/EU:   use whatsapp as primary
   primary_alert_channel: sms
+  approval_require_scoped_replies: true # Tier C replies must be YES-<proposal_id> / NO-<proposal_id>
   operator_contact: "${OWNER_PHONE_NUMBER}"          # Unified: WHO to contact for Tier-C Approvals
   secondary_contact: ""                              # Optional escalation contact
   alert_outbox:
@@ -367,7 +372,16 @@ actions:
       host: "127.0.0.1"
       port: 8080
       path: "/webhooks/sms/africastalking"
-      token: "${ORI_SMS_WEBHOOK_TOKEN}"  # required; shared secret checked on inbound requests
+      token: "${ORI_SMS_WEBHOOK_TOKEN}"  # required unless signature.mode=hmac_required
+      signature:
+        mode: token_only              # token_only | hmac_required | token_and_hmac
+        shared_secret: "${ORI_SMS_WEBHOOK_HMAC_SECRET}" # required when mode != token_only
+        signature_header: "x-ori-webhook-signature"
+        timestamp_header: "x-ori-webhook-timestamp"
+        nonce_header: "x-ori-webhook-nonce"
+        max_skew_seconds: 300
+        replay_ttl_seconds: 300
+        require_nonce: true
 
   local_console:
     enabled: false                   # Tier C local fallback when SMS/WhatsApp are unavailable

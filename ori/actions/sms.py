@@ -27,7 +27,7 @@ import logging
 import os
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 from ori.security.remote_command_responses import (
     format_remote_command_execution_response,
@@ -48,7 +48,7 @@ from ori.utils.time_utils import now_ms
 logger = logging.getLogger(__name__)
 
 try:
-    import serial as _serial_module  # type: ignore[import-untyped]
+    import serial as _serial_module
 
     _PYSERIAL_AVAILABLE = True
 except Exception:
@@ -94,6 +94,7 @@ class SMSAction:
             [RemoteCommandThrottleDecision], Awaitable[Any]
         ]
         | None = None,
+        allowed_senders: set[str] | frozenset[str] | None = None,
     ) -> None:
         sms_cfg = config if isinstance(config, dict) else {}
 
@@ -129,9 +130,13 @@ class SMSAction:
         self._remote_command_handler = remote_command_handler
         self._remote_command_incident_handler = remote_command_incident_handler
         self._poll_interval_seconds = max(1, int(poll_interval_seconds))
+        self._allowed_senders: frozenset[str] = (
+            frozenset(allowed_senders) if allowed_senders else frozenset()
+        )
         self._ip_ready = bool(self._api_key)
 
-        gsm_cfg = sms_cfg.get("gsm") if isinstance(sms_cfg.get("gsm"), dict) else {}
+        raw_gsm_cfg = sms_cfg.get("gsm")
+        gsm_cfg: dict[str, Any] = raw_gsm_cfg if isinstance(raw_gsm_cfg, dict) else {}
         self._gsm_enabled = is_truthy(gsm_cfg.get("enabled", False))
         self._gsm_port = str(gsm_cfg.get("port", "")).strip()
         self._gsm_baud = int(gsm_cfg.get("baud", self._DEFAULT_GSM_BAUD))
@@ -163,7 +168,7 @@ class SMSAction:
 
         if self._ip_ready and self._transport in {"ip", "hybrid"}:
             try:
-                import africastalking  # type: ignore[import-untyped]
+                import africastalking
 
                 africastalking.initialize(self._username, self._api_key)
             except Exception:
@@ -245,12 +250,14 @@ class SMSAction:
             return False
 
         try:
-            import africastalking  # type: ignore[import-untyped]
+            import africastalking
 
             # Africa's Talking SDK is synchronous — offload to thread.
-            def _send_sync() -> dict:
+            def _send_sync() -> dict[Any, Any]:
                 sms = africastalking.SMS
-                return sms.send(message, [to_number], self._sender_id)
+                return cast(
+                    dict[Any, Any], sms.send(message, [to_number], self._sender_id)
+                )
 
             response = await asyncio.to_thread(_send_sync)
 
@@ -401,7 +408,7 @@ class SMSAction:
                 output += text
                 upper = output.upper()
                 if expected in upper:
-                    return output
+                    return str(output)
                 if "ERROR" in upper or "+CMS ERROR" in upper:
                     logger.warning("SMSAction._gsm_read_until: modem error: %s", output)
                     return None
@@ -486,6 +493,15 @@ class SMSAction:
                     )
                 return True
 
+            if self._allowed_senders and from_number not in self._allowed_senders:
+                logger.warning(
+                    "SMSAction.ingest_incoming_webhook: rejected approval message "
+                    "from unlisted sender from_number=%r — not in operator_contact "
+                    "or secondary_contact",
+                    from_number,
+                )
+                return False
+
             await self._state_store.store_incoming_message(
                 channel="sms",
                 from_number=from_number,
@@ -536,7 +552,7 @@ class SMSAction:
                 return None
 
             if message:
-                return message
+                return str(message)
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:

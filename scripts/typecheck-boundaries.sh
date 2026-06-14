@@ -19,7 +19,10 @@ fi
   ori/skills/loader.py \
   ori/integration/rule_evaluation.py \
   ori/security/gateway_messages.py \
+  ori/security/webhook_signatures.py \
   ori/security/remote_commands.py \
+  ori/network/sms_webhook.py \
+  ori/actions/sms.py \
   ori/policy/device_policy.py \
   ori/policy/remote_fetch.py \
   ori/reasoning/escalation_policy.py \

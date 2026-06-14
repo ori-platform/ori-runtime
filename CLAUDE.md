@@ -134,14 +134,16 @@ RULE ENGINE — First: Is this Tier D?
           No rule matched → Escalate to LOCAL SLM
     │
     ▼
-LOCAL SLM — Returns: reasoning text, confidence, recommended action tier
+LOCAL SLM — Returns reasoning text. Confidence is telemetry-only and
+            currently 0.0 for base completion backends.
     │
     ▼
 ACTION DISPATCHER
     Tier A → Execute informational action immediately
     Tier B → Execute soft physical action before explanation when
              reasoning_policy: post_action, or use approval workflow
-    Tier C → Run approval workflow. Send WhatsApp. Wait for YES/NO.
+    Tier C → Run approval workflow. Send WhatsApp/SMS. Wait for scoped
+             YES-<proposal_id> or NO-<proposal_id>.
     Tier D → Already handled above. Never reaches dispatcher.
 ```
 
@@ -425,9 +427,10 @@ class ActionDispatcher:
     async def _approval_workflow(self, action, context, result) -> ActionResult:
         # 1. Send WhatsApp/SMS with reasoning + proposed action via AlertFailoverSender
         #    (tries primary channel first, falls back to secondary on failure)
-        # 2. Wait for YES/NO within approval_timeout_seconds (default: 300)
-        # 3. YES → execute action
-        # 4. NO or timeout → execute safe_default_action, log override
+        # 2. Wait for YES-<proposal_id>/NO-<proposal_id>
+        #    within approval_timeout_seconds (default: 300)
+        # 3. Scoped YES → execute action
+        # 4. Scoped NO, invalid reply, or timeout → execute safe_default_action
         # 5. No response after 2x timeout → escalate to secondary_contact
         ...
 ```
@@ -450,7 +453,7 @@ PROPOSED ACTION:
 
 CONFIDENCE: {result.confidence:.0%}
 
-Reply YES to approve  |  Reply NO to cancel
+Reply YES-{proposal_id} to approve  |  Reply NO-{proposal_id} to cancel
 Auto-cancel in {timeout} seconds if no response.
 ```
 
@@ -581,6 +584,10 @@ skills:
       approval_timeout_seconds: 300
       safe_default_action: log_to_dashboard
       secondary_contact_number: ${SECONDARY_WHATSAPP}
+
+security:
+  skills:
+    require_signed: false # true => local/non-core skills must use ed25519 signatures
 
 reasoning:
   default_tier: local
@@ -774,6 +781,8 @@ that must be de-energised on failure.
 - **No approval bypass for Tier C.** The approval workflow for hard physical
   actions cannot be skipped, disabled, or made optional in config. If a skill
   defines a Tier C action, the approval workflow runs. No exceptions.
+  Remote replies are scoped by default; bare `YES`/`NO` must not approve Tier C
+  unless a legacy/test deployment explicitly disables scoped reply enforcement.
 - **No LLM for Tier D.** Safety-critical actions fire from the rule engine.
   `bypass_llm: true` is set automatically for any trigger with `action_tier: D`.
 - **No microservices at device layer.** Modular monolith only.
@@ -831,6 +840,8 @@ async def test_tier_d_bypasses_dispatcher():
 OWNER_WHATSAPP_NUMBER=whatsapp:+234XXXXXXXXXX
 OWNER_PHONE_NUMBER=+234XXXXXXXXXX
 SECONDARY_WHATSAPP=whatsapp:+234XXXXXXXXXX  # Escalation contact for Tier C no-response
+ORI_SMS_WEBHOOK_TOKEN=                # Shared token for inbound SMS webhook
+ORI_SMS_WEBHOOK_HMAC_SECRET=          # Required when webhook signature mode != token_only
 
 # WhatsApp (Twilio or WhatsApp Cloud API)
 TWILIO_ACCOUNT_SID=
