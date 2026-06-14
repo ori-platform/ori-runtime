@@ -589,22 +589,32 @@ Violating them creates vulnerabilities that affect physical hardware.
 5. Never store credentials in code, comments, or git-tracked
    files. All secrets go in .env (gitignored).
 
-6. Never add a GitHub Actions workflow that processes untrusted
+6. Production deployments must enable production posture enforcement.
+   Set `device.deployment_profile: staging|production` or
+   `security.enforce_production_posture: true`. Staging and production profiles
+   cannot opt out. In production posture the runtime must fail config load for
+   unsafe network/security settings:
+   non-loopback gateway brokers require TLS, gateway HMAC auth, and encrypted
+   sensitive exports; public SMS webhook ingress must use HMAC mode, not
+   token-only mode; remote commands must not allow unlisted senders; and
+   local/non-core skills must require Ed25519 signatures.
+
+7. Never add a GitHub Actions workflow that processes untrusted
    input (issue titles, PR comments) with shell access.
 
-7. Never add postinstall scripts to pyproject.toml that
+8. Never add postinstall scripts to pyproject.toml that
    fetch from external URLs.
-8. If `_validate_sensor_value` raises `RuleEngineSafetyError`, the
+9. If `_validate_sensor_value` raises `RuleEngineSafetyError`, the
    calling code must fire a Tier A alert to the operator.
    A suspended Tier D path is a safety event requiring human
    awareness. It must never fail silently.
-9. relay.py is intentionally tier-agnostic. `RelayAction.trigger()` and
+10. relay.py is intentionally tier-agnostic. `RelayAction.trigger()` and
    `RelayAction.release()` must only be called through `ActionDispatcher`,
    never directly from skills, hooks, or any other layer. The Tier D
    CRITICAL escalation and emergency SMS path in `_execute_immediately()`
    depends on this contract — direct relay calls bypass it entirely.
 
-10. DevicePolicy.permits_action() and relay.enabled in ori.yaml govern Tier B and Tier C
+11. DevicePolicy.permits_action() and relay.enabled in ori.yaml govern Tier B and Tier C
     relay actuation only. Tier D relay paths must:
     (a) be initialised at boot regardless of relay.enabled or DevicePolicy state,
     (b) bypass all DevicePolicy checks at dispatch time unconditionally.
@@ -615,7 +625,7 @@ Violating them creates vulnerabilities that affect physical hardware.
     - test_tier_d_relay_fires_when_policy_parse_fails()
     - test_tier_d_relay_fires_when_policy_refresh_fails()
 
-11. Remote DevicePolicy payloads from ori-cloud must be verified for integrity before
+12. Remote DevicePolicy payloads from ori-cloud must be verified for integrity before
     any policy is applied. The runtime must verify:
     (a) HTTPS transport,
     (b) device authentication on the request (API key or JWT),
@@ -627,11 +637,11 @@ Violating them creates vulnerabilities that affect physical hardware.
     NEVER reject silently. NEVER fail open by applying an unverified policy.
     The phrase 'reject silently' must not appear in any policy enforcement code path.
 
-12. Database compaction logic must always query the physical tables to check for backwards clock skew
+13. Database compaction logic must always query the physical tables to check for backwards clock skew
     before deleting history. Relying on host clock calculations (`now_ms - 48h < now_ms - 1h`) is a
     tautology and will blindly destroy data if the host clock jumps backward.
 
-13. Remote commands that change configuration, policy, update intent, relay state,
+14. Remote commands that change configuration, policy, update intent, relay state,
     or any other actuator-affecting setting must be authenticated before execution.
     SMS, WhatsApp, and cloud-originated commands require HMAC, signature, offline
     token, or an equivalent replay-resistant check. Tier D evaluation and
@@ -678,7 +688,7 @@ Violating them creates vulnerabilities that affect physical hardware.
     `hmac_required`, with HMAC verified over the raw HTTP body before payload
     parsing and nonce replay recorded in `StateStore`.
 
-14. Runtime-gateway MQTT encryption protects sensitive export payloads only
+15. Runtime-gateway MQTT encryption protects sensitive export payloads only
     when authenticated gateway envelopes are enabled. Do not enable
     `gateway.encryption.enabled` without `gateway.auth.enabled`. Sensitive
     export responses (`sensor_history`, `action_log`, `reasoning_log`, and

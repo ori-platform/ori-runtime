@@ -549,6 +549,7 @@ class TestLoadExample:
         cfg = Config.load(EXAMPLE_YAML)
         remote = cfg.security["remote_commands"]
         skills = cfg.security["skills"]
+        assert cfg.security["enforce_production_posture"] is False
         assert remote["enabled"] is False
         assert remote["hmac_secret_env"] == "ORI_REMOTE_COMMAND_HMAC_SECRET"
         assert remote["max_skew_seconds"] == 300
@@ -617,6 +618,377 @@ class TestLoadExample:
 
         with pytest.raises(ConfigValidationError, match="security.skills"):
             Config.load(yaml_path)
+
+    def test_rejects_invalid_deployment_profile(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: prod
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="deployment_profile"):
+            Config.load(yaml_path)
+
+    def test_production_posture_requires_signed_skills(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              skills:
+                require_signed: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="require_signed"):
+            Config.load(yaml_path)
+
+    def test_staging_profile_enforces_production_posture(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: staging
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              skills:
+                require_signed: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="require_signed"):
+            Config.load(yaml_path)
+
+    def test_production_profile_cannot_disable_posture_enforcement(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: false
+              skills:
+                require_signed: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="require_signed"):
+            Config.load(yaml_path)
+
+    def test_production_posture_allows_loopback_gateway_without_site_tls(
+        self, tmp_path
+    ):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://127.0.0.1:1883
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.gateway.enabled is True
+        assert cfg.gateway.broker_url == "mqtt://127.0.0.1:1883"
+
+    def test_production_posture_rejects_gateway_broker_without_hostname(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="include a hostname"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_plain_non_loopback_gateway(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://192.168.1.10:1883
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway TLS"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_gateway_without_auth(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local:8883
+              encryption:
+                enabled: false
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.auth.enabled"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_gateway_without_encryption(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local:8883
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.encryption.enabled"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_public_token_only_sms_webhook(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: true
+                transport: ip
+                AT_API_KEY: "key"
+                AT_USERNAME: "user"
+                incoming_webhook:
+                  enabled: true
+                  host: "0.0.0.0"
+                  token: "token"
+                  signature:
+                    mode: token_only
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="token_only"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_remote_command_test_allowlist(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+              remote_commands:
+                enabled: true
+                allow_unlisted_senders: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="allow_unlisted_senders"):
+            Config.load(yaml_path)
+
+    def test_production_posture_accepts_hardened_site_config(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local:8883
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: true
+                transport: ip
+                AT_API_KEY: "key"
+                AT_USERNAME: "user"
+                incoming_webhook:
+                  enabled: true
+                  host: "0.0.0.0"
+                  token: "token"
+                  signature:
+                    mode: token_and_hmac
+                    shared_secret: "hmac-secret"
+            security:
+              skills:
+                require_signed: true
+              remote_commands:
+                enabled: true
+                allow_unlisted_senders: false
+                allowed_senders:
+                  sms:
+                    - "+2348012345678"
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.device.deployment_profile == "production"
+        assert cfg.security["skills"]["require_signed"] is True
 
     def test_gateway_message_secret_separate_from_remote_command_secret(self):
         cfg = Config.load(EXAMPLE_YAML)

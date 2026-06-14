@@ -89,6 +89,7 @@ class DeviceConfig:
     timezone: str = "Africa/Lagos"
     country_code: str = ""
     deployment_type: str = "pi"  # 'pi' | 'phone' | 'server'
+    deployment_profile: str = "development"  # 'development' | 'staging' | 'production'
     site_type: str = ""  # business/site context, e.g. pharmacy | office | factory
 
 
@@ -227,6 +228,12 @@ class Config:
         state_cfg = _parse_state(data.get("state"))
         logging_cfg = _parse_logging(data.get("logging"))
         _validate_coap_sensor_allowlist(sensors, actions.coap)
+        _validate_production_security_posture(
+            device=device,
+            gateway=gateway,
+            actions=actions,
+            security=security,
+        )
 
         if not actions.operator_contact or "${" in actions.operator_contact:
             logger.warning(
@@ -467,6 +474,14 @@ def _parse_device(data: Any) -> DeviceConfig:
         raise ConfigValidationError(
             "device.deployment_type must be one of ['phone', 'pi', 'server']."
         )
+    deployment_profile = (
+        str(data.get("deployment_profile", "development")).strip().lower()
+    )
+    if deployment_profile not in {"development", "staging", "production"}:
+        raise ConfigValidationError(
+            "device.deployment_profile must be one of "
+            "['development', 'staging', 'production']."
+        )
     country_code = str(data.get("country_code", "")).strip().upper()
     if country_code and (len(country_code) != 2 or not country_code.isalpha()):
         raise ConfigValidationError(
@@ -481,6 +496,7 @@ def _parse_device(data: Any) -> DeviceConfig:
         timezone=_resolve_device_timezone(data.get("timezone", "")),
         country_code=country_code,
         deployment_type=deployment_type,
+        deployment_profile=deployment_profile,
         site_type=str(data.get("site_type", "") or "").strip(),
     )
 
@@ -1401,7 +1417,108 @@ def _parse_security(data: Any) -> dict:
         **skills_security,
         "require_signed": is_truthy(skills_security.get("require_signed", False)),
     }
+    out["enforce_production_posture"] = is_truthy(
+        out.get("enforce_production_posture", False)
+    )
     return out
+
+
+def _validate_production_security_posture(
+    *,
+    device: DeviceConfig,
+    gateway: GatewayConfig,
+    actions: ActionChannelConfig,
+    security: dict[str, Any],
+) -> None:
+    """Fail closed on unsafe production posture.
+
+    Development and loopback deployments may intentionally use weaker local
+    settings. Production posture is opt-in by ``security`` or implied by
+    ``device.deployment_profile: staging|production``. An explicit false
+    ``security.enforce_production_posture`` does not override those profiles.
+    """
+    enforce = bool(
+        device.deployment_profile in {"staging", "production"}
+        or security.get("enforce_production_posture") is True
+    )
+    if not enforce:
+        return
+
+    skills_security = security.get("skills") or {}
+    if not isinstance(skills_security, dict) or not is_truthy(
+        skills_security.get("require_signed", False)
+    ):
+        raise ConfigValidationError(
+            "production posture requires security.skills.require_signed: true"
+        )
+
+    remote = security.get("remote_commands") or {}
+    if isinstance(remote, dict) and is_truthy(remote.get("enabled", False)):
+        if is_truthy(remote.get("allow_unlisted_senders", False)):
+            raise ConfigValidationError(
+                "production posture forbids "
+                "security.remote_commands.allow_unlisted_senders: true"
+            )
+        allowed_senders = remote.get("allowed_senders")
+        if not isinstance(allowed_senders, dict) or not any(
+            bool(v) for v in allowed_senders.values()
+        ):
+            raise ConfigValidationError(
+                "production posture requires "
+                "security.remote_commands.allowed_senders when remote commands are enabled"
+            )
+
+    if gateway.enabled:
+        broker_url = str(gateway.broker_url or "").strip()
+        if not broker_url:
+            raise ConfigValidationError(
+                "production posture requires gateway.broker_url when gateway is enabled"
+            )
+        parsed = urlparse(broker_url if "://" in broker_url else f"mqtt://{broker_url}")
+        scheme = parsed.scheme.lower()
+        if parsed.hostname is None:
+            raise ConfigValidationError(
+                "production posture requires gateway.broker_url to include a hostname"
+            )
+        non_loopback = not _is_loopback_host(parsed.hostname)
+        if non_loopback:
+            if scheme != "mqtts" and not is_truthy(gateway.tls.get("enabled", False)):
+                raise ConfigValidationError(
+                    "production posture requires gateway TLS for non-loopback brokers "
+                    "(use mqtts:// or gateway.tls.enabled: true)"
+                )
+            if not is_truthy(gateway.auth.get("enabled", False)):
+                raise ConfigValidationError(
+                    "production posture requires gateway.auth.enabled: true "
+                    "for non-loopback brokers"
+                )
+            if not is_truthy(gateway.encryption.get("enabled", False)):
+                raise ConfigValidationError(
+                    "production posture requires gateway.encryption.enabled: true "
+                    "for non-loopback brokers"
+                )
+
+    sms_cfg = actions.sms if isinstance(actions.sms, dict) else {}
+    incoming = sms_cfg.get("incoming_webhook") or {}
+    if isinstance(incoming, dict) and is_truthy(incoming.get("enabled", False)):
+        host = str(incoming.get("host", "127.0.0.1") or "").strip()
+        if not _is_loopback_host(host):
+            signature = incoming.get("signature") or {}
+            mode = (
+                str(signature.get("mode", "token_only")).strip().lower()
+                if isinstance(signature, dict)
+                else "token_only"
+            )
+            if mode == "token_only":
+                raise ConfigValidationError(
+                    "production posture forbids public SMS webhook token_only mode; "
+                    "use token_and_hmac or hmac_required"
+                )
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    value = str(host or "").strip().lower()
+    return value in {"", "localhost", "::1"} or value.startswith("127.")
 
 
 def _parse_remote_command_allowed_senders(data: Any) -> dict[str, list[str]]:
