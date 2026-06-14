@@ -1,6 +1,8 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
+
 import pytest
 
 from ori.security.gateway_messages import (
@@ -47,6 +49,112 @@ def test_sign_and_verify_returns_payload_without_auth():
     )
 
     assert verified == _payload()
+
+
+def test_sign_uses_current_secret_when_previous_secret_is_configured():
+    auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(
+            shared_secret="current-secret",
+            previous_shared_secret="previous-secret",
+            max_skew_ms=1_000,
+            replay_ttl_ms=1_000,
+        )
+    )
+    signed = auth.sign(_payload(), message_type="export_response", signed_at_ms=10_000)
+
+    verified = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(
+            shared_secret="current-secret",
+            max_skew_ms=1_000,
+            replay_ttl_ms=1_000,
+        )
+    ).verify(
+        signed,
+        message_type="export_response",
+        expected_device_id="dev-01",
+        expected_request_id="req-001",
+        now_ms_value=10_000,
+    )
+
+    assert verified == _payload()
+
+
+def test_verify_accepts_previous_secret_during_rotation(caplog):
+    previous_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(
+            shared_secret="previous-secret",
+            max_skew_ms=1_000,
+            replay_ttl_ms=1_000,
+        )
+    )
+    rotated_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(
+            shared_secret="current-secret",
+            previous_shared_secret="previous-secret",
+            max_skew_ms=1_000,
+            replay_ttl_ms=1_000,
+        )
+    )
+    signed = previous_auth.sign(
+        _payload(), message_type="export_response", signed_at_ms=10_000
+    )
+
+    with caplog.at_level(logging.WARNING, logger="ori.security.gateway_messages"):
+        verified = rotated_auth.verify(
+            signed,
+            message_type="export_response",
+            expected_device_id="dev-01",
+            expected_request_id="req-001",
+            now_ms_value=10_000,
+        )
+
+    assert verified == _payload()
+    assert "previous HMAC secret" in caplog.text
+    assert "device_id=dev-01" in caplog.text
+    assert "request_id=req-001" in caplog.text
+
+
+def test_verify_broadcast_accepts_previous_secret_during_rotation(caplog):
+    previous_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(
+            shared_secret="previous-secret",
+            max_skew_ms=1_000,
+            replay_ttl_ms=1_000,
+        )
+    )
+    rotated_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(
+            shared_secret="current-secret",
+            previous_shared_secret="previous-secret",
+            max_skew_ms=1_000,
+            replay_ttl_ms=1_000,
+        )
+    )
+    payload = {"gateway_id": "gw-01", "status": "healthy"}
+    signed = previous_auth.sign(
+        payload, message_type="gateway.heartbeat", signed_at_ms=10_000
+    )
+
+    with caplog.at_level(logging.WARNING, logger="ori.security.gateway_messages"):
+        verified = rotated_auth.verify_broadcast(
+            signed,
+            message_type="gateway.heartbeat",
+            now_ms_value=10_000,
+        )
+
+    assert verified == payload
+    assert "broadcast accepted with previous HMAC secret" in caplog.text
+    assert "message_type=gateway.heartbeat" in caplog.text
+
+
+def test_auth_config_rejects_same_current_and_previous_secret():
+    with pytest.raises(ValueError, match="previous_shared_secret"):
+        GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(
+                shared_secret="same-secret",
+                previous_shared_secret="same-secret",
+            )
+        )
 
 
 def test_verify_rejects_tampered_payload():
@@ -119,6 +227,14 @@ def test_verify_rejects_replay_within_ttl_but_allows_after_expiry():
         expected_request_id="req-001",
         now_ms_value=10_101,
     )
+
+
+def test_gateway_replay_cache_fails_closed_when_full_of_live_entries():
+    cache = GatewayReplayCache(ttl_ms=10_000, max_entries=1)
+
+    assert cache.mark_seen("nonce-1", now_ms_value=1_000) is True
+    assert cache.mark_seen("nonce-2", now_ms_value=1_001) is False
+    assert cache.mark_seen("nonce-1", now_ms_value=1_002) is False
 
 
 def test_verify_rejects_missing_auth_when_authenticator_is_configured():

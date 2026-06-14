@@ -390,6 +390,22 @@ class Config:
                                     f"Environment variable not set: {resolved_value}. "
                                     f"Set it in your .env file before starting Ori."
                                 )
+                            previous_secret = str(
+                                signature_cfg.get("previous_shared_secret", "")
+                            )
+                            if previous_secret and "${" in previous_secret:
+                                resolved_value = signature_cfg.get(
+                                    "previous_shared_secret", ""
+                                )
+                                raise ConfigValidationError(
+                                    f"Environment variable not set: {resolved_value}. "
+                                    f"Set it in your .env file before starting Ori."
+                                )
+                            if previous_secret and previous_secret == secret:
+                                raise ConfigValidationError(
+                                    "actions.sms.incoming_webhook.signature.previous_shared_secret "
+                                    "must differ from shared_secret"
+                                )
                         for key in ("max_skew_seconds", "replay_ttl_seconds"):
                             if key in signature_cfg:
                                 try:
@@ -846,6 +862,18 @@ def _parse_gateway(data: Any) -> GatewayConfig:
             "gateway.auth.shared_secret_env is required when gateway.auth.enabled is true"
         )
     auth["shared_secret_env"] = shared_secret_env
+    previous_shared_secret_env = str(
+        auth.get("previous_shared_secret_env", "") or ""
+    ).strip()
+    if (
+        auth["enabled"]
+        and previous_shared_secret_env
+        and previous_shared_secret_env == shared_secret_env
+    ):
+        raise ConfigValidationError(
+            "gateway.auth.previous_shared_secret_env must differ from shared_secret_env"
+        )
+    auth["previous_shared_secret_env"] = previous_shared_secret_env
     try:
         max_clock_skew_ms = int(auth.get("max_clock_skew_ms", 300_000))
         replay_ttl_ms = int(auth.get("replay_ttl_ms", 300_000))
@@ -1372,6 +1400,17 @@ def _parse_security(data: Any) -> dict:
         raise ConfigValidationError(
             "security.remote_commands.hmac_secret_env is required when enabled."
         )
+    previous_hmac_secret_env = str(
+        remote.get("previous_hmac_secret_env", "") or ""
+    ).strip()
+    if (
+        enabled
+        and previous_hmac_secret_env
+        and previous_hmac_secret_env == hmac_secret_env
+    ):
+        raise ConfigValidationError(
+            "security.remote_commands.previous_hmac_secret_env must differ from hmac_secret_env."
+        )
 
     allowed_senders = _parse_remote_command_allowed_senders(
         remote.get("allowed_senders")
@@ -1404,6 +1443,7 @@ def _parse_security(data: Any) -> dict:
         **remote,
         "enabled": enabled,
         "hmac_secret_env": hmac_secret_env,
+        "previous_hmac_secret_env": previous_hmac_secret_env,
         "max_skew_seconds": max_skew_seconds,
         "allowed_senders": allowed_senders,
         "allow_unlisted_senders": allow_unlisted_senders,

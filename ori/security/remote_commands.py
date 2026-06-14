@@ -69,6 +69,7 @@ class RemoteCommandVerifier:
         *,
         device_id: str,
         shared_secret: str | None,
+        previous_shared_secret: str | None = None,
         max_skew_ms: int = 300_000,
         allowed_senders: Mapping[str, list[str] | set[str] | tuple[str, ...]]
         | None = None,
@@ -76,6 +77,13 @@ class RemoteCommandVerifier:
     ) -> None:
         self._device_id = str(device_id or "").strip()
         self._shared_secret = str(shared_secret or "").strip()
+        self._previous_shared_secret = str(previous_shared_secret or "").strip()
+        if self._previous_shared_secret and hmac.compare_digest(
+            self._previous_shared_secret, self._shared_secret
+        ):
+            raise ValueError(
+                "remote command previous_shared_secret must differ from shared_secret"
+            )
         self._max_skew_ms = max(0, int(max_skew_ms))
         self._allowed_senders = _normalize_allowed_senders(allowed_senders)
         self._allow_unlisted_senders = bool(allow_unlisted_senders)
@@ -123,9 +131,17 @@ class RemoteCommandVerifier:
         if not parsed.signature.startswith("hmac-sha256:"):
             return await self._reject(state_store, parsed, "unsupported_signature")
 
+        matched_previous_secret = False
         expected = sign_remote_command(parsed, self._shared_secret)
         if not hmac.compare_digest(parsed.signature, expected):
-            return await self._reject(state_store, parsed, "invalid_signature")
+            if not self._previous_shared_secret:
+                return await self._reject(state_store, parsed, "invalid_signature")
+            expected_previous = sign_remote_command(
+                parsed, self._previous_shared_secret
+            )
+            if not hmac.compare_digest(parsed.signature, expected_previous):
+                return await self._reject(state_store, parsed, "invalid_signature")
+            matched_previous_secret = True
 
         if not self._sender_is_allowed(parsed):
             return await self._reject(state_store, parsed, "sender_not_allowed")
@@ -142,7 +158,9 @@ class RemoteCommandVerifier:
             from_number=parsed.from_number,
             command=parsed.command,
             accepted=True,
-            reason="accepted",
+            reason="accepted_previous_secret"
+            if matched_previous_secret
+            else "accepted",
             issued_at_ms=parsed.issued_at_ms,
             command_obj=parsed,
         )

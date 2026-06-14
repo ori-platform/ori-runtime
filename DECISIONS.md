@@ -1080,8 +1080,57 @@ Non-goals:
   sender allowlisting reduces application-layer spoofing, but public webhook
   deployments still need provider IP allowlisting, firewalling, or a signing
   bridge.
-- This does not add live key rotation. Gateway, webhook, and remote-command
-  HMAC secrets still rotate through configuration/environment changes and
-  restart.
+- This does not add live in-band key rotation. Gateway, webhook, and
+  remote-command HMAC secrets rotate through configuration/environment changes
+  and restart.
 - This does not encrypt SQLite at rest. Disk/database encryption remains a
   separate deployment or storage-layer decision.
+
+---
+
+## 2026-06-14 — HMAC Secret Rotation Uses Verify-Only Previous Secrets
+
+**Status:** Accepted
+
+Runtime HMAC channels support restart-based secret rotation with a primary
+current secret and an optional previous secret:
+
+- runtime-gateway MQTT envelopes:
+  `gateway.auth.shared_secret_env` and
+  `gateway.auth.previous_shared_secret_env`
+- remote commands:
+  `security.remote_commands.hmac_secret_env` and
+  `security.remote_commands.previous_hmac_secret_env`
+- public SMS webhook ingress:
+  `actions.sms.incoming_webhook.signature.shared_secret` and
+  `actions.sms.incoming_webhook.signature.previous_shared_secret`
+
+The runtime signs new outbound messages with the current secret only. Inbound
+verification accepts current first, then previous. Previous-secret acceptance is
+verify-only and exists to let a site rotate without a simultaneous cutover of
+every producer/consumer.
+
+Remote command acceptance with the previous secret is audited as
+`accepted_previous_secret`. Webhook verification returns
+`accepted_previous_secret` for the same reason. Gateway MQTT verification does
+not change the payload contract; previous-secret use is an operational rotation
+state, not a message field.
+
+Current and previous secrets must differ. A previous-secret environment variable
+that is configured but empty is ignored with a runtime warning.
+
+Rationale:
+
+- The runtime already requires restarts for most deployment secret changes.
+  Adding dual-secret verification provides practical field rotation without
+  introducing an in-band key-management protocol.
+- Signing with only the current secret prevents the old secret from continuing
+  to propagate after a runtime has been rotated.
+- Time-based grace windows are intentionally omitted until there is a durable
+  rotation-start marker. A process-start-relative grace window would be
+  misleading after restarts.
+
+Non-goal:
+
+- This is not live automatic key rotation. ori-cloud/gateway-managed rotation,
+  key version IDs, and fleet-wide rollout status remain future platform work.

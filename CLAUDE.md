@@ -69,7 +69,9 @@ and action tier are selected together — they are not independent decisions.
 Runtime-gateway MQTT envelopes are optionally HMAC-authenticated. Production
 sites set `gateway.auth.enabled: true` and provide the shared secret through the
 environment variable named by `gateway.auth.shared_secret_env`. The gateway
-secret is separate from remote-command secrets. Authenticated deployments sign
+secret is separate from remote-command secrets. During rotation,
+`gateway.auth.previous_shared_secret_env` is verify-only; new outbound runtime
+messages are signed with the current secret. Authenticated deployments sign
 runtime reasoning requests and export responses, and verify gateway reasoning
 responses and export requests before using them.
 
@@ -609,6 +611,7 @@ gateway:
   auth:
     enabled: false
     shared_secret_env: GATEWAY_SHARED_SECRET
+    previous_shared_secret_env: ""
     max_clock_skew_ms: 300000
     replay_ttl_ms: 300000
   encryption:
@@ -857,6 +860,7 @@ AT_SENDER_ID=ORI
 
 # Cloud provider keys belong in the gateway/product environment, not runtime.
 GATEWAY_SHARED_SECRET=  # Site-local MQTT envelope HMAC/encryption root secret.
+GATEWAY_PREVIOUS_SHARED_SECRET=  # Optional verify-only rotation secret.
 
 # Relay control (if physical relay wired)
 RELAY_GPIO_PIN=26

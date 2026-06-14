@@ -1571,6 +1571,9 @@ class OriRuntime:
             config = WebhookSignatureConfig(
                 mode=mode,
                 shared_secret=str(signature_cfg.get("shared_secret", "") or ""),
+                previous_shared_secret=str(
+                    signature_cfg.get("previous_shared_secret", "") or ""
+                ),
                 signature_header=str(
                     signature_cfg.get("signature_header", "x-ori-webhook-signature")
                     or "x-ori-webhook-signature"
@@ -2792,10 +2795,21 @@ def _build_remote_command_verifier(config: Config) -> RemoteCommandVerifier | No
             "[runtime] remote commands enabled but %s is not set; commands will fail closed.",
             secret_env,
         )
+    previous_secret_env = str(remote_cfg.get("previous_hmac_secret_env", "") or "")
+    previous_shared_secret = (
+        os.environ.get(previous_secret_env, "") if previous_secret_env else ""
+    )
+    if previous_secret_env and not previous_shared_secret:
+        logger.warning(
+            "[runtime] remote command previous secret env %s is configured but empty; "
+            "previous-secret verification disabled.",
+            previous_secret_env,
+        )
     max_skew_ms = int(remote_cfg.get("max_skew_seconds", 300)) * 1000
     return RemoteCommandVerifier(
         device_id=str(config.device.id),
         shared_secret=shared_secret,
+        previous_shared_secret=previous_shared_secret,
         max_skew_ms=max_skew_ms,
         allowed_senders=remote_cfg.get("allowed_senders"),
         allow_unlisted_senders=is_truthy(
@@ -3013,9 +3027,20 @@ def _build_gateway_message_auth(config: Config) -> GatewayMessageAuthenticator |
         raise ValueError(
             f"gateway auth is enabled but environment variable {env_name!r} is empty"
         )
+    previous_env_name = str(
+        auth_cfg.get("previous_shared_secret_env", "") or ""
+    ).strip()
+    previous_secret = os.environ.get(previous_env_name, "") if previous_env_name else ""
+    if previous_env_name and not previous_secret:
+        logger.warning(
+            "[runtime] gateway auth previous secret env %s is configured but empty; "
+            "previous-secret verification disabled.",
+            previous_env_name,
+        )
     return GatewayMessageAuthenticator(
         GatewayMessageAuthConfig(
             shared_secret=secret,
+            previous_shared_secret=previous_secret,
             max_skew_ms=int(auth_cfg.get("max_clock_skew_ms", 300_000)),
             replay_ttl_ms=int(auth_cfg.get("replay_ttl_ms", 300_000)),
         )

@@ -47,6 +47,7 @@ gateway:
   auth:
     enabled: true
     shared_secret_env: GATEWAY_SHARED_SECRET
+    previous_shared_secret_env: ""
     max_clock_skew_ms: 300000
     replay_ttl_ms: 300000
   encryption:
@@ -64,6 +65,13 @@ export GATEWAY_SHARED_SECRET='replace-with-site-local-random-secret'
 
 Do not reuse remote-command secrets. `GATEWAY_SHARED_SECRET` is for site-local
 runtime-gateway MQTT envelopes only.
+
+For gateway HMAC rotation, set `previous_shared_secret_env` to the old secret's
+environment variable while `shared_secret_env` points at the new secret. The
+runtime signs new outbound MQTT envelopes with the current secret only, but
+accepts inbound envelopes signed with either current or previous. Remove
+`previous_shared_secret_env` after the gateway and runtime are both confirmed on
+the new secret.
 
 `gateway.encryption.enabled` requires `gateway.auth.enabled`. The runtime derives
 a separate AES-GCM key from `GATEWAY_SHARED_SECRET` with HKDF domain separation;
