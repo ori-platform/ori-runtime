@@ -1032,3 +1032,56 @@ separate MQTT topics avoids conflating posture consumed by the runtime with node
 state consumed by the gateway. Keeping both out of the sensor EventBus preserves
 the sensor/skill boundary and avoids wildcard skill handlers seeing
 infrastructure-only payloads.
+
+---
+
+## 2026-06-14 — Production Security Posture Fails Closed
+
+**Status:** Accepted
+
+Development and loopback deployments may use warning-only security posture so a
+developer can run the runtime locally without provisioning a full site broker,
+certificates, or signed webhook bridge. Production deployments must fail closed
+before runtime startup if the network/security posture is unsafe.
+
+Production posture is enabled by either:
+
+- `device.deployment_profile: staging`
+- `device.deployment_profile: production`
+- `security.enforce_production_posture: true`
+
+`security.enforce_production_posture: false` does not weaken `staging` or
+`production` profiles. `development` is the only relaxed profile.
+
+Rules enforced at config load:
+
+- `security.skills.require_signed` must be true. First-party repo-bundled
+  skills may still use `signature: bundled`; local/non-core skills require
+  verified Ed25519 signatures.
+- Non-loopback gateway brokers require TLS (`mqtts://` or
+  `gateway.tls.enabled: true`).
+- Non-loopback gateway brokers require gateway HMAC envelopes
+  (`gateway.auth.enabled: true`).
+- Non-loopback gateway brokers require encrypted sensitive exports
+  (`gateway.encryption.enabled: true`) so a compromised broker cannot read
+  historical sensor/action/reasoning data.
+- Public SMS webhook ingress must not run in `token_only` mode. Internet-facing
+  webhook deployments must use `token_and_hmac` or `hmac_required` through a
+  signing bridge/proxy.
+- Remote commands must not allow unlisted senders in production. If remote
+  commands are enabled, the sender allowlist must be populated.
+
+Non-goals:
+
+- This does not prove Mosquitto ACLs are correctly configured. Broker ACLs,
+  anonymous-client disablement, VLAN/LAN isolation, and firewall rules remain
+  deployment responsibilities documented in `docs/MQTT_SECURITY.md`.
+- This does not solve Africa's Talking carrier-level sender spoofing. Runtime
+  sender allowlisting reduces application-layer spoofing, but public webhook
+  deployments still need provider IP allowlisting, firewalling, or a signing
+  bridge.
+- This does not add live key rotation. Gateway, webhook, and remote-command
+  HMAC secrets still rotate through configuration/environment changes and
+  restart.
+- This does not encrypt SQLite at rest. Disk/database encryption remains a
+  separate deployment or storage-layer decision.

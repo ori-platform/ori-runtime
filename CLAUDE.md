@@ -558,6 +558,7 @@ device:
   id: energy-monitor-ikeja-01
   name: Ikeja Office Energy Monitor
   location: Lagos, Nigeria
+  deployment_profile: development # development | staging | production; staging/production enforce hardened posture
   rated_capacity_amps: 10.0 # Used in Tier D threshold calculations
 
 sensors:
@@ -586,6 +587,7 @@ skills:
       secondary_contact_number: ${SECONDARY_WHATSAPP}
 
 security:
+  enforce_production_posture: false # staging/production profiles cannot opt out
   skills:
     require_signed: false # true => local/non-core skills must use ed25519 signatures
 
