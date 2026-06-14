@@ -481,8 +481,10 @@ that are hard to debug.
    The runtime signs gateway reasoning requests, export responses, and
    runtime-node heartbeat payloads, and verifies gateway reasoning responses,
    export requests, and gateway heartbeat payloads, using the dedicated gateway
-   HMAC secret configured by `gateway.auth.shared_secret_env`. Do not
-   reuse remote-command secrets for gateway MQTT. Replay protection for gateway
+   HMAC secret configured by `gateway.auth.shared_secret_env`. During rotation,
+   `gateway.auth.previous_shared_secret_env` is verify-only; the runtime must
+   continue signing outbound gateway MQTT envelopes with the current secret. Do
+   not reuse remote-command secrets for gateway MQTT. Replay protection for gateway
    MQTT is in-memory and TTL-bounded; do not copy the remote-command SQLite
    audit/replay pattern into this higher-frequency path. MQTT gateway messages
    must never mutate runtime config, policy, update intent, relay state, or
@@ -687,6 +689,9 @@ Violating them creates vulnerabilities that affect physical hardware.
     `actions.sms.incoming_webhook.signature.mode: token_and_hmac` or
     `hmac_required`, with HMAC verified over the raw HTTP body before payload
     parsing and nonce replay recorded in `StateStore`.
+    HMAC previous-secret fields are verify-only rotation aids. New outbound
+    signatures must use the current secret; accepted remote commands signed
+    with a previous secret must be audited distinctly.
 
 15. Runtime-gateway MQTT encryption protects sensitive export payloads only
     when authenticated gateway envelopes are enabled. Do not enable

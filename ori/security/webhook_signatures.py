@@ -34,6 +34,7 @@ class WebhookSignatureConfig:
 
     mode: str = "token_only"
     shared_secret: str = ""
+    previous_shared_secret: str = ""
     signature_header: str = "x-ori-webhook-signature"
     timestamp_header: str = "x-ori-webhook-timestamp"
     nonce_header: str = "x-ori-webhook-nonce"
@@ -96,6 +97,13 @@ class WebhookSignatureVerifier:
         self._secret = str(config.shared_secret or "").strip()
         if self._mode != "token_only" and not self._secret:
             raise ValueError("webhook HMAC shared_secret must not be empty")
+        self._previous_secret = str(config.previous_shared_secret or "").strip()
+        if self._previous_secret and hmac.compare_digest(
+            self._previous_secret, self._secret
+        ):
+            raise ValueError(
+                "webhook HMAC previous_shared_secret must differ from shared_secret"
+            )
         self._signature_header = _normalize_header(config.signature_header)
         self._timestamp_header = _normalize_header(config.timestamp_header)
         self._nonce_header = _normalize_header(config.nonce_header)
@@ -151,8 +159,19 @@ class WebhookSignatureVerifier:
             signed_at_ms=signed_at_ms,
             nonce=nonce,
         )
+        matched_previous_secret = False
         if not hmac.compare_digest(signature, expected):
-            return WebhookVerificationResult(False, "invalid_signature")
+            if not self._previous_secret:
+                return WebhookVerificationResult(False, "invalid_signature")
+            expected_previous = sign_webhook_body(
+                body,
+                shared_secret=self._previous_secret,
+                signed_at_ms=signed_at_ms,
+                nonce=nonce,
+            )
+            if not hmac.compare_digest(signature, expected_previous):
+                return WebhookVerificationResult(False, "invalid_signature")
+            matched_previous_secret = True
 
         if nonce:
             replay_key = f"{source}\n{nonce}"
@@ -169,7 +188,10 @@ class WebhookSignatureVerifier:
             elif not self._replay_cache.mark_seen(replay_key, now_ms_value=current_ms):
                 return WebhookVerificationResult(False, "replay_detected")
 
-        return WebhookVerificationResult(True, "accepted")
+        return WebhookVerificationResult(
+            True,
+            "accepted_previous_secret" if matched_previous_secret else "accepted",
+        )
 
 
 def sign_webhook_body(

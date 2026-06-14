@@ -66,12 +66,14 @@ def _signed(payload: dict, secret: str = "shared-secret") -> dict:
 def _verifier(
     secret: str = "shared-secret",
     *,
+    previous_secret: str = "",
     allowed_senders: dict | None = None,
     allow_unlisted_senders: bool = False,
 ) -> RemoteCommandVerifier:
     return RemoteCommandVerifier(
         device_id="dev-01",
         shared_secret=secret,
+        previous_shared_secret=previous_secret,
         max_skew_ms=300_000,
         allowed_senders=allowed_senders
         if allowed_senders is not None
@@ -171,6 +173,29 @@ async def test_accepts_valid_hmac_command(store, fixed_now):
     assert rows[0]["command_id"] == "cmd-1"
     assert rows[0]["accepted"] is True
     assert rows[0]["from_number"] == "+2348012345678"
+
+
+async def test_accepts_previous_hmac_command_during_rotation(store, fixed_now):
+    payload = _signed(
+        _payload(now=fixed_now, command_id="cmd-previous"),
+        secret="previous-secret",
+    )
+
+    result = await _verifier(
+        secret="current-secret",
+        previous_secret="previous-secret",
+    ).verify(payload, state_store=store)
+
+    assert result.accepted is True
+    assert result.reason == "accepted_previous_secret"
+    assert await store.has_remote_command("cmd-previous") is True
+    rows = await store.get_remote_command_log()
+    assert rows[0]["reason"] == "accepted_previous_secret"
+
+
+def test_rejects_same_current_and_previous_hmac_secret():
+    with pytest.raises(ValueError, match="previous_shared_secret"):
+        _verifier(secret="same-secret", previous_secret="same-secret")
 
 
 async def test_rejects_sender_not_allowed_after_hmac_verification(store, fixed_now):

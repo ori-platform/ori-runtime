@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ DEFAULT_GATEWAY_AUTH_SKEW_MS = 300_000
 DEFAULT_GATEWAY_AUTH_REPLAY_TTL_MS = 300_000
 _MAX_REPLAY_ENTRIES = 4096
 _AES_GCM_NONCE_BYTES = 12
+logger = logging.getLogger(__name__)
 
 
 class GatewayMessageAuthError(ValueError):
@@ -52,6 +54,7 @@ class GatewayMessageEncryptionError(ValueError):
 @dataclass(frozen=True)
 class GatewayMessageAuthConfig:
     shared_secret: str
+    previous_shared_secret: str = ""
     max_skew_ms: int = DEFAULT_GATEWAY_AUTH_SKEW_MS
     replay_ttl_ms: int = DEFAULT_GATEWAY_AUTH_REPLAY_TTL_MS
 
@@ -81,9 +84,7 @@ class GatewayReplayCache:
         if key in self._seen_until_ms:
             return False
         if len(self._seen_until_ms) >= self._max_entries:
-            # Oldest expiry is the cheapest deterministic eviction strategy.
-            oldest = min(self._seen_until_ms.items(), key=lambda item: item[1])[0]
-            self._seen_until_ms.pop(oldest, None)
+            return False
         self._seen_until_ms[key] = current_ms + self._ttl_ms
         return True
 
@@ -110,6 +111,12 @@ class GatewayMessageAuthenticator:
         if not secret:
             raise ValueError("gateway message shared_secret must not be empty")
         self._secret = secret
+        previous_secret = str(config.previous_shared_secret or "").strip()
+        if previous_secret and hmac.compare_digest(previous_secret, secret):
+            raise ValueError(
+                "gateway message previous_shared_secret must differ from shared_secret"
+            )
+        self._previous_secret = previous_secret
         self._max_skew_ms = max(0, int(config.max_skew_ms))
         self._replay_cache = replay_cache or GatewayReplayCache(
             ttl_ms=config.replay_ttl_ms
@@ -175,13 +182,22 @@ class GatewayMessageAuthenticator:
         if expected_request_id is not None and request_id != str(expected_request_id):
             raise GatewayMessageAuthError("request_id_mismatch")
 
-        expected = self._signature(
+        signature_match = self._signature_match(
+            signature,
             payload=unsigned_payload,
             message_type=message_type,
             signed_at_ms=signed_at_ms,
         )
-        if not hmac.compare_digest(signature, expected):
+        if signature_match == "none":
             raise GatewayMessageAuthError("invalid_signature")
+        if signature_match == "previous":
+            logger.warning(
+                "gateway MQTT envelope accepted with previous HMAC secret: "
+                "message_type=%s device_id=%s request_id=%s",
+                message_type,
+                device_id,
+                request_id,
+            )
 
         replay_key = "\n".join(
             [message_type, device_id, request_id, str(signed_at_ms), signature]
@@ -228,13 +244,20 @@ class GatewayMessageAuthenticator:
             raise GatewayMessageAuthError("future_timestamp")
 
         unsigned_payload = _payload_without_auth(payload)
-        expected = self._signature(
+        signature_match = self._signature_match(
+            signature,
             payload=unsigned_payload,
             message_type=message_type,
             signed_at_ms=signed_at_ms,
         )
-        if not hmac.compare_digest(signature, expected):
+        if signature_match == "none":
             raise GatewayMessageAuthError("invalid_signature")
+        if signature_match == "previous":
+            logger.warning(
+                "gateway MQTT broadcast accepted with previous HMAC secret: "
+                "message_type=%s",
+                message_type,
+            )
 
         replay_key = "\n".join([message_type, str(signed_at_ms), signature])
         if not self._replay_cache.mark_seen(replay_key, now_ms_value=current_ms):
@@ -243,6 +266,48 @@ class GatewayMessageAuthenticator:
 
     def _signature(
         self,
+        *,
+        payload: Mapping[str, Any],
+        message_type: str,
+        signed_at_ms: int,
+    ) -> str:
+        return self._signature_with_secret(
+            self._secret,
+            payload=payload,
+            message_type=message_type,
+            signed_at_ms=signed_at_ms,
+        )
+
+    def _signature_match(
+        self,
+        signature: str,
+        *,
+        payload: Mapping[str, Any],
+        message_type: str,
+        signed_at_ms: int,
+    ) -> str:
+        expected = self._signature(
+            payload=payload,
+            message_type=message_type,
+            signed_at_ms=signed_at_ms,
+        )
+        if hmac.compare_digest(signature, expected):
+            return "current"
+        if not self._previous_secret:
+            return "none"
+        expected_previous = self._signature_with_secret(
+            self._previous_secret,
+            payload=payload,
+            message_type=message_type,
+            signed_at_ms=signed_at_ms,
+        )
+        if hmac.compare_digest(signature, expected_previous):
+            return "previous"
+        return "none"
+
+    def _signature_with_secret(
+        self,
+        secret: str,
         *,
         payload: Mapping[str, Any],
         message_type: str,
@@ -260,7 +325,7 @@ class GatewayMessageAuthenticator:
             ]
         )
         digest = hmac.new(
-            self._secret.encode("utf-8"),
+            str(secret).encode("utf-8"),
             signed.encode("utf-8"),
             sha256,
         ).hexdigest()

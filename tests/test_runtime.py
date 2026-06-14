@@ -35,6 +35,7 @@ from ori.runtime import (
     _build_gateway_message_encryptor,
     _build_gateway_reasoner,
     _build_local_llm,
+    _build_remote_command_verifier,
     _build_runtime_node_heartbeat_publisher,
     _coap_command_from_context,
     _maybe_autoload_dotenv,
@@ -42,6 +43,10 @@ from ori.runtime import (
     _process_target_from_context,
     _resolve_dispatcher_approval_timeout,
     _resolve_local_model_file,
+)
+from ori.security.gateway_messages import (
+    GatewayMessageAuthConfig,
+    GatewayMessageAuthenticator,
 )
 from ori.security.remote_command_throttle import RemoteCommandThrottleDecision
 from ori.skills.signing import canonical_signed_payload
@@ -78,6 +83,51 @@ def test_build_gateway_message_auth_uses_configured_env_secret(monkeypatch):
     assert auth is not None
 
 
+def test_build_gateway_message_auth_accepts_previous_env_secret(monkeypatch):
+    monkeypatch.setenv("GATEWAY_SHARED_SECRET", "current-secret")
+    monkeypatch.setenv("GATEWAY_PREVIOUS_SHARED_SECRET", "previous-secret")
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+                "previous_shared_secret_env": "GATEWAY_PREVIOUS_SHARED_SECRET",
+                "max_clock_skew_ms": 300_000,
+                "replay_ttl_ms": 300_000,
+            },
+        )
+    )
+    previous_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="previous-secret")
+    )
+    payload = {
+        "request_id": "req-1",
+        "device_id": "dev-01",
+        "export_type": "health",
+    }
+    signed = previous_auth.sign(
+        payload,
+        message_type="export_response",
+        signed_at_ms=1_000,
+    )
+
+    auth = _build_gateway_message_auth(config)
+
+    assert auth is not None
+    assert (
+        auth.verify(
+            signed,
+            message_type="export_response",
+            expected_device_id="dev-01",
+            expected_request_id="req-1",
+            now_ms_value=1_000,
+        )
+        == payload
+    )
+
+
 def test_build_gateway_message_auth_rejects_missing_env_secret(monkeypatch):
     monkeypatch.delenv("GATEWAY_SHARED_SECRET", raising=False)
     config = SimpleNamespace(
@@ -95,6 +145,28 @@ def test_build_gateway_message_auth_rejects_missing_env_secret(monkeypatch):
 
     with pytest.raises(ValueError, match="GATEWAY_SHARED_SECRET"):
         _build_gateway_message_auth(config)
+
+
+def test_build_remote_command_verifier_passes_previous_env_secret(monkeypatch):
+    monkeypatch.setenv("ORI_REMOTE_COMMAND_HMAC_SECRET", "current-secret")
+    monkeypatch.setenv("ORI_REMOTE_COMMAND_PREVIOUS_HMAC_SECRET", "previous-secret")
+    config = SimpleNamespace(
+        device=SimpleNamespace(id="dev-01"),
+        security={
+            "remote_commands": {
+                "enabled": True,
+                "hmac_secret_env": "ORI_REMOTE_COMMAND_HMAC_SECRET",
+                "previous_hmac_secret_env": "ORI_REMOTE_COMMAND_PREVIOUS_HMAC_SECRET",
+                "max_skew_seconds": 300,
+                "allowed_senders": {"sms": ["+2348012345678"]},
+                "allow_unlisted_senders": False,
+            }
+        },
+    )
+
+    verifier = _build_remote_command_verifier(config)
+
+    assert verifier is not None
 
 
 def test_build_gateway_message_encryptor_uses_gateway_secret(monkeypatch):

@@ -42,6 +42,50 @@ async def test_webhook_signature_accepts_valid_raw_body() -> None:
 
 
 @pytest.mark.asyncio
+async def test_webhook_signature_accepts_previous_secret_during_rotation() -> None:
+    body = b"from=%2B2348000000000&text=YES-AB12CD34"
+    signature = sign_webhook_body(
+        body,
+        shared_secret="previous-secret",
+        signed_at_ms=1_000,
+        nonce="nonce-rotation",
+    )
+    verifier = WebhookSignatureVerifier(
+        WebhookSignatureConfig(
+            mode="hmac_required",
+            shared_secret="current-secret",
+            previous_shared_secret="previous-secret",
+            max_skew_ms=500,
+            replay_ttl_ms=500,
+        )
+    )
+
+    result = await verifier.verify(
+        headers={
+            "x-ori-webhook-signature": signature,
+            "x-ori-webhook-timestamp": "1000",
+            "x-ori-webhook-nonce": "nonce-rotation",
+        },
+        body=body,
+        now_ms_value=1_100,
+    )
+
+    assert result.accepted is True
+    assert result.reason == "accepted_previous_secret"
+
+
+def test_webhook_signature_rejects_same_current_and_previous_secret() -> None:
+    with pytest.raises(ValueError, match="previous_shared_secret"):
+        WebhookSignatureVerifier(
+            WebhookSignatureConfig(
+                mode="hmac_required",
+                shared_secret="same-secret",
+                previous_shared_secret="same-secret",
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_webhook_signature_rejects_tampered_body() -> None:
     signed_body = b"from=%2B2348000000000&text=YES-AB12CD34"
     tampered_body = b"from=%2B2348000000000&text=YES-WRONG999"

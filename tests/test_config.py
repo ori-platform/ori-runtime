@@ -112,6 +112,7 @@ class TestLoadExample:
         assert cfg.gateway.node_heartbeat["interval_seconds"] == 30
         assert cfg.gateway.auth["enabled"] is False
         assert cfg.gateway.auth["shared_secret_env"] == "GATEWAY_SHARED_SECRET"
+        assert cfg.gateway.auth["previous_shared_secret_env"] == ""
         assert cfg.gateway.auth["max_clock_skew_ms"] == 300_000
         assert cfg.gateway.auth["replay_ttl_ms"] == 300_000
         assert cfg.gateway.tls["enabled"] is False
@@ -285,6 +286,34 @@ class TestLoadExample:
         with pytest.raises(
             ConfigValidationError, match="gateway.auth.shared_secret_env"
         ):
+            Config.load(yaml_path)
+
+    def test_gateway_auth_rejects_duplicate_previous_secret_env(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+                previous_shared_secret_env: GATEWAY_SHARED_SECRET
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="previous_shared_secret_env"):
             Config.load(yaml_path)
 
     def test_gateway_encryption_requires_auth_enabled(self, tmp_path):
@@ -552,6 +581,7 @@ class TestLoadExample:
         assert cfg.security["enforce_production_posture"] is False
         assert remote["enabled"] is False
         assert remote["hmac_secret_env"] == "ORI_REMOTE_COMMAND_HMAC_SECRET"
+        assert remote["previous_hmac_secret_env"] == ""
         assert remote["max_skew_seconds"] == 300
         assert remote["allow_unlisted_senders"] is False
         assert remote["allowed_senders"] == {
@@ -1041,6 +1071,34 @@ class TestLoadExample:
         assert lockout["elevated_rejection_threshold"] == 8
         assert lockout["critical_rejection_threshold"] == 20
         assert lockout["enforcement_enabled"] is False
+
+    def test_remote_command_rejects_duplicate_previous_secret_env(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                enabled: true
+                hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
+                previous_hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
+                allow_unlisted_senders: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="previous_hmac_secret_env"):
+            Config.load(yaml_path)
 
     def test_security_remote_command_allowed_senders_are_normalized(self, tmp_path):
         yaml_path = _write_yaml(
@@ -2733,6 +2791,52 @@ actions:
             cfg.actions.sms["incoming_webhook"]["signature"]["shared_secret"]
             == "hmac-secret"
         )
+
+    def test_sms_incoming_webhook_previous_hmac_secret_set_is_valid(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      signature:\n"
+                "        mode: token_and_hmac\n"
+                "        shared_secret: 'hmac-secret'\n"
+                "        previous_shared_secret: 'previous-hmac-secret'\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert (
+            cfg.actions.sms["incoming_webhook"]["signature"]["previous_shared_secret"]
+            == "previous-hmac-secret"
+        )
+
+    def test_sms_incoming_webhook_duplicate_previous_hmac_secret_raises(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      signature:\n"
+                "        mode: token_and_hmac\n"
+                "        shared_secret: 'hmac-secret'\n"
+                "        previous_shared_secret: 'hmac-secret'\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="previous_shared_secret"):
+            Config.load(yaml_path)
 
     def test_sms_incoming_webhook_hmac_required_without_token_is_valid(self, tmp_path):
         yaml_path = _write_yaml(
