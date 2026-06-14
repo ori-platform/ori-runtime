@@ -599,8 +599,9 @@ Violating them creates vulnerabilities that affect physical hardware.
    non-loopback gateway brokers require TLS, gateway HMAC auth, and encrypted
    sensitive exports; public SMS webhook ingress must use HMAC mode plus
    source IP/CIDR allowlisting, not token-only mode; remote commands must not
-   allow unlisted senders; and local/non-core skills must require Ed25519
-   signatures.
+   allow unlisted senders; local/non-core skills must require Ed25519
+   signatures; and SQLite state must live under an operator-declared encrypted
+   filesystem posture (`state.encryption.mode: filesystem_required`).
 
 7. Never add a GitHub Actions workflow that processes untrusted
    input (issue titles, PR comments) with shell access.
@@ -644,7 +645,15 @@ Violating them creates vulnerabilities that affect physical hardware.
     before deleting history. Relying on host clock calculations (`now_ms - 48h < now_ms - 1h`) is a
     tautology and will blindly destroy data if the host clock jumps backward.
 
-14. Remote commands that change configuration, policy, update intent, relay state,
+14. SQLite state-store encryption at rest is a deployment posture, not a
+    runtime crypto layer. The runtime uses standard `sqlite3`; do not add
+    SQLCipher or custom row encryption without a separate design review.
+    Production posture requires `state.encryption.mode: filesystem_required`
+    and either a valid `state.encryption.marker_file` or a `database.path`
+    under one of `state.encryption.encrypted_path_prefixes`. This is an
+    operator attestation that the DB lives on an encrypted filesystem/mount.
+
+15. Remote commands that change configuration, policy, update intent, relay state,
     or any other actuator-affecting setting must be authenticated before execution.
     SMS, WhatsApp, and cloud-originated commands require HMAC, signature, offline
     token, or an equivalent replay-resistant check. Tier D evaluation and
@@ -696,7 +705,7 @@ Violating them creates vulnerabilities that affect physical hardware.
     signatures must use the current secret; accepted remote commands signed
     with a previous secret must be audited distinctly.
 
-15. Runtime-gateway MQTT encryption protects sensitive export payloads only
+16. Runtime-gateway MQTT encryption protects sensitive export payloads only
     when authenticated gateway envelopes are enabled. Do not enable
     `gateway.encryption.enabled` without `gateway.auth.enabled`. Sensitive
     export responses (`sensor_history`, `action_log`, `reasoning_log`, and

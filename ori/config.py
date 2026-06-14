@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from ipaddress import ip_network
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -17,6 +18,7 @@ from ori.hal.protocol_registry import SUPPORTED_SENSOR_PROTOCOLS
 from ori.security.remote_command_lockout import normalize_remote_command_lockout_config
 from ori.security.remote_commands import normalize_remote_command_sender
 from ori.utils.bool_utils import is_truthy
+from ori.utils.path_utils import path_is_relative_to
 
 logger = logging.getLogger(__name__)
 
@@ -162,8 +164,16 @@ class CompactionConfig:
 
 
 @dataclass
+class StateEncryptionConfig:
+    mode: str = "disabled"
+    encrypted_path_prefixes: list[str] = field(default_factory=list)
+    marker_file: str = ""
+
+
+@dataclass
 class StateConfig:
     compaction: CompactionConfig = field(default_factory=CompactionConfig)
+    encryption: StateEncryptionConfig = field(default_factory=StateEncryptionConfig)
 
 
 @dataclass
@@ -186,6 +196,7 @@ class Config:
     actions: ActionChannelConfig
     hal: HalConfig
     logging: LoggingConfig
+    database_path: str = "ori_state.db"
     device_policy: dict = field(default_factory=dict)
     security: dict = field(default_factory=dict)
     health_socket: dict = field(default_factory=dict)
@@ -227,6 +238,7 @@ class Config:
         health_socket = _parse_health_socket(data.get("health_socket"))
         os_sandbox = _parse_os_sandbox(data.get("os_sandbox"))
         state_cfg = _parse_state(data.get("state"))
+        database_path = _parse_database_path(data.get("database"))
         logging_cfg = _parse_logging(data.get("logging"))
         _validate_coap_sensor_allowlist(sensors, actions.coap)
         _validate_production_security_posture(
@@ -234,6 +246,8 @@ class Config:
             gateway=gateway,
             actions=actions,
             security=security,
+            state=state_cfg,
+            database_path=database_path,
         )
 
         if not actions.operator_contact or "${" in actions.operator_contact:
@@ -459,6 +473,7 @@ class Config:
             os_sandbox=os_sandbox,
             state=state_cfg,
             logging=logging_cfg,
+            database_path=database_path,
             raw=data,
         )
 
@@ -1473,6 +1488,8 @@ def _validate_production_security_posture(
     gateway: GatewayConfig,
     actions: ActionChannelConfig,
     security: dict[str, Any],
+    state: StateConfig,
+    database_path: str,
 ) -> None:
     """Fail closed on unsafe production posture.
 
@@ -1566,10 +1583,52 @@ def _validate_production_security_posture(
                     "use token_and_hmac or hmac_required"
                 )
 
+    _validate_state_store_encryption_posture(
+        state=state,
+        database_path=database_path,
+    )
+
 
 def _is_loopback_host(host: str | None) -> bool:
     value = str(host or "").strip().lower()
     return value in {"localhost", "::1"} or value.startswith("127.")
+
+
+def _validate_state_store_encryption_posture(
+    *,
+    state: StateConfig,
+    database_path: str,
+) -> None:
+    encryption = state.encryption
+    if encryption.mode != "filesystem_required":
+        raise ConfigValidationError(
+            "production posture requires state.encryption.mode: filesystem_required"
+        )
+
+    marker_ok = False
+    if encryption.marker_file:
+        marker_path = Path(encryption.marker_file).expanduser()
+        if not marker_path.is_file():
+            raise ConfigValidationError(
+                "state.encryption.marker_file must point to an existing file "
+                "when configured."
+            )
+        marker_ok = True
+
+    db_path = Path(database_path).expanduser().resolve(strict=False)
+    prefix_ok = any(
+        path_is_relative_to(
+            db_path,
+            Path(prefix).expanduser().resolve(strict=False),
+        )
+        for prefix in encryption.encrypted_path_prefixes
+    )
+    if not (marker_ok or prefix_ok):
+        raise ConfigValidationError(
+            "production posture requires database.path to live under one of "
+            "state.encryption.encrypted_path_prefixes or a valid "
+            "state.encryption.marker_file."
+        )
 
 
 def _validate_sms_webhook_source_cidrs(data: Any) -> None:
@@ -1718,6 +1777,9 @@ def _parse_state(data: Any) -> StateConfig:
     comp_data = data.get("compaction", {})
     if not isinstance(comp_data, dict):
         comp_data = {}
+    encryption_data = data.get("encryption", {})
+    if not isinstance(encryption_data, dict):
+        raise ConfigValidationError("state.encryption must be a mapping.")
 
     try:
         max_skew = int(comp_data.get("max_backward_skew_ms", 3600000))
@@ -1731,7 +1793,68 @@ def _parse_state(data: Any) -> StateConfig:
             "state.compaction.max_backward_skew_ms must be >= 60000."
         )
 
-    return StateConfig(compaction=CompactionConfig(max_backward_skew_ms=max_skew))
+    encryption = _parse_state_encryption(encryption_data)
+
+    return StateConfig(
+        compaction=CompactionConfig(max_backward_skew_ms=max_skew),
+        encryption=encryption,
+    )
+
+
+def _parse_state_encryption(data: dict[str, Any]) -> StateEncryptionConfig:
+    mode = str(data.get("mode", "disabled") or "disabled").strip().lower()
+    if mode not in {"disabled", "filesystem_required"}:
+        raise ConfigValidationError(
+            "state.encryption.mode must be one of: disabled, filesystem_required."
+        )
+
+    prefixes_raw = data.get("encrypted_path_prefixes", [])
+    if prefixes_raw is None:
+        prefixes_raw = []
+    if not isinstance(prefixes_raw, list):
+        raise ConfigValidationError(
+            "state.encryption.encrypted_path_prefixes must be a list."
+        )
+    prefixes = [str(item).strip() for item in prefixes_raw if str(item).strip()]
+    for prefix in prefixes:
+        prefix_path = Path(prefix).expanduser()
+        if not prefix_path.is_absolute():
+            raise ConfigValidationError(
+                "state.encryption.encrypted_path_prefixes entries must be absolute paths."
+            )
+        resolved_prefix = prefix_path.resolve(strict=False)
+        if str(resolved_prefix) == resolved_prefix.anchor:
+            raise ConfigValidationError(
+                "state.encryption.encrypted_path_prefixes must not contain a root path."
+            )
+    marker_file = str(data.get("marker_file", "") or "").strip()
+    if marker_file and not Path(marker_file).expanduser().is_absolute():
+        raise ConfigValidationError(
+            "state.encryption.marker_file must be an absolute path."
+        )
+
+    if mode == "filesystem_required" and not prefixes and not marker_file:
+        raise ConfigValidationError(
+            "state.encryption.mode=filesystem_required requires "
+            "encrypted_path_prefixes or marker_file."
+        )
+
+    return StateEncryptionConfig(
+        mode=mode,
+        encrypted_path_prefixes=prefixes,
+        marker_file=marker_file,
+    )
+
+
+def _parse_database_path(data: Any) -> str:
+    if data is None:
+        return "ori_state.db"
+    if not isinstance(data, dict):
+        raise ConfigValidationError("'database' section must be a mapping.")
+    path = str(data.get("path", "ori_state.db") or "").strip()
+    if not path:
+        raise ConfigValidationError("database.path must not be empty.")
+    return path
 
 
 def _parse_logging(data: Any) -> LoggingConfig:

@@ -2021,6 +2021,37 @@ class TestAlertOutbox:
         finally:
             await runtime._state_store.close()
 
+    async def test_health_snapshot_reports_state_store_encryption_posture(
+        self, tmp_path
+    ):
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._device_id = "dev-01"
+        database_path = encrypted_dir / "ori_state.db"
+        runtime._config = SimpleNamespace(
+            state=SimpleNamespace(
+                encryption=SimpleNamespace(
+                    mode="filesystem_required",
+                    encrypted_path_prefixes=[str(encrypted_dir)],
+                    marker_file="",
+                )
+            ),
+            database_path=str(database_path),
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        posture = snapshot["state_store_encryption"]
+        assert posture == {
+            "available": True,
+            "mode": "filesystem_required",
+            "satisfied": True,
+            "marker_configured": False,
+            "path_prefix_configured": True,
+        }
+        assert str(encrypted_dir) not in json.dumps(posture)
+
     async def test_load_remote_command_lockout_state_failure_is_non_blocking(self):
         class _FailingIncidentStore:
             async def get_recent_remote_command_incident_senders(

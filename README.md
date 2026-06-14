@@ -141,7 +141,7 @@ All adapters include a **hardware circuit breaker** that auto-isolates failing b
 | Full stack with local SLM | Raspberry Pi 4 4GB             | 4GB  | Validated reference hardware. 3–8s inference. |
 | Development / laptop      | Any modern machine             | 4GB+ | psutil adapter. No Pi required.               |
 
-The model file (Qwen2.5-0.5B Q4) is 500MB. The SQLite state store stays bounded under 80MB via the compaction pyramid regardless of deployment duration.
+The model file (Qwen2.5-0.5B Q4) is 500MB. The SQLite state store stays bounded under 80MB via the compaction pyramid regardless of deployment duration. Production/staging deployments must place the SQLite state path on an encrypted filesystem or mount and declare that posture under `state.encryption`; the runtime uses standard `sqlite3`, not SQLCipher.
 
 ---
 

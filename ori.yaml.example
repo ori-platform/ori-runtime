@@ -306,6 +306,9 @@ os_sandbox:
   exec_timeout_ms: 2000
   max_output_bytes: 65536
 
+database:
+  path: ori_state.db                             # production should place this under an encrypted mount
+
 security:
   # Set true, or set device.deployment_profile to staging/production, to fail
   # startup on unsafe network/security posture. A staging/production profile
@@ -444,6 +447,10 @@ hal:
 state:
   compaction:
     max_backward_skew_ms: 3600000    # Threshold (in ms) to reject compaction due to clock skew
+  encryption:
+    mode: disabled                   # disabled | filesystem_required
+    encrypted_path_prefixes: []      # e.g. ["/var/lib/ori-encrypted"]; required for production unless marker_file is set
+    marker_file: ""                  # optional existing marker file; startup fails if missing
 
 logging:
   level: INFO                        # DEBUG | INFO | WARNING | ERROR

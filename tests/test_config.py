@@ -754,16 +754,20 @@ class TestLoadExample:
     def test_production_posture_allows_loopback_gateway_without_site_tls(
         self, tmp_path
     ):
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
         yaml_path = _write_yaml(
             tmp_path,
-            """
+            f"""
             device:
               id: dev-01
               name: Test
               location: Lagos
+            database:
+              path: "{encrypted_dir / "ori_state.db"}"
             sensors: []
             skills: []
-            reasoning: {}
+            reasoning: {{}}
             gateway:
               enabled: true
               broker_url: mqtt://127.0.0.1:1883
@@ -775,6 +779,11 @@ class TestLoadExample:
               enforce_production_posture: true
               skills:
                 require_signed: true
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "{encrypted_dir}"
             """,
         )
 
@@ -782,6 +791,7 @@ class TestLoadExample:
 
         assert cfg.gateway.enabled is True
         assert cfg.gateway.broker_url == "mqtt://127.0.0.1:1883"
+        assert cfg.database_path == str(encrypted_dir / "ori_state.db")
 
     def test_production_posture_rejects_gateway_broker_without_hostname(self, tmp_path):
         yaml_path = _write_yaml(
@@ -1045,7 +1055,7 @@ class TestLoadExample:
         with pytest.raises(ConfigValidationError, match="allow_unlisted_senders"):
             Config.load(yaml_path)
 
-    def test_production_posture_accepts_hardened_site_config(self, tmp_path):
+    def test_production_posture_rejects_plaintext_state_store(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
             """
@@ -1053,10 +1063,164 @@ class TestLoadExample:
               id: dev-01
               name: Test
               location: Lagos
-              deployment_profile: production
             sensors: []
             skills: []
             reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="state.encryption.mode"):
+            Config.load(yaml_path)
+
+    def test_state_encryption_rejects_relative_encrypted_prefix(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "relative/encrypted"
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="absolute paths"):
+            Config.load(yaml_path)
+
+    def test_state_encryption_rejects_root_encrypted_prefix(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "/"
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="root path"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_state_store_outside_encrypted_prefix(
+        self, tmp_path
+    ):
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            database:
+              path: "{tmp_path / "plain" / "ori_state.db"}"
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "{encrypted_dir}"
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="database.path"):
+            Config.load(yaml_path)
+
+    def test_production_posture_accepts_state_store_marker_file(self, tmp_path):
+        marker = tmp_path / ".ori-encrypted-volume"
+        marker.write_text("ok", encoding="utf-8")
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            state:
+              encryption:
+                mode: filesystem_required
+                marker_file: "{marker}"
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.state.encryption.marker_file == str(marker)
+
+    def test_production_posture_accepts_hardened_site_config(self, tmp_path):
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            database:
+              path: "{encrypted_dir / "ori_state.db"}"
+            sensors: []
+            skills: []
+            reasoning: {{}}
             gateway:
               enabled: true
               broker_url: mqtts://broker.local:8883
@@ -1090,6 +1254,11 @@ class TestLoadExample:
                 allowed_senders:
                   sms:
                     - "+2348012345678"
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "{encrypted_dir}"
             """,
         )
 

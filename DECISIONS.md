@@ -1083,8 +1083,54 @@ Non-goals:
 - This does not add live in-band key rotation. Gateway, webhook, and
   remote-command HMAC secrets rotate through configuration/environment changes
   and restart.
-- This does not encrypt SQLite at rest. Disk/database encryption remains a
-  separate deployment or storage-layer decision.
+- This does not add SQLCipher or row-level database encryption. SQLite
+  encryption-at-rest is enforced as filesystem posture in the separate decision
+  below.
+
+---
+
+## 2026-06-14 — SQLite At-Rest Protection Uses Filesystem Posture
+
+**Status:** Accepted
+
+The runtime continues to use Python's standard `sqlite3` module. It does not
+depend on SQLCipher or custom row-level encryption for v1 because that would
+increase Pi deployment complexity, wheel build risk, and dependency surface for
+the safety-critical runtime.
+
+Instead, production/staging posture requires the operator to declare that the
+SQLite database lives on encrypted storage:
+
+- `state.encryption.mode: filesystem_required`
+- either `state.encryption.marker_file` points to an existing deployment-created
+  marker file, or `database.path` is under one of
+  `state.encryption.encrypted_path_prefixes`
+
+This is an explicit deployment attestation, not a cryptographic proof. The
+runtime can fail closed when the configured posture is absent or inconsistent,
+and runtime health exports whether the configured posture is satisfied without
+leaking local filesystem paths.
+
+The marker file check is intentionally a startup-time liveness probe, not just
+syntax validation. If the encrypted volume is not mounted and the marker is
+missing, production config load fails before SQLite is opened.
+
+Rationale:
+
+- Encrypted filesystem/mounts are the normal operational control for Pi-class
+  devices with physically accessible storage.
+- SQLCipher can be revisited later if a deployment requires portable encrypted
+  DB files independent of disk encryption.
+- Adding SQLCipher now would create native dependency and migration risk without
+  changing Tier D safety behavior.
+
+Non-goals:
+
+- This does not validate the underlying kernel/disk encryption mechanism.
+- This does not encrypt individual rows or exports. MQTT export payload
+  encryption remains handled separately by gateway export encryption.
+- This does not protect a running unlocked device from a privileged local
+  attacker.
 
 ---
 
