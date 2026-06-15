@@ -54,6 +54,80 @@ if [ -z "${WHEEL}" ]; then
   exit 1
 fi
 
+echo "Verifying wheel dependency metadata..."
+"${PYTHON}" - "${WHEEL}" <<'PY'
+import sys
+import zipfile
+from pathlib import Path
+import re
+
+wheel = Path(sys.argv[1])
+metadata_name = ""
+with zipfile.ZipFile(wheel) as zf:
+    for name in zf.namelist():
+        if name.endswith(".dist-info/METADATA"):
+            metadata_name = name
+            break
+    if not metadata_name:
+        raise AssertionError(f"missing METADATA in {wheel}")
+    metadata = zf.read(metadata_name).decode("utf-8")
+
+requires = [
+    line.removeprefix("Requires-Dist: ").strip()
+    for line in metadata.splitlines()
+    if line.startswith("Requires-Dist: ")
+]
+base_requires = [req for req in requires if "extra ==" not in req]
+dep_name_re = re.compile(r"^[A-Za-z0-9_.-]+")
+
+
+def dependency_name(requirement):
+    match = dep_name_re.match(requirement)
+    if match is None:
+        raise AssertionError(f"could not parse dependency name from {requirement!r}")
+    return match.group(0).lower()
+
+
+base_names = {dependency_name(req) for req in base_requires}
+if base_names != {"pyyaml"}:
+    raise AssertionError(
+        "base ori-runtime install must stay slim for ori-energy/demo consumers; "
+        f"got base dependencies: {base_requires}"
+    )
+
+for forbidden in (
+    "paho-mqtt",
+    "psutil",
+    "pyserial",
+    "asyncua",
+    "cryptography",
+    "twilio",
+    "africastalking",
+    "httpx",
+):
+    if forbidden in base_names:
+        raise AssertionError(f"{forbidden} must not be a base dependency")
+
+runtime_extra = [
+    req
+    for req in requires
+    if 'extra == "runtime"' in req or "extra == 'runtime'" in req
+]
+for expected in ("paho-mqtt", "cryptography", "africastalking"):
+    if not any(req.lower().startswith(expected) for req in runtime_extra):
+        raise AssertionError(
+            f"runtime extra is missing {expected!r}; got {runtime_extra}"
+        )
+
+print(
+    "Wheel dependency metadata ok:",
+    {
+        "base": sorted(base_requires),
+        "runtime_extra_count": len(runtime_extra),
+    },
+)
+PY
+
 echo "Creating clean install environment..."
 "${PYTHON}" -m venv "${VENV_DIR}"
 if [ -x "${VENV_DIR}/bin/python" ]; then

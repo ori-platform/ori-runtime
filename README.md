@@ -307,6 +307,29 @@ for t in skill.triggers:
 "
 ```
 
+## Install Targets
+
+`ori-runtime` has two intentionally different install shapes:
+
+```bash
+# Product/demo consumers: typed rule-evaluation boundary only.
+# This is what ori-energy FastAPI should use for /demo proof evaluation.
+python -m pip install "ori-runtime[eval] @ git+https://github.com/ori-platform/ori-runtime.git@<commit-or-tag>"
+
+# Runtime/device development: full transport, security, provider, and HAL deps.
+python -m pip install -e ".[runtime,dev]"
+
+# Edge deployment still uses the signed wheelhouse / hash-locked requirements path.
+bash scripts/build-wheelhouse.sh
+```
+
+The base package deliberately installs only the dependency needed by
+`ori.integration` (`PyYAML`) plus the packaged bundled skills. MQTT, SMS,
+WhatsApp, OPC-UA, HTTP adapters, crypto transports, and hardware/provider
+libraries live behind extras or the deployment wheelhouse. This keeps
+`ori-energy` and other product/demo consumers from inheriting the full device
+runtime dependency surface while still using the real rule engine.
+
 ### Quick Local SLM Setup (Qwen GGUF)
 
 ```bash
@@ -410,12 +433,14 @@ bash scripts/smoke-release-wheel.sh           # Installed-wheel release readines
 The test suite covers all layers — HAL adapters, event bus, rule engine (with AST safety validation), action dispatcher (all four tiers), skill loader, state store, and runtime.
 
 Run `scripts/smoke-release-wheel.sh` before tagging a runtime release. It is
-deliberately stricter than an editable install: it builds the wheel, installs
-runtime dependencies from hash-locked requirements, installs the wheel with
-`--no-deps`, then verifies the public `ori.integration` rule-evaluation boundary
-is typed (`ori/py.typed`) and can resolve bundled skill data from the installed
-artifact. This protects the `ori-energy` demo/API path from type-checker ignores
-and source-checkout-only packaging mistakes.
+deliberately stricter than an editable install: it builds the wheel, verifies
+the wheel metadata keeps the base install slim for `ori-energy`/demo consumers,
+installs runtime dependencies from hash-locked requirements, installs the wheel
+with `--no-deps`, then verifies the public `ori.integration` rule-evaluation
+boundary is typed (`ori/py.typed`) and can resolve bundled skill data from the
+installed artifact. This protects the `ori-energy` demo/API path from
+type-checker ignores, accidental dependency bloat, and source-checkout-only
+packaging mistakes.
 
 ## Security
 
@@ -443,7 +468,7 @@ We welcome contributions! Start here:
 3. **Understand the extension points:** [`AGENTS.md`](AGENTS.md)
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[runtime,dev]"
 pytest tests/ -v
 ```
 
