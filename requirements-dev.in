@@ -9,3 +9,5 @@ types-PyYAML>=6.0
 pip-tools>=7.4
 pip-audit>=2.7
 cyclonedx-bom>=6.0
+
+wait-for2==0.3.2; python_version < "3.12"
