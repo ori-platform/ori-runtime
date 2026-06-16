@@ -16,7 +16,9 @@ def _dependency_name(requirement: str) -> str:
 
 def test_base_package_dependencies_stay_slim_for_integration_consumers() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    dependencies = {_dependency_name(dep) for dep in pyproject["project"]["dependencies"]}
+    dependencies = {
+        _dependency_name(dep) for dep in pyproject["project"]["dependencies"]
+    }
 
     assert dependencies == {"pyyaml"}
 
