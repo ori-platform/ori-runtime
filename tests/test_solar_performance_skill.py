@@ -98,7 +98,7 @@ def _ctx(skill, event, store):
 async def test_skill_loads_with_expected_triggers():
     skill = _load_skill()
     assert skill.name == "solar-performance-monitor"
-    assert len(skill.triggers) == 3
+    assert len(skill.triggers) == 4
     assert {t.action_tier for t in skill.triggers} == {"A"}
 
 

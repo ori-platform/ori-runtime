@@ -18,6 +18,8 @@ sensors_required:
     protocol: growatt
   - type: victron_grid_power
     protocol: victron
+  - type: battery
+    protocol: simulation
 
 triggers:
   - name: battery_deep_discharge_risk
@@ -31,6 +33,14 @@ triggers:
     cooldown_seconds: 3600
     escalate_to: local_slm
     action_tier: A
+
+  # Tier D — Critical SOC emergency cutoff: prevent deep discharge damage
+  # Covers simulation (sensor_type='battery'), Growatt, Victron, and hook-derived is_soc_sensor.
+  - name: battery_emergency_cutoff
+    condition: "(sensor_type == 'battery' or sensor_type == 'growatt_battery_soc' or sensor_type == 'victron_battery_soc' or is_soc_sensor == 1) and value < battery_critical_threshold"
+    bypass_llm: true
+    action_tier: D
+    cooldown_seconds: 0
 
   - name: olax_voltage_decay_degraded
     condition: "is_voltage_mode == 1 and is_battery_voltage_sensor == 1 and outage_active == 1 and outage_duration_minutes >= olax_min_outage_minutes and voltage_decay_v_per_hour >= olax_decay_threshold_v_per_hour"
@@ -53,6 +63,13 @@ prompts:
     Do not include timestamps, percentages, units, currency, or action statements.
     Example: "Your battery has been cycling heavily this week, which can speed up wear."
 
+  battery_emergency_cutoff: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining why
+    the battery was cut off before full discharge.
+    Do not include timestamps, percentages, units, currency, or action statements.
+    Example: "The backup battery dropped critically low, so Ori cut it off to prevent permanent damage."
+
   olax_voltage_decay_degraded: |
     Your job is diagnosis only.
     Write one plain sentence for a non-technical building owner explaining why
@@ -66,10 +83,13 @@ actions:
       tier: A
     - name: log_to_dashboard
       tier: A
+    - name: switch_to_grid
+      tier: D
   defaults:
     battery_deep_discharge_risk: [alert_whatsapp, log_to_dashboard]
     battery_cycle_stress: [alert_whatsapp, log_to_dashboard]
     olax_voltage_decay_degraded: [alert_whatsapp, log_to_dashboard]
+    battery_emergency_cutoff: [switch_to_grid, alert_whatsapp, log_to_dashboard]
 
 config:
   timezone: Africa/Lagos
@@ -79,6 +99,9 @@ config:
   low_soc_threshold: 20.0
   low_soc_persistence_minutes: 30
   efc_warning_threshold_weekly: 7.0
+
+  # Emergency cutoff threshold (Tier D)
+  battery_critical_threshold: 5.0
 
   # Voltage-proxy mode (PoC OLAX UPS path)
   battery_voltage_sensor_ids: ["olax-battery-voltage"]

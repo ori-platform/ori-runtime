@@ -113,8 +113,8 @@ def _seed_history(store: _Store, sensor_id: str, values: list[float]) -> None:
 async def test_skill_loads_with_v2_triggers():
     skill = _load_skill()
     assert skill.name == "energy-anomaly-detector"
-    assert len(skill.triggers) == 4
-    assert {trigger.action_tier for trigger in skill.triggers} == {"A", "D"}
+    assert len(skill.triggers) == 6
+    assert {trigger.action_tier for trigger in skill.triggers} == {"A", "D", "B"}
 
 
 def test_hook_computes_baseline_and_deviation():
