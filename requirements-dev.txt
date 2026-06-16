@@ -2170,6 +2170,12 @@ yarl==1.23.0 \
     #   -r requirements.txt
     #   aiohttp
 
+wait-for2==0.3.2 ; python_version < "3.12" \
+    --hash=sha256:93863026dc35f3471104ecf7de1f4a0b31f4c8b12a2241c0d6ee26dcc0c2092a
+    # via
+    #   -r requirements-dev.in
+    #   asyncua
+
 # WARNING: The following packages were not pinned, but pip requires them to be
 # pinned when the requirements file includes hashes and the requirement is not
 # satisfied by a package already installed. Consider using the --allow-unsafe flag.

@@ -1188,3 +1188,8 @@ yarl==1.23.0 \
     --hash=sha256:fe8f8f5e70e6dbdfca9882cd9deaac058729bcf323cf7a58660901e55c9c94f6 \
     --hash=sha256:fffc45637bcd6538de8b85f51e3df3223e4ad89bccbfca0481c08c7fc8b7ed7d
     # via aiohttp
+wait-for2==0.3.2 ; python_version < "3.12" \
+    --hash=sha256:93863026dc35f3471104ecf7de1f4a0b31f4c8b12a2241c0d6ee26dcc0c2092a
+    # via
+    #   -r requirements.in
+    #   asyncua
