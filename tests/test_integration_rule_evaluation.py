@@ -79,7 +79,7 @@ async def test_dangerous_overcurrent_returns_tier_d_with_proof_fields() -> None:
     assert result.action_tier == "D"
     assert result.trigger_name == "dangerous_overcurrent"
     assert result.bypass_llm is True
-    assert result.proof_rule_condition == "value > dangerous_overcurrent_threshold"
+    assert result.proof_rule_condition == "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and value > dangerous_overcurrent_threshold"
     assert result.proof_threshold_name == "dangerous_overcurrent_threshold"
     assert result.proof_threshold == pytest.approx(20.0)
     assert result.proof_sensor_value == pytest.approx(52.0)
