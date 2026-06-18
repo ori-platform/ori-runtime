@@ -64,6 +64,8 @@ _COUNTRY_TO_LINE_VOLTAGE = {
     "CA": 120.0,
 }
 
+_POWER_SENSOR_TYPES = frozenset({"usb_power"})
+
 
 def _resolve_timezone(tz_name):
     return resolve_timezone(tz_name)
@@ -255,7 +257,9 @@ def pre_trigger_eval(context):
     context.derived["sustained_high_ratio"] = 0.0
     context.derived["sustained_high_count"] = 0
     context.derived["recent_volatility_percent"] = 0.0
+    context.derived["measurement_kind"] = "current"
     context.derived["delta_amps"] = 0.0
+    context.derived["delta_watts"] = 0.0
     context.derived["line_voltage_used"] = 0.0
     context.derived["power_factor_used"] = 0.0
     context.derived["estimated_kw_delta"] = 0.0
@@ -269,6 +273,9 @@ def pre_trigger_eval(context):
         return context
 
     sensor_id = str(getattr(reading, "sensor_id", "")).strip()
+    sensor_type = str(getattr(reading, "sensor_type", "")).strip()
+    measurement_kind = "power" if sensor_type in _POWER_SENSOR_TYPES else "current"
+    context.derived["measurement_kind"] = measurement_kind
     current_value = as_float(getattr(reading, "value", 0.0), 0.0)
     history_window = context.derived["history_window"]
     persistence_window = context.derived["persistence_window"]
@@ -339,12 +346,17 @@ def pre_trigger_eval(context):
                     recent_values
                 )
 
-    # Deterministic cost estimator (P3-R6):
-    # keep both observed window and projected /day run-rate values.
+    # Deterministic cost estimator: USB power meters report watts
+    # directly, while clamp/current sensors need voltage and power factor.
     delta_amps = 0.0
+    delta_watts = 0.0
     if baseline_valid == 1 and current_value > baseline_24h:
-        delta_amps = current_value - baseline_24h
+        if measurement_kind == "power":
+            delta_watts = current_value - baseline_24h
+        else:
+            delta_amps = current_value - baseline_24h
     context.derived["delta_amps"] = delta_amps
+    context.derived["delta_watts"] = delta_watts
 
     tariff_per_kwh, tariff_is_explicit = _resolve_tariff(context)
     line_voltage, voltage_confidence = _resolve_line_voltage(context)
@@ -353,15 +365,22 @@ def pre_trigger_eval(context):
     context.derived["line_voltage_used"] = line_voltage
     context.derived["power_factor_used"] = power_factor
 
-    confidence = (
-        "exact" if tariff_is_explicit and voltage_confidence == "exact" else "estimated"
-    )
+    confidence = "estimated"
+    if tariff_is_explicit:
+        if measurement_kind == "power" or voltage_confidence == "exact":
+            confidence = "exact"
     context.derived["cost_confidence"] = confidence
 
-    if delta_amps <= 0.0 or tariff_per_kwh <= 0.0:
+    if measurement_kind == "power":
+        kw_delta = delta_watts / 1000.0
+    else:
+        kw_delta = (delta_amps * line_voltage * power_factor) / 1000.0
+        delta_watts = delta_amps * line_voltage * power_factor
+        context.derived["delta_watts"] = delta_watts
+
+    if kw_delta <= 0.0 or tariff_per_kwh <= 0.0:
         return context
 
-    kw_delta = (delta_amps * line_voltage * power_factor) / 1000.0
     context.derived["estimated_kw_delta"] = kw_delta
 
     observed_hours = 0.0

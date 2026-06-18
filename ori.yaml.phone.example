@@ -1,15 +1,25 @@
 # ori.yaml.phone.example
 # Phone-as-Gateway deployment profile (Termux on Android)
+#
+# This profile is the Ori Energy phone wedge: an Android phone runs the runtime
+# in Termux and reads a USB serial energy meter through an OTG adapter. The
+# phone is an edge runtime and gateway substitute for Tier A intelligence; it is
+# not a substitute for certified Edge Node relay wiring.
 
 device:
   id: phone-gateway-ikeja-01
   name: Ikeja Office Phone Gateway
   location: Lagos, Nigeria
   timezone: Africa/Lagos
+  country_code: NG
   deployment_type: phone
+  site_type: office
 
 sensors:
-  - id: mains-power
+  # PZEM-004T or equivalent USB/Modbus energy meter connected to the Android
+  # phone's USB port through an OTG adapter. The USB meter is the small sensor
+  # device in the phone onboarding kit; Termux only runs the Ori runtime.
+  - id: phone-main-power
     type: usb_power
     protocol: usb_serial
     device_path: /dev/ttyUSB0
@@ -18,8 +28,11 @@ sensors:
 
 skills:
   - name: energy-anomaly-detector
-    version: "0.2.1"
-    config: {}
+    version: "0.1.0"
+    config:
+      country_code: NG
+      tariff_per_kwh: 225.0
+      currency_code: NGN
 
 reasoning:
   default_tier: local
@@ -40,6 +53,8 @@ actions:
   sms:
     enabled: false
   relay:
+    # Phone deployments must keep relay disabled. Tier B/C physical actuation
+    # requires a certified Ori Edge Node installation.
     enabled: false
     gpio_pin: 26
 

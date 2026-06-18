@@ -13,35 +13,41 @@ sensors_required:
     protocol: serial
   - type: voltage
     protocol: serial
+  - type: usb_power
+    protocol: usb_serial
+  - type: usb_current
+    protocol: usb_serial
+  - type: usb_voltage
+    protocol: usb_serial
 
 triggers:
   - name: sustained_overdraw
-    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and deviation_percent >= overdraw_threshold_percent and sustained_high_ratio >= sustained_ratio_threshold"
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current' or sensor_type == 'usb_current' or sensor_type == 'usb_power') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and deviation_percent >= overdraw_threshold_percent and sustained_high_ratio >= sustained_ratio_threshold"
     cooldown_seconds: 600
     escalate_to: local_slm
     action_tier: A
 
   - name: sudden_load_spike
-    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and spike_ratio >= spike_ratio_threshold and deviation_percent >= (overdraw_threshold_percent / 2.0)"
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current' or sensor_type == 'usb_current' or sensor_type == 'usb_power') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and spike_ratio >= spike_ratio_threshold and deviation_percent >= (overdraw_threshold_percent / 2.0)"
     cooldown_seconds: 300
     escalate_to: local_slm
     action_tier: A
 
   - name: unstable_power_draw
-    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and recent_volatility_percent >= volatility_threshold_percent and deviation_percent >= (overdraw_threshold_percent / 3.0)"
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current' or sensor_type == 'usb_current' or sensor_type == 'usb_power') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and recent_volatility_percent >= volatility_threshold_percent and deviation_percent >= (overdraw_threshold_percent / 3.0)"
     cooldown_seconds: 600
     escalate_to: local_slm
     action_tier: A
 
   - name: dangerous_overcurrent
-    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and value > dangerous_overcurrent_threshold"
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current' or sensor_type == 'usb_current') and value > dangerous_overcurrent_threshold"
     bypass_llm: true
     action_tier: D
     cooldown_seconds: 0
 
   # Tier D — Grid overvoltage: protect equipment from damaging voltage levels
   - name: voltage_overvoltage
-    condition: "sensor_type == 'voltage' and sensor_id == 'grid-main_voltage' and value > overvoltage_threshold"
+    condition: "(sensor_type == 'voltage' or sensor_type == 'usb_voltage') and sensor_id == 'grid-main_voltage' and value > overvoltage_threshold"
     bypass_llm: true
     action_tier: D
     cooldown_seconds: 0
@@ -50,7 +56,7 @@ triggers:
   # phcn_restore_active is injected by hooks when load is confirmed on generator.
   # Default is 0 (safe for deployments without live context).
   - name: grid_phcn_restored
-    condition: "sensor_type == 'voltage' and sensor_id == 'grid-main_voltage' and value >= grid_restore_voltage and phcn_restore_active == 1"
+    condition: "(sensor_type == 'voltage' or sensor_type == 'usb_voltage') and sensor_id == 'grid-main_voltage' and value >= grid_restore_voltage and phcn_restore_active == 1"
     action_tier: B
     reasoning_policy: post_action
     cooldown_seconds: 0

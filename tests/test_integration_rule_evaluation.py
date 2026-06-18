@@ -16,12 +16,18 @@ from ori.integration.rule_evaluation import (
 )
 
 
-def _request(value: float, **kwargs: object) -> RuleEvaluationRequest:
+def _request(
+    value: float,
+    *,
+    sensor_type: str = "current_clamp",
+    unit: str = "ampere",
+    **kwargs: object,
+) -> RuleEvaluationRequest:
     return RuleEvaluationRequest(
         sensor_id="main-circuit-current",
-        sensor_type="current_clamp",
+        sensor_type=sensor_type,
         value=value,
-        unit="ampere",
+        unit=unit,
         timestamp_ms=1_710_000_000_123,
         quality=1.0,
         device_id="demo-site-a",
@@ -81,7 +87,7 @@ async def test_dangerous_overcurrent_returns_tier_d_with_proof_fields() -> None:
     assert result.bypass_llm is True
     assert (
         result.proof_rule_condition
-        == "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current') and value > dangerous_overcurrent_threshold"
+        == "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current' or sensor_type == 'usb_current') and value > dangerous_overcurrent_threshold"
     )
     assert result.proof_threshold_name == "dangerous_overcurrent_threshold"
     assert result.proof_threshold == pytest.approx(20.0)
@@ -90,6 +96,21 @@ async def test_dangerous_overcurrent_returns_tier_d_with_proof_fields() -> None:
     assert result.proposed_action == "alert_whatsapp"
     assert result.default_actions == ("alert_whatsapp", "log_to_dashboard")
     assert result.latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_usb_current_can_return_tier_d_with_proof_fields() -> None:
+    result = await evaluate_sensor_reading(
+        _request(52.0, sensor_type="usb_current", unit="ampere")
+    )
+
+    assert result.matched is True
+    assert result.action_tier == "D"
+    assert result.trigger_name == "dangerous_overcurrent"
+    assert result.proof_threshold_name == "dangerous_overcurrent_threshold"
+    assert result.proof_threshold == pytest.approx(20.0)
+    assert result.proof_sensor_value == pytest.approx(52.0)
+    assert result.proof_tier_selected == "D"
 
 
 @pytest.mark.asyncio
