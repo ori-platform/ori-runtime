@@ -68,6 +68,8 @@ def _event(
     sensor_id: str = "load-current-01",
     sensor_type: str = "current_clamp",
     value: float,
+    unit: str = "ampere",
+    source: str = "i2c",
     quality: float = 1.0,
     timestamp: int = 1_710_000_000_123,
 ) -> OriEvent:
@@ -75,10 +77,10 @@ def _event(
         sensor_id=sensor_id,
         sensor_type=sensor_type,
         value=value,
-        unit="ampere",
+        unit=unit,
         timestamp=timestamp,
         quality=quality,
-        metadata={"source": "i2c"},
+        metadata={"source": source},
     )
     return OriEvent.from_reading(reading, "energy-site-01")
 
@@ -91,22 +93,48 @@ def _ctx(skill, event, store):
     return hook_ctx, context
 
 
-def _history_reading(sensor_id: str, value: float, ts: int) -> SensorReading:
+def _history_reading(
+    sensor_id: str,
+    value: float,
+    ts: int,
+    *,
+    sensor_type: str = "current_clamp",
+    unit: str = "ampere",
+    source: str = "i2c",
+) -> SensorReading:
     return SensorReading(
         sensor_id=sensor_id,
-        sensor_type="current_clamp",
+        sensor_type=sensor_type,
         value=value,
-        unit="ampere",
+        unit=unit,
         timestamp=ts,
         quality=1.0,
-        metadata={"source": "i2c"},
+        metadata={"source": source},
     )
 
 
-def _seed_history(store: _Store, sensor_id: str, values: list[float]) -> None:
+def _seed_history(
+    store: _Store,
+    sensor_id: str,
+    values: list[float],
+    *,
+    sensor_type: str = "current_clamp",
+    unit: str = "ampere",
+    source: str = "i2c",
+) -> None:
     base_ts = 1_709_999_000_000
     for idx, value in enumerate(reversed(values)):
-        store.add_history(sensor_id, _history_reading(sensor_id, value, base_ts + idx))
+        store.add_history(
+            sensor_id,
+            _history_reading(
+                sensor_id,
+                value,
+                base_ts + idx,
+                sensor_type=sensor_type,
+                unit=unit,
+                source=source,
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -196,6 +224,48 @@ async def test_rule_matches_sustained_overdraw():
     result = await RuleEngine().evaluate(event, [trigger], context=context)
     assert result.matched is True
     assert result.rule_name == "sustained_overdraw"
+
+
+@pytest.mark.asyncio
+async def test_usb_power_matches_sustained_overdraw_and_uses_watts_for_cost():
+    skill = _load_skill()
+    skill.config["overdraw_threshold_percent"] = 10.0
+    skill.config["sustained_ratio_threshold"] = 0.6
+    skill.config["tariff_per_kwh"] = 100.0
+    store = _Store()
+    sensor_id = "phone-main-power"
+    _seed_history(
+        store,
+        sensor_id,
+        [1_700.0, 1_650.0, 1_720.0, 1_680.0, 1_710.0, 1_690.0, 1_000.0, 1_000.0],
+        sensor_type="usb_power",
+        unit="watt",
+        source="usb_serial",
+    )
+
+    event = _event(
+        sensor_id=sensor_id,
+        sensor_type="usb_power",
+        value=1_750.0,
+        unit="watt",
+        source="usb_serial",
+        quality=0.95,
+    )
+    hook_ctx, context = _ctx(skill, event, store)
+    trigger = next(t for t in skill.triggers if t.name == "sustained_overdraw")
+
+    result = await RuleEngine().evaluate(event, [trigger], context=context)
+
+    assert result.matched is True
+    assert hook_ctx.derived["measurement_kind"] == "power"
+    assert hook_ctx.derived["delta_amps"] == 0.0
+    assert hook_ctx.derived["delta_watts"] == pytest.approx(
+        1_750.0 - hook_ctx.derived["baseline_24h"]
+    )
+    assert hook_ctx.derived["estimated_kw_delta"] == pytest.approx(
+        hook_ctx.derived["delta_watts"] / 1000.0
+    )
+    assert hook_ctx.derived["cost_confidence"] == "exact"
 
 
 @pytest.mark.asyncio
