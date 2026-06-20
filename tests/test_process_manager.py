@@ -61,5 +61,17 @@ async def test_access_denied_returns_false():
     assert ok is False
 
 
+@pytest.mark.asyncio
+async def test_missing_psutil_disables_process_control():
+    action = ProcessManagerAction()
+    with (
+        patch("ori.actions.process_manager._PSUTIL_AVAILABLE", False),
+        patch("ori.actions.process_manager.psutil", None),
+    ):
+        ok = await action.terminate_process(pid=4321, name="Zoom")
+
+    assert ok is False
+
+
 def test_blocklist_is_frozen():
     assert isinstance(_SYSTEM_PROCESS_BLOCKLIST, frozenset)

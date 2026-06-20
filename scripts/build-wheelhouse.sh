@@ -13,8 +13,13 @@
 #   bash scripts/build-wheelhouse.sh                        # default output: dist/ori-wheelhouse/
 #   ORI_WHEELHOUSE_OUT=/tmp/wh bash scripts/build-wheelhouse.sh
 #   ORI_PYTHON=python3.12 bash scripts/build-wheelhouse.sh  # pin Python version
+#   ORI_WHEELHOUSE_TARGET=generic bash scripts/build-wheelhouse.sh
 #   ORI_WHEELHOUSE_TARGET=pi bash scripts/build-wheelhouse.sh
 #
+# Phone wheelhouses use requirements-phone.txt so Android/Termux deployments
+# do not carry gateway MQTT, industrial protocol, Pi GPIO, or PC-control deps.
+# Build production phone wheelhouses on Termux or a compatible trusted Android
+# builder; wheels downloaded on macOS/Linux are useful for smoke tests only.
 # Pi wheelhouses include platform-specific GPIO wheels. Build them on a
 # Pi-compatible trusted Linux builder rather than on a phone or macOS host.
 #
@@ -25,9 +30,11 @@
 #
 # Requirements:
 #   pip>=23.0, pip-tools>=7.0 (both are in requirements-dev.txt)
+#   Phone source-wheel builds also require local build tooling on the trusted
+#   Termux/Android builder for native packages such as cryptography or aiohttp.
 #
 # Supply-chain posture:
-#   - All wheels are downloaded with --require-hashes from requirements files.
+#   - All dependency inputs are resolved with --require-hashes from requirements files.
 #   - Hash-locked requirements are bundled into the wheelhouse so device
 #     installers can re-verify on every install.
 #   - This script must only be run in a clean, trusted environment.
@@ -40,25 +47,28 @@ PYTHON="${ORI_PYTHON:-python3}"
 TARGET="${ORI_WHEELHOUSE_TARGET:-phone}"
 if [ "${TARGET}" = "pi" ]; then
   DEFAULT_OUT="$(pwd)/dist/ori-pi-wheelhouse"
+elif [ "${TARGET}" = "phone" ]; then
+  DEFAULT_OUT="$(pwd)/dist/ori-phone-wheelhouse"
 else
   DEFAULT_OUT="$(pwd)/dist/ori-wheelhouse"
 fi
 OUT="${ORI_WHEELHOUSE_OUT:-${DEFAULT_OUT}}"
 REQUIREMENTS="requirements.txt"
+PHONE_REQUIREMENTS="requirements-phone.txt"
 PI_REQUIREMENTS="requirements-pi.txt"
 PACKAGE_NAME="ori-runtime"
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
-if [ ! -f "${REQUIREMENTS}" ]; then
-  echo "ERROR: ${REQUIREMENTS} not found. Run from the repo root." >&2
-  exit 1
-fi
-
 case "${TARGET}" in
-  phone|generic)
+  phone)
+    ACTIVE_REQUIREMENTS="${PHONE_REQUIREMENTS}"
+    ;;
+  generic)
+    ACTIVE_REQUIREMENTS="${REQUIREMENTS}"
     ;;
   pi)
+    ACTIVE_REQUIREMENTS="${REQUIREMENTS}"
     if [ ! -f "${PI_REQUIREMENTS}" ]; then
       echo "ERROR: ${PI_REQUIREMENTS} not found. Run from the repo root." >&2
       exit 1
@@ -70,9 +80,18 @@ case "${TARGET}" in
     ;;
 esac
 
-if ! grep -q "sha256:" "${REQUIREMENTS}"; then
-  echo "ERROR: ${REQUIREMENTS} does not contain hashes." >&2
-  echo "Regenerate with: pip-compile --generate-hashes requirements.in" >&2
+if [ ! -f "${ACTIVE_REQUIREMENTS}" ]; then
+  echo "ERROR: ${ACTIVE_REQUIREMENTS} not found. Run from the repo root." >&2
+  exit 1
+fi
+
+if ! grep -q "sha256:" "${ACTIVE_REQUIREMENTS}"; then
+  echo "ERROR: ${ACTIVE_REQUIREMENTS} does not contain hashes." >&2
+  if [ "${ACTIVE_REQUIREMENTS}" = "${PHONE_REQUIREMENTS}" ]; then
+    echo "Regenerate with: pip-compile --generate-hashes --output-file=requirements-phone.txt requirements-phone.in" >&2
+  else
+    echo "Regenerate with: pip-compile --generate-hashes requirements.in" >&2
+  fi
   exit 1
 fi
 
@@ -89,7 +108,7 @@ fi
 echo "Building Ori wheelhouse → ${OUT}"
 echo "  Target: ${TARGET}"
 echo "  Python: $("${PYTHON}" --version)"
-echo "  Source: ${REQUIREMENTS}"
+echo "  Source: ${ACTIVE_REQUIREMENTS}"
 if [ "${TARGET}" = "pi" ]; then
   echo "  Pi source: ${PI_REQUIREMENTS}"
 fi
@@ -98,13 +117,27 @@ echo ""
 rm -rf "${OUT}"
 mkdir -p "${OUT}"
 
-# 1. Download all dependency wheels with hash verification
-echo "Downloading dependency wheels (hash-locked)..."
-"${PYTHON}" -m pip download \
-  --require-hashes \
-  --only-binary=:all: \
-  --dest "${OUT}" \
-  -r "${REQUIREMENTS}"
+# 1. Build or download all dependency wheels with hash verification.
+#
+# Generic/Pi targets intentionally require upstream binary wheels. Phone
+# wheelhouses are different: Android/Termux often has no compatible PyPI wheel
+# for native packages, so the trusted phone builder must be allowed to compile
+# platform-local wheels from the hash-locked source distributions.
+if [ "${TARGET}" = "phone" ]; then
+  echo "Building phone dependency wheels from hash-locked inputs..."
+  "${PYTHON}" -m pip wheel \
+    --require-hashes \
+    --no-build-isolation \
+    --wheel-dir "${OUT}" \
+    -r "${ACTIVE_REQUIREMENTS}"
+else
+  echo "Downloading dependency wheels (hash-locked, binary-only)..."
+  "${PYTHON}" -m pip download \
+    --require-hashes \
+    --only-binary=:all: \
+    --dest "${OUT}" \
+    -r "${ACTIVE_REQUIREMENTS}"
+fi
 
 if [ "${TARGET}" = "pi" ]; then
   echo "Downloading Raspberry Pi hardware wheels (hash-locked)..."
@@ -122,8 +155,73 @@ echo "Building ${PACKAGE_NAME} wheel..."
   --wheel-dir "${OUT}" \
   .
 
-# 3. Bundle the hash-locked requirements so the device can verify on install
-cp "${REQUIREMENTS}" "${OUT}/requirements.txt"
+# 3. Bundle the hash-locked requirements so the device can verify on install.
+#
+# For phone builds, requirements-phone.txt is the source/build lockfile. If a
+# Termux builder compiles a local wheel from a hashed sdist, the resulting wheel
+# has a new SHA256. The install requirements must therefore be generated from
+# the actual wheelhouse contents, while the source lockfile is copied alongside
+# it for provenance.
+if [ "${TARGET}" = "phone" ]; then
+  echo "Writing phone install requirements from built wheels..."
+  "${PYTHON}" - "${OUT}" "${PACKAGE_NAME}" > "${OUT}/requirements.txt" <<'PY'
+import hashlib
+import sys
+import zipfile
+from pathlib import Path
+
+wheelhouse = Path(sys.argv[1])
+package_name = sys.argv[2].lower().replace("_", "-")
+
+
+def _metadata_for_wheel(path: Path) -> tuple[str, str]:
+    with zipfile.ZipFile(path) as zf:
+        metadata_name = next(
+            (name for name in zf.namelist() if name.endswith(".dist-info/METADATA")),
+            "",
+        )
+        if not metadata_name:
+            raise SystemExit(f"ERROR: missing METADATA in wheel: {path.name}")
+        metadata = zf.read(metadata_name).decode("utf-8")
+
+    name = ""
+    version = ""
+    for line in metadata.splitlines():
+        if line.startswith("Name: "):
+            name = line.removeprefix("Name: ").strip()
+        elif line.startswith("Version: "):
+            version = line.removeprefix("Version: ").strip()
+    if not name or not version:
+        raise SystemExit(f"ERROR: missing Name/Version metadata in wheel: {path.name}")
+    return name, version
+
+
+rows: list[tuple[str, str, str]] = []
+for wheel in sorted(wheelhouse.glob("*.whl")):
+    name, version = _metadata_for_wheel(wheel)
+    if name.lower().replace("_", "-") == package_name:
+        continue
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    rows.append((name, version, digest))
+
+if not rows:
+    raise SystemExit("ERROR: no dependency wheels found for phone requirements.")
+
+print("#")
+print("# This file is generated by scripts/build-wheelhouse.sh for this")
+print("# phone wheelhouse. It hashes the actual built/downloaded wheels,")
+print("# not the source distributions in requirements-phone.txt.")
+print("#")
+for name, version, digest in rows:
+    print(f"{name}=={version} \\")
+    print(f"    --hash=sha256:{digest}")
+PY
+else
+  cp "${ACTIVE_REQUIREMENTS}" "${OUT}/requirements.txt"
+fi
+if [ "${TARGET}" = "phone" ]; then
+  cp "${PHONE_REQUIREMENTS}" "${OUT}/requirements-phone.txt"
+fi
 if [ "${TARGET}" = "pi" ]; then
   cp "${PI_REQUIREMENTS}" "${OUT}/requirements-pi.txt"
 fi
@@ -135,7 +233,7 @@ echo "Writing wheelhouse manifest..."
   echo "# Built: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   echo "# Python: $("${PYTHON}" --version 2>&1)"
   echo "# Target: ${TARGET}"
-  echo "# Source: ${REQUIREMENTS}"
+  echo "# Source: ${ACTIVE_REQUIREMENTS}"
   if [ "${TARGET}" = "pi" ]; then
     echo "# Pi source: ${PI_REQUIREMENTS}"
   fi

@@ -64,6 +64,19 @@ directly for cost projection. It does not reinterpret watts as amps.
 Follow [android-phone-install.md](android-phone-install.md) for the install and
 USB readiness checklist.
 
+Phone wheelhouses are built from `requirements-phone.txt`, not the broad
+runtime lockfile. The phone lockfile keeps gateway MQTT, industrial protocols,
+Pi GPIO packages, and PC process-control dependencies out of the Android
+install while preserving USB serial, telemetry export, runtime crypto, and
+direct alert transports. Build production phone wheelhouses on Termux or a
+compatible trusted Android builder because Python wheels are platform-specific.
+The phone target builds platform-local wheels from hash-locked inputs instead
+of forcing binary-only downloads, since native dependencies may not publish
+Android-compatible PyPI wheels. Inside the finished wheelhouse,
+`requirements-phone.txt` records the source/build lockfile, while
+`requirements.txt` is generated from the actual built wheels so offline phone
+installs can still use `--require-hashes`.
+
 `termux-usb -l` is a readiness signal, not a runtime transport by itself. It can
 show that Android sees the USB meter, but the runtime still needs the meter to
 be presented as a serial stream through a tty path or approved local bridge.
