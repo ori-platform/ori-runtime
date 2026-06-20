@@ -68,6 +68,16 @@ USB readiness checklist.
 show that Android sees the USB meter, but the runtime still needs the meter to
 be presented as a serial stream through a tty path or approved local bridge.
 
+Run this for phone readiness:
+
+```sh
+ori-phone-doctor --config ori.yaml
+```
+
+The doctor validates Termux command availability, USB readiness, phone-mode
+config, relay disablement, telemetry API-key presence when enabled, and operator
+contact setup without starting the runtime loop.
+
 ## PWA Role
 
 The PWA is an operator and commercial surface, not the sensing runtime. It can

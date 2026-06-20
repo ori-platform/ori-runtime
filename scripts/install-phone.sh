@@ -112,4 +112,6 @@ else
   fi
 fi
 
-echo "Setup complete. Run: ori-runtime --config ori.yaml"
+echo "Setup complete."
+echo "After copying and editing ori.yaml, run: ori-phone-doctor --config ori.yaml"
+echo "Then start the runtime with: ori-runtime --config ori.yaml"
