@@ -41,6 +41,13 @@ if [ ! -d "${WHEELHOUSE_DIR}" ]; then
   echo "ERROR: Signed wheelhouse not found: ${WHEELHOUSE_DIR}" >&2
   echo "Production phone installs must use a signed Ori wheelhouse, not live PyPI resolution." >&2
   echo "Set ORI_WHEELHOUSE_DIR to a directory containing wheels and requirements.txt." >&2
+  echo "Build one with: ORI_WHEELHOUSE_TARGET=phone bash scripts/build-wheelhouse.sh" >&2
+  exit 1
+fi
+
+if [ ! -f "${WHEELHOUSE_DIR}/requirements.txt" ]; then
+  echo "ERROR: ${WHEELHOUSE_DIR}/requirements.txt missing from phone wheelhouse." >&2
+  echo "Build with: ORI_WHEELHOUSE_TARGET=phone bash scripts/build-wheelhouse.sh" >&2
   exit 1
 fi
 

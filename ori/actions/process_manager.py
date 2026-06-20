@@ -5,7 +5,13 @@
 
 import logging
 
-import psutil
+try:
+    import psutil
+
+    _PSUTIL_AVAILABLE = True
+except Exception:
+    psutil = None
+    _PSUTIL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +53,11 @@ class ProcessManagerAction:
             logger.error(
                 "ProcessManagerAction: refusing termination of system process %r",
                 requested_name,
+            )
+            return False
+        if not _PSUTIL_AVAILABLE or psutil is None:
+            logger.warning(
+                "ProcessManagerAction: psutil is not installed; process control disabled."
             )
             return False
 

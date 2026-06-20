@@ -37,6 +37,71 @@ def test_runtime_extra_carries_transport_provider_and_crypto_dependencies() -> N
     assert "psutil" in runtime_deps
 
 
+def test_phone_extra_carries_only_phone_wedge_dependencies() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    phone_deps = {
+        _dependency_name(dep)
+        for dep in pyproject["project"]["optional-dependencies"]["phone"]
+    }
+
+    assert phone_deps == {
+        "africastalking",
+        "cryptography",
+        "httpx",
+        "pyserial",
+        "twilio",
+    }
+
+
+def test_phone_requirements_input_excludes_gateway_pi_and_pc_deps() -> None:
+    deps = {
+        _dependency_name(line.strip())
+        for line in Path("requirements-phone.in")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert {"pyyaml", "pyserial", "httpx", "cryptography"} <= deps
+    assert "paho-mqtt" not in deps
+    assert "asyncua" not in deps
+    assert "pysolarmanv5" not in deps
+    assert "psutil" not in deps
+    assert "gpiozero" not in deps
+
+
+def test_phone_requirements_lockfile_is_hashed_and_excludes_broad_runtime_deps() -> (
+    None
+):
+    lockfile = Path("requirements-phone.txt").read_text(encoding="utf-8")
+    deps = {
+        _dependency_name(line.strip())
+        for line in lockfile.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and not line.startswith(" ")
+    }
+
+    assert "sha256:" in lockfile
+    assert {"pyyaml", "pyserial", "httpx", "cryptography"} <= deps
+    assert "paho-mqtt" not in deps
+    assert "asyncua" not in deps
+    assert "pysolarmanv5" not in deps
+    assert "psutil" not in deps
+    assert "gpiozero" not in deps
+
+
+def test_phone_wheelhouse_build_allows_platform_local_wheels() -> None:
+    script = Path("scripts/build-wheelhouse.sh").read_text(encoding="utf-8")
+
+    assert 'if [ "${TARGET}" = "phone" ]; then' in script
+    assert "Building phone dependency wheels from hash-locked inputs" in script
+    assert "--no-build-isolation" in script
+    assert "Writing phone install requirements from built wheels" in script
+    assert "requirements-phone.txt is the source/build lockfile" in script
+    assert "--only-binary=:all:" in script
+
+
 def test_eval_extra_is_intentionally_empty() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 

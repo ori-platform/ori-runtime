@@ -45,6 +45,13 @@ runtime = [
     "python-dotenv>=1.0",
     "urllib3>=2.7.0",
 ]
+phone = [
+    "pyserial>=3.5",
+    "httpx>=0.28",
+    "cryptography>=48.0.1",
+    "twilio>=9.0",
+    "africastalking>=1.0",
+]
 pi = [
     "gpiozero>=2.0",
     "smbus2>=0.4",

@@ -115,7 +115,34 @@ ori-runtime --config ori.yaml
 ## Customer Install From Signed Wheelhouse
 
 Production phone installs must not resolve dependencies live from public package
-registries. Build and transfer a signed wheelhouse, then run:
+registries. Build and transfer a signed phone wheelhouse:
+
+```sh
+ORI_WHEELHOUSE_TARGET=phone bash scripts/build-wheelhouse.sh
+```
+
+The wheelhouse is platform-specific. A macOS or generic Linux build can prove
+the script works, but do not ship that wheelhouse to an Android phone. Build the
+production phone wheelhouse on Termux or a compatible trusted Android builder,
+then sign and transfer it to the customer phone.
+
+On a Termux builder, install build tooling before creating the wheelhouse:
+
+```sh
+pkg install -y python clang make pkg-config rust openssl libffi
+python -m pip install --upgrade pip pip-tools wheel setuptools
+ORI_WHEELHOUSE_TARGET=phone bash scripts/build-wheelhouse.sh
+```
+
+The phone target builds dependency wheels from hash-locked inputs instead of
+forcing `--only-binary`, because several native packages may not publish
+Android-compatible PyPI wheels. The wheelhouse will contain both:
+
+- `requirements-phone.txt`, the source/build lockfile used to build the wheels;
+- `requirements.txt`, the install lockfile generated from the actual wheel
+  files in that wheelhouse.
+
+On the phone:
 
 ```sh
 export ORI_WHEELHOUSE_DIR="$HOME/ori-wheelhouse"
