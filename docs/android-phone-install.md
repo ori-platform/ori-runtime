@@ -105,6 +105,12 @@ Run the doctor before starting the runtime:
 ori-phone-doctor --config ori.yaml
 ```
 
+For a fuller phone diagnostic on the Android device:
+
+```sh
+bash scripts/termux-phone-smoke.sh --config ori.yaml
+```
+
 Start the runtime:
 
 ```sh
@@ -153,9 +159,23 @@ cp ori.yaml.phone.example ori.yaml
 Edit the same site/device fields as the development install, then start:
 
 ```sh
-ori-phone-doctor --config ori.yaml
+bash scripts/termux-phone-smoke.sh --config ori.yaml
 termux-wake-lock
 ori-runtime --config ori.yaml
+```
+
+To validate the offline wheelhouse installation itself on a test phone, run:
+
+```sh
+export ORI_WHEELHOUSE_DIR="$HOME/ori-wheelhouse"
+bash scripts/termux-phone-smoke.sh --install-wheelhouse --config ori.yaml
+```
+
+To prove the runtime can stay alive briefly without taking over the terminal
+forever:
+
+```sh
+bash scripts/termux-phone-smoke.sh --config ori.yaml --runtime-startup-seconds 10
 ```
 
 ## Termux:Boot Startup
@@ -184,6 +204,7 @@ Run these checks before calling a phone deployment usable:
 ```sh
 python -c "import ori; print('imports ok')"
 ori-phone-doctor --config ori.yaml
+bash scripts/termux-phone-smoke.sh --config ori.yaml
 ori-runtime --config ori.yaml
 ```
 

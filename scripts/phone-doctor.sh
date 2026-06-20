@@ -3,6 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Phone Starter readiness check wrapper for Android/Termux installs.
+#
+# For full phone validation, including wheelhouse install checks and optional
+# runtime startup smoke, use scripts/termux-phone-smoke.sh.
 set -euo pipefail
 
 CONFIG_PATH="${1:-ori.yaml}"
