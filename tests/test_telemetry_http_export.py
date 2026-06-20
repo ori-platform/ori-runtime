@@ -132,11 +132,7 @@ async def test_flush_once_posts_hmac_signed_batch(monkeypatch):
     payload = json.loads(body)
     assert payload["schema_version"] == "runtime.telemetry.v1"
     assert payload["device_id"] == "phone-01"
-    signed = (
-        headers["X-Ori-Timestamp-Ms"].encode("utf-8")
-        + b"."
-        + body
-    )
+    signed = headers["X-Ori-Timestamp-Ms"].encode("utf-8") + b"." + body
     expected = hmac.new(
         b"device-secret",
         signed,

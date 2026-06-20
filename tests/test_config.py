@@ -130,7 +130,9 @@ class TestLoadExample:
     def test_telemetry_export_disabled_by_default(self):
         cfg = Config.load(EXAMPLE_YAML)
         assert cfg.telemetry_export.enabled is False
-        assert cfg.telemetry_export.endpoint == "https://api.ori.energy/runtime/telemetry"
+        assert (
+            cfg.telemetry_export.endpoint == "https://api.ori.energy/runtime/telemetry"
+        )
         assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
         assert cfg.telemetry_export.batch_size == 50
 
