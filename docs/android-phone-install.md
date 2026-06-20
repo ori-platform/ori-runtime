@@ -99,6 +99,12 @@ telemetry_export:
   api_key_env: ORI_ENERGY_DEVICE_API_KEY
 ```
 
+Run the doctor before starting the runtime:
+
+```sh
+ori-phone-doctor --config ori.yaml
+```
+
 Start the runtime:
 
 ```sh
@@ -120,6 +126,7 @@ cp ori.yaml.phone.example ori.yaml
 Edit the same site/device fields as the development install, then start:
 
 ```sh
+ori-phone-doctor --config ori.yaml
 termux-wake-lock
 ori-runtime --config ori.yaml
 ```
@@ -149,12 +156,17 @@ Run these checks before calling a phone deployment usable:
 
 ```sh
 python -c "import ori; print('imports ok')"
+ori-phone-doctor --config ori.yaml
 ori-runtime --config ori.yaml
 ```
 
-In the runtime logs, confirm:
+In the doctor output and runtime logs, confirm:
 
 - `deployment_type=phone` is active;
+- relay is disabled;
+- USB readiness is either direct serial or an approved local serial bridge;
+- telemetry API key environment variable is present if telemetry export is
+  enabled;
 - relay initialization is skipped;
 - the `usb_serial` adapter connects;
 - the `usb_serial` adapter logs either `transport=serial` for `/dev/ttyUSB*`

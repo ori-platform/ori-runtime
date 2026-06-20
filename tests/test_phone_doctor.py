@@ -1,0 +1,217 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+import json
+
+from ori import phone_doctor
+
+
+def _write_phone_config(
+    tmp_path,
+    *,
+    deployment_type: str = "phone",
+    relay_enabled: bool = False,
+    telemetry_enabled: bool = False,
+    operator_contact: str = "+2348012345678",
+) -> str:
+    path = tmp_path / "ori.yaml"
+    path.write_text(
+        f"""
+device:
+  id: phone-gateway-ikeja-01
+  name: Ikeja Office Phone Gateway
+  location: Lagos, Nigeria
+  timezone: Africa/Lagos
+  deployment_type: {deployment_type}
+
+sensors:
+  - id: phone-main-power
+    type: usb_power
+    protocol: usb_serial
+    device_path: /dev/ttyUSB0
+    poll_interval_ms: 2000
+
+skills:
+  - name: energy-anomaly-detector
+    version: "0.1.0"
+
+reasoning:
+  default_tier: local
+  local_model: qwen2.5-0.5b-instruct-q4_k_m
+  model_path: /data/data/com.termux/files/home/models/
+
+gateway:
+  enabled: false
+  broker_url: ""
+
+telemetry_export:
+  enabled: {str(telemetry_enabled).lower()}
+  endpoint: "https://api.ori.energy/runtime/telemetry"
+  api_key_env: ORI_ENERGY_DEVICE_API_KEY
+
+actions:
+  primary_alert_channel: sms
+  operator_contact: "{operator_contact}"
+  whatsapp:
+    enabled: false
+  sms:
+    enabled: false
+  relay:
+    enabled: {str(relay_enabled).lower()}
+    gpio_pin: 26
+
+hal:
+  circuit_breaker:
+    failure_threshold: 5
+    recovery_timeout_s: 300
+    success_threshold: 2
+
+logging:
+  level: INFO
+  file: ori.log
+""".strip()
+    )
+    return str(path)
+
+
+def _status_by_name(checks):
+    return {check.name: check.status for check in checks}
+
+
+def _message_by_name(checks):
+    return {check.name: check.message for check in checks}
+
+
+def test_phone_doctor_accepts_valid_phone_config_with_warnings(tmp_path, monkeypatch):
+    config_path = _write_phone_config(tmp_path)
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    statuses = _status_by_name(checks)
+    assert statuses["config.load"] == "pass"
+    assert statuses["config.deployment_type"] == "pass"
+    assert statuses["config.relay"] == "pass"
+    assert statuses["config.gateway"] == "pass"
+    assert statuses["config.usb_sensor"] == "pass"
+    assert statuses["config.telemetry_export"] == "warn"
+    assert phone_doctor.has_failures(checks) is False
+
+
+def test_phone_doctor_fails_when_deployment_type_is_not_phone(tmp_path, monkeypatch):
+    config_path = _write_phone_config(tmp_path, deployment_type="pi")
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    assert _status_by_name(checks)["config.deployment_type"] == "fail"
+    assert phone_doctor.has_failures(checks) is True
+
+
+def test_phone_doctor_fails_when_phone_relay_is_enabled(tmp_path, monkeypatch):
+    config_path = _write_phone_config(tmp_path, relay_enabled=True)
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    assert _status_by_name(checks)["config.relay"] == "fail"
+    assert phone_doctor.has_failures(checks) is True
+
+
+def test_phone_doctor_requires_api_key_when_telemetry_enabled(tmp_path, monkeypatch):
+    config_path = _write_phone_config(tmp_path, telemetry_enabled=True)
+    monkeypatch.delenv("ORI_ENERGY_DEVICE_API_KEY", raising=False)
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    assert _status_by_name(checks)["config.telemetry_export"] == "fail"
+    assert (
+        "ORI_ENERGY_DEVICE_API_KEY"
+        in _message_by_name(checks)["config.telemetry_export"]
+    )
+
+
+def test_phone_doctor_accepts_api_key_when_telemetry_enabled(tmp_path, monkeypatch):
+    config_path = _write_phone_config(tmp_path, telemetry_enabled=True)
+    monkeypatch.setenv("ORI_ENERGY_DEVICE_API_KEY", "test-key")
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    assert _status_by_name(checks)["config.telemetry_export"] == "pass"
+    assert phone_doctor.has_failures(checks) is False
+
+
+def test_usb_readiness_prefers_direct_serial_device(monkeypatch):
+    monkeypatch.setattr(
+        phone_doctor,
+        "_find_direct_serial_devices",
+        lambda: ["/dev/ttyUSB0"],
+    )
+
+    check = phone_doctor._check_usb_readiness()
+
+    assert check.status == "pass"
+    assert check.details == {"serial_devices": ["/dev/ttyUSB0"]}
+
+
+def test_usb_readiness_warns_for_raw_termux_usb_without_serial(monkeypatch):
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(
+        phone_doctor,
+        "_list_termux_usb_devices",
+        lambda: ["/dev/bus/usb/001/002"],
+    )
+
+    check = phone_doctor._check_usb_readiness()
+
+    assert check.status == "warn"
+    assert "no /dev/ttyUSB" in check.message
+
+
+def test_parse_termux_usb_json_output():
+    assert phone_doctor._parse_termux_usb_output(
+        '["/dev/bus/usb/001/002", "/dev/bus/usb/001/003"]'
+    ) == ["/dev/bus/usb/001/002", "/dev/bus/usb/001/003"]
+
+
+def test_main_emits_json_and_returns_failure(tmp_path, monkeypatch, capsys):
+    config_path = _write_phone_config(tmp_path, relay_enabled=True)
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    exit_code = phone_doctor.main(["--config", config_path, "--json"])
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert any(
+        item["name"] == "config.relay" and item["status"] == "fail" for item in payload
+    )
+
+
+def test_main_no_fail_returns_zero_for_failures(tmp_path, monkeypatch):
+    config_path = _write_phone_config(tmp_path, relay_enabled=True)
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    assert phone_doctor.main(["--config", config_path, "--no-fail"]) == 0
+
+
+def test_format_text_uses_pretty_ansi_report(tmp_path, monkeypatch):
+    config_path = _write_phone_config(tmp_path)
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    output = phone_doctor._format_text(phone_doctor.run_phone_doctor(config_path))
+
+    assert "\033[" in output
+    assert "ORI  PHONE DOCTOR" in output
+    assert "ANDROID / TERMUX" in output
+    assert "ORI CONFIG" in output
+    assert "Result: PASS" in output
