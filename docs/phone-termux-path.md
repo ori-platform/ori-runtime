@@ -91,6 +91,18 @@ The doctor validates Termux command availability, USB readiness, phone-mode
 config, relay disablement, telemetry API-key presence when enabled, and operator
 contact setup without starting the runtime loop.
 
+Run this on the actual Android phone for end-to-end install readiness:
+
+```sh
+bash scripts/termux-phone-smoke.sh --config ori.yaml
+```
+
+Use `--install-wheelhouse` to validate the offline signed wheelhouse install
+path, and `--runtime-startup-seconds 10` to confirm the runtime stays alive
+briefly without leaving it running forever. The smoke script wraps the doctor
+and adds Termux package, wheelhouse, import, USB snapshot, and optional runtime
+startup checks.
+
 ## PWA Role
 
 The PWA is an operator and commercial surface, not the sensing runtime. It can

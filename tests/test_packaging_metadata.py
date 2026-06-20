@@ -102,6 +102,18 @@ def test_phone_wheelhouse_build_allows_platform_local_wheels() -> None:
     assert "--only-binary=:all:" in script
 
 
+def test_termux_phone_smoke_script_keeps_install_and_runtime_startup_opt_in() -> None:
+    script = Path("scripts/termux-phone-smoke.sh").read_text(encoding="utf-8")
+
+    assert "INSTALL_WHEELHOUSE=false" in script
+    assert "--install-wheelhouse" in script
+    assert "RUNTIME_STARTUP_SECONDS=0" in script
+    assert "--runtime-startup-seconds" in script
+    assert 'PYTHON_BIN="${ORI_PYTHON:-python}"' in script
+    assert "python -m pip install --break-system-packages --no-index" not in script
+    assert '"${PYTHON_BIN}" -m pip install --break-system-packages --no-index' in script
+
+
 def test_eval_extra_is_intentionally_empty() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
