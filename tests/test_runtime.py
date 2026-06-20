@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ori.config import GatewayConfig
+from ori.config import GatewayConfig, TelemetryExportConfig
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
@@ -82,6 +82,46 @@ def test_build_gateway_message_auth_uses_configured_env_secret(monkeypatch):
     auth = _build_gateway_message_auth(config)
 
     assert auth is not None
+
+
+@pytest.mark.asyncio
+async def test_start_telemetry_export_subscribes_wildcard_handler(monkeypatch):
+    served = asyncio.Event()
+
+    class FakeExporter:
+        def __init__(self, *, device_id, config):
+            self.device_id = device_id
+            self.config = config
+
+        async def handle_event(self, event):
+            return None
+
+        async def serve_until(self, shutdown_event):
+            served.set()
+            await shutdown_event.wait()
+
+    monkeypatch.setattr("ori.runtime.HttpTelemetryExporter", FakeExporter)
+    runtime = OriRuntime()
+    event_bus = EventBus()
+    config = SimpleNamespace(
+        device=SimpleNamespace(id="phone-01"),
+        telemetry_export=TelemetryExportConfig(
+            enabled=True,
+            endpoint="https://api.example.test/runtime/telemetry",
+            api_key_env="ORI_ENERGY_DEVICE_API_KEY",
+        ),
+    )
+
+    task = runtime._start_telemetry_export_if_enabled(config, event_bus)
+
+    try:
+        assert task is not None
+        assert event_bus.subscriber_count("*") == 1
+    finally:
+        runtime._shutdown_event.set()
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 def _sms_webhook_posture_config(
