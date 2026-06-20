@@ -39,9 +39,10 @@ In Android settings:
 
 ## USB Readiness Gate
 
-The current runtime `usb_serial` adapter expects a serial device path such as
-`/dev/ttyUSB0`. Some rooted or permissive Android builds expose USB serial
-meters this way. Many stock Android builds do not.
+The runtime `usb_serial` adapter needs a serial byte stream. It supports direct
+tty paths such as `/dev/ttyUSB0` or `/dev/ttyACM0`, and pyserial URLs such as
+`socket://127.0.0.1:7000` when an approved Android USB-serial bridge exposes
+the meter as a local TCP serial stream.
 
 Check before trying to run Ori against the meter:
 
@@ -54,9 +55,11 @@ If `/dev/ttyUSB0` or `/dev/ttyACM0` appears and Termux can read it, configure
 `ori.yaml` with that `device_path`.
 
 If only `termux-usb -l` sees the meter, the phone is detecting the hardware but
-the current runtime still needs a Termux USB Host adapter before direct meter
-reads will work on that handset. Do not present that phone as a working USB
-runtime until the adapter path is implemented and tested.
+Android is not exposing a serial tty. `termux-usb` gives access to a raw USB
+device handle, not a serial stream the runtime can read directly. Use an
+approved USB-serial bridge that exposes the meter on localhost and configure
+`device_path` with its `socket://` URL. Do not present that phone as a working
+USB runtime until one of these serial stream paths is confirmed.
 
 ## Development Install From Source
 
@@ -76,7 +79,8 @@ Edit `ori.yaml`:
 
 - set `device.id` to a stable phone/site identifier;
 - set `actions.operator_contact`;
-- set `sensors[0].device_path` to the actual serial path;
+- set `sensors[0].device_path` to the actual serial path, or to a pyserial URL
+  such as `socket://127.0.0.1:7000`;
 - keep `actions.relay.enabled: false`;
 - keep `gateway.enabled: false` for phone-only testing.
 
@@ -153,15 +157,16 @@ In the runtime logs, confirm:
 - `deployment_type=phone` is active;
 - relay initialization is skipped;
 - the `usb_serial` adapter connects;
+- the `usb_serial` adapter logs either `transport=serial` for `/dev/ttyUSB*`
+  and `/dev/ttyACM*`, or `transport=socket` for a local serial bridge;
 - `sensor.reading` events appear for `usb_power`;
 - telemetry export logs show successful POSTs when enabled;
 - Tier A alerts still work if telemetry export is disabled or the backend is
   unreachable.
 
-## Current Limitation
+## Unsupported USB Shape
 
-The runtime is ready for phones that expose the USB meter as a serial device
-path. Stock Android devices that only expose the meter through Android's USB
-Host permission flow need a dedicated Termux USB Host adapter before they can
-read the meter directly. Treat this as the next hardware compatibility task for
-the phone path.
+The runtime cannot treat a raw `termux-usb` device handle as a serial meter by
+itself. A raw Android USB Host handle still needs a USB-serial driver layer for
+CDC ACM, CH340, CP210x, FTDI, or the adapter chipset in the onboarding kit. Use
+a direct tty device or an approved bridge that presents a serial stream.

@@ -6,7 +6,35 @@
 set -euo pipefail
 
 pkg update -y
-pkg install -y python sqlite curl
+pkg install -y python sqlite curl termux-api
+
+_print_usb_readiness() {
+  echo "Checking USB meter readiness..."
+
+  local tty_devices=""
+  tty_devices=$(ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true)
+  if [ -n "${tty_devices}" ]; then
+    echo "Found direct serial device(s):"
+    echo "${tty_devices}"
+    echo "Configure sensors[0].device_path with the correct /dev/ttyUSB* or /dev/ttyACM* path."
+    return 0
+  fi
+
+  if command -v termux-usb >/dev/null 2>&1; then
+    local usb_devices=""
+    usb_devices=$(termux-usb -l 2>/dev/null || true)
+    if [ -n "${usb_devices}" ] && [ "${usb_devices}" != "[]" ]; then
+      echo "termux-usb can see USB device(s): ${usb_devices}"
+      echo "No /dev/ttyUSB* or /dev/ttyACM* serial stream is exposed."
+      echo "Use an approved USB-serial bridge and configure device_path as socket://127.0.0.1:PORT."
+      return 0
+    fi
+  fi
+
+  echo "No USB serial meter detected yet. Connect the OTG meter and rerun readiness checks before customer activation."
+}
+
+_print_usb_readiness
 
 WHEELHOUSE_DIR="${ORI_WHEELHOUSE_DIR:-${HOME}/ori-wheelhouse}"
 if [ ! -d "${WHEELHOUSE_DIR}" ]; then
