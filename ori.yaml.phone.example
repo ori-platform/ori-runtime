@@ -22,7 +22,11 @@ sensors:
   - id: phone-main-power
     type: usb_power
     protocol: usb_serial
+    # Use /dev/ttyUSB* or /dev/ttyACM* when Android exposes the meter as a
+    # readable tty. If an approved Android USB-serial bridge exposes a local TCP
+    # stream instead, use a pyserial URL such as socket://127.0.0.1:7000.
     device_path: /dev/ttyUSB0
+    auto_detect_device_path: false
     baud_rate: 9600
     poll_interval_ms: 2000
 

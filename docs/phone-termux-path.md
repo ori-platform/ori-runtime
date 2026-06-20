@@ -35,7 +35,7 @@ The basic phone onboarding kit contains:
 The USB energy meter is the small sensor device. It measures voltage, current,
 power, energy, frequency, and power factor in hardware. Termux does not install
 software onto the meter; Termux runs the Ori runtime, and the runtime's
-`usb_serial` HAL reads the meter over the phone's USB port.
+`usb_serial` HAL reads a serial stream exposed from the phone's USB port.
 
 Customer-facing copy should say that the meter "connects to your phone's USB
 port using a small adapter cable." Do not imply that the phone's charging port
@@ -48,6 +48,9 @@ Use `ori.yaml.phone.example` as the starting profile:
 - `device.deployment_type: phone`;
 - `sensors[].protocol: usb_serial`;
 - `sensors[].type: usb_power` for a single plug-level phone starter sensor;
+- `sensors[].device_path: /dev/ttyUSB0` or `/dev/ttyACM0` for direct tty
+  devices, or `socket://127.0.0.1:PORT` for an approved Android USB-serial
+  bridge;
 - `actions.relay.enabled: false`;
 - `gateway.enabled: false` unless the phone is explicitly bridged to a local
   gateway.
@@ -60,6 +63,10 @@ directly for cost projection. It does not reinterpret watts as amps.
 
 Follow [android-phone-install.md](android-phone-install.md) for the install and
 USB readiness checklist.
+
+`termux-usb -l` is a readiness signal, not a runtime transport by itself. It can
+show that Android sees the USB meter, but the runtime still needs the meter to
+be presented as a serial stream through a tty path or approved local bridge.
 
 ## PWA Role
 
