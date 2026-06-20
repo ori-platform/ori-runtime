@@ -56,7 +56,9 @@ def test_phone_extra_carries_only_phone_wedge_dependencies() -> None:
 def test_phone_requirements_input_excludes_gateway_pi_and_pc_deps() -> None:
     deps = {
         _dependency_name(line.strip())
-        for line in Path("requirements-phone.in").read_text(encoding="utf-8").splitlines()
+        for line in Path("requirements-phone.in")
+        .read_text(encoding="utf-8")
+        .splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     }
 
@@ -68,7 +70,9 @@ def test_phone_requirements_input_excludes_gateway_pi_and_pc_deps() -> None:
     assert "gpiozero" not in deps
 
 
-def test_phone_requirements_lockfile_is_hashed_and_excludes_broad_runtime_deps() -> None:
+def test_phone_requirements_lockfile_is_hashed_and_excludes_broad_runtime_deps() -> (
+    None
+):
     lockfile = Path("requirements-phone.txt").read_text(encoding="utf-8")
     deps = {
         _dependency_name(line.strip())
