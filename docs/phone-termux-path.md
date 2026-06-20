@@ -13,7 +13,8 @@ energy intelligence:
 - build a site-local baseline for power draw;
 - detect sustained overdraw, sudden spikes, and unstable draw;
 - send operator alerts and dashboard logs;
-- export consented telemetry to ori-cloud for fleet intelligence.
+- export consented telemetry to the Ori Energy product backend for fleet
+  intelligence and Gemini-powered reports.
 
 The phone path does not provide certified relay control. Tier B/C physical
 switching, load separation, generator/grid transfer, and equipment cutoffs
@@ -50,10 +51,15 @@ Use `ori.yaml.phone.example` as the starting profile:
 - `actions.relay.enabled: false`;
 - `gateway.enabled: false` unless the phone is explicitly bridged to a local
   gateway.
+- `telemetry_export.enabled: true` only after the phone has been registered and
+  `ORI_ENERGY_DEVICE_API_KEY` has been provisioned in Termux.
 
 The `energy-anomaly-detector` skill accepts `usb_power`, `usb_current`, and
 `usb_voltage`. For `usb_power`, the hook treats the reading as watts and uses it
 directly for cost projection. It does not reinterpret watts as amps.
+
+Follow [android-phone-install.md](android-phone-install.md) for the install and
+USB readiness checklist.
 
 ## PWA Role
 
@@ -64,6 +70,22 @@ reports, and upgrade prompts from any modern phone, including iPhone.
 The Android Termux runtime remains the edge execution path because browsers and
 PWAs cannot reliably read USB serial meters, run offline background loops, or
 enforce Ori's runtime safety model.
+
+## Android Background Runtime
+
+Android can stop unattended background work aggressively, especially on low-cost
+devices with vendor battery managers. Early phone deployments must configure the
+phone as a dedicated runtime device:
+
+- run `termux-wake-lock` before starting Ori;
+- disable battery optimization for Termux in Android settings;
+- keep Termux's persistent notification enabled;
+- use Termux:Boot or a support-run startup shortcut for restart recovery;
+- keep the phone powered from a stable adapter or inverter-backed socket.
+
+This is acceptable for Phone Starter monitoring and Tier A alerts. It is not the
+durability boundary for certified actuation; physical control remains an Ori
+Edge Node responsibility.
 
 ## Device Policy On Phone
 
@@ -85,20 +107,46 @@ when a phone is replaced.
 ## Telemetry And Data Moat
 
 The phone should keep local readings available offline, but consented telemetry
-must not remain trapped on the handset. The runtime should export:
+must not remain trapped on the handset. When `telemetry_export.enabled` is true,
+the runtime posts HMAC-signed `runtime.telemetry.v1` batches over HTTPS to the
+configured product backend endpoint. The runtime should export:
 
 - normalized sensor readings at a cloud-controlled sampling rate;
 - alert and action logs;
 - baseline summaries and derived anomaly features;
 - device health and sync status.
 
-Sensitive historical exports must follow the runtime-gateway/cloud security
+The first runtime implementation exports real `sensor.reading` events. Alert,
+baseline, and health sync remain product-backend follow-up work. Telemetry
+export is observational only; failed uploads must not affect local trigger
+evaluation, Tier D semantics, or operator alerts.
+
+Sensitive historical exports must follow the runtime-gateway/product security
 posture: authenticated envelopes, replay protection, and encryption for
 business/audit history when gateway encryption is enabled.
 
-## ori-cloud Requirements
+## Alerts On Phone
 
-ori-cloud needs explicit support for phone deployments:
+Phone Starter should keep direct SMS or WhatsApp alerts available as a local
+runtime path. Product push notifications can be added through the PWA/backend,
+but they depend on account sync, browser notification permissions, and internet
+delivery. Direct runtime alerts remain the fallback when the product backend is
+unavailable.
+
+For early deployments, configure at least one of:
+
+- SMS via IP provider credentials when mobile data is reliable;
+- WhatsApp via Twilio where approved;
+- GSM modem path only for Edge Node or a supported Android USB modem setup.
+
+## Product Backend Requirements
+
+For early customer validation, `[Ori Energy](https://github.com/ori-platform/ori-energy)`
+`apps/api` is the real product backend for phone deployments. `[Ori Cloud](https://github.com/ori-platform/ori-cloud)`
+eventually absorbs these responsibilities, but the phone path should
+not point to `apps/demo-api`.
+
+The product backend needs explicit support for phone deployments:
 
 - a `phone_starter` or equivalent subscription tier mapped to Tier A energy
   intelligence, no relay entitlement, and limited local/cloud reasoning;
@@ -111,9 +159,10 @@ ori-cloud needs explicit support for phone deployments:
   limits, idempotency, and offline backfill handling;
 - a PWA dashboard that reads cloud state instead of talking directly to the USB
   meter;
+- Gemini weekly report generation from real persisted telemetry;
 - upgrade flow from Phone Starter to Certified Edge Node without losing the
   site's historical baseline.
 
-The `/Users/adegneus/Ori-Platform/ori-energy` demo should be treated as the
-product proxy for this flow: waitlist, onboarding, site health, alerts,
-subscription state, and the Edge Node upgrade path.
+`apps/demo-api` should remain a clearly marked scenario/demo backend for
+development only. The frontend's committed default API base URL for the
+phone path should target `apps/api`.

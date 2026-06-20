@@ -103,6 +103,7 @@ from ori.security.webhook_signatures import (
 from ori.skills.loader import SkillLoader
 from ori.skills.signing import verify_signed_payload
 from ori.state.store import StateStore
+from ori.telemetry.http_export import HttpTelemetryExporter
 from ori.utils.bool_utils import is_truthy
 from ori.utils.path_utils import path_is_relative_to
 from ori.utils.time_utils import now_ms
@@ -192,6 +193,7 @@ class OriRuntime:
         self._runtime_node_heartbeat_publisher: (
             MqttRuntimeNodeHeartbeatPublisher | None
         ) = None
+        self._telemetry_exporter: HttpTelemetryExporter | None = None
         self._health_socket_path: str = ""
         self._device_policy_enabled: bool = False
         self._device_id: str = ""
@@ -882,6 +884,13 @@ class OriRuntime:
         webhook_task = await self._start_sms_webhook_if_enabled(config)
         if webhook_task is not None:
             self._background_tasks.append(webhook_task)
+
+        telemetry_export_task = self._start_telemetry_export_if_enabled(
+            config,
+            event_bus,
+        )
+        if telemetry_export_task is not None:
+            self._background_tasks.append(telemetry_export_task)
 
         _warn_gateway_security_posture(config)
         _warn_sms_webhook_security_posture(config)
@@ -1633,6 +1642,25 @@ class OriRuntime:
         return asyncio.create_task(
             server.serve_until(self._shutdown_event),
             name="gateway-export-responder",
+        )
+
+    def _start_telemetry_export_if_enabled(
+        self,
+        config: Config,
+        event_bus: EventBus,
+    ) -> asyncio.Task[None] | None:
+        export_cfg = config.telemetry_export
+        if not export_cfg.enabled:
+            return None
+        exporter = HttpTelemetryExporter(
+            device_id=config.device.id,
+            config=export_cfg,
+        )
+        self._telemetry_exporter = exporter
+        event_bus.subscribe("*", exporter.handle_event)
+        return asyncio.create_task(
+            exporter.serve_until(self._shutdown_event),
+            name="telemetry-export",
         )
 
     async def _start_health_socket_if_enabled(self, config: Config) -> None:

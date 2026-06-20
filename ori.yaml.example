@@ -290,6 +290,18 @@ gateway:
     enabled: true                    # Tier 3 request/response on ori/{device_id}/reasoning/*
     timeout_ms: 10000                # per-phase timeout: connect/subscribe and response wait
 
+telemetry_export:
+  # Optional direct product-backend export for phone/lightweight deployments.
+  # Separate from gateway MQTT exports. Mirrors real sensor.reading events only;
+  # never affects Tier B/C/D action authority.
+  enabled: false
+  endpoint: "https://api.ori.energy/runtime/telemetry"
+  api_key_env: ORI_ENERGY_DEVICE_API_KEY
+  flush_interval_s: 30
+  batch_size: 50
+  timeout_ms: 3000
+  max_queue_size: 1000
+
 device_policy:
   enabled: false
   url: "https://api.ori.cloud/v1/device-policy" # ori-cloud endpoint for signed DevicePolicy

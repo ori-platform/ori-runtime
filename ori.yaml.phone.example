@@ -44,6 +44,18 @@ gateway:
   enabled: false
   broker_url: ""
 
+telemetry_export:
+  # Phone deployments can push real sensor readings directly to the Ori Energy
+  # product backend. Leave disabled until the device is registered and the API
+  # key is provisioned in Termux as ORI_ENERGY_DEVICE_API_KEY.
+  enabled: false
+  endpoint: "https://api.ori.energy/runtime/telemetry"
+  api_key_env: ORI_ENERGY_DEVICE_API_KEY
+  flush_interval_s: 30
+  batch_size: 50
+  timeout_ms: 3000
+  max_queue_size: 1000
+
 actions:
   primary_alert_channel: sms
   operator_contact: "+234XXXXXXXXXX"

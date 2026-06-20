@@ -12,6 +12,11 @@ from ori.config import (
 )
 
 EXAMPLE_YAML = os.path.join(os.path.dirname(__file__), "..", "ori.yaml.example")
+PHONE_EXAMPLE_YAML = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "ori.yaml.phone.example",
+)
 
 
 @pytest.fixture
@@ -121,6 +126,15 @@ class TestLoadExample:
         assert cfg.gateway.tls["keyfile"] == ""
         assert cfg.gateway.tls["keyfile_password_env"] == ""
         assert cfg.gateway.encryption["enabled"] is False
+
+    def test_telemetry_export_disabled_by_default(self):
+        cfg = Config.load(EXAMPLE_YAML)
+        assert cfg.telemetry_export.enabled is False
+        assert (
+            cfg.telemetry_export.endpoint == "https://api.ori.energy/runtime/telemetry"
+        )
+        assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
+        assert cfg.telemetry_export.batch_size == 50
 
     def test_gateway_node_heartbeat_interval_must_be_numeric(self, tmp_path):
         yaml_path = _write_yaml(
@@ -3316,6 +3330,19 @@ actions:
         assert cfg.actions.offline_tokens["max_clock_skew_s"] == 10
 
 
+class TestLoadPhoneExample:
+    def test_phone_example_loads_with_usb_power_and_telemetry_export(self):
+        cfg = Config.load(PHONE_EXAMPLE_YAML)
+
+        assert cfg.device.deployment_type == "phone"
+        assert cfg.gateway.enabled is False
+        assert cfg.actions.relay["enabled"] is False
+        assert cfg.sensors[0].protocol == "usb_serial"
+        assert cfg.sensors[0].type == "usb_power"
+        assert cfg.telemetry_export.enabled is False
+        assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
+
+
 class TestDevicePolicyConfig:
     def _yaml(self, extra_block: str = "") -> str:
         return f"""
@@ -3413,6 +3440,139 @@ actions:
         assert cfg.device_policy["max_clock_skew_s"] == 120
         assert cfg.device_policy["refresh_enabled"] is True
         assert cfg.device_policy["refresh_interval_s"] == 3600
+
+
+class TestTelemetryExportConfig:
+    def _yaml(self, extra_block: str = "") -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+{extra_block}
+"""
+
+    def test_defaults_when_block_missing(self, tmp_path):
+        yaml_path = _write_yaml(tmp_path, self._yaml())
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.telemetry_export.enabled is False
+        assert cfg.telemetry_export.endpoint == ""
+        assert cfg.telemetry_export.api_key_env == ""
+        assert cfg.telemetry_export.flush_interval_s == 30.0
+        assert cfg.telemetry_export.batch_size == 50
+        assert cfg.telemetry_export.timeout_ms == 3000
+        assert cfg.telemetry_export.max_queue_size == 1000
+
+    def test_enabled_valid_configuration(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: https://api.example.test/runtime/telemetry\n"
+                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+                "  flush_interval_s: 5\n"
+                "  batch_size: 10\n"
+                "  timeout_ms: 2500\n"
+                "  max_queue_size: 100\n"
+            ),
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.telemetry_export.enabled is True
+        assert cfg.telemetry_export.endpoint.endswith("/runtime/telemetry")
+        assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
+        assert cfg.telemetry_export.flush_interval_s == 5.0
+        assert cfg.telemetry_export.batch_size == 10
+        assert cfg.telemetry_export.timeout_ms == 2500
+        assert cfg.telemetry_export.max_queue_size == 100
+
+    def test_enabled_requires_endpoint(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: ''\n"
+                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="telemetry_export.endpoint"):
+            Config.load(yaml_path)
+
+    def test_enabled_requires_https_for_non_loopback(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: http://api.example.test/runtime/telemetry\n"
+                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="must use https"):
+            Config.load(yaml_path)
+
+    def test_enabled_allows_http_loopback(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: http://127.0.0.1:8000/runtime/telemetry\n"
+                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+            ),
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.telemetry_export.enabled is True
+
+    def test_enabled_requires_api_key_env_name(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: https://api.example.test/runtime/telemetry\n"
+                "  api_key_env: 'not valid'\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="api_key_env"):
+            Config.load(yaml_path)
+
+    def test_queue_size_must_cover_batch_size(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: https://api.example.test/runtime/telemetry\n"
+                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+                "  batch_size: 20\n"
+                "  max_queue_size: 10\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="max_queue_size"):
+            Config.load(yaml_path)
 
     def test_refresh_interval_minimum_enforced(self, tmp_path):
         yaml_path = _write_yaml(

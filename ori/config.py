@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _VALID_ACTION_TIERS = {"A", "B", "C", "D"}
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # BCM GPIO pins valid for relay use on Raspberry Pi 4 and CM4 (both BCM2711).
 # Mirrors ori/actions/relay.py::_VALID_BCM_PINS — kept here to avoid a
@@ -138,6 +139,17 @@ class GatewayConfig:
 
 
 @dataclass
+class TelemetryExportConfig:
+    enabled: bool = False
+    endpoint: str = ""
+    api_key_env: str = ""
+    flush_interval_s: float = 30.0
+    batch_size: int = 50
+    timeout_ms: int = 3000
+    max_queue_size: int = 1000
+
+
+@dataclass
 class ActionChannelConfig:
     primary_alert_channel: str  # 'sms' | 'whatsapp'
     operator_contact: str = ""  # phone number for Tier C approvals and emergency SMS
@@ -194,6 +206,7 @@ class Config:
     skills: list[SkillConfig]
     reasoning: ReasoningConfig
     gateway: GatewayConfig
+    telemetry_export: TelemetryExportConfig
     actions: ActionChannelConfig
     hal: HalConfig
     logging: LoggingConfig
@@ -232,6 +245,7 @@ class Config:
         skills = _parse_skills(data.get("skills", []))
         reasoning = _parse_reasoning(data.get("reasoning", {}))
         gateway = _parse_gateway(data.get("gateway", {}))
+        telemetry_export = _parse_telemetry_export(data.get("telemetry_export"))
         actions = _parse_actions(data.get("actions", {}))
         hal = _parse_hal(data.get("hal"))
         device_policy = _parse_device_policy(data.get("device_policy"))
@@ -466,6 +480,7 @@ class Config:
             skills=skills,
             reasoning=reasoning,
             gateway=gateway,
+            telemetry_export=telemetry_export,
             actions=actions,
             hal=hal,
             device_policy=device_policy,
@@ -989,6 +1004,81 @@ def _parse_gateway_broker_posture(data: Any) -> dict[str, Any]:
         "acl_policy": acl_policy,
         "require_credentials": is_truthy(data.get("require_credentials", False)),
     }
+
+
+def _parse_telemetry_export(data: Any) -> TelemetryExportConfig:
+    if data is None:
+        return TelemetryExportConfig()
+    if not isinstance(data, dict):
+        raise ConfigValidationError("'telemetry_export' section must be a mapping.")
+
+    enabled = is_truthy(data.get("enabled", False))
+    endpoint = str(data.get("endpoint", "") or "").strip()
+    api_key_env = str(data.get("api_key_env", "") or "").strip()
+
+    try:
+        flush_interval_s = float(data.get("flush_interval_s", 30.0))
+        batch_size = int(data.get("batch_size", 50))
+        timeout_ms = int(data.get("timeout_ms", 3000))
+        max_queue_size = int(data.get("max_queue_size", 1000))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "telemetry_export.flush_interval_s, batch_size, timeout_ms, and "
+            "max_queue_size must be numeric."
+        ) from exc
+
+    if flush_interval_s < 1.0 or flush_interval_s > 300.0:
+        raise ConfigValidationError(
+            "telemetry_export.flush_interval_s must be between 1 and 300 seconds."
+        )
+    if batch_size < 1 or batch_size > 500:
+        raise ConfigValidationError(
+            "telemetry_export.batch_size must be between 1 and 500."
+        )
+    if timeout_ms < 100 or timeout_ms > 30_000:
+        raise ConfigValidationError(
+            "telemetry_export.timeout_ms must be between 100 and 30000."
+        )
+    if max_queue_size < batch_size:
+        raise ConfigValidationError(
+            "telemetry_export.max_queue_size must be greater than or equal to "
+            "telemetry_export.batch_size."
+        )
+
+    if enabled:
+        if not endpoint:
+            raise ConfigValidationError(
+                "telemetry_export.endpoint is required when telemetry_export.enabled=true."
+            )
+        parsed = urlparse(endpoint)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ConfigValidationError(
+                "telemetry_export.endpoint must be an absolute http(s) URL."
+            )
+        if parsed.scheme != "https" and not _is_loopback_host(parsed.hostname):
+            raise ConfigValidationError(
+                "telemetry_export.endpoint must use https:// unless it targets "
+                "localhost or 127.0.0.1."
+            )
+        if not api_key_env:
+            raise ConfigValidationError(
+                "telemetry_export.api_key_env is required when "
+                "telemetry_export.enabled=true."
+            )
+        if not _ENV_NAME_RE.match(api_key_env):
+            raise ConfigValidationError(
+                "telemetry_export.api_key_env must be an environment variable name."
+            )
+
+    return TelemetryExportConfig(
+        enabled=enabled,
+        endpoint=endpoint,
+        api_key_env=api_key_env,
+        flush_interval_s=flush_interval_s,
+        batch_size=batch_size,
+        timeout_ms=timeout_ms,
+        max_queue_size=max_queue_size,
+    )
 
 
 def _parse_actions(data: Any) -> ActionChannelConfig:
