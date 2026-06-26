@@ -1,0 +1,6 @@
+# Phone/Termux Victron VenusOS MQTT dependencies.
+#
+# Build this as an additive lock on top of requirements-phone.txt. Do not add
+# these dependencies to the base phone wheelhouse; USB/PZEM deployments should
+# stay small.
+aiomqtt>=2.0

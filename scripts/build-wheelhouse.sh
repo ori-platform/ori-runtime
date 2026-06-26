@@ -14,6 +14,8 @@
 #   ORI_WHEELHOUSE_OUT=/tmp/wh bash scripts/build-wheelhouse.sh
 #   ORI_PYTHON=python3.12 bash scripts/build-wheelhouse.sh  # pin Python version
 #   ORI_WHEELHOUSE_TARGET=generic bash scripts/build-wheelhouse.sh
+#   ORI_WHEELHOUSE_TARGET=phone-growatt bash scripts/build-wheelhouse.sh
+#   ORI_WHEELHOUSE_TARGET=phone-victron bash scripts/build-wheelhouse.sh
 #   ORI_WHEELHOUSE_TARGET=pi bash scripts/build-wheelhouse.sh
 #
 # Phone wheelhouses use requirements-phone.txt so Android/Termux deployments
@@ -49,20 +51,35 @@ if [ "${TARGET}" = "pi" ]; then
   DEFAULT_OUT="$(pwd)/dist/ori-pi-wheelhouse"
 elif [ "${TARGET}" = "phone" ]; then
   DEFAULT_OUT="$(pwd)/dist/ori-phone-wheelhouse"
+elif [ "${TARGET}" = "phone-growatt" ]; then
+  DEFAULT_OUT="$(pwd)/dist/ori-phone-growatt-wheelhouse"
+elif [ "${TARGET}" = "phone-victron" ]; then
+  DEFAULT_OUT="$(pwd)/dist/ori-phone-victron-wheelhouse"
 else
   DEFAULT_OUT="$(pwd)/dist/ori-wheelhouse"
 fi
 OUT="${ORI_WHEELHOUSE_OUT:-${DEFAULT_OUT}}"
 REQUIREMENTS="requirements.txt"
 PHONE_REQUIREMENTS="requirements-phone.txt"
+PHONE_GROWATT_REQUIREMENTS="requirements-phone-growatt.txt"
+PHONE_VICTRON_REQUIREMENTS="requirements-phone-victron.txt"
 PI_REQUIREMENTS="requirements-pi.txt"
 PACKAGE_NAME="ori-runtime"
+PROFILE_REQUIREMENTS=""
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
 case "${TARGET}" in
   phone)
     ACTIVE_REQUIREMENTS="${PHONE_REQUIREMENTS}"
+    ;;
+  phone-growatt)
+    ACTIVE_REQUIREMENTS="${PHONE_REQUIREMENTS}"
+    PROFILE_REQUIREMENTS="${PHONE_GROWATT_REQUIREMENTS}"
+    ;;
+  phone-victron)
+    ACTIVE_REQUIREMENTS="${PHONE_REQUIREMENTS}"
+    PROFILE_REQUIREMENTS="${PHONE_VICTRON_REQUIREMENTS}"
     ;;
   generic)
     ACTIVE_REQUIREMENTS="${REQUIREMENTS}"
@@ -75,7 +92,7 @@ case "${TARGET}" in
     fi
     ;;
   *)
-    echo "ERROR: unknown ORI_WHEELHOUSE_TARGET=${TARGET}; expected phone, generic, or pi." >&2
+    echo "ERROR: unknown ORI_WHEELHOUSE_TARGET=${TARGET}; expected phone, phone-growatt, phone-victron, generic, or pi." >&2
     exit 1
     ;;
 esac
@@ -95,6 +112,18 @@ if ! grep -q "sha256:" "${ACTIVE_REQUIREMENTS}"; then
   exit 1
 fi
 
+if [ -n "${PROFILE_REQUIREMENTS}" ]; then
+  if [ ! -f "${PROFILE_REQUIREMENTS}" ]; then
+    echo "ERROR: ${PROFILE_REQUIREMENTS} not found. Run from the repo root." >&2
+    exit 1
+  fi
+  if ! grep -q "sha256:" "${PROFILE_REQUIREMENTS}"; then
+    echo "ERROR: ${PROFILE_REQUIREMENTS} does not contain hashes." >&2
+    echo "Regenerate with: pip-compile --generate-hashes --output-file=${PROFILE_REQUIREMENTS} ${PROFILE_REQUIREMENTS%.txt}.in" >&2
+    exit 1
+  fi
+fi
+
 if [ "${TARGET}" = "pi" ] && ! grep -q "sha256:" "${PI_REQUIREMENTS}"; then
   echo "ERROR: ${PI_REQUIREMENTS} does not contain hashes." >&2
   echo "Regenerate with: pip-compile --generate-hashes requirements-pi.in" >&2
@@ -111,6 +140,8 @@ echo "  Python: $("${PYTHON}" --version)"
 echo "  Source: ${ACTIVE_REQUIREMENTS}"
 if [ "${TARGET}" = "pi" ]; then
   echo "  Pi source: ${PI_REQUIREMENTS}"
+elif [ -n "${PROFILE_REQUIREMENTS}" ]; then
+  echo "  Profile source: ${PROFILE_REQUIREMENTS}"
 fi
 echo ""
 
@@ -123,13 +154,21 @@ mkdir -p "${OUT}"
 # wheelhouses are different: Android/Termux often has no compatible PyPI wheel
 # for native packages, so the trusted phone builder must be allowed to compile
 # platform-local wheels from the hash-locked source distributions.
-if [ "${TARGET}" = "phone" ]; then
+if [[ "${TARGET}" == phone* ]]; then
   echo "Building phone dependency wheels from hash-locked inputs..."
   "${PYTHON}" -m pip wheel \
     --require-hashes \
     --no-build-isolation \
     --wheel-dir "${OUT}" \
     -r "${ACTIVE_REQUIREMENTS}"
+  if [ -n "${PROFILE_REQUIREMENTS}" ]; then
+    echo "Building phone profile dependency wheels from hash-locked inputs..."
+    "${PYTHON}" -m pip wheel \
+      --require-hashes \
+      --no-build-isolation \
+      --wheel-dir "${OUT}" \
+      -r "${PROFILE_REQUIREMENTS}"
+  fi
 else
   echo "Downloading dependency wheels (hash-locked, binary-only)..."
   "${PYTHON}" -m pip download \
@@ -162,7 +201,7 @@ echo "Building ${PACKAGE_NAME} wheel..."
 # has a new SHA256. The install requirements must therefore be generated from
 # the actual wheelhouse contents, while the source lockfile is copied alongside
 # it for provenance.
-if [ "${TARGET}" = "phone" ]; then
+if [[ "${TARGET}" == phone* ]]; then
   echo "Writing phone install requirements from built wheels..."
   "${PYTHON}" - "${OUT}" "${PACKAGE_NAME}" > "${OUT}/requirements.txt" <<'PY'
 import hashlib
@@ -219,8 +258,11 @@ PY
 else
   cp "${ACTIVE_REQUIREMENTS}" "${OUT}/requirements.txt"
 fi
-if [ "${TARGET}" = "phone" ]; then
+if [[ "${TARGET}" == phone* ]]; then
   cp "${PHONE_REQUIREMENTS}" "${OUT}/requirements-phone.txt"
+  if [ -n "${PROFILE_REQUIREMENTS}" ]; then
+    cp "${PROFILE_REQUIREMENTS}" "${OUT}/${PROFILE_REQUIREMENTS}"
+  fi
 fi
 if [ "${TARGET}" = "pi" ]; then
   cp "${PI_REQUIREMENTS}" "${OUT}/requirements-pi.txt"
@@ -236,6 +278,8 @@ echo "Writing wheelhouse manifest..."
   echo "# Source: ${ACTIVE_REQUIREMENTS}"
   if [ "${TARGET}" = "pi" ]; then
     echo "# Pi source: ${PI_REQUIREMENTS}"
+  elif [ -n "${PROFILE_REQUIREMENTS}" ]; then
+    echo "# Profile source: ${PROFILE_REQUIREMENTS}"
   fi
   echo ""
   echo "# SHA256 checksums of all wheel files:"

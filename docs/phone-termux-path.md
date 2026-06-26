@@ -43,7 +43,14 @@ directly senses the building's mains supply.
 
 ## Runtime Shape
 
-Use `ori.yaml.phone.example` as the starting profile:
+Choose the phone profile that matches the site:
+
+- `ori.yaml.phone.example` for USB/PZEM meter deployments;
+- `ori.yaml.phone.growatt.example` for qualified Growatt SolarmanV5 WiFi/LAN
+  inverter deployments;
+- `ori.yaml.phone.victron.example` for Victron VenusOS MQTT deployments.
+
+Use `ori.yaml.phone.example` as the USB starter profile:
 
 - `device.deployment_type: phone`;
 - `sensors[].protocol: usb_serial`;
@@ -57,6 +64,25 @@ Use `ori.yaml.phone.example` as the starting profile:
 - `telemetry_export.enabled: true` only after the phone has been registered and
   `ORI_ENERGY_DEVICE_API_KEY` has been provisioned in Termux.
 
+Use the inverter profiles when the customer already has supported WiFi/LAN
+inverter telemetry:
+
+- Growatt SolarmanV5 requires `sensors[].protocol: growatt`, a local `host`,
+  and the inverter dongle `serial`;
+- Victron VenusOS requires `sensors[].protocol: victron`, a local MQTT
+  `broker_host`, and `portal_id`;
+- the Android phone must be on the same local network as the inverter or MQTT
+  broker;
+- no USB/PZEM meter is needed for these profiles, but the phone still remains
+  non-actuating unless a certified actuator path exists.
+
+SolarmanV5 is a transport, not a universal register map. Deye, Sunsynk,
+Felicity, Solis, Sofar, and other WiFi inverter brands must pass
+model-specific qualification before Ori calls them supported. A profile is not
+qualified until Ori has verified the local transport, register addresses,
+signedness, scaling, units, and polling behavior against the inverter's own
+display or official monitoring app.
+
 The `energy-anomaly-detector` skill accepts `usb_power`, `usb_current`, and
 `usb_voltage`. For `usb_power`, the hook treats the reading as watts and uses it
 directly for cost projection. It does not reinterpret watts as amps.
@@ -68,18 +94,21 @@ Set `health_socket.path` to a Termux-writable path such as
 `/data/data/com.termux/files/home/.ori/health.sock`. The Linux default
 `/run/ori/health.sock` is not writable inside the Android app sandbox.
 
-Phone wheelhouses are built from `requirements-phone.txt`, not the broad
-runtime lockfile. The phone lockfile keeps gateway MQTT, industrial protocols,
-Pi GPIO packages, and PC process-control dependencies out of the Android
-install while preserving USB serial, telemetry export, runtime crypto, and
-direct alert transports. Build production phone wheelhouses on Termux or a
-compatible trusted Android builder because Python wheels are platform-specific.
-The phone target builds platform-local wheels from hash-locked inputs instead
-of forcing binary-only downloads, since native dependencies may not publish
+Phone wheelhouses are built from profile-specific lockfiles, not the broad
+runtime lockfile. The base `phone` target keeps gateway MQTT, industrial
+protocols, Pi GPIO packages, and PC process-control dependencies out of USB/PZEM
+Android installs while preserving USB serial, telemetry export, runtime crypto,
+and direct alert transports. Use `ORI_WHEELHOUSE_TARGET=phone-growatt` or
+`ORI_WHEELHOUSE_TARGET=phone-victron` only when the site needs that inverter
+profile. Build production phone wheelhouses on Termux or a compatible trusted
+Android builder because Python wheels are platform-specific. The phone targets
+build platform-local wheels from hash-locked inputs instead of forcing
+binary-only downloads, since native dependencies may not publish
 Android-compatible PyPI wheels. Inside the finished wheelhouse,
-`requirements-phone.txt` records the source/build lockfile, while
-`requirements.txt` is generated from the actual built wheels so offline phone
-installs can still use `--require-hashes`.
+`requirements-phone.txt` records the base source/build lockfile,
+`requirements-phone-growatt.txt` or `requirements-phone-victron.txt` records the
+optional profile lockfile, and `requirements.txt` is generated from the actual
+built wheels so offline phone installs can still use `--require-hashes`.
 
 `termux-usb -l` is a readiness signal, not a runtime transport by itself. It can
 show that Android sees the USB meter, but the runtime still needs the meter to
@@ -157,6 +186,61 @@ The APK must not:
 The current Termux path is therefore the engineering and assisted-pilot proof.
 The APK is the self-serve commercial installer that removes terminal setup
 while preserving the runtime's actuation-trust boundaries.
+
+Production provisioning should use one generic Ori Android Agent APK plus a
+backend-generated runtime profile. The Ori Energy onboarding flow asks what the
+site has: USB/PZEM meter, Growatt SolarmanV5, Victron VenusOS, or an
+unqualified inverter. After payment or trial activation, the backend issues a
+short-lived provisioning token; the APK downloads the signed config for that
+site instead of embedding customer-specific `ori.yaml` in the APK. The same
+profile-generation service should later provision Pi and certified Ori Edge
+Node deployments.
+
+## Inverter Profile Qualification
+
+This is the gate for adding hot Nigerian and sub-Saharan African inverter
+brands without weakening runtime trust.
+
+An inverter brand/model may be listed as a candidate when one of these is true:
+
+- it exposes a local WiFi/LAN logger that can be scanned from the phone's local
+  network;
+- it exposes Modbus RTU/TCP, SolarmanV5, MQTT, or a documented local API;
+- it can be read by an installer-supported bridge without cloud credentials.
+
+It becomes an Ori-supported profile only after qualification:
+
+1. Capture brand, model, firmware, logger type, logger serial, and wiring or
+   LAN topology.
+2. Prove local reachability from Android/Termux with `ping`, socket connection,
+   MQTT subscription, Modbus scan, or the relevant adapter scan utility.
+3. Read the smallest useful register/topic set: PV power, grid/import power,
+   load power, battery SOC, battery voltage, and inverter status where
+   available.
+4. Compare every reading against the inverter screen, the vendor app, or an
+   installer meter at the same timestamp.
+5. Record register address/topic, register count, signedness, byte order,
+   scale, unit, valid range, and unavailable/error behavior.
+6. Add adapter fixtures and tests that prove decoding, unit mapping, and
+   missing-data behavior.
+7. Add a profile-specific `ori.yaml.phone.<brand>.example`, doctor dependency
+   check, and wheelhouse target only after the above evidence exists.
+
+Candidate priority for Nigeria and sub-Saharan Africa:
+
+| Candidate | Likely integration route | Status |
+| :-- | :-- | :-- |
+| Growatt | SolarmanV5/logger path with Growatt register map | Implemented in this branch |
+| Victron | VenusOS local MQTT | Implemented in this branch |
+| Deye | SolarmanV5 or native Modbus with Deye register map | Needs qualification |
+| Sunsynk | Likely Deye/Solarman-family path, model-dependent | Needs qualification |
+| Felicity | Brand/model-specific logger or Modbus path | Needs qualification |
+| Solis/Sofar/GoodWe/Huawei/Sungrow | Vendor-specific local API, logger, or Modbus path | Needs qualification |
+| Axpert/Voltronic-style off-grid units | Serial/USB or RS485 protocol bridge | Needs qualification |
+
+Until a candidate passes this checklist, the fallback deployable Phone Starter
+path remains USB/PZEM metering because it gives Ori an independent measurement
+surface that does not depend on inverter-brand support.
 
 ## Android Background Runtime
 

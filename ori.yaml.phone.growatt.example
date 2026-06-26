@@ -1,0 +1,106 @@
+# ori.yaml.phone.growatt.example
+# Phone-as-Gateway deployment profile for Growatt SolarmanV5 inverters.
+#
+# This profile removes the USB/PZEM requirement when the customer already has a
+# supported WiFi/LAN inverter dongle. The Android phone must be on the same
+# network as the inverter dongle and must be installed with the phone-growatt
+# dependency set or wheelhouse target.
+#
+# SolarmanV5 is the transport. Do not use this Growatt-shaped register map for
+# Deye, Sunsynk, Felicity, or other Solarman-compatible brands until that exact
+# model has passed Ori's inverter-profile qualification checklist.
+
+device:
+  id: phone-growatt-ikeja-01
+  name: Ikeja Office Phone Growatt Gateway
+  location: Lagos, Nigeria
+  timezone: Africa/Lagos
+  country_code: NG
+  deployment_type: phone
+  site_type: office
+
+sensors:
+  - id: growatt-pv-power
+    type: growatt_pv_power
+    protocol: growatt
+    host: "192.168.1.XXX"
+    serial: "XXXXXXXXXX"
+    port: 8899
+    poll_interval_ms: 5000
+
+  - id: growatt-grid-power
+    type: growatt_grid_power
+    protocol: growatt
+    host: "192.168.1.XXX"
+    serial: "XXXXXXXXXX"
+    port: 8899
+    poll_interval_ms: 5000
+
+  - id: growatt-battery-soc
+    type: growatt_battery_soc
+    protocol: growatt
+    host: "192.168.1.XXX"
+    serial: "XXXXXXXXXX"
+    port: 8899
+    poll_interval_ms: 5000
+
+skills:
+  - name: solar-performance-monitor
+    version: "0.1.0"
+    config:
+      installed_pv_capacity_watts: 5000
+      battery_capacity_wh: 10000
+      country_code: NG
+      currency_code: NGN
+
+  - name: battery-lifecycle-observer
+    version: "0.1.0"
+    config:
+      battery_sensor_id: growatt-battery-soc
+      grid_power_sensor_id: growatt-grid-power
+
+reasoning:
+  default_tier: local
+  local_model: qwen2.5-0.5b-instruct-q4_k_m
+  model_path: /data/data/com.termux/files/home/models/
+  offline_fallback: rule
+
+gateway:
+  enabled: false
+  broker_url: ""
+
+telemetry_export:
+  enabled: false
+  endpoint: "https://api.ori.energy/runtime/telemetry"
+  api_key_env: ORI_ENERGY_DEVICE_API_KEY
+  flush_interval_s: 30
+  batch_size: 50
+  timeout_ms: 3000
+  max_queue_size: 1000
+
+health_socket:
+  enabled: true
+  path: /data/data/com.termux/files/home/.ori/health.sock
+  mode: 0o660
+
+actions:
+  primary_alert_channel: sms
+  operator_contact: "+234XXXXXXXXXX"
+  secondary_contact: ""
+  whatsapp:
+    enabled: false
+  sms:
+    enabled: false
+  relay:
+    enabled: false
+    gpio_pin: 26
+
+hal:
+  circuit_breaker:
+    failure_threshold: 5
+    recovery_timeout_s: 300
+    success_threshold: 2
+
+logging:
+  level: INFO
+  file: ori.log

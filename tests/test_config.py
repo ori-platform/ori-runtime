@@ -17,6 +17,16 @@ PHONE_EXAMPLE_YAML = os.path.join(
     "..",
     "ori.yaml.phone.example",
 )
+PHONE_GROWATT_EXAMPLE_YAML = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "ori.yaml.phone.growatt.example",
+)
+PHONE_VICTRON_EXAMPLE_YAML = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "ori.yaml.phone.victron.example",
+)
 
 
 @pytest.fixture
@@ -3341,6 +3351,42 @@ class TestLoadPhoneExample:
         assert cfg.sensors[0].type == "usb_power"
         assert cfg.telemetry_export.enabled is False
         assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
+        assert cfg.health_socket["path"] == (
+            "/data/data/com.termux/files/home/.ori/health.sock"
+        )
+
+    def test_phone_growatt_example_loads_with_inverter_profile(self):
+        cfg = Config.load(PHONE_GROWATT_EXAMPLE_YAML)
+
+        assert cfg.device.deployment_type == "phone"
+        assert cfg.gateway.enabled is False
+        assert cfg.actions.relay["enabled"] is False
+        assert {sensor.protocol for sensor in cfg.sensors} == {"growatt"}
+        assert {sensor.type for sensor in cfg.sensors} == {
+            "growatt_pv_power",
+            "growatt_grid_power",
+            "growatt_battery_soc",
+        }
+        assert cfg.sensors[0].metadata["host"] == "192.168.1.XXX"
+        assert cfg.sensors[0].metadata["serial"] == "XXXXXXXXXX"
+        assert cfg.health_socket["path"] == (
+            "/data/data/com.termux/files/home/.ori/health.sock"
+        )
+
+    def test_phone_victron_example_loads_with_inverter_profile(self):
+        cfg = Config.load(PHONE_VICTRON_EXAMPLE_YAML)
+
+        assert cfg.device.deployment_type == "phone"
+        assert cfg.gateway.enabled is False
+        assert cfg.actions.relay["enabled"] is False
+        assert {sensor.protocol for sensor in cfg.sensors} == {"victron"}
+        assert {sensor.type for sensor in cfg.sensors} == {
+            "victron_pv_power",
+            "victron_grid_power",
+            "victron_battery_soc",
+        }
+        assert cfg.sensors[0].metadata["broker_host"] == "192.168.1.50"
+        assert cfg.sensors[0].metadata["portal_id"] == "YOUR_PORTAL_ID"
         assert cfg.health_socket["path"] == (
             "/data/data/com.termux/files/home/.ori/health.sock"
         )

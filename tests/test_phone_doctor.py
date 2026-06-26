@@ -24,11 +24,22 @@ def _write_phone_config(
     tmp_path,
     *,
     deployment_type: str = "phone",
+    sensor_block: str | None = None,
     relay_enabled: bool = False,
     telemetry_enabled: bool = False,
     operator_contact: str = "+2348012345678",
 ) -> str:
     path = tmp_path / "ori.yaml"
+    sensors = (
+        sensor_block
+        or """
+  - id: phone-main-power
+    type: usb_power
+    protocol: usb_serial
+    device_path: /dev/ttyUSB0
+    poll_interval_ms: 2000
+""".rstrip()
+    )
     path.write_text(
         f"""
 device:
@@ -39,11 +50,7 @@ device:
   deployment_type: {deployment_type}
 
 sensors:
-  - id: phone-main-power
-    type: usb_power
-    protocol: usb_serial
-    device_path: /dev/ttyUSB0
-    poll_interval_ms: 2000
+{sensors}
 
 skills:
   - name: energy-anomaly-detector
@@ -101,6 +108,15 @@ def _message_by_name(checks):
     return {check.name: check.message for check in checks}
 
 
+def _dependency_finder(available):
+    def find_spec(name):
+        if name in available:
+            return object()
+        return None
+
+    return find_spec
+
+
 def test_phone_doctor_accepts_valid_phone_config_with_warnings(tmp_path, monkeypatch):
     config_path = _write_phone_config(tmp_path)
     monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
@@ -113,7 +129,8 @@ def test_phone_doctor_accepts_valid_phone_config_with_warnings(tmp_path, monkeyp
     assert statuses["config.deployment_type"] == "pass"
     assert statuses["config.relay"] == "pass"
     assert statuses["config.gateway"] == "pass"
-    assert statuses["config.usb_sensor"] == "pass"
+    assert statuses["config.sensor_profile"] == "pass"
+    assert statuses["config.profile_dependencies"] == "pass"
     assert statuses["config.telemetry_export"] == "warn"
     assert statuses["config.health_socket"] == "pass"
     assert phone_doctor.has_failures(checks) is False
@@ -166,6 +183,149 @@ def test_phone_doctor_accepts_api_key_when_telemetry_enabled(tmp_path, monkeypat
 
     assert _status_by_name(checks)["config.telemetry_export"] == "pass"
     assert phone_doctor.has_failures(checks) is False
+
+
+def test_phone_doctor_accepts_growatt_phone_profile(tmp_path, monkeypatch):
+    config_path = _write_phone_config(
+        tmp_path,
+        sensor_block="""
+  - id: growatt-pv-power
+    type: growatt_pv_power
+    protocol: growatt
+    host: "192.168.1.20"
+    serial: "1234567890"
+    port: 8899
+    poll_interval_ms: 5000
+""".rstrip(),
+    )
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(
+        phone_doctor.importlib.util,
+        "find_spec",
+        _dependency_finder({"pysolarmanv5"}),
+    )
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    statuses = _status_by_name(checks)
+    assert statuses["config.sensor_profile"] == "pass"
+    assert statuses["config.profile_dependencies"] == "pass"
+    assert phone_doctor.has_failures(checks) is False
+
+
+def test_phone_doctor_fails_growatt_profile_without_host_or_serial(
+    tmp_path, monkeypatch
+):
+    config_path = _write_phone_config(
+        tmp_path,
+        sensor_block="""
+  - id: growatt-pv-power
+    type: growatt_pv_power
+    protocol: growatt
+    poll_interval_ms: 5000
+""".rstrip(),
+    )
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(
+        phone_doctor.importlib.util,
+        "find_spec",
+        _dependency_finder({"pysolarmanv5"}),
+    )
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    assert _status_by_name(checks)["config.sensor_profile"] == "fail"
+    message = _message_by_name(checks)["config.sensor_profile"]
+    assert "host" in message
+    assert "serial" in message
+    assert phone_doctor.has_failures(checks) is True
+
+
+def test_phone_doctor_fails_growatt_profile_without_dependency(tmp_path, monkeypatch):
+    config_path = _write_phone_config(
+        tmp_path,
+        sensor_block="""
+  - id: growatt-pv-power
+    type: growatt_pv_power
+    protocol: growatt
+    host: "192.168.1.20"
+    serial: "1234567890"
+    poll_interval_ms: 5000
+""".rstrip(),
+    )
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(
+        phone_doctor.importlib.util,
+        "find_spec",
+        _dependency_finder(set()),
+    )
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    assert _status_by_name(checks)["config.profile_dependencies"] == "fail"
+    assert "pysolarmanv5" in _message_by_name(checks)["config.profile_dependencies"]
+    assert phone_doctor.has_failures(checks) is True
+
+
+def test_phone_doctor_accepts_victron_phone_profile(tmp_path, monkeypatch):
+    config_path = _write_phone_config(
+        tmp_path,
+        sensor_block="""
+  - id: victron-pv-power
+    type: victron_pv_power
+    protocol: victron
+    broker_host: "192.168.1.50"
+    portal_id: "site-portal"
+    port: 1883
+    poll_interval_ms: 5000
+""".rstrip(),
+    )
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(
+        phone_doctor.importlib.util,
+        "find_spec",
+        _dependency_finder({"aiomqtt"}),
+    )
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    statuses = _status_by_name(checks)
+    assert statuses["config.sensor_profile"] == "pass"
+    assert statuses["config.profile_dependencies"] == "pass"
+    assert phone_doctor.has_failures(checks) is False
+
+
+def test_phone_doctor_fails_victron_profile_without_broker_or_portal(
+    tmp_path, monkeypatch
+):
+    config_path = _write_phone_config(
+        tmp_path,
+        sensor_block="""
+  - id: victron-pv-power
+    type: victron_pv_power
+    protocol: victron
+    poll_interval_ms: 5000
+""".rstrip(),
+    )
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(
+        phone_doctor.importlib.util,
+        "find_spec",
+        _dependency_finder({"aiomqtt"}),
+    )
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    assert _status_by_name(checks)["config.sensor_profile"] == "fail"
+    message = _message_by_name(checks)["config.sensor_profile"]
+    assert "broker_host" in message
+    assert "portal_id" in message
+    assert phone_doctor.has_failures(checks) is True
 
 
 def test_phone_doctor_rejects_linux_health_socket_path_for_phone(tmp_path, monkeypatch):
