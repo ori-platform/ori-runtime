@@ -7,6 +7,7 @@ import argparse
 import json
 import sys
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from ori.hal.inverter_profiles import (
@@ -15,6 +16,15 @@ from ori.hal.inverter_profiles import (
     decode_metric,
     list_bundled_profiles,
     load_profile,
+)
+
+_EVIDENCE_SCHEMA_VERSION = "ori.inverter_evidence.v1"
+_REQUIRED_EVIDENCE_IDENTITY_FIELDS = (
+    "brand",
+    "model",
+    "firmware",
+    "logger_serial",
+    "captured_at_ms",
 )
 
 
@@ -40,6 +50,61 @@ def _parse_registers(raw: str) -> list[int]:
     return registers
 
 
+def _parse_evidence_registers(raw: object, sample_index: int) -> list[int]:
+    if not isinstance(raw, list):
+        raise InverterProfileError(
+            f"evidence sample {sample_index}: raw_registers must be a list"
+        )
+    registers: list[int] = []
+    for value in raw:
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise InverterProfileError(
+                f"evidence sample {sample_index}: raw register {value!r} "
+                "must be an integer"
+            )
+        if not (0 <= value <= 0xFFFF):
+            raise InverterProfileError(
+                f"evidence sample {sample_index}: raw register {value!r} "
+                "is outside uint16 range 0..65535"
+            )
+        registers.append(value)
+    if not registers:
+        raise InverterProfileError(
+            f"evidence sample {sample_index}: at least one raw_registers value is required"
+        )
+    return registers
+
+
+def _read_evidence_bundle(path: Path) -> dict[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise InverterProfileError(
+            f"unable to read evidence file {path}: {exc}"
+        ) from exc
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise InverterProfileError(
+            f"invalid JSON evidence file {path}: {exc.msg}"
+        ) from exc
+    if not isinstance(data, dict):
+        raise InverterProfileError("evidence file must contain a JSON object")
+    return data
+
+
+def _has_evidence_identity_value(field: str, value: object) -> bool:
+    if field == "captured_at_ms":
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value > 0
+        )
+    if value is None or isinstance(value, bool):
+        return False
+    return bool(str(value).strip())
+
+
 def _vector_checks(profile: InverterProfile) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     for vector in profile.vectors:
@@ -57,6 +122,110 @@ def _vector_checks(profile: InverterProfile) -> list[dict[str, Any]]:
             }
         )
     return checks
+
+
+def _review_evidence_sample(
+    profile: InverterProfile,
+    sample: object,
+    index: int,
+) -> dict[str, Any]:
+    if not isinstance(sample, dict):
+        raise InverterProfileError(f"evidence sample {index}: must be a JSON object")
+
+    metric = str(sample.get("metric", "")).strip()
+    if not metric:
+        raise InverterProfileError(f"evidence sample {index}: metric is required")
+    registers = _parse_evidence_registers(sample.get("raw_registers"), index)
+    try:
+        raw_observed = sample["observed_value"]
+        raw_tolerance = sample.get("tolerance", 0.0)
+        if isinstance(raw_observed, bool) or isinstance(raw_tolerance, bool):
+            raise ValueError("boolean is not numeric evidence")
+        observed = float(raw_observed)
+        tolerance = float(raw_tolerance)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InverterProfileError(
+            f"evidence sample {index}: observed_value and tolerance must be numeric"
+        ) from exc
+    if tolerance < 0:
+        raise InverterProfileError(f"evidence sample {index}: tolerance must be >= 0")
+
+    ground_truth = str(sample.get("ground_truth", "")).strip()
+    decoded = decode_metric(profile, metric, registers)
+    delta = abs(decoded - observed)
+    ground_truth_present = bool(ground_truth)
+    return {
+        "index": index,
+        "metric": metric,
+        "raw_registers": registers,
+        "decoded": decoded,
+        "observed_value": observed,
+        "delta": round(delta, 4),
+        "tolerance": tolerance,
+        "pass": delta <= tolerance and ground_truth_present,
+        "ground_truth": ground_truth,
+        "ground_truth_present": ground_truth_present,
+    }
+
+
+def _evidence_summary(profile: InverterProfile, path: Path) -> dict[str, Any]:
+    bundle = _read_evidence_bundle(path)
+    schema_version = str(bundle.get("schema_version", "")).strip()
+    if schema_version != _EVIDENCE_SCHEMA_VERSION:
+        raise InverterProfileError(
+            "evidence schema_version must be "
+            f"{_EVIDENCE_SCHEMA_VERSION!r}, got {schema_version!r}"
+        )
+
+    bundle_profile = str(bundle.get("profile", "")).strip()
+    if bundle_profile != profile.profile:
+        raise InverterProfileError(
+            f"evidence profile {bundle_profile!r} does not match --profile "
+            f"{profile.profile!r}"
+        )
+
+    missing_identity = [
+        field
+        for field in _REQUIRED_EVIDENCE_IDENTITY_FIELDS
+        if not _has_evidence_identity_value(field, bundle.get(field))
+    ]
+    samples = bundle.get("samples")
+    if not isinstance(samples, list) or not samples:
+        raise InverterProfileError("evidence samples must be a non-empty list")
+
+    sample_checks = [
+        _review_evidence_sample(profile, sample, index)
+        for index, sample in enumerate(samples, start=1)
+    ]
+    samples_pass = all(check["pass"] for check in sample_checks)
+    identity_complete = not missing_identity
+    evidence_pass = identity_complete and samples_pass
+    return {
+        "schema_version": schema_version,
+        "profile": profile.profile,
+        "profile_status": profile.status,
+        "profile_field_qualified": profile.is_field_qualified,
+        "evidence_file": str(path),
+        "identity": {
+            "brand": bundle.get("brand"),
+            "model": bundle.get("model"),
+            "firmware": bundle.get("firmware"),
+            "logger_serial": bundle.get("logger_serial"),
+            "captured_at_ms": bundle.get("captured_at_ms"),
+            "source": bundle.get("source", ""),
+        },
+        "identity_complete": identity_complete,
+        "missing_identity_fields": missing_identity,
+        "sample_checks": sample_checks,
+        "samples_pass": samples_pass,
+        "evidence_pass": evidence_pass,
+        "promotion_candidate": evidence_pass and not profile.is_field_qualified,
+        "note": (
+            "Offline evidence review only; this command does not mutate bundled "
+            "profiles, promote qualification status, open inverter transports, "
+            "or write control registers."
+        ),
+    }
 
 
 def _profile_summary(profile: InverterProfile) -> dict[str, Any]:
@@ -151,6 +320,47 @@ def _print_decode(summary: dict[str, Any], json_output: bool) -> int:
     return 0
 
 
+def _print_evidence(summary: dict[str, Any], json_output: bool) -> int:
+    if json_output:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0 if summary["evidence_pass"] else 1
+
+    print(f"Evidence file: {summary['evidence_file']}")
+    print(f"Profile: {summary['profile']} ({summary['profile_status']})")
+    identity = summary["identity"]
+    print(
+        "Unit: "
+        f"{identity['brand'] or '-'} {identity['model'] or '-'} "
+        f"firmware={identity['firmware'] or '-'} "
+        f"logger={identity['logger_serial'] or '-'}"
+    )
+    if not summary["identity_complete"]:
+        missing = ", ".join(summary["missing_identity_fields"])
+        print(f"FAIL identity: missing {missing}")
+    else:
+        print("PASS identity: brand/model/firmware/logger/timestamp present")
+
+    print("Evidence samples:")
+    for check in summary["sample_checks"]:
+        status = "PASS" if check["pass"] else "FAIL"
+        print(
+            f"- {status} {check['metric']}: decoded={check['decoded']} "
+            f"observed={check['observed_value']} delta={check['delta']} "
+            f"tolerance={check['tolerance']} ground_truth={check['ground_truth'] or '-'}"
+        )
+    if summary["promotion_candidate"]:
+        print(
+            "Result: PASS - this bundle is a field-qualification evidence candidate. "
+            "A maintainer must still review and update the profile in a separate PR."
+        )
+    elif summary["evidence_pass"]:
+        print("Result: PASS - evidence agrees with an already field-qualified profile.")
+    else:
+        print("Result: FAIL - evidence is incomplete or outside tolerance.")
+    print(f"Note: {summary['note']}")
+    return 0 if summary["evidence_pass"] else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Inspect and validate bundled Ori inverter profiles."
@@ -174,6 +384,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated uint16 registers, decimal or 0x-prefixed hex.",
     )
     parser.add_argument(
+        "--evidence",
+        metavar="PATH",
+        help=(
+            "Review an offline inverter evidence JSON bundle for --profile. "
+            "This never contacts hardware or promotes profile status."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON.",
@@ -192,6 +410,11 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--profile is required unless --list is used")
 
         profile = load_profile(args.profile)
+        if args.evidence:
+            return _print_evidence(
+                _evidence_summary(profile, Path(args.evidence)),
+                args.json,
+            )
         if args.decode or args.raw:
             if not args.decode or not args.raw:
                 parser.error("--decode and --raw must be provided together")
