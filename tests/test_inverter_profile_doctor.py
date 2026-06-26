@@ -4,6 +4,7 @@
 import json
 
 from ori import inverter_profile_doctor
+from ori.hal.inverter_profiles import ProfileStatus, load_profile_data
 
 
 def _write_evidence(tmp_path, overrides=None):
@@ -251,3 +252,84 @@ def test_evidence_unknown_metric_returns_error(tmp_path, capsys):
 
     assert result == 2
     assert "has no metric" in capsys.readouterr().err
+
+
+def test_decode_supports_enum_metric(monkeypatch, capsys):
+    profile = load_profile_data(
+        {
+            "profile": "fixture",
+            "transport": "solarman_v5",
+            "status": ProfileStatus.COMMUNITY_DERIVED,
+            "metrics": {
+                "status": {
+                    "register": 1,
+                    "unit": "state",
+                    "value_type": "enum",
+                    "lookup": {2: "fault"},
+                }
+            },
+            "qualification_vectors": [
+                {"metric": "status", "raw_registers": [2], "expected_value": "fault"}
+            ],
+        }
+    )
+    monkeypatch.setattr(inverter_profile_doctor, "load_profile", lambda _: profile)
+
+    result = inverter_profile_doctor.main(
+        ["--profile", "fixture", "--decode", "status", "--raw", "2", "--json"]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["decoded"] == "fault"
+    assert payload["unit"] == "state"
+
+
+def test_evidence_supports_string_observed_value(monkeypatch, tmp_path, capsys):
+    profile = load_profile_data(
+        {
+            "profile": "fixture",
+            "transport": "solarman_v5",
+            "status": ProfileStatus.COMMUNITY_DERIVED,
+            "metrics": {
+                "firmware": {
+                    "register": 1,
+                    "count": 3,
+                    "unit": "text",
+                    "value_type": "string",
+                }
+            },
+            "qualification_vectors": [
+                {
+                    "metric": "firmware",
+                    "raw_registers": [0x5631, 0x2E32, 0x0000],
+                    "expected_value": "V1.2",
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(inverter_profile_doctor, "load_profile", lambda _: profile)
+    path = _write_evidence(
+        tmp_path,
+        {
+            "profile": "fixture",
+            "samples": [
+                {
+                    "metric": "firmware",
+                    "raw_registers": [0x5631, 0x2E32, 0x0000],
+                    "observed_value": "V1.2",
+                    "ground_truth": "timestamped_inverter_lcd_photo",
+                }
+            ],
+        },
+    )
+
+    result = inverter_profile_doctor.main(
+        ["--profile", "fixture", "--evidence", str(path), "--json"]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sample_checks"][0]["decoded"] == "V1.2"
+    assert payload["sample_checks"][0]["delta"] is None
+    assert payload["sample_checks"][0]["pass"] is True

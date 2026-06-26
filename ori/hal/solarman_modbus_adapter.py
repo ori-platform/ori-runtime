@@ -82,6 +82,13 @@ class SolarmanModbusAdapter(BaseAdapter):
                 f"SolarmanModbusAdapter: profile {profile_name!r} has no metric "
                 f"{sensor_type!r}. Available: {sorted(profile.metrics)}"
             )
+        metric = profile.metric(sensor_type)
+        if metric.value_type != "numeric":
+            raise AdapterConnectionError(
+                f"SolarmanModbusAdapter: metric {sensor_type!r} has "
+                f"value_type={metric.value_type!r}; live SensorReading values "
+                "must be numeric."
+            )
 
         self._host = str(config.get("host", "")).strip()
         self._serial = str(config.get("serial", "")).strip()

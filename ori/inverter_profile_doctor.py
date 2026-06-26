@@ -13,7 +13,7 @@ from typing import Any
 from ori.hal.inverter_profiles import (
     InverterProfile,
     InverterProfileError,
-    decode_metric,
+    decode_metric_value,
     list_bundled_profiles,
     load_profile,
 )
@@ -105,19 +105,50 @@ def _has_evidence_identity_value(field: str, value: object) -> bool:
     return bool(str(value).strip())
 
 
+def _coerce_observed_value(value: object, *, sample_index: int) -> float | str:
+    if isinstance(value, bool):
+        raise InverterProfileError(
+            f"evidence sample {sample_index}: observed_value cannot be boolean"
+        )
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        raise InverterProfileError(
+            f"evidence sample {sample_index}: observed_value is required"
+        )
+    return text
+
+
+def _compare_decoded_value(
+    decoded: float | str,
+    expected: float | str,
+    tolerance: float,
+) -> tuple[bool, float | None]:
+    if isinstance(decoded, str) or isinstance(expected, str):
+        return str(decoded) == str(expected), None
+    delta = abs(float(decoded) - float(expected))
+    return delta <= tolerance, round(delta, 4)
+
+
 def _vector_checks(profile: InverterProfile) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     for vector in profile.vectors:
-        decoded = decode_metric(profile, vector.metric, vector.raw_registers)
-        delta = abs(decoded - vector.expected_value)
+        decoded = decode_metric_value(profile, vector.metric, vector.raw_registers)
+        passed, delta = _compare_decoded_value(
+            decoded,
+            vector.expected_value,
+            vector.tolerance,
+        )
         checks.append(
             {
                 "metric": vector.metric,
                 "raw_registers": list(vector.raw_registers),
                 "decoded": decoded,
                 "expected": vector.expected_value,
+                "delta": delta,
                 "tolerance": vector.tolerance,
-                "pass": delta <= vector.tolerance,
+                "pass": passed,
                 "ground_truth": vector.ground_truth,
             }
         )
@@ -137,22 +168,25 @@ def _review_evidence_sample(
         raise InverterProfileError(f"evidence sample {index}: metric is required")
     registers = _parse_evidence_registers(sample.get("raw_registers"), index)
     try:
-        raw_observed = sample["observed_value"]
         raw_tolerance = sample.get("tolerance", 0.0)
-        if isinstance(raw_observed, bool) or isinstance(raw_tolerance, bool):
+        if isinstance(raw_tolerance, bool):
             raise ValueError("boolean is not numeric evidence")
-        observed = float(raw_observed)
+        observed = _coerce_observed_value(sample["observed_value"], sample_index=index)
         tolerance = float(raw_tolerance)
-    except (KeyError, TypeError, ValueError) as exc:
+    except KeyError as exc:
         raise InverterProfileError(
-            f"evidence sample {index}: observed_value and tolerance must be numeric"
+            f"evidence sample {index}: observed_value is required"
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise InverterProfileError(
+            f"evidence sample {index}: tolerance must be numeric"
         ) from exc
     if tolerance < 0:
         raise InverterProfileError(f"evidence sample {index}: tolerance must be >= 0")
 
     ground_truth = str(sample.get("ground_truth", "")).strip()
-    decoded = decode_metric(profile, metric, registers)
-    delta = abs(decoded - observed)
+    decoded = decode_metric_value(profile, metric, registers)
+    passed, delta = _compare_decoded_value(decoded, observed, tolerance)
     ground_truth_present = bool(ground_truth)
     return {
         "index": index,
@@ -160,9 +194,9 @@ def _review_evidence_sample(
         "raw_registers": registers,
         "decoded": decoded,
         "observed_value": observed,
-        "delta": round(delta, 4),
+        "delta": delta,
         "tolerance": tolerance,
-        "pass": delta <= tolerance and ground_truth_present,
+        "pass": passed and ground_truth_present,
         "ground_truth": ground_truth,
         "ground_truth_present": ground_truth_present,
     }
@@ -253,7 +287,7 @@ def _profile_summary(profile: InverterProfile) -> dict[str, Any]:
 def _decode_summary(profile: InverterProfile, metric: str, raw: str) -> dict[str, Any]:
     registers = _parse_registers(raw)
     spec = profile.metric(metric)
-    decoded = decode_metric(profile, metric, registers)
+    decoded = decode_metric_value(profile, metric, registers)
     return {
         "profile": profile.profile,
         "metric": metric,
@@ -294,7 +328,8 @@ def _print_profile(profile: InverterProfile, json_output: bool) -> int:
         status = "PASS" if check["pass"] else "FAIL"
         print(
             f"- {status} {check['metric']}: decoded={check['decoded']} "
-            f"expected={check['expected']} tolerance={check['tolerance']}"
+            f"expected={check['expected']} delta={check['delta']} "
+            f"tolerance={check['tolerance']}"
         )
     if not profile.is_field_qualified:
         print(
