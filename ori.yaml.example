@@ -61,8 +61,10 @@ sensors:
     baud_rate: 9600
     poll_interval_ms: 5000
 
-  # ─── Growatt/Deye inverter via SolarmanV5 (optional) ─────────────────────
-  # Uncomment for installations with a Growatt or Deye WiFi/LAN dongle
+  # ─── Growatt inverter via SolarmanV5 (optional) ─────────────────────────
+  # Uncomment for installations with a validated Growatt WiFi/LAN dongle.
+  # SolarmanV5 is the transport; Deye/Sunsynk/Felicity register maps need
+  # separate model qualification before using them in production.
   # - id: inverter-solar-power
   #   type: growatt_pv_power
   #   protocol: growatt

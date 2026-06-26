@@ -42,11 +42,15 @@ _SUPPORTED = frozenset(_SENSOR_MAP)
 
 
 class GrowattAdapter(BaseAdapter):
-    """Growatt/Deye SolarmanV5 adapter.
+    """Growatt SolarmanV5 adapter.
 
     This adapter keeps connect() lightweight and lazily initializes the
     synchronous Solarman client at first read. All sync I/O is dispatched
-    through run_in_executor to avoid blocking the event loop.
+    through asyncio.to_thread to avoid blocking the event loop.
+
+    SolarmanV5 is the transport. The register map below is Growatt-shaped and
+    must not be treated as validated Deye/Sunsynk/Felicity support without a
+    model-specific register qualification.
     """
 
     def __init__(self) -> None:

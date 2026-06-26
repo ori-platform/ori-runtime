@@ -53,6 +53,24 @@ phone = [
     "twilio>=9.0",
     "africastalking>=1.0",
 ]
+phone-growatt = [
+    "pyserial>=3.5",
+    "tzdata>=2025.2",
+    "httpx>=0.28",
+    "cryptography>=48.0.1",
+    "twilio>=9.0",
+    "africastalking>=1.0",
+    "pysolarmanv5>=3.0",
+]
+phone-victron = [
+    "pyserial>=3.5",
+    "tzdata>=2025.2",
+    "httpx>=0.28",
+    "cryptography>=48.0.1",
+    "twilio>=9.0",
+    "africastalking>=1.0",
+    "aiomqtt>=2.0",
+]
 pi = [
     "gpiozero>=2.0",
     "smbus2>=0.4",

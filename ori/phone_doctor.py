@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import importlib.util
 import json
 import os
 import shutil
@@ -239,6 +240,7 @@ def _check_phone_config(config: Config) -> list[DoctorCheck]:
         _relay_check(config),
         _gateway_check(config),
         _sensor_check(config),
+        _profile_dependency_check(config),
         _telemetry_check(config),
         _health_socket_check(config),
         _operator_contact_check(config),
@@ -290,49 +292,115 @@ def _gateway_check(config: Config) -> DoctorCheck:
 
 
 def _sensor_check(config: Config) -> DoctorCheck:
-    usb_sensors = [
-        sensor
-        for sensor in config.sensors
-        if sensor.protocol == "usb_serial" and sensor.type.startswith("usb_")
+    phone_sensors = [
+        sensor for sensor in config.sensors if _phone_sensor_profile(sensor) is not None
     ]
-    if not usb_sensors:
+    if not phone_sensors:
         return DoctorCheck(
-            name="config.usb_sensor",
+            name="config.sensor_profile",
             status="fail",
-            message="No usb_serial energy sensor is configured.",
+            message=(
+                "No supported Phone Starter sensor profile is configured. "
+                "Use usb_serial, growatt, or victron sensors."
+            ),
         )
 
     details = []
-    needs_path = False
-    for sensor in usb_sensors:
+    missing: list[str] = []
+    profiles = set()
+    for sensor in phone_sensors:
+        profile = _phone_sensor_profile(sensor)
+        profiles.add(profile)
         device_path = str(sensor.metadata.get("device_path", "") or "").strip()
         auto_detect = is_truthy(sensor.metadata.get("auto_detect_device_path", False))
-        details.append(
-            {
-                "id": sensor.id,
-                "type": sensor.type,
-                "device_path": device_path,
-                "auto_detect_device_path": auto_detect,
-            }
-        )
-        if not device_path and not auto_detect:
-            needs_path = True
 
-    if needs_path:
+        detail = {
+            "id": sensor.id,
+            "type": sensor.type,
+            "protocol": sensor.protocol,
+            "profile": profile,
+        }
+        if profile == "usb":
+            detail["device_path"] = device_path
+            detail["auto_detect_device_path"] = auto_detect
+            if not device_path and not auto_detect:
+                missing.append(f"{sensor.id}: device_path or auto_detect_device_path")
+        elif profile == "growatt":
+            host = str(sensor.metadata.get("host", "") or "").strip()
+            serial = str(sensor.metadata.get("serial", "") or "").strip()
+            detail["host"] = host
+            detail["serial_configured"] = bool(serial)
+            if not host:
+                missing.append(f"{sensor.id}: host")
+            if not serial:
+                missing.append(f"{sensor.id}: serial")
+        elif profile == "victron":
+            broker_host = str(sensor.metadata.get("broker_host", "") or "").strip()
+            portal_id = str(sensor.metadata.get("portal_id", "") or "").strip()
+            detail["broker_host"] = broker_host
+            detail["portal_id_configured"] = bool(portal_id)
+            if not broker_host:
+                missing.append(f"{sensor.id}: broker_host")
+            if not portal_id:
+                missing.append(f"{sensor.id}: portal_id")
+        details.append(detail)
+
+    if missing:
         return DoctorCheck(
-            name="config.usb_sensor",
+            name="config.sensor_profile",
             status="fail",
             message=(
-                "At least one usb_serial sensor lacks device_path and does not "
-                "enable auto_detect_device_path."
+                "Phone Starter sensor profile is incomplete: "
+                + ", ".join(sorted(missing))
             ),
             details={"sensors": details},
         )
     return DoctorCheck(
-        name="config.usb_sensor",
+        name="config.sensor_profile",
         status="pass",
-        message="usb_serial energy sensor configuration is present.",
-        details={"sensors": details},
+        message="Supported Phone Starter sensor profile is configured.",
+        details={"profiles": sorted(p for p in profiles if p), "sensors": details},
+    )
+
+
+def _phone_sensor_profile(sensor: Any) -> str | None:
+    if sensor.protocol == "usb_serial" and str(sensor.type).startswith("usb_"):
+        return "usb"
+    if sensor.protocol == "growatt" and str(sensor.type).startswith("growatt_"):
+        return "growatt"
+    if sensor.protocol == "victron" and str(sensor.type).startswith("victron_"):
+        return "victron"
+    return None
+
+
+def _profile_dependency_check(config: Config) -> DoctorCheck:
+    profiles = {
+        profile
+        for sensor in config.sensors
+        if (profile := _phone_sensor_profile(sensor)) is not None
+    }
+    missing: list[str] = []
+    if "growatt" in profiles and importlib.util.find_spec("pysolarmanv5") is None:
+        missing.append("pysolarmanv5")
+    if "victron" in profiles and importlib.util.find_spec("aiomqtt") is None:
+        missing.append("aiomqtt")
+
+    if missing:
+        return DoctorCheck(
+            name="config.profile_dependencies",
+            status="fail",
+            message=(
+                "Phone sensor profile dependencies are missing: "
+                + ", ".join(sorted(missing))
+                + ". Install the matching phone profile wheelhouse."
+            ),
+            details={"profiles": sorted(profiles), "missing": sorted(missing)},
+        )
+    return DoctorCheck(
+        name="config.profile_dependencies",
+        status="pass",
+        message="Phone sensor profile dependencies are available.",
+        details={"profiles": sorted(profiles)},
     )
 
 

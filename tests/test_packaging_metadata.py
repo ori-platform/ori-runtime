@@ -54,6 +54,21 @@ def test_phone_extra_carries_only_phone_wedge_dependencies() -> None:
     }
 
 
+def test_phone_inverter_extras_extend_phone_without_bloating_base() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    optional = pyproject["project"]["optional-dependencies"]
+    phone_deps = {_dependency_name(dep) for dep in optional["phone"]}
+    growatt_deps = {_dependency_name(dep) for dep in optional["phone-growatt"]}
+    victron_deps = {_dependency_name(dep) for dep in optional["phone-victron"]}
+
+    assert "pysolarmanv5" not in phone_deps
+    assert "aiomqtt" not in phone_deps
+    assert phone_deps < growatt_deps
+    assert growatt_deps - phone_deps == {"pysolarmanv5"}
+    assert phone_deps < victron_deps
+    assert victron_deps - phone_deps == {"aiomqtt"}
+
+
 def test_phone_requirements_input_excludes_gateway_pi_and_pc_deps() -> None:
     deps = {
         _dependency_name(line.strip())
@@ -92,11 +107,43 @@ def test_phone_requirements_lockfile_is_hashed_and_excludes_broad_runtime_deps()
     assert "gpiozero" not in deps
 
 
+def test_phone_inverter_profile_lockfiles_are_additive_and_hashed() -> None:
+    growatt = Path("requirements-phone-growatt.txt").read_text(encoding="utf-8")
+    victron = Path("requirements-phone-victron.txt").read_text(encoding="utf-8")
+    growatt_deps = {
+        _dependency_name(line.strip())
+        for line in growatt.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and not line.startswith(" ")
+    }
+    victron_deps = {
+        _dependency_name(line.strip())
+        for line in victron.splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and not line.startswith(" ")
+    }
+
+    assert "sha256:" in growatt
+    assert "pysolarmanv5" in growatt_deps
+    assert "gpiozero" not in growatt_deps
+
+    assert "sha256:" in victron
+    assert "aiomqtt" in victron_deps
+    assert "pyserial" not in victron_deps
+    assert "gpiozero" not in victron_deps
+
+
 def test_phone_wheelhouse_build_allows_platform_local_wheels() -> None:
     script = Path("scripts/build-wheelhouse.sh").read_text(encoding="utf-8")
 
-    assert 'if [ "${TARGET}" = "phone" ]; then' in script
+    assert 'if [[ "${TARGET}" == phone* ]]; then' in script
+    assert "phone-growatt" in script
+    assert "phone-victron" in script
+    assert "PROFILE_REQUIREMENTS" in script
     assert "Building phone dependency wheels from hash-locked inputs" in script
+    assert "Building phone profile dependency wheels" in script
     assert "--no-build-isolation" in script
     assert "Writing phone install requirements from built wheels" in script
     assert "requirements-phone.txt is the source/build lockfile" in script

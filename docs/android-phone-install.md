@@ -5,11 +5,27 @@ It is not the certified Edge Node path for physical actuation.
 
 ## Hardware
 
+- Android phone dedicated to the runtime
+- Stable charger or inverter-backed power socket for the phone
+- Optional: second phone or laptop for SSH/support access
+
+For USB/PZEM mode:
+
 - Android phone with USB OTG support
 - USB OTG adapter
 - PZEM-004T or equivalent USB/Modbus energy meter
-- Stable charger or inverter-backed power socket for the phone
-- Optional: second phone or laptop for SSH/support access
+
+For WiFi inverter mode:
+
+- qualified Growatt SolarmanV5 inverter dongle reachable on the local network,
+  or
+  Victron VenusOS MQTT reachable on the local network
+- inverter connection details from the installer or owner
+
+Deye, Sunsynk, Felicity, Solis, Sofar, and other inverter brands are product
+targets, but they are not automatically covered by the Growatt example. Each
+brand/model needs a verified local transport and register/topic map before it
+is provisioned for a customer.
 
 ## Android Setup
 
@@ -75,12 +91,22 @@ python -m pip install -e ".[runtime]"
 cp ori.yaml.phone.example ori.yaml
 ```
 
+Use the profile that matches the site:
+
+```sh
+cp ori.yaml.phone.example ori.yaml          # USB/PZEM
+cp ori.yaml.phone.growatt.example ori.yaml  # qualified Growatt SolarmanV5
+cp ori.yaml.phone.victron.example ori.yaml  # Victron VenusOS MQTT
+```
+
 Edit `ori.yaml`:
 
 - set `device.id` to a stable phone/site identifier;
 - set `actions.operator_contact`;
-- set `sensors[0].device_path` to the actual serial path, or to a pyserial URL
-  such as `socket://127.0.0.1:7000`;
+- for USB/PZEM, set `sensors[0].device_path` to the actual serial path, or to a
+  pyserial URL such as `socket://127.0.0.1:7000`;
+- for Growatt, set each inverter sensor `host` and `serial`;
+- for Victron, set each inverter sensor `broker_host` and `portal_id`;
 - keep `health_socket.path` under `/data/data/com.termux/files/home/.ori/`;
 - keep `actions.relay.enabled: false`;
 - keep `gateway.enabled: false` for phone-only testing.
@@ -125,7 +151,9 @@ Production phone installs must not resolve dependencies live from public package
 registries. Build and transfer a signed phone wheelhouse:
 
 ```sh
-ORI_WHEELHOUSE_TARGET=phone bash scripts/build-wheelhouse.sh
+ORI_WHEELHOUSE_TARGET=phone bash scripts/build-wheelhouse.sh          # USB/PZEM
+ORI_WHEELHOUSE_TARGET=phone-growatt bash scripts/build-wheelhouse.sh  # Growatt
+ORI_WHEELHOUSE_TARGET=phone-victron bash scripts/build-wheelhouse.sh  # Victron
 ```
 
 The wheelhouse is platform-specific. A macOS or generic Linux build can prove
@@ -140,6 +168,8 @@ pkg install -y python clang make pkg-config rust openssl libffi
 python -m pip install --upgrade pip pip-tools wheel setuptools
 ORI_WHEELHOUSE_TARGET=phone bash scripts/build-wheelhouse.sh
 ```
+
+Use the matching `ORI_WHEELHOUSE_TARGET` for Growatt or Victron sites.
 
 The phone target builds dependency wheels from hash-locked inputs instead of
 forcing `--only-binary`, because several native packages may not publish
@@ -259,6 +289,22 @@ In the doctor output and runtime logs, confirm:
 - telemetry export logs show successful POSTs when enabled;
 - Tier A alerts still work if telemetry export is disabled or the backend is
   unreachable.
+
+## Inverter Qualification Check
+
+Before provisioning a WiFi inverter site, confirm the exact profile:
+
+- brand and model, for example Growatt, Deye, Sunsynk, Felicity, Victron;
+- firmware/logger type and logger serial;
+- local network address or broker address;
+- whether readings come from SolarmanV5, MQTT, Modbus TCP, Modbus RTU, or
+  another local API;
+- PV power, grid/import power, load power, battery SOC, and inverter status
+  readings cross-checked against the vendor app or inverter display.
+
+If the site uses Deye/Sunsynk/Felicity or another unqualified profile, do not
+rename the Growatt profile and ship it. Use USB/PZEM mode for deployment, or
+create a separate qualification branch with fixture captures and adapter tests.
 
 ## Unsupported USB Shape
 
