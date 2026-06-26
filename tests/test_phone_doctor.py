@@ -270,6 +270,96 @@ def test_phone_doctor_fails_growatt_profile_without_dependency(tmp_path, monkeyp
     assert phone_doctor.has_failures(checks) is True
 
 
+def test_phone_doctor_accepts_solarman_modbus_phone_profile(tmp_path, monkeypatch):
+    config_path = _write_phone_config(
+        tmp_path,
+        sensor_block="""
+  - id: deye-grid-power
+    type: deye_grid_power
+    protocol: solarman_modbus
+    profile: deye_hybrid
+    host: "192.168.1.20"
+    serial: "1234567890"
+    port: 8899
+    poll_interval_ms: 5000
+""".rstrip(),
+    )
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(
+        phone_doctor.importlib.util,
+        "find_spec",
+        _dependency_finder({"pysolarmanv5"}),
+    )
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    statuses = _status_by_name(checks)
+    assert statuses["config.sensor_profile"] == "pass"
+    assert statuses["config.profile_dependencies"] == "pass"
+    assert phone_doctor.has_failures(checks) is False
+
+
+def test_phone_doctor_fails_solarman_modbus_profile_without_fields(
+    tmp_path, monkeypatch
+):
+    config_path = _write_phone_config(
+        tmp_path,
+        sensor_block="""
+  - id: deye-grid-power
+    type: deye_grid_power
+    protocol: solarman_modbus
+    poll_interval_ms: 5000
+""".rstrip(),
+    )
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(
+        phone_doctor.importlib.util,
+        "find_spec",
+        _dependency_finder({"pysolarmanv5"}),
+    )
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    assert _status_by_name(checks)["config.sensor_profile"] == "fail"
+    message = _message_by_name(checks)["config.sensor_profile"]
+    assert "profile" in message
+    assert "host" in message
+    assert "serial" in message
+    assert phone_doctor.has_failures(checks) is True
+
+
+def test_phone_doctor_fails_solarman_modbus_profile_without_dependency(
+    tmp_path, monkeypatch
+):
+    config_path = _write_phone_config(
+        tmp_path,
+        sensor_block="""
+  - id: deye-grid-power
+    type: deye_grid_power
+    protocol: solarman_modbus
+    profile: deye_hybrid
+    host: "192.168.1.20"
+    serial: "1234567890"
+    poll_interval_ms: 5000
+""".rstrip(),
+    )
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(
+        phone_doctor.importlib.util,
+        "find_spec",
+        _dependency_finder(set()),
+    )
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    assert _status_by_name(checks)["config.profile_dependencies"] == "fail"
+    assert "pysolarmanv5" in _message_by_name(checks)["config.profile_dependencies"]
+    assert phone_doctor.has_failures(checks) is True
+
+
 def test_phone_doctor_accepts_victron_phone_profile(tmp_path, monkeypatch):
     config_path = _write_phone_config(
         tmp_path,

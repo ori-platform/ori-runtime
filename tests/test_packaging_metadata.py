@@ -69,6 +69,14 @@ def test_phone_inverter_extras_extend_phone_without_bloating_base() -> None:
     assert victron_deps - phone_deps == {"aiomqtt"}
 
 
+def test_inverter_profiles_are_packaged_with_runtime_wheel() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    package_data = pyproject["tool"]["setuptools"]["package-data"]["ori"]
+
+    assert "py.typed" in package_data
+    assert "hal/inverter_profiles/*.yaml" in package_data
+
+
 def test_phone_requirements_input_excludes_gateway_pi_and_pc_deps() -> None:
     deps = {
         _dependency_name(line.strip())

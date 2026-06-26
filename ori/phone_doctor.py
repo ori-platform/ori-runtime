@@ -301,7 +301,7 @@ def _sensor_check(config: Config) -> DoctorCheck:
             status="fail",
             message=(
                 "No supported Phone Starter sensor profile is configured. "
-                "Use usb_serial, growatt, or victron sensors."
+                "Use usb_serial, growatt, solarman_modbus, or victron sensors."
             ),
         )
 
@@ -330,6 +330,19 @@ def _sensor_check(config: Config) -> DoctorCheck:
             serial = str(sensor.metadata.get("serial", "") or "").strip()
             detail["host"] = host
             detail["serial_configured"] = bool(serial)
+            if not host:
+                missing.append(f"{sensor.id}: host")
+            if not serial:
+                missing.append(f"{sensor.id}: serial")
+        elif profile == "solarman_modbus":
+            profile_name = str(sensor.metadata.get("profile", "") or "").strip()
+            host = str(sensor.metadata.get("host", "") or "").strip()
+            serial = str(sensor.metadata.get("serial", "") or "").strip()
+            detail["inverter_profile"] = profile_name
+            detail["host"] = host
+            detail["serial_configured"] = bool(serial)
+            if not profile_name:
+                missing.append(f"{sensor.id}: profile")
             if not host:
                 missing.append(f"{sensor.id}: host")
             if not serial:
@@ -368,6 +381,8 @@ def _phone_sensor_profile(sensor: Any) -> str | None:
         return "usb"
     if sensor.protocol == "growatt" and str(sensor.type).startswith("growatt_"):
         return "growatt"
+    if sensor.protocol == "solarman_modbus":
+        return "solarman_modbus"
     if sensor.protocol == "victron" and str(sensor.type).startswith("victron_"):
         return "victron"
     return None
@@ -380,7 +395,9 @@ def _profile_dependency_check(config: Config) -> DoctorCheck:
         if (profile := _phone_sensor_profile(sensor)) is not None
     }
     missing: list[str] = []
-    if "growatt" in profiles and importlib.util.find_spec("pysolarmanv5") is None:
+    if {"growatt", "solarman_modbus"} & profiles and importlib.util.find_spec(
+        "pysolarmanv5"
+    ) is None:
         missing.append("pysolarmanv5")
     if "victron" in profiles and importlib.util.find_spec("aiomqtt") is None:
         missing.append("aiomqtt")

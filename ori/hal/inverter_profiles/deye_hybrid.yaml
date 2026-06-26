@@ -1,0 +1,82 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+profile: deye_hybrid
+brand: Deye
+models:
+  - "Deye hybrid candidate"
+  - "Sunsynk Deye-family candidate"
+  - "Sol-Ark Deye-family candidate"
+transport: solarman_v5
+status: community_derived
+default_port: 8899
+source: >
+  StephanJoubert/home_assistant_solarman deye_hybrid.yaml and
+  kellerza/sunsynk Deye/Sunsynk definitions; minimal Phone Starter metrics only.
+upstream_license: "Apache-2.0"
+upstream_commit: >
+  home_assistant_solarman@d4296b16415dc9187a74fbaf249bfd71417c38aa;
+  kellerza/sunsynk@b44f32ed07e9c19b88be1395d2d9fa0a799f92c6
+notes: >
+  Deye-family profile candidate only. Sunsynk and Sol-Ark are commonly
+  integrated through Deye-family maps, but each model/firmware/logger must be
+  field-qualified before Ori claims support. Grid power sign must be validated
+  during both import and export.
+
+metrics:
+  deye_battery_soc:
+    register: 184
+    count: 1
+    scale: 1.0
+    unit: percent
+    signed: false
+  deye_pv1_power:
+    register: 186
+    count: 1
+    scale: 1.0
+    unit: watt
+    signed: false
+  deye_grid_power:
+    register: 169
+    count: 1
+    scale: 1.0
+    unit: watt
+    signed: true
+  deye_load_power:
+    register: 178
+    count: 1
+    scale: 1.0
+    unit: watt
+    signed: false
+  deye_battery_voltage:
+    register: 183
+    count: 1
+    scale: 0.01
+    unit: volt
+    signed: false
+
+qualification_vectors:
+  - metric: deye_battery_soc
+    raw_registers: [85]
+    expected_value: 85.0
+    tolerance: 0.01
+    ground_truth: "synthetic fixture from community map; not field-confirmed"
+  - metric: deye_pv1_power
+    raw_registers: [1500]
+    expected_value: 1500.0
+    tolerance: 0.01
+    ground_truth: "synthetic fixture from community map; not field-confirmed"
+  - metric: deye_grid_power
+    raw_registers: [65136]
+    expected_value: -400.0
+    tolerance: 0.01
+    ground_truth: "synthetic signed 16-bit fixture; sign must be field-confirmed"
+  - metric: deye_load_power
+    raw_registers: [900]
+    expected_value: 900.0
+    tolerance: 0.01
+    ground_truth: "synthetic fixture from community map; not field-confirmed"
+  - metric: deye_battery_voltage
+    raw_registers: [5320]
+    expected_value: 53.2
+    tolerance: 0.01
+    ground_truth: "synthetic fixture from community map; not field-confirmed"

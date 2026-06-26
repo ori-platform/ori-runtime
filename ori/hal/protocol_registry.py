@@ -10,6 +10,7 @@ SUPPORTED_SENSOR_PROTOCOLS: frozenset[str] = frozenset(
         "psutil",
         "i2c",
         "serial",
+        "solarman_modbus",
         "growatt",
         "victron",
         "zigbee",
@@ -43,6 +44,10 @@ def make_adapter(protocol: str) -> BaseAdapter:
         from ori.hal.growatt_adapter import GrowattAdapter
 
         return GrowattAdapter()
+    if protocol == "solarman_modbus":
+        from ori.hal.solarman_modbus_adapter import SolarmanModbusAdapter
+
+        return SolarmanModbusAdapter()
     if protocol == "victron":
         from ori.hal.victron_adapter import VictronAdapter
 

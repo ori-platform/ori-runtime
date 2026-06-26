@@ -12,6 +12,11 @@ from ori.config import (
 )
 
 EXAMPLE_YAML = os.path.join(os.path.dirname(__file__), "..", "ori.yaml.example")
+LINUX_EXAMPLE_YAML = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "ori.linux.yaml.example",
+)
 PHONE_EXAMPLE_YAML = os.path.join(
     os.path.dirname(__file__),
     "..",
@@ -78,6 +83,13 @@ class TestLoadExample:
         assert "ads1115_current" in types
         assert "ads1115_voltage" in types
         assert "active_power" in types
+
+    def test_example_documents_runtime_inverter_profile_registry(self):
+        text = open(EXAMPLE_YAML, encoding="utf-8").read()
+
+        assert "protocol: solarman_modbus" in text
+        assert "profile: deye_hybrid" in text
+        assert "Pi / Edge Node / phone" in text
 
     def test_sensor_poll_intervals(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -1990,6 +2002,24 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "growatt"
 
+    def test_accepts_solarman_modbus_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: inverter-grid\n"
+                "    type: deye_grid_power\n"
+                "    protocol: solarman_modbus\n"
+                "    profile: deye_hybrid\n"
+                "    host: 192.168.1.50\n"
+                "    serial: '1234567890'\n"
+                "    poll_interval_ms: 5000"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+
+        assert cfg.sensors[0].protocol == "solarman_modbus"
+        assert cfg.sensors[0].metadata["profile"] == "deye_hybrid"
+
     def test_accepts_usb_serial_protocol(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
@@ -3390,6 +3420,22 @@ class TestLoadPhoneExample:
         assert cfg.health_socket["path"] == (
             "/data/data/com.termux/files/home/.ori/health.sock"
         )
+
+
+class TestLoadLinuxExample:
+    def test_linux_example_loads_without_error(self):
+        cfg = Config.load(LINUX_EXAMPLE_YAML)
+
+        assert isinstance(cfg, Config)
+        assert cfg.device.deployment_type == "server"
+        assert {sensor.protocol for sensor in cfg.sensors} == {"psutil"}
+
+    def test_linux_example_documents_runtime_inverter_profile_registry(self):
+        text = open(LINUX_EXAMPLE_YAML, encoding="utf-8").read()
+
+        assert "protocol: solarman_modbus" in text
+        assert "profile: deye_hybrid" in text
+        assert "not phone-specific" in text
 
 
 class TestDevicePolicyConfig:

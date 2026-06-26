@@ -12,6 +12,11 @@
 #
 # This config uses the psutil adapter and pc-system-health skill which run
 # on any Linux machine. No Raspberry Pi, no sensors, no wiring needed.
+#
+# Linux/Pi/Ori Edge Node deployments can also use networked inverter profiles
+# when the inverter logger is reachable on the LAN. Add `protocol:
+# solarman_modbus` with a bundled profile such as `growatt_spf` or
+# `deye_hybrid`; profile status remains advisory until field-qualified.
 # ─────────────────────────────────────────────────────────────────────────────
 
 device:
@@ -37,6 +42,18 @@ sensors:
     type: cpu_temp
     protocol: psutil
     poll_interval_ms: 10000
+
+  # ─── Optional networked inverter profile (not phone-specific) ──────────
+  # Uncomment when this Linux/Pi/Edge Node runtime can reach a SolarmanV5
+  # inverter logger on the local network.
+  # - id: inverter-grid-power
+  #   type: deye_grid_power
+  #   protocol: solarman_modbus
+  #   profile: deye_hybrid
+  #   host: "192.168.1.XXX"
+  #   serial: "XXXXXXXXXX"
+  #   port: 8899
+  #   poll_interval_ms: 5000
 
 skills:
   - name: pc-system-health

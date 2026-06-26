@@ -1,0 +1,75 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+profile: growatt_spf
+brand: Growatt
+models:
+  - SPF 5000 ES
+transport: solarman_v5
+status: community_derived
+default_port: 8899
+source: "Ori legacy GrowattAdapter _SENSOR_MAP; pysolarmanv5 SolarmanV5 transport"
+upstream_license: "Ori Apache-2.0"
+upstream_commit: "internal legacy map"
+notes: >
+  Decode is equivalent to the legacy GrowattAdapter register map. Promote to
+  field_qualified only after a live cross-check against inverter display,
+  vendor app, or independent meter evidence for the exact model/firmware/logger.
+
+metrics:
+  growatt_battery_soc:
+    register: 1014
+    count: 1
+    scale: 0.1
+    unit: percent
+    signed: false
+  growatt_pv_power:
+    register: 1060
+    count: 2
+    scale: 1.0
+    unit: watt
+    signed: false
+  growatt_grid_power:
+    register: 1062
+    count: 2
+    scale: 1.0
+    unit: watt
+    signed: true
+  growatt_load_power:
+    register: 1064
+    count: 2
+    scale: 1.0
+    unit: watt
+    signed: false
+  growatt_battery_voltage:
+    register: 1016
+    count: 1
+    scale: 0.1
+    unit: volt
+    signed: false
+
+qualification_vectors:
+  - metric: growatt_battery_soc
+    raw_registers: [850]
+    expected_value: 85.0
+    tolerance: 0.01
+    ground_truth: "synthetic fixture from legacy register map"
+  - metric: growatt_pv_power
+    raw_registers: [0, 12345]
+    expected_value: 12345.0
+    tolerance: 0.01
+    ground_truth: "synthetic fixture from legacy register map"
+  - metric: growatt_grid_power
+    raw_registers: [65535, 65306]
+    expected_value: -230.0
+    tolerance: 0.01
+    ground_truth: "synthetic signed 32-bit fixture from legacy register map"
+  - metric: growatt_load_power
+    raw_registers: [0, 4321]
+    expected_value: 4321.0
+    tolerance: 0.01
+    ground_truth: "synthetic fixture from legacy register map"
+  - metric: growatt_battery_voltage
+    raw_registers: [520]
+    expected_value: 52.0
+    tolerance: 0.01
+    ground_truth: "synthetic fixture from legacy register map"
