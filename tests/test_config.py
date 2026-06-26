@@ -85,7 +85,8 @@ class TestLoadExample:
         assert "active_power" in types
 
     def test_example_documents_runtime_inverter_profile_registry(self):
-        text = open(EXAMPLE_YAML, encoding="utf-8").read()
+        with open(EXAMPLE_YAML, encoding="utf-8") as fh:
+            text = fh.read()
 
         assert "protocol: solarman_modbus" in text
         assert "profile: deye_hybrid" in text
@@ -3431,7 +3432,8 @@ class TestLoadLinuxExample:
         assert {sensor.protocol for sensor in cfg.sensors} == {"psutil"}
 
     def test_linux_example_documents_runtime_inverter_profile_registry(self):
-        text = open(LINUX_EXAMPLE_YAML, encoding="utf-8").read()
+        with open(LINUX_EXAMPLE_YAML, encoding="utf-8") as fh:
+            text = fh.read()
 
         assert "protocol: solarman_modbus" in text
         assert "profile: deye_hybrid" in text
