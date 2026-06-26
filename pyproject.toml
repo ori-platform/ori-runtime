@@ -47,6 +47,7 @@ runtime = [
 ]
 phone = [
     "pyserial>=3.5",
+    "tzdata>=2025.2",
     "httpx>=0.28",
     "cryptography>=48.0.1",
     "twilio>=9.0",

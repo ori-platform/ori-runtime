@@ -3341,6 +3341,9 @@ class TestLoadPhoneExample:
         assert cfg.sensors[0].type == "usb_power"
         assert cfg.telemetry_export.enabled is False
         assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
+        assert cfg.health_socket["path"] == (
+            "/data/data/com.termux/files/home/.ori/health.sock"
+        )
 
 
 class TestDevicePolicyConfig:

@@ -4,7 +4,9 @@
 # This profile is the Ori Energy phone wedge: an Android phone runs the runtime
 # in Termux and reads a USB serial energy meter through an OTG adapter. The
 # phone is an edge runtime and gateway substitute for Tier A intelligence; it is
-# not a substitute for certified Edge Node relay wiring.
+# not a substitute for certified Edge Node relay wiring. The operator contact
+# below is the customer's normal phone number; it is not assumed to be this
+# unattended runtime phone.
 
 device:
   id: phone-gateway-ikeja-01
@@ -59,6 +61,14 @@ telemetry_export:
   batch_size: 50
   timeout_ms: 3000
   max_queue_size: 1000
+
+health_socket:
+  # Termux cannot create /run/ori/health.sock. Keep the local read-only health
+  # socket inside the Android app sandbox so support diagnostics and smoke tests
+  # work on the dedicated runtime phone.
+  enabled: true
+  path: /data/data/com.termux/files/home/.ori/health.sock
+  mode: 0o660
 
 actions:
   primary_alert_channel: sms
