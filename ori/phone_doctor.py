@@ -240,6 +240,7 @@ def _check_phone_config(config: Config) -> list[DoctorCheck]:
         _gateway_check(config),
         _sensor_check(config),
         _telemetry_check(config),
+        _health_socket_check(config),
         _operator_contact_check(config),
     ]
     return checks
@@ -362,6 +363,41 @@ def _telemetry_check(config: Config) -> DoctorCheck:
         status="pass",
         message="telemetry_export is enabled and its API key environment variable is set.",
         details={"api_key_env": env_name, "endpoint": telemetry.endpoint},
+    )
+
+
+def _health_socket_check(config: Config) -> DoctorCheck:
+    health_socket = (
+        config.health_socket if isinstance(config.health_socket, dict) else {}
+    )
+    enabled = is_truthy(health_socket.get("enabled", False))
+    path = str(health_socket.get("path", "") or "").strip()
+    details = {"enabled": enabled, "path": path}
+
+    if not enabled:
+        return DoctorCheck(
+            name="config.health_socket",
+            status="warn",
+            message=(
+                "health_socket is disabled; local support diagnostics will be limited."
+            ),
+            details=details,
+        )
+    if path.startswith("/run/"):
+        return DoctorCheck(
+            name="config.health_socket",
+            status="fail",
+            message=(
+                "health_socket.path uses /run, which is not writable in Termux. "
+                "Use a path under /data/data/com.termux/files/home/.ori/."
+            ),
+            details=details,
+        )
+    return DoctorCheck(
+        name="config.health_socket",
+        status="pass",
+        message="health_socket uses a phone-writable path.",
+        details=details,
     )
 
 

@@ -81,6 +81,7 @@ Edit `ori.yaml`:
 - set `actions.operator_contact`;
 - set `sensors[0].device_path` to the actual serial path, or to a pyserial URL
   such as `socket://127.0.0.1:7000`;
+- keep `health_socket.path` under `/data/data/com.termux/files/home/.ori/`;
 - keep `actions.relay.enabled: false`;
 - keep `gateway.enabled: false` for phone-only testing.
 
@@ -177,6 +178,41 @@ forever:
 ```sh
 bash scripts/termux-phone-smoke.sh --config ori.yaml --runtime-startup-seconds 10
 ```
+
+## Socket Bridge Simulator
+
+If a physical USB energy meter is not available yet, validate the Android
+runtime and socket bridge shape with the bundled PZEM simulator:
+
+```sh
+cd ~/ori
+python scripts/pzem_socket_sim.py --port 7000 --power 850 > ~/pzem-sim.log 2>&1 &
+echo $! > ~/pzem-sim.pid
+```
+
+Set the phone sensor path in `ori.yaml`:
+
+```yaml
+device_path: socket://127.0.0.1:7000
+```
+
+Then run:
+
+```sh
+bash scripts/termux-phone-smoke.sh --config ori.yaml --runtime-startup-seconds 10
+cat ~/pzem-sim.log
+```
+
+The simulator log should show repeated requests for register `0x0012` when the
+configured sensor type is `usb_power`. Stop it with:
+
+```sh
+kill "$(cat ~/pzem-sim.pid)"
+```
+
+This proves the Android phone can run Ori through the same `socket://` serial
+bridge shape used by an approved USB-serial bridge. It does not prove physical
+meter wiring, OTG compatibility, or deployment readiness by itself.
 
 ## Termux:Boot Startup
 

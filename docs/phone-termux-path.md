@@ -64,6 +64,10 @@ directly for cost projection. It does not reinterpret watts as amps.
 Follow [android-phone-install.md](android-phone-install.md) for the install and
 USB readiness checklist.
 
+Set `health_socket.path` to a Termux-writable path such as
+`/data/data/com.termux/files/home/.ori/health.sock`. The Linux default
+`/run/ori/health.sock` is not writable inside the Android app sandbox.
+
 Phone wheelhouses are built from `requirements-phone.txt`, not the broad
 runtime lockfile. The phone lockfile keeps gateway MQTT, industrial protocols,
 Pi GPIO packages, and PC process-control dependencies out of the Android
@@ -80,6 +84,12 @@ installs can still use `--require-hashes`.
 `termux-usb -l` is a readiness signal, not a runtime transport by itself. It can
 show that Android sees the USB meter, but the runtime still needs the meter to
 be presented as a serial stream through a tty path or approved local bridge.
+
+The Android phone smoke has also validated the local bridge shape with a PZEM
+socket simulator: `ori-runtime` connected to `socket://127.0.0.1:7000`, loaded
+the phone profile, stayed alive, and issued repeated PZEM Modbus reads for the
+`usb_power` register. This proves the Android runtime can consume an approved
+local serial bridge. It does not replace a physical USB meter validation before activation.
 
 Run this for phone readiness:
 
@@ -112,6 +122,41 @@ reports, and upgrade prompts from any modern phone, including iPhone.
 The Android Termux runtime remains the edge execution path because browsers and
 PWAs cannot reliably read USB serial meters, run offline background loops, or
 enforce Ori's runtime safety model.
+
+## Private Android APK Path
+
+The private APK is the client-facing packaging layer for Phone Starter. It
+does not change Ori's safety model; it wraps the same runtime capability behind
+normal Android install and permission screens.
+
+The APK must:
+
+- be signed and distributed from the authenticated Ori Energy onboarding flow
+  after trial or Paystack activation;
+- accept a short-lived provisioning token from the product backend;
+- request USB Host permission for the approved meter or bridge;
+- run as a foreground service with a persistent status notification;
+- request wake-lock and battery-optimization exemptions explicitly;
+- store runtime credentials in Android-protected app storage, not in a public
+  config file or the APK bundle;
+- keep `deployment_type: phone`, `gateway.enabled: false`, and relay
+  entitlements disabled unless a separate certified actuator path exists;
+- export telemetry through the existing HTTPS/HMAC runtime telemetry path;
+- send alerts to `actions.operator_contact`, which is the client's normal
+  operator phone, not necessarily the unattended Android gateway device.
+
+The APK must not:
+
+- enable Tier B/C relay actuation on a phone-only deployment;
+- call Gemini, cloud LLMs, or any product backend in the Tier D safety path;
+- silently bypass Android USB, notification, background, or battery prompts;
+- embed long-lived client API keys or provisioning secrets in the APK;
+- treat the client PWA phone as the same device as the unattended runtime
+  phone.
+
+The current Termux path is therefore the engineering and assisted-pilot proof.
+The APK is the self-serve commercial installer that removes terminal setup
+while preserving the runtime's actuation-trust boundaries.
 
 ## Android Background Runtime
 
@@ -174,6 +219,11 @@ runtime path. Product push notifications can be added through the PWA/backend,
 but they depend on account sync, browser notification permissions, and internet
 delivery. Direct runtime alerts remain the fallback when the product backend is
 unavailable.
+
+The Android device running Ori should be treated as a dedicated edge node. It
+may sit near the meter, inverter, or distribution board and should not be
+assumed to be the phone the owner carries. Customer messages go to
+`actions.operator_contact` and optional secondary contacts.
 
 For early deployments, configure at least one of:
 

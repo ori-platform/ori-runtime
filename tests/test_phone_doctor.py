@@ -1,9 +1,23 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import json
+import struct
+from pathlib import Path
 
 from ori import phone_doctor
+
+_PZEM_SIM_PATH = Path("scripts/pzem_socket_sim.py")
+
+
+def _load_pzem_sim():
+    spec = importlib.util.spec_from_file_location("pzem_socket_sim", _PZEM_SIM_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _write_phone_config(
@@ -48,6 +62,11 @@ telemetry_export:
   enabled: {str(telemetry_enabled).lower()}
   endpoint: "https://api.ori.energy/runtime/telemetry"
   api_key_env: ORI_ENERGY_DEVICE_API_KEY
+
+health_socket:
+  enabled: true
+  path: /data/data/com.termux/files/home/.ori/health.sock
+  mode: 0o660
 
 actions:
   primary_alert_channel: sms
@@ -96,6 +115,7 @@ def test_phone_doctor_accepts_valid_phone_config_with_warnings(tmp_path, monkeyp
     assert statuses["config.gateway"] == "pass"
     assert statuses["config.usb_sensor"] == "pass"
     assert statuses["config.telemetry_export"] == "warn"
+    assert statuses["config.health_socket"] == "pass"
     assert phone_doctor.has_failures(checks) is False
 
 
@@ -146,6 +166,26 @@ def test_phone_doctor_accepts_api_key_when_telemetry_enabled(tmp_path, monkeypat
 
     assert _status_by_name(checks)["config.telemetry_export"] == "pass"
     assert phone_doctor.has_failures(checks) is False
+
+
+def test_phone_doctor_rejects_linux_health_socket_path_for_phone(tmp_path, monkeypatch):
+    config_path = Path(_write_phone_config(tmp_path))
+    text = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        text.replace(
+            "/data/data/com.termux/files/home/.ori/health.sock",
+            "/run/ori/health.sock",
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    checks = phone_doctor.run_phone_doctor(str(config_path))
+
+    assert _status_by_name(checks)["config.health_socket"] == "fail"
+    assert "/run" in _message_by_name(checks)["config.health_socket"]
+    assert phone_doctor.has_failures(checks) is True
 
 
 def test_usb_readiness_prefers_direct_serial_device(monkeypatch):
@@ -215,3 +255,15 @@ def test_format_text_uses_pretty_ansi_report(tmp_path, monkeypatch):
     assert "ANDROID / TERMUX" in output
     assert "ORI CONFIG" in output
     assert "Result: PASS" in output
+
+
+def test_pzem_socket_sim_builds_usb_power_response():
+    sim = _load_pzem_sim()
+    payload = struct.pack(">BBHH", 1, 0x03, 0x0012, 2)
+    request = payload + struct.pack("<H", sim.crc16(payload))
+
+    response = sim.build_response(request, {"power": 850.0})
+
+    assert response[:3] == b"\x01\x03\x04"
+    assert struct.unpack(">I", response[3:-2])[0] == 8500
+    assert struct.unpack("<H", response[-2:])[0] == sim.crc16(response[:-2])

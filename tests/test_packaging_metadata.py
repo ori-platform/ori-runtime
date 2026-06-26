@@ -49,6 +49,7 @@ def test_phone_extra_carries_only_phone_wedge_dependencies() -> None:
         "cryptography",
         "httpx",
         "pyserial",
+        "tzdata",
         "twilio",
     }
 
@@ -62,7 +63,7 @@ def test_phone_requirements_input_excludes_gateway_pi_and_pc_deps() -> None:
         if line.strip() and not line.lstrip().startswith("#")
     }
 
-    assert {"pyyaml", "pyserial", "httpx", "cryptography"} <= deps
+    assert {"pyyaml", "pyserial", "tzdata", "httpx", "cryptography"} <= deps
     assert "paho-mqtt" not in deps
     assert "asyncua" not in deps
     assert "pysolarmanv5" not in deps
@@ -83,7 +84,7 @@ def test_phone_requirements_lockfile_is_hashed_and_excludes_broad_runtime_deps()
     }
 
     assert "sha256:" in lockfile
-    assert {"pyyaml", "pyserial", "httpx", "cryptography"} <= deps
+    assert {"pyyaml", "pyserial", "tzdata", "httpx", "cryptography"} <= deps
     assert "paho-mqtt" not in deps
     assert "asyncua" not in deps
     assert "pysolarmanv5" not in deps
