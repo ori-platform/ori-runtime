@@ -17,7 +17,6 @@ import struct
 from collections.abc import Mapping
 
 _FC_READ_HOLDING = 0x03
-_DEFAULT_SLAVE_ID = 1
 
 # Matches ori.hal.usb_serial_adapter._SENSOR_MAP.
 _REGISTER_SCALE: dict[int, tuple[str, float]] = {
