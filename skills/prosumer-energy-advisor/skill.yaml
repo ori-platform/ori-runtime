@@ -1,0 +1,107 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: prosumer-energy-advisor
+version: 0.1.0
+author: wasiubakare
+license: Apache-2.0
+signature: bundled
+
+sensors_required:
+  - type: usb_power
+    protocol: usb_serial
+  - type: power
+    protocol: simulation
+  - type: growatt_pv_power
+    protocol: growatt
+  - type: growatt_grid_power
+    protocol: growatt
+  - type: growatt_load_power
+    protocol: growatt
+  - type: growatt_battery_soc
+    protocol: growatt
+  - type: victron_pv_power
+    protocol: victron
+  - type: victron_grid_power
+    protocol: victron
+  - type: victron_battery_soc
+    protocol: victron
+  - type: deye_pv1_power
+    protocol: solarman_modbus
+  - type: deye_grid_power
+    protocol: solarman_modbus
+  - type: deye_load_power
+    protocol: solarman_modbus
+  - type: deye_battery_soc
+    protocol: solarman_modbus
+
+triggers:
+  - name: self_consume_or_store_surplus
+    condition: "is_prosumer_power_event == 1 and quality >= min_quality and config_valid == 1 and surplus_watts >= surplus_threshold_watts and battery_soc_snapshot < battery_full_soc and export_credit_discounted == 1"
+    cooldown_seconds: 900
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: export_cap_approaching
+    condition: "is_grid_power_event == 1 and quality >= min_quality and config_valid == 1 and export_cap_configured == 1 and grid_export_watts >= export_cap_warning_watts"
+    cooldown_seconds: 900
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: defer_deferrable_load
+    condition: "is_prosumer_power_event == 1 and quality >= min_quality and config_valid == 1 and grid_import_watts >= high_import_threshold_watts and pv_watts_snapshot <= low_solar_threshold_watts and battery_soc_snapshot <= battery_reserve_soc"
+    cooldown_seconds: 900
+    escalate_to: local_slm
+    action_tier: A
+
+prompts:
+  self_consume_or_store_surplus: |
+    Your job is advisory only. Do not command the inverter or imply that Ori
+    changed any setting.
+    Write one plain sentence for a business owner explaining that solar surplus
+    is available and why using or storing it is usually better than exporting it
+    at a lower credit.
+
+  export_cap_approaching: |
+    Your job is advisory only. Do not command the inverter or imply that Ori
+    changed any setting.
+    Write one plain sentence explaining that export is near the configured
+    regulatory/site cap and should be reviewed before exporting more.
+
+  defer_deferrable_load: |
+    Your job is advisory only. Do not command the inverter or imply that Ori
+    changed any setting.
+    Write one plain sentence explaining that non-urgent loads should be delayed
+    because grid draw is high while solar and battery reserve are low.
+
+actions:
+  available:
+    - name: alert_whatsapp
+      tier: A
+    - name: log_to_dashboard
+      tier: A
+  defaults:
+    self_consume_or_store_surplus: [alert_whatsapp, log_to_dashboard]
+    export_cap_approaching: [alert_whatsapp, log_to_dashboard]
+    defer_deferrable_load: [alert_whatsapp, log_to_dashboard]
+
+config:
+  timezone: Africa/Lagos
+  min_quality: 0.8
+
+  # Operational estimates only. DisCo revenue-grade import/export statements
+  # remain the billing source of truth for regulated net billing.
+  import_tariff_naira_per_kwh: 225.0
+  export_credit_naira_per_kwh: 40.0
+
+  # Local advisory thresholds.
+  surplus_threshold_watts: 500.0
+  high_import_threshold_watts: 1000.0
+  low_solar_threshold_watts: 300.0
+  battery_reserve_soc: 40.0
+  battery_full_soc: 90.0
+
+  # Disabled when 0. If configured, this is a deterministic advisory ceiling,
+  # not an inverter-control path.
+  export_cap_watts: 0.0
+  export_cap_warning_ratio: 0.8

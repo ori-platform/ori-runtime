@@ -146,6 +146,10 @@ Issues = "https://github.com/ori-platform/ori-runtime/issues"
     "skills/pc-system-health/skill.yaml",
     "skills/pc-system-health/hooks.py",
 ]
+"share/ori-runtime/skills/prosumer-energy-advisor" = [
+    "skills/prosumer-energy-advisor/skill.yaml",
+    "skills/prosumer-energy-advisor/hooks.py",
+]
 "share/ori-runtime/skills/retail-occupancy-optimizer" = [
     "skills/retail-occupancy-optimizer/skill.yaml",
     "skills/retail-occupancy-optimizer/hooks.py",

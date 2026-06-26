@@ -84,6 +84,28 @@ def test_inverter_profile_doctor_entrypoint_is_packaged() -> None:
     assert scripts["ori-inverter-profile-doctor"] == "ori.inverter_profile_doctor:main"
 
 
+def test_all_bundled_skills_are_packaged_as_data_files() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    data_files = pyproject["tool"]["setuptools"]["data-files"]
+    packaged_skill_dirs = {
+        key.removeprefix("share/ori-runtime/skills/")
+        for key in data_files
+        if key.startswith("share/ori-runtime/skills/")
+    }
+    bundled_skill_dirs = {
+        path.parent.name
+        for path in Path("skills").glob("*/skill.yaml")
+        if path.parent.name != "template"
+    }
+
+    assert bundled_skill_dirs <= packaged_skill_dirs
+
+    for skill_name in bundled_skill_dirs:
+        files = set(data_files[f"share/ori-runtime/skills/{skill_name}"])
+        assert f"skills/{skill_name}/skill.yaml" in files
+        assert f"skills/{skill_name}/hooks.py" in files
+
+
 def test_phone_requirements_input_excludes_gateway_pi_and_pc_deps() -> None:
     deps = {
         _dependency_name(line.strip())
