@@ -73,6 +73,20 @@ sensors:
   #   port: 8899
   #   poll_interval_ms: 5000
 
+  # ─── Data-driven SolarmanV5 inverter profile (Pi / Edge Node / phone) ─────
+  # Preferred for new SolarmanV5 LAN integrations because the register map
+  # lives in a versioned inverter profile instead of adapter code.
+  # Bundled profiles such as growatt_spf and deye_hybrid are
+  # community_derived until field evidence promotes an exact model/firmware.
+  # - id: inverter-grid-power
+  #   type: deye_grid_power
+  #   protocol: solarman_modbus
+  #   profile: deye_hybrid
+  #   host: "192.168.1.XXX"
+  #   serial: "XXXXXXXXXX"            # inverter logger/dongle serial
+  #   port: 8899
+  #   poll_interval_ms: 5000
+
   # ─── Victron inverter via VenusOS MQTT (optional) ──────────────────────────
   # - id: victron-battery
   #   type: victron_battery_soc
