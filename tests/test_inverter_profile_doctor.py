@@ -3,6 +3,8 @@
 
 import json
 
+import pytest
+
 from ori import inverter_profile_doctor
 from ori.hal.inverter_profiles import ProfileStatus, load_profile_data
 
@@ -138,6 +140,45 @@ def test_evidence_json_reports_promotion_candidate(tmp_path, capsys):
     assert payload["promotion_candidate"] is True
     assert payload["sample_checks"][0]["pass"] is True
     assert "does not mutate bundled profiles" in payload["note"]
+
+
+def test_evidence_template_contains_profile_samples(capsys):
+    result = inverter_profile_doctor.main(
+        ["--profile", "deye_hybrid", "--evidence-template"]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == "ori.inverter_evidence.v1"
+    assert payload["profile"] == "deye_hybrid"
+    assert payload["profile_status"] == "community_derived"
+    assert payload["profile_field_qualified"] is False
+    assert payload["captured_at_ms"] == 0
+    assert (
+        "Do not reuse fixture_hint values as field evidence." in payload["instructions"]
+    )
+    samples = {sample["metric"]: sample for sample in payload["samples"]}
+    assert "deye_grid_power" in samples
+    assert samples["deye_grid_power"]["raw_registers"] == []
+    assert samples["deye_grid_power"]["observed_value"] == ""
+    assert samples["deye_grid_power"]["fixture_hint"]["expected_value"] == -400.0
+
+
+def test_evidence_template_rejects_decode_mix(capsys):
+    with pytest.raises(SystemExit):
+        inverter_profile_doctor.main(
+            [
+                "--profile",
+                "deye_hybrid",
+                "--evidence-template",
+                "--decode",
+                "deye_grid_power",
+                "--raw",
+                "65136",
+            ]
+        )
+
+    assert "cannot be combined" in capsys.readouterr().err
 
 
 def test_evidence_outside_tolerance_returns_failure(tmp_path, capsys):

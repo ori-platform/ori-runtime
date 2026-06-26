@@ -28,6 +28,60 @@ _REQUIRED_EVIDENCE_IDENTITY_FIELDS = (
 )
 
 
+def _evidence_template(profile: InverterProfile) -> dict[str, Any]:
+    vectors_by_metric = {vector.metric: vector for vector in profile.vectors}
+    samples: list[dict[str, Any]] = []
+    for metric_name, spec in sorted(profile.metrics.items(), key=lambda item: item[0]):
+        vector = vectors_by_metric.get(metric_name)
+        sample: dict[str, Any] = {
+            "metric": metric_name,
+            "register": spec.register,
+            "count": spec.count,
+            "unit": spec.unit,
+            "value_type": spec.value_type,
+            "raw_registers": [],
+            "observed_value": "",
+            "tolerance": 0.0 if spec.value_type != "numeric" else 1.0,
+            "ground_truth": "",
+        }
+        if spec.value_type == "enum":
+            sample["lookup"] = {str(key): value for key, value in spec.lookup.items()}
+        if vector is not None:
+            sample["fixture_hint"] = {
+                "raw_registers": list(vector.raw_registers),
+                "expected_value": vector.expected_value,
+                "ground_truth": vector.ground_truth,
+            }
+        samples.append(sample)
+
+    return {
+        "schema_version": _EVIDENCE_SCHEMA_VERSION,
+        "profile": profile.profile,
+        "profile_status": profile.status,
+        "profile_field_qualified": profile.is_field_qualified,
+        "brand": profile.brand,
+        "model": "",
+        "firmware": "",
+        "logger_serial": "",
+        "captured_at_ms": 0,
+        "source": "field_capture",
+        "transport_proof": "",
+        "operating_state": "",
+        "attachments": {
+            "inverter_lcd_photo": "",
+            "vendor_app_screenshot": "",
+            "pzem_or_clamp_photo": "",
+        },
+        "instructions": [
+            "Replace every placeholder before review.",
+            "Use raw registers captured from the live unit at the same timestamp as the ground-truth reading.",
+            "Use inverter LCD, vendor app, or independent PZEM/clamp evidence as ground_truth.",
+            "Do not reuse fixture_hint values as field evidence.",
+        ],
+        "samples": samples,
+    }
+
+
 def _parse_registers(raw: str) -> list[int]:
     registers: list[int] = []
     for part in str(raw or "").split(","):
@@ -355,6 +409,11 @@ def _print_decode(summary: dict[str, Any], json_output: bool) -> int:
     return 0
 
 
+def _print_evidence_template(profile: InverterProfile) -> int:
+    print(json.dumps(_evidence_template(profile), indent=2, sort_keys=True))
+    return 0
+
+
 def _print_evidence(summary: dict[str, Any], json_output: bool) -> int:
     if json_output:
         print(json.dumps(summary, indent=2, sort_keys=True))
@@ -427,6 +486,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--evidence-template",
+        action="store_true",
+        help=(
+            "Emit a fill-in JSON evidence template for --profile. This never "
+            "reviews evidence, contacts hardware, or promotes profile status."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON.",
@@ -445,6 +512,13 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--profile is required unless --list is used")
 
         profile = load_profile(args.profile)
+        if args.evidence_template:
+            if args.evidence or args.decode or args.raw:
+                parser.error(
+                    "--evidence-template cannot be combined with --evidence, "
+                    "--decode, or --raw"
+                )
+            return _print_evidence_template(profile)
         if args.evidence:
             return _print_evidence(
                 _evidence_summary(profile, Path(args.evidence)),
