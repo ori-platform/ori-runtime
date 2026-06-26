@@ -242,6 +242,18 @@ Until a candidate passes this checklist, the fallback deployable Phone Starter
 path remains USB/PZEM metering because it gives Ori an independent measurement
 surface that does not depend on inverter-brand support.
 
+Use the offline profile doctor to inspect bundled maps or verify a captured raw
+register sample before adding field evidence:
+
+```sh
+ori-inverter-profile-doctor --list
+ori-inverter-profile-doctor --profile deye_hybrid
+ori-inverter-profile-doctor --profile deye_hybrid --decode deye_grid_power --raw 65136
+```
+
+This tool never opens a network connection and never writes inverter registers.
+It only exercises the same decode path used by the runtime.
+
 ## Android Background Runtime
 
 Android can stop unattended background work aggressively, especially on low-cost
