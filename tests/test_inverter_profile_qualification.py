@@ -8,7 +8,9 @@ from ori.hal.inverter_profiles import (
     InverterProfileError,
     ProfileStatus,
     decode_metric,
+    decode_metric_value,
     decode_raw_registers,
+    decode_string_registers,
     list_bundled_profiles,
     load_profile,
     load_profile_data,
@@ -91,6 +93,132 @@ def test_decode_supports_word_order_mask_and_offset():
 
     assert decode_metric(profile, "fixture_metric", [0x0012, 0x0000]) == -1.0
     assert decode_raw_registers([0xFFFF], signed=True) == -1
+
+
+def test_decode_supports_enum_lookup_values():
+    profile = load_profile_data(
+        {
+            "profile": "fixture",
+            "transport": "solarman_v5",
+            "status": ProfileStatus.COMMUNITY_DERIVED,
+            "metrics": {
+                "inverter_status": {
+                    "register": 10,
+                    "count": 1,
+                    "unit": "state",
+                    "value_type": "enum",
+                    "lookup": {0: "standby", 1: "normal", 2: "fault"},
+                }
+            },
+            "qualification_vectors": [
+                {
+                    "metric": "inverter_status",
+                    "raw_registers": [1],
+                    "expected_value": "normal",
+                }
+            ],
+        }
+    )
+
+    assert decode_metric_value(profile, "inverter_status", [1]) == "normal"
+    with pytest.raises(InverterProfileError, match="numeric values only"):
+        decode_metric(profile, "inverter_status", [1])
+
+
+def test_decode_supports_string_register_values():
+    profile = load_profile_data(
+        {
+            "profile": "fixture",
+            "transport": "solarman_v5",
+            "status": ProfileStatus.COMMUNITY_DERIVED,
+            "metrics": {
+                "firmware_version": {
+                    "register": 20,
+                    "count": 3,
+                    "unit": "text",
+                    "value_type": "string",
+                }
+            },
+            "qualification_vectors": [
+                {
+                    "metric": "firmware_version",
+                    "raw_registers": [0x5631, 0x2E32, 0x0000],
+                    "expected_value": "V1.2",
+                }
+            ],
+        }
+    )
+
+    assert decode_string_registers([0x5631, 0x2E32, 0x0000]) == "V1.2"
+    assert (
+        decode_metric_value(profile, "firmware_version", [0x5631, 0x2E32, 0x0000])
+        == "V1.2"
+    )
+
+
+def test_enum_metrics_require_lookup():
+    with pytest.raises(InverterProfileError, match="enum metrics require lookup"):
+        load_profile_data(
+            {
+                "profile": "fixture",
+                "transport": "solarman_v5",
+                "status": ProfileStatus.COMMUNITY_DERIVED,
+                "metrics": {
+                    "status": {
+                        "register": 1,
+                        "unit": "state",
+                        "value_type": "enum",
+                    }
+                },
+                "qualification_vectors": [
+                    {"metric": "status", "raw_registers": [1], "expected_value": "ok"}
+                ],
+            }
+        )
+
+
+def test_non_numeric_vectors_require_string_expected_value():
+    with pytest.raises(InverterProfileError, match="enum vector"):
+        load_profile_data(
+            {
+                "profile": "fixture",
+                "transport": "solarman_v5",
+                "status": ProfileStatus.COMMUNITY_DERIVED,
+                "metrics": {
+                    "status": {
+                        "register": 1,
+                        "unit": "state",
+                        "value_type": "enum",
+                        "lookup": {1: "ok"},
+                    }
+                },
+                "qualification_vectors": [
+                    {"metric": "status", "raw_registers": [1], "expected_value": 1}
+                ],
+            }
+        )
+
+
+def test_vector_expected_value_cannot_be_null():
+    with pytest.raises(InverterProfileError, match="expected_value"):
+        load_profile_data(
+            {
+                "profile": "fixture",
+                "transport": "solarman_v5",
+                "status": ProfileStatus.COMMUNITY_DERIVED,
+                "metrics": {
+                    "status": {
+                        "register": 1,
+                        "unit": "state",
+                        "value_type": "enum",
+                        "lookup": {1: "ok"},
+                    }
+                },
+                "qualification_vectors": [
+                    {"metric": "status", "raw_registers": [1], "expected_value": None}
+                ],
+            }
+        )
 
 
 def test_field_qualified_profiles_require_firmware_verified():
@@ -241,6 +369,47 @@ async def test_solarman_modbus_adapter_rejects_experimental_profile(monkeypatch)
             {
                 "profile": "experimental_profile",
                 "sensor_type": "soc",
+                "host": "192.168.1.50",
+                "serial": "1234567890",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_solarman_modbus_adapter_rejects_non_numeric_metric(monkeypatch):
+    profile = load_profile_data(
+        {
+            "profile": "status_profile",
+            "transport": "solarman_v5",
+            "status": ProfileStatus.COMMUNITY_DERIVED,
+            "metrics": {
+                "status": {
+                    "register": 1,
+                    "unit": "state",
+                    "value_type": "enum",
+                    "lookup": {1: "normal"},
+                },
+            },
+            "qualification_vectors": [
+                {
+                    "metric": "status",
+                    "raw_registers": [1],
+                    "expected_value": "normal",
+                }
+            ],
+        }
+    )
+
+    monkeypatch.setattr(
+        "ori.hal.solarman_modbus_adapter.load_profile", lambda _: profile
+    )
+    adapter = SolarmanModbusAdapter()
+
+    with pytest.raises(AdapterConnectionError, match="must be numeric"):
+        await adapter.connect(
+            {
+                "profile": "status_profile",
+                "sensor_type": "status",
                 "host": "192.168.1.50",
                 "serial": "1234567890",
             }

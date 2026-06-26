@@ -3,16 +3,31 @@
 
 """Data-driven inverter register profiles.
 
-Profiles turn inverter support into validated data: a metric name maps to a
-register layout, scaling rule, and qualification vectors. The runtime adapter
-and the test harness use the same decode functions so CI protects the exact
-production decode path.
+An inverter profile is data, not code. Each profile maps a brand/model's
+Modbus register layout to Ori sensor metrics and carries golden decode vectors
+so the mapping is provable in CI without owning the physical inverter.
+
+This is the brand-agnostic primitive: adding support for a new inverter means
+adding a validated profile YAML file, not writing a new adapter class. Transport
+adapters such as SolarmanV5/Modbus read those profiles through the shared decode
+path.
+
+Qualification status ladder:
+
+- experimental: decode is asserted but unproven; never authoritative.
+- community_derived: decode matches a published/community register map and
+  passes golden vectors, but has not been confirmed against a real unit. It is
+  read-only and advisory.
+- field_qualified: confirmed against one or more real units with independent
+  ground-truth cross-checks such as an inverter screen, vendor app, or Ori
+  PZEM/USB clamp. Only this status may ever back physical Tier B+ authority for
+  that profile.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +37,7 @@ _PROFILE_DIR = Path(__file__).resolve().parent
 
 _VALID_TRANSPORTS = frozenset({"solarman_v5", "modbus_serial", "modbus_tcp"})
 _VALID_STATUSES = frozenset({"experimental", "community_derived", "field_qualified"})
+_VALID_VALUE_TYPES = frozenset({"numeric", "enum", "string"})
 _VALID_WORD_ORDERS = frozenset({"big", "little"})
 
 
@@ -49,6 +65,8 @@ class MetricSpec:
     offset: float = 0.0
     mask: int | None = None
     word_order: str = "big"
+    value_type: str = "numeric"
+    lookup: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -57,7 +75,7 @@ class GoldenVector:
 
     metric: str
     raw_registers: tuple[int, ...]
-    expected_value: float
+    expected_value: float | str
     tolerance: float
     ground_truth: str = ""
 
@@ -131,12 +149,34 @@ def decode_raw_registers(
     return value
 
 
-def decode_metric(
+def decode_string_registers(
+    registers: Sequence[int],
+    *,
+    word_order: str = "big",
+) -> str:
+    """Decode uint16 registers as a null-trimmed big-endian ASCII/UTF-8 string."""
+
+    regs = [int(register) & 0xFFFF for register in registers]
+    if not regs:
+        raise InverterProfileError("empty register payload")
+    if word_order not in _VALID_WORD_ORDERS:
+        raise InverterProfileError(
+            f"unsupported word_order {word_order!r}; expected {sorted(_VALID_WORD_ORDERS)}"
+        )
+
+    ordered = regs if word_order == "big" else list(reversed(regs))
+    raw = bytearray()
+    for register in ordered:
+        raw.extend(((register >> 8) & 0xFF, register & 0xFF))
+    return bytes(raw).rstrip(b"\x00").decode("utf-8", errors="replace").strip()
+
+
+def decode_metric_value(
     profile: InverterProfile,
     metric_name: str,
     raw_registers: Sequence[int],
-) -> float:
-    """Decode raw registers into a scaled engineering value for *metric_name*."""
+) -> float | str:
+    """Decode raw registers into the configured engineering value type."""
 
     spec = profile.metric(metric_name)
     if len(raw_registers) < spec.count:
@@ -144,13 +184,88 @@ def decode_metric(
             f"profile {profile.profile!r} metric {metric_name!r}: expected "
             f"{spec.count} registers, got {len(raw_registers)}"
         )
+
+    if spec.value_type == "string":
+        return decode_string_registers(
+            raw_registers[: spec.count],
+            word_order=spec.word_order,
+        )
+
     raw = decode_raw_registers(
         raw_registers[: spec.count],
         signed=spec.signed,
         word_order=spec.word_order,
         mask=spec.mask,
     )
+    if spec.value_type == "enum":
+        try:
+            return spec.lookup[raw]
+        except KeyError as exc:
+            raise InverterProfileError(
+                f"profile {profile.profile!r} metric {metric_name!r}: "
+                f"raw enum value {raw} is not in lookup"
+            ) from exc
     return round((float(raw) * spec.scale) + spec.offset, 4)
+
+
+def decode_metric(
+    profile: InverterProfile,
+    metric_name: str,
+    raw_registers: Sequence[int],
+) -> float:
+    """Decode raw registers into a scaled engineering value for *metric_name*."""
+
+    value = decode_metric_value(profile, metric_name, raw_registers)
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise InverterProfileError(
+            f"profile {profile.profile!r} metric {metric_name!r} has "
+            f"value_type={profile.metric(metric_name).value_type!r}; "
+            "decode_metric() returns numeric values only"
+        )
+    return float(value)
+
+
+def _parse_lookup(
+    raw_lookup: object, metric_name: str, profile_name: str
+) -> dict[int, str]:
+    if raw_lookup in (None, ""):
+        return {}
+    if not isinstance(raw_lookup, dict):
+        raise InverterProfileError(
+            f"profile {profile_name!r} metric {metric_name!r}: lookup must be a map"
+        )
+
+    lookup: dict[int, str] = {}
+    for raw_key, raw_value in raw_lookup.items():
+        if isinstance(raw_key, bool):
+            raise InverterProfileError(
+                f"profile {profile_name!r} metric {metric_name!r}: "
+                "lookup keys must be integers"
+            )
+        try:
+            key = int(raw_key)
+        except (TypeError, ValueError) as exc:
+            raise InverterProfileError(
+                f"profile {profile_name!r} metric {metric_name!r}: "
+                f"lookup key {raw_key!r} is not an integer"
+            ) from exc
+        if key < 0:
+            raise InverterProfileError(
+                f"profile {profile_name!r} metric {metric_name!r}: "
+                "lookup keys must be >= 0"
+            )
+        value = str(raw_value).strip()
+        if not value:
+            raise InverterProfileError(
+                f"profile {profile_name!r} metric {metric_name!r}: "
+                f"lookup value for {key} is empty"
+            )
+        lookup[key] = value
+    if not lookup:
+        raise InverterProfileError(
+            f"profile {profile_name!r} metric {metric_name!r}: lookup cannot be empty"
+        )
+    return lookup
 
 
 def _parse_metric(name: str, data: object, profile_name: str) -> MetricSpec:
@@ -166,8 +281,10 @@ def _parse_metric(name: str, data: object, profile_name: str) -> MetricSpec:
         signed = bool(data.get("signed", False))
         offset = float(data.get("offset", 0.0))
         word_order = str(data.get("word_order", "big")).strip()
+        value_type = str(data.get("value_type", "numeric")).strip()
         raw_mask = data.get("mask")
         mask = None if raw_mask is None else int(raw_mask)
+        lookup = _parse_lookup(data.get("lookup"), name, profile_name)
     except (KeyError, TypeError, ValueError) as exc:
         raise InverterProfileError(
             f"profile {profile_name!r} metric {name!r}: invalid spec ({exc})"
@@ -177,13 +294,19 @@ def _parse_metric(name: str, data: object, profile_name: str) -> MetricSpec:
         raise InverterProfileError(
             f"profile {profile_name!r} metric {name!r}: register must be >= 0"
         )
-    if count < 1 or count > 4:
+    max_count = 32 if value_type == "string" else 4
+    if count < 1 or count > max_count:
         raise InverterProfileError(
-            f"profile {profile_name!r} metric {name!r}: count must be 1..4"
+            f"profile {profile_name!r} metric {name!r}: count must be 1..{max_count}"
         )
     if not unit:
         raise InverterProfileError(
             f"profile {profile_name!r} metric {name!r}: unit is required"
+        )
+    if value_type not in _VALID_VALUE_TYPES:
+        raise InverterProfileError(
+            f"profile {profile_name!r} metric {name!r}: value_type must be one "
+            f"of {sorted(_VALID_VALUE_TYPES)}"
         )
     if word_order not in _VALID_WORD_ORDERS:
         raise InverterProfileError(
@@ -194,6 +317,31 @@ def _parse_metric(name: str, data: object, profile_name: str) -> MetricSpec:
         raise InverterProfileError(
             f"profile {profile_name!r} metric {name!r}: mask must be >= 0"
         )
+    if value_type == "numeric" and lookup:
+        raise InverterProfileError(
+            f"profile {profile_name!r} metric {name!r}: numeric metrics cannot declare lookup"
+        )
+    if value_type == "enum" and not lookup:
+        raise InverterProfileError(
+            f"profile {profile_name!r} metric {name!r}: enum metrics require lookup"
+        )
+    if value_type == "string":
+        if lookup:
+            raise InverterProfileError(
+                f"profile {profile_name!r} metric {name!r}: string metrics cannot declare lookup"
+            )
+        if signed:
+            raise InverterProfileError(
+                f"profile {profile_name!r} metric {name!r}: string metrics cannot be signed"
+            )
+        if mask is not None:
+            raise InverterProfileError(
+                f"profile {profile_name!r} metric {name!r}: string metrics cannot declare mask"
+            )
+        if scale != 1.0 or offset != 0.0:
+            raise InverterProfileError(
+                f"profile {profile_name!r} metric {name!r}: string metrics cannot scale or offset"
+            )
 
     return MetricSpec(
         register=register,
@@ -204,6 +352,8 @@ def _parse_metric(name: str, data: object, profile_name: str) -> MetricSpec:
         offset=offset,
         mask=mask,
         word_order=word_order,
+        value_type=value_type,
+        lookup=lookup,
     )
 
 
@@ -215,7 +365,15 @@ def _parse_vector(data: object, profile_name: str) -> GoldenVector:
     try:
         metric = str(data["metric"]).strip()
         raw_registers = tuple(int(v) for v in data["raw_registers"])
-        expected_value = float(data["expected_value"])
+        raw_expected_value = data["expected_value"]
+        if raw_expected_value is None:
+            raise ValueError("expected_value cannot be null")
+        if isinstance(raw_expected_value, bool):
+            raise ValueError("expected_value cannot be boolean")
+        if isinstance(raw_expected_value, int | float):
+            expected_value: float | str = float(raw_expected_value)
+        else:
+            expected_value = str(raw_expected_value).strip()
         tolerance = float(data.get("tolerance", 0.0))
         ground_truth = str(data.get("ground_truth", "")).strip()
     except (KeyError, TypeError, ValueError) as exc:
@@ -225,6 +383,10 @@ def _parse_vector(data: object, profile_name: str) -> GoldenVector:
     if not metric:
         raise InverterProfileError(
             f"profile {profile_name!r}: qualification vector metric is required"
+        )
+    if expected_value == "":
+        raise InverterProfileError(
+            f"profile {profile_name!r}: vector for {metric!r} has empty expected_value"
         )
     if not raw_registers:
         raise InverterProfileError(
@@ -302,6 +464,18 @@ def load_profile_data(
                 f"profile {name!r}: vector for {vector.metric!r} has "
                 f"{len(vector.raw_registers)} registers; expected {spec.count}"
             )
+        if spec.value_type == "numeric" and not isinstance(
+            vector.expected_value, int | float
+        ):
+            raise InverterProfileError(
+                f"profile {name!r}: numeric vector for {vector.metric!r} "
+                "must use a numeric expected_value"
+            )
+        if spec.value_type != "numeric" and not isinstance(vector.expected_value, str):
+            raise InverterProfileError(
+                f"profile {name!r}: {spec.value_type} vector for {vector.metric!r} "
+                "must use a string expected_value"
+            )
 
     firmware_verified = tuple(
         str(item).strip()
@@ -376,7 +550,9 @@ __all__ = [
     "MetricSpec",
     "ProfileStatus",
     "decode_metric",
+    "decode_metric_value",
     "decode_raw_registers",
+    "decode_string_registers",
     "list_bundled_profiles",
     "load_profile",
     "load_profile_data",
