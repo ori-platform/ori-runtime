@@ -89,10 +89,28 @@ config:
   timezone: Africa/Lagos
   min_quality: 0.8
 
-  # Operational estimates only. DisCo revenue-grade import/export statements
-  # remain the billing source of truth for regulated net billing.
-  import_tariff_naira_per_kwh: 225.0
-  export_credit_naira_per_kwh: 40.0
+  # Versioned operational policy for Tier A advice only. DisCo revenue-grade
+  # import/export statements remain the billing source of truth for regulated
+  # net billing. Replace this profile with ori-energy generated site policy.
+  tariff_profile:
+    profile: ng-operator-provided-example
+    version: 2026-06-draft
+    status: operator_provided
+    country: NG
+    currency: NGN
+    disco: operator_supplied
+    effective_from: "2026-06-01"
+    effective_until: ""
+    import_tariff_per_kwh: 225.0
+    export_credit_per_kwh: 40.0
+    export_credit_formula: operator_supplied_fixed_credit
+    fixed_charges_per_month: 0.0
+    interconnection_charges_per_kwh: 0.0
+    source:
+      type: operator_estimate
+      reference: Replace with DisCo tariff order, statement, or signed ori-energy policy.
+      retrieved_at: ""
+    notes: Example operational estimate for development and demos; not billing truth.
 
   # Local advisory thresholds.
   surplus_threshold_watts: 500.0

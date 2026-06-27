@@ -3,6 +3,11 @@
 
 """Hooks for the bundled prosumer-energy-advisor skill."""
 
+from ori.policy.tariff_profiles import (
+    METER_OF_RECORD_BOUNDARY,
+    TariffProfileError,
+    load_tariff_profile_data,
+)
 from ori.skills.composer import (
     DEFAULT_JARGON_REPLACEMENTS,
     as_float,
@@ -45,6 +50,13 @@ def _grid_direction(value):
     return grid_import_watts, grid_export_watts
 
 
+def _resolve_tariff_profile(cfg):
+    raw_profile = cfg.get("tariff_profile")
+    if isinstance(raw_profile, dict) and raw_profile:
+        return load_tariff_profile_data(raw_profile), ""
+    return None, "missing tariff_profile"
+
+
 def _compose_sms(trigger_name, hhmm, diagnosis):
     if trigger_name == "self_consume_or_store_surplus":
         msg = (
@@ -76,8 +88,18 @@ def pre_trigger_eval(context):
     reading = getattr(event, "reading", None)
 
     min_quality = as_float(cfg.get("min_quality", 0.8), 0.8)
-    import_tariff = as_float(cfg.get("import_tariff_naira_per_kwh", 0.0), 0.0)
-    export_credit = as_float(cfg.get("export_credit_naira_per_kwh", 0.0), 0.0)
+    tariff_profile = None
+    tariff_error = ""
+    try:
+        tariff_profile, tariff_error = _resolve_tariff_profile(cfg)
+    except TariffProfileError as exc:
+        tariff_error = str(exc)
+    import_tariff = (
+        tariff_profile.import_tariff_per_kwh if tariff_profile is not None else 0.0
+    )
+    export_credit = (
+        tariff_profile.export_credit_per_kwh if tariff_profile is not None else 0.0
+    )
     surplus_threshold = as_float(cfg.get("surplus_threshold_watts", 500.0), 500.0)
     high_import_threshold = as_float(
         cfg.get("high_import_threshold_watts", 1000.0), 1000.0
@@ -88,13 +110,55 @@ def pre_trigger_eval(context):
     export_cap_watts = as_float(cfg.get("export_cap_watts", 0.0), 0.0)
     export_cap_warning_ratio = as_float(cfg.get("export_cap_warning_ratio", 0.8), 0.8)
 
-    config_valid = 1 if import_tariff > 0 and surplus_threshold > 0 else 0
+    tariff_policy_valid = (
+        tariff_profile is not None and tariff_profile.advisory_qualified
+    )
+    config_valid = 1 if tariff_policy_valid and surplus_threshold > 0 else 0
     export_cap_warning_watts = max(0.0, export_cap_watts * export_cap_warning_ratio)
 
     context.derived["config_valid"] = config_valid
+    context.derived["tariff_policy_valid"] = 1 if tariff_policy_valid else 0
+    context.derived["tariff_policy_error"] = tariff_error
     context.derived["min_quality"] = min_quality
     context.derived["import_tariff_naira_per_kwh"] = import_tariff
     context.derived["export_credit_naira_per_kwh"] = export_credit
+    context.derived["tariff_profile"] = (
+        tariff_profile.profile if tariff_profile is not None else ""
+    )
+    context.derived["tariff_profile_version"] = (
+        tariff_profile.version if tariff_profile is not None else ""
+    )
+    context.derived["tariff_profile_status"] = (
+        tariff_profile.status if tariff_profile is not None else ""
+    )
+    context.derived["tariff_profile_source_type"] = (
+        tariff_profile.source.source_type if tariff_profile is not None else ""
+    )
+    context.derived["tariff_profile_source_reference"] = (
+        tariff_profile.source.reference if tariff_profile is not None else ""
+    )
+    context.derived["tariff_profile_disco"] = (
+        tariff_profile.disco if tariff_profile is not None else ""
+    )
+    context.derived["tariff_profile_effective_from"] = (
+        tariff_profile.effective_from if tariff_profile is not None else ""
+    )
+    context.derived["tariff_profile_meter_of_record_boundary"] = (
+        tariff_profile.meter_of_record_boundary
+        if tariff_profile is not None
+        else METER_OF_RECORD_BOUNDARY
+    )
+    context.derived["tariff_profile_fixed_charges_per_month"] = (
+        tariff_profile.fixed_charges_per_month if tariff_profile is not None else 0.0
+    )
+    context.derived["tariff_profile_interconnection_charges_per_kwh"] = (
+        tariff_profile.interconnection_charges_per_kwh
+        if tariff_profile is not None
+        else 0.0
+    )
+    context.derived["tariff_profile_export_credit_formula"] = (
+        tariff_profile.export_credit_formula if tariff_profile is not None else ""
+    )
     context.derived["export_credit_discounted"] = (
         1 if export_credit < import_tariff else 0
     )
