@@ -140,12 +140,17 @@ async def test_self_consume_or_store_surplus_matches_when_export_credit_is_low()
     assert matched is True
     assert context["surplus_watts"] == 1400.0
     assert context["export_credit_discounted"] == 1
+    assert context["tariff_policy_valid"] == 1
+    assert context["tariff_profile"] == "ng-operator-provided-example"
+    assert context["tariff_profile_status"] == "operator_provided"
+    assert context["tariff_profile_source_type"] == "operator_estimate"
+    assert "billing truth" in context["tariff_profile_meter_of_record_boundary"]
 
 
 @pytest.mark.asyncio
 async def test_self_consume_or_store_surplus_blocks_when_export_credit_is_not_discounted():
     skill = _load_skill()
-    skill.config["export_credit_naira_per_kwh"] = 250.0
+    skill.config["tariff_profile"]["export_credit_per_kwh"] = 250.0
     store = _Store()
     ts = _ts_utc(2026, 6, 26, 12)
 
@@ -182,6 +187,139 @@ async def test_self_consume_or_store_surplus_blocks_when_export_credit_is_not_di
 
     assert matched is False
     assert context["export_credit_discounted"] == 0
+
+
+@pytest.mark.asyncio
+async def test_draft_tariff_profile_blocks_tariff_dependent_advice():
+    skill = _load_skill()
+    skill.config["tariff_profile"]["status"] = "draft"
+    store = _Store()
+    ts = _ts_utc(2026, 6, 26, 12)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="battery",
+            sensor_type="growatt_battery_soc",
+            value=55.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="load",
+            sensor_type="growatt_load_power",
+            value=1200.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    event = _event(
+        sensor_id="pv",
+        sensor_type="growatt_pv_power",
+        value=2600.0,
+        timestamp=ts,
+    )
+
+    matched, context = await _matches(
+        skill, event, store, "self_consume_or_store_surplus"
+    )
+
+    assert matched is False
+    assert context["tariff_policy_valid"] == 0
+    assert context["config_valid"] == 0
+    assert context["tariff_profile_status"] == "draft"
+
+
+@pytest.mark.asyncio
+async def test_invalid_tariff_profile_blocks_advice_and_records_error():
+    skill = _load_skill()
+    skill.config["tariff_profile"]["source"]["reference"] = ""
+    store = _Store()
+    ts = _ts_utc(2026, 6, 26, 12)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="battery",
+            sensor_type="growatt_battery_soc",
+            value=55.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="load",
+            sensor_type="growatt_load_power",
+            value=1200.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    event = _event(
+        sensor_id="pv",
+        sensor_type="growatt_pv_power",
+        value=2600.0,
+        timestamp=ts,
+    )
+
+    matched, context = await _matches(
+        skill, event, store, "self_consume_or_store_surplus"
+    )
+
+    assert matched is False
+    assert context["tariff_policy_valid"] == 0
+    assert context["config_valid"] == 0
+    assert "reference" in context["tariff_policy_error"]
+
+
+@pytest.mark.asyncio
+async def test_missing_tariff_profile_blocks_tariff_dependent_advice():
+    skill = _load_skill()
+    skill.config.pop("tariff_profile")
+    store = _Store()
+    ts = _ts_utc(2026, 6, 26, 12)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="battery",
+            sensor_type="growatt_battery_soc",
+            value=55.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="load",
+            sensor_type="growatt_load_power",
+            value=1200.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    event = _event(
+        sensor_id="pv",
+        sensor_type="growatt_pv_power",
+        value=2600.0,
+        timestamp=ts,
+    )
+
+    matched, context = await _matches(
+        skill, event, store, "self_consume_or_store_surplus"
+    )
+
+    assert matched is False
+    assert context["tariff_policy_valid"] == 0
+    assert context["config_valid"] == 0
+    assert context["tariff_profile"] == ""
+    assert context["tariff_policy_error"] == "missing tariff_profile"
 
 
 @pytest.mark.asyncio
