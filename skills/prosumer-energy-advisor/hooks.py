@@ -50,6 +50,13 @@ def _grid_direction(value):
     return grid_import_watts, grid_export_watts
 
 
+def _bounded_warning_ratio(value):
+    ratio = as_float(value, 0.8)
+    if ratio <= 0.0:
+        return 0.8
+    return min(1.0, ratio)
+
+
 def _resolve_tariff_profile(cfg):
     raw_profile = cfg.get("tariff_profile")
     if isinstance(raw_profile, dict) and raw_profile:
@@ -57,11 +64,23 @@ def _resolve_tariff_profile(cfg):
     return None, "missing tariff_profile"
 
 
-def _compose_sms(trigger_name, hhmm, diagnosis):
+def _compose_sms(trigger_name, hhmm, diagnosis, derived):
     if trigger_name == "self_consume_or_store_surplus":
+        cap_blocks_export = as_float(derived.get("export_cap_blocks_export", 0), 0.0)
+        if cap_blocks_export >= 1:
+            msg = (
+                f"At {hhmm}, solar surplus is available. {diagnosis} "
+                "Use or store it on-site; do not add grid export."
+            )
+        else:
+            msg = (
+                f"At {hhmm}, solar surplus is available. {diagnosis} "
+                "Consider using it now or storing it before exporting."
+            )
+    elif trigger_name == "export_cap_exceeded":
         msg = (
-            f"At {hhmm}, solar surplus is available. {diagnosis} "
-            "Consider using it now or storing it before exporting."
+            f"At {hhmm}, export is above the configured site cap. {diagnosis} "
+            "Avoid adding grid export; use or store surplus on-site."
         )
     elif trigger_name == "export_cap_approaching":
         msg = (
@@ -108,7 +127,9 @@ def pre_trigger_eval(context):
     battery_reserve_soc = as_float(cfg.get("battery_reserve_soc", 40.0), 40.0)
     battery_full_soc = as_float(cfg.get("battery_full_soc", 90.0), 90.0)
     export_cap_watts = as_float(cfg.get("export_cap_watts", 0.0), 0.0)
-    export_cap_warning_ratio = as_float(cfg.get("export_cap_warning_ratio", 0.8), 0.8)
+    export_cap_warning_ratio = _bounded_warning_ratio(
+        cfg.get("export_cap_warning_ratio", 0.8)
+    )
 
     tariff_policy_valid = (
         tariff_profile is not None and tariff_profile.advisory_qualified
@@ -170,6 +191,7 @@ def pre_trigger_eval(context):
     context.derived["export_cap_configured"] = 1 if export_cap_watts > 0 else 0
     context.derived["export_cap_watts"] = export_cap_watts
     context.derived["export_cap_warning_watts"] = export_cap_warning_watts
+    context.derived["export_cap_warning_ratio"] = export_cap_warning_ratio
 
     pv_watts = _state_get_float(context, "last_pv_watts", 0.0)
     load_watts = _state_get_float(context, "last_load_watts", 0.0)
@@ -203,6 +225,22 @@ def pre_trigger_eval(context):
             _state_set(context, "last_battery_soc", battery_soc)
 
     surplus_watts = max(0.0, grid_export_watts, pv_watts - load_watts)
+    if export_cap_watts > 0:
+        export_cap_headroom_watts = max(0.0, export_cap_watts - grid_export_watts)
+        exportable_surplus_watts = min(surplus_watts, export_cap_headroom_watts)
+        export_cap_exceeded = 1 if grid_export_watts > export_cap_watts else 0
+        export_cap_blocks_export = (
+            1
+            if export_cap_exceeded == 1
+            or (surplus_watts > 0 and exportable_surplus_watts < surplus_watts)
+            else 0
+        )
+    else:
+        export_cap_headroom_watts = surplus_watts
+        exportable_surplus_watts = surplus_watts
+        export_cap_exceeded = 0
+        export_cap_blocks_export = 0
+    local_use_or_store_watts = max(0.0, surplus_watts - exportable_surplus_watts)
 
     context.derived["pv_watts_snapshot"] = pv_watts
     context.derived["load_watts_snapshot"] = load_watts
@@ -210,6 +248,11 @@ def pre_trigger_eval(context):
     context.derived["grid_export_watts"] = grid_export_watts
     context.derived["battery_soc_snapshot"] = battery_soc
     context.derived["surplus_watts"] = surplus_watts
+    context.derived["export_cap_headroom_watts"] = export_cap_headroom_watts
+    context.derived["exportable_surplus_watts"] = exportable_surplus_watts
+    context.derived["local_use_or_store_watts"] = local_use_or_store_watts
+    context.derived["export_cap_exceeded"] = export_cap_exceeded
+    context.derived["export_cap_blocks_export"] = export_cap_blocks_export
 
     return context
 
@@ -238,7 +281,7 @@ def post_reasoning(result, context):
         tz_name=tz_name,
     )
     trigger_name = str(getattr(context, "trigger_name", "") or "")
-    result.text = _compose_sms(trigger_name, hhmm, diagnosis)
+    result.text = _compose_sms(trigger_name, hhmm, diagnosis, context.derived)
     result.action_tier = "A"
     result.proposed_action = None
     return result

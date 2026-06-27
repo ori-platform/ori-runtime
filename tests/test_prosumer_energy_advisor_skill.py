@@ -94,7 +94,7 @@ async def test_skill_loads_as_tier_a_only():
     skill = _load_skill()
 
     assert skill.name == "prosumer-energy-advisor"
-    assert len(skill.triggers) == 3
+    assert len(skill.triggers) == 4
     assert {trigger.action_tier for trigger in skill.triggers} == {"A"}
     assert {action["tier"] for action in skill.actions["available"]} == {"A"}
 
@@ -145,6 +145,8 @@ async def test_self_consume_or_store_surplus_matches_when_export_credit_is_low()
     assert context["tariff_profile_status"] == "operator_provided"
     assert context["tariff_profile_source_type"] == "operator_estimate"
     assert "billing truth" in context["tariff_profile_meter_of_record_boundary"]
+    assert context["exportable_surplus_watts"] == 1400.0
+    assert context["export_cap_blocks_export"] == 0
 
 
 @pytest.mark.asyncio
@@ -340,6 +342,110 @@ async def test_export_cap_approaching_matches_on_signed_export_power():
     assert matched is True
     assert context["grid_export_watts"] == 850.0
     assert context["export_cap_warning_watts"] == 800.0
+    assert context["export_cap_headroom_watts"] == 150.0
+    assert context["export_cap_exceeded"] == 0
+
+
+@pytest.mark.asyncio
+async def test_export_cap_exceeded_matches_and_blocks_approaching_trigger():
+    skill = _load_skill()
+    skill.config["export_cap_watts"] = 1000.0
+    skill.config["export_cap_warning_ratio"] = 0.8
+    store = _Store()
+    event = _event(
+        sensor_id="grid",
+        sensor_type="deye_grid_power",
+        value=-1100.0,
+        timestamp=_ts_utc(2026, 6, 26, 12),
+    )
+
+    exceeded, context = await _matches(skill, event, store, "export_cap_exceeded")
+    approaching, _ = await _matches(skill, event, store, "export_cap_approaching")
+
+    assert exceeded is True
+    assert approaching is False
+    assert context["grid_export_watts"] == 1100.0
+    assert context["export_cap_headroom_watts"] == 0.0
+    assert context["exportable_surplus_watts"] == 0.0
+    assert context["local_use_or_store_watts"] == 1100.0
+    assert context["export_cap_exceeded"] == 1
+    assert context["export_cap_blocks_export"] == 1
+
+
+@pytest.mark.asyncio
+async def test_export_cap_limits_exportable_surplus_even_before_exporting():
+    skill = _load_skill()
+    skill.config["export_cap_watts"] = 1000.0
+    store = _Store()
+    ts = _ts_utc(2026, 6, 26, 12)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="grid",
+            sensor_type="deye_grid_power",
+            value=-700.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="load",
+            sensor_type="deye_load_power",
+            value=1200.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="battery",
+            sensor_type="deye_battery_soc",
+            value=55.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    event = _event(
+        sensor_id="pv",
+        sensor_type="deye_pv1_power",
+        value=2600.0,
+        timestamp=ts,
+    )
+
+    matched, context = await _matches(
+        skill, event, store, "self_consume_or_store_surplus"
+    )
+
+    assert matched is True
+    assert context["surplus_watts"] == 1400.0
+    assert context["export_cap_headroom_watts"] == 300.0
+    assert context["exportable_surplus_watts"] == 300.0
+    assert context["local_use_or_store_watts"] == 1100.0
+    assert context["export_cap_blocks_export"] == 1
+
+
+@pytest.mark.asyncio
+async def test_export_cap_warning_ratio_is_bounded_to_one():
+    skill = _load_skill()
+    skill.config["export_cap_watts"] = 1000.0
+    skill.config["export_cap_warning_ratio"] = 1.4
+    store = _Store()
+    event = _event(
+        sensor_id="grid",
+        sensor_type="deye_grid_power",
+        value=-1000.0,
+        timestamp=_ts_utc(2026, 6, 26, 12),
+    )
+
+    matched, context = await _matches(skill, event, store, "export_cap_approaching")
+
+    assert matched is True
+    assert context["export_cap_warning_ratio"] == 1.0
+    assert context["export_cap_warning_watts"] == 1000.0
 
 
 @pytest.mark.asyncio
@@ -411,4 +517,33 @@ def test_post_reasoning_is_bounded_tier_a_advisory_text():
     assert updated.proposed_action is None
     assert len(updated.text) <= 160
     assert "Ori changed" not in updated.text
+    assert "command" not in updated.text.lower()
+
+
+def test_post_reasoning_for_blocked_export_never_suggests_more_export():
+    skill = _load_skill()
+    skill.config["timezone"] = "UTC"
+    store = _Store()
+    event = _event(
+        sensor_id="pv",
+        sensor_type="deye_pv1_power",
+        value=2600.0,
+        timestamp=_ts_utc(2026, 6, 26, 12),
+    )
+    hook_ctx, _ = _ctx(skill, event, store)
+    hook_ctx.derived["export_cap_blocks_export"] = 1
+    hook_ctx.trigger_name = "self_consume_or_store_surplus"
+    result = ReasoningResult(
+        text="Export now because the credit may still help.",
+        tier="local_slm",
+        model="stub",
+        tokens_used=0,
+        latency_ms=0,
+        action_tier="A",
+    )
+
+    updated = skill.hooks.post_reasoning(result, hook_ctx)
+
+    assert "do not add grid export" in updated.text.lower()
+    assert "before exporting" not in updated.text.lower()
     assert "command" not in updated.text.lower()

@@ -43,7 +43,13 @@ triggers:
     action_tier: A
 
   - name: export_cap_approaching
-    condition: "is_grid_power_event == 1 and quality >= min_quality and config_valid == 1 and export_cap_configured == 1 and grid_export_watts >= export_cap_warning_watts"
+    condition: "is_grid_power_event == 1 and quality >= min_quality and config_valid == 1 and export_cap_configured == 1 and export_cap_exceeded == 0 and grid_export_watts >= export_cap_warning_watts"
+    cooldown_seconds: 900
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: export_cap_exceeded
+    condition: "is_grid_power_event == 1 and quality >= min_quality and config_valid == 1 and export_cap_configured == 1 and export_cap_exceeded == 1"
     cooldown_seconds: 900
     escalate_to: local_slm
     action_tier: A
@@ -68,6 +74,13 @@ prompts:
     Write one plain sentence explaining that export is near the configured
     regulatory/site cap and should be reviewed before exporting more.
 
+  export_cap_exceeded: |
+    Your job is advisory only. Do not command the inverter or imply that Ori
+    changed any setting.
+    Write one plain sentence explaining that export is above the configured
+    regulatory/site cap and the operator should use or store surplus on-site
+    instead of adding more export.
+
   defer_deferrable_load: |
     Your job is advisory only. Do not command the inverter or imply that Ori
     changed any setting.
@@ -83,6 +96,7 @@ actions:
   defaults:
     self_consume_or_store_surplus: [alert_whatsapp, log_to_dashboard]
     export_cap_approaching: [alert_whatsapp, log_to_dashboard]
+    export_cap_exceeded: [alert_whatsapp, log_to_dashboard]
     defer_deferrable_load: [alert_whatsapp, log_to_dashboard]
 
 config:
