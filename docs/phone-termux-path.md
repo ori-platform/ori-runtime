@@ -77,11 +77,13 @@ inverter telemetry:
   non-actuating unless a certified actuator path exists.
 
 SolarmanV5 is a transport, not a universal register map. Deye, Sunsynk,
-Felicity, Solis, Sofar, and other WiFi inverter brands must pass
-model-specific qualification before Ori calls them supported. A profile is not
-qualified until Ori has verified the local transport, register addresses,
-signedness, scaling, units, and polling behavior against the inverter's own
-display or official monitoring app.
+Felicity, Solis, Sofar, GoodWe, Huawei, Sungrow, Axpert/Voltronic, and other
+inverter families must pass model-specific qualification before Ori calls them
+supported. A profile is not qualified until Ori has verified the local
+transport, register addresses, signedness, scaling, units, and polling behavior
+against the inverter's own display, official monitoring app, or an independent
+PZEM/clamp reference. Run `ori-inverter-profile-doctor --vendor-targets` to see
+the current target catalog without treating candidates as live support claims.
 
 The `energy-anomaly-detector` skill accepts `usb_power`, `usb_current`, and
 `usb_voltage`. For `usb_power`, the hook treats the reading as watts and uses it
@@ -230,10 +232,10 @@ Candidate priority for Nigeria and sub-Saharan Africa:
 
 | Candidate | Likely integration route | Status |
 | :-- | :-- | :-- |
-| Growatt | SolarmanV5/logger path with Growatt register map | Implemented in this branch |
-| Victron | VenusOS local MQTT | Implemented in this branch |
-| Deye | SolarmanV5 or native Modbus with Deye register map | Needs qualification |
-| Sunsynk | Likely Deye/Solarman-family path, model-dependent | Needs qualification |
+| Growatt | SolarmanV5/logger path with Growatt register map | Bundled community-derived profile |
+| Victron | VenusOS local MQTT | Dedicated local telemetry adapter path |
+| Deye | SolarmanV5 or native Modbus with Deye register map | Bundled community-derived profile |
+| Sunsynk/Sol-Ark | Likely Deye/Solarman-family path, model-dependent | Deye-family validation target |
 | Felicity | Brand/model-specific logger or Modbus path | Needs qualification |
 | Solis/Sofar/GoodWe/Huawei/Sungrow | Vendor-specific local API, logger, or Modbus path | Needs qualification |
 | Axpert/Voltronic-style off-grid units | Serial/USB or RS485 protocol bridge | Needs qualification |
@@ -247,11 +249,16 @@ register sample before adding field evidence:
 
 ```sh
 ori-inverter-profile-doctor --list
+ori-inverter-profile-doctor --vendor-targets
 ori-inverter-profile-doctor --profile deye_hybrid
 ori-inverter-profile-doctor --profile deye_hybrid --decode deye_grid_power --raw 65136
 ```
 
 This tool never opens a network connection and never writes inverter registers.
+
+For future inverter commands, follow
+[INVERTER_CONTROL_LADDER.md](INVERTER_CONTROL_LADDER.md). Current Phone Starter
+profiles remain read/advisory only.
 It only exercises the same decode path used by the runtime.
 
 ## Android Background Runtime
