@@ -27,6 +27,11 @@ _BATTERY_SOC_TYPES = {
     "victron_battery_soc",
     "deye_battery_soc",
 }
+_GENERATOR_TYPES = {
+    "generator_power",
+    "diesel_generator_power",
+    "generator_runtime_power",
+}
 _ADVISORY_REPLACEMENTS = DEFAULT_JARGON_REPLACEMENTS + (
     (r"\bcommands?\b", "suggestion"),
     (r"\bissued?\b", "made"),
@@ -55,6 +60,38 @@ def _bounded_warning_ratio(value):
     if ratio <= 0.0:
         return 0.8
     return min(1.0, ratio)
+
+
+def _kw_value_per_hour(watts, naira_per_kwh):
+    watts = max(0.0, as_float(watts, 0.0))
+    naira_per_kwh = max(0.0, as_float(naira_per_kwh, 0.0))
+    return (watts / 1000.0) * naira_per_kwh
+
+
+def _optimizer_action(
+    *,
+    export_cap_exceeded,
+    can_reduce_generator,
+    battery_preserve_needed,
+    should_defer_load,
+    should_consume_or_store,
+    can_export_now,
+):
+    """Pick one deterministic advisory label; it never grants action authority."""
+
+    if export_cap_exceeded:
+        return "consume_or_store"
+    if can_reduce_generator:
+        return "reduce_generator_use"
+    if battery_preserve_needed and should_defer_load:
+        return "defer_load_preserve_reserve"
+    if should_consume_or_store:
+        return "consume_or_store"
+    if can_export_now:
+        return "export_now"
+    if battery_preserve_needed:
+        return "preserve_battery_reserve"
+    return "monitor"
 
 
 def _resolve_tariff_profile(cfg):
@@ -87,10 +124,25 @@ def _compose_sms(trigger_name, hhmm, diagnosis, derived):
             f"At {hhmm}, export is near the configured site cap. {diagnosis} "
             "Please review before adding more export load."
         )
+    elif trigger_name == "export_surplus_with_headroom":
+        msg = (
+            f"At {hhmm}, export headroom is available. {diagnosis} "
+            "Export can be considered within the configured cap."
+        )
     elif trigger_name == "defer_deferrable_load":
         msg = (
             f"At {hhmm}, grid draw is high while backup reserve is low. {diagnosis} "
             "Consider delaying non-urgent loads."
+        )
+    elif trigger_name == "preserve_battery_reserve":
+        msg = (
+            f"At {hhmm}, battery reserve is low. {diagnosis} "
+            "Keep backup energy for outages and delay non-urgent loads."
+        )
+    elif trigger_name == "reduce_generator_use":
+        msg = (
+            f"At {hhmm}, generator use can be reduced. {diagnosis} "
+            "Consider using available solar or battery for non-urgent loads."
         )
     else:
         msg = (
@@ -130,6 +182,14 @@ def pre_trigger_eval(context):
     export_cap_warning_ratio = _bounded_warning_ratio(
         cfg.get("export_cap_warning_ratio", 0.8)
     )
+    export_min_headroom = as_float(
+        cfg.get("export_min_headroom_watts", surplus_threshold), surplus_threshold
+    )
+    reserve_margin_soc = as_float(cfg.get("battery_reserve_margin_soc", 10.0), 10.0)
+    generator_reduce_threshold = as_float(
+        cfg.get("generator_reduce_threshold_watts", 800.0), 800.0
+    )
+    generator_cost = as_float(cfg.get("generator_cost_naira_per_kwh", 0.0), 0.0)
 
     tariff_policy_valid = (
         tariff_profile is not None and tariff_profile.advisory_qualified
@@ -192,12 +252,17 @@ def pre_trigger_eval(context):
     context.derived["export_cap_watts"] = export_cap_watts
     context.derived["export_cap_warning_watts"] = export_cap_warning_watts
     context.derived["export_cap_warning_ratio"] = export_cap_warning_ratio
+    context.derived["export_min_headroom_watts"] = export_min_headroom
+    context.derived["battery_reserve_margin_soc"] = reserve_margin_soc
+    context.derived["generator_reduce_threshold_watts"] = generator_reduce_threshold
+    context.derived["generator_cost_naira_per_kwh"] = generator_cost
 
     pv_watts = _state_get_float(context, "last_pv_watts", 0.0)
     load_watts = _state_get_float(context, "last_load_watts", 0.0)
     grid_import_watts = _state_get_float(context, "last_grid_import_watts", 0.0)
     grid_export_watts = _state_get_float(context, "last_grid_export_watts", 0.0)
     battery_soc = _state_get_float(context, "last_battery_soc", 100.0)
+    generator_watts = _state_get_float(context, "last_generator_watts", 0.0)
 
     context.derived["is_prosumer_power_event"] = 0
     context.derived["is_grid_power_event"] = 0
@@ -223,6 +288,10 @@ def pre_trigger_eval(context):
         elif sensor_type in _BATTERY_SOC_TYPES:
             battery_soc = max(0.0, min(100.0, value))
             _state_set(context, "last_battery_soc", battery_soc)
+        elif sensor_type in _GENERATOR_TYPES:
+            generator_watts = max(0.0, value)
+            _state_set(context, "last_generator_watts", generator_watts)
+            context.derived["is_prosumer_power_event"] = 1
 
     surplus_watts = max(0.0, grid_export_watts, pv_watts - load_watts)
     if export_cap_watts > 0:
@@ -241,18 +310,105 @@ def pre_trigger_eval(context):
         export_cap_exceeded = 0
         export_cap_blocks_export = 0
     local_use_or_store_watts = max(0.0, surplus_watts - exportable_surplus_watts)
+    battery_preserve_needed = 1 if battery_soc <= battery_reserve_soc else 0
+    battery_ready_for_generator_offset = (
+        1 if battery_soc >= battery_reserve_soc + max(0.0, reserve_margin_soc) else 0
+    )
+    should_defer_load = (
+        1
+        if grid_import_watts >= high_import_threshold
+        and pv_watts <= low_solar_threshold
+        and battery_preserve_needed == 1
+        else 0
+    )
+    should_consume_or_store = (
+        1
+        if surplus_watts >= surplus_threshold
+        and battery_soc < battery_full_soc
+        and (export_credit < import_tariff or export_cap_blocks_export == 1)
+        else 0
+    )
+    can_export_now = (
+        1
+        if surplus_watts >= surplus_threshold
+        and exportable_surplus_watts >= max(0.0, export_min_headroom)
+        and battery_soc >= battery_full_soc
+        and export_cap_blocks_export == 0
+        else 0
+    )
+    generator_offset_available = (
+        1
+        if surplus_watts >= surplus_threshold
+        or (battery_ready_for_generator_offset == 1 and load_watts > 0)
+        else 0
+    )
+    can_reduce_generator = (
+        1
+        if generator_watts >= generator_reduce_threshold
+        and generator_offset_available == 1
+        else 0
+    )
+    self_consumption_value = _kw_value_per_hour(surplus_watts, import_tariff)
+    export_value = _kw_value_per_hour(exportable_surplus_watts, export_credit)
+    self_consumption_premium = max(0.0, self_consumption_value - export_value)
+    defer_load_value = _kw_value_per_hour(grid_import_watts, import_tariff)
+    generator_offset_watts = min(
+        generator_watts,
+        max(surplus_watts, load_watts if battery_ready_for_generator_offset else 0.0),
+    )
+    generator_reduction_value = _kw_value_per_hour(
+        generator_offset_watts, generator_cost
+    )
+    optimizer_action = _optimizer_action(
+        export_cap_exceeded=export_cap_exceeded,
+        can_reduce_generator=can_reduce_generator,
+        battery_preserve_needed=battery_preserve_needed,
+        should_defer_load=should_defer_load,
+        should_consume_or_store=should_consume_or_store,
+        can_export_now=can_export_now,
+    )
+    action_values = {
+        "reduce_generator_use": generator_reduction_value,
+        "defer_load_preserve_reserve": defer_load_value,
+        "consume_or_store": self_consumption_premium,
+        "export_now": export_value,
+        "preserve_battery_reserve": defer_load_value,
+    }
+    optimizer_value = action_values.get(optimizer_action, 0.0)
 
     context.derived["pv_watts_snapshot"] = pv_watts
     context.derived["load_watts_snapshot"] = load_watts
     context.derived["grid_import_watts"] = grid_import_watts
     context.derived["grid_export_watts"] = grid_export_watts
     context.derived["battery_soc_snapshot"] = battery_soc
+    context.derived["generator_watts_snapshot"] = generator_watts
     context.derived["surplus_watts"] = surplus_watts
     context.derived["export_cap_headroom_watts"] = export_cap_headroom_watts
     context.derived["exportable_surplus_watts"] = exportable_surplus_watts
     context.derived["local_use_or_store_watts"] = local_use_or_store_watts
     context.derived["export_cap_exceeded"] = export_cap_exceeded
     context.derived["export_cap_blocks_export"] = export_cap_blocks_export
+    context.derived["battery_preserve_needed"] = battery_preserve_needed
+    context.derived["battery_ready_for_generator_offset"] = (
+        battery_ready_for_generator_offset
+    )
+    context.derived["should_defer_load"] = should_defer_load
+    context.derived["should_consume_or_store"] = should_consume_or_store
+    context.derived["can_export_now"] = can_export_now
+    context.derived["generator_offset_available"] = generator_offset_available
+    context.derived["can_reduce_generator"] = can_reduce_generator
+    context.derived["generator_offset_watts"] = generator_offset_watts
+    context.derived["self_consumption_value_naira_per_hour"] = self_consumption_value
+    context.derived["export_value_naira_per_hour"] = export_value
+    context.derived["self_consumption_premium_naira_per_hour"] = (
+        self_consumption_premium
+    )
+    context.derived["defer_load_value_naira_per_hour"] = defer_load_value
+    context.derived["generator_reduction_value_naira_per_hour"] = (
+        generator_reduction_value
+    )
+    context.derived["optimizer_action"] = optimizer_action
+    context.derived["optimizer_value_naira_per_hour"] = optimizer_value
 
     return context
 

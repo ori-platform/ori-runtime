@@ -89,12 +89,18 @@ async def _matches(skill, event, store, trigger_name: str) -> tuple[bool, dict]:
     return result.matched, context
 
 
+async def _first_match(skill, event, store):
+    _, context = _ctx(skill, event, store)
+    result = await RuleEngine().evaluate(event, skill.triggers, context=context)
+    return result, context
+
+
 @pytest.mark.asyncio
 async def test_skill_loads_as_tier_a_only():
     skill = _load_skill()
 
     assert skill.name == "prosumer-energy-advisor"
-    assert len(skill.triggers) == 4
+    assert len(skill.triggers) == 7
     assert {trigger.action_tier for trigger in skill.triggers} == {"A"}
     assert {action["tier"] for action in skill.actions["available"]} == {"A"}
 
@@ -147,6 +153,11 @@ async def test_self_consume_or_store_surplus_matches_when_export_credit_is_low()
     assert "billing truth" in context["tariff_profile_meter_of_record_boundary"]
     assert context["exportable_surplus_watts"] == 1400.0
     assert context["export_cap_blocks_export"] == 0
+    assert context["should_consume_or_store"] == 1
+    assert context["optimizer_action"] == "consume_or_store"
+    assert context["self_consumption_value_naira_per_hour"] == 315.0
+    assert context["export_value_naira_per_hour"] == 56.0
+    assert context["self_consumption_premium_naira_per_hour"] == 259.0
 
 
 @pytest.mark.asyncio
@@ -373,6 +384,36 @@ async def test_export_cap_exceeded_matches_and_blocks_approaching_trigger():
 
 
 @pytest.mark.asyncio
+async def test_export_cap_exceeded_routes_optimizer_to_consume_or_store():
+    """Regression: the optimizer's cap-exceeded label must match a real trigger.
+
+    _optimizer_action() previously returned "use_or_store_surplus" when the
+    export cap was exceeded, but no trigger condition checked for that label.
+    The skill only kept alerting in this case because the independent
+    export_cap_exceeded trigger bypasses optimizer_action entirely. This test
+    pins optimizer_action to a label self_consume_or_store_surplus actually
+    routes, so the optimizer's own decision can never go silently unmatched.
+    """
+    skill = _load_skill()
+    skill.config["export_cap_watts"] = 1000.0
+    store = _Store()
+    event = _event(
+        sensor_id="grid",
+        sensor_type="deye_grid_power",
+        value=-1100.0,
+        timestamp=_ts_utc(2026, 6, 26, 12),
+    )
+
+    matched, context = await _matches(
+        skill, event, store, "self_consume_or_store_surplus"
+    )
+
+    assert context["export_cap_exceeded"] == 1
+    assert context["optimizer_action"] == "consume_or_store"
+    assert matched is True
+
+
+@pytest.mark.asyncio
 async def test_export_cap_limits_exportable_surplus_even_before_exporting():
     skill = _load_skill()
     skill.config["export_cap_watts"] = 1000.0
@@ -449,6 +490,50 @@ async def test_export_cap_warning_ratio_is_bounded_to_one():
 
 
 @pytest.mark.asyncio
+async def test_export_surplus_with_headroom_matches_when_battery_is_full():
+    skill = _load_skill()
+    store = _Store()
+    ts = _ts_utc(2026, 6, 26, 12)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="battery",
+            sensor_type="growatt_battery_soc",
+            value=95.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="load",
+            sensor_type="growatt_load_power",
+            value=1000.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    event = _event(
+        sensor_id="pv",
+        sensor_type="growatt_pv_power",
+        value=1800.0,
+        timestamp=ts,
+    )
+
+    matched, context = await _matches(
+        skill, event, store, "export_surplus_with_headroom"
+    )
+
+    assert matched is True
+    assert context["can_export_now"] == 1
+    assert context["optimizer_action"] == "export_now"
+    assert context["exportable_surplus_watts"] == 800.0
+    assert context["export_value_naira_per_hour"] == 32.0
+
+
+@pytest.mark.asyncio
 async def test_defer_deferrable_load_matches_when_import_high_and_reserve_low():
     skill = _load_skill()
     store = _Store()
@@ -487,6 +572,149 @@ async def test_defer_deferrable_load_matches_when_import_high_and_reserve_low():
     assert context["grid_import_watts"] == 1500.0
     assert context["battery_soc_snapshot"] == 32.0
     assert context["pv_watts_snapshot"] == 120.0
+    assert context["should_defer_load"] == 1
+    assert context["optimizer_action"] == "defer_load_preserve_reserve"
+    assert context["defer_load_value_naira_per_hour"] == 337.5
+
+
+@pytest.mark.asyncio
+async def test_preserve_battery_reserve_matches_without_high_import():
+    skill = _load_skill()
+    store = _Store()
+    ts = _ts_utc(2026, 6, 26, 20)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="battery",
+            sensor_type="deye_battery_soc",
+            value=35.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="pv",
+            sensor_type="deye_pv1_power",
+            value=100.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    event = _event(
+        sensor_id="load",
+        sensor_type="deye_load_power",
+        value=450.0,
+        timestamp=ts,
+    )
+
+    matched, context = await _matches(skill, event, store, "preserve_battery_reserve")
+
+    assert matched is True
+    assert context["battery_preserve_needed"] == 1
+    assert context["should_defer_load"] == 0
+    assert context["optimizer_action"] == "preserve_battery_reserve"
+
+
+@pytest.mark.asyncio
+async def test_reduce_generator_use_matches_with_available_battery_offset():
+    skill = _load_skill()
+    skill.config["generator_cost_naira_per_kwh"] = 500.0
+    store = _Store()
+    ts = _ts_utc(2026, 6, 26, 21)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="battery",
+            sensor_type="deye_battery_soc",
+            value=70.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="load",
+            sensor_type="deye_load_power",
+            value=900.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    event = _event(
+        sensor_id="generator",
+        sensor_type="diesel_generator_power",
+        value=1200.0,
+        timestamp=ts,
+    )
+
+    matched, context = await _matches(skill, event, store, "reduce_generator_use")
+
+    assert matched is True
+    assert context["generator_watts_snapshot"] == 1200.0
+    assert context["battery_ready_for_generator_offset"] == 1
+    assert context["can_reduce_generator"] == 1
+    assert context["optimizer_action"] == "reduce_generator_use"
+    assert context["generator_offset_watts"] == 900.0
+    assert context["generator_reduction_value_naira_per_hour"] == 450.0
+
+
+@pytest.mark.asyncio
+async def test_optimizer_action_selects_first_rule_when_raw_context_overlaps():
+    skill = _load_skill()
+    skill.config["generator_cost_naira_per_kwh"] = 500.0
+    store = _Store()
+    ts = _ts_utc(2026, 6, 26, 21)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="battery",
+            sensor_type="deye_battery_soc",
+            value=70.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="load",
+            sensor_type="deye_load_power",
+            value=900.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="pv",
+            sensor_type="deye_pv1_power",
+            value=1800.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    event = _event(
+        sensor_id="generator",
+        sensor_type="diesel_generator_power",
+        value=1200.0,
+        timestamp=ts,
+    )
+
+    result, context = await _first_match(skill, event, store)
+
+    assert context["surplus_watts"] == 900.0
+    assert context["should_consume_or_store"] == 1
+    assert context["can_reduce_generator"] == 1
+    assert context["optimizer_action"] == "reduce_generator_use"
+    assert result.matched is True
+    assert result.rule_name == "reduce_generator_use"
 
 
 def test_post_reasoning_is_bounded_tier_a_advisory_text():
@@ -546,4 +774,34 @@ def test_post_reasoning_for_blocked_export_never_suggests_more_export():
 
     assert "do not add grid export" in updated.text.lower()
     assert "before exporting" not in updated.text.lower()
+    assert "command" not in updated.text.lower()
+
+
+def test_post_reasoning_for_generator_use_remains_advisory():
+    skill = _load_skill()
+    skill.config["timezone"] = "UTC"
+    store = _Store()
+    event = _event(
+        sensor_id="generator",
+        sensor_type="diesel_generator_power",
+        value=1200.0,
+        timestamp=_ts_utc(2026, 6, 26, 21),
+    )
+    hook_ctx, _ = _ctx(skill, event, store)
+    hook_ctx.trigger_name = "reduce_generator_use"
+    result = ReasoningResult(
+        text="Command the generator off now.",
+        tier="local_slm",
+        model="stub",
+        tokens_used=0,
+        latency_ms=0,
+        action_tier="C",
+        proposed_action="stop_generator",
+    )
+
+    updated = skill.hooks.post_reasoning(result, hook_ctx)
+
+    assert updated.action_tier == "A"
+    assert updated.proposed_action is None
+    assert "consider using available solar or battery" in updated.text.lower()
     assert "command" not in updated.text.lower()

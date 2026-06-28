@@ -34,10 +34,14 @@ sensors_required:
     protocol: solarman_modbus
   - type: deye_battery_soc
     protocol: solarman_modbus
+  - type: generator_power
+    protocol: simulation
+  - type: diesel_generator_power
+    protocol: simulation
 
 triggers:
   - name: self_consume_or_store_surplus
-    condition: "is_prosumer_power_event == 1 and quality >= min_quality and config_valid == 1 and surplus_watts >= surplus_threshold_watts and battery_soc_snapshot < battery_full_soc and export_credit_discounted == 1"
+    condition: "is_prosumer_power_event == 1 and quality >= min_quality and config_valid == 1 and optimizer_action == 'consume_or_store'"
     cooldown_seconds: 900
     escalate_to: local_slm
     action_tier: A
@@ -54,8 +58,26 @@ triggers:
     escalate_to: local_slm
     action_tier: A
 
+  - name: export_surplus_with_headroom
+    condition: "is_prosumer_power_event == 1 and quality >= min_quality and config_valid == 1 and optimizer_action == 'export_now'"
+    cooldown_seconds: 900
+    escalate_to: local_slm
+    action_tier: A
+
   - name: defer_deferrable_load
-    condition: "is_prosumer_power_event == 1 and quality >= min_quality and config_valid == 1 and grid_import_watts >= high_import_threshold_watts and pv_watts_snapshot <= low_solar_threshold_watts and battery_soc_snapshot <= battery_reserve_soc"
+    condition: "is_prosumer_power_event == 1 and quality >= min_quality and config_valid == 1 and optimizer_action == 'defer_load_preserve_reserve'"
+    cooldown_seconds: 900
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: preserve_battery_reserve
+    condition: "is_prosumer_power_event == 1 and quality >= min_quality and config_valid == 1 and optimizer_action == 'preserve_battery_reserve'"
+    cooldown_seconds: 900
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: reduce_generator_use
+    condition: "is_prosumer_power_event == 1 and quality >= min_quality and config_valid == 1 and optimizer_action == 'reduce_generator_use'"
     cooldown_seconds: 900
     escalate_to: local_slm
     action_tier: A
@@ -81,11 +103,30 @@ prompts:
     regulatory/site cap and the operator should use or store surplus on-site
     instead of adding more export.
 
+  export_surplus_with_headroom: |
+    Your job is advisory only. Do not command the inverter or imply that Ori
+    changed any setting.
+    Write one plain sentence explaining that the battery has enough reserve,
+    surplus power is available, and export can be considered within the
+    configured cap.
+
   defer_deferrable_load: |
     Your job is advisory only. Do not command the inverter or imply that Ori
     changed any setting.
     Write one plain sentence explaining that non-urgent loads should be delayed
     because grid draw is high while solar and battery reserve are low.
+
+  preserve_battery_reserve: |
+    Your job is advisory only. Do not command the inverter or imply that Ori
+    changed any setting.
+    Write one plain sentence explaining that battery reserve is low and the
+    operator should protect backup energy for outages.
+
+  reduce_generator_use: |
+    Your job is advisory only. Do not command the generator or inverter or imply
+    that Ori changed any setting.
+    Write one plain sentence explaining that generator use may be reduced by
+    using available solar or battery energy for non-urgent loads.
 
 actions:
   available:
@@ -97,7 +138,10 @@ actions:
     self_consume_or_store_surplus: [alert_whatsapp, log_to_dashboard]
     export_cap_approaching: [alert_whatsapp, log_to_dashboard]
     export_cap_exceeded: [alert_whatsapp, log_to_dashboard]
+    export_surplus_with_headroom: [alert_whatsapp, log_to_dashboard]
     defer_deferrable_load: [alert_whatsapp, log_to_dashboard]
+    preserve_battery_reserve: [alert_whatsapp, log_to_dashboard]
+    reduce_generator_use: [alert_whatsapp, log_to_dashboard]
 
 config:
   timezone: Africa/Lagos
@@ -132,8 +176,15 @@ config:
   low_solar_threshold_watts: 300.0
   battery_reserve_soc: 40.0
   battery_full_soc: 90.0
+  battery_reserve_margin_soc: 10.0
+
+  # Operator-provided diesel/generator cost estimate for Tier A advice only.
+  # Keep at 0 when unknown so Ori does not invent site economics.
+  generator_reduce_threshold_watts: 800.0
+  generator_cost_naira_per_kwh: 0.0
 
   # Disabled when 0. If configured, this is a deterministic advisory ceiling,
   # not an inverter-control path.
   export_cap_watts: 0.0
   export_cap_warning_ratio: 0.8
+  export_min_headroom_watts: 500.0
