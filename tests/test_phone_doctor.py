@@ -1,12 +1,19 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import importlib.util
 import json
 import struct
 from pathlib import Path
 
+import yaml
+
 from ori import phone_doctor
+from ori.security.config_signatures import (
+    CONFIG_SIGNATURE_SCHEMA,
+    canonical_config_signature_payload,
+)
 
 _PZEM_SIM_PATH = Path("scripts/pzem_socket_sim.py")
 
@@ -25,6 +32,7 @@ def _write_phone_config(
     *,
     deployment_type: str = "phone",
     sensor_block: str | None = None,
+    security_block: str | None = None,
     relay_enabled: bool = False,
     telemetry_enabled: bool = False,
     operator_contact: str = "+2348012345678",
@@ -40,6 +48,7 @@ def _write_phone_config(
     poll_interval_ms: 2000
 """.rstrip()
     )
+    security = security_block or ""
     path.write_text(
         f"""
 device:
@@ -75,6 +84,8 @@ health_socket:
   path: /data/data/com.termux/files/home/.ori/health.sock
   mode: 0o660
 
+{security}
+
 actions:
   primary_alert_channel: sms
   operator_contact: "{operator_contact}"
@@ -98,6 +109,36 @@ logging:
 """.strip()
     )
     return str(path)
+
+
+def _ed25519_keypair():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = Ed25519PrivateKey.generate()
+    public_key_b64 = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode("ascii")
+    return private_key, public_key_b64
+
+
+def _sign_config_file(config_path: str, private_key) -> None:
+    path = Path(config_path)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw["config_signature"] = {
+        "schema": CONFIG_SIGNATURE_SCHEMA,
+        "signer_id": "ori-energy-test",
+        "signed_at_ms": 1_800_000_000_000,
+        "signature": "ed25519:",
+    }
+    signature = private_key.sign(canonical_config_signature_payload(raw))
+    raw["config_signature"]["signature"] = "ed25519:" + base64.b64encode(
+        signature
+    ).decode("ascii")
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
 
 def _status_by_name(checks):
@@ -131,9 +172,101 @@ def test_phone_doctor_accepts_valid_phone_config_with_warnings(tmp_path, monkeyp
     assert statuses["config.gateway"] == "pass"
     assert statuses["config.sensor_profile"] == "pass"
     assert statuses["config.profile_dependencies"] == "pass"
+    assert statuses["config.config_signature"] == "warn"
     assert statuses["config.telemetry_export"] == "warn"
     assert statuses["config.health_socket"] == "pass"
     assert phone_doctor.has_failures(checks) is False
+
+
+def test_phone_doctor_accepts_verified_signed_phone_config(tmp_path, monkeypatch):
+    private_key, public_key_b64 = _ed25519_keypair()
+    monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+    config_path = _write_phone_config(
+        tmp_path,
+        security_block="""
+security:
+  config_signature:
+    require_signed: true
+    trust_anchor_env: ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64
+  skills:
+    require_signed: false
+""".rstrip(),
+    )
+    _sign_config_file(config_path, private_key)
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    statuses = _status_by_name(checks)
+    signature_check = next(
+        check for check in checks if check.name == "config.config_signature"
+    )
+    assert statuses["config.load"] == "pass"
+    assert statuses["config.config_signature"] == "pass"
+    assert signature_check.details == {
+        "verified": True,
+        "required": True,
+        "trust_anchor_env": "ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64",
+        "signer_id": "ori-energy-test",
+        "signed_at_ms": 1_800_000_000_000,
+    }
+    assert phone_doctor.has_failures(checks) is False
+
+
+def test_phone_doctor_fails_required_unsigned_config(tmp_path, monkeypatch):
+    config_path = _write_phone_config(
+        tmp_path,
+        security_block="""
+security:
+  config_signature:
+    require_signed: true
+  skills:
+    require_signed: false
+""".rstrip(),
+    )
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    statuses = _status_by_name(checks)
+    assert statuses["config.load"] == "fail"
+    assert "missing config_signature" in _message_by_name(checks)["config.load"]
+    assert phone_doctor.has_failures(checks) is True
+
+
+def test_phone_doctor_fails_tampered_signed_config(tmp_path, monkeypatch):
+    private_key, public_key_b64 = _ed25519_keypair()
+    monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+    config_path = _write_phone_config(
+        tmp_path,
+        security_block="""
+security:
+  config_signature:
+    require_signed: true
+  skills:
+    require_signed: false
+""".rstrip(),
+    )
+    _sign_config_file(config_path, private_key)
+    path = Path(config_path)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "location: Lagos, Nigeria",
+            "location: Tampered",
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    statuses = _status_by_name(checks)
+    assert statuses["config.load"] == "fail"
+    assert "signature verification failed" in _message_by_name(checks)["config.load"]
+    assert phone_doctor.has_failures(checks) is True
 
 
 def test_phone_doctor_fails_when_deployment_type_is_not_phone(tmp_path, monkeypatch):
