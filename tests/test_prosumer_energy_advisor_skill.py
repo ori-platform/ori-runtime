@@ -74,6 +74,27 @@ def _event(
     return OriEvent.from_reading(reading, "prosumer-site-01")
 
 
+def _settlement_statement():
+    return {
+        "statement_id": "ikeja-2026-06",
+        "disco": "Ikeja Electric",
+        "period_start": "2026-06-01",
+        "period_end": "2026-06-30",
+        "import_kwh": 120.5,
+        "export_kwh": 18.25,
+        "import_value": 27112.5,
+        "export_credit_value": 730.0,
+        "net_value": 26382.5,
+        "currency": "NGN",
+        "source": {
+            "type": "disco_statement",
+            "reference": "statement PDF sha256:abc123",
+            "retrieved_at": "2026-07-01",
+        },
+        "notes": "Monthly statement uploaded by operator.",
+    }
+
+
 def _ctx(skill, event, store):
     hook_ctx = HookContext.build(event, store, skill.name, skill_config=skill.config)
     skill.hooks.pre_trigger_eval(hook_ctx)
@@ -158,6 +179,9 @@ async def test_self_consume_or_store_surplus_matches_when_export_credit_is_low()
     assert context["self_consumption_value_naira_per_hour"] == 315.0
     assert context["export_value_naira_per_hour"] == 56.0
     assert context["self_consumption_premium_naira_per_hour"] == 259.0
+    assert context["ledger_fast_loop_clock"] == "runtime_operational_estimate"
+    assert context["ledger_settlement_clock"] == "disco_monthly_statement"
+    assert "settlement and billing truth" in context["ledger_meter_of_record_boundary"]
 
 
 @pytest.mark.asyncio
@@ -333,6 +357,78 @@ async def test_missing_tariff_profile_blocks_tariff_dependent_advice():
     assert context["config_valid"] == 0
     assert context["tariff_profile"] == ""
     assert context["tariff_policy_error"] == "missing tariff_profile"
+
+
+@pytest.mark.asyncio
+async def test_settlement_statement_is_exposed_as_slow_clock_context():
+    skill = _load_skill()
+    skill.config["settlement_statement"] = _settlement_statement()
+    store = _Store()
+    event = _event(
+        sensor_id="grid",
+        sensor_type="deye_grid_power",
+        value=500.0,
+        timestamp=_ts_utc(2026, 7, 1, 8),
+    )
+
+    _, context = _ctx(skill, event, store)
+
+    assert context["settlement_statement_present"] == 1
+    assert context["settlement_statement_valid"] == 1
+    assert context["settlement_statement_error"] == ""
+    assert context["settlement_statement_id"] == "ikeja-2026-06"
+    assert context["settlement_statement_disco"] == "Ikeja Electric"
+    assert context["settlement_period_start"] == "2026-06-01"
+    assert context["settlement_period_end"] == "2026-06-30"
+    assert context["settlement_import_kwh"] == 120.5
+    assert context["settlement_export_kwh"] == 18.25
+    assert context["settlement_net_value_naira"] == 26382.5
+    assert context["settlement_source_type"] == "disco_statement"
+
+
+@pytest.mark.asyncio
+async def test_invalid_settlement_statement_records_error_without_blocking_advice():
+    skill = _load_skill()
+    skill.config["settlement_statement"] = _settlement_statement()
+    skill.config["settlement_statement"]["source"]["reference"] = ""
+    store = _Store()
+    ts = _ts_utc(2026, 7, 1, 8)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="battery",
+            sensor_type="growatt_battery_soc",
+            value=55.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="load",
+            sensor_type="growatt_load_power",
+            value=1200.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    event = _event(
+        sensor_id="pv",
+        sensor_type="growatt_pv_power",
+        value=2600.0,
+        timestamp=ts,
+    )
+
+    matched, context = await _matches(
+        skill, event, store, "self_consume_or_store_surplus"
+    )
+
+    assert matched is True
+    assert context["settlement_statement_present"] == 1
+    assert context["settlement_statement_valid"] == 0
+    assert "reference" in context["settlement_statement_error"]
 
 
 @pytest.mark.asyncio
@@ -715,6 +811,177 @@ async def test_optimizer_action_selects_first_rule_when_raw_context_overlaps():
     assert context["optimizer_action"] == "reduce_generator_use"
     assert result.matched is True
     assert result.rule_name == "reduce_generator_use"
+
+
+def test_fast_loop_ledger_accumulates_bounded_operational_estimates():
+    skill = _load_skill()
+    skill.config["generator_cost_naira_per_kwh"] = 500.0
+    store = _Store()
+    ts0 = _ts_utc(2026, 6, 26, 12)
+    ts1 = _ts_utc(2026, 6, 26, 12, 15)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="pv",
+            sensor_type="deye_pv1_power",
+            value=2000.0,
+            timestamp=ts0,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="load",
+            sensor_type="deye_load_power",
+            value=1000.0,
+            timestamp=ts0,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="grid",
+            sensor_type="deye_grid_power",
+            value=-400.0,
+            timestamp=ts0,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="battery",
+            sensor_type="deye_battery_power",
+            value=-200.0,
+            timestamp=ts0,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="generator",
+            sensor_type="diesel_generator_power",
+            value=300.0,
+            timestamp=ts0,
+        ),
+        store,
+    )
+    _, context = _ctx(
+        skill,
+        _event(
+            sensor_id="pv",
+            sensor_type="deye_pv1_power",
+            value=2000.0,
+            timestamp=ts1,
+        ),
+        store,
+    )
+
+    assert context["fast_loop_ledger_confidence"] == "bounded_estimate"
+    assert context["fast_loop_interval_hours"] == 0.25
+    assert context["fast_loop_grid_import_kwh_delta"] == 0.0
+    assert context["fast_loop_grid_export_kwh_delta"] == 0.1
+    assert context["fast_loop_solar_generation_kwh_delta"] == 0.5
+    assert context["fast_loop_site_consumption_kwh_delta"] == 0.25
+    assert context["fast_loop_battery_charge_kwh_delta"] == 0.05
+    assert context["fast_loop_battery_discharge_kwh_delta"] == 0.0
+    assert context["fast_loop_generator_kwh_delta"] == 0.075
+    assert context["fast_loop_backup_supply_hours_delta"] == 0.25
+    assert context["fast_loop_grid_unavailable_hours_delta"] == 0.0
+    assert context["fast_loop_outage_hours_delta"] == 0.0
+    assert context["fast_loop_outage_hours_semantics"] == "not_observed"
+    assert context["fast_loop_exported_value_naira_delta"] == 4.0
+    assert context["fast_loop_self_consumption_value_naira_delta"] == 56.25
+    assert context["fast_loop_diesel_displaced_kwh_delta"] == 0.075
+    assert context["fast_loop_diesel_displaced_value_naira_delta"] == 37.5
+    assert context["fast_loop_grid_export_kwh_total"] == 0.1
+    assert context["fast_loop_solar_generation_kwh_total"] == 0.5
+    assert context["fast_loop_backup_supply_hours_total"] == 0.25
+    assert context["fast_loop_outage_hours_total"] == 0.0
+
+
+def test_fast_loop_ledger_tracks_explicit_daytime_grid_outage():
+    skill = _load_skill()
+    store = _Store()
+    ts0 = _ts_utc(2026, 6, 26, 12)
+    ts1 = _ts_utc(2026, 6, 26, 12, 15)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="grid-status",
+            sensor_type="grid_available",
+            value=0.0,
+            timestamp=ts0,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="load",
+            sensor_type="deye_load_power",
+            value=1000.0,
+            timestamp=ts0,
+        ),
+        store,
+    )
+    _, context = _ctx(
+        skill,
+        _event(
+            sensor_id="pv",
+            sensor_type="deye_pv1_power",
+            value=1200.0,
+            timestamp=ts1,
+        ),
+        store,
+    )
+
+    assert context["grid_availability_observed"] == 1
+    assert context["grid_unavailable_snapshot"] == 1
+    assert context["grid_availability_source"] == "grid_available"
+    assert context["fast_loop_interval_hours"] == 0.25
+    assert context["fast_loop_backup_supply_hours_delta"] == 0.0
+    assert context["fast_loop_grid_unavailable_hours_delta"] == 0.25
+    assert context["fast_loop_outage_hours_delta"] == 0.25
+    assert context["fast_loop_outage_hours_semantics"] == "explicit_grid_unavailable"
+    assert context["fast_loop_outage_hours_total"] == 0.25
+
+
+def test_fast_loop_ledger_caps_long_gaps_and_handles_corrupt_timestamp():
+    skill = _load_skill()
+    store = _Store()
+    store.hooks_set_skill_state(skill.name, "ledger_last_timestamp_ms", "bad-clock")
+    event = _event(
+        sensor_id="pv",
+        sensor_type="deye_pv1_power",
+        value=1000.0,
+        timestamp=_ts_utc(2026, 6, 26, 12),
+    )
+
+    _, first_context = _ctx(skill, event, store)
+
+    assert first_context["fast_loop_ledger_confidence"] == (
+        "not_accumulated:first_sample"
+    )
+    assert first_context["fast_loop_solar_generation_kwh_delta"] == 0.0
+
+    later = _event(
+        sensor_id="pv",
+        sensor_type="deye_pv1_power",
+        value=1000.0,
+        timestamp=_ts_utc(2026, 6, 26, 13),
+    )
+
+    _, capped_context = _ctx(skill, later, store)
+
+    assert capped_context["fast_loop_interval_capped"] == 1
+    assert capped_context["fast_loop_interval_hours"] == 0.25
+    assert capped_context["fast_loop_solar_generation_kwh_delta"] == 0.25
 
 
 def test_post_reasoning_is_bounded_tier_a_advisory_text():
