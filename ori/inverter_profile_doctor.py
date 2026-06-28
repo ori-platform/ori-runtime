@@ -17,6 +17,7 @@ from ori.hal.inverter_profiles import (
     list_bundled_profiles,
     load_profile,
 )
+from ori.hal.inverter_vendor_targets import list_vendor_targets
 
 # Pre-release draft schema. No installer/customer evidence has been captured
 # against this contract yet, so breaking changes may still refine v1. Once the
@@ -539,6 +540,36 @@ def _print_list(json_output: bool) -> int:
     return 0
 
 
+def _vendor_targets_summary() -> dict[str, Any]:
+    return {
+        "note": (
+            "Vendor targets are qualification targets, not support claims. "
+            "Only implemented bundled profiles may be used for live reads, and "
+            "non-field-qualified readings remain advisory."
+        ),
+        "targets": [target.to_dict() for target in list_vendor_targets()],
+    }
+
+
+def _print_vendor_targets(json_output: bool) -> int:
+    summary = _vendor_targets_summary()
+    if json_output:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
+
+    print("Inverter telemetry vendor targets:")
+    print(summary["note"])
+    for target in list_vendor_targets():
+        profile = target.bundled_profile or "-"
+        brands = ", ".join(target.brands)
+        transports = ", ".join(target.likely_transports)
+        print(
+            f"- {target.family}: {target.status}; brands={brands}; "
+            f"transports={transports}; profile={profile}; fallback={target.fallback}"
+        )
+    return 0
+
+
 def _print_profile(profile: InverterProfile, json_output: bool) -> int:
     summary = _profile_summary(profile)
     if json_output:
@@ -659,6 +690,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="List bundled inverter profiles.",
     )
     parser.add_argument(
+        "--vendor-targets",
+        action="store_true",
+        help=(
+            "List inverter-family telemetry targets and fallback posture. "
+            "This is a qualification roadmap, not a live support claim."
+        ),
+    )
+    parser.add_argument(
         "--profile",
         help="Bundled profile name to inspect, for example deye_hybrid.",
     )
@@ -700,6 +739,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.vendor_targets:
+            if args.list or args.profile:
+                parser.error(
+                    "--vendor-targets cannot be combined with --list or --profile"
+                )
+            return _print_vendor_targets(args.json)
         if args.list:
             return _print_list(args.json)
         if not args.profile:

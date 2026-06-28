@@ -114,6 +114,35 @@ def test_lists_bundled_profiles(capsys):
     assert "deye_hybrid" in output
 
 
+def test_lists_vendor_targets(capsys):
+    result = inverter_profile_doctor.main(["--vendor-targets"])
+
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "Vendor targets are qualification targets" in output
+    assert "deye_family" in output
+    assert "felicity" in output
+    assert "closed_or_unknown" in output
+    assert "fallback=usb_pzem" in output
+
+
+def test_vendor_targets_json(capsys):
+    result = inverter_profile_doctor.main(["--vendor-targets", "--json"])
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    families = {target["family"] for target in payload["targets"]}
+    assert "Vendor targets are qualification targets" in payload["note"]
+    assert {"growatt", "deye_family", "victron", "felicity"} <= families
+
+
+def test_vendor_targets_rejects_profile_mix(capsys):
+    with pytest.raises(SystemExit):
+        inverter_profile_doctor.main(["--vendor-targets", "--profile", "deye_hybrid"])
+
+    assert "cannot be combined" in capsys.readouterr().err
+
+
 def test_profile_json_reports_vector_status(capsys):
     result = inverter_profile_doctor.main(["--profile", "deye_hybrid", "--json"])
 
