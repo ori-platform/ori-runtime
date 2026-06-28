@@ -95,6 +95,64 @@ def _settlement_statement():
     }
 
 
+def _net_billing_compliance():
+    return {
+        "profile": "ng-net-billing-example",
+        "version": "2026-06",
+        "status": "operator_provided",
+        "country": "NG",
+        "disco": "Ikeja Electric",
+        "source": {
+            "type": "operator_record",
+            "reference": "ori-energy policy sha256:abc123",
+            "retrieved_at": "2026-06-28",
+        },
+        "export_cap_watts": 1000.0,
+        "export_cap_reference": "approved export cap letter",
+        "disco_feasibility": {
+            "status": "approved",
+            "reference": "feasibility report",
+            "submitted_at": "2026-06-01",
+            "due_by": "2026-06-11",
+            "completed_at": "2026-06-08",
+        },
+        "nerc_registration": {
+            "status": "approved",
+            "reference": "NERC certificate PDF",
+            "certificate_id": "NERC-NB-001",
+            "submitted_at": "2026-06-09",
+            "due_by": "2026-06-19",
+            "completed_at": "2026-06-15",
+        },
+        "nemsa_inspection": {
+            "status": "passed",
+            "reference": "NEMSA certificate PDF",
+            "certificate_id": "NEMSA-001",
+            "submitted_at": "2026-06-16",
+            "due_by": "2026-06-26",
+            "completed_at": "2026-06-20",
+        },
+        "monthly_statement": {
+            "status": "reconciled",
+            "required": True,
+            "expected_statement_id": "ikeja-2026-06",
+            "period_start": "2026-06-01",
+            "period_end": "2026-06-30",
+            "due_by": "2026-07-10",
+            "reference": "statement PDF sha256:def456",
+        },
+        "credit_carry_forward": {
+            "value": 0.0,
+            "currency": "NGN",
+            "kwh": 0.0,
+            "as_of": "2026-06-30",
+        },
+        "site_relocation_planned": False,
+        "relocation_effective_date": "",
+        "notes": "Operator-provided compliance snapshot.",
+    }
+
+
 def _ctx(skill, event, store):
     hook_ctx = HookContext.build(event, store, skill.name, skill_config=skill.config)
     skill.hooks.pre_trigger_eval(hook_ctx)
@@ -121,9 +179,10 @@ async def test_skill_loads_as_tier_a_only():
     skill = _load_skill()
 
     assert skill.name == "prosumer-energy-advisor"
-    assert len(skill.triggers) == 7
+    assert len(skill.triggers) == 8
     assert {trigger.action_tier for trigger in skill.triggers} == {"A"}
     assert {action["tier"] for action in skill.actions["available"]} == {"A"}
+    assert any(t.name == "net_billing_compliance_attention" for t in skill.triggers)
 
 
 @pytest.mark.asyncio
@@ -384,6 +443,123 @@ async def test_settlement_statement_is_exposed_as_slow_clock_context():
     assert context["settlement_export_kwh"] == 18.25
     assert context["settlement_net_value_naira"] == 26382.5
     assert context["settlement_source_type"] == "disco_statement"
+
+
+@pytest.mark.asyncio
+async def test_net_billing_compliance_context_is_exposed_without_attention():
+    skill = _load_skill()
+    skill.config["export_cap_watts"] = 1000.0
+    skill.config["settlement_statement"] = _settlement_statement()
+    skill.config["net_billing_compliance"] = _net_billing_compliance()
+    store = _Store()
+    event = _event(
+        sensor_id="pv",
+        sensor_type="deye_pv1_power",
+        value=1200.0,
+        timestamp=_ts_utc(2026, 7, 1, 8),
+    )
+
+    matched, context = await _matches(
+        skill,
+        event,
+        store,
+        "net_billing_compliance_attention",
+    )
+
+    assert matched is False
+    assert context["net_billing_present"] == 1
+    assert context["net_billing_valid"] == 1
+    assert context["net_billing_tracking_qualified"] == 1
+    assert context["net_billing_profile"] == "ng-net-billing-example"
+    assert context["net_billing_disco"] == "Ikeja Electric"
+    assert context["net_billing_export_cap_watts"] == 1000.0
+    assert context["net_billing_export_cap_matches_runtime"] == 1
+    assert context["net_billing_attention_required"] == 0
+    assert context["net_billing_attention_codes"] == ""
+    assert context["net_billing_nerc_certificate_id"] == "NERC-NB-001"
+    assert context["net_billing_nemsa_certificate_id"] == "NEMSA-001"
+    assert context["net_billing_monthly_statement_status"] == "reconciled"
+    assert "authoritative" in context["net_billing_boundary"]
+
+
+@pytest.mark.asyncio
+async def test_net_billing_compliance_attention_matches_when_records_need_review():
+    skill = _load_skill()
+    skill.config["export_cap_watts"] = 1000.0
+    skill.config["net_billing_compliance"] = _net_billing_compliance()
+    skill.config["net_billing_compliance"]["disco_feasibility"]["status"] = "submitted"
+    skill.config["net_billing_compliance"]["disco_feasibility"]["due_by"] = "2026-06-20"
+    skill.config["net_billing_compliance"]["monthly_statement"]["status"] = "missing"
+    skill.config["net_billing_compliance"]["monthly_statement"]["due_by"] = "2026-06-28"
+    store = _Store()
+    event = _event(
+        sensor_id="pv",
+        sensor_type="deye_pv1_power",
+        value=1200.0,
+        timestamp=_ts_utc(2026, 7, 1, 8),
+    )
+
+    matched, context = await _matches(
+        skill,
+        event,
+        store,
+        "net_billing_compliance_attention",
+    )
+
+    assert matched is True
+    assert context["net_billing_attention_required"] == 1
+    assert "disco_feasibility_pending" in context["net_billing_attention_codes"]
+    assert "disco_feasibility_due" in context["net_billing_attention_codes"]
+    assert "monthly_statement_missing" in context["net_billing_attention_codes"]
+    assert "monthly_statement_due" in context["net_billing_attention_codes"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_net_billing_compliance_records_error_without_blocking_advice():
+    skill = _load_skill()
+    skill.config["net_billing_compliance"] = _net_billing_compliance()
+    skill.config["net_billing_compliance"]["source"]["reference"] = ""
+    store = _Store()
+    ts = _ts_utc(2026, 7, 1, 8)
+
+    _ctx(
+        skill,
+        _event(
+            sensor_id="battery",
+            sensor_type="growatt_battery_soc",
+            value=55.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    _ctx(
+        skill,
+        _event(
+            sensor_id="load",
+            sensor_type="growatt_load_power",
+            value=1200.0,
+            timestamp=ts,
+        ),
+        store,
+    )
+    event = _event(
+        sensor_id="pv",
+        sensor_type="growatt_pv_power",
+        value=2600.0,
+        timestamp=ts,
+    )
+
+    matched, context = await _matches(
+        skill,
+        event,
+        store,
+        "self_consume_or_store_surplus",
+    )
+
+    assert matched is True
+    assert context["net_billing_present"] == 1
+    assert context["net_billing_valid"] == 0
+    assert "reference" in context["net_billing_error"]
 
 
 @pytest.mark.asyncio
@@ -1071,4 +1247,36 @@ def test_post_reasoning_for_generator_use_remains_advisory():
     assert updated.action_tier == "A"
     assert updated.proposed_action is None
     assert "consider using available solar or battery" in updated.text.lower()
+    assert "command" not in updated.text.lower()
+
+
+def test_post_reasoning_for_net_billing_attention_remains_advisory():
+    skill = _load_skill()
+    skill.config["timezone"] = "UTC"
+    store = _Store()
+    event = _event(
+        sensor_id="pv",
+        sensor_type="deye_pv1_power",
+        value=1200.0,
+        timestamp=_ts_utc(2026, 7, 1, 8),
+    )
+    hook_ctx, _ = _ctx(skill, event, store)
+    hook_ctx.derived["net_billing_attention_summary"] = "monthly_statement_missing"
+    hook_ctx.trigger_name = "net_billing_compliance_attention"
+    result = ReasoningResult(
+        text="Command the inverter and update the regulator record now.",
+        tier="local_slm",
+        model="stub",
+        tokens_used=0,
+        latency_ms=0,
+        action_tier="B",
+        proposed_action="update_export_limit",
+    )
+
+    updated = skill.hooks.post_reasoning(result, hook_ctx)
+
+    assert updated.action_tier == "A"
+    assert updated.proposed_action is None
+    assert "net-billing compliance needs review" in updated.text.lower()
+    assert "monthly_statement_missing" in updated.text
     assert "command" not in updated.text.lower()
