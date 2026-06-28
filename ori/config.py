@@ -15,6 +15,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from ori.hal.protocol_registry import SUPPORTED_SENSOR_PROTOCOLS
+from ori.security.config_signatures import (
+    CONFIG_REQUIRE_SIGNED_ENV,
+    DEFAULT_CONFIG_TRUST_ANCHOR_ENV,
+    ConfigSignatureError,
+    config_signature_policy_from_raw_config,
+    verify_config_signature_if_needed,
+)
 from ori.security.remote_command_lockout import normalize_remote_command_lockout_config
 from ori.security.remote_commands import normalize_remote_command_sender
 from ori.utils.bool_utils import is_truthy
@@ -228,6 +235,27 @@ class Config:
                 f"Cannot read config file '{path}': {exc}"
             ) from exc
 
+        try:
+            raw_unexpanded = yaml.safe_load(raw_text)
+        except yaml.YAMLError as exc:
+            raise ConfigValidationError(f"YAML parse error in '{path}': {exc}") from exc
+
+        if not isinstance(raw_unexpanded, dict):
+            raise ConfigValidationError(
+                "Config file must be a YAML mapping at the top level."
+            )
+
+        try:
+            config_signature_policy = config_signature_policy_from_raw_config(
+                raw_unexpanded
+            )
+            config_signature_verification = verify_config_signature_if_needed(
+                raw_unexpanded,
+                config_signature_policy,
+            )
+        except ConfigSignatureError as exc:
+            raise ConfigValidationError(str(exc)) from exc
+
         expanded = _expand_env_vars(raw_text)
 
         try:
@@ -250,6 +278,21 @@ class Config:
         hal = _parse_hal(data.get("hal"))
         device_policy = _parse_device_policy(data.get("device_policy"))
         security = _parse_security(data.get("security"))
+        security["config_signature"]["verified"] = (
+            config_signature_verification.verified
+        )
+        security["config_signature"]["required"] = (
+            config_signature_verification.required
+        )
+        security["config_signature"]["trust_anchor_env"] = (
+            config_signature_verification.trust_anchor_env
+        )
+        security["config_signature"]["signer_id"] = (
+            config_signature_verification.signer_id
+        )
+        security["config_signature"]["signed_at_ms"] = (
+            config_signature_verification.signed_at_ms
+        )
         health_socket = _parse_health_socket(data.get("health_socket"))
         os_sandbox = _parse_os_sandbox(data.get("os_sandbox"))
         state_cfg = _parse_state(data.get("state"))
@@ -263,6 +306,7 @@ class Config:
             security=security,
             state=state_cfg,
             database_path=database_path,
+            config_signature_verified=config_signature_verification.verified,
         )
 
         if not actions.operator_contact or "${" in actions.operator_contact:
@@ -1603,6 +1647,29 @@ def _parse_security(data: Any) -> dict:
         **skills_security,
         "require_signed": is_truthy(skills_security.get("require_signed", False)),
     }
+    config_signature = out.get("config_signature") or {}
+    if not isinstance(config_signature, dict):
+        raise ConfigValidationError("security.config_signature must be a mapping.")
+    trust_anchor_env = str(
+        os.environ.get("ORI_CONFIG_TRUST_ANCHOR_ENV")
+        or config_signature.get("trust_anchor_env")
+        or DEFAULT_CONFIG_TRUST_ANCHOR_ENV
+    ).strip()
+    if not trust_anchor_env or not _ENV_NAME_RE.fullmatch(trust_anchor_env):
+        raise ConfigValidationError(
+            "security.config_signature.trust_anchor_env must be a valid "
+            "environment variable name."
+        )
+    out["config_signature"] = {
+        **config_signature,
+        "require_signed": is_truthy(config_signature.get("require_signed", False))
+        or is_truthy(os.environ.get(CONFIG_REQUIRE_SIGNED_ENV, "")),
+        "trust_anchor_env": trust_anchor_env,
+        "verified": False,
+        "required": False,
+        "signer_id": "",
+        "signed_at_ms": None,
+    }
     out["enforce_production_posture"] = is_truthy(
         out.get("enforce_production_posture", False)
     )
@@ -1617,6 +1684,7 @@ def _validate_production_security_posture(
     security: dict[str, Any],
     state: StateConfig,
     database_path: str,
+    config_signature_verified: bool,
 ) -> None:
     """Fail closed on unsafe production posture.
 
@@ -1744,6 +1812,19 @@ def _validate_production_security_posture(
         state=state,
         database_path=database_path,
     )
+
+    config_signature = security.get("config_signature") or {}
+    if not isinstance(config_signature, dict) or not is_truthy(
+        config_signature.get("require_signed", False)
+    ):
+        raise ConfigValidationError(
+            "production posture requires security.config_signature.require_signed: "
+            f"true or {CONFIG_REQUIRE_SIGNED_ENV}=true"
+        )
+    if not config_signature_verified:
+        raise ConfigValidationError(
+            "production posture requires a verified config_signature block"
+        )
 
 
 def _is_loopback_host(host: str | None) -> bool:

@@ -101,6 +101,15 @@ hal:
   external_watchdog:
     enabled: false                     # leave false on laptops
 
+security:
+  config_signature:
+    # Generated configs from Ori Energy / future Edge Node provisioning should
+    # set this true. The public verification key is supplied by environment.
+    require_signed: false
+    trust_anchor_env: ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64
+  skills:
+    require_signed: false
+
 logging:
   level: INFO
   file: ori.log

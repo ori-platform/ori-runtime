@@ -347,6 +347,12 @@ security:
   # startup on unsafe network/security posture. A staging/production profile
   # cannot be weakened by setting this false.
   enforce_production_posture: false
+  config_signature:
+    # Generated configs from Ori Energy / APK provisioning should set this true.
+    # The verification public key is supplied outside this YAML through the env
+    # var below, so a tampered config cannot swap its own trust anchor.
+    require_signed: false
+    trust_anchor_env: ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64
   skills:
     # Production deployments may require Ed25519 signatures for local/non-core
     # skills. First-party repo-bundled skills may still use signature: bundled.

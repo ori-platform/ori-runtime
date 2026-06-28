@@ -1,14 +1,20 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import os
 import textwrap
 
 import pytest
+import yaml
 
 from ori.config import (
     Config,
     ConfigValidationError,
+)
+from ori.security.config_signatures import (
+    CONFIG_SIGNATURE_SCHEMA,
+    canonical_config_signature_payload,
 )
 
 EXAMPLE_YAML = os.path.join(os.path.dirname(__file__), "..", "ori.yaml.example")
@@ -52,6 +58,35 @@ def _write_yaml(tmp_path, content: str) -> str:
     p = tmp_path / "ori.yaml"
     p.write_text(textwrap.dedent(content))
     return str(p)
+
+
+def _sign_config_yaml(content: str, private_key) -> str:
+    raw = yaml.safe_load(textwrap.dedent(content))
+    raw["config_signature"] = {
+        "schema": CONFIG_SIGNATURE_SCHEMA,
+        "signer_id": "ori-energy-test",
+        "signed_at_ms": 1_800_000_000_000,
+        "signature": "ed25519:",
+    }
+    signature = private_key.sign(canonical_config_signature_payload(raw))
+    raw["config_signature"]["signature"] = "ed25519:" + base64.b64encode(
+        signature
+    ).decode("ascii")
+    return yaml.safe_dump(raw, sort_keys=False)
+
+
+def _ed25519_keypair():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = Ed25519PrivateKey.generate()
+    public_key_b64 = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode("ascii")
+    return private_key, public_key_b64
 
 
 # ─── Loading ori.yaml.example ─────────────────────────────────────────────────
@@ -686,6 +721,212 @@ class TestLoadExample:
         with pytest.raises(ConfigValidationError, match="security.skills"):
             Config.load(yaml_path)
 
+    def test_signed_config_verifies_with_env_trust_anchor(self, tmp_path, monkeypatch):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        yaml_path = _write_yaml(
+            tmp_path,
+            _sign_config_yaml(
+                """
+                device:
+                  id: dev-01
+                  name: Test
+                  location: Lagos
+                sensors: []
+                skills: []
+                reasoning: {}
+                gateway: {}
+                actions:
+                  primary_alert_channel: sms
+                  sms:
+                    enabled: false
+                security:
+                  config_signature:
+                    require_signed: true
+                """,
+                private_key,
+            ),
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.security["config_signature"]["verified"] is True
+        assert cfg.security["config_signature"]["required"] is True
+        assert cfg.security["config_signature"]["signer_id"] == "ori-energy-test"
+        assert cfg.security["config_signature"]["signed_at_ms"] == 1_800_000_000_000
+
+    def test_signed_config_is_checked_before_env_expansion(self, tmp_path, monkeypatch):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        monkeypatch.setenv("DEVICE_NAME_FROM_ENV", "Expanded Device Name")
+        yaml_path = _write_yaml(
+            tmp_path,
+            _sign_config_yaml(
+                """
+                device:
+                  id: dev-01
+                  name: ${DEVICE_NAME_FROM_ENV}
+                  location: Lagos
+                sensors: []
+                skills: []
+                reasoning: {}
+                gateway: {}
+                actions:
+                  primary_alert_channel: sms
+                  sms:
+                    enabled: false
+                security:
+                  config_signature:
+                    require_signed: true
+                """,
+                private_key,
+            ),
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.device.name == "Expanded Device Name"
+        assert cfg.security["config_signature"]["verified"] is True
+
+    def test_config_signature_tamper_fails_closed(self, tmp_path, monkeypatch):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        signed = _sign_config_yaml(
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              config_signature:
+                require_signed: true
+            """,
+            private_key,
+        ).replace("location: Lagos", "location: Tampered")
+        yaml_path = _write_yaml(tmp_path, signed)
+
+        with pytest.raises(
+            ConfigValidationError, match="signature verification failed"
+        ):
+            Config.load(yaml_path)
+
+    def test_present_config_signature_is_always_verified(self, tmp_path, monkeypatch):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        signed = _sign_config_yaml(
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              config_signature:
+                require_signed: false
+            """,
+            private_key,
+        ).replace("name: Test", "name: Tampered")
+        yaml_path = _write_yaml(tmp_path, signed)
+
+        with pytest.raises(
+            ConfigValidationError, match="signature verification failed"
+        ):
+            Config.load(yaml_path)
+
+    def test_required_config_signature_rejects_unsigned_config(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              config_signature:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="missing config_signature"):
+            Config.load(yaml_path)
+
+    def test_env_can_require_signed_config_even_if_yaml_does_not(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("ORI_CONFIG_REQUIRE_SIGNED", "true")
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="missing config_signature"):
+            Config.load(yaml_path)
+
+    def test_signed_config_requires_external_trust_anchor(self, tmp_path):
+        private_key, _ = _ed25519_keypair()
+        yaml_path = _write_yaml(
+            tmp_path,
+            _sign_config_yaml(
+                """
+                device:
+                  id: dev-01
+                  name: Test
+                  location: Lagos
+                sensors: []
+                skills: []
+                reasoning: {}
+                gateway: {}
+                actions:
+                  primary_alert_channel: sms
+                  sms:
+                    enabled: false
+                security:
+                  config_signature:
+                    require_signed: true
+                """,
+                private_key,
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="trust anchor env"):
+            Config.load(yaml_path)
+
     def test_rejects_invalid_deployment_profile(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
@@ -789,13 +1030,16 @@ class TestLoadExample:
             Config.load(yaml_path)
 
     def test_production_posture_allows_loopback_gateway_without_site_tls(
-        self, tmp_path
+        self, tmp_path, monkeypatch
     ):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
         encrypted_dir = tmp_path / "encrypted"
         encrypted_dir.mkdir()
         yaml_path = _write_yaml(
             tmp_path,
-            f"""
+            _sign_config_yaml(
+                f"""
             device:
               id: dev-01
               name: Test
@@ -814,6 +1058,8 @@ class TestLoadExample:
                 enabled: false
             security:
               enforce_production_posture: true
+              config_signature:
+                require_signed: true
               skills:
                 require_signed: true
             state:
@@ -822,6 +1068,8 @@ class TestLoadExample:
                 encrypted_path_prefixes:
                   - "{encrypted_dir}"
             """,
+                private_key,
+            ),
         )
 
         cfg = Config.load(yaml_path)
@@ -1282,12 +1530,17 @@ class TestLoadExample:
         with pytest.raises(ConfigValidationError, match="database.path"):
             Config.load(yaml_path)
 
-    def test_production_posture_accepts_state_store_marker_file(self, tmp_path):
+    def test_production_posture_accepts_state_store_marker_file(
+        self, tmp_path, monkeypatch
+    ):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
         marker = tmp_path / ".ori-encrypted-volume"
         marker.write_text("ok", encoding="utf-8")
         yaml_path = _write_yaml(
             tmp_path,
-            f"""
+            _sign_config_yaml(
+                f"""
             device:
               id: dev-01
               name: Test
@@ -1302,6 +1555,8 @@ class TestLoadExample:
                 enabled: false
             security:
               enforce_production_posture: true
+              config_signature:
+                require_signed: true
               skills:
                 require_signed: true
             state:
@@ -1309,18 +1564,25 @@ class TestLoadExample:
                 mode: filesystem_required
                 marker_file: "{marker}"
             """,
+                private_key,
+            ),
         )
 
         cfg = Config.load(yaml_path)
 
         assert cfg.state.encryption.marker_file == str(marker)
 
-    def test_production_posture_accepts_hardened_site_config(self, tmp_path):
+    def test_production_posture_accepts_hardened_site_config(
+        self, tmp_path, monkeypatch
+    ):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
         encrypted_dir = tmp_path / "encrypted"
         encrypted_dir.mkdir()
         yaml_path = _write_yaml(
             tmp_path,
-            f"""
+            _sign_config_yaml(
+                f"""
             device:
               id: dev-01
               name: Test
@@ -1361,6 +1623,8 @@ class TestLoadExample:
                     mode: token_and_hmac
                     shared_secret: "hmac-secret"
             security:
+              config_signature:
+                require_signed: true
               skills:
                 require_signed: true
               remote_commands:
@@ -1375,6 +1639,8 @@ class TestLoadExample:
                 encrypted_path_prefixes:
                   - "{encrypted_dir}"
             """,
+                private_key,
+            ),
         )
 
         cfg = Config.load(yaml_path)
