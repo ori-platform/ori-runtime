@@ -92,6 +92,12 @@ triggers:
     escalate_to: local_slm
     action_tier: A
 
+  - name: net_billing_compliance_attention
+    condition: "is_prosumer_power_event == 1 and quality >= min_quality and net_billing_tracking_qualified == 1 and net_billing_attention_required == 1"
+    cooldown_seconds: 21600
+    escalate_to: local_slm
+    action_tier: A
+
 prompts:
   self_consume_or_store_surplus: |
     Your job is advisory only. Do not command the inverter or imply that Ori
@@ -138,6 +144,11 @@ prompts:
     Write one plain sentence explaining that generator use may be reduced by
     using available solar or battery energy for non-urgent loads.
 
+  net_billing_compliance_attention: |
+    Your job is advisory only. Do not present Ori as the regulator, DisCo, NERC,
+    NEMSA, or billing meter of record. Write one plain sentence explaining that
+    the operator should review the supplied net-billing compliance records.
+
 actions:
   available:
     - name: alert_whatsapp
@@ -152,6 +163,7 @@ actions:
     defer_deferrable_load: [alert_whatsapp, log_to_dashboard]
     preserve_battery_reserve: [alert_whatsapp, log_to_dashboard]
     reduce_generator_use: [alert_whatsapp, log_to_dashboard]
+    net_billing_compliance_attention: [alert_whatsapp, log_to_dashboard]
 
 config:
   timezone: Africa/Lagos
@@ -204,6 +216,12 @@ config:
   # Optional monthly DisCo statement supplied by ori-energy/provisioning for
   # reconciliation. Empty means no settlement statement has been provided.
   settlement_statement: {}
+
+  # Optional NERC net-billing compliance snapshot supplied by ori-energy or a
+  # site operator. Empty means the site is not being tracked for net billing.
+  # Ori validates and surfaces this context; it is not the regulatory source of
+  # truth and does not replace DisCo/NERC/NEMSA records.
+  net_billing_compliance: {}
 
   # Disabled when 0. If configured, this is a deterministic advisory ceiling,
   # not an inverter-control path.

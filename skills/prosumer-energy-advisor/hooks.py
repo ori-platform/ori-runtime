@@ -3,6 +3,14 @@
 
 """Hooks for the bundled prosumer-energy-advisor skill."""
 
+from datetime import datetime, timezone
+
+from ori.policy.nerc_net_billing import (
+    NET_BILLING_BOUNDARY,
+    NetBillingComplianceError,
+    evaluate_net_billing_compliance,
+    load_net_billing_compliance_data,
+)
 from ori.policy.prosumer_ledger import (
     PROSUMER_METER_OF_RECORD_BOUNDARY,
     ProsumerLedgerError,
@@ -149,10 +157,22 @@ def _resolve_settlement_statement(cfg):
     return None, "missing settlement_statement"
 
 
+def _resolve_net_billing_compliance(cfg):
+    raw_profile = cfg.get("net_billing_compliance")
+    if isinstance(raw_profile, dict) and raw_profile:
+        return load_net_billing_compliance_data(raw_profile), ""
+    return None, "missing net_billing_compliance"
+
+
 def _state_add_float(context, key, delta):
     total = _state_get_float(context, key, 0.0) + max(0.0, as_float(delta, 0.0))
     _state_set(context, key, total)
     return total
+
+
+def _current_date_from_timestamp(timestamp_ms):
+    timestamp = max(0, int(timestamp_ms or 0)) / 1000.0
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat()
 
 
 def _compose_sms(trigger_name, hhmm, diagnosis, derived):
@@ -198,6 +218,12 @@ def _compose_sms(trigger_name, hhmm, diagnosis, derived):
             f"At {hhmm}, generator use can be reduced. {diagnosis} "
             "Consider using available solar or battery for non-urgent loads."
         )
+    elif trigger_name == "net_billing_compliance_attention":
+        summary = str(derived.get("net_billing_attention_summary", "")).strip()
+        msg = (
+            f"At {hhmm}, net-billing compliance needs review. {diagnosis} "
+            f"{summary or 'Please check the site records.'}"
+        )
     else:
         msg = (
             f"At {hhmm}, energy use needs review. {diagnosis} "
@@ -228,6 +254,15 @@ def pre_trigger_eval(context):
         settlement_statement, settlement_error = _resolve_settlement_statement(cfg)
     except ProsumerLedgerError as exc:
         settlement_error = str(exc)
+    net_billing_profile = None
+    net_billing_error = ""
+    net_billing_raw_present = isinstance(
+        cfg.get("net_billing_compliance"), dict
+    ) and bool(cfg.get("net_billing_compliance"))
+    try:
+        net_billing_profile, net_billing_error = _resolve_net_billing_compliance(cfg)
+    except NetBillingComplianceError as exc:
+        net_billing_error = str(exc)
     import_tariff = (
         tariff_profile.import_tariff_per_kwh if tariff_profile is not None else 0.0
     )
@@ -378,6 +413,141 @@ def pre_trigger_eval(context):
     context.derived["settlement_source_reference"] = (
         settlement_statement.source.reference
         if settlement_statement is not None
+        else ""
+    )
+    current_date = _current_date_from_timestamp(getattr(context, "timestamp", 0) or 0)
+    net_billing_evaluation = None
+    if net_billing_profile is not None:
+        net_billing_evaluation = evaluate_net_billing_compliance(
+            net_billing_profile,
+            current_date=current_date,
+            configured_export_cap_watts=export_cap_watts,
+            settlement_statement_valid=settlement_statement is not None,
+            settlement_statement_id=(
+                settlement_statement.statement_id
+                if settlement_statement is not None
+                else ""
+            ),
+        )
+    attention_codes = (
+        net_billing_evaluation.attention_codes
+        if net_billing_evaluation is not None
+        else ()
+    )
+    context.derived["net_billing_present"] = 1 if net_billing_raw_present else 0
+    context.derived["net_billing_valid"] = 1 if net_billing_profile is not None else 0
+    context.derived["net_billing_tracking_qualified"] = (
+        1
+        if net_billing_profile is not None and net_billing_profile.tracking_qualified
+        else 0
+    )
+    context.derived["net_billing_error"] = net_billing_error
+    context.derived["net_billing_boundary"] = (
+        net_billing_profile.boundary
+        if net_billing_profile is not None
+        else NET_BILLING_BOUNDARY
+    )
+    context.derived["net_billing_profile"] = (
+        net_billing_profile.profile if net_billing_profile is not None else ""
+    )
+    context.derived["net_billing_profile_version"] = (
+        net_billing_profile.version if net_billing_profile is not None else ""
+    )
+    context.derived["net_billing_status"] = (
+        net_billing_profile.status if net_billing_profile is not None else ""
+    )
+    context.derived["net_billing_disco"] = (
+        net_billing_profile.disco if net_billing_profile is not None else ""
+    )
+    context.derived["net_billing_source_type"] = (
+        net_billing_profile.source.source_type
+        if net_billing_profile is not None
+        else ""
+    )
+    context.derived["net_billing_source_reference"] = (
+        net_billing_profile.source.reference if net_billing_profile is not None else ""
+    )
+    context.derived["net_billing_export_cap_watts"] = (
+        net_billing_profile.export_cap_watts if net_billing_profile is not None else 0.0
+    )
+    context.derived["net_billing_export_cap_matches_runtime"] = (
+        1
+        if net_billing_evaluation is not None
+        and net_billing_evaluation.export_cap_matches_runtime
+        else 0
+    )
+    context.derived["net_billing_attention_required"] = (
+        1
+        if net_billing_evaluation is not None
+        and net_billing_evaluation.attention_required
+        else 0
+    )
+    context.derived["net_billing_attention_codes"] = ",".join(attention_codes)
+    context.derived["net_billing_attention_count"] = len(attention_codes)
+    context.derived["net_billing_attention_summary"] = (
+        net_billing_evaluation.attention_summary
+        if net_billing_evaluation is not None
+        else net_billing_error
+    )
+    context.derived["net_billing_disco_feasibility_status"] = (
+        net_billing_profile.disco_feasibility.status
+        if net_billing_profile is not None
+        else ""
+    )
+    context.derived["net_billing_disco_feasibility_due_by"] = (
+        net_billing_profile.disco_feasibility.due_by
+        if net_billing_profile is not None
+        else ""
+    )
+    context.derived["net_billing_nerc_registration_status"] = (
+        net_billing_profile.nerc_registration.status
+        if net_billing_profile is not None
+        else ""
+    )
+    context.derived["net_billing_nerc_certificate_id"] = (
+        net_billing_profile.nerc_registration.certificate_id
+        if net_billing_profile is not None
+        else ""
+    )
+    context.derived["net_billing_nemsa_inspection_status"] = (
+        net_billing_profile.nemsa_inspection.status
+        if net_billing_profile is not None
+        else ""
+    )
+    context.derived["net_billing_nemsa_certificate_id"] = (
+        net_billing_profile.nemsa_inspection.certificate_id
+        if net_billing_profile is not None
+        else ""
+    )
+    context.derived["net_billing_monthly_statement_status"] = (
+        net_billing_profile.statement_tracking.status
+        if net_billing_profile is not None
+        else ""
+    )
+    context.derived["net_billing_monthly_statement_due_by"] = (
+        net_billing_profile.statement_tracking.due_by
+        if net_billing_profile is not None
+        else ""
+    )
+    context.derived["net_billing_credit_carry_forward_value"] = (
+        net_billing_profile.credit_carry_forward.value
+        if net_billing_profile is not None
+        else 0.0
+    )
+    context.derived["net_billing_credit_carry_forward_kwh"] = (
+        net_billing_profile.credit_carry_forward.kwh
+        if net_billing_profile is not None
+        else 0.0
+    )
+    context.derived["net_billing_relocation_planned"] = (
+        1
+        if net_billing_profile is not None
+        and net_billing_profile.site_relocation_planned
+        else 0
+    )
+    context.derived["net_billing_relocation_effective_date"] = (
+        net_billing_profile.relocation_effective_date
+        if net_billing_profile is not None
         else ""
     )
 
