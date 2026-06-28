@@ -198,6 +198,18 @@ site instead of embedding customer-specific `ori.yaml` in the APK. The same
 profile-generation service should later provision Pi and certified Ori Edge
 Node deployments.
 
+The runtime verifies backend-generated configs before loading them. Signed
+configs carry a top-level `config_signature` block with
+`schema: ori.config_signature.v1`, `signer_id`, `signed_at_ms`, and an
+`ed25519:<base64>` signature. The signature covers the unexpanded YAML body, so
+placeholders such as `${ORI_ENERGY_DEVICE_API_KEY}` can remain placeholders
+until the APK/Termux environment supplies their values. The verification public
+key must be provisioned outside the YAML through
+`ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64` (or a trusted env name selected by the
+launcher); do not put the public key itself in the config file. Private APK and
+production launchers should set `ORI_CONFIG_REQUIRE_SIGNED=true` so a tampered
+config cannot opt out by changing itself back to a development profile.
+
 ## Inverter Profile Qualification
 
 This is the gate for adding hot Nigerian and sub-Saharan African inverter

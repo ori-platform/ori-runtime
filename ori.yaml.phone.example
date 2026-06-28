@@ -70,6 +70,16 @@ health_socket:
   path: /data/data/com.termux/files/home/.ori/health.sock
   mode: 0o660
 
+security:
+  config_signature:
+    # Assisted Termux pilots may leave this false. The private APK / production
+    # launcher should set require_signed true or ORI_CONFIG_REQUIRE_SIGNED=true
+    # before loading backend-generated configs.
+    require_signed: false
+    trust_anchor_env: ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64
+  skills:
+    require_signed: false
+
 actions:
   primary_alert_channel: sms
   operator_contact: "+234XXXXXXXXXX"
