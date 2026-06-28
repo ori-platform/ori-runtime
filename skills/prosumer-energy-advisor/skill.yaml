@@ -16,15 +16,23 @@ sensors_required:
     protocol: growatt
   - type: growatt_grid_power
     protocol: growatt
+  - type: grid_available
+    protocol: simulation
+  - type: grid_voltage
+    protocol: simulation
   - type: growatt_load_power
     protocol: growatt
   - type: growatt_battery_soc
+    protocol: growatt
+  - type: growatt_battery_power
     protocol: growatt
   - type: victron_pv_power
     protocol: victron
   - type: victron_grid_power
     protocol: victron
   - type: victron_battery_soc
+    protocol: victron
+  - type: victron_battery_power
     protocol: victron
   - type: deye_pv1_power
     protocol: solarman_modbus
@@ -33,6 +41,8 @@ sensors_required:
   - type: deye_load_power
     protocol: solarman_modbus
   - type: deye_battery_soc
+    protocol: solarman_modbus
+  - type: deye_battery_power
     protocol: solarman_modbus
   - type: generator_power
     protocol: simulation
@@ -182,6 +192,18 @@ config:
   # Keep at 0 when unknown so Ori does not invent site economics.
   generator_reduce_threshold_watts: 800.0
   generator_cost_naira_per_kwh: 0.0
+  grid_voltage_available_threshold: 160.0
+
+  # Runtime fast-loop operational ledger. These are bounded estimates for
+  # advice and dashboards, not DisCo settlement/billing truth.
+  # Grid-unavailable hours require an explicit grid_available/grid_voltage
+  # signal. Backup-supply hours are tracked separately as an inference.
+  ledger_enabled: true
+  ledger_max_interval_seconds: 900.0
+
+  # Optional monthly DisCo statement supplied by ori-energy/provisioning for
+  # reconciliation. Empty means no settlement statement has been provided.
+  settlement_statement: {}
 
   # Disabled when 0. If configured, this is a deterministic advisory ceiling,
   # not an inverter-control path.

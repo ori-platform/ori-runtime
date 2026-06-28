@@ -3,6 +3,13 @@
 
 """Hooks for the bundled prosumer-energy-advisor skill."""
 
+from ori.policy.prosumer_ledger import (
+    PROSUMER_METER_OF_RECORD_BOUNDARY,
+    ProsumerLedgerError,
+    bounded_fast_loop_interval,
+    kwh_from_watts,
+    load_settlement_statement_data,
+)
 from ori.policy.tariff_profiles import (
     METER_OF_RECORD_BOUNDARY,
     TariffProfileError,
@@ -21,11 +28,18 @@ _DIAGNOSIS_MAX_CHARS = 58
 
 _PV_TYPES = {"growatt_pv_power", "victron_pv_power", "deye_pv1_power"}
 _GRID_TYPES = {"growatt_grid_power", "victron_grid_power", "deye_grid_power"}
+_GRID_AVAILABILITY_TYPES = {"grid_available", "grid_present", "utility_available"}
+_GRID_VOLTAGE_TYPES = {"grid_voltage", "utility_voltage", "ac_grid_voltage"}
 _LOAD_TYPES = {"usb_power", "power", "growatt_load_power", "deye_load_power"}
 _BATTERY_SOC_TYPES = {
     "growatt_battery_soc",
     "victron_battery_soc",
     "deye_battery_soc",
+}
+_BATTERY_POWER_TYPES = {
+    "growatt_battery_power",
+    "victron_battery_power",
+    "deye_battery_power",
 }
 _GENERATOR_TYPES = {
     "generator_power",
@@ -44,6 +58,16 @@ def _state_get_float(context, key, default=0.0):
     return as_float(context.state.get(key), default)
 
 
+def _state_get_int_or_none(context, key):
+    value = context.state.get(key)
+    if value in (None, ""):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _state_set(context, key, value):
     context.state.set(key, str(value))
 
@@ -53,6 +77,23 @@ def _grid_direction(value):
     grid_import_watts = max(0.0, value)
     grid_export_watts = max(0.0, -value)
     return grid_import_watts, grid_export_watts
+
+
+def _battery_direction(value):
+    """Return charge/discharge watts using positive-discharge convention."""
+    battery_discharge_watts = max(0.0, value)
+    battery_charge_watts = max(0.0, -value)
+    return battery_charge_watts, battery_discharge_watts
+
+
+def _grid_unavailable_from_status(value):
+    """Return 1 when a binary grid-availability signal says grid is absent."""
+    return 0 if as_float(value, 0.0) >= 0.5 else 1
+
+
+def _grid_unavailable_from_voltage(value, available_threshold):
+    """Return 1 when a voltage signal is below the configured grid threshold."""
+    return 0 if as_float(value, 0.0) >= max(0.0, available_threshold) else 1
 
 
 def _bounded_warning_ratio(value):
@@ -99,6 +140,19 @@ def _resolve_tariff_profile(cfg):
     if isinstance(raw_profile, dict) and raw_profile:
         return load_tariff_profile_data(raw_profile), ""
     return None, "missing tariff_profile"
+
+
+def _resolve_settlement_statement(cfg):
+    raw_statement = cfg.get("settlement_statement")
+    if isinstance(raw_statement, dict) and raw_statement:
+        return load_settlement_statement_data(raw_statement), ""
+    return None, "missing settlement_statement"
+
+
+def _state_add_float(context, key, delta):
+    total = _state_get_float(context, key, 0.0) + max(0.0, as_float(delta, 0.0))
+    _state_set(context, key, total)
+    return total
 
 
 def _compose_sms(trigger_name, hhmm, diagnosis, derived):
@@ -165,6 +219,15 @@ def pre_trigger_eval(context):
         tariff_profile, tariff_error = _resolve_tariff_profile(cfg)
     except TariffProfileError as exc:
         tariff_error = str(exc)
+    settlement_statement = None
+    settlement_error = ""
+    settlement_raw_present = isinstance(cfg.get("settlement_statement"), dict) and bool(
+        cfg.get("settlement_statement")
+    )
+    try:
+        settlement_statement, settlement_error = _resolve_settlement_statement(cfg)
+    except ProsumerLedgerError as exc:
+        settlement_error = str(exc)
     import_tariff = (
         tariff_profile.import_tariff_per_kwh if tariff_profile is not None else 0.0
     )
@@ -190,6 +253,13 @@ def pre_trigger_eval(context):
         cfg.get("generator_reduce_threshold_watts", 800.0), 800.0
     )
     generator_cost = as_float(cfg.get("generator_cost_naira_per_kwh", 0.0), 0.0)
+    grid_voltage_available_threshold = as_float(
+        cfg.get("grid_voltage_available_threshold", 160.0), 160.0
+    )
+    ledger_enabled = bool(cfg.get("ledger_enabled", True))
+    ledger_max_interval_seconds = as_float(
+        cfg.get("ledger_max_interval_seconds", 900.0), 900.0
+    )
 
     tariff_policy_valid = (
         tariff_profile is not None and tariff_profile.advisory_qualified
@@ -256,13 +326,76 @@ def pre_trigger_eval(context):
     context.derived["battery_reserve_margin_soc"] = reserve_margin_soc
     context.derived["generator_reduce_threshold_watts"] = generator_reduce_threshold
     context.derived["generator_cost_naira_per_kwh"] = generator_cost
+    context.derived["grid_voltage_available_threshold"] = (
+        grid_voltage_available_threshold
+    )
+    context.derived["ledger_enabled"] = 1 if ledger_enabled else 0
+    context.derived["ledger_max_interval_seconds"] = ledger_max_interval_seconds
+    context.derived["ledger_meter_of_record_boundary"] = (
+        PROSUMER_METER_OF_RECORD_BOUNDARY
+    )
+    context.derived["ledger_fast_loop_clock"] = "runtime_operational_estimate"
+    context.derived["ledger_settlement_clock"] = "disco_monthly_statement"
+    context.derived["settlement_statement_present"] = 1 if settlement_raw_present else 0
+    context.derived["settlement_statement_valid"] = (
+        1 if settlement_statement is not None else 0
+    )
+    context.derived["settlement_statement_error"] = settlement_error
+    context.derived["settlement_statement_id"] = (
+        settlement_statement.statement_id if settlement_statement is not None else ""
+    )
+    context.derived["settlement_statement_disco"] = (
+        settlement_statement.disco if settlement_statement is not None else ""
+    )
+    context.derived["settlement_period_start"] = (
+        settlement_statement.period_start if settlement_statement is not None else ""
+    )
+    context.derived["settlement_period_end"] = (
+        settlement_statement.period_end if settlement_statement is not None else ""
+    )
+    context.derived["settlement_import_kwh"] = (
+        settlement_statement.import_kwh if settlement_statement is not None else 0.0
+    )
+    context.derived["settlement_export_kwh"] = (
+        settlement_statement.export_kwh if settlement_statement is not None else 0.0
+    )
+    context.derived["settlement_import_value_naira"] = (
+        settlement_statement.import_value if settlement_statement is not None else 0.0
+    )
+    context.derived["settlement_export_credit_value_naira"] = (
+        settlement_statement.export_credit_value
+        if settlement_statement is not None
+        else 0.0
+    )
+    context.derived["settlement_net_value_naira"] = (
+        settlement_statement.net_value if settlement_statement is not None else 0.0
+    )
+    context.derived["settlement_source_type"] = (
+        settlement_statement.source.source_type
+        if settlement_statement is not None
+        else ""
+    )
+    context.derived["settlement_source_reference"] = (
+        settlement_statement.source.reference
+        if settlement_statement is not None
+        else ""
+    )
 
     pv_watts = _state_get_float(context, "last_pv_watts", 0.0)
     load_watts = _state_get_float(context, "last_load_watts", 0.0)
     grid_import_watts = _state_get_float(context, "last_grid_import_watts", 0.0)
     grid_export_watts = _state_get_float(context, "last_grid_export_watts", 0.0)
     battery_soc = _state_get_float(context, "last_battery_soc", 100.0)
+    battery_charge_watts = _state_get_float(context, "last_battery_charge_watts", 0.0)
+    battery_discharge_watts = _state_get_float(
+        context, "last_battery_discharge_watts", 0.0
+    )
     generator_watts = _state_get_float(context, "last_generator_watts", 0.0)
+    grid_availability_observed = _state_get_float(
+        context, "last_grid_availability_observed", 0.0
+    )
+    grid_unavailable = _state_get_float(context, "last_grid_unavailable", 0.0)
+    grid_availability_source = context.state.get("last_grid_availability_source") or ""
 
     context.derived["is_prosumer_power_event"] = 0
     context.derived["is_grid_power_event"] = 0
@@ -285,9 +418,39 @@ def pre_trigger_eval(context):
             _state_set(context, "last_grid_export_watts", grid_export_watts)
             context.derived["is_prosumer_power_event"] = 1
             context.derived["is_grid_power_event"] = 1
+        elif sensor_type in _GRID_AVAILABILITY_TYPES:
+            grid_availability_observed = 1.0
+            grid_unavailable = float(_grid_unavailable_from_status(value))
+            grid_availability_source = sensor_type
+            _state_set(context, "last_grid_availability_observed", 1.0)
+            _state_set(context, "last_grid_unavailable", grid_unavailable)
+            _state_set(
+                context, "last_grid_availability_source", grid_availability_source
+            )
+            context.derived["is_prosumer_power_event"] = 1
+        elif sensor_type in _GRID_VOLTAGE_TYPES:
+            grid_availability_observed = 1.0
+            grid_unavailable = float(
+                _grid_unavailable_from_voltage(
+                    value,
+                    grid_voltage_available_threshold,
+                )
+            )
+            grid_availability_source = sensor_type
+            _state_set(context, "last_grid_availability_observed", 1.0)
+            _state_set(context, "last_grid_unavailable", grid_unavailable)
+            _state_set(
+                context, "last_grid_availability_source", grid_availability_source
+            )
+            context.derived["is_prosumer_power_event"] = 1
         elif sensor_type in _BATTERY_SOC_TYPES:
             battery_soc = max(0.0, min(100.0, value))
             _state_set(context, "last_battery_soc", battery_soc)
+        elif sensor_type in _BATTERY_POWER_TYPES:
+            battery_charge_watts, battery_discharge_watts = _battery_direction(value)
+            _state_set(context, "last_battery_charge_watts", battery_charge_watts)
+            _state_set(context, "last_battery_discharge_watts", battery_discharge_watts)
+            context.derived["is_prosumer_power_event"] = 1
         elif sensor_type in _GENERATOR_TYPES:
             generator_watts = max(0.0, value)
             _state_set(context, "last_generator_watts", generator_watts)
@@ -375,13 +538,119 @@ def pre_trigger_eval(context):
         "preserve_battery_reserve": defer_load_value,
     }
     optimizer_value = action_values.get(optimizer_action, 0.0)
+    current_timestamp = int(getattr(context, "timestamp", 0) or 0)
+    last_ledger_timestamp = _state_get_int_or_none(context, "ledger_last_timestamp_ms")
+    ledger_interval = (
+        bounded_fast_loop_interval(
+            last_ledger_timestamp,
+            current_timestamp,
+            max_interval_seconds=ledger_max_interval_seconds,
+        )
+        if ledger_enabled and context.derived["is_prosumer_power_event"] == 1
+        else bounded_fast_loop_interval(
+            None,
+            current_timestamp,
+            max_interval_seconds=ledger_max_interval_seconds,
+        )
+    )
+    if ledger_enabled and context.derived["is_prosumer_power_event"] == 1:
+        if ledger_interval.usable or ledger_interval.reason == "first_sample":
+            _state_set(context, "ledger_last_timestamp_ms", current_timestamp)
+
+    grid_import_kwh_delta = kwh_from_watts(grid_import_watts, ledger_interval.hours)
+    grid_export_kwh_delta = kwh_from_watts(grid_export_watts, ledger_interval.hours)
+    solar_generation_kwh_delta = kwh_from_watts(pv_watts, ledger_interval.hours)
+    site_consumption_kwh_delta = kwh_from_watts(load_watts, ledger_interval.hours)
+    battery_charge_kwh_delta = kwh_from_watts(
+        battery_charge_watts, ledger_interval.hours
+    )
+    battery_discharge_kwh_delta = kwh_from_watts(
+        battery_discharge_watts, ledger_interval.hours
+    )
+    generator_kwh_delta = kwh_from_watts(generator_watts, ledger_interval.hours)
+    backup_supply_hours_delta = (
+        ledger_interval.hours
+        if load_watts > 0
+        and grid_import_watts == 0
+        and (generator_watts > 0 or battery_discharge_watts > 0)
+        else 0.0
+    )
+    grid_unavailable_hours_delta = (
+        ledger_interval.hours
+        if grid_availability_observed >= 1.0 and grid_unavailable >= 1.0
+        else 0.0
+    )
+    exported_value_delta = grid_export_kwh_delta * export_credit
+    self_consumed_watts = min(pv_watts + battery_discharge_watts, load_watts)
+    self_consumption_value_delta = (
+        kwh_from_watts(self_consumed_watts, ledger_interval.hours) * import_tariff
+    )
+    diesel_displaced_kwh_delta = kwh_from_watts(
+        generator_offset_watts, ledger_interval.hours
+    )
+    diesel_displaced_value_delta = diesel_displaced_kwh_delta * generator_cost
+    grid_import_kwh_total = _state_add_float(
+        context, "ledger_grid_import_kwh_total", grid_import_kwh_delta
+    )
+    grid_export_kwh_total = _state_add_float(
+        context, "ledger_grid_export_kwh_total", grid_export_kwh_delta
+    )
+    solar_generation_kwh_total = _state_add_float(
+        context, "ledger_solar_generation_kwh_total", solar_generation_kwh_delta
+    )
+    site_consumption_kwh_total = _state_add_float(
+        context, "ledger_site_consumption_kwh_total", site_consumption_kwh_delta
+    )
+    battery_charge_kwh_total = _state_add_float(
+        context, "ledger_battery_charge_kwh_total", battery_charge_kwh_delta
+    )
+    battery_discharge_kwh_total = _state_add_float(
+        context, "ledger_battery_discharge_kwh_total", battery_discharge_kwh_delta
+    )
+    generator_kwh_total = _state_add_float(
+        context, "ledger_generator_kwh_total", generator_kwh_delta
+    )
+    backup_supply_hours_total = _state_add_float(
+        context, "ledger_backup_supply_hours_total", backup_supply_hours_delta
+    )
+    grid_unavailable_hours_total = _state_add_float(
+        context, "ledger_grid_unavailable_hours_total", grid_unavailable_hours_delta
+    )
+    exported_value_total = _state_add_float(
+        context, "ledger_exported_value_naira_total", exported_value_delta
+    )
+    self_consumption_value_total = _state_add_float(
+        context,
+        "ledger_self_consumption_value_naira_total",
+        self_consumption_value_delta,
+    )
+    diesel_displaced_kwh_total = _state_add_float(
+        context, "ledger_diesel_displaced_kwh_total", diesel_displaced_kwh_delta
+    )
+    diesel_displaced_value_total = _state_add_float(
+        context,
+        "ledger_diesel_displaced_value_naira_total",
+        diesel_displaced_value_delta,
+    )
+    ledger_confidence = (
+        "bounded_estimate"
+        if ledger_interval.usable
+        else f"not_accumulated:{ledger_interval.reason}"
+    )
 
     context.derived["pv_watts_snapshot"] = pv_watts
     context.derived["load_watts_snapshot"] = load_watts
     context.derived["grid_import_watts"] = grid_import_watts
     context.derived["grid_export_watts"] = grid_export_watts
     context.derived["battery_soc_snapshot"] = battery_soc
+    context.derived["battery_charge_watts_snapshot"] = battery_charge_watts
+    context.derived["battery_discharge_watts_snapshot"] = battery_discharge_watts
     context.derived["generator_watts_snapshot"] = generator_watts
+    context.derived["grid_availability_observed"] = (
+        1 if grid_availability_observed >= 1.0 else 0
+    )
+    context.derived["grid_unavailable_snapshot"] = 1 if grid_unavailable >= 1.0 else 0
+    context.derived["grid_availability_source"] = grid_availability_source
     context.derived["surplus_watts"] = surplus_watts
     context.derived["export_cap_headroom_watts"] = export_cap_headroom_watts
     context.derived["exportable_surplus_watts"] = exportable_surplus_watts
@@ -409,6 +678,59 @@ def pre_trigger_eval(context):
     )
     context.derived["optimizer_action"] = optimizer_action
     context.derived["optimizer_value_naira_per_hour"] = optimizer_value
+    context.derived["fast_loop_ledger_confidence"] = ledger_confidence
+    context.derived["fast_loop_interval_ms"] = ledger_interval.interval_ms
+    context.derived["fast_loop_interval_hours"] = ledger_interval.hours
+    context.derived["fast_loop_interval_capped"] = 1 if ledger_interval.capped else 0
+    context.derived["fast_loop_grid_import_kwh_delta"] = grid_import_kwh_delta
+    context.derived["fast_loop_grid_export_kwh_delta"] = grid_export_kwh_delta
+    context.derived["fast_loop_solar_generation_kwh_delta"] = solar_generation_kwh_delta
+    context.derived["fast_loop_site_consumption_kwh_delta"] = site_consumption_kwh_delta
+    context.derived["fast_loop_battery_charge_kwh_delta"] = battery_charge_kwh_delta
+    context.derived["fast_loop_battery_discharge_kwh_delta"] = (
+        battery_discharge_kwh_delta
+    )
+    context.derived["fast_loop_generator_kwh_delta"] = generator_kwh_delta
+    context.derived["fast_loop_backup_supply_hours_delta"] = backup_supply_hours_delta
+    context.derived["fast_loop_grid_unavailable_hours_delta"] = (
+        grid_unavailable_hours_delta
+    )
+    context.derived["fast_loop_outage_hours_delta"] = grid_unavailable_hours_delta
+    context.derived["fast_loop_outage_hours_semantics"] = (
+        "explicit_grid_unavailable"
+        if grid_availability_observed >= 1.0
+        else "not_observed"
+    )
+    context.derived["fast_loop_exported_value_naira_delta"] = exported_value_delta
+    context.derived["fast_loop_self_consumption_value_naira_delta"] = (
+        self_consumption_value_delta
+    )
+    context.derived["fast_loop_diesel_displaced_kwh_delta"] = diesel_displaced_kwh_delta
+    context.derived["fast_loop_diesel_displaced_value_naira_delta"] = (
+        diesel_displaced_value_delta
+    )
+    context.derived["fast_loop_grid_import_kwh_total"] = grid_import_kwh_total
+    context.derived["fast_loop_grid_export_kwh_total"] = grid_export_kwh_total
+    context.derived["fast_loop_solar_generation_kwh_total"] = solar_generation_kwh_total
+    context.derived["fast_loop_site_consumption_kwh_total"] = site_consumption_kwh_total
+    context.derived["fast_loop_battery_charge_kwh_total"] = battery_charge_kwh_total
+    context.derived["fast_loop_battery_discharge_kwh_total"] = (
+        battery_discharge_kwh_total
+    )
+    context.derived["fast_loop_generator_kwh_total"] = generator_kwh_total
+    context.derived["fast_loop_backup_supply_hours_total"] = backup_supply_hours_total
+    context.derived["fast_loop_grid_unavailable_hours_total"] = (
+        grid_unavailable_hours_total
+    )
+    context.derived["fast_loop_outage_hours_total"] = grid_unavailable_hours_total
+    context.derived["fast_loop_exported_value_naira_total"] = exported_value_total
+    context.derived["fast_loop_self_consumption_value_naira_total"] = (
+        self_consumption_value_total
+    )
+    context.derived["fast_loop_diesel_displaced_kwh_total"] = diesel_displaced_kwh_total
+    context.derived["fast_loop_diesel_displaced_value_naira_total"] = (
+        diesel_displaced_value_total
+    )
 
     return context
 
