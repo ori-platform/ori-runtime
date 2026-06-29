@@ -239,6 +239,7 @@ def _check_phone_config(config: Config) -> list[DoctorCheck]:
         _deployment_type_check(config),
         _relay_check(config),
         _gateway_check(config),
+        _config_signature_check(config),
         _sensor_check(config),
         _profile_dependency_check(config),
         _telemetry_check(config),
@@ -288,6 +289,63 @@ def _gateway_check(config: Config) -> DoctorCheck:
             "gateway.enabled is true. This is valid only when the phone is "
             "explicitly bridged to a local Ori gateway."
         ),
+    )
+
+
+def _config_signature_check(config: Config) -> DoctorCheck:
+    signature_cfg = (
+        config.security.get("config_signature")
+        if isinstance(config.security, dict)
+        else {}
+    )
+    if not isinstance(signature_cfg, dict):
+        return DoctorCheck(
+            name="config.config_signature",
+            status="fail",
+            message="security.config_signature is not a mapping.",
+        )
+
+    verified = is_truthy(signature_cfg.get("verified", False))
+    required = is_truthy(signature_cfg.get("required", False)) or is_truthy(
+        signature_cfg.get("require_signed", False)
+    )
+    trust_anchor_env = str(signature_cfg.get("trust_anchor_env", "") or "").strip()
+    signer_id = str(signature_cfg.get("signer_id", "") or "").strip()
+    signed_at_ms = signature_cfg.get("signed_at_ms")
+    details = {
+        "verified": verified,
+        "required": required,
+        "trust_anchor_env": trust_anchor_env,
+        "signer_id": signer_id,
+        "signed_at_ms": signed_at_ms,
+    }
+
+    if verified:
+        return DoctorCheck(
+            name="config.config_signature",
+            status="pass",
+            message="Runtime config signature is verified.",
+            details=details,
+        )
+    if required:
+        return DoctorCheck(
+            name="config.config_signature",
+            status="fail",
+            message=(
+                "Runtime config signature is required but was not verified. "
+                "Provision a signed config and set the configured trust-anchor env."
+            ),
+            details=details,
+        )
+    return DoctorCheck(
+        name="config.config_signature",
+        status="warn",
+        message=(
+            "Runtime config is unsigned. This is acceptable for assisted Termux "
+            "pilots only; private APK/provisioned deployments should require a "
+            "verified signed config."
+        ),
+        details=details,
     )
 
 

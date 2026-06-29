@@ -129,8 +129,11 @@ ori-phone-doctor --config ori.yaml
 ```
 
 The doctor validates Termux command availability, USB readiness, phone-mode
-config, relay disablement, telemetry API-key presence when enabled, and operator
-contact setup without starting the runtime loop.
+config, relay disablement, signed-config posture, telemetry API-key presence
+when enabled, and operator contact setup without starting the runtime loop.
+For private APK/provisioned phones, `config.config_signature` should pass before
+activation; an unsigned-config warning is only acceptable for assisted Termux
+pilots.
 
 Run this on the actual Android phone for end-to-end install readiness:
 

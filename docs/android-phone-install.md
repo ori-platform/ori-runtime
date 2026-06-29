@@ -126,11 +126,30 @@ telemetry_export:
   api_key_env: ORI_ENERGY_DEVICE_API_KEY
 ```
 
+For APK/provisioned deployments, the runtime config should also be signed by
+the Ori Energy backend. The verification public key is not stored in
+`ori.yaml`; provision it into the phone environment:
+
+```sh
+export ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64="public-key-from-ori-energy"
+export ORI_CONFIG_REQUIRE_SIGNED=true
+```
+
+Assisted Termux pilots may keep unsigned local configs while testing. Private
+APK and production launchers should require signed configs so a tampered
+`ori.yaml` cannot opt out of verification or swap its own trust anchor.
+
 Run the doctor before starting the runtime:
 
 ```sh
 ori-phone-doctor --config ori.yaml
 ```
+
+The doctor reports `config.config_signature` as:
+
+- `PASS` when a signed config verifies against the provisioned trust anchor;
+- `WARN` when the local config is unsigned for assisted Termux testing;
+- `FAIL` when signing is required but the config cannot be verified.
 
 For a fuller phone diagnostic on the Android device:
 
@@ -187,7 +206,10 @@ bash scripts/install-phone.sh
 cp ori.yaml.phone.example ori.yaml
 ```
 
-Edit the same site/device fields as the development install, then start:
+Edit the same site/device fields as the development install. For provisioned
+phone deployment, install the signed backend-generated `ori.yaml`, set
+`ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64`, and set
+`ORI_CONFIG_REQUIRE_SIGNED=true` before running the smoke check. Then start:
 
 ```sh
 bash scripts/termux-phone-smoke.sh --config ori.yaml
