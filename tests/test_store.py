@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 import sqlite3
 import time
 from datetime import datetime, timedelta
@@ -104,6 +105,15 @@ class TestLifecycle:
             "remote_command_execution_log",
             "alert_outbox",
         } <= names
+
+    async def test_open_restricts_database_file_permissions(self, tmp_path):
+        db_path = tmp_path / "least-privilege.db"
+        s = StateStore(db_path=str(db_path))
+
+        await s.open()
+        await s.close()
+
+        assert os.stat(db_path).st_mode & 0o777 == 0o600
 
     async def test_open_is_idempotent(self, tmp_path):
         """Re-opening with the same path should not raise (DDL uses IF NOT EXISTS)."""

@@ -84,6 +84,11 @@ actions:
   primary_alert_channel: sms
   operator_contact: "+234XXXXXXXXXX"
   secondary_contact: ""
+  setup_notifications:
+    enabled: true
+    # Use [sms, whatsapp] when both transports are provisioned. Disabled
+    # transports are skipped instead of silently generating fake delivery.
+    channels: [primary]
   whatsapp:
     enabled: false
   sms:

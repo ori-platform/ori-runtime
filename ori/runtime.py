@@ -930,6 +930,8 @@ class OriRuntime:
         if status_indicator is not None:
             status_indicator.set_runtime_state(RuntimeHealthState.NORMAL)
 
+        await self._send_setup_success_notifications(config, alert_sender)
+
         # Block here until stop() sets the shutdown event
         await self._shutdown_event.wait()
 
@@ -2562,6 +2564,7 @@ class OriRuntime:
         trigger_name: str,
         original_ts: int,
         alert_sender: AlertFailoverSender,
+        allow_failover: bool = True,
     ) -> bool:
         """Attempt immediate delivery; enqueue on failure.
 
@@ -2581,11 +2584,26 @@ class OriRuntime:
 
         delivered = False
         try:
-            delivered = await alert_sender.send(
-                message=message,
-                to_number=recipient,
-                preferred_channel=channel,
-            )
+            if allow_failover:
+                delivered = await alert_sender.send(
+                    message=message,
+                    to_number=recipient,
+                    preferred_channel=channel,
+                )
+            else:
+                exact_sender = getattr(alert_sender, "send_exact", None)
+                if callable(exact_sender):
+                    delivered = await exact_sender(
+                        message=message,
+                        to_number=recipient,
+                        channel=channel,
+                    )
+                else:
+                    delivered = await alert_sender.send(
+                        message=message,
+                        to_number=recipient,
+                        preferred_channel=channel,
+                    )
         except Exception:
             logger.exception(
                 "[runtime] unexpected %s send failure; falling back to outbox queue",
@@ -2633,6 +2651,67 @@ class OriRuntime:
                 "[runtime] alert already queued id=%s channel=%s", alert_id, channel
             )
         return True
+
+    async def _send_setup_success_notifications(
+        self,
+        config: Config,
+        alert_sender: AlertFailoverSender,
+    ) -> None:
+        setup_cfg = (
+            config.actions.setup_notifications
+            if isinstance(config.actions.setup_notifications, dict)
+            else {}
+        )
+        if not is_truthy(setup_cfg.get("enabled", False)):
+            return
+
+        if not self._operator_contact:
+            logger.warning(
+                "[runtime] setup notification skipped: operator_contact not configured"
+            )
+            return
+
+        channels = _resolve_setup_notification_channels(
+            setup_cfg.get("channels", ["primary"]),
+            config.actions.primary_alert_channel,
+        )
+        if not channels:
+            logger.warning("[runtime] setup notification skipped: no valid channels")
+            return
+
+        channel_enabled = {
+            "sms": is_truthy(config.actions.sms.get("enabled", False)),
+            "whatsapp": is_truthy(config.actions.whatsapp.get("enabled", False)),
+        }
+        message = _setup_success_message(
+            config=config,
+            connected_sensor_count=len(self._connected_sensor_ids),
+            loaded_skill_count=len(self._loaded_skills),
+        )
+        original_ts = self._runtime_started_at_ms or now_ms()
+        for channel in channels:
+            if not channel_enabled.get(channel, False):
+                logger.info(
+                    "[runtime] setup notification skipped for disabled channel=%s",
+                    channel,
+                )
+                continue
+            try:
+                await self._send_or_queue_alert(
+                    channel=channel,
+                    message=message,
+                    recipient=self._operator_contact,
+                    action_tier="A",
+                    trigger_name="runtime_setup_complete",
+                    original_ts=original_ts,
+                    alert_sender=alert_sender,
+                    allow_failover=False,
+                )
+            except Exception:
+                logger.exception(
+                    "[runtime] setup notification failed unexpectedly on channel=%s",
+                    channel,
+                )
 
     async def _alert_delivery_loop(
         self,
@@ -2805,6 +2884,48 @@ def _message_from_context(
     return msg
 
 
+def _resolve_setup_notification_channels(
+    raw_channels: Any,
+    primary_alert_channel: str,
+) -> list[str]:
+    if isinstance(raw_channels, str):
+        candidates = [raw_channels]
+    elif isinstance(raw_channels, list):
+        candidates = raw_channels
+    else:
+        candidates = ["primary"]
+
+    primary = str(primary_alert_channel or "sms").strip().lower()
+    if primary not in {"sms", "whatsapp"}:
+        primary = "sms"
+
+    resolved: list[str] = []
+    for raw in candidates:
+        channel = str(raw).strip().lower()
+        if channel == "primary":
+            channel = primary
+        if channel in {"sms", "whatsapp"} and channel not in resolved:
+            resolved.append(channel)
+    return resolved
+
+
+def _setup_success_message(
+    *,
+    config: Config,
+    connected_sensor_count: int,
+    loaded_skill_count: int,
+) -> str:
+    location = str(config.device.location or "site").strip()
+    deployment = str(config.device.deployment_type or "runtime").strip()
+    return _cap_sms_message(
+        "Ori is now watching and protecting your site. "
+        f"{config.device.id} is monitoring {location} in {deployment} mode. "
+        f"Sensors connected: {connected_sensor_count}; skills loaded: {loaded_skill_count}. "
+        "You will receive alerts here when Ori detects risk.",
+        limit=320,
+    )
+
+
 def _resolve_trigger_name(ctx: SkillContext) -> str:
     if ctx and isinstance(getattr(ctx, "trigger_name", ""), str):
         trigger_name = ctx.trigger_name.strip()
@@ -2896,8 +3017,8 @@ def _build_remote_command_verifier(config: Config) -> RemoteCommandVerifier | No
     shared_secret = os.environ.get(secret_env, "")
     if not shared_secret:
         logger.warning(
-            "[runtime] remote commands enabled but %s is not set; commands will fail closed.",
-            secret_env,
+            "[runtime] remote commands enabled but configured HMAC secret "
+            "environment variable is not set; commands will fail closed."
         )
     previous_secret_env = str(remote_cfg.get("previous_hmac_secret_env", "") or "")
     previous_shared_secret = (
@@ -2905,9 +3026,8 @@ def _build_remote_command_verifier(config: Config) -> RemoteCommandVerifier | No
     )
     if previous_secret_env and not previous_shared_secret:
         logger.warning(
-            "[runtime] remote command previous secret env %s is configured but empty; "
-            "previous-secret verification disabled.",
-            previous_secret_env,
+            "[runtime] remote command previous HMAC secret environment variable "
+            "is configured but empty; previous-secret verification disabled."
         )
     max_skew_ms = int(remote_cfg.get("max_skew_seconds", 300)) * 1000
     return RemoteCommandVerifier(
@@ -3129,7 +3249,8 @@ def _build_gateway_message_auth(config: Config) -> GatewayMessageAuthenticator |
     secret = os.environ.get(env_name, "") if env_name else ""
     if not secret:
         raise ValueError(
-            f"gateway auth is enabled but environment variable {env_name!r} is empty"
+            "gateway auth is enabled but configured shared-secret environment "
+            "variable is empty"
         )
     previous_env_name = str(
         auth_cfg.get("previous_shared_secret_env", "") or ""
@@ -3137,9 +3258,8 @@ def _build_gateway_message_auth(config: Config) -> GatewayMessageAuthenticator |
     previous_secret = os.environ.get(previous_env_name, "") if previous_env_name else ""
     if previous_env_name and not previous_secret:
         logger.warning(
-            "[runtime] gateway auth previous secret env %s is configured but empty; "
-            "previous-secret verification disabled.",
-            previous_env_name,
+            "[runtime] gateway auth previous shared-secret environment variable "
+            "is configured but empty; previous-secret verification disabled."
         )
     return GatewayMessageAuthenticator(
         GatewayMessageAuthConfig(
@@ -3165,7 +3285,8 @@ def _build_gateway_message_encryptor(config: Config) -> GatewayMessageEncryptor 
     secret = os.environ.get(env_name, "") if env_name else ""
     if not secret:
         raise ValueError(
-            f"gateway encryption is enabled but environment variable {env_name!r} is empty"
+            "gateway encryption is enabled but configured shared-secret "
+            "environment variable is empty"
         )
     return GatewayMessageEncryptor(GatewayMessageEncryptionConfig(shared_secret=secret))
 

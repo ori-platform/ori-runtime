@@ -43,6 +43,8 @@ from ori.runtime import (
     _process_target_from_context,
     _resolve_dispatcher_approval_timeout,
     _resolve_local_model_file,
+    _resolve_setup_notification_channels,
+    _setup_success_message,
     _warn_sms_webhook_security_posture,
 )
 from ori.security.gateway_messages import (
@@ -82,6 +84,110 @@ def test_build_gateway_message_auth_uses_configured_env_secret(monkeypatch):
     auth = _build_gateway_message_auth(config)
 
     assert auth is not None
+
+
+def test_remote_command_secret_env_names_are_not_logged(monkeypatch, caplog):
+    monkeypatch.delenv("ORI_REMOTE_COMMAND_HMAC_SECRET", raising=False)
+    config = SimpleNamespace(
+        device=SimpleNamespace(id="device-01"),
+        security={
+            "remote_commands": {
+                "enabled": True,
+                "hmac_secret_env": "ORI_REMOTE_COMMAND_HMAC_SECRET",
+                "previous_hmac_secret_env": "ORI_REMOTE_COMMAND_PREVIOUS_SECRET",
+            }
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        verifier = _build_remote_command_verifier(config)
+
+    assert verifier is not None
+    assert "ORI_REMOTE_COMMAND_HMAC_SECRET" not in caplog.text
+    assert "ORI_REMOTE_COMMAND_PREVIOUS_SECRET" not in caplog.text
+    assert "configured HMAC secret environment variable is not set" in caplog.text
+
+
+def test_resolve_setup_notification_channels_deduplicates_primary():
+    assert _resolve_setup_notification_channels(
+        ["primary", "sms", "whatsapp", "primary"],
+        "sms",
+    ) == ["sms", "whatsapp"]
+
+
+def test_setup_success_message_is_bounded_and_operational():
+    config = SimpleNamespace(
+        device=SimpleNamespace(
+            id="phone-01",
+            location="Temidayo Site",
+            deployment_type="phone",
+        )
+    )
+
+    message = _setup_success_message(
+        config=config,
+        connected_sensor_count=1,
+        loaded_skill_count=3,
+    )
+
+    assert len(message) <= 320
+    assert "Ori is now watching and protecting your site" in message
+    assert "phone-01" in message
+    assert "Sensors connected: 1" in message
+    assert "skills loaded: 3" in message
+    assert "detects risk" in message
+
+
+@pytest.mark.asyncio
+async def test_setup_success_notification_sends_enabled_channels():
+    class FakeAlertSender:
+        def __init__(self):
+            self.calls = []
+
+        async def send(self, *, message, to_number, preferred_channel=None):
+            raise AssertionError("setup notifications must use exact-channel send")
+
+        async def send_exact(self, *, message, to_number, channel):
+            self.calls.append(
+                {
+                    "message": message,
+                    "to_number": to_number,
+                    "channel": channel,
+                }
+            )
+            return True
+
+    runtime = OriRuntime()
+    runtime._operator_contact = "+2348000000000"
+    runtime._connected_sensor_ids = {"phone-main-power"}
+    runtime._loaded_skills = [SimpleNamespace(name="energy-anomaly-detector")]
+    runtime._last_alert_timestamps_by_channel = {}
+    runtime._last_alert_timestamps_by_trigger = {}
+    runtime._runtime_started_at_ms = 1_700_000_000_000
+    sender = FakeAlertSender()
+    config = SimpleNamespace(
+        device=SimpleNamespace(
+            id="phone-01",
+            location="Temidayo Site",
+            deployment_type="phone",
+        ),
+        actions=SimpleNamespace(
+            setup_notifications={"enabled": True, "channels": ["sms", "whatsapp"]},
+            primary_alert_channel="sms",
+            sms={"enabled": True},
+            whatsapp={"enabled": True},
+        ),
+    )
+
+    await runtime._send_setup_success_notifications(config, sender)
+
+    assert [call["channel"] for call in sender.calls] == ["sms", "whatsapp"]
+    assert all(call["to_number"] == "+2348000000000" for call in sender.calls)
+    assert all(
+        "Ori is now watching and protecting your site" in call["message"]
+        for call in sender.calls
+    )
+    assert runtime._last_alert_timestamps_by_trigger["runtime_setup_complete"] > 0
 
 
 @pytest.mark.asyncio
@@ -236,8 +342,39 @@ def test_build_gateway_message_auth_rejects_missing_env_secret(monkeypatch):
         )
     )
 
-    with pytest.raises(ValueError, match="GATEWAY_SHARED_SECRET"):
+    with pytest.raises(ValueError) as excinfo:
         _build_gateway_message_auth(config)
+    assert "GATEWAY_SHARED_SECRET" not in str(excinfo.value)
+    assert "configured shared-secret environment variable is empty" in str(
+        excinfo.value
+    )
+
+
+def test_build_gateway_message_auth_redacts_previous_env_secret(monkeypatch, caplog):
+    monkeypatch.setenv("GATEWAY_SHARED_SECRET", "current-secret")
+    monkeypatch.delenv("GATEWAY_PREVIOUS_SHARED_SECRET", raising=False)
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+                "previous_shared_secret_env": "GATEWAY_PREVIOUS_SHARED_SECRET",
+                "max_clock_skew_ms": 300_000,
+                "replay_ttl_ms": 300_000,
+            },
+        )
+    )
+
+    with caplog.at_level(logging.WARNING):
+        auth = _build_gateway_message_auth(config)
+
+    assert auth is not None
+    assert "GATEWAY_PREVIOUS_SHARED_SECRET" not in caplog.text
+    assert "previous shared-secret environment variable is configured but empty" in (
+        caplog.text
+    )
 
 
 def test_build_remote_command_verifier_passes_previous_env_secret(monkeypatch):
@@ -295,8 +432,12 @@ def test_build_gateway_message_encryptor_rejects_missing_env_secret(monkeypatch)
         )
     )
 
-    with pytest.raises(ValueError, match="GATEWAY_SHARED_SECRET"):
+    with pytest.raises(ValueError) as excinfo:
         _build_gateway_message_encryptor(config)
+    assert "GATEWAY_SHARED_SECRET" not in str(excinfo.value)
+    assert "configured shared-secret environment variable is empty" in str(
+        excinfo.value
+    )
 
 
 def test_build_gateway_message_encryptor_requires_auth_enabled():

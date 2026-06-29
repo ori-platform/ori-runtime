@@ -111,8 +111,8 @@ class HttpTelemetryExporter:
         api_key = os.environ.get(self._config.api_key_env, "").strip()
         if not api_key:
             logger.warning(
-                "[telemetry-export] %s is not set; telemetry batch retained in memory",
-                self._config.api_key_env,
+                "[telemetry-export] configured API key environment variable is not set; "
+                "telemetry batch retained in memory"
             )
             self._requeue(batch)
             return 0

@@ -169,6 +169,7 @@ class ActionChannelConfig:
     local_console: dict = field(default_factory=dict)
     offline_tokens: dict = field(default_factory=dict)
     alert_outbox: dict = field(default_factory=dict)
+    setup_notifications: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -1250,6 +1251,32 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         "max_clock_skew_s": offline_tokens_max_clock_skew_s,
     }
 
+    setup_notifications_raw = data.get("setup_notifications") or {}
+    if not isinstance(setup_notifications_raw, dict):
+        raise ConfigValidationError(
+            "'actions.setup_notifications' must be a mapping when provided."
+        )
+    setup_channels_raw = setup_notifications_raw.get("channels", ["primary"])
+    if isinstance(setup_channels_raw, str):
+        setup_channels_raw = [setup_channels_raw]
+    if not isinstance(setup_channels_raw, list):
+        raise ConfigValidationError(
+            "actions.setup_notifications.channels must be a list of sms/whatsapp/primary."
+        )
+    setup_channels: list[str] = []
+    for raw_channel in setup_channels_raw:
+        channel = str(raw_channel).strip().lower()
+        if channel not in {"sms", "whatsapp", "primary"}:
+            raise ConfigValidationError(
+                "actions.setup_notifications.channels entries must be sms, whatsapp, or primary."
+            )
+        if channel not in setup_channels:
+            setup_channels.append(channel)
+    setup_notifications = {
+        "enabled": is_truthy(setup_notifications_raw.get("enabled", False)),
+        "channels": setup_channels,
+    }
+
     alert_outbox_raw = data.get("alert_outbox") or {}
     if not isinstance(alert_outbox_raw, dict):
         raise ConfigValidationError(
@@ -1325,6 +1352,7 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         local_console=local_console,
         offline_tokens=offline_tokens,
         alert_outbox=alert_outbox,
+        setup_notifications=setup_notifications,
     )
 
 
