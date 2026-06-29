@@ -162,7 +162,7 @@ async def test_flush_once_requeues_when_post_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_flush_once_requeues_when_api_key_missing(monkeypatch):
+async def test_flush_once_requeues_when_api_key_missing(monkeypatch, caplog):
     monkeypatch.delenv("ORI_ENERGY_DEVICE_API_KEY", raising=False)
     exporter = HttpTelemetryExporter(device_id="phone-01", config=_config())
     await exporter.handle_event(_event())
@@ -171,6 +171,8 @@ async def test_flush_once_requeues_when_api_key_missing(monkeypatch):
 
     assert sent == 0
     assert len(exporter._drain_batch()) == 1
+    assert "ORI_ENERGY_DEVICE_API_KEY" not in caplog.text
+    assert "configured API key environment variable is not set" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import hashlib
 import json
+import os
 import sqlite3
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -334,11 +335,23 @@ class StateStore:
 
     def _open_sync(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._restrict_db_file_permissions()
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         self._migrate_sync(conn)
         return conn
+
+    def _restrict_db_file_permissions(self) -> None:
+        """Keep local SQLite state readable/writable only by the runtime user."""
+        if self._db_path == ":memory:":
+            return
+        try:
+            os.chmod(self._db_path, 0o600)
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            return
 
     async def close(self) -> None:
         async with self._lifecycle_lock:
