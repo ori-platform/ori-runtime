@@ -129,6 +129,7 @@ def _verify_with_runtime_loader(
             try:
                 temp_path.unlink()
             except FileNotFoundError:
+                # Cleanup is idempotent; another path may have already removed it.
                 pass
 
     signature_cfg = config.security.get("config_signature") or {}
@@ -247,6 +248,7 @@ def _atomic_write(destination: Path, data: bytes) -> None:
             try:
                 temp_path.unlink()
             except FileNotFoundError:
+                # os.replace() may have already moved it into destination.
                 pass
 
 
