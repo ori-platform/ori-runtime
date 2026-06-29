@@ -119,6 +119,35 @@ class AlertFailoverSender:
                 return True
         return False
 
+    async def send_exact(
+        self,
+        message: str,
+        to_number: str,
+        *,
+        channel: str,
+    ) -> bool:
+        """Send on exactly one channel without failover."""
+        channel_name = str(channel or "").strip().lower()
+        if channel_name not in {"sms", "whatsapp"}:
+            logger.warning("AlertFailoverSender: unknown exact channel=%r", channel)
+            return False
+        if not self._channel_available(channel_name):
+            return False
+
+        sender = self._sms_sender if channel_name == "sms" else self._whatsapp_sender
+        if sender is None:
+            return False
+
+        channel_contact = self._normalize_for_channel(channel_name, to_number)
+        try:
+            return bool(await sender.send(message=message, to_number=channel_contact))
+        except Exception:
+            logger.exception(
+                "AlertFailoverSender: exact send failed on channel=%s",
+                channel_name,
+            )
+            return False
+
     async def listen_for_response(
         self,
         from_number: str,

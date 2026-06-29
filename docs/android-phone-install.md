@@ -110,6 +110,10 @@ Edit `ori.yaml`:
 - keep `health_socket.path` under `/data/data/com.termux/files/home/.ori/`;
 - keep `actions.relay.enabled: false`;
 - keep `gateway.enabled: false` for phone-only testing.
+- set `actions.setup_notifications.enabled: true` after SMS or WhatsApp is
+  provisioned so Ori sends an operator confirmation once runtime startup
+  succeeds. Use `channels: [sms, whatsapp]` only when both transports are
+  configured; disabled transports are skipped.
 
 After registering the device with the product backend, enable telemetry:
 

@@ -62,6 +62,62 @@ class TestAlertFailoverSender:
         sms.send.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_send_exact_does_not_fall_back(self):
+        sms = AsyncMock()
+        sms.send = AsyncMock(return_value=True)
+        whatsapp = AsyncMock()
+        whatsapp.send = AsyncMock(return_value=False)
+
+        sender = AlertFailoverSender(
+            primary_channel="sms",
+            sms_sender=sms,
+            whatsapp_sender=whatsapp,
+        )
+
+        ok = await sender.send_exact(
+            "hello",
+            "+2340000000",
+            channel="whatsapp",
+        )
+
+        assert ok is False
+        whatsapp.send.assert_awaited_once_with(
+            message="hello",
+            to_number="whatsapp:+2340000000",
+        )
+        sms.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_exact_skips_unavailable_channel(self):
+        sms = AsyncMock()
+        sms.send = AsyncMock(return_value=True)
+        whatsapp = AsyncMock()
+        whatsapp.send = AsyncMock(return_value=True)
+        sender = AlertFailoverSender(
+            primary_channel="sms",
+            sms_sender=sms,
+            whatsapp_sender=whatsapp,
+        )
+        sender.update_capability_posture(
+            CapabilityPosture(
+                sms_available=True,
+                whatsapp_available=True,
+                gateway_reachable=False,
+                local_slm_loaded=False,
+                relay_connected=False,
+                internet_available=False,
+                checked_at_ms=1,
+                expires_at_ms=2,
+            )
+        )
+
+        ok = await sender.send_exact("hello", "+2340000000", channel="whatsapp")
+
+        assert ok is False
+        whatsapp.send.assert_not_awaited()
+        sms.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_send_normalizes_contact_per_channel(self):
         sms = AsyncMock()
         sms.send = AsyncMock(return_value=False)

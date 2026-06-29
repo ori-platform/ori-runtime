@@ -534,6 +534,74 @@ class TestLoadExample:
         assert cfg.actions.alert_outbox["max_non_tier_d_attempts"] == 10
         assert cfg.actions.alert_outbox["tier_d_critical_warning_threshold"] == 3
         assert cfg.actions.alert_outbox["batch_size"] == 50
+        assert cfg.actions.setup_notifications == {
+            "enabled": True,
+            "channels": ["primary"],
+        }
+
+    def test_setup_notifications_config(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: test-device
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: ""
+              model_path: ""
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              setup_notifications:
+                enabled: true
+                channels: [primary, whatsapp, sms, sms]
+              sms:
+                enabled: false
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.actions.setup_notifications == {
+            "enabled": True,
+            "channels": ["primary", "whatsapp", "sms"],
+        }
+
+    def test_setup_notifications_rejects_invalid_channel(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: test-device
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: ""
+              model_path: ""
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              setup_notifications:
+                enabled: true
+                channels: [telegram]
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="setup_notifications.channels"):
+            Config.load(yaml_path)
 
     def test_alert_outbox_config_defaults(self, tmp_path):
         yaml_path = _write_yaml(
@@ -566,6 +634,10 @@ class TestLoadExample:
             "max_non_tier_d_attempts": 10,
             "tier_d_critical_warning_threshold": 3,
             "batch_size": 50,
+        }
+        assert cfg.actions.setup_notifications == {
+            "enabled": False,
+            "channels": ["primary"],
         }
 
     @pytest.mark.parametrize(
