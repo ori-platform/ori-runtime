@@ -7,7 +7,7 @@ pre-commit>=3.7
 mypy>=1.18
 types-PyYAML>=6.0
 pip-tools>=7.4
-pip-audit>=2.7
+pip-audit>=2.10.1
 cyclonedx-bom>=6.0
 
 wait-for2==0.3.2; python_version < "3.12"
