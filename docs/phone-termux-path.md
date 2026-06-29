@@ -213,6 +213,26 @@ launcher); do not put the public key itself in the config file. Private APK and
 production launchers should set `ORI_CONFIG_REQUIRE_SIGNED=true` so a tampered
 config cannot opt out by changing itself back to a development profile.
 
+The runtime package also ships `ori-config-install` for APK and assisted
+Termux provisioning. The APK may download the generated config itself and pass a
+local file, or ask the installer to fetch an HTTPS config endpoint with a
+short-lived bearer token from an environment variable:
+
+```sh
+export ORI_PROVISIONING_TOKEN="short-lived-token"
+ori-config-install \
+  --source https://api.ori.energy/runtime/config \
+  --bearer-token-env ORI_PROVISIONING_TOKEN \
+  --destination ori.yaml
+```
+
+`ori-config-install` uses the runtime's normal `Config.load()` path, requires a
+verified `config_signature`, rejects non-HTTPS remote sources except explicit
+loopback development, writes the destination atomically with `0600`
+permissions, and does not persist the provisioning token. Ori Energy still owns
+account creation, payment, token issuance, profile selection, and config
+generation; this tool is only the runtime-side install boundary.
+
 ## Inverter Profile Qualification
 
 This is the gate for adding hot Nigerian and sub-Saharan African inverter

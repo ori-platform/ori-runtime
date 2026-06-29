@@ -486,7 +486,7 @@ class Config:
                         for key in ("max_skew_seconds", "replay_ttl_seconds"):
                             if key in signature_cfg:
                                 try:
-                                    value = int(signature_cfg.get(key))
+                                    value = int(signature_cfg[key])
                                 except (TypeError, ValueError) as exc:
                                     raise ConfigValidationError(
                                         f"actions.sms.incoming_webhook.signature.{key} must be an integer."
@@ -544,7 +544,7 @@ class Config:
 def _expand_env_vars(text: str) -> str:
     """Replace ${VAR_NAME} with the environment variable value, or leave as-is."""
 
-    def _replace(match: re.Match) -> str:
+    def _replace(match: re.Match[str]) -> str:
         var = match.group(1)
         return os.environ.get(var, match.group(0))
 
@@ -663,7 +663,7 @@ def _validate_coap_sensor_metadata(metadata: dict[str, Any], section: str) -> No
 
     if "timeout_s" in metadata:
         try:
-            timeout_s = float(metadata.get("timeout_s"))
+            timeout_s = float(metadata["timeout_s"])
         except (TypeError, ValueError) as exc:
             raise ConfigValidationError(
                 f"{section}: coap sensor timeout_s must be numeric."
@@ -1208,38 +1208,47 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         raise ConfigValidationError(
             "'actions.local_console' must be a mapping when provided."
         )
-    local_console = {
-        "enabled": bool(local_console_raw.get("enabled", False)),
-        "poll_interval_ms": int(local_console_raw.get("poll_interval_ms", 1000)),
-        "approval_channel_id": str(
-            local_console_raw.get("approval_channel_id", "local_console")
-        ),
-    }
-    if local_console["poll_interval_ms"] < 100:
+    local_console_enabled = bool(local_console_raw.get("enabled", False))
+    local_console_poll_interval_ms = int(
+        local_console_raw.get("poll_interval_ms", 1000)
+    )
+    local_console_approval_channel_id = str(
+        local_console_raw.get("approval_channel_id", "local_console")
+    )
+    if local_console_poll_interval_ms < 100:
         raise ConfigValidationError(
             "actions.local_console.poll_interval_ms must be >= 100."
         )
+    local_console: dict[str, Any] = {
+        "enabled": local_console_enabled,
+        "poll_interval_ms": local_console_poll_interval_ms,
+        "approval_channel_id": local_console_approval_channel_id,
+    }
 
     offline_tokens_raw = data.get("offline_tokens") or {}
     if not isinstance(offline_tokens_raw, dict):
         raise ConfigValidationError(
             "'actions.offline_tokens' must be a mapping when provided."
         )
-    offline_tokens = {
-        "enabled": bool(offline_tokens_raw.get("enabled", False)),
-        "public_key_b64": str(offline_tokens_raw.get("public_key_b64", "")),
-        "max_clock_skew_s": int(offline_tokens_raw.get("max_clock_skew_s", 300)),
-    }
-    if offline_tokens["max_clock_skew_s"] < 0:
+    offline_tokens_enabled = bool(offline_tokens_raw.get("enabled", False))
+    offline_tokens_public_key_b64 = str(offline_tokens_raw.get("public_key_b64", ""))
+    offline_tokens_max_clock_skew_s = int(
+        offline_tokens_raw.get("max_clock_skew_s", 300)
+    )
+    if offline_tokens_max_clock_skew_s < 0:
         raise ConfigValidationError(
             "actions.offline_tokens.max_clock_skew_s must be >= 0."
         )
-    if offline_tokens["enabled"]:
-        public_key = offline_tokens["public_key_b64"]
-        if not public_key or "${" in public_key:
+    if offline_tokens_enabled:
+        if not offline_tokens_public_key_b64 or "${" in offline_tokens_public_key_b64:
             raise ConfigValidationError(
                 "actions.offline_tokens.enabled=true requires actions.offline_tokens.public_key_b64."
             )
+    offline_tokens: dict[str, Any] = {
+        "enabled": offline_tokens_enabled,
+        "public_key_b64": offline_tokens_public_key_b64,
+        "max_clock_skew_s": offline_tokens_max_clock_skew_s,
+    }
 
     alert_outbox_raw = data.get("alert_outbox") or {}
     if not isinstance(alert_outbox_raw, dict):
@@ -1512,47 +1521,55 @@ def _parse_device_policy(data: Any) -> dict:
         return default_policy
 
     try:
-        out = {
-            "enabled": bool(data.get("enabled", False)),
-            "url": str(data.get("url", "") or "").strip(),
-            "auth_token": str(data.get("auth_token", "") or "").strip(),
-            "public_key_b64": str(data.get("public_key_b64", "") or "").strip(),
-            "request_timeout_ms": int(data.get("request_timeout_ms", 3000)),
-            "max_clock_skew_s": int(data.get("max_clock_skew_s", 300)),
-            "refresh_enabled": bool(data.get("refresh_enabled", False)),
-            "refresh_interval_s": int(data.get("refresh_interval_s", 21600)),
-        }
+        enabled = bool(data.get("enabled", False))
+        url = str(data.get("url", "") or "").strip()
+        auth_token = str(data.get("auth_token", "") or "").strip()
+        public_key_b64 = str(data.get("public_key_b64", "") or "").strip()
+        request_timeout_ms = int(data.get("request_timeout_ms", 3000))
+        max_clock_skew_s = int(data.get("max_clock_skew_s", 300))
+        refresh_enabled = bool(data.get("refresh_enabled", False))
+        refresh_interval_s = int(data.get("refresh_interval_s", 21600))
     except (TypeError, ValueError):
         logger.warning(
             "[config] 'device_policy' has invalid types. Falling back to defaults."
         )
         return default_policy
 
-    if out["request_timeout_ms"] < 100:
+    if request_timeout_ms < 100:
         raise ConfigValidationError("device_policy.request_timeout_ms must be >= 100.")
-    if out["max_clock_skew_s"] < 1:
+    if max_clock_skew_s < 1:
         raise ConfigValidationError("device_policy.max_clock_skew_s must be >= 1.")
-    if out["refresh_interval_s"] < 60:
+    if refresh_interval_s < 60:
         raise ConfigValidationError("device_policy.refresh_interval_s must be >= 60.")
 
-    if out["enabled"]:
-        if not out["url"]:
+    if enabled:
+        if not url:
             raise ConfigValidationError(
                 "device_policy.enabled is true but 'url' is empty."
             )
-        if not out["url"].startswith("https://"):
+        if not url.startswith("https://"):
             raise ConfigValidationError(
                 "device_policy.url must start with https:// when enabled."
             )
-        if not out["auth_token"] or "${" in out["auth_token"]:
+        if not auth_token or "${" in auth_token:
             raise ConfigValidationError(
                 "device_policy.auth_token is missing or not properly interpolated."
             )
-        if not out["public_key_b64"] or "${" in out["public_key_b64"]:
+        if not public_key_b64 or "${" in public_key_b64:
             raise ConfigValidationError(
                 "device_policy.public_key_b64 is missing or not properly interpolated."
             )
 
+    out: dict[str, Any] = {
+        "enabled": enabled,
+        "url": url,
+        "auth_token": auth_token,
+        "public_key_b64": public_key_b64,
+        "request_timeout_ms": request_timeout_ms,
+        "max_clock_skew_s": max_clock_skew_s,
+        "refresh_enabled": refresh_enabled,
+        "refresh_interval_s": refresh_interval_s,
+    }
     return out
 
 

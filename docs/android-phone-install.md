@@ -139,6 +139,31 @@ Assisted Termux pilots may keep unsigned local configs while testing. Private
 APK and production launchers should require signed configs so a tampered
 `ori.yaml` cannot opt out of verification or swap its own trust anchor.
 
+If provisioned deployment has already generated a signed config file, install it
+through the runtime verifier instead of copying it directly:
+
+```sh
+ori-config-install \
+  --source signed-ori.yaml \
+  --destination ori.yaml
+```
+
+For backend download flows, pass only a short-lived token through the
+environment. The installer rejects non-HTTPS URLs except explicit loopback
+development sources:
+
+```sh
+export ORI_PROVISIONING_TOKEN="short-lived-token"
+ori-config-install \
+  --source https://api.ori.energy/runtime/config \
+  --bearer-token-env ORI_PROVISIONING_TOKEN \
+  --destination ori.yaml
+```
+
+The installer validates the config with the same `Config.load()` path the
+runtime uses, requires a verified `config_signature`, writes the destination
+atomically with `0600` permissions, and never stores the provisioning token.
+
 Run the doctor before starting the runtime:
 
 ```sh
@@ -203,13 +228,13 @@ On the phone:
 ```sh
 export ORI_WHEELHOUSE_DIR="$HOME/ori-wheelhouse"
 bash scripts/install-phone.sh
-cp ori.yaml.phone.example ori.yaml
 ```
 
-Edit the same site/device fields as the development install. For provisioned
-phone deployment, install the signed backend-generated `ori.yaml`, set
-`ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64`, and set
-`ORI_CONFIG_REQUIRE_SIGNED=true` before running the smoke check. Then start:
+For an assisted development install, copy `ori.yaml.phone.example` to
+`ori.yaml` and edit the same site/device fields as above. For provisioned phone
+deployment, set `ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64` and
+`ORI_CONFIG_REQUIRE_SIGNED=true`, then install the signed backend-generated
+config through `ori-config-install` before running the smoke check. Then start:
 
 ```sh
 bash scripts/termux-phone-smoke.sh --config ori.yaml
