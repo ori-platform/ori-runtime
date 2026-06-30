@@ -99,7 +99,7 @@ class DeviceConfig:
     rated_capacity_amps: float = 10.0
     timezone: str = "Africa/Lagos"
     country_code: str = ""
-    deployment_type: str = "pi"  # 'pi' | 'phone' | 'server'
+    deployment_type: str = "pi"  # 'pi' | 'phone' | 'edge_node' | 'server'
     deployment_profile: str = "development"  # 'development' | 'staging' | 'production'
     site_type: str = ""  # business/site context, e.g. pharmacy | office | factory
 
@@ -566,9 +566,10 @@ def _parse_device(data: Any) -> DeviceConfig:
         )
 
     deployment_type = str(data.get("deployment_type", "pi")).strip().lower()
-    if deployment_type not in {"pi", "phone", "server"}:
+    if deployment_type not in {"pi", "phone", "edge_node", "server"}:
         raise ConfigValidationError(
-            "device.deployment_type must be one of ['phone', 'pi', 'server']."
+            "device.deployment_type must be one of "
+            "['phone', 'pi', 'edge_node', 'server']."
         )
     deployment_profile = (
         str(data.get("deployment_profile", "development")).strip().lower()

@@ -1953,6 +1953,34 @@ class TestDeviceValidation:
         cfg = Config.load(yaml_path)
         assert cfg.device.deployment_type == "phone"
 
+    def test_edge_node_deployment_type(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: edge-node-01
+              name: Ori Edge Node
+              location: Lagos
+              deployment_type: edge_node
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+              relay:
+                enabled: true
+                gpio_pin: 26
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device.deployment_type == "edge_node"
+
     def test_invalid_device_timezone_falls_back_to_host_tz_env(
         self, tmp_path, monkeypatch
     ):
