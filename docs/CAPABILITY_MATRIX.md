@@ -71,6 +71,7 @@ This is the authoritative record of what is real versus planned.
 
 ## Recent updates
 
+- 2026-06-30: Added `edge_node` as a first-class runtime deployment type. Product-generated Ori Edge Node configs can now preserve `device.deployment_type: edge_node` instead of collapsing to the Pi profile, while the runtime continues to use the Linux/Pi hardware path unless a module explicitly handles Edge Node-specific hardware.
 - 2026-05-07: Runtime async offload refactor changed blocking-call wrappers from `run_in_executor` to `asyncio.to_thread` in actions/HAL/reasoning/store paths. Capability statuses unchanged (implementation detail only).
 - 2026-05-08: Added safe history-placeholder prompt interpolation in the elevator and hardened state compaction with configurable DB-backed clock-skew guard (`state.compaction.max_backward_skew_ms`).
 - 2026-05-09: Added load-time guardrails for history placeholder volume in skill prompts and raised unresolved history placeholder observability to WARNING logs.
