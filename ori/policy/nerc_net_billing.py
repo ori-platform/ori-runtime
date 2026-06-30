@@ -4,7 +4,7 @@
 """NERC net-billing compliance tracking primitives for advisory logic.
 
 This module validates a site-level compliance snapshot supplied by
-provisioning/ori-energy. It does not contact DisCos, NERC, NEMSA, or any cloud
+product provisioning. It does not contact DisCos, NERC, NEMSA, or any cloud
 service, and it does not make Ori the regulatory source of truth. The runtime
 uses this data only to surface Tier A operator attention when a required
 registration, certificate, export-cap value, monthly statement, or credit risk

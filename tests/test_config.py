@@ -64,7 +64,7 @@ def _sign_config_yaml(content: str, private_key) -> str:
     raw = yaml.safe_load(textwrap.dedent(content))
     raw["config_signature"] = {
         "schema": CONFIG_SIGNATURE_SCHEMA,
-        "signer_id": "ori-energy-test",
+        "signer_id": "product-provisioning-test",
         "signed_at_ms": 1_800_000_000_000,
         "signature": "ed25519:",
     }
@@ -824,7 +824,9 @@ class TestLoadExample:
 
         assert cfg.security["config_signature"]["verified"] is True
         assert cfg.security["config_signature"]["required"] is True
-        assert cfg.security["config_signature"]["signer_id"] == "ori-energy-test"
+        assert (
+            cfg.security["config_signature"]["signer_id"] == "product-provisioning-test"
+        )
         assert cfg.security["config_signature"]["signed_at_ms"] == 1_800_000_000_000
 
     def test_signed_config_is_checked_before_env_expansion(self, tmp_path, monkeypatch):

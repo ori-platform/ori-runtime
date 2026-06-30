@@ -171,7 +171,7 @@ config:
 
   # Versioned operational policy for Tier A advice only. DisCo revenue-grade
   # import/export statements remain the billing source of truth for regulated
-  # net billing. Replace this profile with ori-energy generated site policy.
+  # net billing. Replace this profile with product-provisioning generated site policy.
   tariff_profile:
     profile: ng-operator-provided-example
     version: 2026-06-draft
@@ -188,7 +188,7 @@ config:
     interconnection_charges_per_kwh: 0.0
     source:
       type: operator_estimate
-      reference: Replace with DisCo tariff order, statement, or signed ori-energy policy.
+      reference: Replace with DisCo tariff order, statement, or signed product policy.
       retrieved_at: ""
     notes: Example operational estimate for development and demos; not billing truth.
 
@@ -213,11 +213,11 @@ config:
   ledger_enabled: true
   ledger_max_interval_seconds: 900.0
 
-  # Optional monthly DisCo statement supplied by ori-energy/provisioning for
+  # Optional monthly DisCo statement supplied by product provisioning for
   # reconciliation. Empty means no settlement statement has been provided.
   settlement_statement: {}
 
-  # Optional NERC net-billing compliance snapshot supplied by ori-energy or a
+  # Optional NERC net-billing compliance snapshot supplied by product provisioning or a
   # site operator. Empty means the site is not being tracked for net billing.
   # Ori validates and surfaces this context; it is not the regulatory source of
   # truth and does not replace DisCo/NERC/NEMSA records.

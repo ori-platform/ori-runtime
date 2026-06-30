@@ -29,7 +29,7 @@ Built for the world's majority condition — unreliable power, intermittent conn
 - Runtime core is v1-stable for PoC, demo API, and controlled field deployment.
 - Safety invariants (tier guards, strict skill validation, sandbox boundaries) are CI-enforced on every PR.
 - Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary.
-- Recommended use today: pilots, PoCs, controlled deployments, and the `ori-energy` demo/API integration.
+- Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
 - Release notes: [`docs/releases/v1.0.0.md`](docs/releases/v1.0.0.md)
 
 Related repos in the org:
@@ -313,7 +313,7 @@ for t in skill.triggers:
 
 ```bash
 # Product/demo consumers: typed rule-evaluation boundary only.
-# This is what ori-energy FastAPI should use for /demo proof evaluation.
+# This is what downstream FastAPI product/demo services should use for proof evaluation.
 python -m pip install "ori-runtime[eval] @ git+https://github.com/ori-platform/ori-runtime.git@<commit-or-tag>"
 
 # Runtime/device development: full transport, security, provider, and HAL deps.
@@ -327,7 +327,7 @@ The base package deliberately installs only the dependency needed by
 `ori.integration` (`PyYAML`) plus the packaged bundled skills. MQTT, SMS,
 WhatsApp, OPC-UA, HTTP adapters, crypto transports, and hardware/provider
 libraries live behind extras or the deployment wheelhouse. This keeps
-`ori-energy` and other product/demo consumers from inheriting the full device
+product/demo consumers from inheriting the full device
 runtime dependency surface while still using the real rule engine.
 
 ### Quick Local SLM Setup (Qwen GGUF)
@@ -434,11 +434,11 @@ The test suite covers all layers — HAL adapters, event bus, rule engine (with 
 
 Run `scripts/smoke-release-wheel.sh` before tagging a runtime release. It is
 deliberately stricter than an editable install: it builds the wheel, verifies
-the wheel metadata keeps the base install slim for `ori-energy`/demo consumers,
+the wheel metadata keeps the base install slim for product/demo consumers,
 installs runtime dependencies from hash-locked requirements, installs the wheel
 with `--no-deps`, then verifies the public `ori.integration` rule-evaluation
 boundary is typed (`ori/py.typed`) and can resolve bundled skill data from the
-installed artifact. This protects the `ori-energy` demo/API path from
+installed artifact. This protects downstream product/demo API paths from
 type-checker ignores, accidental dependency bloat, and source-checkout-only
 packaging mistakes.
 

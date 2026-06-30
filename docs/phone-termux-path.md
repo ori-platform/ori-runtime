@@ -1,6 +1,6 @@
 # Ori Phone Termux Path
 
-This document defines the phone-first Ori Energy wedge. The phone path is a
+This document defines the phone-first product provisioning wedge. The phone path is a
 low-friction deployment profile for early African SME sites, not the final
 hardware architecture for physical actuation.
 
@@ -13,7 +13,7 @@ energy intelligence:
 - build a site-local baseline for power draw;
 - detect sustained overdraw, sudden spikes, and unstable draw;
 - send operator alerts and dashboard logs;
-- export consented telemetry to the Ori Energy product backend for fleet
+- export consented telemetry to the product provisioning backend for fleet
   intelligence and Gemini-powered reports.
 
 The phone path does not provide certified relay control. Tier B/C physical
@@ -165,7 +165,7 @@ normal Android install and permission screens.
 
 The APK must:
 
-- be signed and distributed from the authenticated Ori Energy onboarding flow
+- be signed and distributed from the authenticated product provisioning flow
   after trial or Paystack activation;
 - accept a short-lived provisioning token from the product backend;
 - request USB Host permission for the approved meter or bridge;
@@ -193,7 +193,7 @@ The APK is the self-serve commercial installer that removes terminal setup
 while preserving the runtime's actuation-trust boundaries.
 
 Production provisioning should use one generic Ori Android Agent APK plus a
-backend-generated runtime profile. The Ori Energy onboarding flow asks what the
+backend-generated runtime profile. The product provisioning flow asks what the
 site has: USB/PZEM meter, Growatt SolarmanV5, Victron VenusOS, or an
 unqualified inverter. After payment or trial activation, the backend issues a
 short-lived provisioning token; the APK downloads the signed config for that
@@ -229,7 +229,7 @@ ori-config-install \
 `ori-config-install` uses the runtime's normal `Config.load()` path, requires a
 verified `config_signature`, rejects non-HTTPS remote sources except explicit
 loopback development, writes the destination atomically with `0600`
-permissions, and does not persist the provisioning token. Ori Energy still owns
+permissions, and does not persist the provisioning token. The product provisioning backend still owns
 account creation, payment, token issuance, profile selection, and config
 generation; this tool is only the runtime-side install boundary.
 
@@ -371,8 +371,8 @@ For early deployments, configure at least one of:
 
 ## Product Backend Requirements
 
-For early customer validation, `[Ori Energy](https://github.com/ori-platform/ori-energy)`
-`apps/api` is the real product backend for phone deployments. `[Ori Cloud](https://github.com/ori-platform/ori-cloud)`
+For early customer validation, the product provisioning backend (`ori-energy`
+`apps/api`) is the real backend for phone deployments. `[Ori Cloud](https://github.com/ori-platform/ori-cloud)`
 eventually absorbs these responsibilities, but the phone path should
 not point to `apps/demo-api`.
 
