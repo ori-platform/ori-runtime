@@ -131,11 +131,11 @@ telemetry_export:
 ```
 
 For APK/provisioned deployments, the runtime config should also be signed by
-the Ori Energy backend. The verification public key is not stored in
+the product provisioning backend. The verification public key is not stored in
 `ori.yaml`; provision it into the phone environment:
 
 ```sh
-export ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64="public-key-from-ori-energy"
+export ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64="public-key-from-product-provisioning"
 export ORI_CONFIG_REQUIRE_SIGNED=true
 ```
 

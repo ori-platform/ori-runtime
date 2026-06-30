@@ -20,5 +20,5 @@ Guaranteed by the runtime v1 line:
 - typed `ori.integration` rule-evaluation boundary for demos and product tests
 - release wheel smoke verification for packaged bundled skills
 
-Companion repos (`ori-gateway`, `ori-energy`, `ori-sdk-python`, `ori-cloud`) may
+Companion repos (`ori-gateway`, product provisioning, `ori-sdk-python`, `ori-cloud`) may
 continue iterating while consuming these runtime contracts.

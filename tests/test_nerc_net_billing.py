@@ -19,7 +19,7 @@ def _profile_data():
         "disco": "Ikeja Electric",
         "source": {
             "type": "operator_record",
-            "reference": "ori-energy policy sha256:abc123",
+            "reference": "product policy sha256:abc123",
             "retrieved_at": "2026-06-28",
         },
         "export_cap_watts": 5000.0,

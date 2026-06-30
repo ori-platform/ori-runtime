@@ -38,7 +38,7 @@ def _sign_config_yaml(content: str, private_key) -> str:
     raw = yaml.safe_load(textwrap.dedent(content))
     raw["config_signature"] = {
         "schema": CONFIG_SIGNATURE_SCHEMA,
-        "signer_id": "ori-energy-test",
+        "signer_id": "product-provisioning-test",
         "signed_at_ms": 1_800_000_000_000,
         "signature": "ed25519:",
     }
@@ -94,7 +94,7 @@ def test_install_signed_config_writes_verified_config_atomically(tmp_path, monke
     result = install_signed_config(source=str(source), destination=destination)
 
     assert result.device_id == "phone-live-01"
-    assert result.signer_id == "ori-energy-test"
+    assert result.signer_id == "product-provisioning-test"
     assert result.signed_at_ms == 1_800_000_000_000
     assert result.dry_run is False
     assert destination.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
@@ -160,7 +160,7 @@ def test_install_signed_config_requires_verified_signature_even_when_not_require
         source=str(source), destination=tmp_path / "ori.yaml"
     )
 
-    assert result.signer_id == "ori-energy-test"
+    assert result.signer_id == "product-provisioning-test"
 
 
 def test_install_signed_config_rejects_non_https_remote_source(tmp_path):

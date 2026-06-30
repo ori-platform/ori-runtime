@@ -130,7 +130,7 @@ def _sign_config_file(config_path: str, private_key) -> None:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     raw["config_signature"] = {
         "schema": CONFIG_SIGNATURE_SCHEMA,
-        "signer_id": "ori-energy-test",
+        "signer_id": "product-provisioning-test",
         "signed_at_ms": 1_800_000_000_000,
         "signature": "ed25519:",
     }
@@ -208,7 +208,7 @@ security:
         "verified": True,
         "required": True,
         "trust_anchor_env": "ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64",
-        "signer_id": "ori-energy-test",
+        "signer_id": "product-provisioning-test",
         "signed_at_ms": 1_800_000_000_000,
     }
     assert phone_doctor.has_failures(checks) is False

@@ -143,7 +143,7 @@ def _source(data: dict[str, Any]) -> TariffSource:
 def load_tariff_profile_data(data: dict[str, Any]) -> TariffProfile:
     """Validate tariff profile data from config/backend provisioning.
 
-    The function accepts plain dictionaries so `ori-energy` can generate signed
+    The function accepts plain dictionaries so product provisioning can generate signed
     runtime configs without requiring this package to read a database or contact
     a network service. Validation is deliberately strict because these values
     shape economic recommendations.
