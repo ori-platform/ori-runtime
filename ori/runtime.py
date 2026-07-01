@@ -14,6 +14,7 @@ Or via the CLI entry point::
 """
 
 import asyncio
+import datetime as dt
 import hashlib
 import json
 import logging
@@ -2582,6 +2583,18 @@ class OriRuntime:
             )
             return False
 
+        if not await self._policy_permits_external_alert(
+            channel=channel,
+            action_tier=action_tier,
+        ):
+            logger.info(
+                "[runtime] %s alert suppressed by DevicePolicy monthly cap tier=%s trigger=%s",
+                channel,
+                action_tier,
+                trigger_name,
+            )
+            return False
+
         delivered = False
         try:
             if allow_failover:
@@ -2612,6 +2625,7 @@ class OriRuntime:
             delivered = False
 
         if delivered:
+            await self._record_policy_counted_alert(channel, action_tier=action_tier)
             return True
 
         if self._state_store is None:
@@ -2638,6 +2652,7 @@ class OriRuntime:
             original_ts=original_ts,
         )
         if inserted:
+            await self._record_policy_counted_alert(channel, action_tier=action_tier)
             logger.info(
                 "[runtime] queued failed %s alert id=%s tier=%s trigger=%s original_ts=%d",
                 channel,
@@ -2651,6 +2666,60 @@ class OriRuntime:
                 "[runtime] alert already queued id=%s channel=%s", alert_id, channel
             )
         return True
+
+    async def _policy_permits_external_alert(
+        self,
+        *,
+        channel: str,
+        action_tier: str,
+    ) -> bool:
+        if str(action_tier).upper() == "D":
+            return True
+        if self._dispatcher is None or self._state_store is None:
+            return True
+        count = await self._current_policy_counted_alerts(channel)
+        return self._dispatcher.permits_external_alert(
+            channel=channel,
+            action_tier=action_tier,
+            current_month_count=count,
+        )
+
+    async def _current_policy_counted_alerts(self, channel: str) -> int:
+        if self._state_store is None:
+            return 0
+        raw = await self._state_store.get_skill_state(
+            "__runtime_alert_policy__",
+            _alert_policy_count_key(channel, now_ms()),
+        )
+        try:
+            return max(0, int(raw or "0"))
+        except (TypeError, ValueError):
+            return 0
+
+    async def _record_policy_counted_alert(
+        self,
+        channel: str,
+        *,
+        action_tier: str,
+    ) -> None:
+        if str(action_tier).upper() == "D":
+            return
+        if self._state_store is None:
+            return
+        try:
+            key = _alert_policy_count_key(channel, now_ms())
+            current = await self._current_policy_counted_alerts(channel)
+            await self._state_store.set_skill_state(
+                "__runtime_alert_policy__",
+                key,
+                str(current + 1),
+            )
+        except Exception:
+            logger.warning(
+                "[runtime] failed to persist %s alert policy count; delivered alert remains valid",
+                channel,
+                exc_info=True,
+            )
 
     async def _send_setup_success_notifications(
         self,
@@ -2974,6 +3043,15 @@ def _build_alert_id(
 ) -> str:
     raw = f"{channel}|{recipient}|{action_tier}|{trigger_name}|{original_ts}|{message}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _alert_policy_count_key(channel: str, timestamp_ms: int) -> str:
+    month = dt.datetime.fromtimestamp(
+        max(0, int(timestamp_ms)) / 1000,
+        tz=dt.UTC,
+    ).strftime("%Y-%m")
+    normalized = str(channel or "").strip().lower() or "unknown"
+    return f"external_alert_count:{normalized}:{month}"
 
 
 def _validate_remote_policy_reference_args(

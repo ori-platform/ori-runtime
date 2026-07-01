@@ -83,6 +83,50 @@ async def test_fetch_remote_policy_accepts_valid_signed_payload(monkeypatch):
     reason="cryptography ed25519 is unavailable",
 )
 @pytest.mark.asyncio
+async def test_fetch_remote_policy_accepts_alert_caps(monkeypatch):
+    private_key = Ed25519PrivateKey.generate()
+    public_key_b64 = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=Encoding.Raw,
+            format=PublicFormat.Raw,
+        )
+    ).decode("ascii")
+    payload = _signed_payload(
+        private_key,
+        alert_sms_monthly_cap=3,
+        alert_whatsapp_monthly_cap=5,
+    )
+
+    monkeypatch.setattr(
+        "ori.policy.remote_fetch._http_get_json",
+        lambda _cfg: (json.dumps(payload), payload),
+    )
+    fetched = await fetch_remote_device_policy_bundle(_base_config(public_key_b64))
+
+    assert fetched.policy.alert_sms_monthly_cap == 3
+    assert fetched.policy.alert_whatsapp_monthly_cap == 5
+    assert fetched.policy.permits_external_alert(
+        channel="sms",
+        action_tier="A",
+        current_month_count=2,
+    )
+    assert not fetched.policy.permits_external_alert(
+        channel="sms",
+        action_tier="A",
+        current_month_count=3,
+    )
+    assert fetched.policy.permits_external_alert(
+        channel="sms",
+        action_tier="D",
+        current_month_count=999,
+    )
+
+
+@pytest.mark.skipif(
+    Ed25519PrivateKey is None,
+    reason="cryptography ed25519 is unavailable",
+)
+@pytest.mark.asyncio
 async def test_fetch_remote_policy_bundle_returns_exact_raw_payload(monkeypatch):
     private_key = Ed25519PrivateKey.generate()
     public_key_b64 = base64.b64encode(
