@@ -2165,6 +2165,137 @@ class TestAlertOutbox:
         finally:
             await runtime._state_store.close()
 
+    async def test_send_or_queue_alert_respects_device_policy_monthly_cap(
+        self, tmp_path
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "alert-cap.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        dispatcher.update_policy(
+            DevicePolicy(
+                tier="restricted",
+                relay_b_enabled=False,
+                relay_c_enabled=False,
+                cloud_llm_enabled=False,
+                valid_until=int(time.time()) + 3600,
+                policy_version=3,
+                issued_at=int(time.time()),
+                signature="test",
+                alert_sms_monthly_cap=1,
+                alert_whatsapp_monthly_cap=1,
+            )
+        )
+        runtime._dispatcher = dispatcher
+        alert_sender = AsyncMock()
+        alert_sender.send = AsyncMock(return_value=True)
+
+        try:
+            first = await runtime._send_or_queue_alert(
+                channel="sms",
+                message="first alert",
+                recipient="+2340000000000",
+                action_tier="A",
+                trigger_name="high_draw",
+                original_ts=1234567890,
+                alert_sender=alert_sender,
+            )
+            second = await runtime._send_or_queue_alert(
+                channel="sms",
+                message="second alert",
+                recipient="+2340000000000",
+                action_tier="A",
+                trigger_name="high_draw",
+                original_ts=1234567891,
+                alert_sender=alert_sender,
+            )
+            assert first is True
+            assert second is False
+            alert_sender.send.assert_awaited_once()
+        finally:
+            await runtime._state_store.close()
+
+    async def test_send_or_queue_alert_never_caps_tier_d(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "alert-cap-tier-d.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        dispatcher.update_policy(
+            DevicePolicy(
+                tier="restricted",
+                relay_b_enabled=False,
+                relay_c_enabled=False,
+                cloud_llm_enabled=False,
+                valid_until=int(time.time()) + 3600,
+                policy_version=3,
+                issued_at=int(time.time()),
+                signature="test",
+                alert_sms_monthly_cap=0,
+                alert_whatsapp_monthly_cap=0,
+            )
+        )
+        runtime._dispatcher = dispatcher
+        alert_sender = AsyncMock()
+        alert_sender.send = AsyncMock(return_value=True)
+
+        try:
+            delivered = await runtime._send_or_queue_alert(
+                channel="sms",
+                message="tier d alert",
+                recipient="+2340000000000",
+                action_tier="D",
+                trigger_name="dangerous_overcurrent",
+                original_ts=1234567890,
+                alert_sender=alert_sender,
+            )
+            assert delivered is True
+            alert_sender.send.assert_awaited_once()
+        finally:
+            await runtime._state_store.close()
+
+    async def test_send_or_queue_alert_ignores_alert_count_persistence_failure(
+        self, tmp_path
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "alert-count-failure.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        dispatcher.update_policy(
+            DevicePolicy(
+                tier="restricted",
+                relay_b_enabled=False,
+                relay_c_enabled=False,
+                cloud_llm_enabled=False,
+                valid_until=int(time.time()) + 3600,
+                policy_version=3,
+                issued_at=int(time.time()),
+                signature="test",
+                alert_sms_monthly_cap=1,
+                alert_whatsapp_monthly_cap=1,
+            )
+        )
+        runtime._dispatcher = dispatcher
+        alert_sender = AsyncMock()
+        alert_sender.send = AsyncMock(return_value=True)
+        runtime._state_store.set_skill_state = AsyncMock(  # type: ignore[method-assign]
+            side_effect=RuntimeError("sqlite unavailable")
+        )
+
+        try:
+            delivered = await runtime._send_or_queue_alert(
+                channel="sms",
+                message="delivered alert",
+                recipient="+2340000000000",
+                action_tier="A",
+                trigger_name="high_draw",
+                original_ts=1234567890,
+                alert_sender=alert_sender,
+            )
+            assert delivered is True
+            alert_sender.send.assert_awaited_once()
+        finally:
+            await runtime._state_store.close()
+
     async def test_remote_command_incident_emits_tier_a_alert(self, tmp_path):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "remote-lockout.db"))

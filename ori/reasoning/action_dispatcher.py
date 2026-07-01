@@ -233,6 +233,8 @@ class ActionDispatcher:
                 "relay_b_enabled": None,
                 "relay_c_enabled": None,
                 "cloud_llm_enabled": None,
+                "alert_sms_monthly_cap": None,
+                "alert_whatsapp_monthly_cap": None,
                 "valid_until": None,
                 "issued_at": None,
                 "is_expired": None,
@@ -244,6 +246,8 @@ class ActionDispatcher:
             "relay_b_enabled": bool(self._policy.relay_b_enabled),
             "relay_c_enabled": bool(self._policy.relay_c_enabled),
             "cloud_llm_enabled": bool(self._policy.cloud_llm_enabled),
+            "alert_sms_monthly_cap": self._policy.alert_sms_monthly_cap,
+            "alert_whatsapp_monthly_cap": self._policy.alert_whatsapp_monthly_cap,
             "valid_until": int(self._policy.valid_until),
             "issued_at": int(self._policy.issued_at),
             "is_expired": bool(self._policy.is_expired),
@@ -259,6 +263,22 @@ class ActionDispatcher:
             self._policy if self._policy is not None else DevicePolicy.unrestricted()
         )
         return self._relay_b_c_enabled and active_policy.permits_action(action_tier)
+
+    def permits_external_alert(
+        self,
+        *,
+        channel: str,
+        action_tier: str,
+        current_month_count: int,
+    ) -> bool:
+        active_policy = (
+            self._policy if self._policy is not None else DevicePolicy.unrestricted()
+        )
+        return active_policy.permits_external_alert(
+            channel=channel,
+            action_tier=str(action_tier).upper(),
+            current_month_count=current_month_count,
+        )
 
     def get_inflight_tier_d_tasks(self) -> set[asyncio.Task[Any]]:
         """Return currently running Tier D execution tasks."""

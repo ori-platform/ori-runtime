@@ -68,6 +68,12 @@ def _to_int(value: Any, field: str) -> int:
         ) from exc
 
 
+def _optional_int(value: Any, field: str) -> int | None:
+    if value is None:
+        return None
+    return _to_int(value, field)
+
+
 def device_policy_from_payload(
     payload: dict[str, Any],
     *,
@@ -99,6 +105,13 @@ def device_policy_from_payload(
         policy_version=_to_int(payload.get("policy_version"), "policy_version"),
         issued_at=_to_int(payload.get("issued_at"), "issued_at"),
         signature=str(payload.get("signature", "")),
+        alert_sms_monthly_cap=_optional_int(
+            payload.get("alert_sms_monthly_cap"), "alert_sms_monthly_cap"
+        ),
+        alert_whatsapp_monthly_cap=_optional_int(
+            payload.get("alert_whatsapp_monthly_cap"),
+            "alert_whatsapp_monthly_cap",
+        ),
     )
 
 
