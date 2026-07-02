@@ -5,7 +5,7 @@ Thank you for your interest in contributing to Ori — an open-source, offline-f
 sensor data and take autonomous physical actions.
 
 Before writing any code, please read **PRINCIPLES.md**. Every contribution is
-evaluated through the six design lenses defined there. The most important one:
+evaluated through the seven design lenses defined there. The most important one:
 
 > **Ori is NOT a monitoring system.** It is an agent that detects, reasons, and acts.
 > If your contribution makes Ori more passive, it is going in the wrong direction.
@@ -598,7 +598,7 @@ process, response timelines, disclosure policy, and security scope.
 
 ## Relevant Reading
 
-- [**PRINCIPLES.md**](PRINCIPLES.md) — The six design lenses
+- [**PRINCIPLES.md**](PRINCIPLES.md) — The seven design lenses
 - [**CLAUDE.md**](CLAUDE.md) — Full architectural specification
 - [**AGENTS.md**](AGENTS.md) — Extension patterns for AI coding agents and contributors
 - [**LICENSE**](LICENSE) — Apache 2.0
