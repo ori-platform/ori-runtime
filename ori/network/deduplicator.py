@@ -1,23 +1,19 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-import time
 from dataclasses import dataclass
 
 from ori.network.events import OriEvent, compute_fingerprint
+from ori.utils.time_utils import now_ms
 
-_WINDOW_MS = 5_000   # suppress duplicates seen within this window
-_TTL_MS = 30_000     # evict records older than this from the cache
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
+_WINDOW_MS = 5_000  # suppress duplicates seen within this window
+_TTL_MS = 30_000  # evict records older than this from the cache
 
 
 @dataclass
 class OccurrenceRecord:
-    first_seen: int   # unix milliseconds
-    last_seen: int    # unix milliseconds
+    first_seen: int  # unix milliseconds
+    last_seen: int  # unix milliseconds
     count: int
     event: OriEvent
 
@@ -58,7 +54,7 @@ class EventDeduplicator:
         else:
             fp = event.fingerprint or event.event_id  # heartbeats are unique
 
-        now = _now_ms()
+        now = now_ms()
         record = self._records.get(fp)
 
         if record is not None and (now - record.first_seen) < _WINDOW_MS:
@@ -70,7 +66,9 @@ class EventDeduplicator:
 
         # New or expired — forward and (re)register
         self._records[fp] = OccurrenceRecord(
-            first_seen=record.first_seen if record is not None else now,
+            # Always restart the dedup window from "now" once the event is
+            # forwarded (new fingerprint or previous window expired).
+            first_seen=now,
             last_seen=now,
             count=record.count + 1 if record is not None else 1,
             event=event,
@@ -83,7 +81,7 @@ class EventDeduplicator:
         Returns:
             Number of records evicted.
         """
-        cutoff = _now_ms() - _TTL_MS
+        cutoff = now_ms() - _TTL_MS
         stale = [fp for fp, rec in self._records.items() if rec.last_seen < cutoff]
         for fp in stale:
             del self._records[fp]

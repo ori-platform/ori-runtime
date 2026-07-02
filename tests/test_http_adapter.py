@@ -34,7 +34,9 @@ def _config(
 
 
 class _FakeResponse:
-    def __init__(self, payload: dict | None = None, raise_error: Exception | None = None):
+    def __init__(
+        self, payload: dict | None = None, raise_error: Exception | None = None
+    ):
         self._payload = payload or {}
         self._raise_error = raise_error
 

@@ -52,6 +52,8 @@ def _rule(
     bypass_llm: bool = False,
     action: str | None = "alert_whatsapp",
     escalate_to: str | None = None,
+    reasoning_policy: str | None = None,
+    requires_approval: bool = False,
     cooldown_seconds: int = 0,
 ) -> dict:
     r: dict = {
@@ -65,6 +67,10 @@ def _rule(
         r["action"] = action
     if escalate_to is not None:
         r["escalate_to"] = escalate_to
+    if reasoning_policy is not None:
+        r["reasoning_policy"] = reasoning_policy
+    if requires_approval:
+        r["requires_approval"] = True
     return r
 
 
@@ -92,14 +98,18 @@ class TestEvaluate:
     @pytest.mark.asyncio
     async def test_condition_true_returns_match(self):
         engine = RuleEngine()
-        result = await engine.evaluate(_event(value=15.0), [_rule(condition="value > 10.0")])
+        result = await engine.evaluate(
+            _event(value=15.0), [_rule(condition="value > 10.0")]
+        )
         assert result.matched is True
         assert result.rule_name == "overcurrent"
 
     @pytest.mark.asyncio
     async def test_condition_false_returns_no_match(self):
         engine = RuleEngine()
-        result = await engine.evaluate(_event(value=5.0), [_rule(condition="value > 10.0")])
+        result = await engine.evaluate(
+            _event(value=5.0), [_rule(condition="value > 10.0")]
+        )
         assert result.matched is False
 
     @pytest.mark.asyncio
@@ -150,9 +160,9 @@ class TestEvaluate:
         engine = RuleEngine()
         result = await engine.evaluate(
             _event(value=15.0),
-            [_rule(condition="value > 10.0", action="trip_breaker")],
+            [_rule(condition="value > 10.0", action="open_safety_circuit")],
         )
-        assert result.action == "trip_breaker"
+        assert result.action == "open_safety_circuit"
 
     @pytest.mark.asyncio
     async def test_result_carries_escalate_to(self):
@@ -164,9 +174,29 @@ class TestEvaluate:
         assert result.escalate_to == "local_slm"
 
     @pytest.mark.asyncio
+    async def test_result_carries_reasoning_policy(self):
+        engine = RuleEngine()
+        result = await engine.evaluate(
+            _event(value=15.0),
+            [_rule(condition="value > 10.0", reasoning_policy="post_action")],
+        )
+        assert result.reasoning_policy == "post_action"
+
+    @pytest.mark.asyncio
+    async def test_result_carries_requires_approval(self):
+        engine = RuleEngine()
+        result = await engine.evaluate(
+            _event(value=15.0),
+            [_rule(condition="value > 10.0", requires_approval=True)],
+        )
+        assert result.requires_approval is True
+
+    @pytest.mark.asyncio
     async def test_confidence_is_1_for_rule_match(self):
         engine = RuleEngine()
-        result = await engine.evaluate(_event(value=15.0), [_rule(condition="value > 10.0")])
+        result = await engine.evaluate(
+            _event(value=15.0), [_rule(condition="value > 10.0")]
+        )
         assert result.confidence == 1.0
 
     @pytest.mark.asyncio
@@ -351,11 +381,11 @@ class TestCooldown:
         rules = [_rule(name="r", condition="value > 10.0", cooldown_seconds=5)]
         now = _ms()
 
-        with patch("ori.reasoning.rule_engine._now_ms", return_value=now):
+        with patch("ori.reasoning.rule_engine.now_ms", return_value=now):
             await engine.evaluate(_event(value=15.0), rules)
 
         # 6 seconds later — cooldown expired
-        with patch("ori.reasoning.rule_engine._now_ms", return_value=now + 6_000):
+        with patch("ori.reasoning.rule_engine.now_ms", return_value=now + 6_000):
             result = await engine.evaluate(_event(value=15.0), rules)
 
         assert result.matched is True

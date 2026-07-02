@@ -1,61 +1,80 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ori.network.events import OriEvent
+from ori.utils.time_utils import now_ms
 
 
 class HookHistoryAdapter:
     """Synchronous adapter to wrap StateStore for skill hooks."""
 
-    def __init__(self, store: Any):
+    def __init__(
+        self,
+        store: Any,
+        *,
+        reference_timestamp_ms: int | None = None,
+        timezone: str = "UTC",
+    ):
         self._store = store
+        self._reference_timestamp_ms = reference_timestamp_ms
+        self._timezone = str(timezone or "UTC")
 
-    def _read(self, fn_name: str, *args: Any) -> Any:
-        """Execute a StateStore sync read helper across store API versions."""
+    def _read(self, method_name: str, *args: Any) -> Any:
+        """Execute a stable StateStore hook-sync method."""
         if not self._store:
             return None
-        fn = getattr(self._store, fn_name, None)
-        if fn is None:
+        method = getattr(self._store, method_name, None)
+        if callable(method):
+            return method(*args)
+        return None
+
+    @staticmethod
+    def _optional_float(value: Any) -> Optional[float]:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-        run_read = getattr(self._store, "_run_read_with_conn", None)
-        if callable(run_read):
-            return run_read(fn, *args)
-        return fn(*args)
+        return float(value)
+
+    @staticmethod
+    def _optional_int(value: Any) -> Optional[int]:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return int(value)
 
     def avg_hours(self, sensor_id: str, hours: int) -> Optional[float]:
         if not self._store:
             return None
-        return self._read("_avg_last_hours_sync", sensor_id, hours)
+        return self._optional_float(
+            self._read("hooks_avg_last_hours", sensor_id, hours)
+        )
 
     def avg_last_n(self, sensor_id: str, n: int) -> Optional[float]:
         if not self._store:
             return None
-        return self._read("_avg_last_n_sync", sensor_id, n)
+        return self._optional_float(self._read("hooks_avg_last_n", sensor_id, n))
 
     def last_value(self, sensor_id: str) -> Optional[float]:
         if not self._store:
             return None
-        history = self._read("_get_history_sync", sensor_id, 1) or []
+        history = self._read("hooks_get_history", sensor_id, 1) or []
         if history:
-            return history[0].value
+            return self._optional_float(getattr(history[0], "value", None))
         return None
 
     def last_timestamp(self, sensor_id: str) -> Optional[int]:
         if not self._store:
             return None
-        history = self._read("_get_history_sync", sensor_id, 1) or []
+        history = self._read("hooks_get_history", sensor_id, 1) or []
         if history:
-            return history[0].timestamp
+            return self._optional_int(getattr(history[0], "timestamp", None))
         return None
 
     def fetch_history(self, sensor_id: str, limit: int = 1) -> list[dict[str, Any]]:
         if not self._store:
             return []
-        history = self._read("_get_history_sync", sensor_id, limit) or []
+        history = self._read("hooks_get_history", sensor_id, limit) or []
         return [
             {
                 "sensor_id": r.sensor_id,
@@ -69,6 +88,32 @@ class HookHistoryAdapter:
             for r in history
         ]
 
+    def same_weekday_hour_baseline(
+        self,
+        sensor_id: str,
+        lookback_weeks: int = 8,
+        min_weeks: int = 3,
+    ) -> dict[str, Any]:
+        if not self._store or self._reference_timestamp_ms is None:
+            return {
+                "sensor_id": str(sensor_id),
+                "avg_value": None,
+                "sample_count": 0,
+                "covered_weeks": 0,
+                "usable": False,
+                "reason": "no_reference_timestamp",
+                "tier": "hourly",
+            }
+        result = self._read(
+            "hooks_time_of_week_baseline",
+            sensor_id,
+            self._reference_timestamp_ms,
+            self._timezone,
+            lookback_weeks,
+            min_weeks,
+        )
+        return result if isinstance(result, dict) else {}
+
 
 class HookStateAdapter:
     """Provides key-value persistence specifically isolated to the active skill."""
@@ -77,27 +122,27 @@ class HookStateAdapter:
         self._store = store
         self._skill_name = skill_name
 
-    def _read(self, fn_name: str, *args: Any) -> Any:
-        """Execute a StateStore sync read helper across store API versions."""
+    def _read(self, method_name: str, *args: Any) -> Any:
+        """Execute a stable StateStore hook-sync method."""
         if not self._store:
             return None
-        fn = getattr(self._store, fn_name, None)
-        if fn is None:
-            return None
-        run_read = getattr(self._store, "_run_read_with_conn", None)
-        if callable(run_read):
-            return run_read(fn, *args)
-        return fn(*args)
+        method = getattr(self._store, method_name, None)
+        if callable(method):
+            return method(*args)
+        return None
 
     def get(self, key: str) -> Optional[str]:
         if not self._store or not self._skill_name:
             return None
-        return self._read("_get_skill_state_sync", self._skill_name, key)
+        value = self._read("hooks_get_skill_state", self._skill_name, key)
+        return value if isinstance(value, str) else None
 
     def set(self, key: str, value: str) -> None:
         if not self._store or not self._skill_name:
             return
-        self._store._set_skill_state_sync(self._skill_name, key, value)
+        fn = getattr(self._store, "hooks_set_skill_state", None)
+        if callable(fn):
+            fn(self._skill_name, key, value)
 
 
 @dataclass
@@ -129,6 +174,14 @@ class HookContext:
         skill_config: dict[str, Any] | None = None,
     ) -> "HookContext":
         readings = {}
+        event_context = (
+            event.context if event and isinstance(event.context, dict) else {}
+        )
+        tz_name = (
+            str(event_context.get("device_timezone") or "").strip()
+            or str((skill_config or {}).get("timezone") or "").strip()
+            or "UTC"
+        )
         if event and event.reading:
             readings[event.reading.sensor_id] = event.reading.value
             # Also spread meta into readings for easy trigger addressing
@@ -139,8 +192,12 @@ class HookContext:
             event=event,
             trigger_name="",
             readings=readings,
-            history=HookHistoryAdapter(store),
+            history=HookHistoryAdapter(
+                store,
+                reference_timestamp_ms=event.timestamp if event else None,
+                timezone=tz_name,
+            ),
             state=HookStateAdapter(store, skill_name),
-            timestamp=event.timestamp if event else int(time.time() * 1000),
+            timestamp=event.timestamp if event else now_ms(),
             config=skill_config if isinstance(skill_config, dict) else {},
         )

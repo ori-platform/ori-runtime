@@ -6,8 +6,8 @@ Ori Runtime controls physical systems. Security issues can have real-world conse
 
 | Version | Supported |
 | ------- | --------- |
-| `0.1.x` (alpha) | Yes |
-| `<0.1.0` | No |
+| `0.9.x` (beta) | Yes |
+| `<0.9.0` | No |
 
 ## Reporting a Vulnerability
 
@@ -75,4 +75,3 @@ If you discover an issue that can cause immediate physical harm, mark the report
 - Trigger conditions
 - Potential hazard
 - Suggested temporary mitigation
-

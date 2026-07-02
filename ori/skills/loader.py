@@ -19,8 +19,10 @@ All I/O (LLM inference, network, GPIO) runs inside the background task.
 import asyncio
 import importlib.util
 import logging
+import os
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -28,11 +30,19 @@ from typing import Any
 import yaml
 
 from ori.network.events import OriEvent
+from ori.skills.os_sandbox import load_community_hooks
+from ori.skills.sandbox import SkillSecurityError
+from ori.skills.signing import verify_community_skill_signature
 
 logger = logging.getLogger(__name__)
 
 _VALID_TIERS = frozenset({"A", "B", "C", "D"})
 _TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
+_MAX_HISTORY_PLACEHOLDERS = 16
+_BUNDLED_SIGNATURE_SENTINEL = "bundled"
+_HUB_ROOT_PUBLIC_KEY_B64 = "PENDING_REPLACE_AT_HUB_LAUNCH"
+_HUB_TRUST_ANCHOR_ENV = "ORI_HUB_ROOT_PUBLIC_KEY_B64"
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -54,9 +64,14 @@ class Trigger:
         condition: Python expression evaluated by the rule engine.
         action_tier: Required. One of ``'A'`` | ``'B'`` | ``'C'`` | ``'D'``.
         cooldown_seconds: Minimum seconds between consecutive fires. Default 0.
-        escalate_to: ``'rule'`` | ``'local_slm'`` | ``'gateway'`` | ``'cloud'``.
+        escalate_to: ``'rule'`` | ``'local_slm'`` | ``'gateway'``.
         bypass_llm: If ``True``, the rule engine handles this trigger without
             any LLM call.  Always ``True`` for Tier D triggers (enforced).
+        requires_approval: If ``True``, Tier B trigger dispatch uses the approval
+            workflow instead of autonomous execution.
+        reasoning_policy: Optional execution/reasoning policy. ``post_action`` is
+            valid only for Tier B and executes the deterministic action before
+            asynchronous advisory reasoning.
         approval_timeout_seconds: Seconds to wait for operator approval (Tier C).
         safe_default_action: Action executed on approval timeout / NO response
             (Tier C).
@@ -68,6 +83,8 @@ class Trigger:
     cooldown_seconds: int = 0
     escalate_to: str = "local_slm"
     bypass_llm: bool = False
+    requires_approval: bool = False
+    reasoning_policy: str = ""
     approval_timeout_seconds: int = 300
     safe_default_action: str = "log_to_dashboard"
 
@@ -91,11 +108,11 @@ class Skill:
     name: str
     version: str
     author: str
-    sensors_required: list[dict] = field(default_factory=list)
+    sensors_required: list[dict[str, Any]] = field(default_factory=list)
     triggers: list[Trigger] = field(default_factory=list)
     prompts: dict[str, str] = field(default_factory=dict)
-    actions: dict = field(default_factory=dict)
-    config: dict = field(default_factory=dict)
+    actions: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
     hooks: Any = None  # loaded module or None
 
     def get_default_actions_for_trigger(self, trigger_name: str) -> list[str]:
@@ -122,7 +139,11 @@ class Skill:
         """
         defaults: dict[str, list[str]] = self.actions.get("defaults") or {}
         # Find triggers that match sensor_type via sensors_required
-        matching_sensor_types = {s.get("type") for s in self.sensors_required}
+        matching_sensor_types: set[str] = set()
+        for sensor in self.sensors_required:
+            declared_sensor_type = sensor.get("type")
+            if isinstance(declared_sensor_type, str):
+                matching_sensor_types.add(declared_sensor_type)
         for trigger in self.triggers:
             if sensor_type in matching_sensor_types:
                 actions = defaults.get(trigger.name, [])
@@ -182,10 +203,22 @@ class SkillLoader:
         elevator: Any = None,
         state_store: Any = None,
         dispatcher: Any = None,
+        os_sandbox_config: dict[str, Any] | None = None,
+        community_trust_anchor_public_key_b64: str | None = None,
+        require_signed: bool = False,
     ) -> None:
         self._elevator = elevator
         self._state_store = state_store
         self._dispatcher = dispatcher
+        self._os_sandbox_config = (
+            dict(os_sandbox_config) if isinstance(os_sandbox_config, dict) else {}
+        )
+        self._community_trust_anchor_public_key_b64 = (
+            str(community_trust_anchor_public_key_b64).strip()
+            if isinstance(community_trust_anchor_public_key_b64, str)
+            else None
+        )
+        self._require_signed = bool(require_signed)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -231,6 +264,12 @@ class SkillLoader:
                 logger.error(
                     "SkillLoader: validation failed for %s — %s", child.name, exc
                 )
+            except SkillSecurityError as exc:
+                logger.error(
+                    "SkillLoader: security validation failed for %s — %s",
+                    child.name,
+                    exc,
+                )
             except Exception:
                 logger.exception(
                     "SkillLoader: unexpected error loading skill from %s", child
@@ -262,7 +301,7 @@ class SkillLoader:
                 f"Skill {skill_dir.name!r}: skill.yaml must be a mapping"
             )
 
-        self._validate_skill_metadata(raw, skill_dir.name)
+        self._validate_skill_metadata(raw, skill_dir)
 
         triggers = self._parse_triggers(
             raw.get("triggers") or [], raw.get("name", "<unknown>")
@@ -273,6 +312,18 @@ class SkillLoader:
             raw.get("name", "<unknown>"),
             trigger_names=[t.name for t in triggers],
         )
+        self._validate_tier_b_trigger_policies(
+            triggers,
+            actions,
+            raw.get("name", "<unknown>"),
+        )
+        prompts = raw.get("prompts") or {}
+        self._validate_history_placeholder_count(
+            prompts=prompts,
+            skill_name=raw.get("name", "<unknown>"),
+            trigger_names=[t.name for t in triggers],
+        )
+        self._verify_community_signature(raw, skill_dir)
         hooks = self._load_hooks(skill_dir)
 
         return Skill(
@@ -281,16 +332,55 @@ class SkillLoader:
             author=raw.get("author", ""),
             sensors_required=raw.get("sensors_required") or [],
             triggers=triggers,
-            prompts=raw.get("prompts") or {},
+            prompts=prompts,
             actions=raw.get("actions") or {},
             config=raw.get("config") or {},
             hooks=hooks,
         )
 
-    def _validate_skill_metadata(
-        self, raw: dict[str, Any], skill_dir_name: str
+    def _verify_community_signature(
+        self,
+        raw: dict[str, Any],
+        skill_dir: Path,
     ) -> None:
+        """Verify signatures for community-installed skills only."""
+        if self._is_core_bundled_skill(skill_dir):
+            return
+        if self._is_bundled_skill(skill_dir) and not self._require_signed:
+            return
+
+        signature = str(raw.get("signature") or "").strip()
+        if signature == _BUNDLED_SIGNATURE_SENTINEL:
+            raise SkillSecurityError(
+                "community skill uses bundled signature sentinel. "
+                "Re-sign with an 'ed25519:' signature before installing under ~/.ori/skills/."
+            )
+
+        trust_anchor = self._resolve_community_trust_anchor()
+        if trust_anchor == "PENDING_REPLACE_AT_HUB_LAUNCH":
+            raise SkillSecurityError(
+                "community skill verification trust anchor is not configured"
+            )
+
+        verify_community_skill_signature(
+            raw_skill=raw,
+            trust_anchor_public_key_b64=trust_anchor,
+        )
+
+    def _resolve_community_trust_anchor(self) -> str:
+        """Resolve trust anchor: constructor override > env var > built-in sentinel."""
+        if self._community_trust_anchor_public_key_b64:
+            return self._community_trust_anchor_public_key_b64
+
+        env_value = os.getenv(_HUB_TRUST_ANCHOR_ENV, "").strip()
+        if env_value:
+            return env_value
+
+        return _HUB_ROOT_PUBLIC_KEY_B64
+
+    def _validate_skill_metadata(self, raw: dict[str, Any], skill_dir: Path) -> None:
         """Validate core metadata presence for runtime-loadable skills."""
+        skill_dir_name = skill_dir.name
         name = str(raw.get("name") or "").strip()
         version = str(raw.get("version") or "").strip()
         author = str(raw.get("author") or "").strip()
@@ -311,6 +401,32 @@ class SkillLoader:
         if not isinstance(triggers, list) or len(triggers) == 0:
             raise SkillValidationError(
                 f"Skill {name!r}: triggers must be a non-empty list"
+            )
+
+        if self._is_bundled_skill(skill_dir):
+            signature = str(raw.get("signature") or "").strip()
+            if self._require_signed:
+                if (
+                    signature == _BUNDLED_SIGNATURE_SENTINEL
+                    and self._is_core_bundled_skill(skill_dir)
+                ):
+                    return
+                if not signature.startswith("ed25519:"):
+                    raise SkillSecurityError(
+                        f"Skill {name!r}: security.skills.require_signed is enabled — "
+                        f"non-bundled skills must carry an 'ed25519:' signature. "
+                        f"Got {signature!r}. Sign the skill before loading."
+                    )
+                return
+            if not signature:
+                return
+            if signature == _BUNDLED_SIGNATURE_SENTINEL:
+                return
+            if signature.startswith("ed25519:"):
+                return
+            raise SkillValidationError(
+                f"Skill {name!r}: bundled skill signature must be either "
+                f"{_BUNDLED_SIGNATURE_SENTINEL!r} or an 'ed25519:' signature."
             )
 
     def register(self, skill: Skill, event_bus: Any) -> list[tuple[str, Any]]:
@@ -334,12 +450,14 @@ class SkillLoader:
             Callers can reuse this list to unsubscribe the exact handlers later.
         """
         tracker = _CooldownTracker()
-        subscriptions: list[tuple[str, Any]] = []
+        subscriptions: list[tuple[str, Callable[[OriEvent], Awaitable[None]]]] = []
 
         for trigger in skill.triggers:
-            sensor_types = [
-                s.get("type") for s in skill.sensors_required if s.get("type")
-            ]
+            sensor_types: list[str] = []
+            for sensor in skill.sensors_required:
+                sensor_type = sensor.get("type")
+                if isinstance(sensor_type, str) and sensor_type:
+                    sensor_types.append(sensor_type)
             if not sensor_types:
                 # Subscribe to wildcard if no sensor types declared
                 sensor_types = ["*"]
@@ -476,6 +594,16 @@ class SkillLoader:
                 )
 
             bypass_llm = bool(raw.get("bypass_llm", False))
+            requires_approval = bool(raw.get("requires_approval", False))
+            reasoning_policy = str(raw.get("reasoning_policy") or "").strip()
+            escalate_to = str(raw.get("escalate_to", "local_slm")).strip().lower()
+            if escalate_to not in {"rule", "local_slm", "gateway"}:
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' trigger '{name}' has invalid "
+                    f"escalate_to={escalate_to!r}. Supported runtime tiers: rule, "
+                    "local_slm, gateway. Cloud reasoning is a gateway backend; "
+                    "use escalate_to: gateway."
+                )
 
             # Tier D: enforce bypass_llm — safety-critical actions never reach LLM
             if action_tier == "D":
@@ -487,6 +615,20 @@ class SkillLoader:
                     f"Skill '{skill_name}' trigger '{name}' sets bypass_llm=true but "
                     f"action_tier={action_tier!r}. bypass_llm is reserved for Tier D "
                     f"safety-critical triggers only."
+                )
+
+            if reasoning_policy and reasoning_policy != "post_action":
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' trigger '{name}' has invalid "
+                    f"reasoning_policy={reasoning_policy!r}. Supported values: "
+                    "post_action."
+                )
+
+            if reasoning_policy == "post_action" and action_tier != "B":
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' trigger '{name}' sets "
+                    "reasoning_policy=post_action but is not Tier B. post_action is "
+                    "reserved for Tier B soft physical triggers."
                 )
 
             safe_default_action = raw.get("safe_default_action", "log_to_dashboard")
@@ -505,8 +647,10 @@ class SkillLoader:
                     condition=raw.get("condition", ""),
                     action_tier=action_tier,
                     cooldown_seconds=int(raw.get("cooldown_seconds", 0)),
-                    escalate_to=raw.get("escalate_to", "local_slm"),
+                    escalate_to=escalate_to,
                     bypass_llm=bypass_llm,
+                    requires_approval=requires_approval,
+                    reasoning_policy=reasoning_policy,
                     approval_timeout_seconds=int(
                         raw.get("approval_timeout_seconds", 300)
                     ),
@@ -514,6 +658,82 @@ class SkillLoader:
                 )
             )
         return triggers
+
+    def _validate_tier_b_trigger_policies(
+        self,
+        triggers: list[Trigger],
+        actions_dict: dict,
+        skill_name: str,
+    ) -> None:
+        """Require explicit execution policy for physical Tier B triggers."""
+        defaults = actions_dict.get("defaults") or {}
+        available = actions_dict.get("available") or []
+        action_tiers: dict[str, str] = {}
+        for entry in available:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                tier = str(entry.get("tier", "A")).upper()
+                if isinstance(name, str) and name:
+                    action_tiers[name] = tier
+
+        for trigger in triggers:
+            if trigger.action_tier != "B":
+                continue
+            default_actions = defaults.get(trigger.name, [])
+            physical_default = any(
+                action_tiers.get(str(action_name), "") == "B"
+                for action_name in default_actions
+                if isinstance(action_name, str)
+            )
+            if not physical_default:
+                continue
+            if trigger.requires_approval or trigger.reasoning_policy == "post_action":
+                if trigger.reasoning_policy == "post_action":
+                    has_notification_default = any(
+                        action_tiers.get(str(action_name), "A") == "A"
+                        for action_name in default_actions
+                        if isinstance(action_name, str)
+                    )
+                    if not has_notification_default:
+                        raise SkillValidationError(
+                            f"Skill '{skill_name}' trigger '{trigger.name}' uses "
+                            "reasoning_policy=post_action but has no Tier A default "
+                            "action for post-action operator notification."
+                        )
+                continue
+            raise SkillValidationError(
+                f"Skill '{skill_name}' trigger '{trigger.name}' is Tier B with "
+                "Tier B default action(s) but declares neither requires_approval=true "
+                "nor reasoning_policy=post_action. Physical Tier B triggers must "
+                "choose an explicit execution policy."
+            )
+
+    def _validate_history_placeholder_count(
+        self,
+        *,
+        prompts: Any,
+        skill_name: str,
+        trigger_names: list[str],
+    ) -> None:
+        """Fail fast when prompt templates exceed history placeholder cap."""
+        if not isinstance(prompts, dict):
+            return
+        trigger_name_set = set(trigger_names)
+        for prompt_key, template in prompts.items():
+            if not isinstance(template, str):
+                continue
+            count = len(_HISTORY_PLACEHOLDER_PATTERN.findall(template))
+            if count <= _MAX_HISTORY_PLACEHOLDERS:
+                continue
+            scope = (
+                "trigger"
+                if isinstance(prompt_key, str) and prompt_key in trigger_name_set
+                else "prompt key"
+            )
+            raise SkillValidationError(
+                f"Skill {skill_name!r}: {scope} {prompt_key!r} contains {count} "
+                f"history placeholders; maximum allowed is {_MAX_HISTORY_PLACEHOLDERS}."
+            )
 
     def _load_hooks(self, skill_dir: Path) -> Any:
         hooks_path = skill_dir / "hooks.py"
@@ -542,6 +762,15 @@ class SkillLoader:
         except ValueError:
             return True  # Not under user home — bundled skill
 
+    def _is_core_bundled_skill(self, skill_dir: Path) -> bool:
+        """Return True for first-party skills shipped in this repository."""
+        repo_skills_dir = Path(__file__).resolve().parents[2] / "skills"
+        try:
+            skill_dir.resolve().relative_to(repo_skills_dir.resolve())
+            return True
+        except ValueError:
+            return False
+
     def _load_hooks_direct(self, hooks_path: Path) -> Any:
         # Used for core team reviewed bundled skills only.
         try:
@@ -561,15 +790,16 @@ class SkillLoader:
 
     def _load_hooks_sandboxed(self, hooks_path: Path) -> Any:
         # Used for all community skills installed from the Skills Hub.
-        from ori.skills.sandbox import SkillSecurityError, load_hooks_restricted
-
         try:
-            module = load_hooks_restricted(str(hooks_path))
+            module = load_community_hooks(
+                hooks_path=hooks_path,
+                state_store=self._state_store,
+                skill_name=hooks_path.parent.name,
+                os_sandbox_config=self._os_sandbox_config,
+            )
             if module is None:
                 return None
-            logger.info(
-                "SkillLoader: loaded sandboxed hooks for %s", hooks_path.parent.name
-            )
+            logger.info("SkillLoader: loaded hooks for %s", hooks_path.parent.name)
             return module
         except SkillSecurityError as exc:
             logger.error(
@@ -584,7 +814,7 @@ class SkillLoader:
         skill: Skill,
         trigger: Trigger,
         tracker: _CooldownTracker,
-    ):
+    ) -> Callable[[OriEvent], Awaitable[None]]:
         """Return a coroutine function suitable for EventBus subscription.
 
         The returned handler:

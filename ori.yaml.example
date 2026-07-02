@@ -5,8 +5,8 @@
 #
 # ACTION TIER REFERENCE:
 #   Tier A  INFORMATIONAL   — Always autonomous. Alerts, logs, reports.
-#   Tier B  SOFT PHYSICAL   — Autonomous by default. Power switching, valves.
-#   Tier C  HARD PHYSICAL   — Approval workflow required. Breakers, shutdowns.
+#   Tier B  SOFT PHYSICAL   — Approval or post-action policy required.
+#   Tier C  HARD PHYSICAL   — Approval workflow required. Relay/contactor shutdowns.
 #   Tier D  SAFETY-CRITICAL — Always autonomous. Cannot be overridden.
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -14,12 +14,16 @@ device:
   id: energy-monitor-ikeja-01        # unique, no spaces, no special chars
   name: Ikeja Office Energy Monitor
   location: Lagos, Nigeria
-  deployment_type: pi                # pi | phone | server
+  site_type: office                 # business context for Tier C logs: office | pharmacy | factory | warehouse
+  country_code: NG                  # ISO 3166-1 alpha-2 (e.g. NG, KE, US)
+  deployment_type: pi                # pi | phone | edge_node | server
+  deployment_profile: development    # development | staging | production
+                                     # staging/production enforce hardened posture
   rated_capacity_amps: 10.0          # used for Tier D threshold calculations
                                      # set this to the actual rated amperage
                                      # of your main circuit
-  timezone: Africa/Lagos             # IANA timezone for Tier C approval messages
-                                     # operators see local time, not UTC
+  timezone: Africa/Lagos             # IANA timezone for operator-facing timestamps
+                                     # if omitted/invalid, runtime falls back to host timezone, then UTC
                                      # e.g. Africa/Lagos, Europe/London, America/New_York
 
 sensors:
@@ -34,6 +38,11 @@ sensors:
     poll_interval_ms: 1000
     calibration:
       sensitivity: 0.1              # SCT-013-030: 1A per 10mV output
+      # Optional deterministic gateway-escalation guardrails.
+      # When gateway reasoning transport is available, readings outside these
+      # bounds escalate before local SLM inference.
+      # min_value: 0.0
+      # max_value: 30.0
 
   # ─── Grid voltage sensor on ADS1115 channel 1 ───────────────────────────
   - id: grid-voltage
@@ -52,13 +61,29 @@ sensors:
     baud_rate: 9600
     poll_interval_ms: 5000
 
-  # ─── Growatt/Deye inverter via SolarmanV5 (optional) ─────────────────────
-  # Uncomment for installations with a Growatt or Deye WiFi/LAN dongle
+  # ─── Growatt inverter via SolarmanV5 (optional) ─────────────────────────
+  # Uncomment for installations with a validated Growatt WiFi/LAN dongle.
+  # SolarmanV5 is the transport; Deye/Sunsynk/Felicity register maps need
+  # separate model qualification before using them in production.
   # - id: inverter-solar-power
   #   type: growatt_pv_power
   #   protocol: growatt
   #   host: "192.168.1.XXX"
   #   serial: "XXXXXXXXXX"
+  #   port: 8899
+  #   poll_interval_ms: 5000
+
+  # ─── Data-driven SolarmanV5 inverter profile (Pi / Edge Node / phone) ─────
+  # Preferred for new SolarmanV5 LAN integrations because the register map
+  # lives in a versioned inverter profile instead of adapter code.
+  # Bundled profiles such as growatt_spf and deye_hybrid are
+  # community_derived until field evidence promotes an exact model/firmware.
+  # - id: inverter-grid-power
+  #   type: deye_grid_power
+  #   protocol: solarman_modbus
+  #   profile: deye_hybrid
+  #   host: "192.168.1.XXX"
+  #   serial: "XXXXXXXXXX"            # inverter logger/dongle serial
   #   port: 8899
   #   poll_interval_ms: 5000
 
@@ -132,6 +157,17 @@ sensors:
   #   unit: kelvin
   #   poll_interval_ms: 300000
 
+  # ─── CoAP telemetry sensor (optional) ──────────────────────────────────────
+  # Requires the host to be listed under actions.coap.allowed_hosts.
+  # - id: room-temp-coap
+  #   type: temperature
+  #   protocol: coap
+  #   uri: "coap://192.168.1.70/telemetry/temp"
+  #   method: GET
+  #   json_path: "metrics.temp_c"
+  #   unit: celsius
+  #   poll_interval_ms: 2000
+
   # ─── Zigbee smart-home sensor via MQTT bridge (optional) ──────────────────
   # Requires zigbee2mqtt (or equivalent) publishing JSON payloads.
   # - id: living-room-temp
@@ -156,6 +192,18 @@ sensors:
   #   # value_path defaults from sensor type mapping; override for your payload:
   #   # value_path: "uplink_message.decoded_payload.temperature"
   #   poll_interval_ms: 5000
+
+  # ─── Generic MQTT telemetry sensor (optional) ─────────────────────────────
+  # Use this when a device publishes JSON measurements to a broker.
+  # - id: chiller-supply-temp
+  #   type: temperature
+  #   protocol: mqtt
+  #   broker_host: "192.168.1.20"
+  #   topic: "plant/chiller-1/supply"
+  #   value_path: "reading.value"
+  #   quality_path: "reading.quality"
+  #   unit: celsius
+  #   poll_interval_ms: 2000
 
   # ─── External perception stream via MQTT (optional) ───────────────────────
   # Payload contract expected on topic:
@@ -201,11 +249,17 @@ skills:
 
 
 reasoning:
-  default_tier: local                # rule | local | gateway | cloud
+  default_tier: local                # rule | local (gateway selected by escalation policy)
   local_model: qwen2.5-0.5b-instruct-q4_k_m  # basename or full .gguf filename/path
   model_path: /home/pi/models/       # directory containing local GGUF models
-  offline_fallback: rule             # tier to use when network unavailable
-  escalation_threshold: 0.70        # escalate if confidence below this
+  escalation_threshold: 0.70        # complexity threshold; local SLM confidence is non-authoritative
+  capability_posture:
+    enabled: true
+    probe_interval_seconds: 30      # must be <=30; posture refresh cadence
+    gateway_heartbeat_ttl_seconds: 30
+    internet_probe_host: one.one.one.one
+    internet_probe_port: 53
+    internet_probe_timeout_ms: 1000
   energy_aware_reasoning:
     enabled: true
     throttle_threshold_percent: 20
@@ -213,20 +267,137 @@ reasoning:
     battery_sensor_id: ""            # set to a real battery sensor id (for example victron-battery or inverter-battery-soc)
     alert_on_throttle: true
   causal_memory:
+    enabled: false
+    min_confidence_to_store: 0.0
     rejection_expiry_days: 30      # 0 = never expire
+  context_enricher:
+    enabled: false                 # disabled by default; opt-in per deployment
+    staleness_window_ms: 60000     # exclude readings older than 60 s at prompt-build time
+    max_entries: 5                 # hard cap on snapshot size (1–20)
+    include_sources: []            # empty = all adapter sources; e.g. ["i2c", "mqtt"]
 
 
 gateway:
-  enabled: false                     # set true when gateway Pi is on the LAN
+  enabled: false                     # starts MQTT gateway integration over the LAN broker
   broker_url: mqtt://192.168.1.10:1883
+  broker_posture:
+    deployment_check: warning        # warning | required; production non-loopback requires required
+    anonymous_access: unknown        # unknown | disabled; production non-loopback requires disabled
+    require_credentials: false       # true => broker_url must include username and password
+    acl_policy: unknown              # unknown | per_device_required; production non-loopback requires per_device_required
+  tls:
+    enabled: false                   # use mqtts:// or set true when broker TLS is required
+    ca_certfile: ""                  # e.g. /etc/ori/certs/site-ca.crt
+    certfile: ""                     # optional client certificate
+    keyfile: ""                      # optional client private key
+    keyfile_password_env: ""         # env var name only, if keyfile is encrypted
+  auth:
+    enabled: false                   # production sites should enable HMAC envelopes
+    shared_secret_env: GATEWAY_SHARED_SECRET # env var name only; never put the secret in ori.yaml
+    previous_shared_secret_env: ""   # optional verify-only previous secret env during rotation
+    max_clock_skew_ms: 300000
+    replay_ttl_ms: 300000
+  encryption:
+    enabled: false                   # encrypt sensitive export responses; requires gateway.auth.enabled
+  node_heartbeat:
+    enabled: true                    # publish runtime liveness to ori/{device_id}/runtime/heartbeat
+    interval_seconds: 30
+  reasoning:
+    enabled: true                    # Tier 3 request/response on ori/{device_id}/reasoning/*
+    timeout_ms: 10000                # per-phase timeout: connect/subscribe and response wait
 
+telemetry_export:
+  # Optional direct product-backend export for phone/lightweight deployments.
+  # Separate from gateway MQTT exports. Mirrors real sensor.reading events only;
+  # never affects Tier B/C/D action authority.
+  enabled: false
+  endpoint: "https://api.ori.energy/runtime/telemetry"
+  api_key_env: ORI_ENERGY_DEVICE_API_KEY
+  flush_interval_s: 30
+  batch_size: 50
+  timeout_ms: 3000
+  max_queue_size: 1000
+
+device_policy:
+  enabled: false
+  url: "https://api.ori.cloud/v1/device-policy" # ori-cloud endpoint for signed DevicePolicy
+  auth_token: "${ORI_DEVICE_POLICY_TOKEN}"      # device auth bearer token
+  public_key_b64: "${ORI_CLOUD_PUBKEY_B64}"     # ori-cloud Ed25519 public key (base64)
+  request_timeout_ms: 3000
+  max_clock_skew_s: 300
+  refresh_enabled: false                         # background refresh loop
+  refresh_interval_s: 21600                      # 6h; minimum allowed is 60s
+
+health_socket:
+  enabled: true
+  path: /run/ori/health.sock                     # local read-only runtime health RPC
+  mode: 0o660                                    # unix socket permission bits
+
+os_sandbox:
+  enabled: true
+  require_for_community: false                   # true => reject community hooks if kernel hardening unavailable
+  exec_timeout_ms: 2000
+  max_output_bytes: 65536
+
+database:
+  path: ori_state.db                             # production should place this under an encrypted mount
+
+security:
+  # Set true, or set device.deployment_profile to staging/production, to fail
+  # startup on unsafe network/security posture. A staging/production profile
+  # cannot be weakened by setting this false.
+  enforce_production_posture: false
+  config_signature:
+    # Generated configs from Ori Energy / APK provisioning should set this true.
+    # The verification public key is supplied outside this YAML through the env
+    # var below, so a tampered config cannot swap its own trust anchor.
+    require_signed: false
+    trust_anchor_env: ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64
+  skills:
+    # Production deployments may require Ed25519 signatures for local/non-core
+    # skills. First-party repo-bundled skills may still use signature: bundled.
+    require_signed: false
+  remote_commands:
+    enabled: false                               # state-changing SMS/WhatsApp/cloud commands require HMAC
+    hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
+    previous_hmac_secret_env: ""                 # optional verify-only previous secret env during rotation
+    max_skew_seconds: 300
+    # Fail-closed sender binding. When remote_commands.enabled=true, commands
+    # are rejected unless they arrive from one of these channel-specific senders,
+    # or allow_unlisted_senders is explicitly set true for test deployments.
+    allow_unlisted_senders: false
+    allowed_senders:
+      sms:
+        - "${OWNER_PHONE_NUMBER}"
+      whatsapp:
+        - "${OWNER_WHATSAPP_NUMBER}"
+    lockout:
+      # Advisory only. Enforcement remains disabled even if set true until a
+      # recovery-safe lockout policy is accepted.
+      enforcement_enabled: false
+      risk_window_ms: 3600000                    # 1h risk calculation window
+      state_stale_after_ms: 3600000              # mark cached sender risk stale after 1h
+      incident_sender_limit: 50                  # max recent senders rebuilt into health at startup
+      elevated_incident_threshold: 1
+      critical_incident_threshold: 3
+      elevated_rejection_threshold: 5
+      critical_rejection_threshold: 15
 
 actions:
   # For Nigeria: use sms as primary (Africa's Talking — no approval required)
   # For UK/EU:   use whatsapp as primary
   primary_alert_channel: sms
+  approval_require_scoped_replies: true # Tier C replies must be YES-<proposal_id> / NO-<proposal_id>
   operator_contact: "${OWNER_PHONE_NUMBER}"          # Unified: WHO to contact for Tier-C Approvals
   secondary_contact: ""                              # Optional escalation contact
+  setup_notifications:
+    enabled: true                    # send a Tier A protection/monitoring confirmation after startup
+    channels: [primary]              # use [sms, whatsapp] when both transports are provisioned
+  alert_outbox:
+    retry_interval_minutes: 0.5        # current default: retry queued alerts every 30 seconds
+    max_non_tier_d_attempts: 10        # non-critical alerts are abandoned after this many failed retries
+    tier_d_critical_warning_threshold: 3  # Tier D alerts keep retrying; log CRITICAL after this many failures
+    batch_size: 50                     # max queued alerts retried per outbox cycle
 
   whatsapp:
     enabled: true
@@ -235,20 +406,66 @@ actions:
     TWILIO_WHATSAPP_FROM: "${TWILIO_WHATSAPP_FROM}"
 
   sms:
-    enabled: true                    # Africa's Talking — primary for Nigeria
+    enabled: true                    # SMS transport enabled
+    transport: hybrid                # ip | gsm | hybrid
+    hybrid_order: gsm_first          # ip_first | gsm_first (used only when transport=hybrid)
     AT_API_KEY: "${AT_API_KEY}"
     AT_USERNAME: "${AT_USERNAME}"
+    AT_SENDER_ID: "${AT_SENDER_ID}"
+    gsm:
+      enabled: false                 # set true to enable direct modem SMS transport
+      port: "/dev/ttyUSB0"
+      baud: 115200
+      sim_pin: ""
+      timeout_s: 5.0
+      command_timeout_s: 3.0
+      write_timeout_s: 3.0
     incoming_webhook:
       enabled: false                 # set true when exposing a public webhook endpoint
-      host: "0.0.0.0"
+      host: "127.0.0.1"
       port: 8080
       path: "/webhooks/sms/africastalking"
-      token: "${ORI_SMS_WEBHOOK_TOKEN}"  # required; shared secret checked on inbound requests
+      # Public ingress: see docs/SMS_WEBHOOK_SECURITY.md before binding non-loopback.
+      allowed_source_cidrs: []       # public webhooks should restrict provider/reverse-proxy IP ranges
+      token: "${ORI_SMS_WEBHOOK_TOKEN}"  # required unless signature.mode=hmac_required
+      signature:
+        mode: token_only              # token_only | hmac_required | token_and_hmac
+        shared_secret: "${ORI_SMS_WEBHOOK_HMAC_SECRET}" # required when mode != token_only
+        previous_shared_secret: ""    # optional verify-only previous HMAC secret during rotation
+        signature_header: "x-ori-webhook-signature"
+        timestamp_header: "x-ori-webhook-timestamp"
+        nonce_header: "x-ori-webhook-nonce"
+        max_skew_seconds: 300
+        replay_ttl_seconds: 300
+        require_nonce: true
+
+  local_console:
+    enabled: false                   # Tier C local fallback when SMS/WhatsApp are unavailable
+    poll_interval_ms: 1000
+    approval_channel_id: "local_console"
+
+  offline_tokens:
+    enabled: false                   # Tier C offline cryptographic approval tokens
+    public_key_b64: "${ORI_OFFLINE_TOKEN_PUBKEY_B64}"
+    max_clock_skew_s: 300
 
   relay:
     enabled: false                   # CHANGE TO true ONLY WHEN RELAY IS WIRED
     gpio_pin: 26                     # BCM pin number connected to relay IN
     active_high: true
+
+  # CoAP command transport (optional; constrained-device actuation path)
+  # CoAP commands are executed through `coap_command` actions in skills.
+  coap:
+    enabled: false
+    timeout_s: 2.0
+    retries: 1
+    allowed_hosts: ["192.168.1.70"]  # required when enabled
+    commands:
+      open_bypass_valve:
+        uri: "coap://192.168.1.70/actuators/bypass"
+        method: POST
+        payload: '{"state":"open"}'
 
 
 hal:
@@ -260,7 +477,23 @@ hal:
     enabled: false                   # optional GPIO heartbeat for external watchdog ICs
     gpio_pin: 17                     # BCM pin connected to watchdog DONE/WDI pin
     ping_interval_s: 30              # heartbeat interval in seconds
+  status_signaling:
+    enabled: false                   # LED/buzzer runtime state signaling
+    power_led_pin: 17                # BCM pin: power source indicator
+    relay_led_pin: 27                # BCM pin: relay state indicator
+    network_led_pin: 22              # BCM pin: network/cellular indicator
+    health_led_pin: 23               # BCM pin: runtime health indicator
+    buzzer_pin: 24                   # BCM pin: audible alert indicator
+    tick_ms: 100                     # pattern update interval in milliseconds
 
+
+state:
+  compaction:
+    max_backward_skew_ms: 3600000    # Threshold (in ms) to reject compaction due to clock skew
+  encryption:
+    mode: disabled                   # disabled | filesystem_required
+    encrypted_path_prefixes: []      # e.g. ["/var/lib/ori-encrypted"]; required for production unless marker_file is set
+    marker_file: ""                  # optional existing marker file; startup fails if missing
 
 logging:
   level: INFO                        # DEBUG | INFO | WARNING | ERROR

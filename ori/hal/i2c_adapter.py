@@ -4,8 +4,6 @@
 import asyncio
 import logging
 import threading
-import time
-from functools import partial
 from typing import Any
 
 from ori.hal.base import (
@@ -16,6 +14,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +66,6 @@ _SUPPORTED = frozenset(
 # Default ADS1115 current-clamp sensitivity (V/A) for common SCT-013 clamps.
 # Override via config key ``sensitivity`` in ori.yaml.
 _DEFAULT_SENSITIVITY = 0.1  # V/A
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 # ── Shared I2C bus singleton registry ─────────────────────────────────────
@@ -194,9 +189,8 @@ class I2CAdapter(BaseAdapter):
         self._channel = int(config.get("channel", 0))
         self._sensitivity = float(config.get("sensitivity", _DEFAULT_SENSITIVITY))
 
-        loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, partial(self._connect_sync, sensor_type))
+            await asyncio.to_thread(self._connect_sync, sensor_type)
         except AdapterConnectionError:
             raise
         except Exception as exc:
@@ -205,7 +199,9 @@ class I2CAdapter(BaseAdapter):
                 f"address 0x{self._address:02X} on bus {self._bus_number}: {exc}"
             ) from exc
 
-        self._breaker = HardwareCircuitBreaker(getattr(self, "adapter_name", type(self).__name__), config)
+        self._breaker = HardwareCircuitBreaker(
+            getattr(self, "adapter_name", type(self).__name__), config
+        )
         self._connected = True
 
     def _connect_sync(self, sensor_type: str) -> None:
@@ -265,12 +261,10 @@ class I2CAdapter(BaseAdapter):
         """
         try:
             if self._scd4x is not None:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._scd4x.stop_periodic_measurement)
+                await asyncio.to_thread(self._scd4x.stop_periodic_measurement)
                 self._scd4x = None
             if self._bus is not None:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._bus.close)
+                await asyncio.to_thread(self._bus.close)
                 self._bus = None
             if self._sensor_type in _ADS_SENSOR_TYPES | {"scd40"}:
                 _release_shared_busio_i2c(self._bus_number)
@@ -307,10 +301,9 @@ class I2CAdapter(BaseAdapter):
             raise AdapterReadError("I2CAdapter: not connected — call connect() first")
 
         async with self._breaker:
-            loop = asyncio.get_running_loop()
             try:
                 reading = await asyncio.wait_for(
-                    loop.run_in_executor(None, partial(self._read_sync, sensor_id)),
+                    asyncio.to_thread(self._read_sync, sensor_id),
                     timeout=5.0,
                 )
             except asyncio.TimeoutError as exc:
@@ -350,7 +343,7 @@ class I2CAdapter(BaseAdapter):
             sensor_type="bme280",
             value=round(data.temperature, 2),
             unit="celsius",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata={
                 "pressure_hpa": round(data.pressure, 2),
@@ -369,7 +362,7 @@ class I2CAdapter(BaseAdapter):
             sensor_type="ads1115_current",
             value=round(current_amps, 4),
             unit="ampere",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata={
                 "adc_voltage": round(adc_voltage, 6),
@@ -388,7 +381,7 @@ class I2CAdapter(BaseAdapter):
             sensor_type="ads1115_voltage",
             value=round(voltage, 4),
             unit="volt",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata={"channel": self._channel},
         )
@@ -406,7 +399,7 @@ class I2CAdapter(BaseAdapter):
             sensor_type="scd40",
             value=float(self._scd4x.CO2),
             unit="ppm",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata={
                 "temperature_celsius": round(self._scd4x.temperature, 2),

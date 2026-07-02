@@ -123,7 +123,9 @@ def test_ori_event_from_reading_attaches_reading(sample_reading: SensorReading) 
 # ---------------------------------------------------------------------------
 
 
-def test_fingerprint_same_regardless_of_timestamp(sample_reading: SensorReading) -> None:
+def test_fingerprint_same_regardless_of_timestamp(
+    sample_reading: SensorReading,
+) -> None:
     # Timestamp is excluded from the fingerprint; window enforcement is the
     # deduplicator's responsibility, not compute_fingerprint's.
     base_ts = 1_700_000_000_000
@@ -306,15 +308,16 @@ def test_action_result_tier_a_approved_is_none() -> None:
     )
     assert result.approved is None
     assert result.operator_response is None
+    assert result.correlation_id == ""
 
 
 def test_action_result_tier_c_approved_true() -> None:
     result = ActionResult(
-        action_name="trip_main_breaker",
+        action_name="open_safety_circuit",
         tier=ActionTier.HARD_PHYSICAL,
         executed=True,
         approved=True,
-        action_taken="trip_main_breaker",
+        action_taken="open_safety_circuit",
         timestamp=1_700_000_000_000,
         operator_response="YES",
     )
@@ -324,7 +327,7 @@ def test_action_result_tier_c_approved_true() -> None:
 
 def test_action_result_tier_c_approved_false_uses_safe_default() -> None:
     result = ActionResult(
-        action_name="trip_main_breaker",
+        action_name="open_safety_circuit",
         tier=ActionTier.HARD_PHYSICAL,
         executed=False,
         approved=False,
@@ -372,6 +375,28 @@ def test_reasoning_result_proposed_action_defaults_to_none() -> None:
         latency_ms=0,
     )
     assert result.proposed_action is None
+
+
+def test_reasoning_result_reasoning_status_defaults_to_empty() -> None:
+    result = ReasoningResult(
+        text="All nominal.",
+        tier="rule",
+        model="rule_engine",
+        tokens_used=0,
+        latency_ms=0,
+    )
+    assert result.reasoning_status == ""
+
+
+def test_reasoning_result_correlation_id_defaults_to_empty() -> None:
+    result = ReasoningResult(
+        text="All nominal.",
+        tier="rule",
+        model="rule_engine",
+        tokens_used=0,
+        latency_ms=0,
+    )
+    assert result.correlation_id == ""
 
 
 def test_reasoning_result_explicit_fields() -> None:

@@ -22,35 +22,47 @@ def _write_hooks(tmp_path, source: str) -> str:
 
 
 def test_allowed_import_math_loads(tmp_path):
-    path = _write_hooks(tmp_path, """\
+    path = _write_hooks(
+        tmp_path,
+        """\
         import math
         result = math.sqrt(16)
-    """)
+    """,
+    )
     module = load_hooks_restricted(path)
     assert module is not None
     assert module.result == 4.0
 
 
 def test_blocked_import_os_raises(tmp_path):
-    path = _write_hooks(tmp_path, """\
+    path = _write_hooks(
+        tmp_path,
+        """\
         import os
-    """)
+    """,
+    )
     with pytest.raises(SkillSecurityError):
         load_hooks_restricted(path)
 
 
 def test_blocked_import_subprocess_raises(tmp_path):
-    path = _write_hooks(tmp_path, """\
+    path = _write_hooks(
+        tmp_path,
+        """\
         import subprocess
-    """)
+    """,
+    )
     with pytest.raises(SkillSecurityError):
         load_hooks_restricted(path)
 
 
 def test_blocked_builtin_open_raises(tmp_path):
-    path = _write_hooks(tmp_path, """\
+    path = _write_hooks(
+        tmp_path,
+        """\
         data = open("/etc/passwd", "r")
-    """)
+    """,
+    )
     with pytest.raises((NameError, SkillSecurityError)):
         load_hooks_restricted(path)
 
@@ -86,10 +98,13 @@ def test_meta_path_not_polluted_after_runtime_error(tmp_path):
     The finder must still be cleaned up even though the failure is not an
     ImportError caught by the SkillSecurityError path.
     """
-    path = _write_hooks(tmp_path, """\
+    path = _write_hooks(
+        tmp_path,
+        """\
         import math          # allowed — clears the import gate
         x = 1 / 0            # raises ZeroDivisionError during exec
-    """)
+    """,
+    )
     with pytest.raises(ZeroDivisionError):
         load_hooks_restricted(path)
     assert not any(isinstance(f, RestrictedImportFinder) for f in sys.meta_path)

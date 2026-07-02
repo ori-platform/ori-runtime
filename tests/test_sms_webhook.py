@@ -7,15 +7,27 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ori.network.sms_webhook import SMSWebhookServer, _HttpRequest
+from ori.security.webhook_signatures import (
+    WebhookSignatureConfig,
+    WebhookSignatureVerifier,
+    sign_webhook_body,
+)
+from ori.utils.time_utils import now_ms
 
 
 class _FakeWriter:
-    def __init__(self) -> None:
+    def __init__(self, peername: tuple[str, int] = ("127.0.0.1", 12345)) -> None:
         self.buffer = bytearray()
         self.closed = False
+        self.peername = peername
 
     def write(self, data: bytes) -> None:
         self.buffer.extend(data)
+
+    def get_extra_info(self, name: str):
+        if name == "peername":
+            return self.peername
+        return None
 
     async def drain(self) -> None:
         return None
@@ -31,10 +43,48 @@ class _FakeWriter:
 async def test_authorized_accepts_header_and_bearer():
     server = SMSWebhookServer(sms_action=AsyncMock(), token="secret-token")
     assert server._authorized({"x-ori-webhook-token": "secret-token"}) is True
-    assert (
-        server._authorized({"authorization": "Bearer secret-token"}) is True
-    )
+    assert server._authorized({"authorization": "Bearer secret-token"}) is True
     assert server._authorized({"x-ori-webhook-token": "wrong"}) is False
+    assert server._authorized({}) is False
+
+
+def test_default_host_is_loopback():
+    server = SMSWebhookServer(sms_action=AsyncMock(), token="secret-token")
+    assert server._host == "127.0.0.1"
+
+
+def test_source_allowed_enforces_configured_cidrs():
+    server = SMSWebhookServer(
+        sms_action=AsyncMock(),
+        token="secret-token",
+        allowed_source_cidrs=["203.0.113.0/24", "2001:db8::/32"],
+    )
+
+    assert server._source_allowed("203.0.113.9") is True
+    assert server._source_allowed("2001:db8::1") is True
+    assert server._source_allowed("198.51.100.9") is False
+    assert server._source_allowed("unknown") is False
+
+
+@pytest.mark.asyncio
+async def test_handle_client_rejects_disallowed_source_before_parsing():
+    sms_action = AsyncMock()
+    sms_action.ingest_incoming_webhook.return_value = True
+    server = SMSWebhookServer(
+        sms_action=sms_action,
+        token="secret-token",
+        allowed_source_cidrs=["203.0.113.0/24"],
+    )
+    server._read_request = AsyncMock()
+    reader = asyncio.StreamReader()
+    writer = _FakeWriter(peername=("198.51.100.10", 12345))
+
+    await server._handle_client(reader, writer)
+
+    text = writer.buffer.decode("utf-8", errors="replace")
+    assert "403 Forbidden" in text
+    server._read_request.assert_not_called()
+    sms_action.ingest_incoming_webhook.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -76,6 +126,25 @@ async def test_read_request_parses_http_message():
     assert request.path == "/webhooks/sms/africastalking"
     assert request.headers["content-type"] == "application/json"
     assert request.body == body
+
+
+@pytest.mark.asyncio
+async def test_read_request_rejects_oversized_body():
+    server = SMSWebhookServer(sms_action=AsyncMock(), token="secret-token")
+    reader = asyncio.StreamReader()
+    content_length = 70 * 1024
+    raw = (
+        b"POST /webhooks/sms/africastalking HTTP/1.1\r\n"
+        b"Host: localhost\r\n"
+        b"Content-Type: application/json\r\n"
+        + f"Content-Length: {content_length}\r\n".encode("utf-8")
+        + b"\r\n"
+    )
+    reader.feed_data(raw)
+    reader.feed_eof()
+
+    request = await server._read_request(reader)
+    assert request is None
 
 
 @pytest.mark.asyncio
@@ -126,4 +195,108 @@ async def test_handle_client_returns_200_for_valid_request():
     assert "200 OK" in text
     sms_action.ingest_incoming_webhook.assert_awaited_once_with(
         {"from": "+2348000000000", "text": "YES"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_client_rejects_query_token_fallback():
+    """Query-string token is no longer accepted; only header tokens are valid."""
+    sms_action = AsyncMock()
+    sms_action.ingest_incoming_webhook.return_value = True
+    server = SMSWebhookServer(sms_action=sms_action, token="secret-token")
+    server._read_request = AsyncMock(
+        return_value=_HttpRequest(
+            method="POST",
+            path="/webhooks/sms/africastalking?token=secret-token",
+            headers={
+                "content-type": "application/x-www-form-urlencoded",
+            },
+            body=b"from=%2B2348000000000&text=YES",
+        )
+    )
+    reader = asyncio.StreamReader()
+    writer = _FakeWriter()
+
+    await server._handle_client(reader, writer)
+
+    text = writer.buffer.decode("utf-8", errors="replace")
+    assert "401 Unauthorized" in text
+    sms_action.ingest_incoming_webhook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_client_rejects_unsigned_hmac_webhook_before_parsing():
+    sms_action = AsyncMock()
+    sms_action.ingest_incoming_webhook.return_value = True
+    server = SMSWebhookServer(
+        sms_action=sms_action,
+        token="secret-token",
+        signature_verifier=WebhookSignatureVerifier(
+            WebhookSignatureConfig(mode="hmac_required", shared_secret="hmac-secret")
+        ),
+    )
+    server._read_request = AsyncMock(
+        return_value=_HttpRequest(
+            method="POST",
+            path="/webhooks/sms/africastalking",
+            headers={
+                "x-ori-webhook-token": "secret-token",
+                "content-type": "application/json",
+            },
+            body=b'{"from":"+2348000000000","text":"YES-AB12CD34"}',
+        )
+    )
+    reader = asyncio.StreamReader()
+    writer = _FakeWriter()
+
+    await server._handle_client(reader, writer)
+
+    text = writer.buffer.decode("utf-8", errors="replace")
+    assert "401 Unauthorized" in text
+    sms_action.ingest_incoming_webhook.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_client_accepts_signed_hmac_webhook():
+    sms_action = AsyncMock()
+    sms_action.ingest_incoming_webhook.return_value = True
+    body = b"from=%2B2348000000000&text=YES-AB12CD34"
+    signed_at_ms = now_ms()
+    signature = sign_webhook_body(
+        body, shared_secret="hmac-secret", signed_at_ms=signed_at_ms, nonce="nonce-1"
+    )
+    server = SMSWebhookServer(
+        sms_action=sms_action,
+        token="secret-token",
+        signature_verifier=WebhookSignatureVerifier(
+            WebhookSignatureConfig(
+                mode="token_and_hmac",
+                shared_secret="hmac-secret",
+                max_skew_ms=10_000_000_000,
+            )
+        ),
+    )
+    server._read_request = AsyncMock(
+        return_value=_HttpRequest(
+            method="POST",
+            path="/webhooks/sms/africastalking",
+            headers={
+                "x-ori-webhook-token": "secret-token",
+                "x-ori-webhook-signature": signature,
+                "x-ori-webhook-timestamp": str(signed_at_ms),
+                "x-ori-webhook-nonce": "nonce-1",
+                "content-type": "application/x-www-form-urlencoded",
+            },
+            body=body,
+        )
+    )
+    reader = asyncio.StreamReader()
+    writer = _FakeWriter()
+
+    await server._handle_client(reader, writer)
+
+    text = writer.buffer.decode("utf-8", errors="replace")
+    assert "200 OK" in text
+    sms_action.ingest_incoming_webhook.assert_awaited_once_with(
+        {"from": "+2348000000000", "text": "YES-AB12CD34"}
     )

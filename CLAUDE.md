@@ -57,14 +57,41 @@ the approval model before execution.
 ```text
 Tier 1  RULE ENGINE    microseconds  always available  safety-critical + Tier D actions
 Tier 2  LOCAL SLM      3-8 seconds   offline-capable   most everyday reasoning
-Tier 3  GATEWAY LLM    1-3 seconds   LAN required      cross-device reasoning
-Tier 4  CLOUD LLM      2-5 seconds   internet          deep analysis + reports
+Tier 3  GATEWAY LLM    1-3 seconds   LAN required      cross-device or cloud-backed reasoning
 ```
 
 The runtime selects the cheapest tier that can answer the question.
-Tier 1 is always evaluated first. Tier 4 is only reached if Tiers 1–3 are
-insufficient or unavailable. The reasoning tier and action tier are selected
-together — they are not independent decisions.
+Tier 1 is always evaluated first. Gateway reasoning is reached only through
+deterministic escalation policy or an explicit trigger floor. Cloud reasoning,
+when used, is a gateway backend, not a runtime dependency. The reasoning tier
+and action tier are selected together — they are not independent decisions.
+
+Runtime-gateway MQTT envelopes are optionally HMAC-authenticated. Production
+sites set `gateway.auth.enabled: true` and provide the shared secret through the
+environment variable named by `gateway.auth.shared_secret_env`. The gateway
+secret is separate from remote-command secrets. During rotation,
+`gateway.auth.previous_shared_secret_env` is verify-only; new outbound runtime
+messages are signed with the current secret. Authenticated deployments sign
+runtime reasoning requests and export responses, and verify gateway reasoning
+responses and export requests before using them.
+
+Sensitive runtime export responses can also be encrypted with
+`gateway.encryption.enabled: true`. Encryption requires authenticated gateway
+envelopes and applies to `sensor_history`, `action_log`, `reasoning_log`, and
+`tier_c_decision_log` responses. The runtime derives a separate AES-GCM key from
+the gateway shared secret with HKDF domain separation; TLS remains transport
+defense-in-depth, not a replacement for HMAC or payload encryption.
+
+Broker hardening is documented in `docs/MQTT_SECURITY.md`. Production brokers
+must disable anonymous access, use separate runtime/gateway MQTT users, and
+apply per-device topic ACLs.
+Runtime-gateway transport supports `mqtts://` and `gateway.tls`; TLS is
+defense-in-depth and does not replace HMAC envelope authentication.
+
+SMS webhook ingress hardening is documented in `docs/SMS_WEBHOOK_SECURITY.md`.
+Runtime sender allowlisting is necessary but cannot prove carrier-origin
+identity. Internet-exposed Africa's Talking ingress must use source CIDR
+allowlisting plus an HMAC signing bridge or equivalent raw-body signing path.
 
 ---
 
@@ -81,13 +108,14 @@ Tier A  INFORMATIONAL        Always autonomous. No approval. No override.
         These ARE agent actions. When Ori sends a reasoned WhatsApp message,
         no human approved it first. The agent reasoned and acted.
 
-Tier B  SOFT PHYSICAL        Autonomous by default. Operator can require approval.
+Tier B  SOFT PHYSICAL        Explicit approval or post-action policy.
         Switching power sources, adjusting thermostat setpoints,
         opening irrigation valves, dimming lights.
-        Reversible, low-consequence. Config flag: requires_approval: true.
+        Reversible, low-consequence. Use requires_approval: true or
+        reasoning_policy: post_action on physical Tier B triggers.
 
 Tier C  HARD PHYSICAL        Approval workflow. Always. No exception.
-        Tripping breakers, shutting down industrial equipment,
+        Opening relay/contactor-controlled safety circuits,
         high-pressure valve control.
         Ori reasons → proposes action via WhatsApp → operator replies YES/NO
         → action executes or is cancelled.
@@ -108,18 +136,21 @@ Sensor reading arrives
 RULE ENGINE — First: Is this Tier D?
     YES → Execute Tier D action immediately. No LLM. Full stop.
     NO  → Evaluate normal rules
-          Rule matched, bypass_llm: true → Execute Tier A/B action, return
+          Rule matched, bypass_llm: true → Execute Tier D action, return
           Rule matched, bypass_llm: false → Escalate to SLM with tier hint
           No rule matched → Escalate to LOCAL SLM
     │
     ▼
-LOCAL SLM — Returns: reasoning text, confidence, recommended action tier
+LOCAL SLM — Returns reasoning text. Confidence is telemetry-only and
+            currently 0.0 for base completion backends.
     │
     ▼
 ACTION DISPATCHER
     Tier A → Execute informational action immediately
-    Tier B → Execute soft physical action (or approval workflow if configured)
-    Tier C → Run approval workflow. Send WhatsApp. Wait for YES/NO.
+    Tier B → Execute soft physical action before explanation when
+             reasoning_policy: post_action, or use approval workflow
+    Tier C → Run approval workflow. Send WhatsApp/SMS. Wait for scoped
+             YES-<proposal_id> or NO-<proposal_id>.
     Tier D → Already handled above. Never reaches dispatcher.
 ```
 
@@ -186,7 +217,7 @@ class ActionResult:
 class ReasoningResult:
     """Returned by the Intelligence Elevator after every reasoning call."""
     text:          str
-    tier:          str          # 'rule' | 'local_slm' | 'gateway' | 'cloud'
+    tier:          str          # 'rule' | 'local_slm' | 'gateway'
     model:         str
     tokens_used:   int
     latency_ms:    int
@@ -201,33 +232,63 @@ class ReasoningResult:
 
 ```bash
 ori/
+├── AGENTS.md
 ├── CLAUDE.md
+├── PRINCIPLES.md
 ├── README.md
 ├── CONTRIBUTING.md
+├── SECURITY.md
 ├── LICENSE
 ├── pyproject.toml
+├── requirements.in
 ├── requirements.txt
+├── requirements-dev.in
 ├── requirements-dev.txt
 ├── ori.yaml.example
+├── ori.linux.yaml.example
+├── ori.yaml.phone.example
+│
+├── docs/
+│   ├── CAPABILITY_MATRIX.md
+│   ├── linux-setup.md
+│   └── releases/
+│
+├── scripts/
+│   └── guard-capability-matrix.sh
 │
 ├── ori/
 │   ├── __init__.py
 │   ├── runtime.py             ← main event loop — build last
 │   ├── config.py              ← ori.yaml loader and validator
 │   │
+│   ├── utils/
+│   │   ├── bool_utils.py
+│   │   └── time_utils.py
+│   │
+│   ├── gateway/
+│   │   ├── export.py          ← MQTT export responder for gateway data requests
+│   │   └── reasoning.py       ← MQTT request/response client for Tier 3 reasoning
+│   │
 │   ├── hal/                   ← Hardware Abstraction Layer (Layer 1)
 │   │   ├── __init__.py
 │   │   ├── base.py
-│   │   ├── gpio_adapter.py
 │   │   ├── i2c_adapter.py
 │   │   ├── serial_adapter.py
-│   │   └── psutil_adapter.py  ← PC-Ori, no hardware needed
+│   │   ├── mqtt_adapter.py    ← Generic MQTT telemetry adapter
+│   │   ├── psutil_adapter.py  ← PC-Ori, no hardware needed
+│   │   ├── smart_adapter.py
+│   │   ├── http_adapter.py
+│   │   ├── opcua_adapter.py
+│   │   ├── victron_adapter.py
+│   │   ├── growatt_adapter.py
+│   │   └── ... (LoRaWAN, Zigbee, USB-Serial, MQTT perception adapters)
 │   │
 │   ├── network/               ← Network Layer (Layer 2)
 │   │   ├── __init__.py
 │   │   ├── events.py          ← OriEvent + SensorReading + ActionResult — BUILD FIRST
 │   │   ├── event_bus.py
-│   │   └── deduplicator.py
+│   │   ├── deduplicator.py
+│   │   └── sms_webhook.py
 │   │
 │   ├── reasoning/             ← Intelligence Elevator + Action Tiers (Layer 4)
 │   │   ├── __init__.py
@@ -235,20 +296,37 @@ ori/
 │   │   ├── rule_engine.py     ← deterministic rules — BUILD BEFORE LLM
 │   │   ├── local_llm.py       ← llama-cpp-python wrapper
 │   │   ├── causal_memory.py   ← SQLite pattern cache
+│   │   ├── capability_posture.py
 │   │   └── action_dispatcher.py ← ACTION TIER ROUTER — the agent's executor
+│   │
+│   ├── hardware/
+│   │   ├── __init__.py
+│   │   └── led_indicator.py
+│   │
+│   ├── policy/
+│   │   ├── device_policy.py
+│   │   └── remote_fetch.py
+│   │
+│   ├── security/
+│   │   ├── __init__.py
+│   │   └── offline_tokens.py
 │   │
 │   ├── skills/                ← Skills loader (Layer 5)
 │   │   ├── __init__.py
 │   │   ├── loader.py
 │   │   ├── hooks_api.py
-│   │   └── sandbox.py
+│   │   ├── sandbox.py
+│   │   └── signing.py
 │   │
 │   ├── actions/               ← Action executors (called by action_dispatcher)
 │   │   ├── __init__.py
 │   │   ├── whatsapp.py        ← Twilio / WhatsApp Cloud API
 │   │   ├── sms.py             ← Africa's Talking (PRIMARY for Nigeria)
 │   │   ├── relay.py           ← Physical relay control (GPIO output)
-│   │   ├── modbus_control.py  ← Modbus write commands (industrial)
+│   │   ├── alert_failover.py  ← Failover alert transport wrapper
+│   │   ├── coap.py            ← CoAP action executor for constrained devices
+│   │   ├── process_manager.py
+│   │   ├── system_control.py
 │   │   └── logger.py
 │   │
 │   └── state/
@@ -262,22 +340,31 @@ ori/
 │   ├── energy-anomaly-detector/
 │   │   ├── skill.yaml
 │   │   └── hooks.py
+│   ├── retail-occupancy-optimizer/
+│   │   ├── skill.yaml
+│   │   └── hooks.py
+│   ├── hvac-refrigerant-monitor/
+│   │   ├── skill.yaml
+│   │   └── hooks.py
+│   ├── pc-network-threat-monitor/
+│   │   ├── skill.yaml
+│   │   └── hooks.py
+│   ├── site-safety-ppe/
+│   │   ├── skill.yaml
+│   │   └── hooks.py
 │   └── pc-system-health/
 │       ├── skill.yaml
 │       └── hooks.py           ← uses HookContext dynamic API
 │
 └── tests/
     ├── __init__.py
-    ├── test_events.py
-    ├── test_rule_engine.py         ← includes AST whitelist validation tests
     ├── test_action_dispatcher.py
-    ├── test_circuit_breaker.py
-    ├── test_deduplicator.py
     ├── test_config.py
     ├── test_elevator.py
-    ├── test_event_bus.py
-    ├── test_store.py
-    └── ... (23 test modules total)
+    ├── test_led_indicator.py
+    ├── test_remote_policy_fetch.py
+    ├── test_offline_tokens.py
+    └── ... (full suite in tests/)
 ```
 
 ---
@@ -345,10 +432,12 @@ class ActionDispatcher:
             return await self._approval_workflow(action, context, result)
 
     async def _approval_workflow(self, action, context, result) -> ActionResult:
-        # 1. Send WhatsApp/SMS with reasoning + proposed action
-        # 2. Wait for YES/NO within approval_timeout_seconds (default: 300)
-        # 3. YES → execute action
-        # 4. NO or timeout → execute safe_default_action, log override
+        # 1. Send WhatsApp/SMS with reasoning + proposed action via AlertFailoverSender
+        #    (tries primary channel first, falls back to secondary on failure)
+        # 2. Wait for YES-<proposal_id>/NO-<proposal_id>
+        #    within approval_timeout_seconds (default: 300)
+        # 3. Scoped YES → execute action
+        # 4. Scoped NO, invalid reply, or timeout → execute safe_default_action
         # 5. No response after 2x timeout → escalate to secondary_contact
         ...
 ```
@@ -371,7 +460,7 @@ PROPOSED ACTION:
 
 CONFIDENCE: {result.confidence:.0%}
 
-Reply YES to approve  |  Reply NO to cancel
+Reply YES-{proposal_id} to approve  |  Reply NO-{proposal_id} to cancel
 Auto-cancel in {timeout} seconds if no response.
 ```
 
@@ -399,14 +488,15 @@ triggers:
     escalate_to: local_slm
     action_tier: A
 
-  # Tier B: Soft physical — switch source autonomously
+  # Tier B: Soft physical — switch source, explain after action
   - name: source_switch_recommended
     condition: "grid_voltage < 180 and inverter_battery > 0.4"
     cooldown_seconds: 60
     escalate_to: rule
     action_tier: B
+    reasoning_policy: post_action
 
-  # Tier C: Hard physical — propose breaker trip, await approval
+  # Tier C: Hard physical — propose relay/contactor-controlled shutdown, await approval
   - name: critical_fault
     condition: "load_current > rated_capacity * 3.0"
     cooldown_seconds: 0
@@ -448,10 +538,10 @@ actions:
       tier: B
       requires_approval: false # true = operator must approve each switch
 
-    - name: trip_main_breaker
+    - name: open_safety_circuit
       tier: C
       approval_message: |
-        PROPOSED: Trip main circuit breaker.
+        PROPOSED: Open the installer-wired safety circuit.
         REASON: {result.text}
         Reply YES to approve or NO to cancel.
 
@@ -461,7 +551,7 @@ actions:
   defaults:
     anomalous_draw: [alert_whatsapp, log_to_dashboard]
     source_switch_recommended: [switch_power_source, alert_sms]
-    critical_fault: [trip_main_breaker]
+    critical_fault: [open_safety_circuit]
     dangerous_overcurrent: [emergency_cutoff]
     daily_report: [alert_whatsapp]
 ```
@@ -475,6 +565,7 @@ device:
   id: energy-monitor-ikeja-01
   name: Ikeja Office Energy Monitor
   location: Lagos, Nigeria
+  deployment_profile: development # development | staging | production; staging/production enforce hardened posture
   rated_capacity_amps: 10.0 # Used in Tier D threshold calculations
 
 sensors:
@@ -502,6 +593,20 @@ skills:
       safe_default_action: log_to_dashboard
       secondary_contact_number: ${SECONDARY_WHATSAPP}
 
+security:
+  enforce_production_posture: false # staging/production profiles cannot opt out
+  skills:
+    require_signed: false # true => local/non-core skills must use ed25519 signatures
+
+database:
+  path: ori_state.db # production should place this under an encrypted mount
+
+state:
+  encryption:
+    mode: disabled # disabled | filesystem_required
+    encrypted_path_prefixes: [] # e.g. ["/var/lib/ori-encrypted"]
+    marker_file: "" # optional existing marker; startup fails if missing
+
 reasoning:
   default_tier: local
   local_model: qwen2.5-0.5b-instruct-q4_k_m
@@ -511,9 +616,39 @@ reasoning:
 gateway:
   enabled: false
   broker_url: mqtt://192.168.1.10:1883
+  broker_posture:
+    deployment_check: warning
+    anonymous_access: unknown
+    require_credentials: false
+    acl_policy: unknown
+  tls:
+    enabled: false
+    ca_certfile: ""
+    certfile: ""
+    keyfile: ""
+    keyfile_password_env: ""
+  auth:
+    enabled: false
+    shared_secret_env: GATEWAY_SHARED_SECRET
+    previous_shared_secret_env: ""
+    max_clock_skew_ms: 300000
+    replay_ttl_ms: 300000
+  encryption:
+    enabled: false
+  node_heartbeat:
+    enabled: true
+    interval_seconds: 30
+  reasoning:
+    enabled: true
+    timeout_ms: 10000
 
 actions:
   primary_alert_channel: sms # 'sms' | 'whatsapp' — use sms for Nigeria
+  alert_outbox:
+    retry_interval_minutes: 0.5
+    max_non_tier_d_attempts: 10
+    tier_d_critical_warning_threshold: 3
+    batch_size: 50
   whatsapp:
     enabled: true
     to_number: "${OWNER_WHATSAPP_NUMBER}"
@@ -523,11 +658,26 @@ actions:
   relay:
     enabled: false # true when physical relay is wired
     gpio_pin: 26
+  coap:
+    enabled: false
+    timeout_s: 2.0
+    retries: 1
+    allowed_hosts: ["192.168.1.70"]
+    commands:
+      open_bypass_valve:
+        uri: "coap://192.168.1.70/actuators/bypass"
+        method: POST
+        payload: '{"state":"open"}'
 
 logging:
   level: INFO
   file: ori.log
 ```
+
+Hook history helpers include `same_weekday_hour_baseline(sensor_id,
+lookback_weeks=8, min_weeks=3)`, which returns a bounded, site-local baseline
+from hourly retained history. Use it for deterministic context-aware anomaly
+suppression, not for Tier D safety cutoffs and not as a model-confidence proxy.
 
 ---
 
@@ -655,6 +805,8 @@ that must be de-energised on failure.
 - **No approval bypass for Tier C.** The approval workflow for hard physical
   actions cannot be skipped, disabled, or made optional in config. If a skill
   defines a Tier C action, the approval workflow runs. No exceptions.
+  Remote replies are scoped by default; bare `YES`/`NO` must not approve Tier C
+  unless a legacy/test deployment explicitly disables scoped reply enforcement.
 - **No LLM for Tier D.** Safety-critical actions fire from the rule engine.
   `bypass_llm: true` is set automatically for any trigger with `action_tier: D`.
 - **No microservices at device layer.** Modular monolith only.
@@ -674,8 +826,8 @@ that must be de-energised on failure.
 async def test_tier_a_fires_immediately():
     ...
 
-# Test Tier B default: soft physical fires without approval
-async def test_tier_b_autonomous_by_default():
+# Test Tier B post-action: soft physical executes before reasoning
+async def test_tier_b_post_action_dispatches_before_reasoning():
     ...
 
 # Test Tier B configured: soft physical requests approval when requires_approval: true
@@ -712,6 +864,8 @@ async def test_tier_d_bypasses_dispatcher():
 OWNER_WHATSAPP_NUMBER=whatsapp:+234XXXXXXXXXX
 OWNER_PHONE_NUMBER=+234XXXXXXXXXX
 SECONDARY_WHATSAPP=whatsapp:+234XXXXXXXXXX  # Escalation contact for Tier C no-response
+ORI_SMS_WEBHOOK_TOKEN=                # Shared token for inbound SMS webhook
+ORI_SMS_WEBHOOK_HMAC_SECRET=          # Required when webhook signature mode != token_only
 
 # WhatsApp (Twilio or WhatsApp Cloud API)
 TWILIO_ACCOUNT_SID=
@@ -723,8 +877,9 @@ AT_API_KEY=
 AT_USERNAME=
 AT_SENDER_ID=ORI
 
-# Cloud LLM (Tier 4 reasoning)
-ANTHROPIC_API_KEY=
+# Cloud provider keys belong in the gateway/product environment, not runtime.
+GATEWAY_SHARED_SECRET=  # Site-local MQTT envelope HMAC/encryption root secret.
+GATEWAY_PREVIOUS_SHARED_SECRET=  # Optional verify-only rotation secret.
 
 # Relay control (if physical relay wired)
 RELAY_GPIO_PIN=26

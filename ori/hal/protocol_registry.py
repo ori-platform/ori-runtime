@@ -10,13 +10,16 @@ SUPPORTED_SENSOR_PROTOCOLS: frozenset[str] = frozenset(
         "psutil",
         "i2c",
         "serial",
+        "solarman_modbus",
         "growatt",
         "victron",
         "zigbee",
         "lorawan",
+        "mqtt",
         "mqtt_perception",
         "usb_serial",
         "http",
+        "coap",
         "opcua",
         "smart",
     }
@@ -41,6 +44,10 @@ def make_adapter(protocol: str) -> BaseAdapter:
         from ori.hal.growatt_adapter import GrowattAdapter
 
         return GrowattAdapter()
+    if protocol == "solarman_modbus":
+        from ori.hal.solarman_modbus_adapter import SolarmanModbusAdapter
+
+        return SolarmanModbusAdapter()
     if protocol == "victron":
         from ori.hal.victron_adapter import VictronAdapter
 
@@ -53,6 +60,10 @@ def make_adapter(protocol: str) -> BaseAdapter:
         from ori.hal.lorawan_adapter import LoraWanAdapter
 
         return LoraWanAdapter()
+    if protocol == "mqtt":
+        from ori.hal.mqtt_adapter import MqttAdapter
+
+        return MqttAdapter()
     if protocol == "mqtt_perception":
         from ori.hal.mqtt_perception_adapter import MqttPerceptionAdapter
 
@@ -69,6 +80,10 @@ def make_adapter(protocol: str) -> BaseAdapter:
         from ori.hal.http_adapter import HttpAdapter
 
         return HttpAdapter()
+    if protocol == "coap":
+        from ori.hal.coap_adapter import CoapAdapter
+
+        return CoapAdapter()
     if protocol == "opcua":
         from ori.hal.opcua_adapter import OpcUaAdapter
 

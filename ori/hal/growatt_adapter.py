@@ -3,8 +3,6 @@
 
 import asyncio
 import logging
-import time
-from functools import partial
 from typing import Any
 
 from ori.hal.base import (
@@ -14,6 +12,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -42,16 +41,16 @@ _SENSOR_MAP: dict[str, tuple[int, int, float, str, bool]] = {
 _SUPPORTED = frozenset(_SENSOR_MAP)
 
 
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
 class GrowattAdapter(BaseAdapter):
-    """Growatt/Deye SolarmanV5 adapter.
+    """Growatt SolarmanV5 adapter.
 
     This adapter keeps connect() lightweight and lazily initializes the
     synchronous Solarman client at first read. All sync I/O is dispatched
-    through run_in_executor to avoid blocking the event loop.
+    through asyncio.to_thread to avoid blocking the event loop.
+
+    SolarmanV5 is the transport. The register map below is Growatt-shaped and
+    must not be treated as validated Deye/Sunsynk/Felicity support without a
+    model-specific register qualification.
     """
 
     def __init__(self) -> None:
@@ -110,8 +109,7 @@ class GrowattAdapter(BaseAdapter):
             closer = getattr(client, "close", None)
         if callable(closer):
             try:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, closer)
+                await asyncio.to_thread(closer)
             except Exception:
                 logger.warning("GrowattAdapter: exception during client close")
 
@@ -126,14 +124,13 @@ class GrowattAdapter(BaseAdapter):
                 "Run: pip install pysolarmanv5"
             )
         if not self._connected:
-            raise AdapterReadError("GrowattAdapter: not connected — call connect() first")
+            raise AdapterReadError(
+                "GrowattAdapter: not connected — call connect() first"
+            )
 
         async with self._breaker:
-            loop = asyncio.get_running_loop()
             try:
-                return await loop.run_in_executor(
-                    None, partial(self._read_sensor_value_sync, sensor_id)
-                )
+                return await asyncio.to_thread(self._read_sensor_value_sync, sensor_id)
             except ConnectionRefusedError as exc:
                 raise AdapterReadError(
                     f"GrowattAdapter: connection refused for host={self._host}:{self._port}"
@@ -156,7 +153,7 @@ class GrowattAdapter(BaseAdapter):
             sensor_type=self._sensor_type,
             value=round(value, 4),
             unit=unit,
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
             quality=1.0,
             metadata={
                 "source": "growatt",

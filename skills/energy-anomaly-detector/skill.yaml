@@ -2,7 +2,7 @@ name: energy-anomaly-detector
 version: 0.1.0
 author: wasiubakare
 license: Apache-2.0
-signature: ed25519:PENDING
+signature: bundled
 
 sensors_required:
   - type: current_clamp
@@ -11,19 +11,106 @@ sensors_required:
     protocol: i2c
   - type: current
     protocol: serial
+  - type: voltage
+    protocol: serial
+  - type: usb_power
+    protocol: usb_serial
+  - type: usb_current
+    protocol: usb_serial
+  - type: usb_voltage
+    protocol: usb_serial
 
 triggers:
-  - name: anomalous_draw
-    condition: "value > 8.0"
+  - name: sustained_overdraw
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current' or sensor_type == 'usb_current' or sensor_type == 'usb_power') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and deviation_percent >= overdraw_threshold_percent and sustained_high_ratio >= sustained_ratio_threshold"
+    cooldown_seconds: 600
+    escalate_to: local_slm
+    action_tier: A
+
+  - name: sudden_load_spike
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current' or sensor_type == 'usb_current' or sensor_type == 'usb_power') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and spike_ratio >= spike_ratio_threshold and deviation_percent >= (overdraw_threshold_percent / 2.0)"
     cooldown_seconds: 300
     escalate_to: local_slm
     action_tier: A
 
+  - name: unstable_power_draw
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current' or sensor_type == 'usb_current' or sensor_type == 'usb_power') and quality >= min_quality and baseline_valid == 1 and context_aware_suppression == 0 and recent_volatility_percent >= volatility_threshold_percent and deviation_percent >= (overdraw_threshold_percent / 3.0)"
+    cooldown_seconds: 600
+    escalate_to: local_slm
+    action_tier: A
+
   - name: dangerous_overcurrent
-    condition: "value > 20.0"
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'ads1115_current' or sensor_type == 'current' or sensor_type == 'usb_current') and value > dangerous_overcurrent_threshold"
     bypass_llm: true
     action_tier: D
     cooldown_seconds: 0
+
+  # Tier D — Grid overvoltage: protect equipment from damaging voltage levels
+  - name: voltage_overvoltage
+    condition: "(sensor_type == 'voltage' or sensor_type == 'usb_voltage') and sensor_id == 'grid-main_voltage' and value > overvoltage_threshold"
+    bypass_llm: true
+    action_tier: D
+    cooldown_seconds: 0
+
+  # Tier B — PHCN grid restored: switch load back from generator to grid
+  # phcn_restore_active is injected by hooks when load is confirmed on generator.
+  # Default is 0 (safe for deployments without live context).
+  - name: grid_phcn_restored
+    condition: "(sensor_type == 'voltage' or sensor_type == 'usb_voltage') and sensor_id == 'grid-main_voltage' and value >= grid_restore_voltage and phcn_restore_active == 1"
+    action_tier: B
+    reasoning_policy: post_action
+    cooldown_seconds: 0
+
+prompts:
+  sustained_overdraw: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining the
+    most likely cause and why it matters.
+    Do not include timestamps, currency, percentages, units, or action
+    statements.
+    Example: "Your generator kept running longer than needed after grid power
+    returned, which wastes fuel."
+
+  sudden_load_spike: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining the
+    most likely cause and why it matters.
+    Do not include timestamps, currency, percentages, units, or action
+    statements.
+    Example: "A large appliance likely started suddenly, which can stress your
+    electrical setup."
+
+  unstable_power_draw: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining the
+    most likely cause and why it matters.
+    Do not include timestamps, currency, percentages, units, or action
+    statements.
+    Example: "Your power usage is swinging up and down, which may point to an
+    equipment fault developing."
+
+  dangerous_overcurrent: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining the
+    immediate risk in plain language.
+    Do not include timestamps, currency, percentages, units, or action
+    statements.
+    Example: "A dangerous power surge was detected and this can damage
+    equipment quickly."
+
+  voltage_overvoltage: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining why
+    a sudden voltage spike is dangerous to connected equipment.
+    Do not include timestamps, currency, percentages, units, or action statements.
+    Example: "An unusually high voltage arrived from the grid and can damage sensitive electronics."
+
+  grid_phcn_restored: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining why
+    Ori switched the building back to grid power.
+    Do not include timestamps, currency, percentages, units, or action statements.
+    Example: "PHCN power returned to normal levels, so Ori switched the building back to grid supply."
 
 actions:
   available:
@@ -31,6 +118,46 @@ actions:
       tier: A
     - name: log_to_dashboard
       tier: A
+    # Tier D relay actions: override in deployment config after wiring is verified.
+    # See dangerous_overcurrent default comment below.
+    - name: switch_to_generator
+      tier: D
+    - name: switch_to_grid
+      tier: B
   defaults:
-    anomalous_draw: [alert_whatsapp, log_to_dashboard]
+    sustained_overdraw: [alert_whatsapp, log_to_dashboard]
+    sudden_load_spike: [alert_whatsapp, log_to_dashboard]
+    unstable_power_draw: [alert_whatsapp, log_to_dashboard]
+    # Tier D executes immediately (no LLM, no approval), but this bundled default
+    # remains informational so the skill is safe on deployments without relay
+    # hardware (e.g. phone/gateway-only or Pi without a wired relay).
+    #
+    # For edge-node energy cutoffs, override this action list in deployment config
+    # after relay wiring is physically verified and mapped in `actions.relay`.
+    # Example override: [trip_relay, alert_whatsapp, log_to_dashboard]
     dangerous_overcurrent: [alert_whatsapp, log_to_dashboard]
+    voltage_overvoltage: [switch_to_generator, alert_whatsapp, log_to_dashboard]
+    grid_phcn_restored: [switch_to_grid, alert_whatsapp, log_to_dashboard]
+
+config:
+  min_quality: 0.8
+  overdraw_threshold_percent: 30.0
+  spike_ratio_threshold: 1.5
+  sustained_ratio_threshold: 0.7
+  volatility_threshold_percent: 20.0
+  history_window: 10
+  persistence_window: 6
+  observed_window_minutes: 10
+  tariff_per_kwh: 225.0
+  currency_code: NGN
+  # Optional overrides:
+  # currency_symbol: "₦"
+  # country_code: NG
+  # line_voltage: 230.0
+  power_factor: 0.9
+  dangerous_overcurrent_threshold: 20.0
+  # Grid voltage triggers
+  overvoltage_threshold: 260.0
+  grid_restore_voltage: 200.0
+  # Injected to 1 by hooks when load is confirmed on generator; 0 = safe default
+  phcn_restore_active: 0

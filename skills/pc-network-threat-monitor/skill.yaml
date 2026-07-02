@@ -8,7 +8,7 @@ description: >
   Host behavioral anomaly detection for suspicious listener/socket/session
   changes on PC deployments.
 license: Apache-2.0
-signature: ed25519:PENDING
+signature: bundled
 
 sensors_required:
   - type: net_listening_sockets

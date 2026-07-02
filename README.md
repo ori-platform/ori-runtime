@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-1E6B4A?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-1E6B4A?style=flat-square)](https://python.org)
 [![CI](https://github.com/ori-platform/ori-runtime/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ori-platform/ori-runtime/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-alpha-C8A951?style=flat-square)](#release-status)
+[![Release](https://img.shields.io/badge/release-v1.0.0-1E6B4A?style=flat-square)](#release-status)
 [![Platform](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%20·%20Linux%20·%20macOS-C8A951?style=flat-square)](#)
 
 </div>
@@ -18,18 +18,19 @@
 
 > **IoT devices do not need more data. They need to reason about that data — and act on it.**
 
-Ori is an open-source **agentic IoT runtime** that gives physical devices **tiered autonomous reasoning** — from deterministic safety rules to local SLMs. This reasoning is governed by a **[Physical Actuation Trust](PRINCIPLES.md)** framework that defines exactly what an AI agent is permitted to do in the physical world, at what consequence level, and with what human oversight. Offline-first and cloud-optional. Runs on a $55 Raspberry Pi.
+Ori is an open-source **agentic IoT runtime** that gives physical devices **tiered autonomous reasoning** — from deterministic safety rules to local SLMs. This reasoning is governed by a **[Physical Actuation Trust](PRINCIPLES.md)** framework that defines exactly what an AI agent is permitted to do in the physical world, at what consequence level, and with what human oversight. Offline-first with an offline-capable safety core; gateway escalation is optional. Runs on a $55 Raspberry Pi.
 
 Built for the world's majority condition — unreliable power, intermittent connectivity, constrained hardware. Systems designed for constraint work everywhere.
 
 ## Release Status
 
-**Current channel: Alpha (`0.1.x`)**
+**Current channel: Stable (`1.0.x`)**
 
-- Runtime core is functional and publicly testable.
+- Runtime core is v1-stable for PoC, demo API, and controlled field deployment.
 - Safety invariants (tier guards, strict skill validation, sandbox boundaries) are CI-enforced on every PR.
-- APIs/config may still evolve between minor alpha releases.
-- Recommended use today: pilots, PoCs, and controlled deployments.
+- Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary.
+- Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
+- Release notes: [`docs/releases/v1.0.0.md`](docs/releases/v1.0.0.md)
 
 Related repos in the org:
 
@@ -56,17 +57,17 @@ Every existing IoT platform does the same thing: collect data, apply a threshold
         Estimated failure: 2 weeks.
         I've sent a service reminder to your WhatsApp."
 
-         — sent autonomously, from a $55 Pi, with no internet
+         — sent autonomously from a $55 Pi, without requiring cloud inference for safety decisions
 
 ✅ Ori (Tier B): "Grid voltage dropped to 174V. I have switched to
 inverter power automatically." ← Acted. Then told you.
 
 ✅ Ori (Tier C): "Critical fault detected on main circuit. I am
-proposing to trip the breaker. Reply YES to approve
-or NO to cancel. Auto-cancel in 5 minutes."
+proposing to open the protected-load safety circuit. Reply YES-AB12CD34
+to approve or NO-AB12CD34 to cancel. Auto-cancel in 5 minutes."
 ← Reasoned. Proposed. Awaiting you.
 
-✅ Ori (Tier D): [Relay trips immediately]
+✅ Ori (Tier D): [Installer-wired relay/contactor opens immediately]
 "Dangerous overcurrent (52A on 10A circuit). Emergency
 cutoff executed at 14:32." ← Safety. No waiting.
 ```
@@ -78,7 +79,7 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 ## What Ori Is Not
 
 - Not a monitoring dashboard like Grafana — Ori acts, not just displays
-- Not a cloud IoT platform like AWS IoT Core — Ori can run fully offline (Tier 1 + Tier 2), with optional gateway/cloud escalation
+- Not a cloud IoT platform like AWS IoT Core — Ori keeps an offline-capable safety core (Tier 1 + local Tier 2), with optional gateway escalation when connected
 - Not a notification system — alerts are Tier A, the least of what Ori does
 - Not just a rules engine — Ori pairs deterministic safety rules with LLM reasoning
 
@@ -120,6 +121,7 @@ For the full architectural specification, read [`CLAUDE.md`](CLAUDE.md). For the
 | Modbus RTU (RS485)   | ✅     | Industrial energy meters, PLCs, motor drives                           |
 | psutil               | ✅     | PC and server health monitoring (any laptop)                           |
 | MQTT                 | ✅     | WiFi-connected sensors/devices via an MQTT broker (commonly Mosquitto) |
+| CoAP (actuation)     | ✅     | Constrained-device command path for low-overhead control endpoints     |
 | OPC-UA               | ✅     | Industrial PLCs (IEC 62541)                                            |
 | SolarmanV5 (Growatt) | ✅     | Smart inverter integration                                             |
 | Zigbee               | ✅     | Smart-home sensors via MQTT bridge (for example zigbee2mqtt)           |
@@ -139,7 +141,7 @@ All adapters include a **hardware circuit breaker** that auto-isolates failing b
 | Full stack with local SLM | Raspberry Pi 4 4GB             | 4GB  | Validated reference hardware. 3–8s inference. |
 | Development / laptop      | Any modern machine             | 4GB+ | psutil adapter. No Pi required.               |
 
-The model file (Qwen2.5-0.5B Q4) is 500MB. The SQLite state store stays bounded under 80MB via the compaction pyramid regardless of deployment duration.
+The model file (Qwen2.5-0.5B Q4) is 500MB. The SQLite state store stays bounded under 80MB via the compaction pyramid regardless of deployment duration. Production/staging deployments must place the SQLite state path on an encrypted filesystem or mount and declare that posture under `state.encryption`; the runtime uses standard `sqlite3`, not SQLCipher.
 
 ---
 
@@ -151,12 +153,22 @@ Ori runs a paired decision system on every sensor event:
 
 ```text
 Tier 1  RULE ENGINE    microseconds · always available  · safety triggers
-Tier 2  LOCAL SLM      3-8 seconds  · fully offline     · everyday reasoning
-Tier 3  GATEWAY LLM    1-3 seconds  · LAN only          · cross-device reasoning
-Tier 4  CLOUD LLM      2-5 seconds  · internet          · deep analysis + reports
+Tier 2  LOCAL SLM      3-8 seconds  · offline-capable   · everyday reasoning
+Tier 3  GATEWAY LLM    1-3 seconds  · LAN only          · cross-device or cloud-backed reasoning
 ```
 
-Tiers 3 and 4 are wired in the elevator. The gateway service (`ori-platform/ori-gateway`) and cloud API connection are implemented as separate services — the runtime routes to them automatically when they are available on the LAN or internet respectively.
+- Tier 1 (Rule Engine) and Tier 2 (Local SLM) are fully implemented and available offline.
+- Tier 3 (Gateway LLM) is implemented over MQTT request/response and remains optional.
+- Cloud reasoning, when used, is a gateway backend, not a runtime dependency.
+- Production runtime-gateway MQTT deployments should follow
+  [`docs/MQTT_SECURITY.md`](docs/MQTT_SECURITY.md) for broker ACLs, network
+  isolation, and HMAC envelope configuration.
+- Public SMS webhook deployments should follow
+  [`docs/SMS_WEBHOOK_SECURITY.md`](docs/SMS_WEBHOOK_SECURITY.md). Runtime
+  sender allowlisting is necessary, but carrier-level sender spoofing requires
+  deployment controls such as a signing bridge, source CIDR allowlisting, or a
+  trusted reverse proxy.
+- The runtime is correctly described as an offline-capable safety runtime. Tier 1 and Tier D safety paths are available with zero network dependency.
 
 ### The Action Tier Framework — _What should I do about it?_
 
@@ -164,12 +176,12 @@ Tiers 3 and 4 are wired in the elevator. The gateway service (`ori-platform/ori-
 Tier A  INFORMATIONAL       Always autonomous
         Alerts, logs, reports — the agent acts without asking
 
-Tier B  SOFT PHYSICAL        Autonomous by default, configurable
+Tier B  SOFT PHYSICAL        Explicit approval or post-action policy
         Power source switching, thermostat adjustments, irrigation valves
-        The agent acts and tells you what it did
+        The agent either asks first or acts first and explains after
 
 Tier C  HARD PHYSICAL        Approval workflow — always
-        Breaker trips, equipment shutdown, high-consequence control
+        Relay/contactor-controlled shutdown, high-consequence control
         The agent reasons, proposes, and waits for your YES or NO
 
 Tier D  SAFETY-CRITICAL      Always autonomous, cannot be overridden
@@ -190,6 +202,9 @@ Ori is designed for [physical actuation trust](PRINCIPLES.md). The safety archit
 - **Sandboxed skill hooks** — community skills cannot import arbitrary modules. The sandbox enforces an explicit allowlist at import time
 - **Hardware circuit breakers** — failing sensor buses are auto-isolated using a three-state (CLOSED → OPEN → HALF_OPEN) circuit breaker so one bad sensor doesn't crash the runtime
 - **Approval workflows for hard physical actions** — Tier C actions always require operator approval via WhatsApp/SMS. No config flag to skip it
+- **Alert transport failover** — approval requests use the configured primary channel first, then fail over to the secondary channel if delivery fails
+
+For constrained deployments, a common pattern is MQTT for continuous telemetry plus CoAP for low-overhead command delivery.
 
 For the full set of security invariants, see [`AGENTS.md`](AGENTS.md#security-invariants--never-violate-these).
 
@@ -208,11 +223,12 @@ triggers:
 
   - name: grid_instability
     condition: "grid_voltage < 180 and inverter_battery > 0.4"
-    action_tier: B # → switches source, tells you after
+    action_tier: B
+    reasoning_policy: post_action # → switches source, explains after
 
   - name: critical_fault
     condition: "load_current > rated_capacity * 3.0"
-    action_tier: C # → "Trip breaker? Reply YES/NO"
+    action_tier: C # → "Open protected load safety circuit? Reply YES-<proposal_id>/NO-<proposal_id>"
 
   - name: dangerous_overcurrent
     condition: "load_current > rated_capacity * 5.0"
@@ -220,7 +236,7 @@ triggers:
     action_tier: D # → cuts power. no waiting.
 ```
 
-Bundled skills: **pc-system-health** (runs on any laptop), **energy-anomaly-detector**, **hvac-refrigerant-monitor**, and **site-safety-ppe**.
+Bundled skills: **pc-system-health** (runs on any laptop), **energy-anomaly-detector**, **retail-occupancy-optimizer**, **solar-performance-monitor**, **battery-lifecycle-observer**, **hvac-refrigerant-monitor**, and **site-safety-ppe**.
 
 Community skills live at **[ori-platform/ori-skills](https://github.com/ori-platform/ori-skills)**. The runtime enforces strict skill validation and sandboxed hook loading for community-installed skills.
 
@@ -233,6 +249,7 @@ When Ori proposes a hard physical action, this is what the operator receives:
 ```text
 ORI ALERT — Action Required
 Device: energy-monitor-ikeja-office-01
+Proposal ID: AB12CD34
 Time: Wednesday 14:32
 
 OBSERVATION:
@@ -244,13 +261,17 @@ Pattern consistent with a short circuit, not a temporary surge.
 Active fault propagation detected.
 
 PROPOSED ACTION:
-Trip the main circuit breaker to prevent equipment damage or fire.
+Open the installer-wired safety circuit to cut power to the protected load.
 
 CONFIDENCE: 94%
 
-Reply YES to approve  |  Reply NO to cancel
+Reply YES-AB12CD34 to approve  |  Reply NO-AB12CD34 to cancel
 Auto-cancel in 5 minutes if no response.
 ```
+
+The message is delivered over SMS (primary for Nigeria deployments) with automatic
+failover to WhatsApp when SMS is unavailable, or WhatsApp-first when configured.
+The same message format is used on both channels.
 
 The agent does the diagnosis. The operator approves or rejects a specific, fully-reasoned proposal.
 
@@ -260,14 +281,17 @@ The agent does the diagnosis. The operator approves or rejects a specific, fully
 
 Ori's **pc-system-health** skill runs on any laptop using `psutil`. No Raspberry Pi, no sensors, no wiring.
 
+> **Linux users:** See [docs/linux-setup.md](docs/linux-setup.md) for a step-by-step Linux setup guide, including a minimal validated config (`ori.linux.yaml.example`), Linux model paths, and troubleshooting for common Linux-specific issues.
+
 ```bash
 # Clone and install
 git clone https://github.com/ori-platform/ori-runtime.git
 cd ori-runtime
 python3 -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip          # required: old pip (<22) can't handle pyproject.toml editable installs
-pip install -e ".[dev]"
+
+# One-command dev bootstrap (deps + hooks + formatting baseline)
+bash scripts/bootstrap.sh
 
 # Verify everything works
 pytest tests/ -v
@@ -282,6 +306,29 @@ for t in skill.triggers:
     print(f'  Trigger: {t.name} tier={t.action_tier}')
 "
 ```
+
+## Install Targets
+
+`ori-runtime` has two intentionally different install shapes:
+
+```bash
+# Product/demo consumers: typed rule-evaluation boundary only.
+# This is what downstream FastAPI product/demo services should use for proof evaluation.
+python -m pip install "ori-runtime[eval] @ git+https://github.com/ori-platform/ori-runtime.git@<commit-or-tag>"
+
+# Runtime/device development: full transport, security, provider, and HAL deps.
+python -m pip install -e ".[runtime,dev]"
+
+# Edge deployment still uses the signed wheelhouse / hash-locked requirements path.
+bash scripts/build-wheelhouse.sh
+```
+
+The base package deliberately installs only the dependency needed by
+`ori.integration` (`PyYAML`) plus the packaged bundled skills. MQTT, SMS,
+WhatsApp, OPC-UA, HTTP adapters, crypto transports, and hardware/provider
+libraries live behind extras or the deployment wheelhouse. This keeps
+product/demo consumers from inheriting the full device
+runtime dependency surface while still using the real rule engine.
 
 ### Quick Local SLM Setup (Qwen GGUF)
 
@@ -301,7 +348,8 @@ curl -L https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen
 # reasoning:
 #   default_tier: local
 #   local_model: qwen2.5-0.5b-instruct-q4_k_m
-#   model_path: /Users/<you>/models
+#   model_path: /Users/<you>/models       # macOS
+#   # model_path: /home/<you>/models     # Linux
 #   offline_fallback: local_slm
 
 # 5) Optional dev convenience: auto-load .env before config parse
@@ -309,13 +357,20 @@ export ORI_AUTOLOAD_DOTENV=true
 
 # 6) Start runtime
 python -m ori.runtime --config ori.local.yaml
+
+# 7) Optional: hot-reload skills without restart (Unix only)
+# Reload applies to new events only; in-flight actions keep previous skill config.
+kill -HUP "$(pgrep -f 'python -m ori.runtime' | head -n 1)"
 ```
 
 ### Smoke Tests
 
 ```bash
-# Full runtime smoke test (requires ori.local.yaml configured)
+# Full runtime smoke test (auto-selects config by platform if arg #1 is omitted)
 bash scripts/smoke-runtime-local.sh
+
+# Linux explicit config (recommended)
+bash scripts/smoke-runtime-local.sh ori.yaml
 
 # Force pretty console output
 ORI_PRETTY_LOGS=true bash scripts/smoke-runtime-local.sh
@@ -326,6 +381,12 @@ ORI_PRETTY_LOGS=false bash scripts/smoke-runtime-local.sh
 # Live host-health report (real psutil readings + skill trigger evaluation)
 ORI_PRETTY_LOGS=true .venv/bin/python scripts/pc_health_report.py
 
+# Release wheel smoke test
+# Builds the wheel, installs it into a clean venv, verifies PEP 561 typing,
+# bundled skill packaging, and a real Tier D rule evaluation through
+# ori.integration.
+bash scripts/smoke-release-wheel.sh
+
 # Local SLM quality smoke test (without starting full runtime)
 python - <<'PY'
 import asyncio
@@ -333,7 +394,8 @@ from ori.reasoning.local_llm import LocalLLM
 
 async def main():
     llm = LocalLLM(
-        model_path="/Users/<you>/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        model_path="/Users/<you>/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",  # macOS
+        # model_path="/home/<you>/models/qwen2.5-0.5b-instruct-q4_k_m.gguf",  # Linux
         context_window=2048,
     )
     result = await llm.reason("CPU at 96% for 10 minutes. Give 2 short operator actions.")
@@ -364,9 +426,21 @@ Troubleshooting:
 pytest tests/ -v                              # Full suite
 pytest tests/test_rule_engine.py -v           # Specific module
 pytest tests/ --cov=ori --cov-report=term-missing  # With coverage
+bash scripts/typecheck-boundaries.sh          # Scoped mypy gate for public/runtime contracts
+bash scripts/smoke-release-wheel.sh           # Installed-wheel release readiness smoke
 ```
 
 The test suite covers all layers — HAL adapters, event bus, rule engine (with AST safety validation), action dispatcher (all four tiers), skill loader, state store, and runtime.
+
+Run `scripts/smoke-release-wheel.sh` before tagging a runtime release. It is
+deliberately stricter than an editable install: it builds the wheel, verifies
+the wheel metadata keeps the base install slim for product/demo consumers,
+installs runtime dependencies from hash-locked requirements, installs the wheel
+with `--no-deps`, then verifies the public `ori.integration` rule-evaluation
+boundary is typed (`ori/py.typed`) and can resolve bundled skill data from the
+installed artifact. This protects downstream product/demo API paths from
+type-checker ignores, accidental dependency bloat, and source-checkout-only
+packaging mistakes.
 
 ## Security
 
@@ -376,12 +450,12 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 
 ## Roadmap
 
-| Phase  | Status          | Milestone                                                             |
-| ------ | --------------- | --------------------------------------------------------------------- |
-| Core   | ✅ Active Alpha | Core runtime with 6-layer architecture and 4-tier action framework    |
-| PoC    | 🔨 In Progress  | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video. |
-| Launch | 🔨 In Progress  | Skills Hub. CLI tooling. Phone-as-gateway (Termux path live).         |
-| Growth | 🗓️ Planned      | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.          |
+| Phase  | Status         | Milestone                                                             |
+| ------ | -------------- | --------------------------------------------------------------------- |
+| Core   | ✅ Stable v1   | Core runtime with 6-layer architecture and 4-tier action framework    |
+| PoC    | 🔨 In Progress | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video. |
+| Launch | 🔨 In Progress | Skills Hub. CLI tooling. Phone-as-gateway (Termux path live).         |
+| Growth | 🗓️ Planned     | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.          |
 
 ---
 
@@ -394,7 +468,7 @@ We welcome contributions! Start here:
 3. **Understand the extension points:** [`AGENTS.md`](AGENTS.md)
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[runtime,dev]"
 pytest tests/ -v
 ```
 

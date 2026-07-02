@@ -38,7 +38,11 @@ def _smartctl_payload() -> dict:
             "table": [
                 {"id": 5, "name": "Reallocated_Sector_Ct", "raw": {"value": 2}},
                 {"id": 9, "name": "Power_On_Hours", "raw": {"value": 8123}},
-                {"id": 241, "name": "Total_LBAs_Written", "raw": {"value": 1_500_000_000}},
+                {
+                    "id": 241,
+                    "name": "Total_LBAs_Written",
+                    "raw": {"value": 1_500_000_000},
+                },
                 {"id": 233, "name": "Media_Wearout_Indicator", "raw": {"value": 30}},
             ]
         },
@@ -89,7 +93,9 @@ class TestSmartAdapter:
         with patch("ori.hal.smart_adapter._PYSMART_AVAILABLE", False):
             await adapter.connect(_config(sensor_type="power_on_hours"))
             with patch.object(adapter, "_run_smartctl_json", return_value=payload):
-                with pytest.raises(AdapterReadError, match="SMART is not available/enabled"):
+                with pytest.raises(
+                    AdapterReadError, match="SMART is not available/enabled"
+                ):
                     await adapter.read("drive-health")
 
     @pytest.mark.asyncio
@@ -123,7 +129,9 @@ class TestSmartAdapter:
     def test_smartctl_execution_failure_raises(self):
         adapter = SmartAdapter()
         adapter._device = "/dev/sda"
-        proc = SimpleNamespace(returncode=8, stdout=json.dumps({}), stderr="permission denied")
+        proc = SimpleNamespace(
+            returncode=8, stdout=json.dumps({}), stderr="permission denied"
+        )
         with patch("subprocess.run", return_value=proc):
             with pytest.raises(AdapterReadError, match="smartctl failed"):
                 adapter._run_smartctl_json()

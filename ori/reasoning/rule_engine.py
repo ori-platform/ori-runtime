@@ -4,11 +4,11 @@
 import ast
 import logging
 import math
-import time
 from dataclasses import dataclass
 from typing import Any
 
 from ori.network.events import OriEvent
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +74,10 @@ class RuleResult:
     matched: bool
     action_tier: str  # 'A' | 'B' | 'C' | 'D'
     rule_name: str | None = None
-    escalate_to: str | None = None  # 'rule' | 'local_slm' | 'gateway' | 'cloud'
+    escalate_to: str | None = None  # 'rule' | 'local_slm' | 'gateway'
     bypass_llm: bool = False
+    reasoning_policy: str | None = None  # e.g. 'post_action' for Tier B triggers
+    requires_approval: bool = False
     action: str | None = None
     confidence: float = 1.0
 
@@ -105,11 +107,21 @@ class EvalContext:
 
     def avg_24h(self, sensor_id: str) -> float:
         """Return 24-hour rolling average for *sensor_id* (0.0 if unavailable)."""
-        return self._cache.get(("avg_24h", sensor_id), 0.0)
+        value = self._cache.get(("avg_24h", sensor_id), 0.0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        return float(value)
 
     def last_n(self, sensor_id: str, n: int) -> list[float]:
         """Return the last *n* values for *sensor_id* (empty list if unavailable)."""
-        return self._cache.get(("last_n", sensor_id, n), [])
+        values = self._cache.get(("last_n", sensor_id, n), [])
+        if not isinstance(values, list):
+            return []
+        return [
+            float(value)
+            for value in values
+            if not isinstance(value, bool) and isinstance(value, (int, float))
+        ]
 
     def as_dict(self) -> dict[str, Any]:
         """Return the namespace dict used for ``eval``."""
@@ -231,7 +243,7 @@ def _check_safety_ast(condition: str) -> None:
             continue
 
         # ast.Call — only permit history.method(...) calls.
-        if node_type is ast.Call:
+        if isinstance(node, ast.Call):
             func = node.func
             if (
                 isinstance(func, ast.Attribute)
@@ -246,11 +258,9 @@ def _check_safety_ast(condition: str) -> None:
             )
 
         # ast.Attribute — only permit access on the history object.
-        if node_type is ast.Attribute:
-            if (
-                isinstance(node.value, ast.Name)
-                and node.value.id in _ALLOWED_ATTRIBUTE_ROOTS
-            ):
+        if isinstance(node, ast.Attribute):
+            value = node.value
+            if isinstance(value, ast.Name) and value.id in _ALLOWED_ATTRIBUTE_ROOTS:
                 continue
             raise RuleEngineSafetyError(
                 f"Rule condition contains forbidden attribute access: {condition!r}"
@@ -263,15 +273,36 @@ def _check_safety_ast(condition: str) -> None:
         )
 
 
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
 def _rule_get(rule: Any, key: str, default: Any = None) -> Any:
     """Read rule fields from either dict rules or Trigger dataclasses."""
     if isinstance(rule, dict):
         return rule.get(key, default)
     return getattr(rule, key, default)
+
+
+def _eval_checked_condition(condition: str, namespace: dict[str, Any]) -> bool:
+    return bool(eval(condition, {"__builtins__": {}}, namespace))  # noqa: S307
+
+
+def evaluate_condition_safely(
+    condition: str,
+    context: dict[str, Any],
+    *,
+    history_cache: dict[tuple, Any] | None = None,
+) -> bool:
+    """Validate and evaluate one rule condition with the RuleEngine sandbox.
+
+    This helper is for code paths that need rule-condition semantics without
+    constructing a full :class:`RuleEngine` event evaluation. It applies the
+    same AST whitelist and ``history`` namespace wrapper used by RuleEngine.
+
+    Raises:
+        RuleEngineSafetyError: if the condition contains unsupported syntax.
+        Exception: if evaluation fails because required context is unavailable.
+    """
+    _check_safety_ast(condition)
+    namespace = EvalContext(dict(context), history_cache).as_dict()
+    return _eval_checked_condition(condition, namespace)
 
 
 class RuleEngine:
@@ -342,16 +373,16 @@ class RuleEngine:
         # Pre-fetch history if needed to safely inject into synchronous eval.
         history_cache: dict[tuple, Any] = {}
         for rule in rules:
-            condition = _rule_get(rule, "condition", "")
-            if not condition:
+            prefetch_condition = _rule_get(rule, "condition", "")
+            if not prefetch_condition:
                 continue
-            _check_safety_ast(condition)
-            history_calls = _extract_history_calls(condition)
+            _check_safety_ast(prefetch_condition)
+            history_calls = _extract_history_calls(prefetch_condition)
             if state_store is None:
                 continue
             for method, args in history_calls:
                 if method == "avg_24h":
-                    key = ("avg_24h", args[0])
+                    key: tuple[Any, ...] = ("avg_24h", args[0])
                     if key in history_cache:
                         continue
                     try:
@@ -370,7 +401,9 @@ class RuleEngine:
                         continue
                     try:
                         readings = await state_store.get_history(args[0], limit=args[1])
-                        history_cache[key] = [r.value for r in readings] if readings else []
+                        history_cache[key] = (
+                            [r.value for r in readings] if readings else []
+                        )
                     except Exception:
                         history_cache[key] = []
                         logger.warning(
@@ -389,6 +422,8 @@ class RuleEngine:
             bypass_llm: bool = bool(_rule_get(rule, "bypass_llm", False))
             action_tier: str = str(_rule_get(rule, "action_tier", "A"))
             escalate_to: str | None = _rule_get(rule, "escalate_to")
+            reasoning_policy: str | None = _rule_get(rule, "reasoning_policy")
+            requires_approval: bool = bool(_rule_get(rule, "requires_approval", False))
             action: str | None = _rule_get(rule, "action")
             cooldown_s: int = int(_rule_get(rule, "cooldown_seconds", 0))
 
@@ -396,7 +431,7 @@ class RuleEngine:
                 continue
 
             try:
-                matched = bool(eval(condition, {"__builtins__": {}}, namespace))  # noqa: S307
+                matched = _eval_checked_condition(condition, namespace)
             except NameError as exc:
                 # Expected: sensor variable not present in this event's namespace.
                 # The runtime evaluates all triggers on every event; sensors not
@@ -424,7 +459,7 @@ class RuleEngine:
                 rec = self._cooldowns.get(name)
                 if (
                     rec is not None
-                    and (_now_ms() - rec.last_fired_ms) < cooldown_s * 1000
+                    and (now_ms() - rec.last_fired_ms) < cooldown_s * 1000
                 ):
                     logger.debug(
                         "RuleEngine: rule %r suppressed by cooldown (%ds)",
@@ -434,7 +469,7 @@ class RuleEngine:
                     continue
 
             # Record fire time
-            self._cooldowns[name] = _CooldownRecord(last_fired_ms=_now_ms())
+            self._cooldowns[name] = _CooldownRecord(last_fired_ms=now_ms())
 
             logger.info(
                 "RuleEngine: rule %r matched (tier=%s, bypass_llm=%s)",
@@ -448,6 +483,8 @@ class RuleEngine:
                 rule_name=name,
                 escalate_to=escalate_to,
                 bypass_llm=bypass_llm,
+                reasoning_policy=reasoning_policy,
+                requires_approval=requires_approval,
                 action=action,
                 action_tier=action_tier,
                 confidence=1.0,

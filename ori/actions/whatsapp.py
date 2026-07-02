@@ -21,9 +21,9 @@ Usage
 
     ok = await action.send("Hello", to_number="whatsapp:+234XXXXXXXXXX")
 
-    msg = await action.send_approval_request(result, "trip_main_breaker",
-                                             timeout_seconds=300,
-                                             to_number="whatsapp:+234XXXXXXXXXX")
+    msg, delivered = await action.send_approval_request(result, "open_safety_circuit",
+                                                        timeout_seconds=300,
+                                                        to_number="whatsapp:+234XXXXXXXXXX")
 
     reply = await action.listen_for_response("whatsapp:+234XXXXXXXXXX",
                                              timeout_seconds=300)
@@ -33,9 +33,25 @@ import asyncio
 import logging
 import os
 import time
-from typing import Protocol, runtime_checkable
+from collections.abc import Awaitable, Callable
+from typing import Any, Protocol, runtime_checkable
 
 from ori.network.events import ReasoningResult
+from ori.security.remote_command_responses import (
+    format_remote_command_execution_response,
+    format_remote_command_rejection_response,
+)
+from ori.security.remote_command_throttle import (
+    RemoteCommandThrottleDecision,
+    evaluate_rejection_feedback,
+)
+from ori.security.remote_commands import (
+    RemoteCommand,
+    RemoteCommandVerifier,
+    extract_remote_command_payload,
+    verify_extracted_remote_command,
+)
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +114,24 @@ class TwilioProvider:
         self._sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
         self._token = os.environ.get("TWILIO_AUTH_TOKEN", "")
         self._from = os.environ.get("TWILIO_WHATSAPP_FROM", "")
+        self._request_timeout_s = max(
+            1.0, float(os.environ.get("TWILIO_REQUEST_TIMEOUT_S", "5.0"))
+        )
+        self._min_incoming_poll_interval_s = max(
+            1.0, float(os.environ.get("TWILIO_INCOMING_MIN_POLL_INTERVAL_S", "5.0"))
+        )
+        self._rate_limit_cooldown_s = max(
+            5.0, float(os.environ.get("TWILIO_RATE_LIMIT_COOLDOWN_S", "30.0"))
+        )
+        self._last_incoming_poll_monotonic = 0.0
+        self._next_incoming_poll_monotonic = 0.0
         self._ready = bool(self._sid and self._token and self._from)
+        if self._ready and not self._from.lower().startswith("whatsapp:+"):
+            logger.error(
+                "TwilioProvider: TWILIO_WHATSAPP_FROM must start with 'whatsapp:+'; got %r",
+                self._from,
+            )
+            self._ready = False
         if not self._ready:
             logger.warning(
                 "TwilioProvider: TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / "
@@ -115,6 +148,12 @@ class TwilioProvider:
                 "TwilioProvider.send: skipped (credentials not configured). to=%r", to
             )
             return False
+        if not str(to).lower().startswith("whatsapp:+"):
+            logger.error(
+                "TwilioProvider.send: destination must start with 'whatsapp:+'; got %r",
+                to,
+            )
+            return False
 
         try:
             from twilio.rest import Client  # type: ignore[import-untyped]
@@ -122,14 +161,14 @@ class TwilioProvider:
             client = Client(self._sid, self._token)
             # Twilio's Python SDK is synchronous — run in executor to avoid
             # blocking the event loop.
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: client.messages.create(
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.messages.create,
                     body=message,
                     from_=self._from,
                     to=to,
                 ),
+                timeout=self._request_timeout_s,
             )
             logger.info("TwilioProvider.send: message delivered to %r", to)
             return True
@@ -144,6 +183,22 @@ class TwilioProvider:
         """
         if not self._ready:
             return []
+        if not str(from_number).lower().startswith("whatsapp:+"):
+            logger.error(
+                "TwilioProvider.get_incoming: source number must start with 'whatsapp:+'; got %r",
+                from_number,
+            )
+            return []
+
+        now_mono = time.monotonic()
+        if now_mono < self._next_incoming_poll_monotonic:
+            return []
+        if (
+            now_mono - self._last_incoming_poll_monotonic
+            < self._min_incoming_poll_interval_s
+        ):
+            return []
+        self._last_incoming_poll_monotonic = now_mono
 
         try:
             import datetime
@@ -155,18 +210,27 @@ class TwilioProvider:
                 since_ms / 1000.0, tz=datetime.timezone.utc
             )
             client = Client(self._sid, self._token)
-            loop = asyncio.get_running_loop()
-
-            messages = await loop.run_in_executor(
-                None,
-                lambda: client.messages.list(
+            messages = await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.messages.list,
                     from_=from_number,
                     to=self._from,
                     date_sent_after=since_dt,
                 ),
+                timeout=self._request_timeout_s,
             )
             return [m.body for m in messages]
-        except Exception:
+        except Exception as exc:
+            status = getattr(exc, "status", None)
+            code = getattr(exc, "code", None)
+            if status == 429 or code == 20429:
+                self._next_incoming_poll_monotonic = (
+                    time.monotonic() + self._rate_limit_cooldown_s
+                )
+                logger.warning(
+                    "TwilioProvider.get_incoming: rate-limited; backing off for %.1fs",
+                    self._rate_limit_cooldown_s,
+                )
             logger.exception(
                 "TwilioProvider.get_incoming: failed to fetch messages from %r",
                 from_number,
@@ -185,21 +249,33 @@ class WhatsAppAction:
             :class:`TwilioProvider` instance constructed from environment
             variables.
 
-    The approval workflow (used for Tier C hard-physical actions):
+    Tier C approval orchestration lives in ``ActionDispatcher`` via
+    ``AlertFailoverSender``. This class provides the transport primitives
+    used there (``send`` and ``listen_for_response``).
 
-    1. Call :meth:`send_approval_request` — formats and sends the canonical
-       approval message template, returns the formatted string for logging.
-    2. Call :meth:`listen_for_response` — polls for an inbound YES/NO reply
-       every 5 seconds until *timeout_seconds* elapses.
-    3. Pass the returned string to
-       :func:`~ori.reasoning.action_dispatcher.parse_approval_response` to
-       decide whether to execute or fall back to ``safe_default_action``.
+    ``send_approval_request`` is retained for standalone integrations and tests,
+    but is not used by the runtime's built-in approval workflow.
     """
 
     _POLL_INTERVAL_SECONDS: int = 5
 
-    def __init__(self, provider: WhatsAppProvider | None = None) -> None:
+    def __init__(
+        self,
+        provider: WhatsAppProvider | None = None,
+        *,
+        state_store: Any = None,
+        remote_command_verifier: RemoteCommandVerifier | None = None,
+        remote_command_handler: Callable[[RemoteCommand], Awaitable[Any]] | None = None,
+        remote_command_incident_handler: Callable[
+            [RemoteCommandThrottleDecision], Awaitable[Any]
+        ]
+        | None = None,
+    ) -> None:
         self._provider: WhatsAppProvider = provider or TwilioProvider()
+        self._state_store = state_store
+        self._remote_command_verifier = remote_command_verifier
+        self._remote_command_handler = remote_command_handler
+        self._remote_command_incident_handler = remote_command_incident_handler
 
     # ------------------------------------------------------------------
     # Public API
@@ -225,21 +301,22 @@ class WhatsAppAction:
         timeout_seconds: int,
         to_number: str,
         device_id: str = "ori-device",
-    ) -> str:
+    ) -> tuple[str, bool]:
         """Format and send the canonical Tier C approval request.
 
         Args:
             result: The :class:`~ori.network.events.ReasoningResult` from the
                 Intelligence Elevator.
             action: Human-readable description of the proposed action
-                (e.g. ``"trip_main_breaker"``).
+                (e.g. ``"open_safety_circuit"``).
             timeout_seconds: Seconds before the request auto-cancels.
             to_number: Destination WhatsApp number
                 (e.g. ``"whatsapp:+234XXXXXXXXXX"``).
             device_id: Device identifier shown in the alert header.
 
         Returns:
-            The formatted message string (useful for logging / audit trail).
+            ``(message, delivered)`` where ``message`` is the formatted string
+            (for audit trail) and ``delivered`` is the provider send status.
         """
         import datetime
 
@@ -254,8 +331,8 @@ class WhatsAppAction:
             confidence=f"{result.confidence:.0%}",
             timeout=timeout_seconds,
         )
-        await self._provider.send(to_number, message)
-        return message
+        delivered = await self._provider.send(to_number, message)
+        return message, bool(delivered)
 
     async def listen_for_response(
         self,
@@ -281,13 +358,75 @@ class WhatsAppAction:
         Returns:
             The first message body received, or None on timeout.
         """
-        since_ms = since_ms if since_ms is not None else int(time.time() * 1000)
+        since_ms = since_ms if since_ms is not None else now_ms()
         deadline = time.monotonic() + timeout_seconds
+        seen_remote_command_ids: set[str] = set()
 
         while time.monotonic() < deadline:
             messages = await self._provider.get_incoming(from_number, since_ms)
-            if messages:
-                reply = messages[0]
+            for reply in messages:
+                command_payload = {"text": reply}
+                extracted_command = extract_remote_command_payload(
+                    command_payload,
+                    channel="whatsapp",
+                    from_number=from_number,
+                )
+                if extracted_command is not None:
+                    command_id = str(extracted_command.get("command_id", "") or "")
+                    if command_id and command_id in seen_remote_command_ids:
+                        continue
+                    if command_id:
+                        seen_remote_command_ids.add(command_id)
+                    command_result = await verify_extracted_remote_command(
+                        extracted_command,
+                        channel="whatsapp",
+                        state_store=self._state_store,
+                        verifier=self._remote_command_verifier,
+                    )
+                    if command_result.accepted:
+                        logger.info(
+                            "WhatsAppAction.listen_for_response: accepted remote command command_id=%s command=%s",
+                            command_result.command.command_id
+                            if command_result.command
+                            else "",
+                            command_result.command.command
+                            if command_result.command
+                            else "",
+                        )
+                        if (
+                            self._remote_command_handler is not None
+                            and command_result.command
+                        ):
+                            execution_result = await self._remote_command_handler(
+                                command_result.command
+                            )
+                            await self._send_remote_command_feedback(
+                                to_number=from_number,
+                                message=format_remote_command_execution_response(
+                                    execution_result
+                                ),
+                            )
+                    else:
+                        logger.warning(
+                            "WhatsAppAction.listen_for_response: rejected remote command reason=%s",
+                            command_result.reason,
+                        )
+                        throttle_decision = await evaluate_rejection_feedback(
+                            state_store=self._state_store,
+                            channel="whatsapp",
+                            from_number=from_number,
+                        )
+                        if throttle_decision.incident_logged:
+                            await self._notify_remote_command_incident(
+                                throttle_decision
+                            )
+                        if throttle_decision.send_feedback:
+                            await self._send_remote_command_feedback(
+                                to_number=from_number,
+                                message=format_remote_command_rejection_response(),
+                            )
+                    continue
+
                 logger.info(
                     "WhatsAppAction.listen_for_response: received reply from %r: %r",
                     from_number,
@@ -307,3 +446,35 @@ class WhatsAppAction:
             from_number,
         )
         return None
+
+    async def _send_remote_command_feedback(
+        self,
+        *,
+        to_number: str,
+        message: str,
+    ) -> bool:
+        try:
+            sent = await self.send(message, to_number)
+        except Exception:
+            logger.exception(
+                "WhatsAppAction: remote command feedback send raised for to=%r",
+                to_number,
+            )
+            return False
+        if not sent:
+            logger.warning(
+                "WhatsAppAction: failed to send remote command feedback to %r",
+                to_number,
+            )
+        return bool(sent)
+
+    async def _notify_remote_command_incident(
+        self,
+        decision: RemoteCommandThrottleDecision,
+    ) -> None:
+        if self._remote_command_incident_handler is None:
+            return
+        try:
+            await self._remote_command_incident_handler(decision)
+        except Exception:
+            logger.exception("WhatsAppAction: remote command incident handler failed")

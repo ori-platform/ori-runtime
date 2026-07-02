@@ -72,7 +72,9 @@ class _FakeSerial:
         if self._last_request is None:
             return b""
         slave_id, register, count = self._last_request
-        return self._responses.get((register, count), _modbus_response(slave_id, count, 0))
+        return self._responses.get(
+            (register, count), _modbus_response(slave_id, count, 0)
+        )
 
     def close(self) -> None:
         self.is_open = False
@@ -120,12 +122,87 @@ class TestUsbSerialAdapter:
             patch("ori.hal.usb_serial_adapter._PYSERIAL_AVAILABLE", True),
             patch("ori.hal.usb_serial_adapter._serial_module", fake_module),
         ):
-            await adapter.connect(_config(sensor_type="usb_power", device_path="/dev/ttyUSB9"))
+            await adapter.connect(
+                _config(sensor_type="usb_power", device_path="/dev/ttyUSB9")
+            )
 
         assert adapter.is_connected is True
         assert adapter._device_path == "/dev/ttyUSB9"
         assert adapter._baud_rate == 9600
         assert adapter._sensor_type == "usb_power"
+        assert adapter._transport == "serial"
+
+    @pytest.mark.asyncio
+    async def test_connect_uses_pyserial_url_transport(self):
+        adapter = UsbSerialAdapter()
+        opened: dict[str, object] = {}
+
+        def serial_for_url(port: str, **kwargs):
+            opened["port"] = port
+            opened["kwargs"] = kwargs
+            return _FakeSerial(port=port, **kwargs)
+
+        fake_module = SimpleNamespace(Serial=_FakeSerial, serial_for_url=serial_for_url)
+        with (
+            patch("ori.hal.usb_serial_adapter._PYSERIAL_AVAILABLE", True),
+            patch("ori.hal.usb_serial_adapter._serial_module", fake_module),
+        ):
+            await adapter.connect(
+                _config(
+                    sensor_type="usb_power",
+                    device_path="socket://127.0.0.1:7000",
+                )
+            )
+
+        assert adapter.is_connected is True
+        assert adapter._transport == "socket"
+        assert opened["port"] == "socket://127.0.0.1:7000"
+
+    @pytest.mark.asyncio
+    async def test_auto_detects_direct_serial_device_when_enabled(self):
+        adapter = UsbSerialAdapter()
+        fake_module = SimpleNamespace(Serial=_FakeSerial)
+        config = _config()
+        config.pop("device_path")
+        config["auto_detect_device_path"] = True
+
+        with (
+            patch("ori.hal.usb_serial_adapter._PYSERIAL_AVAILABLE", True),
+            patch("ori.hal.usb_serial_adapter._serial_module", fake_module),
+            patch(
+                "ori.hal.usb_serial_adapter._find_direct_serial_device",
+                return_value="/dev/ttyACM0",
+            ),
+        ):
+            await adapter.connect(config)
+
+        assert adapter.is_connected is True
+        assert adapter._device_path == "/dev/ttyACM0"
+
+    @pytest.mark.asyncio
+    async def test_termux_usb_without_serial_stream_has_actionable_error(self):
+        adapter = UsbSerialAdapter()
+        fake_module = SimpleNamespace(Serial=_FakeSerial)
+        config = _config()
+        config.pop("device_path")
+
+        with (
+            patch("ori.hal.usb_serial_adapter._PYSERIAL_AVAILABLE", True),
+            patch("ori.hal.usb_serial_adapter._serial_module", fake_module),
+            patch("ori.hal.usb_serial_adapter.asyncio.to_thread") as to_thread,
+            patch(
+                "ori.hal.usb_serial_adapter._list_termux_usb_devices_sync",
+                return_value=["/dev/bus/usb/001/002"],
+            ) as list_termux,
+        ):
+
+            async def run_in_thread(func, *args, **kwargs):
+                return func(*args, **kwargs)
+
+            to_thread.side_effect = run_in_thread
+            with pytest.raises(AdapterConnectionError, match="termux-usb can see"):
+                await adapter.connect(config)
+            to_thread.assert_called_once_with(list_termux)
 
     @pytest.mark.asyncio
     async def test_read_sensor_types(self):

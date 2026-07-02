@@ -2,7 +2,7 @@ name: example-skill-template
 version: 0.1.0
 author: your-name
 license: Apache-2.0
-signature: ed25519:PENDING
+signature: bundled
 
 sensors_required:
   - type: current_clamp

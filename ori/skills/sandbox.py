@@ -6,28 +6,32 @@ import types
 from pathlib import Path
 from typing import Optional
 
-_ALLOWED_IMPORTS: frozenset = frozenset({
-    'math',
-    'statistics',
-    'datetime',
-    'time',
-    'collections',
-    'itertools',
-    'functools',
-    'json',
-    're',
-    'string',
-    'ori.network.events',
-})
+_ALLOWED_IMPORTS: frozenset = frozenset(
+    {
+        "math",
+        "statistics",
+        "datetime",
+        "time",
+        "collections",
+        "itertools",
+        "functools",
+        "json",
+        "re",
+        "string",
+        "ori.network.events",
+    }
+)
 
-_BLOCKED_BUILTINS: frozenset = frozenset({
-    'open',
-    'exec',
-    'eval',
-    '__import__',
-    'compile',
-    'breakpoint',
-})
+_BLOCKED_BUILTINS: frozenset = frozenset(
+    {
+        "open",
+        "exec",
+        "eval",
+        "__import__",
+        "compile",
+        "breakpoint",
+    }
+)
 
 
 class SkillSecurityError(Exception):
@@ -46,7 +50,7 @@ class RestrictedImportFinder:
 
         # Allow intermediate packages of explicitly allowed dotted modules
         for allowed in _ALLOWED_IMPORTS:
-            if allowed.startswith(fullname + '.'):
+            if allowed.startswith(fullname + "."):
                 return None  # intermediate package, allow
 
         # Block everything else
@@ -69,7 +73,7 @@ def load_hooks_restricted(hooks_path: str) -> Optional[types.ModuleType]:
     finder = RestrictedImportFinder()
     sys.meta_path.insert(0, finder)
     try:
-        source = path.read_text(encoding='utf-8')
+        source = path.read_text(encoding="utf-8")
 
         module = types.ModuleType(path.stem)
         module.__file__ = str(path)
@@ -82,17 +86,16 @@ def load_hooks_restricted(hooks_path: str) -> Optional[types.ModuleType]:
         # the same allowlist as RestrictedImportFinder so that direct
         # __import__('os') calls are also rejected.
         import builtins as _builtins_module
+
         _original_import = _builtins_module.__import__
 
         def _restricted_import(name, *args, **kwargs):
             # Allow if the exact name or any prefix of an allowed dotted name
             allowed = name in _ALLOWED_IMPORTS or any(
-                a.startswith(name + '.') for a in _ALLOWED_IMPORTS
+                a.startswith(name + ".") for a in _ALLOWED_IMPORTS
             )
             if not allowed:
-                raise ImportError(
-                    f"Import of '{name}' is not allowed in skill hooks."
-                )
+                raise ImportError(f"Import of '{name}' is not allowed in skill hooks.")
             return _original_import(name, *args, **kwargs)
 
         safe_builtins = vars(_builtins_module).copy()
@@ -100,12 +103,12 @@ def load_hooks_restricted(hooks_path: str) -> Optional[types.ModuleType]:
             safe_builtins.pop(blocked, None)
         # Restore a restricted __import__ so that `import X` statements work
         # for allowed modules while direct __import__('bad') calls are blocked.
-        safe_builtins['__import__'] = _restricted_import
+        safe_builtins["__import__"] = _restricted_import
 
         module.__builtins__ = safe_builtins
 
         try:
-            exec(compile(source, str(path), 'exec'), module.__dict__)  # noqa: S102
+            exec(compile(source, str(path), "exec"), module.__dict__)  # noqa: S102
         except ImportError as exc:
             raise SkillSecurityError(str(exc)) from exc
 

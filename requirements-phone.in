@@ -1,0 +1,13 @@
+# Phone/Termux runtime dependencies.
+#
+# Keep this narrower than requirements.in. The phone wedge needs USB serial
+# telemetry, backend export, runtime envelope crypto, and optional alert
+# transports. Gateway MQTT, industrial protocols, Pi GPIO, and PC
+# process-control packages stay out of the phone wheelhouse.
+pyyaml>=6.0
+pyserial>=3.5
+tzdata>=2025.2
+httpx>=0.28
+cryptography>=48.0.1
+twilio>=9.0
+africastalking>=1.0

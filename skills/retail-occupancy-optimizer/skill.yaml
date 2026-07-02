@@ -1,0 +1,83 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: retail-occupancy-optimizer
+version: 0.1.0
+author: joel-backend
+license: Apache-2.0
+signature: bundled
+
+sensors_required:
+  - type: occupancy_count
+    protocol: mqtt
+  - type: total_power_watts
+    protocol: mqtt
+  - type: active_power
+    protocol: serial
+  - type: growatt_grid_power
+    protocol: growatt
+  - type: victron_grid_power
+    protocol: victron
+
+triggers:
+  - name: empty_business_hours_high_power
+    condition: "is_optimizer_event == 1 and quality >= min_quality and config_valid == 1 and facility_empty == 1 and business_hours == 1 and empty_duration_minutes >= empty_duration_threshold_minutes and power_waste_detected == 1"
+    cooldown_seconds: 1800
+    escalate_to: local_slm
+    action_tier: C
+    requires_approval: true
+    approval_timeout_seconds: 900
+    safe_default_action: log_to_dashboard
+
+  - name: empty_off_hours_load_shed
+    condition: "is_optimizer_event == 1 and quality >= min_quality and config_valid == 1 and facility_empty == 1 and off_hours == 1 and empty_duration_minutes >= empty_duration_threshold_minutes and power_waste_detected == 1"
+    cooldown_seconds: 1800
+    escalate_to: local_slm
+    action_tier: B
+    reasoning_policy: post_action
+
+prompts:
+  empty_business_hours_high_power: |
+    Your job is diagnosis only.
+    Write one plain sentence for a Lagos business owner explaining that the
+    building appears empty while power use remains unusually high, and why
+    approval to switch HVAC or lighting to eco mode may save money.
+    Do not include timestamps, percentages, sensor names, or technical jargon.
+    Example: "The shop appears empty but major equipment is still running, which can waste money during business hours."
+
+  empty_off_hours_load_shed: |
+    Your job is diagnosis only.
+    Write one plain sentence explaining that Ori found an empty facility after
+    hours and shed non-critical load to avoid overnight waste.
+    Do not include timestamps, percentages, sensor names, or technical jargon.
+    Example: "The facility was empty after closing time, so non-critical lighting and cooling were reduced to avoid overnight waste."
+
+actions:
+  available:
+    - name: alert_whatsapp
+      tier: A
+    - name: log_to_dashboard
+      tier: A
+    - name: request_hvac_eco_mode
+      tier: C
+    - name: shed_noncritical_loads
+      tier: B
+  defaults:
+    empty_business_hours_high_power: [request_hvac_eco_mode, alert_whatsapp, log_to_dashboard]
+    empty_off_hours_load_shed: [shed_noncritical_loads, alert_whatsapp, log_to_dashboard]
+
+config:
+  timezone: Africa/Lagos
+  min_quality: 0.8
+  occupancy_empty_threshold: 0.0
+  empty_duration_threshold_minutes: 45
+  power_snapshot_staleness_minutes: 15
+  baseline_hours: 24
+  high_power_threshold_watts: 3500.0
+  high_power_baseline_multiplier: 1.25
+  business_start_hour: 8
+  business_end_hour: 18
+  off_hours_start_hour: 22
+  tariff_per_kwh: 225.0
+  currency_code: NGN
+  currency_symbol: NGN

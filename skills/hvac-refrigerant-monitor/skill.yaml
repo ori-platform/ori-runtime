@@ -8,13 +8,15 @@ description: >
   Multi-joint refrigerant leak detection for HVAC systems using Figaro TGS 5141
   sensors (R22/R410A) plus compressor current anomaly monitoring.
 license: Apache-2.0
-signature: ed25519:PENDING
+signature: bundled
 
 sensors_required:
   - type: gas_concentration
     protocol: i2c
   - type: current_clamp
     protocol: i2c
+  - type: current
+    protocol: serial
 
 triggers:
   - name: gas_leak_detected
@@ -35,6 +37,18 @@ triggers:
     escalate_to: local_slm
     action_tier: A
 
+  # Tier C — Compressor overload against a known baseline: requires operator approval.
+  # baseline_current and compressor_fault_active are injected by hooks at commissioning
+  # after the technician measures and records the unit's normal draw.
+  # sensor_id guard is needed because the demo evaluates all current readings against
+  # this skill; in production only HVAC sensors are routed here.
+  - name: compressor_overload
+    condition: "(sensor_type == 'current_clamp' or sensor_type == 'current') and sensor_id == 'ac-01_compressor_current' and compressor_fault_active == 1 and value >= baseline_current * compressor_overload_ratio"
+    action_tier: C
+    requires_approval: true
+    escalate_to: rule
+    cooldown_seconds: 0
+
 prompts:
   gas_concentration: |
     Gas concentration reading: {value} ppm
@@ -45,6 +59,13 @@ prompts:
     Is this likely a refrigerant leak?
     What immediate checks should the HVAC technician perform?
     Answer in 2-3 plain sentences.
+
+  compressor_overload: |
+    Your job is diagnosis only.
+    Write one plain sentence for a non-technical building owner explaining why
+    the AC compressor current is elevated and what it may indicate.
+    Do not include timestamps, currency, percentages, units, or action statements.
+    Example: "The air conditioner compressor is drawing more power than expected, which can signal mechanical wear."
 
   current_clamp: |
     Compressor current reading: {value} A
@@ -71,3 +92,10 @@ actions:
     gas_leak_detected: [close_gas_valve, alert_whatsapp, alert_sms, log_to_dashboard]
     gas_concentration_elevated: [alert_whatsapp, log_to_dashboard]
     compressor_current_anomaly: [alert_whatsapp, log_to_dashboard]
+    compressor_overload: [alert_whatsapp, log_to_dashboard]
+
+config:
+  # compressor_overload trigger — set by hooks at commissioning after measuring baseline
+  compressor_fault_active: 0
+  baseline_current: 5.0
+  compressor_overload_ratio: 1.4

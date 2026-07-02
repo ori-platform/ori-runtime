@@ -20,12 +20,19 @@ must never crash the runtime.
 import asyncio
 import datetime
 import logging
-import time
+import secrets
+import string
 from typing import Any
 
 from ori.actions.logger import LoggerAction
 from ori.network.events import ActionResult, ActionTier, ReasoningResult
+from ori.policy.device_policy import DevicePolicy
+from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
+from ori.security.offline_tokens import OfflineTierCTokenVerifier
+from ori.security.remote_commands import extract_remote_command_payload
+from ori.utils.bool_utils import is_truthy
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +41,7 @@ _NO_TOKENS = frozenset({"no", "n", "cancel", "stop", "reject", "deny"})
 
 _DEFAULT_APPROVAL_TIMEOUT = 300  # seconds
 _DEFAULT_SAFE_DEFAULT_ACTION = "log_to_dashboard"
+_PROPOSAL_ID_ALPHABET = string.ascii_uppercase + string.digits
 _TIER_RANK: dict[str, int] = {
     ActionTier.INFORMATIONAL: 1,
     ActionTier.SOFT_PHYSICAL: 2,
@@ -42,25 +50,80 @@ _TIER_RANK: dict[str, int] = {
 }
 
 
-def _parse_approval_response(response: str | None) -> bool:
-    """Return ``True`` if *response* is an affirmative approval token.
+def _generate_proposal_id(length: int = 8) -> str:
+    """Generate a short human-readable identifier for a Tier C proposal."""
+    return "".join(secrets.choice(_PROPOSAL_ID_ALPHABET) for _ in range(length))
 
-    Args:
-        response: Raw operator reply string, or ``None``.
 
-    Returns:
-        ``True`` if the response is YES/Y/approve/go/ok/confirm
-        (case-insensitive).  ``False`` for NO tokens, ``None``, or
-        anything unrecognised.
-    """
+def _normalize_proposal_id(value: str | None) -> str:
+    return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _classify_approval_response(
+    response: str | None,
+    *,
+    proposal_id: str | None = None,
+    allow_offline_token: bool = False,
+    require_scoped: bool = False,
+) -> str:
+    """Classify a Tier C response as approve, reject, token, or invalid."""
     if response is None:
-        return False
-    token = response.strip().lower()
-    return token in _YES_TOKENS
+        return "invalid"
+
+    raw = response.strip()
+    if not raw:
+        return "invalid"
+    upper = raw.upper()
+    if allow_offline_token and upper.startswith("TOKEN:"):
+        return "token"
+
+    token = raw.lower()
+    if require_scoped:
+        if "-" not in raw:
+            return "invalid"
+    else:
+        if token in _YES_TOKENS:
+            return "approve"
+        if token in _NO_TOKENS:
+            return "reject"
+        if "-" not in raw:
+            return "invalid"
+
+    head, suffix = raw.split("-", 1)
+    expected = _normalize_proposal_id(proposal_id)
+    if not expected or _normalize_proposal_id(suffix) != expected:
+        return "invalid"
+
+    head_token = head.strip().lower()
+    if head_token in _YES_TOKENS:
+        return "approve"
+    if head_token in _NO_TOKENS:
+        return "reject"
+    return "invalid"
 
 
-def _now_ms() -> int:
-    return int(time.time() * 1000)
+def _extract_structured_remote_command_text(
+    response: str | None,
+    *,
+    channel: str,
+    from_number: str,
+) -> dict[str, Any] | None:
+    """Return the command payload when a local approval reply is a command."""
+    if response is None:
+        return None
+    payload = {"text": response}
+    return extract_remote_command_payload(
+        payload,
+        channel=channel,
+        from_number=from_number,
+    )
 
 
 def _tier_rank(tier: str) -> int:
@@ -89,13 +152,37 @@ class ActionDispatcher:
         self,
         state_store: Any = None,
         alert_sender: Any = None,
+        emergency_sms_sender: Any = None,
+        offline_token_verifier: OfflineTierCTokenVerifier | None = None,
+        status_indicator: Any = None,
         config: dict | None = None,
     ) -> None:
         self._state_store = state_store
         self._alert_sender = alert_sender
+        self._emergency_sms_sender = emergency_sms_sender
+        self._offline_token_verifier = offline_token_verifier
         self._config: dict = config or {}
-        self._log_action_decisions = bool(self._config.get("log_action_decisions", True))
-        self._log_approval_workflow = bool(self._config.get("log_approval_workflow", True))
+        self._log_action_decisions = bool(
+            self._config.get("log_action_decisions", True)
+        )
+        self._log_approval_workflow = bool(
+            self._config.get("log_approval_workflow", True)
+        )
+        self._relay_b_c_enabled = bool(self._config.get("relay_enabled", False))
+        self._local_console_enabled = bool(
+            self._config.get("local_console_enabled", False)
+        )
+        self._local_console_poll_interval_ms = max(
+            100, int(self._config.get("local_console_poll_interval_ms", 1000))
+        )
+        self._local_console_channel_id = str(
+            self._config.get("local_console_channel_id", "local_console")
+        )
+        scoped_replies = self._config.get("approval_require_scoped_replies", True)
+        self._approval_require_scoped_replies = is_truthy(scoped_replies)
+        self._policy: DevicePolicy | None = DevicePolicy.unrestricted()
+        self._capability_posture: CapabilityPosture | None = None
+        self._status_indicator = status_indicator
         self._logger_action = LoggerAction()
         self._inflight_tier_d_tasks: set[asyncio.Task[Any]] = set()
         self._executors: dict[str, Any] = {
@@ -120,6 +207,79 @@ class ActionDispatcher:
         """
         self._executors[action_name] = executor
 
+    def update_policy(self, policy: DevicePolicy | None) -> None:
+        """Update the active DevicePolicy.
+
+        ``None`` resets to unrestricted self-hosted behaviour.
+        """
+        self._policy = policy if policy is not None else DevicePolicy.unrestricted()
+        self._sync_policy_led_state()
+
+    def update_capability_posture(self, posture: CapabilityPosture | None) -> None:
+        self._capability_posture = posture
+
+    def current_policy_version(self) -> int | None:
+        if self._policy is None:
+            return None
+        return int(self._policy.policy_version)
+
+    def get_policy_state_snapshot(self) -> dict[str, Any]:
+        """Return current in-memory DevicePolicy state for diagnostics."""
+        if self._policy is None:
+            return {
+                "available": False,
+                "policy_version": None,
+                "tier": None,
+                "relay_b_enabled": None,
+                "relay_c_enabled": None,
+                "cloud_llm_enabled": None,
+                "alert_sms_monthly_cap": None,
+                "alert_whatsapp_monthly_cap": None,
+                "valid_until": None,
+                "issued_at": None,
+                "is_expired": None,
+            }
+        return {
+            "available": True,
+            "policy_version": int(self._policy.policy_version),
+            "tier": str(self._policy.tier),
+            "relay_b_enabled": bool(self._policy.relay_b_enabled),
+            "relay_c_enabled": bool(self._policy.relay_c_enabled),
+            "cloud_llm_enabled": bool(self._policy.cloud_llm_enabled),
+            "alert_sms_monthly_cap": self._policy.alert_sms_monthly_cap,
+            "alert_whatsapp_monthly_cap": self._policy.alert_whatsapp_monthly_cap,
+            "valid_until": int(self._policy.valid_until),
+            "issued_at": int(self._policy.issued_at),
+            "is_expired": bool(self._policy.is_expired),
+        }
+
+    def permits_relay_action(self, action_tier: str) -> bool:
+        """Check if a relay action is permitted for the given tier based on DevicePolicy and config."""
+        if action_tier == ActionTier.SAFETY_CRITICAL:
+            return True  # Invariant 10: Tier D is never blocked
+        if action_tier == ActionTier.INFORMATIONAL:
+            return True  # Tier A informational always permitted
+        active_policy = (
+            self._policy if self._policy is not None else DevicePolicy.unrestricted()
+        )
+        return self._relay_b_c_enabled and active_policy.permits_action(action_tier)
+
+    def permits_external_alert(
+        self,
+        *,
+        channel: str,
+        action_tier: str,
+        current_month_count: int,
+    ) -> bool:
+        active_policy = (
+            self._policy if self._policy is not None else DevicePolicy.unrestricted()
+        )
+        return active_policy.permits_external_alert(
+            channel=channel,
+            action_tier=str(action_tier).upper(),
+            current_month_count=current_month_count,
+        )
+
     def get_inflight_tier_d_tasks(self) -> set[asyncio.Task[Any]]:
         """Return currently running Tier D execution tasks."""
         return {task for task in self._inflight_tier_d_tasks if not task.done()}
@@ -135,7 +295,8 @@ class ActionDispatcher:
         context: SkillContext,
         result: ReasoningResult,
         safe_default_action: str = _DEFAULT_SAFE_DEFAULT_ACTION,
-        approval_timeout_seconds: int = _DEFAULT_APPROVAL_TIMEOUT,
+        approval_timeout: int | None = None,
+        approval_timeout_seconds: int | None = None,
     ) -> ActionResult:
         """Route *action* to the correct execution path for *tier*.
 
@@ -160,8 +321,10 @@ class ActionDispatcher:
                 the Intelligence Elevator.
             safe_default_action: Action to execute on Tier C approval timeout
                 or NO response.  Overrides the dispatcher default.
-            approval_timeout_seconds: Seconds to wait for operator approval
-                before executing *safe_default_action*.
+            approval_timeout: Seconds to wait for operator approval before
+                executing *safe_default_action*.
+            approval_timeout_seconds: Backward-compatible alias for
+                ``approval_timeout``.
 
         Returns:
             :class:`~ori.network.events.ActionResult` describing what happened.
@@ -199,6 +362,45 @@ class ActionDispatcher:
         # Log autonomous Tier D dispatch to override_log before execution —
         # a safety-critical action firing without operator approval is itself
         # an override event that must be auditable.
+        timeout_value = approval_timeout
+        if timeout_value is None:
+            timeout_value = (
+                approval_timeout_seconds
+                if approval_timeout_seconds is not None
+                else _DEFAULT_APPROVAL_TIMEOUT
+            )
+        try:
+            timeout_value = int(timeout_value)
+        except (TypeError, ValueError):
+            timeout_value = _DEFAULT_APPROVAL_TIMEOUT
+
+        # Tier D Bypass and Policy restrictions for B/C relay actions
+        if action in ("trip_relay", "release_relay") and tier in (
+            ActionTier.SOFT_PHYSICAL,
+            ActionTier.HARD_PHYSICAL,
+        ):
+            if not self.permits_relay_action(tier):
+                # Persist explicit suppression audit before fallback rewrite so
+                # the original attempted relay action is preserved in action_log.
+                suppression_result = ActionResult(
+                    action_name=action,
+                    tier=tier,
+                    executed=False,
+                    approved=None,
+                    action_taken="suppressed",
+                    timestamp=now_ms(),
+                    operator_response="policy_suppression",
+                )
+                await self._log_action(suppression_result, context)
+                logger.warning(
+                    "ActionDispatcher: %r suppressed for Tier %s due to relay.enabled or DevicePolicy restriction. Downgrading to safe default.",
+                    action,
+                    tier,
+                )
+
+                action = safe_default_action
+                tier = ActionTier.INFORMATIONAL
+
         if tier == ActionTier.SAFETY_CRITICAL:
             _store = (
                 context.state_store
@@ -224,6 +426,8 @@ class ActionDispatcher:
 
         try:
             if tier == ActionTier.SAFETY_CRITICAL:
+                if self._status_indicator is not None:
+                    self._status_indicator.set_tier_d_firing()
                 # Track Tier D work explicitly so runtime shutdown can drain it
                 # without relying on fragile task attribute mutation.
                 inner_task = asyncio.create_task(
@@ -231,16 +435,14 @@ class ActionDispatcher:
                 )
                 self._track_tier_d_task(inner_task)
                 action_result = await asyncio.shield(inner_task)
+                if self._status_indicator is not None:
+                    self._status_indicator.clear_tier_d_firing()
 
             elif tier == ActionTier.INFORMATIONAL:
                 action_result = await self._execute_immediately(action, tier, context)
 
             elif tier == ActionTier.SOFT_PHYSICAL:
-                requires_approval = False
-                if hasattr(context, "skill") and hasattr(context.skill, "config"):
-                    requires_approval = bool(
-                        context.skill.config.get("requires_approval", False)
-                    )
+                requires_approval = self._tier_b_requires_approval(context)
                 if requires_approval:
                     action_result = await self._approval_workflow(
                         action,
@@ -248,7 +450,7 @@ class ActionDispatcher:
                         context,
                         result,
                         safe_default_action,
-                        approval_timeout_seconds,
+                        timeout_value,
                     )
                 else:
                     action_result = await self._execute_immediately(
@@ -263,7 +465,7 @@ class ActionDispatcher:
                     context,
                     result,
                     safe_default_action,
-                    approval_timeout_seconds,
+                    timeout_value,
                 )
 
             else:
@@ -302,11 +504,40 @@ class ActionDispatcher:
                 executed=False,
                 approved=None,
                 action_taken="",
-                timestamp=_now_ms(),
+                timestamp=now_ms(),
             )
+            if (
+                tier == ActionTier.SAFETY_CRITICAL
+                and self._status_indicator is not None
+            ):
+                self._status_indicator.clear_tier_d_firing()
 
         await self._log_action(action_result, context)
         return action_result
+
+    @staticmethod
+    def _tier_b_requires_approval(context: Any) -> bool:
+        """Return True when the matched Tier B trigger explicitly requires approval."""
+        trigger_name = str(getattr(context, "trigger_name", "") or "")
+        skill = getattr(context, "skill", None)
+        if skill is not None and trigger_name:
+            for trigger in getattr(skill, "triggers", []):
+                name = (
+                    trigger.get("name")
+                    if isinstance(trigger, dict)
+                    else getattr(trigger, "name", None)
+                )
+                if name != trigger_name:
+                    continue
+                return bool(
+                    trigger.get("requires_approval", False)
+                    if isinstance(trigger, dict)
+                    else getattr(trigger, "requires_approval", False)
+                )
+
+        if hasattr(context, "skill") and hasattr(context.skill, "config"):
+            return bool(context.skill.config.get("requires_approval", False))
+        return False
 
     # ── Built-in executors ────────────────────────────────────────────────────
 
@@ -354,12 +585,22 @@ class ActionDispatcher:
             executor = self._executors.get(action)
             if executor is not None:
                 if self._log_action_decisions:
-                    logger.info("ActionDispatcher: executing action %r (tier=%s)", action, tier)
+                    logger.info(
+                        "ActionDispatcher: executing action %r (tier=%s)", action, tier
+                    )
                 maybe_ok = await executor(action, context)
                 if maybe_ok is False:
                     executed = False
             else:
-                if self._log_action_decisions:
+                if (
+                    action in ("trip_relay", "release_relay")
+                    and tier == ActionTier.SAFETY_CRITICAL
+                ):
+                    executed = False
+                    logger.critical(
+                        "ActionDispatcher: Tier D relay executor is not registered (hardware initialization failed)."
+                    )
+                elif self._log_action_decisions:
                     logger.debug(
                         "ActionDispatcher: no executor registered for action=%r — "
                         "logging intent only",
@@ -399,7 +640,7 @@ class ActionDispatcher:
             executed=executed,
             approved=None,  # no approval step for A/B/D
             action_taken=action if executed else "",
-            timestamp=_now_ms(),
+            timestamp=now_ms(),
         )
 
     async def _approval_workflow(
@@ -436,24 +677,36 @@ class ActionDispatcher:
             :class:`~ori.network.events.ActionResult` with ``approved`` set to
             ``True`` / ``False`` based on the operator response.
         """
+        approval_started_at = now_ms()
+        proposal_id = _generate_proposal_id()
         if self._log_approval_workflow:
-            logger.info("ActionDispatcher: triggering Tier C approval workflow for action=%r", action)
+            logger.info(
+                "ActionDispatcher: triggering Tier C approval workflow for action=%r proposal_id=%s",
+                action,
+                proposal_id,
+            )
+        has_comms = self._tier_c_comms_available()
+        if self._status_indicator is not None:
+            self._status_indicator.set_tier_c_pending(has_comms=has_comms)
 
         device_id = context.event.device_id if context.event else "unknown"
         message = self._format_approval_message(
             device_id=device_id,
-            timestamp_ms=context.event.timestamp if context.event else _now_ms(),
+            timestamp_ms=context.event.timestamp if context.event else now_ms(),
             result=result,
             action=action,
             timeout_seconds=approval_timeout_seconds,
             device_timezone=self._config.get("device_timezone", "Africa/Lagos"),
+            proposal_id=proposal_id,
         )
 
-        # Send approval request
+        # Send approval request (best-effort only when comms are available).
         operator_contact = self._config.get("operator_contact", "")
-        if self._alert_sender is not None and operator_contact:
+        if has_comms and self._alert_sender is not None and operator_contact:
             try:
-                await self._alert_sender.send(message=message, to_number=operator_contact)
+                await self._alert_sender.send(
+                    message=message, to_number=operator_contact
+                )
             except Exception:
                 logger.exception(
                     "ActionDispatcher: failed to send approval request for action=%r",
@@ -462,95 +715,370 @@ class ActionDispatcher:
 
         # Wait for response
         operator_response: str | None = None
+        parsed_operator_response: str | None = None
         timed_out = False
-        try:
-            listen_coro = self._listen_for_response(
-                from_number=operator_contact,
+        local_console_mode = bool(not has_comms and self._local_console_enabled)
+        store = self._resolve_state_store(context)
+        if local_console_mode:
+            local_from_number = operator_contact or "local-operator"
+            operator_response = await self._listen_for_local_console_response(
+                store=store,
+                from_number=local_from_number,
                 timeout_seconds=approval_timeout_seconds,
+                proposal_id=proposal_id,
             )
-        except TypeError:
-            # Backward compatibility for older test doubles/overrides that
-            # patched _listen_for_response with a no-arg coroutine.
-            listen_coro = self._listen_for_response()  # type: ignore[call-arg]
-        listen_task = asyncio.create_task(
-            listen_coro,
-            name=f"approval:{action}",
-        )
-        try:
-            operator_response = await asyncio.wait_for(
-                listen_task,
-                # Keep a small guard margin around provider-side timeout logic.
-                timeout=float(approval_timeout_seconds) + 1.0,
-            )
-        except asyncio.TimeoutError:
-            timed_out = True
-            if not listen_task.done():
-                listen_task.cancel()
-            logger.warning(
-                "ActionDispatcher: approval timeout for action=%r after %ds — "
-                "executing safe_default=%r",
-                action,
-                approval_timeout_seconds,
-                safe_default_action,
-            )
-        else:
-            if operator_response is None:
+            parsed_operator_response = operator_response
+            if operator_response is not None:
+                operator_response = f"LOCAL:{operator_response}"
+            else:
                 timed_out = True
                 logger.warning(
-                    "ActionDispatcher: no approval response for action=%r within %ds — "
+                    "ActionDispatcher: local console approval timeout for action=%r "
+                    "after %ds — executing safe_default=%r",
+                    action,
+                    approval_timeout_seconds,
+                    safe_default_action,
+                )
+        else:
+            try:
+                listen_coro = self._listen_for_response(
+                    from_number=operator_contact,
+                    timeout_seconds=approval_timeout_seconds,
+                )
+            except TypeError:
+                # Backward compatibility for older test doubles/overrides that
+                # patched _listen_for_response with a no-arg coroutine.
+                listen_coro = self._listen_for_response()  # type: ignore[call-arg]
+            listen_task = asyncio.create_task(
+                listen_coro,
+                name=f"approval:{action}",
+            )
+            try:
+                operator_response = await asyncio.wait_for(
+                    listen_task,
+                    # Keep a small guard margin around provider-side timeout logic.
+                    timeout=float(approval_timeout_seconds) + 1.0,
+                )
+                parsed_operator_response = operator_response
+            except asyncio.TimeoutError:
+                timed_out = True
+                if not listen_task.done():
+                    listen_task.cancel()
+                logger.warning(
+                    "ActionDispatcher: approval timeout for action=%r after %ds — "
                     "executing safe_default=%r",
                     action,
                     approval_timeout_seconds,
                     safe_default_action,
                 )
+            else:
+                if operator_response is None:
+                    timed_out = True
+                    logger.warning(
+                        "ActionDispatcher: no approval response for action=%r within %ds — "
+                        "executing safe_default=%r",
+                        action,
+                        approval_timeout_seconds,
+                        safe_default_action,
+                    )
 
-        # Parse response
-        approved = _parse_approval_response(operator_response)
-
-        if approved:
-            inner = await self._execute_immediately(action, tier, context)
-            action_taken = inner.action_taken
-            executed = inner.executed
-        else:
-            # NO, None, or timeout → safe default
-            if timed_out:
-                await self._escalate_to_secondary(action, context, result)
-            inner = await self._execute_immediately(safe_default_action, tier, context)
-            action_taken = inner.action_taken
-            executed = inner.executed
-            # Log operator rejection / timeout override to override_log
-            store = (
-                context.state_store
-                if hasattr(context, "state_store") and context.state_store is not None
-                else self._state_store
+        try:
+            # Parse response
+            response_kind = _classify_approval_response(
+                parsed_operator_response,
+                proposal_id=proposal_id,
+                allow_offline_token=local_console_mode,
+                require_scoped=self._approval_require_scoped_replies,
             )
-            if store is not None and hasattr(store, "log_override"):
-                device_id = context.event.device_id if context.event else "unknown"
-                await store.log_override(
-                    trigger_name=context.event.sensor_id if context.event else "",
-                    action=action,
-                    reason="timeout" if timed_out else "operator_rejection",
-                    operator_response=operator_response,
-                    override_type="rejection",
-                    device_id=device_id,
+            if response_kind == "invalid" and parsed_operator_response is not None:
+                logger.warning(
+                    "ActionDispatcher: invalid Tier C approval response for "
+                    "proposal_id=%s action=%r response=%r",
+                    proposal_id,
+                    action,
+                    parsed_operator_response,
                 )
-            if not timed_out and operator_response is not None:
-                await self._store_rejection_pattern(
-                    store=store,
-                    action=action,
-                    context=context,
-                    operator_response=operator_response,
-                )
+            approved = response_kind == "approve"
+            if (
+                local_console_mode
+                and parsed_operator_response is not None
+                and response_kind == "token"
+            ):
+                token_value = parsed_operator_response.split(":", 1)[1].strip()
+                if self._offline_token_verifier is None:
+                    approved = False
+                    logger.warning(
+                        "ActionDispatcher: offline token provided but verifier is disabled"
+                    )
+                else:
+                    verify_result = await self._offline_token_verifier.verify_token(
+                        token_value,
+                        expected_device_id=device_id,
+                        expected_action=action,
+                        state_store=store,
+                    )
+                    approved = bool(verify_result.approved)
+                    if approved:
+                        operator_response = (
+                            f"LOCAL:TOKEN_APPROVED:{verify_result.token_id}"
+                        )
+                    else:
+                        operator_response = (
+                            f"LOCAL:TOKEN_REJECTED:{verify_result.reason}"
+                        )
+                        logger.warning(
+                            "ActionDispatcher: offline token rejected for action=%r reason=%s",
+                            action,
+                            verify_result.reason,
+                        )
 
-        return ActionResult(
-            action_name=action,
-            tier=tier,
-            executed=executed,
-            approved=approved,
-            action_taken=action_taken,
-            timestamp=_now_ms(),
-            operator_response=operator_response,
+            if approved:
+                inner = await self._execute_immediately(action, tier, context)
+                action_taken = inner.action_taken
+                executed = inner.executed
+            else:
+                # NO, None, or timeout → safe default
+                if timed_out:
+                    await self._escalate_to_secondary(action, context, result)
+                inner = await self._execute_immediately(
+                    safe_default_action, tier, context
+                )
+                action_taken = inner.action_taken
+                executed = inner.executed
+                # Log operator rejection / timeout override to override_log
+                if store is not None and hasattr(store, "log_override"):
+                    device_id = context.event.device_id if context.event else "unknown"
+                    await store.log_override(
+                        trigger_name=context.event.sensor_id if context.event else "",
+                        action=action,
+                        reason="timeout" if timed_out else "operator_rejection",
+                        operator_response=operator_response,
+                        override_type="rejection",
+                        device_id=device_id,
+                    )
+                if not timed_out and operator_response is not None:
+                    await self._store_rejection_pattern(
+                        store=store,
+                        action=action,
+                        context=context,
+                        operator_response=operator_response,
+                    )
+
+            completed_at = now_ms()
+            action_result = ActionResult(
+                action_name=action,
+                tier=tier,
+                executed=executed,
+                approved=approved,
+                action_taken=action_taken,
+                timestamp=completed_at,
+                operator_response=operator_response,
+                proposal_id=proposal_id,
+                safe_default_used=not bool(approved),
+            )
+            await self._log_tier_c_decision(
+                store=store,
+                context=context,
+                result=result,
+                action=action,
+                action_result=action_result,
+                operator_decision=(
+                    "approved" if approved else "timeout" if timed_out else "rejected"
+                ),
+                approval_started_at=approval_started_at,
+                completed_at=completed_at,
+                approval_timeout_seconds=approval_timeout_seconds,
+                safe_default_action=safe_default_action,
+                safe_default_used=not bool(approved),
+            )
+            return action_result
+        finally:
+            if self._status_indicator is not None:
+                self._status_indicator.clear_tier_c_pending()
+
+    async def _log_tier_c_decision(
+        self,
+        *,
+        store: Any,
+        context: SkillContext,
+        result: ReasoningResult,
+        action: str,
+        action_result: ActionResult,
+        operator_decision: str,
+        approval_started_at: int,
+        completed_at: int,
+        approval_timeout_seconds: int,
+        safe_default_action: str,
+        safe_default_used: bool,
+    ) -> None:
+        """Persist the rich Tier C proposal/decision record if supported."""
+        if store is None or not hasattr(store, "log_tier_c_decision"):
+            return
+
+        event = context.event if context else None
+        reading = event.reading if event is not None else None
+        event_context = (
+            event.context
+            if event is not None and isinstance(event.context, dict)
+            else {}
         )
+        skill = context.skill if context else None
+        skill_name = str(getattr(skill, "name", "") or "")
+        trigger_name = str(getattr(context, "trigger_name", "") or "")
+        if not trigger_name and event is not None:
+            trigger_name = event.sensor_id
+
+        history_window = (
+            event_context.get("history_window")
+            or event_context.get("history")
+            or event_context.get("readings_window")
+        )
+        prompt_context_summary = result.prompt or result.reasoning or result.text
+        if len(prompt_context_summary) > 4000:
+            prompt_context_summary = prompt_context_summary[:4000]
+
+        try:
+            await store.log_tier_c_decision(
+                device_id=event.device_id if event is not None else "unknown",
+                site_type=event_context.get("site_type", ""),
+                location=event_context.get("location", ""),
+                timezone=event_context.get(
+                    "device_timezone", self._config.get("device_timezone", "")
+                ),
+                sensor_id=reading.sensor_id if reading is not None else "",
+                sensor_type=reading.sensor_type if reading is not None else "",
+                reading_value=reading.value if reading is not None else None,
+                reading_unit=reading.unit if reading is not None else "",
+                reading_timestamp=reading.timestamp if reading is not None else None,
+                history_window=history_window,
+                skill_name=skill_name,
+                trigger_name=trigger_name,
+                proposed_action=action,
+                confidence=result.confidence,
+                reasoning_tier=result.tier,
+                reasoning_model=result.model,
+                prompt_context_summary=prompt_context_summary,
+                operator_decision=operator_decision,
+                operator_response=action_result.operator_response,
+                decision_latency_ms=max(0, completed_at - approval_started_at),
+                approval_timeout_seconds=approval_timeout_seconds,
+                safe_default_action=safe_default_action,
+                safe_default_used=safe_default_used,
+                action_taken=action_result.action_taken,
+                action_executed=action_result.executed,
+                final_action_result={
+                    "action_name": action_result.action_name,
+                    "tier": action_result.tier,
+                    "executed": action_result.executed,
+                    "approved": action_result.approved,
+                    "action_taken": action_result.action_taken,
+                    "operator_response": action_result.operator_response,
+                    "proposal_id": action_result.proposal_id,
+                    "timestamp": action_result.timestamp,
+                },
+                proposal_id=action_result.proposal_id,
+                later_outcome=None,
+                created_at=completed_at,
+            )
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: failed to log Tier C decision for action=%r",
+                action,
+            )
+
+    async def _listen_for_local_console_response(
+        self,
+        *,
+        store: Any,
+        from_number: str,
+        timeout_seconds: int,
+        proposal_id: str,
+    ) -> str | None:
+        """Poll local inbound channel for Tier C approval replies."""
+        if store is None or not hasattr(store, "consume_incoming_message"):
+            return None
+
+        timeout_ms = max(0, int(timeout_seconds) * 1000)
+        since_ms = now_ms()
+        deadline_ms = since_ms + timeout_ms
+        channel = self._local_console_channel_id
+        poll_s = self._local_console_poll_interval_ms / 1000.0
+        while True:
+            try:
+                response = await store.consume_incoming_message(
+                    channel=channel,
+                    from_number=from_number,
+                    since_ms=since_ms,
+                )
+            except Exception:
+                logger.exception(
+                    "ActionDispatcher: local console approval listener failed"
+                )
+                return None
+            if response is not None:
+                command_payload = _extract_structured_remote_command_text(
+                    response,
+                    channel=channel,
+                    from_number=from_number,
+                )
+                if command_payload is not None:
+                    await self._audit_ignored_local_console_command(
+                        store=store,
+                        command_payload=command_payload,
+                    )
+                    logger.warning(
+                        "ActionDispatcher: ignored structured remote command "
+                        "on local console approval channel"
+                    )
+                    if now_ms() >= deadline_ms:
+                        return None
+                    continue
+                response_kind = _classify_approval_response(
+                    response,
+                    proposal_id=proposal_id,
+                    allow_offline_token=True,
+                    require_scoped=self._approval_require_scoped_replies,
+                )
+                if response_kind == "invalid":
+                    logger.warning(
+                        "ActionDispatcher: unrecognised local console approval "
+                        "input for proposal_id=%s: %r. Reply YES-%s or NO-%s.",
+                        proposal_id,
+                        response,
+                        proposal_id,
+                        proposal_id,
+                    )
+                    if now_ms() >= deadline_ms:
+                        return None
+                    continue
+                return response
+            if now_ms() >= deadline_ms:
+                return None
+            await asyncio.sleep(poll_s)
+
+    async def _audit_ignored_local_console_command(
+        self,
+        *,
+        store: Any,
+        command_payload: dict[str, Any],
+    ) -> None:
+        """Durably audit command payloads rejected from local approval input."""
+        if store is None or not hasattr(store, "log_remote_command_attempt"):
+            return
+        try:
+            await store.log_remote_command_attempt(
+                command_id=str(command_payload.get("command_id", "") or ""),
+                channel=str(command_payload.get("channel", "") or "local_console"),
+                from_number=str(command_payload.get("from_number", "") or ""),
+                command=str(command_payload.get("command", "") or ""),
+                accepted=False,
+                reason="local_console_command_not_supported",
+                issued_at_ms=_safe_int_or_none(command_payload.get("issued_at_ms")),
+            )
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: failed to audit ignored local console command"
+            )
 
     async def _store_rejection_pattern(
         self,
@@ -663,6 +1191,7 @@ class ActionDispatcher:
         action: str,
         timeout_seconds: int,
         device_timezone: str = "Africa/Lagos",
+        proposal_id: str | None = None,
     ) -> str:
         """Format the WhatsApp/SMS approval request message.
 
@@ -675,21 +1204,33 @@ class ActionDispatcher:
             device_timezone: IANA timezone name for local time display
                 (e.g. ``"Africa/Lagos"``).  Defaults to WAT so operators in
                 Nigeria see their local time, not UTC.
+            proposal_id: Short identifier operators can include in scoped
+                replies such as ``YES-AB12CD34``.
 
         Returns:
             Formatted approval message string matching the README template.
         """
         from zoneinfo import ZoneInfo
+
         tz = ZoneInfo(device_timezone or "Africa/Lagos")
         dt = datetime.datetime.fromtimestamp(timestamp_ms / 1000, tz=tz)
         formatted_time = dt.strftime("%A %H:%M")  # e.g. "Wednesday 14:32"
 
         observation = result.text
         reasoning = result.reasoning if result.reasoning else result.text
+        proposal_line = ""
+        reply_line = "Reply YES to approve  |  Reply NO to cancel"
+        if proposal_id:
+            proposal_line = f"Proposal ID: {proposal_id}\n"
+            reply_line = (
+                f"Reply YES-{proposal_id} to approve  |  "
+                f"Reply NO-{proposal_id} to cancel"
+            )
 
         return (
             f"ORI ALERT — Action Required\n"
             f"Device: {device_id}\n"
+            f"{proposal_line}"
             f"Time: {formatted_time}\n"
             f"\n"
             f"OBSERVATION:\n"
@@ -703,7 +1244,8 @@ class ActionDispatcher:
             f"\n"
             f"CONFIDENCE: {result.confidence:.0%}\n"
             f"\n"
-            f"Reply YES to approve  |  Reply NO to cancel\n"
+            f"{reply_line}\n"
+            f"Bare YES/NO is accepted only for the active pending proposal.\n"
             f"Auto-cancel in {timeout_seconds} seconds if no response."
         )
 
@@ -751,10 +1293,12 @@ class ActionDispatcher:
             action: The Tier D action name that failed.
             device_id: The device on which the failure occurred.
         """
-        from ori.actions.sms import SMSAction
-
         try:
-            sms = SMSAction()
+            sms = self._emergency_sms_sender
+            if sms is None:
+                from ori.actions.sms import SMSAction
+
+                sms = SMSAction()
             contact = self._config.get("operator_contact", "")
             if not contact:
                 logger.critical(
@@ -773,6 +1317,37 @@ class ActionDispatcher:
                 "ActionDispatcher: emergency SMS also failed for action=%r",
                 action,
             )
+
+    def _sync_policy_led_state(self) -> None:
+        if self._status_indicator is None:
+            return
+        if self._policy is None:
+            self._status_indicator.set_policy_state("restricted")
+            return
+        if self._policy.is_expired:
+            self._status_indicator.set_policy_state("restricted")
+            return
+        if self._policy.signature == "self_hosted":
+            self._status_indicator.set_policy_state("normal")
+            return
+        if not (
+            self._policy.relay_b_enabled
+            and self._policy.relay_c_enabled
+            and self._policy.cloud_llm_enabled
+        ):
+            self._status_indicator.set_policy_state("grace")
+            return
+        self._status_indicator.set_policy_state("normal")
+
+    def _tier_c_comms_available(self) -> bool:
+        if self._capability_posture is not None:
+            return bool(
+                self._capability_posture.sms_available
+                or self._capability_posture.whatsapp_available
+            )
+        return bool(
+            self._alert_sender is not None and self._config.get("operator_contact")
+        )
 
     async def _log_action(
         self,
@@ -797,11 +1372,36 @@ class ActionDispatcher:
         if store is None:
             return
 
+        if not action_result.correlation_id and context.event is not None:
+            event_context = (
+                context.event.context
+                if isinstance(getattr(context.event, "context", None), dict)
+                else {}
+            )
+            action_result.correlation_id = str(
+                event_context.get("correlation_id") or ""
+            )
+
         trigger_name = context.event.sensor_id if context.event else ""
         try:
-            await store.log_action(action_result, trigger_name)
+            if hasattr(store, "log_action_for_event"):
+                reading = context.event.reading if context.event else None
+                await store.log_action_for_event(
+                    action_result,
+                    trigger_name=trigger_name,
+                    device_id=context.event.device_id if context.event else "",
+                    sensor_id=reading.sensor_id if reading is not None else "",
+                    sensor_type=reading.sensor_type if reading is not None else "",
+                )
+            else:
+                await store.log_action(action_result, trigger_name)
         except Exception:
             logger.exception(
                 "ActionDispatcher: failed to log action=%r to action_log",
                 action_result.action_name,
             )
+
+    def _resolve_state_store(self, context: SkillContext) -> Any:
+        if hasattr(context, "state_store") and context.state_store is not None:
+            return context.state_store
+        return self._state_store

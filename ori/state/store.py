@@ -5,11 +5,13 @@ import asyncio
 import datetime
 import hashlib
 import json
+import os
 import sqlite3
-from functools import partial
-from typing import Optional
+from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
+from ori.utils.time_utils import now_ms
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS sensor_history (
@@ -39,8 +41,16 @@ CREATE TABLE IF NOT EXISTS reasoning_log (
     tokens_used    INTEGER NOT NULL DEFAULT 0,
     latency_ms     INTEGER NOT NULL DEFAULT 0,
     proposed_action TEXT,
+    reasoning_status TEXT NOT NULL DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
     timestamp      INTEGER NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_reasoning_log_device_timestamp
+    ON reasoning_log (device_id, timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_reasoning_log_correlation_id
+    ON reasoning_log (correlation_id, timestamp DESC);
 
 CREATE TABLE IF NOT EXISTS override_log (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,9 +71,54 @@ CREATE TABLE IF NOT EXISTS action_log (
     approved          INTEGER,            -- NULL for Tiers A/B/D, 0/1 for C
     action_taken      TEXT    NOT NULL,
     operator_response TEXT,
+    proposal_id       TEXT    NOT NULL DEFAULT '',
+    safe_default_used INTEGER NOT NULL DEFAULT 0,
+    device_id         TEXT    NOT NULL DEFAULT '',
+    sensor_id         TEXT    NOT NULL DEFAULT '',
+    sensor_type       TEXT    NOT NULL DEFAULT '',
+    correlation_id    TEXT    NOT NULL DEFAULT '',
     trigger_name      TEXT    NOT NULL,
     timestamp         INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tier_c_decision_log (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id                TEXT    NOT NULL DEFAULT '',
+    site_type                TEXT    NOT NULL DEFAULT '',
+    location                 TEXT    NOT NULL DEFAULT '',
+    timezone                 TEXT    NOT NULL DEFAULT '',
+    sensor_id                TEXT    NOT NULL DEFAULT '',
+    sensor_type              TEXT    NOT NULL DEFAULT '',
+    reading_value            REAL,
+    reading_unit             TEXT    NOT NULL DEFAULT '',
+    reading_timestamp        INTEGER,
+    history_window_json      TEXT    NOT NULL DEFAULT 'null',
+    skill_name               TEXT    NOT NULL DEFAULT '',
+    trigger_name             TEXT    NOT NULL DEFAULT '',
+    proposed_action          TEXT    NOT NULL DEFAULT '',
+    confidence               REAL    NOT NULL DEFAULT 0,
+    reasoning_tier           TEXT    NOT NULL DEFAULT '',
+    reasoning_model          TEXT    NOT NULL DEFAULT '',
+    prompt_context_summary   TEXT    NOT NULL DEFAULT '',
+    operator_decision        TEXT    NOT NULL DEFAULT '', -- 'approved' | 'rejected' | 'timeout'
+    operator_response        TEXT,
+    decision_latency_ms      INTEGER NOT NULL DEFAULT 0,
+    approval_timeout_seconds INTEGER NOT NULL DEFAULT 0,
+    safe_default_action      TEXT    NOT NULL DEFAULT '',
+    safe_default_used        INTEGER NOT NULL DEFAULT 0,
+    action_taken             TEXT    NOT NULL DEFAULT '',
+    action_executed          INTEGER NOT NULL DEFAULT 0,
+    final_action_result_json TEXT    NOT NULL DEFAULT '{}',
+    later_outcome_json       TEXT    NOT NULL DEFAULT 'null',
+    proposal_id              TEXT    NOT NULL DEFAULT '',
+    created_at               INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tier_c_decision_log_device_ts
+    ON tier_c_decision_log (device_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_tier_c_decision_log_skill_trigger
+    ON tier_c_decision_log (skill_name, trigger_name, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS causal_memory (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,6 +167,114 @@ CREATE TABLE IF NOT EXISTS inbound_messages (
 CREATE INDEX IF NOT EXISTS idx_inbound_lookup
     ON inbound_messages (channel, from_number, received_at, consumed_at);
 
+CREATE TABLE IF NOT EXISTS webhook_replay_log (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    source         TEXT    NOT NULL DEFAULT '',
+    nonce          TEXT    NOT NULL,
+    received_at_ms INTEGER NOT NULL,
+    expires_at_ms  INTEGER NOT NULL,
+    UNIQUE(source, nonce)
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_replay_log_expiry
+    ON webhook_replay_log (expires_at_ms);
+
+CREATE TABLE IF NOT EXISTS remote_command_log (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_id     TEXT    NOT NULL DEFAULT '',
+    channel        TEXT    NOT NULL DEFAULT '',
+    from_number    TEXT    NOT NULL DEFAULT '',
+    command        TEXT    NOT NULL DEFAULT '',
+    accepted       INTEGER NOT NULL,
+    reason         TEXT    NOT NULL,
+    issued_at_ms   INTEGER,
+    received_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_command_log_command_id
+    ON remote_command_log (command_id, accepted, received_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS remote_command_security_incident_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id     TEXT    NOT NULL UNIQUE,
+    channel         TEXT    NOT NULL DEFAULT '',
+    from_number     TEXT    NOT NULL DEFAULT '',
+    reason          TEXT    NOT NULL DEFAULT '',
+    rejection_count INTEGER NOT NULL DEFAULT 0,
+    threshold       INTEGER NOT NULL DEFAULT 0,
+    window_ms       INTEGER NOT NULL DEFAULT 0,
+    created_at_ms   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_command_security_incident_sender
+    ON remote_command_security_incident_log (channel, from_number, created_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS remote_command_execution_log (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_id     TEXT    NOT NULL DEFAULT '',
+    channel        TEXT    NOT NULL DEFAULT '',
+    command        TEXT    NOT NULL DEFAULT '',
+    status         TEXT    NOT NULL,
+    detail         TEXT    NOT NULL DEFAULT '',
+    executed       INTEGER NOT NULL,
+    executed_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_command_execution_log_command_id
+    ON remote_command_execution_log (command_id, executed_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS alert_outbox (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id        TEXT    NOT NULL UNIQUE,
+    channel         TEXT    NOT NULL,   -- 'sms' | 'whatsapp'
+    recipient       TEXT    NOT NULL,
+    message         TEXT    NOT NULL,
+    action_tier     TEXT    NOT NULL,   -- 'A' | 'B' | 'C' | 'D'
+    trigger_name    TEXT    NOT NULL DEFAULT '',
+    original_ts     INTEGER NOT NULL,
+    attempt_count   INTEGER NOT NULL DEFAULT 0,
+    last_attempt_ts INTEGER,
+    status          TEXT    NOT NULL DEFAULT 'pending' -- 'pending' | 'failed' | 'delivered' | 'abandoned'
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_outbox_status_tier_ts
+    ON alert_outbox (status, action_tier, original_ts ASC);
+
+CREATE TABLE IF NOT EXISTS device_policy_cache (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    policy_version    INTEGER NOT NULL UNIQUE,
+    tier              TEXT    NOT NULL,
+    relay_b_enabled   INTEGER NOT NULL,
+    relay_c_enabled   INTEGER NOT NULL,
+    cloud_llm_enabled INTEGER NOT NULL,
+    valid_until       INTEGER NOT NULL,
+    issued_at         INTEGER NOT NULL,
+    signature         TEXT    NOT NULL,
+    raw_payload       TEXT    NOT NULL,
+    cached_at         INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_policy_cache_version
+    ON device_policy_cache (policy_version DESC, cached_at DESC);
+
+CREATE TABLE IF NOT EXISTS offline_token_consumption (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id    TEXT    NOT NULL UNIQUE,
+    device_id   TEXT    NOT NULL,
+    action      TEXT    NOT NULL,
+    consumed_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS offline_token_audit (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id    TEXT    NOT NULL DEFAULT '',
+    device_id   TEXT    NOT NULL,
+    action      TEXT    NOT NULL,
+    approved    INTEGER NOT NULL,
+    reason      TEXT    NOT NULL,
+    attempted_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS sensor_history_5min (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sensor_id TEXT NOT NULL,
@@ -158,30 +321,48 @@ class StateStore:
         self._db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
         self._write_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
     async def open(self) -> None:
         """Open the database connection and apply DDL migrations."""
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._open_sync)
+        async with self._lifecycle_lock:
+            if self._conn is not None:
+                return
+            conn = await asyncio.to_thread(self._open_sync)
+            self._conn = conn
 
-    def _open_sync(self) -> None:
-        self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.execute("PRAGMA foreign_keys=ON;")
-        self._migrate_sync()
+    def _open_sync(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._restrict_db_file_permissions()
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        self._migrate_sync(conn)
+        return conn
+
+    def _restrict_db_file_permissions(self) -> None:
+        """Keep local SQLite state readable/writable only by the runtime user."""
+        if self._db_path == ":memory:":
+            return
+        try:
+            os.chmod(self._db_path, 0o600)
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            return
 
     async def close(self) -> None:
-        if self._conn is not None:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._conn.close)
-            self._conn = None
+        async with self._lifecycle_lock:
+            async with self._write_lock:
+                conn = self._conn
+                self._conn = None
+            if conn is not None:
+                await asyncio.to_thread(conn.close)
 
-    def _migrate_sync(self) -> None:
-        assert self._conn is not None
-        self._conn.executescript(_DDL)
+    def _migrate_sync(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(_DDL)
         # Add columns that may be missing from databases created before this
         # migration.  SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS
         # so duplicate-column errors are handled explicitly.
@@ -191,15 +372,59 @@ class StateStore:
             ("tokens_used", "INTEGER NOT NULL DEFAULT 0"),
             ("latency_ms", "INTEGER NOT NULL DEFAULT 0"),
             ("proposed_action", "TEXT"),
+            ("reasoning_status", "TEXT NOT NULL DEFAULT ''"),
+            ("correlation_id", "TEXT NOT NULL DEFAULT ''"),
         ]
         for col, typedef in _new_reasoning_cols:
-            self._add_column_if_missing("reasoning_log", col, typedef)
-        self._conn.commit()
+            self._add_column_if_missing_on_conn(conn, "reasoning_log", col, typedef)
+        self._add_column_if_missing_on_conn(
+            conn,
+            "action_log",
+            "proposal_id",
+            "TEXT    NOT NULL DEFAULT ''",
+        )
+        for col, typedef in (
+            ("safe_default_used", "INTEGER NOT NULL DEFAULT 0"),
+            ("device_id", "TEXT    NOT NULL DEFAULT ''"),
+            ("sensor_id", "TEXT    NOT NULL DEFAULT ''"),
+            ("sensor_type", "TEXT    NOT NULL DEFAULT ''"),
+            ("correlation_id", "TEXT    NOT NULL DEFAULT ''"),
+        ):
+            self._add_column_if_missing_on_conn(conn, "action_log", col, typedef)
+        self._add_column_if_missing_on_conn(
+            conn,
+            "tier_c_decision_log",
+            "proposal_id",
+            "TEXT    NOT NULL DEFAULT ''",
+        )
+        self._add_column_if_missing_on_conn(
+            conn,
+            "remote_command_log",
+            "from_number",
+            "TEXT    NOT NULL DEFAULT ''",
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_remote_command_log_sender_rejections
+                ON remote_command_log (channel, from_number, accepted, received_at_ms DESC)
+            """
+        )
+        conn.commit()
 
     def _add_column_if_missing(self, table: str, column: str, typedef: str) -> None:
+        """Backward-compatible helper used by tests and migrations."""
         assert self._conn is not None
+        self._add_column_if_missing_on_conn(self._conn, table, column, typedef)
+
+    def _add_column_if_missing_on_conn(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        typedef: str,
+    ) -> None:
         try:
-            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {typedef}")
         except sqlite3.OperationalError as exc:
             msg = str(exc).lower()
             if "duplicate column name" in msg:
@@ -208,14 +433,21 @@ class StateStore:
 
     async def _run_write(self, fn, *args):
         """Run a synchronous write callable in the executor under write lock."""
-        loop = asyncio.get_running_loop()
         async with self._write_lock:
-            return await loop.run_in_executor(None, partial(fn, *args))
+            return await asyncio.to_thread(fn, *args)
 
     async def _run_read(self, fn, *args):
         """Run a synchronous read callable in the executor without write lock."""
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, partial(self._run_read_with_conn, fn, *args))
+        if self._db_path == ":memory:":
+            # In-memory SQLite cannot be shared with short-lived read
+            # connections, so route reads through the primary connection
+            # under the write lock to avoid cross-thread misuse.
+            return await self._run_write(self._run_read_on_primary_conn, fn, *args)
+        return await asyncio.to_thread(self._run_read_with_conn, fn, *args)
+
+    def _run_read_on_primary_conn(self, fn, *args):
+        assert self._conn is not None
+        return fn(self._conn, *args)
 
     def _run_read_with_conn(self, fn, *args):
         conn, close_when_done = self._open_read_conn_sync()
@@ -243,25 +475,62 @@ class StateStore:
 
     # ─── sensor_history ───────────────────────────────────────────────────────
 
-    async def compact_history(self) -> None:
+    async def compact_history(self, max_backward_skew_ms: int = 3600000) -> None:
         """Compact raw sensor history into time-bucketed averages.
 
         Call from runtime.py via asyncio.create_task() on a 5-minute
         schedule using asyncio periodic task pattern.
         """
-        now_ms = _now_ms()
+        current_ms = now_ms()
         cutoffs = {
-            "raw": now_ms - (48 * 3600 * 1000),  # 48 hours
-            "5min": now_ms - (30 * 86400 * 1000),  # 30 days
-            "hourly": now_ms - (365 * 86400 * 1000),  # 1 year
+            "raw": current_ms - (48 * 3600 * 1000),  # 48 hours
+            "5min": current_ms - (30 * 86400 * 1000),  # 30 days
+            "hourly": current_ms - (365 * 86400 * 1000),  # 1 year
         }
-        await self._run_write(self._compact_sync, cutoffs, now_ms)
-
-    def _compact_sync(self, cutoffs: dict, now_ms: int) -> None:
-        assert self._conn is not None
-        assert cutoffs["raw"] < now_ms - 3600000, (
-            "Clock skew detected: refused to compact history"
+        await self._run_write(
+            self._compact_sync,
+            cutoffs,
+            current_ms,
+            max_backward_skew_ms,
         )
+
+    def _compact_sync(
+        self,
+        cutoffs: dict,
+        now_ms: int,
+        max_backward_skew_ms: int = 3600000,
+    ) -> None:
+        if self._conn is None:
+            raise RuntimeError("StateStore is not open")
+
+        if max_backward_skew_ms < 0:
+            raise RuntimeError("Invalid compaction skew threshold: must be >= 0")
+
+        if not (cutoffs["hourly"] < cutoffs["5min"] < cutoffs["raw"] < now_ms):
+            raise RuntimeError(
+                "Invalid compaction cutoffs: must be strictly ordered in the past"
+            )
+
+        row = self._conn.execute(
+            """
+            SELECT MAX(t) as max_ts FROM (
+                SELECT MAX(timestamp) as t FROM sensor_history
+                UNION ALL
+                SELECT MAX(bucket_ms) as t FROM sensor_history_5min
+                UNION ALL
+                SELECT MAX(bucket_ms) as t FROM sensor_history_hourly
+                UNION ALL
+                SELECT MAX(bucket_ms) as t FROM sensor_history_daily
+            )
+            """
+        ).fetchone()
+
+        if row and row["max_ts"] is not None:
+            db_max_ts = row["max_ts"]
+            if now_ms + max_backward_skew_ms < db_max_ts:
+                raise RuntimeError(
+                    f"Clock skew detected: now_ms ({now_ms}) is behind db_max_ts ({db_max_ts}) by more than {max_backward_skew_ms}ms"
+                )
 
         # 1. Aggregate raw → 5-minute buckets older than 48h
         self._conn.execute(
@@ -290,7 +559,7 @@ class StateStore:
             (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
             SELECT sensor_id, sensor_type,
                    (bucket_ms / 3600000) * 3600000,
-                   AVG(avg_value), unit, SUM(sample_count)
+                   SUM(avg_value * sample_count) / SUM(sample_count), unit, SUM(sample_count)
             FROM sensor_history_5min
             WHERE bucket_ms < ?
             GROUP BY sensor_id, (bucket_ms / 3600000)
@@ -308,7 +577,7 @@ class StateStore:
             (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
             SELECT sensor_id, sensor_type,
                    (bucket_ms / 86400000) * 86400000,
-                   AVG(avg_value), unit, SUM(sample_count)
+                   SUM(avg_value * sample_count) / SUM(sample_count), unit, SUM(sample_count)
             FROM sensor_history_hourly
             WHERE bucket_ms < ?
             GROUP BY sensor_id, (bucket_ms / 86400000)
@@ -354,6 +623,12 @@ class StateStore:
     ) -> list[SensorReading]:
         return await self._run_read(self._get_history_sync, sensor_id, limit)
 
+    def hooks_get_history(
+        self, sensor_id: str, limit: int = 100
+    ) -> list[SensorReading]:
+        """Stable sync facade for hook history lookups."""
+        return self._run_read_with_conn(self._get_history_sync, sensor_id, limit)
+
     def _get_history_sync(
         self, conn: sqlite3.Connection, sensor_id: str, limit: int
     ) -> list[SensorReading]:
@@ -384,6 +659,10 @@ class StateStore:
         """Average of the n most-recent readings for a sensor."""
         return await self._run_read(self._avg_last_n_sync, sensor_id, n)
 
+    def hooks_avg_last_n(self, sensor_id: str, n: int) -> Optional[float]:
+        """Stable sync facade for hook rolling-N average lookups."""
+        return self._run_read_with_conn(self._avg_last_n_sync, sensor_id, n)
+
     def _avg_last_n_sync(
         self, conn: sqlite3.Connection, sensor_id: str, n: int
     ) -> Optional[float]:
@@ -406,10 +685,14 @@ class StateStore:
         """Average of all readings within the last *hours* hours."""
         return await self._run_read(self._avg_last_hours_sync, sensor_id, hours)
 
+    def hooks_avg_last_hours(self, sensor_id: str, hours: int) -> Optional[float]:
+        """Stable sync facade for hook average-over-hours lookups."""
+        return self._run_read_with_conn(self._avg_last_hours_sync, sensor_id, hours)
+
     def _avg_last_hours_sync(
         self, conn: sqlite3.Connection, sensor_id: str, hours: int
     ) -> Optional[float]:
-        cutoff_ms = _now_ms() - hours * 3_600_000
+        cutoff_ms = now_ms() - hours * 3_600_000
 
         # Weighted average across all tiers to seamlessly span compaction boundaries
         row = conn.execute(
@@ -447,11 +730,195 @@ class StateStore:
         ).fetchone()
         return row["avg_val"] if row and row["avg_val"] is not None else None
 
+    async def time_of_week_baseline(
+        self,
+        *,
+        sensor_id: str,
+        reference_timestamp_ms: int,
+        timezone: str = "UTC",
+        lookback_weeks: int = 8,
+        min_weeks: int = 3,
+    ) -> dict[str, Any]:
+        """Return a site-local same-weekday/hour baseline from hourly history."""
+        return await self._run_read(
+            self._time_of_week_baseline_sync,
+            sensor_id,
+            reference_timestamp_ms,
+            timezone,
+            lookback_weeks,
+            min_weeks,
+        )
+
+    def hooks_time_of_week_baseline(
+        self,
+        sensor_id: str,
+        reference_timestamp_ms: int,
+        timezone: str = "UTC",
+        lookback_weeks: int = 8,
+        min_weeks: int = 3,
+    ) -> dict[str, Any]:
+        """Stable sync facade for hook site-local baseline lookups."""
+        return self._run_read_with_conn(
+            self._time_of_week_baseline_sync,
+            sensor_id,
+            reference_timestamp_ms,
+            timezone,
+            lookback_weeks,
+            min_weeks,
+        )
+
+    def _time_of_week_baseline_sync(
+        self,
+        conn: sqlite3.Connection,
+        sensor_id: str,
+        reference_timestamp_ms: int,
+        timezone: str,
+        lookback_weeks: int,
+        min_weeks: int,
+    ) -> dict[str, Any]:
+        lookback = max(1, min(int(lookback_weeks), 52))
+        min_required_weeks = max(1, min(int(min_weeks), lookback))
+        reference_ms = int(reference_timestamp_ms)
+        tz_name = str(timezone or "UTC").strip() or "UTC"
+        try:
+            tz = ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            tz_name = "UTC"
+            tz = ZoneInfo("UTC")
+
+        reference_dt = datetime.datetime.fromtimestamp(reference_ms / 1000.0, tz=tz)
+        target_weekday = int(reference_dt.weekday())
+        target_hour = int(reference_dt.hour)
+        start_ms = reference_ms - (lookback * 7 * 24 * 3_600_000)
+
+        rows = conn.execute(
+            """
+            SELECT bucket_ms, avg_value, sample_count, unit
+            FROM sensor_history_hourly
+            WHERE sensor_id = ?
+              AND bucket_ms >= ?
+              AND bucket_ms < ?
+            ORDER BY bucket_ms ASC
+            """,
+            (str(sensor_id), int(start_ms), reference_ms),
+        ).fetchall()
+
+        total = 0.0
+        sample_count = 0
+        covered_weeks: set[tuple[int, int]] = set()
+        unit = ""
+        for row in rows:
+            bucket_ms = int(row["bucket_ms"])
+            local_dt = datetime.datetime.fromtimestamp(bucket_ms / 1000.0, tz=tz)
+            if local_dt.weekday() != target_weekday or local_dt.hour != target_hour:
+                continue
+            count = max(0, int(row["sample_count"] or 0))
+            if count <= 0:
+                continue
+            value = float(row["avg_value"])
+            total += value * count
+            sample_count += count
+            iso = local_dt.isocalendar()
+            covered_weeks.add((int(iso.year), int(iso.week)))
+            unit = str(row["unit"] or unit)
+
+        covered_week_count = len(covered_weeks)
+        avg_value = (total / sample_count) if sample_count > 0 else None
+        usable = sample_count > 0 and covered_week_count >= min_required_weeks
+        if sample_count <= 0:
+            reason = "no_history"
+        elif not usable:
+            reason = "low_coverage"
+        else:
+            reason = "ok"
+
+        return {
+            "sensor_id": str(sensor_id),
+            "reference_timestamp_ms": reference_ms,
+            "timezone": tz_name,
+            "target_weekday": target_weekday,
+            "target_hour": target_hour,
+            "lookback_weeks": lookback,
+            "min_weeks": min_required_weeks,
+            "avg_value": avg_value,
+            "unit": unit,
+            "sample_count": sample_count,
+            "covered_weeks": covered_week_count,
+            "usable": usable,
+            "reason": reason,
+            "tier": "hourly",
+        }
+
+    async def get_latest_readings_snapshot(
+        self,
+        exclude_sensor_id: str,
+        since_ms: int,
+        max_entries: int,
+    ) -> list[SensorReading]:
+        """Return the most-recent reading per sensor_id fresher than since_ms.
+
+        The triggering sensor (exclude_sensor_id) is always excluded.
+        Results are bounded to max_entries, ordered by sensor_id for
+        deterministic prompt output across calls.
+        """
+        return await self._run_read(
+            self._get_latest_readings_snapshot_sync,
+            exclude_sensor_id,
+            since_ms,
+            max_entries,
+        )
+
+    def _get_latest_readings_snapshot_sync(
+        self,
+        conn: sqlite3.Connection,
+        exclude_sensor_id: str,
+        since_ms: int,
+        max_entries: int,
+    ) -> list[SensorReading]:
+        # Uses a derived-table join rather than a correlated subquery so the
+        # planner resolves each sensor's MAX(timestamp) in a single index pass
+        # over (sensor_id, timestamp DESC) before joining back to the full row.
+        # The correlated-subquery form re-executes the inner SELECT for every
+        # outer candidate row — O(N_candidates × log N_table) vs O(N_candidates).
+        rows = conn.execute(
+            """
+            SELECT h.sensor_id, h.sensor_type, h.value, h.unit,
+                   h.timestamp, h.quality, h.metadata
+            FROM sensor_history AS h
+            INNER JOIN (
+                SELECT sensor_id, MAX(timestamp) AS max_ts
+                FROM sensor_history
+                WHERE sensor_id != ?
+                  AND timestamp >= ?
+                GROUP BY sensor_id
+            ) AS latest
+              ON h.sensor_id = latest.sensor_id
+             AND h.timestamp = latest.max_ts
+            ORDER BY h.sensor_id
+            LIMIT ?
+            """,
+            (exclude_sensor_id, since_ms, max(1, max_entries)),
+        ).fetchall()
+        return [
+            SensorReading(
+                sensor_id=row["sensor_id"],
+                sensor_type=row["sensor_type"],
+                value=row["value"],
+                unit=row["unit"],
+                timestamp=row["timestamp"],
+                quality=row["quality"],
+                metadata=json.loads(row["metadata"]),
+            )
+            for row in rows
+        ]
+
     async def get_timeseries(
         self, sensor_id: str, start_ms: int, end_ms: int
     ) -> list[tuple[int, float]]:
         """Fetch chart data from the appropriate compaction tier."""
-        return await self._run_read(self._get_timeseries_sync, sensor_id, start_ms, end_ms)
+        return await self._run_read(
+            self._get_timeseries_sync, sensor_id, start_ms, end_ms
+        )
 
     def _get_timeseries_sync(
         self, conn: sqlite3.Connection, sensor_id: str, start_ms: int, end_ms: int
@@ -479,13 +946,160 @@ class StateStore:
         ).fetchall()
         return [(row["ts"], row["val"]) for row in rows]
 
+    async def export_sensor_history(
+        self,
+        *,
+        sensor_id: str,
+        start_ms: int,
+        end_ms: int,
+        limit: int = 10_000,
+    ) -> list[dict]:
+        """Return bounded sensor history across raw and compacted tiers.
+
+        The gateway/reporting layer should use this method instead of reaching
+        into SQLite table names. Rows are ordered oldest-first and include the
+        compaction tier so report generators can decide how to aggregate.
+        """
+        return await self._run_read(
+            self._export_sensor_history_sync,
+            sensor_id,
+            start_ms,
+            end_ms,
+            limit,
+        )
+
+    def _export_sensor_history_sync(
+        self,
+        conn: sqlite3.Connection,
+        sensor_id: str,
+        start_ms: int,
+        end_ms: int,
+        limit: int,
+    ) -> list[dict]:
+        if int(end_ms) < int(start_ms):
+            return []
+
+        capped_limit = max(1, min(int(limit), 10_000))
+        params: tuple[Any, ...] = (
+            str(sensor_id),
+            int(start_ms),
+            int(end_ms),
+            str(sensor_id),
+            int(start_ms),
+            int(end_ms),
+            str(sensor_id),
+            int(start_ms),
+            int(end_ms),
+            str(sensor_id),
+            int(start_ms),
+            int(end_ms),
+            capped_limit,
+        )
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM (
+                SELECT
+                    sensor_id,
+                    sensor_type,
+                    timestamp AS timestamp,
+                    value AS value,
+                    unit,
+                    quality,
+                    1 AS sample_count,
+                    'raw' AS tier
+                FROM sensor_history
+                WHERE sensor_id = ? AND timestamp BETWEEN ? AND ?
+                UNION ALL
+                SELECT
+                    sensor_id,
+                    sensor_type,
+                    bucket_ms AS timestamp,
+                    avg_value AS value,
+                    unit,
+                    NULL AS quality,
+                    sample_count,
+                    '5min' AS tier
+                FROM sensor_history_5min
+                WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
+                UNION ALL
+                SELECT
+                    sensor_id,
+                    sensor_type,
+                    bucket_ms AS timestamp,
+                    avg_value AS value,
+                    unit,
+                    NULL AS quality,
+                    sample_count,
+                    'hourly' AS tier
+                FROM sensor_history_hourly
+                WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
+                UNION ALL
+                SELECT
+                    sensor_id,
+                    sensor_type,
+                    bucket_ms AS timestamp,
+                    avg_value AS value,
+                    unit,
+                    NULL AS quality,
+                    sample_count,
+                    'daily' AS tier
+                FROM sensor_history_daily
+                WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
+            )
+            ORDER BY timestamp ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [
+            {
+                "sensor_id": row["sensor_id"],
+                "sensor_type": row["sensor_type"],
+                "timestamp": row["timestamp"],
+                "value": row["value"],
+                "unit": row["unit"],
+                "quality": row["quality"],
+                "sample_count": row["sample_count"],
+                "tier": row["tier"],
+            }
+            for row in rows
+        ]
+
     # ─── action_log ───────────────────────────────────────────────────────────
 
     async def log_action(self, result: ActionResult, trigger_name: str) -> None:
-        await self._run_write(self._log_action_sync, result, trigger_name)
+        await self._run_write(self._log_action_sync, result, trigger_name, None)
 
-    def _log_action_sync(self, result: ActionResult, trigger_name: str) -> None:
+    async def log_action_for_event(
+        self,
+        result: ActionResult,
+        *,
+        trigger_name: str,
+        device_id: str = "",
+        sensor_id: str = "",
+        sensor_type: str = "",
+    ) -> None:
+        """Persist action result with sensor/device context for reporting."""
+        await self._run_write(
+            self._log_action_sync,
+            result,
+            trigger_name,
+            {
+                "device_id": device_id,
+                "sensor_id": sensor_id,
+                "sensor_type": sensor_type,
+            },
+        )
+
+    def _log_action_sync(
+        self,
+        result: ActionResult,
+        trigger_name: str,
+        context_fields: dict | None = None,
+    ) -> None:
         assert self._conn is not None
+        context_fields = context_fields or {}
         approved_int: Optional[int] = None
         if result.approved is not None:
             approved_int = 1 if result.approved else 0
@@ -493,8 +1107,9 @@ class StateStore:
             """
             INSERT INTO action_log
                 (action_name, tier, executed, approved, action_taken,
-                 operator_response, trigger_name, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 operator_response, proposal_id, safe_default_used, device_id,
+                 sensor_id, sensor_type, correlation_id, trigger_name, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.action_name,
@@ -503,6 +1118,12 @@ class StateStore:
                 approved_int,
                 result.action_taken,
                 result.operator_response,
+                result.proposal_id or "",
+                1 if result.safe_default_used else 0,
+                str(context_fields.get("device_id", "") or ""),
+                str(context_fields.get("sensor_id", "") or ""),
+                str(context_fields.get("sensor_type", "") or ""),
+                result.correlation_id,
                 trigger_name,
                 result.timestamp,
             ),
@@ -516,7 +1137,8 @@ class StateStore:
         rows = conn.execute(
             """
             SELECT action_name, tier, executed, approved, action_taken,
-                   operator_response, trigger_name, timestamp
+                   operator_response, proposal_id, safe_default_used, device_id,
+                   sensor_id, sensor_type, correlation_id, trigger_name, timestamp
             FROM action_log
             ORDER BY timestamp DESC
             LIMIT ?
@@ -536,11 +1158,228 @@ class StateStore:
                     "approved": approved_val,
                     "action_taken": row["action_taken"],
                     "operator_response": row["operator_response"],
+                    "proposal_id": row["proposal_id"],
+                    "safe_default_used": bool(row["safe_default_used"]),
+                    "device_id": row["device_id"],
+                    "sensor_id": row["sensor_id"],
+                    "sensor_type": row["sensor_type"],
+                    "correlation_id": row["correlation_id"],
                     "trigger_name": row["trigger_name"],
                     "timestamp": row["timestamp"],
                 }
             )
         return result
+
+    async def export_action_log(
+        self,
+        *,
+        device_id: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        tier: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return a bounded action-log export for gateway/reporting sync."""
+        return await self._run_read(
+            self._export_action_log_sync,
+            device_id,
+            since_ms,
+            until_ms,
+            tier,
+            limit,
+        )
+
+    def _export_action_log_sync(
+        self,
+        conn: sqlite3.Connection,
+        device_id: str | None,
+        since_ms: int | None,
+        until_ms: int | None,
+        tier: str | None,
+        limit: int,
+    ) -> list[dict]:
+        where = []
+        params: list[Any] = []
+        if device_id:
+            where.append("device_id = ?")
+            params.append(str(device_id))
+        if since_ms is not None:
+            where.append("timestamp >= ?")
+            params.append(int(since_ms))
+        if until_ms is not None:
+            where.append("timestamp <= ?")
+            params.append(int(until_ms))
+        if tier:
+            where.append("tier = ?")
+            params.append(str(tier).upper())
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, min(int(limit), 1000)))
+        query = (
+            """
+            SELECT action_name, tier, executed, approved, action_taken,
+                   operator_response, proposal_id, safe_default_used, device_id,
+                   sensor_id, sensor_type, correlation_id, trigger_name, timestamp
+            FROM action_log
+            """
+            + where_sql
+            + """
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """
+        )
+        rows = conn.execute(query, tuple(params)).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["executed"] = bool(item["executed"])
+            item["approved"] = (
+                bool(item["approved"]) if item["approved"] is not None else None
+            )
+            item["safe_default_used"] = bool(item["safe_default_used"])
+            result.append(item)
+        return result
+
+    # ─── tier_c_decision_log ───────────────────────────────────────────────────
+
+    async def log_tier_c_decision(self, **fields) -> None:
+        """Persist a full Tier C proposal/decision record for analytics.
+
+        This table is intentionally richer than ``action_log``.  It captures the
+        sensor context, reasoning proposal, operator decision, latency, and final
+        action outcome needed for future approval/rejection learning.
+        """
+        await self._run_write(self._log_tier_c_decision_sync, fields)
+
+    def _log_tier_c_decision_sync(self, fields: dict) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO tier_c_decision_log
+                (device_id, site_type, location, timezone, sensor_id, sensor_type,
+                 reading_value, reading_unit, reading_timestamp, history_window_json,
+                 skill_name, trigger_name, proposed_action, confidence,
+                 reasoning_tier, reasoning_model, prompt_context_summary,
+                 operator_decision, operator_response, decision_latency_ms,
+                 approval_timeout_seconds, safe_default_action, safe_default_used,
+                 action_taken, action_executed, final_action_result_json,
+                 later_outcome_json, proposal_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(fields.get("device_id", "") or ""),
+                str(fields.get("site_type", "") or ""),
+                str(fields.get("location", "") or ""),
+                str(fields.get("timezone", "") or ""),
+                str(fields.get("sensor_id", "") or ""),
+                str(fields.get("sensor_type", "") or ""),
+                fields.get("reading_value"),
+                str(fields.get("reading_unit", "") or ""),
+                fields.get("reading_timestamp"),
+                json.dumps(fields.get("history_window"), sort_keys=True),
+                str(fields.get("skill_name", "") or ""),
+                str(fields.get("trigger_name", "") or ""),
+                str(fields.get("proposed_action", "") or ""),
+                float(fields.get("confidence", 0.0) or 0.0),
+                str(fields.get("reasoning_tier", "") or ""),
+                str(fields.get("reasoning_model", "") or ""),
+                str(fields.get("prompt_context_summary", "") or ""),
+                str(fields.get("operator_decision", "") or ""),
+                fields.get("operator_response"),
+                int(fields.get("decision_latency_ms", 0) or 0),
+                int(fields.get("approval_timeout_seconds", 0) or 0),
+                str(fields.get("safe_default_action", "") or ""),
+                1 if fields.get("safe_default_used") else 0,
+                str(fields.get("action_taken", "") or ""),
+                1 if fields.get("action_executed") else 0,
+                json.dumps(fields.get("final_action_result", {}), sort_keys=True),
+                json.dumps(fields.get("later_outcome"), sort_keys=True),
+                str(fields.get("proposal_id", "") or ""),
+                int(fields.get("created_at") or now_ms()),
+            ),
+        )
+        self._conn.commit()
+
+    async def get_tier_c_decision_log(self, limit: int = 50) -> list[dict]:
+        return await self._run_read(self._get_tier_c_decision_log_sync, limit)
+
+    def _get_tier_c_decision_log_sync(
+        self, conn: sqlite3.Connection, limit: int
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM tier_c_decision_log
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            result.append(self._decode_tier_c_decision_row(row))
+        return result
+
+    async def export_tier_c_decision_log(
+        self,
+        *,
+        device_id: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return a bounded Tier C decision-log export for cloud sync."""
+        return await self._run_read(
+            self._export_tier_c_decision_log_sync,
+            device_id,
+            since_ms,
+            until_ms,
+            limit,
+        )
+
+    def _export_tier_c_decision_log_sync(
+        self,
+        conn: sqlite3.Connection,
+        device_id: str | None,
+        since_ms: int | None,
+        until_ms: int | None,
+        limit: int,
+    ) -> list[dict]:
+        where = []
+        params: list[Any] = []
+        if device_id:
+            where.append("device_id = ?")
+            params.append(str(device_id))
+        if since_ms is not None:
+            where.append("created_at >= ?")
+            params.append(int(since_ms))
+        if until_ms is not None:
+            where.append("created_at <= ?")
+            params.append(int(until_ms))
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, min(int(limit), 1000)))
+        query = (
+            """
+            SELECT *
+            FROM tier_c_decision_log
+            """
+            + where_sql
+            + """
+            ORDER BY created_at DESC
+            LIMIT ?
+            """
+        )
+        rows = conn.execute(query, tuple(params)).fetchall()
+        return [self._decode_tier_c_decision_row(row) for row in rows]
+
+    @staticmethod
+    def _decode_tier_c_decision_row(row: sqlite3.Row) -> dict:
+        item = dict(row)
+        item["history_window"] = json.loads(item.pop("history_window_json"))
+        item["safe_default_used"] = bool(item["safe_default_used"])
+        item["action_executed"] = bool(item["action_executed"])
+        item["final_action_result"] = json.loads(item.pop("final_action_result_json"))
+        item["later_outcome"] = json.loads(item.pop("later_outcome_json"))
+        return item
 
     # ─── inbound_messages ─────────────────────────────────────────────────────
 
@@ -556,7 +1395,7 @@ class StateStore:
             channel,
             from_number,
             message,
-            received_at_ms if received_at_ms is not None else _now_ms(),
+            received_at_ms if received_at_ms is not None else now_ms(),
         )
 
     def _store_incoming_message_sync(
@@ -616,10 +1455,770 @@ class StateStore:
             SET consumed_at = ?
             WHERE id = ? AND consumed_at IS NULL
             """,
-            (_now_ms(), row["id"]),
+            (now_ms(), row["id"]),
         )
         self._conn.commit()
         return str(row["message"])
+
+    # ─── webhook_replay_log ───────────────────────────────────────────────────
+
+    async def record_webhook_nonce(
+        self,
+        *,
+        source: str,
+        nonce: str,
+        received_at_ms: int,
+        expires_at_ms: int,
+    ) -> bool:
+        """Record a webhook nonce and return False when it is a replay."""
+        return await self._run_write(
+            self._record_webhook_nonce_sync,
+            source,
+            nonce,
+            received_at_ms,
+            expires_at_ms,
+        )
+
+    def _record_webhook_nonce_sync(
+        self,
+        source: str,
+        nonce: str,
+        received_at_ms: int,
+        expires_at_ms: int,
+    ) -> bool:
+        assert self._conn is not None
+        self._conn.execute(
+            "DELETE FROM webhook_replay_log WHERE expires_at_ms <= ?",
+            (int(received_at_ms),),
+        )
+        cursor = self._conn.execute(
+            """
+            INSERT OR IGNORE INTO webhook_replay_log
+                (source, nonce, received_at_ms, expires_at_ms)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                str(source or ""),
+                str(nonce or ""),
+                int(received_at_ms),
+                int(expires_at_ms),
+            ),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # ─── remote_command_log ───────────────────────────────────────────────────
+
+    async def has_remote_command(self, command_id: str) -> bool:
+        return await self._run_read(self._has_remote_command_sync, command_id)
+
+    def _has_remote_command_sync(
+        self, conn: sqlite3.Connection, command_id: str
+    ) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM remote_command_log
+            WHERE command_id = ? AND accepted = 1
+            LIMIT 1
+            """,
+            (str(command_id or ""),),
+        ).fetchone()
+        return row is not None
+
+    async def log_remote_command_attempt(
+        self,
+        *,
+        command_id: str,
+        channel: str,
+        from_number: str = "",
+        command: str,
+        accepted: bool,
+        reason: str,
+        issued_at_ms: int | None = None,
+        received_at_ms: int | None = None,
+    ) -> None:
+        await self._run_write(
+            self._log_remote_command_attempt_sync,
+            command_id,
+            channel,
+            from_number,
+            command,
+            accepted,
+            reason,
+            issued_at_ms,
+            received_at_ms if received_at_ms is not None else now_ms(),
+        )
+
+    def _log_remote_command_attempt_sync(
+        self,
+        command_id: str,
+        channel: str,
+        from_number: str,
+        command: str,
+        accepted: bool,
+        reason: str,
+        issued_at_ms: int | None,
+        received_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO remote_command_log
+                (command_id, channel, from_number, command, accepted, reason, issued_at_ms, received_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(command_id or ""),
+                str(channel or ""),
+                str(from_number or ""),
+                str(command or ""),
+                1 if accepted else 0,
+                str(reason or ""),
+                issued_at_ms,
+                received_at_ms,
+            ),
+        )
+        self._conn.commit()
+
+    async def get_remote_command_log(self, limit: int = 50) -> list[dict]:
+        return await self._run_read(self._get_remote_command_log_sync, limit)
+
+    def _get_remote_command_log_sync(
+        self, conn: sqlite3.Connection, limit: int
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT command_id, channel, from_number, command, accepted, reason, issued_at_ms, received_at_ms
+            FROM remote_command_log
+            ORDER BY received_at_ms DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["accepted"] = bool(item["accepted"])
+            result.append(item)
+        return result
+
+    async def count_recent_remote_command_rejections(
+        self,
+        *,
+        channel: str,
+        from_number: str,
+        since_ms: int,
+    ) -> int:
+        return await self._run_read(
+            self._count_recent_remote_command_rejections_sync,
+            channel,
+            from_number,
+            since_ms,
+        )
+
+    def _count_recent_remote_command_rejections_sync(
+        self,
+        conn: sqlite3.Connection,
+        channel: str,
+        from_number: str,
+        since_ms: int,
+    ) -> int:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM remote_command_log
+            WHERE channel = ?
+              AND from_number = ?
+              AND accepted = 0
+              AND received_at_ms >= ?
+            """,
+            (str(channel or ""), str(from_number or ""), int(since_ms)),
+        ).fetchone()
+        return int(row["n"] if row is not None else 0)
+
+    async def log_remote_command_security_incident(
+        self,
+        *,
+        incident_id: str,
+        channel: str,
+        from_number: str,
+        reason: str,
+        rejection_count: int,
+        threshold: int,
+        window_ms: int,
+        created_at_ms: int | None = None,
+    ) -> bool:
+        return await self._run_write(
+            self._log_remote_command_security_incident_sync,
+            incident_id,
+            channel,
+            from_number,
+            reason,
+            rejection_count,
+            threshold,
+            window_ms,
+            created_at_ms if created_at_ms is not None else now_ms(),
+        )
+
+    def _log_remote_command_security_incident_sync(
+        self,
+        incident_id: str,
+        channel: str,
+        from_number: str,
+        reason: str,
+        rejection_count: int,
+        threshold: int,
+        window_ms: int,
+        created_at_ms: int,
+    ) -> bool:
+        assert self._conn is not None
+        cursor = self._conn.execute(
+            """
+            INSERT OR IGNORE INTO remote_command_security_incident_log
+                (incident_id, channel, from_number, reason, rejection_count,
+                 threshold, window_ms, created_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(incident_id or ""),
+                str(channel or ""),
+                str(from_number or ""),
+                str(reason or ""),
+                int(rejection_count),
+                int(threshold),
+                int(window_ms),
+                int(created_at_ms),
+            ),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_remote_command_security_incidents(
+        self,
+        limit: int = 50,
+    ) -> list[dict]:
+        return await self._run_read(
+            self._get_remote_command_security_incidents_sync,
+            limit,
+        )
+
+    def _get_remote_command_security_incidents_sync(
+        self,
+        conn: sqlite3.Connection,
+        limit: int,
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT incident_id, channel, from_number, reason, rejection_count,
+                   threshold, window_ms, created_at_ms
+            FROM remote_command_security_incident_log
+            ORDER BY created_at_ms DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def count_recent_remote_command_security_incidents(
+        self,
+        *,
+        channel: str,
+        from_number: str,
+        since_ms: int,
+    ) -> int:
+        return await self._run_read(
+            self._count_recent_remote_command_security_incidents_sync,
+            channel,
+            from_number,
+            since_ms,
+        )
+
+    def _count_recent_remote_command_security_incidents_sync(
+        self,
+        conn: sqlite3.Connection,
+        channel: str,
+        from_number: str,
+        since_ms: int,
+    ) -> int:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM remote_command_security_incident_log
+            WHERE channel = ?
+              AND from_number = ?
+              AND created_at_ms >= ?
+            """,
+            (str(channel or ""), str(from_number or ""), int(since_ms)),
+        ).fetchone()
+        return int(row["n"] if row is not None else 0)
+
+    async def get_recent_remote_command_incident_senders(
+        self,
+        *,
+        since_ms: int,
+        limit: int = 50,
+    ) -> list[dict]:
+        return await self._run_read(
+            self._get_recent_remote_command_incident_senders_sync,
+            since_ms,
+            limit,
+        )
+
+    def _get_recent_remote_command_incident_senders_sync(
+        self,
+        conn: sqlite3.Connection,
+        since_ms: int,
+        limit: int,
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT channel, from_number, MAX(created_at_ms) AS last_incident_at_ms,
+                   COUNT(*) AS incident_count
+            FROM remote_command_security_incident_log
+            WHERE created_at_ms >= ?
+            GROUP BY channel, from_number
+            ORDER BY last_incident_at_ms DESC
+            LIMIT ?
+            """,
+            (int(since_ms), max(1, int(limit))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def log_remote_command_execution(
+        self,
+        *,
+        command_id: str,
+        channel: str,
+        command: str,
+        status: str,
+        detail: str,
+        executed: bool,
+        executed_at_ms: int | None = None,
+    ) -> None:
+        await self._run_write(
+            self._log_remote_command_execution_sync,
+            command_id,
+            channel,
+            command,
+            status,
+            detail,
+            executed,
+            executed_at_ms if executed_at_ms is not None else now_ms(),
+        )
+
+    def _log_remote_command_execution_sync(
+        self,
+        command_id: str,
+        channel: str,
+        command: str,
+        status: str,
+        detail: str,
+        executed: bool,
+        executed_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO remote_command_execution_log
+                (command_id, channel, command, status, detail, executed, executed_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(command_id or ""),
+                str(channel or ""),
+                str(command or ""),
+                str(status or ""),
+                str(detail or ""),
+                1 if executed else 0,
+                executed_at_ms,
+            ),
+        )
+        self._conn.commit()
+
+    async def get_remote_command_execution_log(self, limit: int = 50) -> list[dict]:
+        return await self._run_read(self._get_remote_command_execution_log_sync, limit)
+
+    def _get_remote_command_execution_log_sync(
+        self, conn: sqlite3.Connection, limit: int
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT command_id, channel, command, status, detail, executed, executed_at_ms
+            FROM remote_command_execution_log
+            ORDER BY executed_at_ms DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["executed"] = bool(item["executed"])
+            result.append(item)
+        return result
+
+    # ─── alert_outbox ─────────────────────────────────────────────────────────
+
+    async def enqueue_alert(
+        self,
+        *,
+        alert_id: str,
+        channel: str,
+        recipient: str,
+        message: str,
+        action_tier: str,
+        trigger_name: str,
+        original_ts: int,
+    ) -> bool:
+        """Insert an outbound alert row into alert_outbox.
+
+        Returns:
+            True if a new row was inserted, False if a row with alert_id already
+            exists (deduplicated by UNIQUE constraint).
+        """
+        return await self._run_write(
+            self._enqueue_alert_sync,
+            alert_id,
+            channel,
+            recipient,
+            message,
+            action_tier,
+            trigger_name,
+            original_ts,
+        )
+
+    def _enqueue_alert_sync(
+        self,
+        alert_id: str,
+        channel: str,
+        recipient: str,
+        message: str,
+        action_tier: str,
+        trigger_name: str,
+        original_ts: int,
+    ) -> bool:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            INSERT INTO alert_outbox
+                (alert_id, channel, recipient, message, action_tier, trigger_name, original_ts, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+            ON CONFLICT(alert_id) DO NOTHING
+            """,
+            (
+                alert_id,
+                channel,
+                recipient,
+                message,
+                action_tier,
+                trigger_name,
+                original_ts,
+            ),
+        )
+        self._conn.commit()
+        return int(cur.rowcount) > 0
+
+    async def get_retryable_alerts(self, limit: int = 50) -> list[dict]:
+        """Fetch pending/failed outbox alerts in oldest-first order."""
+        return await self._run_read(self._get_retryable_alerts_sync, limit)
+
+    def _get_retryable_alerts_sync(
+        self,
+        conn: sqlite3.Connection,
+        limit: int,
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT alert_id, channel, recipient, message, action_tier,
+                   trigger_name, original_ts, attempt_count, last_attempt_ts, status
+            FROM alert_outbox
+            WHERE status IN ('pending', 'failed')
+            ORDER BY original_ts ASC, id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_alert_outbox_summary(self) -> dict[str, int | None]:
+        """Return a bounded health summary for pending/failed outbound alerts."""
+        return await self._run_read(self._get_alert_outbox_summary_sync)
+
+    def _get_alert_outbox_summary_sync(
+        self,
+        conn: sqlite3.Connection,
+    ) -> dict[str, int | None]:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS backlog_count,
+                   MIN(original_ts) AS oldest_queued_original_ts
+            FROM alert_outbox
+            WHERE status IN ('pending', 'failed')
+            """
+        ).fetchone()
+        backlog_count = int(row["backlog_count"] or 0)
+        oldest_ts = (
+            int(row["oldest_queued_original_ts"])
+            if row["oldest_queued_original_ts"] is not None
+            else None
+        )
+        return {
+            "backlog_count": backlog_count,
+            "oldest_queued_original_ts": oldest_ts,
+        }
+
+    async def mark_alert_delivered(
+        self, alert_id: str, delivered_ts_ms: int | None = None
+    ) -> None:
+        await self._run_write(
+            self._mark_alert_delivered_sync,
+            alert_id,
+            delivered_ts_ms if delivered_ts_ms is not None else now_ms(),
+        )
+
+    def _mark_alert_delivered_sync(self, alert_id: str, delivered_ts_ms: int) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE alert_outbox
+            SET status = 'delivered',
+                last_attempt_ts = ?
+            WHERE alert_id = ?
+            """,
+            (delivered_ts_ms, alert_id),
+        )
+        self._conn.commit()
+
+    async def mark_alert_attempt_failed(
+        self, alert_id: str, failed_ts_ms: int | None = None
+    ) -> None:
+        await self._run_write(
+            self._mark_alert_attempt_failed_sync,
+            alert_id,
+            failed_ts_ms if failed_ts_ms is not None else now_ms(),
+        )
+
+    def _mark_alert_attempt_failed_sync(self, alert_id: str, failed_ts_ms: int) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE alert_outbox
+            SET attempt_count = attempt_count + 1,
+                last_attempt_ts = ?,
+                status = 'failed'
+            WHERE alert_id = ?
+            """,
+            (failed_ts_ms, alert_id),
+        )
+        self._conn.commit()
+
+    async def mark_alert_abandoned(
+        self, alert_id: str, abandoned_ts_ms: int | None = None
+    ) -> None:
+        await self._run_write(
+            self._mark_alert_abandoned_sync,
+            alert_id,
+            abandoned_ts_ms if abandoned_ts_ms is not None else now_ms(),
+        )
+
+    def _mark_alert_abandoned_sync(self, alert_id: str, abandoned_ts_ms: int) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE alert_outbox
+            SET status = 'abandoned',
+                last_attempt_ts = ?
+            WHERE alert_id = ?
+            """,
+            (abandoned_ts_ms, alert_id),
+        )
+        self._conn.commit()
+
+    # ─── offline_token_consumption / offline_token_audit ─────────────────────
+
+    async def claim_offline_token(
+        self,
+        *,
+        token_id: str,
+        device_id: str,
+        action: str,
+        consumed_at_ms: int | None = None,
+    ) -> bool:
+        return await self._run_write(
+            self._claim_offline_token_sync,
+            token_id,
+            device_id,
+            action,
+            consumed_at_ms if consumed_at_ms is not None else now_ms(),
+        )
+
+    def _claim_offline_token_sync(
+        self,
+        token_id: str,
+        device_id: str,
+        action: str,
+        consumed_at_ms: int,
+    ) -> bool:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            INSERT INTO offline_token_consumption (token_id, device_id, action, consumed_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(token_id) DO NOTHING
+            """,
+            (token_id, device_id, action, consumed_at_ms),
+        )
+        self._conn.commit()
+        return int(cur.rowcount) > 0
+
+    async def log_offline_token_attempt(
+        self,
+        *,
+        token_id: str,
+        device_id: str,
+        action: str,
+        approved: bool,
+        reason: str,
+        attempted_at_ms: int | None = None,
+    ) -> None:
+        await self._run_write(
+            self._log_offline_token_attempt_sync,
+            token_id,
+            device_id,
+            action,
+            approved,
+            reason,
+            attempted_at_ms if attempted_at_ms is not None else now_ms(),
+        )
+
+    def _log_offline_token_attempt_sync(
+        self,
+        token_id: str,
+        device_id: str,
+        action: str,
+        approved: bool,
+        reason: str,
+        attempted_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO offline_token_audit
+                (token_id, device_id, action, approved, reason, attempted_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (token_id, device_id, action, int(bool(approved)), reason, attempted_at_ms),
+        )
+        self._conn.commit()
+
+    # ─── device_policy_cache ─────────────────────────────────────────────────
+
+    async def upsert_device_policy_cache(
+        self,
+        *,
+        policy_version: int,
+        tier: str,
+        relay_b_enabled: bool,
+        relay_c_enabled: bool,
+        cloud_llm_enabled: bool,
+        valid_until: int,
+        issued_at: int,
+        signature: str,
+        raw_payload: str,
+        cached_at_ms: int | None = None,
+    ) -> None:
+        await self._run_write(
+            self._upsert_device_policy_cache_sync,
+            policy_version,
+            tier,
+            relay_b_enabled,
+            relay_c_enabled,
+            cloud_llm_enabled,
+            valid_until,
+            issued_at,
+            signature,
+            raw_payload,
+            cached_at_ms if cached_at_ms is not None else now_ms(),
+        )
+
+    def _upsert_device_policy_cache_sync(
+        self,
+        policy_version: int,
+        tier: str,
+        relay_b_enabled: bool,
+        relay_c_enabled: bool,
+        cloud_llm_enabled: bool,
+        valid_until: int,
+        issued_at: int,
+        signature: str,
+        raw_payload: str,
+        cached_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO device_policy_cache
+                (policy_version, tier, relay_b_enabled, relay_c_enabled, cloud_llm_enabled,
+                 valid_until, issued_at, signature, raw_payload, cached_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(policy_version) DO UPDATE SET
+                tier = excluded.tier,
+                relay_b_enabled = excluded.relay_b_enabled,
+                relay_c_enabled = excluded.relay_c_enabled,
+                cloud_llm_enabled = excluded.cloud_llm_enabled,
+                valid_until = excluded.valid_until,
+                issued_at = excluded.issued_at,
+                signature = excluded.signature,
+                raw_payload = excluded.raw_payload,
+                cached_at = excluded.cached_at
+            """,
+            (
+                int(policy_version),
+                tier,
+                1 if relay_b_enabled else 0,
+                1 if relay_c_enabled else 0,
+                1 if cloud_llm_enabled else 0,
+                int(valid_until),
+                int(issued_at),
+                signature,
+                raw_payload,
+                int(cached_at_ms),
+            ),
+        )
+        self._conn.commit()
+
+    async def get_latest_device_policy_cache(self) -> dict | None:
+        return await self._run_read(self._get_latest_device_policy_cache_sync)
+
+    def _get_latest_device_policy_cache_sync(
+        self,
+        conn: sqlite3.Connection,
+    ) -> dict | None:
+        row = conn.execute(
+            """
+            SELECT policy_version, tier, relay_b_enabled, relay_c_enabled,
+                   cloud_llm_enabled, valid_until, issued_at, signature,
+                   raw_payload, cached_at
+            FROM device_policy_cache
+            ORDER BY policy_version DESC, cached_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "policy_version": int(row["policy_version"]),
+            "tier": str(row["tier"]),
+            "relay_b_enabled": bool(row["relay_b_enabled"]),
+            "relay_c_enabled": bool(row["relay_c_enabled"]),
+            "cloud_llm_enabled": bool(row["cloud_llm_enabled"]),
+            "valid_until": int(row["valid_until"]),
+            "issued_at": int(row["issued_at"]),
+            "signature": str(row["signature"]),
+            "raw_payload": str(row["raw_payload"]),
+            "cached_at": int(row["cached_at"]),
+        }
 
     # ─── reasoning_log ───────────────────────────────────────────────────────
 
@@ -644,8 +2243,8 @@ class StateStore:
             INSERT INTO reasoning_log
                 (trigger_name, tier_used, prompt, response, confidence,
                  action_tier, device_id, model, tokens_used, latency_ms,
-                 proposed_action, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 proposed_action, reasoning_status, correlation_id, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trigger_name,
@@ -659,10 +2258,90 @@ class StateStore:
                 result.tokens_used,
                 result.latency_ms,
                 result.proposed_action,
-                _now_ms(),
+                result.reasoning_status,
+                result.correlation_id,
+                now_ms(),
             ),
         )
         self._conn.commit()
+
+    async def export_reasoning_log(
+        self,
+        *,
+        device_id: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        tier_used: str | None = None,
+        action_tier: str | None = None,
+        reasoning_status: str | None = None,
+        correlation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Return a bounded reasoning-log export for gateway/cloud sync."""
+        return await self._run_read(
+            self._export_reasoning_log_sync,
+            device_id,
+            since_ms,
+            until_ms,
+            tier_used,
+            action_tier,
+            reasoning_status,
+            correlation_id,
+            limit,
+        )
+
+    def _export_reasoning_log_sync(
+        self,
+        conn: sqlite3.Connection,
+        device_id: str | None,
+        since_ms: int | None,
+        until_ms: int | None,
+        tier_used: str | None,
+        action_tier: str | None,
+        reasoning_status: str | None,
+        correlation_id: str | None,
+        limit: int,
+    ) -> list[dict]:
+        where = []
+        params: list[Any] = []
+        if device_id:
+            where.append("device_id = ?")
+            params.append(str(device_id))
+        if since_ms is not None:
+            where.append("timestamp >= ?")
+            params.append(int(since_ms))
+        if until_ms is not None:
+            where.append("timestamp <= ?")
+            params.append(int(until_ms))
+        if tier_used:
+            where.append("tier_used = ?")
+            params.append(str(tier_used))
+        if action_tier:
+            where.append("action_tier = ?")
+            params.append(str(action_tier).upper())
+        if reasoning_status:
+            where.append("reasoning_status = ?")
+            params.append(str(reasoning_status))
+        if correlation_id:
+            where.append("correlation_id = ?")
+            params.append(str(correlation_id))
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        params.append(max(1, min(int(limit), 1000)))
+        query = (
+            """
+            SELECT trigger_name, tier_used, prompt, response, confidence,
+                   action_tier, device_id, model, tokens_used, latency_ms,
+                   proposed_action, reasoning_status, correlation_id, timestamp
+            FROM reasoning_log
+            """
+            + where_sql
+            + """
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """
+        )
+        rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
 
     # ─── override_log ─────────────────────────────────────────────────────────
 
@@ -710,7 +2389,7 @@ class StateStore:
                 operator_response,
                 override_type,
                 device_id,
-                _now_ms(),
+                now_ms(),
             ),
         )
         self._conn.commit()
@@ -718,6 +2397,8 @@ class StateStore:
     # ─── causal_memory ────────────────────────────────────────────────────────
 
     async def lookup_causal_memory(self, pattern_key: str) -> Optional[str]:
+        # Intentional write-path lock: lookup also updates hit_count/last_seen
+        # in the same transaction for causal-memory ranking.
         return await self._run_write(self._lookup_causal_sync, pattern_key)
 
     def _lookup_causal_sync(self, pattern_key: str) -> Optional[str]:
@@ -737,7 +2418,7 @@ class StateStore:
             SET hit_count = hit_count + 1, last_seen = ?
             WHERE pattern_key = ?
             """,
-            (_now_ms(), pattern_key),
+            (now_ms(), pattern_key),
         )
         self._conn.commit()
         return row["resolution"]
@@ -745,13 +2426,15 @@ class StateStore:
     async def store_causal_memory(
         self, pattern_key: str, resolution: str, confidence: float
     ) -> None:
-        await self._run_write(self._store_causal_sync, pattern_key, resolution, confidence)
+        await self._run_write(
+            self._store_causal_sync, pattern_key, resolution, confidence
+        )
 
     def _store_causal_sync(
         self, pattern_key: str, resolution: str, confidence: float
     ) -> None:
         assert self._conn is not None
-        now = _now_ms()
+        now = now_ms()
         self._conn.execute(
             """
             INSERT INTO causal_memory
@@ -810,7 +2493,7 @@ class StateStore:
         expiry_days: int,
     ) -> None:
         assert self._conn is not None
-        rejected_at = _now_ms()
+        rejected_at = now_ms()
         expiry_ms: int | None = None
         if expiry_days > 0:
             expiry_ms = int(expiry_days * 86_400_000)
@@ -872,7 +2555,7 @@ class StateStore:
         expiry_ms = row["expiry_ms"]
         if expiry_ms is not None:
             expires_at = int(row["rejected_at"]) + int(expiry_ms)
-            if expires_at < _now_ms():
+            if expires_at < now_ms():
                 return None
 
         return dict(row)
@@ -886,7 +2569,9 @@ class StateStore:
         timestamp_ms: int,
     ) -> str:
         value_bucket = round(float(value) * 2.0) / 2.0
-        dt = datetime.datetime.fromtimestamp(timestamp_ms / 1000.0, tz=datetime.timezone.utc)
+        dt = datetime.datetime.fromtimestamp(
+            timestamp_ms / 1000.0, tz=datetime.timezone.utc
+        )
         two_hour_bucket = (dt.hour // 2) * 2
         day_of_week = dt.weekday()
         raw = (
@@ -899,6 +2584,10 @@ class StateStore:
 
     async def get_skill_state(self, skill_name: str, key: str) -> Optional[str]:
         return await self._run_read(self._get_skill_state_sync, skill_name, key)
+
+    def hooks_get_skill_state(self, skill_name: str, key: str) -> Optional[str]:
+        """Stable sync facade for hook skill-state reads."""
+        return self._run_read_with_conn(self._get_skill_state_sync, skill_name, key)
 
     def _get_skill_state_sync(
         self, conn: sqlite3.Connection, skill_name: str, key: str
@@ -915,6 +2604,10 @@ class StateStore:
     async def set_skill_state(self, skill_name: str, key: str, value: str) -> None:
         await self._run_write(self._set_skill_state_sync, skill_name, key, value)
 
+    def hooks_set_skill_state(self, skill_name: str, key: str, value: str) -> None:
+        """Stable sync facade for hook skill-state writes."""
+        self._set_skill_state_sync(skill_name, key, value)
+
     def _set_skill_state_sync(self, skill_name: str, key: str, value: str) -> None:
         assert self._conn is not None
         self._conn.execute(
@@ -925,16 +2618,6 @@ class StateStore:
                 value      = excluded.value,
                 updated_at = excluded.updated_at
             """,
-            (skill_name, key, value, _now_ms()),
+            (skill_name, key, value, now_ms()),
         )
         self._conn.commit()
-
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def _now_ms() -> int:
-    """Current time as unix milliseconds (UTC)."""
-    import time
-
-    return int(time.time() * 1000)

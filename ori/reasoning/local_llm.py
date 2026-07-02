@@ -5,10 +5,9 @@ import asyncio
 import logging
 import os
 import re
-import time
-from functools import partial
 
 from ori.network.events import ReasoningResult
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +21,6 @@ except ImportError:
 
 class ModelNotAvailableError(Exception):
     """Raised when the model file is missing or llama-cpp-python is not installed."""
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 _OUTPUT_CONTRACT = (
@@ -61,6 +56,7 @@ class LocalLLM:
         self._model_path = model_path
         self._context_window = context_window
         self._llm: object | None = None  # Llama instance, populated on first call
+        self._load_lock = asyncio.Lock()
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -104,19 +100,15 @@ class LocalLLM:
 
         await self._ensure_loaded()
 
-        loop = asyncio.get_running_loop()
-        start_ms = _now_ms()
+        start_ms = now_ms()
 
-        output = await loop.run_in_executor(
-            None,
-            partial(
-                self._infer,
-                prompt=self._build_inference_prompt(prompt),
-                max_tokens=max_tokens,
-            ),
+        output = await asyncio.to_thread(
+            self._infer,
+            prompt=self._build_inference_prompt(prompt),
+            max_tokens=max_tokens,
         )
 
-        latency_ms = _now_ms() - start_ms
+        latency_ms = now_ms() - start_ms
         raw_text = output["choices"][0]["text"].strip()
         text = self._normalize_output(raw_text)
         tokens_used = output["usage"]["completion_tokens"]
@@ -138,16 +130,16 @@ class LocalLLM:
 
     async def _ensure_loaded(self) -> None:
         """Load the model in a thread-pool executor if not already loaded."""
-        if self._llm is not None:
-            return
-        loop = asyncio.get_running_loop()
-        logger.info(
-            "LocalLLM: loading model '%s' (n_ctx=%d) …",
-            self._model_path,
-            self._context_window,
-        )
-        self._llm = await loop.run_in_executor(None, self._load_model)
-        logger.info("LocalLLM: model loaded")
+        async with self._load_lock:
+            if self._llm is not None:
+                return
+            logger.info(
+                "LocalLLM: loading model '%s' (n_ctx=%d) …",
+                self._model_path,
+                self._context_window,
+            )
+            self._llm = await asyncio.to_thread(self._load_model)
+            logger.info("LocalLLM: model loaded")
 
     def _load_model(self) -> object:
         return Llama(

@@ -62,7 +62,9 @@ class VictronAdapter(MqttCachedAdapter):
     async def read(self, sensor_id: str) -> SensorReading:
         self._ensure_aiomqtt_available()
         if not self._connected:
-            raise AdapterReadError("VictronAdapter: not connected — call connect() first")
+            raise AdapterReadError(
+                "VictronAdapter: not connected — call connect() first"
+            )
         if self._breaker is None:
             raise AdapterReadError("VictronAdapter: circuit breaker is not initialized")
 

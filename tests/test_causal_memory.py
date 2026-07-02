@@ -65,14 +65,14 @@ class TestGenerateKey:
     def test_same_inputs_same_key(self):
         event = _event(sensor_type="current_clamp", value=5.0)
         with patch("ori.reasoning.causal_memory.datetime") as mock_dt:
-            mock_dt.datetime.now.return_value.weekday.return_value = 0
+            mock_dt.datetime.fromtimestamp.return_value.weekday.return_value = 0
             k1 = generate_key(event, "trigger_a")
             k2 = generate_key(event, "trigger_a")
         assert k1 == k2
 
     def test_different_sensor_type_gives_different_key(self):
         with patch("ori.reasoning.causal_memory.datetime") as mock_dt:
-            mock_dt.datetime.now.return_value.weekday.return_value = 0
+            mock_dt.datetime.fromtimestamp.return_value.weekday.return_value = 0
             k1 = generate_key(_event(sensor_type="current_clamp"), "t")
             k2 = generate_key(_event(sensor_type="voltage"), "t")
         assert k1 != k2
@@ -80,14 +80,14 @@ class TestGenerateKey:
     def test_different_trigger_gives_different_key(self):
         event = _event()
         with patch("ori.reasoning.causal_memory.datetime") as mock_dt:
-            mock_dt.datetime.now.return_value.weekday.return_value = 0
+            mock_dt.datetime.fromtimestamp.return_value.weekday.return_value = 0
             k1 = generate_key(event, "trigger_a")
             k2 = generate_key(event, "trigger_b")
         assert k1 != k2
 
     def test_different_value_bucket_gives_different_key(self):
         with patch("ori.reasoning.causal_memory.datetime") as mock_dt:
-            mock_dt.datetime.now.return_value.weekday.return_value = 0
+            mock_dt.datetime.fromtimestamp.return_value.weekday.return_value = 0
             k1 = generate_key(_event(value=5.0), "t")  # rounds to 5
             k2 = generate_key(_event(value=6.0), "t")  # rounds to 6
         assert k1 != k2
@@ -95,7 +95,7 @@ class TestGenerateKey:
     def test_values_in_same_bucket_give_same_key(self):
         """5.1 and 5.4 both round to 5.0 — same key."""
         with patch("ori.reasoning.causal_memory.datetime") as mock_dt:
-            mock_dt.datetime.now.return_value.weekday.return_value = 0
+            mock_dt.datetime.fromtimestamp.return_value.weekday.return_value = 0
             k1 = generate_key(_event(value=5.1), "t")
             k2 = generate_key(_event(value=5.4), "t")
         assert k1 == k2
@@ -103,10 +103,10 @@ class TestGenerateKey:
     def test_different_day_of_week_gives_different_key(self):
         event = _event()
         with patch("ori.reasoning.causal_memory.datetime") as mock_dt:
-            mock_dt.datetime.now.return_value.weekday.return_value = 0  # Monday
+            mock_dt.datetime.fromtimestamp.return_value.weekday.return_value = 0
             k_monday = generate_key(event, "t")
         with patch("ori.reasoning.causal_memory.datetime") as mock_dt:
-            mock_dt.datetime.now.return_value.weekday.return_value = 6  # Sunday
+            mock_dt.datetime.fromtimestamp.return_value.weekday.return_value = 6
             k_sunday = generate_key(event, "t")
         assert k_monday != k_sunday
 
@@ -114,7 +114,7 @@ class TestGenerateKey:
         """Heartbeat events must not crash key generation."""
         event = _heartbeat()
         with patch("ori.reasoning.causal_memory.datetime") as mock_dt:
-            mock_dt.datetime.now.return_value.weekday.return_value = 0
+            mock_dt.datetime.fromtimestamp.return_value.weekday.return_value = 0
             key = generate_key(event, "heartbeat_check")
         assert len(key) == 64
 
@@ -185,7 +185,7 @@ class TestInstanceGenerateKey:
         cm = CausalMemory(store)
         event = _event()
         with patch("ori.reasoning.causal_memory.datetime") as mock_dt:
-            mock_dt.datetime.now.return_value.weekday.return_value = 2
+            mock_dt.datetime.fromtimestamp.return_value.weekday.return_value = 2
             k_instance = cm.generate_key(event, "trigger")
             k_module = generate_key(event, "trigger")
         assert k_instance == k_module

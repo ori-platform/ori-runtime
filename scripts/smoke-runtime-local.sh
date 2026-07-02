@@ -4,11 +4,24 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-CONFIG_FILE="${1:-ori.local.yaml}"
+CONFIG_FILE="${1:-}"
 RUN_SECONDS="${2:-8}"
 LOG_FILE="${3:-ori-local.log}"
 DB_FILE="${4:-ori_local_smoke.db}"
 PRETTY_MODE="${ORI_PRETTY_LOGS:-auto}"
+
+if [[ -z "$CONFIG_FILE" ]]; then
+  platform="$(uname -s || echo unknown)"
+  if [[ "$platform" == "Darwin" && -f "ori.local.yaml" ]]; then
+    CONFIG_FILE="ori.local.yaml"
+  elif [[ -f "ori.yaml" ]]; then
+    CONFIG_FILE="ori.yaml"
+  elif [[ "$platform" == "Linux" && -f "ori.linux.yaml.example" ]]; then
+    CONFIG_FILE="ori.linux.yaml.example"
+  else
+    CONFIG_FILE="ori.local.yaml"
+  fi
+fi
 
 use_pretty=0
 case "${PRETTY_MODE}" in
@@ -46,6 +59,10 @@ print_color() {
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "❌ Config file not found: $CONFIG_FILE"
+  echo "   Pass an explicit config file as arg #1."
+  echo "   Example (Linux):  bash scripts/smoke-runtime-local.sh ori.yaml"
+  echo "   Example (macOS):  bash scripts/smoke-runtime-local.sh ori.local.yaml"
+  echo "   Linux quickstart: cp ori.linux.yaml.example ori.yaml"
   exit 1
 fi
 

@@ -43,8 +43,16 @@ class TestSystemControlAction:
         assert create_proc.await_count == 2
         first = create_proc.await_args_list[0].args
         second = create_proc.await_args_list[1].args
-        assert first[0:3] == ("sudo", "tee", "/sys/bus/platform/drivers/i2c-bcm2835/unbind")
-        assert second[0:3] == ("sudo", "tee", "/sys/bus/platform/drivers/i2c-bcm2835/bind")
+        assert first[0:3] == (
+            "sudo",
+            "tee",
+            "/sys/bus/platform/drivers/i2c-bcm2835/unbind",
+        )
+        assert second[0:3] == (
+            "sudo",
+            "tee",
+            "/sys/bus/platform/drivers/i2c-bcm2835/bind",
+        )
 
     @pytest.mark.asyncio
     async def test_disallowed_subsystem_refused(self):

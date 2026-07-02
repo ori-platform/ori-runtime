@@ -64,11 +64,11 @@ class TestProcessDeduplication:
         dedup = EventDeduplicator()
         r = _reading(value=5.0)
         now = _ms()
-        with patch("ori.network.deduplicator._now_ms", return_value=now):
+        with patch("ori.network.deduplicator.now_ms", return_value=now):
             dedup.process(_event(r))
 
         # 5001ms after first_seen — outside the 5-second window
-        with patch("ori.network.deduplicator._now_ms", return_value=now + 5_001):
+        with patch("ori.network.deduplicator.now_ms", return_value=now + 5_001):
             result = dedup.process(_event(r))
         assert result is not None
 
@@ -96,12 +96,30 @@ class TestProcessDeduplication:
             is not None
         )
 
-    def test_different_sensor_types_are_independent(self):  # noqa
+    def test_different_sensor_types_are_independent_explicit(self):
         dedup = EventDeduplicator()
         r1 = _reading(sensor_type="current_clamp", value=5.0)
         r2 = _reading(sensor_type="voltage", value=5.0)
         dedup.process(_event(r1))
         assert dedup.process(_event(r2)) is not None
+
+    def test_window_restarts_after_expiry(self):
+        """After expiry, forwarded event must restart dedup window from new time."""
+        dedup = EventDeduplicator()
+        r = _reading(value=5.0)
+        start = _ms()
+        with patch("ori.network.deduplicator.now_ms", return_value=start):
+            assert dedup.process(_event(r)) is not None
+
+        # First event after expiry passes through and starts a new window.
+        after_expiry = start + 5_001
+        with patch("ori.network.deduplicator.now_ms", return_value=after_expiry):
+            assert dedup.process(_event(r)) is not None
+
+        # A millisecond later should be suppressed by the restarted window.
+        just_after = after_expiry + 1
+        with patch("ori.network.deduplicator.now_ms", return_value=just_after):
+            assert dedup.process(_event(r)) is None
 
     def test_different_devices_are_independent(self):
         dedup = EventDeduplicator()
@@ -138,11 +156,11 @@ class TestProcessDeduplication:
         dedup = EventDeduplicator()
         r = _reading(value=5.0)
         now = _ms()
-        with patch("ori.network.deduplicator._now_ms", return_value=now):
+        with patch("ori.network.deduplicator.now_ms", return_value=now):
             dedup.process(_event(r))
 
         just_inside = now + 4_999
-        with patch("ori.network.deduplicator._now_ms", return_value=just_inside):
+        with patch("ori.network.deduplicator.now_ms", return_value=just_inside):
             result = dedup.process(_event(r))
         assert result is None
 
@@ -151,11 +169,11 @@ class TestProcessDeduplication:
         dedup = EventDeduplicator()
         r = _reading(value=5.0)
         now = _ms()
-        with patch("ori.network.deduplicator._now_ms", return_value=now):
+        with patch("ori.network.deduplicator.now_ms", return_value=now):
             dedup.process(_event(r))
 
         at_expiry = now + 5_000
-        with patch("ori.network.deduplicator._now_ms", return_value=at_expiry):
+        with patch("ori.network.deduplicator.now_ms", return_value=at_expiry):
             result = dedup.process(_event(r))
         assert result is not None
 
@@ -170,15 +188,15 @@ class TestProcessDeduplication:
         dedup = EventDeduplicator()
         r = _reading(value=5.0)
         now = _ms()
-        with patch("ori.network.deduplicator._now_ms", return_value=now):
+        with patch("ori.network.deduplicator.now_ms", return_value=now):
             dedup.process(_event(r))
 
         # 4999ms later — still inside window → suppressed
-        with patch("ori.network.deduplicator._now_ms", return_value=now + 4_999):
+        with patch("ori.network.deduplicator.now_ms", return_value=now + 4_999):
             assert dedup.process(_event(r)) is None
 
         # 5001ms after first_seen → outside window → passes through
-        with patch("ori.network.deduplicator._now_ms", return_value=now + 5_001):
+        with patch("ori.network.deduplicator.now_ms", return_value=now + 5_001):
             assert dedup.process(_event(r)) is not None
 
 
@@ -244,10 +262,10 @@ class TestOccurrenceRecord:
         dedup = EventDeduplicator()
         r = _reading(value=5.0)
         now = _ms()
-        with patch("ori.network.deduplicator._now_ms", return_value=now):
+        with patch("ori.network.deduplicator.now_ms", return_value=now):
             dedup.process(_event(r))
         later = now + 1_000
-        with patch("ori.network.deduplicator._now_ms", return_value=later):
+        with patch("ori.network.deduplicator.now_ms", return_value=later):
             dedup.process(_event(r))
         rec = next(iter(dedup._records.values()))
         assert rec.first_seen == now
@@ -262,12 +280,12 @@ class TestCleanup:
         dedup = EventDeduplicator()
         r = _reading()
         now = _ms()
-        with patch("ori.network.deduplicator._now_ms", return_value=now):
+        with patch("ori.network.deduplicator.now_ms", return_value=now):
             dedup.process(_event(r))
 
         # Advance 31 seconds past the record's last_seen
         future = now + 31_000
-        with patch("ori.network.deduplicator._now_ms", return_value=future):
+        with patch("ori.network.deduplicator.now_ms", return_value=future):
             evicted = dedup.cleanup()
 
         assert evicted == 1
@@ -277,11 +295,11 @@ class TestCleanup:
         dedup = EventDeduplicator()
         r = _reading()
         now = _ms()
-        with patch("ori.network.deduplicator._now_ms", return_value=now):
+        with patch("ori.network.deduplicator.now_ms", return_value=now):
             dedup.process(_event(r))
 
         # Only 10 seconds later — within the 30-second TTL
-        with patch("ori.network.deduplicator._now_ms", return_value=now + 10_000):
+        with patch("ori.network.deduplicator.now_ms", return_value=now + 10_000):
             evicted = dedup.cleanup()
 
         assert evicted == 0
@@ -290,15 +308,15 @@ class TestCleanup:
     def test_cleanup_selectively_removes_old_records(self):
         dedup = EventDeduplicator()
         now = _ms()
-        with patch("ori.network.deduplicator._now_ms", return_value=now):
+        with patch("ori.network.deduplicator.now_ms", return_value=now):
             dedup.process(_event(_reading(sensor_id="s-old")))
 
         # second sensor seen 20 s later
-        with patch("ori.network.deduplicator._now_ms", return_value=now + 20_000):
+        with patch("ori.network.deduplicator.now_ms", return_value=now + 20_000):
             dedup.process(_event(_reading(sensor_id="s-fresh")))
 
         # Cleanup at now+35s — s-old is stale, s-fresh is not
-        with patch("ori.network.deduplicator._now_ms", return_value=now + 35_000):
+        with patch("ori.network.deduplicator.now_ms", return_value=now + 35_000):
             evicted = dedup.cleanup()
 
         assert evicted == 1
@@ -309,3 +327,22 @@ class TestCleanup:
     def test_cleanup_returns_zero_when_nothing_to_evict(self):
         dedup = EventDeduplicator()
         assert dedup.cleanup() == 0
+
+    def test_cleanup_after_dedup_window_and_ttl_evicts_old_record(self):
+        dedup = EventDeduplicator()
+        reading = _reading(sensor_id="cpu", value=11.1)
+        now = _ms()
+
+        with patch("ori.network.deduplicator.now_ms", return_value=now):
+            dedup.process(_event(reading))
+
+        # Dedup window elapsed; same fingerprint is re-registered.
+        with patch("ori.network.deduplicator.now_ms", return_value=now + 6_001):
+            dedup.process(_event(reading))
+
+        # Cleanup past TTL should evict the stale entry.
+        with patch("ori.network.deduplicator.now_ms", return_value=now + 37_100):
+            evicted = dedup.cleanup()
+
+        assert evicted == 1
+        assert len(dedup._records) == 0

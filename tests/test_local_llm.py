@@ -1,6 +1,8 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -91,7 +93,7 @@ class TestReasonResult:
         model_file.write_bytes(b"fake")
         llm, _ = _llm_with_mock(str(model_file))
         with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):
-            result = await llm.reason("overcurrent detected — trip breaker?")
+            result = await llm.reason("overcurrent detected — open safety circuit?")
         assert result.action_tier == "A"
 
     async def test_text_stripped(self, tmp_path):
@@ -205,7 +207,11 @@ class TestOutputNormalization:
                         "A) this B) that"
                     }
                 ],
-                "usage": {"completion_tokens": 30, "prompt_tokens": 50, "total_tokens": 80},
+                "usage": {
+                    "completion_tokens": 30,
+                    "prompt_tokens": 50,
+                    "total_tokens": 80,
+                },
             }
         )
         with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):
@@ -227,7 +233,11 @@ class TestOutputNormalization:
                         )
                     }
                 ],
-                "usage": {"completion_tokens": 24, "prompt_tokens": 40, "total_tokens": 64},
+                "usage": {
+                    "completion_tokens": 24,
+                    "prompt_tokens": 40,
+                    "total_tokens": 64,
+                },
             }
         )
         with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):
@@ -296,3 +306,26 @@ class TestLazyLoading:
             await llm.reason("prompt")
 
         assert mock_llama_cls.call_args[1]["n_ctx"] == 4096
+
+    async def test_concurrent_reason_calls_load_model_once(self, tmp_path):
+        model_file = tmp_path / "model.gguf"
+        model_file.write_bytes(b"fake")
+        llm = LocalLLM(model_path=str(model_file))
+
+        mock_llama_instance = MagicMock(return_value=_LLAMA_OUTPUT)
+        load_calls = 0
+
+        def _slow_load():
+            nonlocal load_calls
+            load_calls += 1
+            time.sleep(0.05)
+            return mock_llama_instance
+
+        with patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True):
+            with patch.object(llm, "_load_model", side_effect=_slow_load):
+                await asyncio.gather(
+                    llm.reason("first concurrent call"),
+                    llm.reason("second concurrent call"),
+                )
+
+        assert load_calls == 1

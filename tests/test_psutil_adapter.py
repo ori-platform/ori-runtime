@@ -42,9 +42,17 @@ def _ms() -> int:
     return int(time.time() * 1000)
 
 
-async def _make_adapter(sensor_type: str, state_store=None) -> PsutilAdapter:
+async def _make_adapter(
+    sensor_type: str,
+    state_store=None,
+    *,
+    extra_config: dict | None = None,
+) -> PsutilAdapter:
     adapter = PsutilAdapter(state_store=state_store)
-    await adapter.connect({"sensor_id": sensor_type, "sensor_type": sensor_type})
+    cfg = {"sensor_id": sensor_type, "sensor_type": sensor_type}
+    if isinstance(extra_config, dict):
+        cfg.update(extra_config)
+    await adapter.connect(cfg)
     return adapter
 
 
@@ -108,6 +116,12 @@ class TestConnect:
 
 
 class TestSystemResources:
+    async def test_cpu_percent_sets_non_empty_source_metadata(self):
+        adapter = await _make_adapter("cpu_percent")
+        r = await adapter.read("cpu_percent")
+        assert isinstance(r.metadata.get("source"), str)
+        assert r.metadata["source"].strip() != ""
+
     async def test_cpu_percent(self):
         adapter = await _make_adapter("cpu_percent")
         r = await adapter.read("cpu_percent")
@@ -478,6 +492,21 @@ class TestBatteryDrainRate:
         adapter = await _make_adapter("battery_drain_rate", state_store=store)
         r = await adapter.read("battery_drain_rate")
         assert r.quality == 0.0
+
+    async def test_uses_configured_battery_source_sensor_id(self):
+        store = MagicMock()
+        store.get_history = AsyncMock(return_value=[])
+        adapter = await _make_adapter(
+            "battery_drain_rate",
+            state_store=store,
+            extra_config={"battery_source_sensor_id": "battery-main"},
+        )
+        with patch(
+            "psutil.sensors_battery",
+            return_value=SimpleNamespace(percent=80.0, power_plugged=False),
+        ):
+            _ = await adapter.read("battery_drain_rate")
+        store.get_history.assert_awaited_once_with("battery-main", limit=2)
 
     async def test_elapsed_too_short_returns_zero_quality(self):
         now = _ms()

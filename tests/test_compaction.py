@@ -21,7 +21,7 @@ async def store(tmp_path):
 
 @pytest.mark.asyncio
 async def test_compaction_pyramid(store, monkeypatch):
-    monkeypatch.setattr("ori.state.store._now_ms", lambda: NOW_MS)
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
 
     def _insert_raw(ts: int, value: float):
         store._conn.execute(
@@ -78,21 +78,32 @@ async def test_compaction_pyramid(store, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_clock_skew_guard(store, monkeypatch):
-    # The guardrail prevents raw retention from being configured to less than 1 hour
-    # regardless of how it was called, protecting the very recent dataset.
+    # Guardrail: if host clock moves backward relative to persisted history,
+    # compaction must refuse to delete data.
     now = 2_000_000_000_000
-    bad_cutoffs = {
-        "raw": now - 60_000,  # only 1 minute buffer (violates 1-hour rule)
-        "5min": 0,
-        "hourly": 0,
+    future_ts = now + 4_000_000
+    store._conn.execute(
+        """
+        INSERT INTO sensor_history
+        (sensor_id, sensor_type, value, unit, timestamp, quality)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("s1", "temp", 20.0, "c", future_ts, 1.0),
+    )
+    store._conn.commit()
+
+    cutoffs = {
+        "hourly": now - 300_000,
+        "5min": now - 200_000,
+        "raw": now - 100_000,
     }
-    with pytest.raises(AssertionError, match="Clock skew detected"):
-        store._compact_sync(bad_cutoffs, now)
+    with pytest.raises(RuntimeError, match="Clock skew detected"):
+        store._compact_sync(cutoffs, now)
 
 
 @pytest.mark.asyncio
 async def test_unified_read_paths(store, monkeypatch):
-    monkeypatch.setattr("ori.state.store._now_ms", lambda: NOW_MS)
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
 
     # Insert raw
     store._conn.execute(
@@ -115,3 +126,53 @@ async def test_unified_read_paths(store, monkeypatch):
     ts = await store.get_timeseries("s1", NOW_MS - 86400_000 * 10, NOW_MS)
     assert len(ts) == 1
     assert ts[0][1] == 20.0
+
+
+@pytest.mark.asyncio
+async def test_compaction_uses_weighted_average_for_hourly(store, monkeypatch):
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    bucket = NOW_MS - 86400_000 * 40
+    hour_bucket = (bucket // 3_600_000) * 3_600_000
+    store._conn.execute(
+        "INSERT INTO sensor_history_5min (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", hour_bucket, 10.0, "c", 1),
+    )
+    store._conn.execute(
+        "INSERT INTO sensor_history_5min (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", hour_bucket + 300_000, 20.0, "c", 9),
+    )
+    store._conn.commit()
+
+    await store.compact_history()
+
+    hourly = store._conn.execute(
+        "SELECT avg_value, sample_count FROM sensor_history_hourly WHERE sensor_id = ?",
+        ("s1",),
+    ).fetchone()
+    assert hourly["avg_value"] == pytest.approx(19.0)
+    assert hourly["sample_count"] == 10
+
+
+@pytest.mark.asyncio
+async def test_compaction_uses_weighted_average_for_daily(store, monkeypatch):
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    bucket = NOW_MS - 86400_000 * 400
+    day_bucket = (bucket // 86_400_000) * 86_400_000
+    store._conn.execute(
+        "INSERT INTO sensor_history_hourly (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", day_bucket, 10.0, "c", 1),
+    )
+    store._conn.execute(
+        "INSERT INTO sensor_history_hourly (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", day_bucket + 3_600_000, 20.0, "c", 9),
+    )
+    store._conn.commit()
+
+    await store.compact_history()
+
+    daily = store._conn.execute(
+        "SELECT avg_value, sample_count FROM sensor_history_daily WHERE sensor_id = ?",
+        ("s1",),
+    ).fetchone()
+    assert daily["avg_value"] == pytest.approx(19.0)
+    assert daily["sample_count"] == 10

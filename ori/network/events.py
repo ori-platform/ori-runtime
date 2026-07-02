@@ -4,7 +4,7 @@
 import hashlib
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -15,7 +15,7 @@ class SensorReading:
     unit: str  # 'celsius' | 'ampere' | 'volt' | 'percent' etc.
     timestamp: int  # unix milliseconds, always UTC
     quality: float  # 0.0 to 1.0
-    metadata: dict = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     raw: Optional[bytes] = None
 
 
@@ -27,7 +27,7 @@ class OriEvent:
     sensor_id: str
     timestamp: int  # unix milliseconds, always UTC
     reading: Optional[SensorReading]
-    context: dict = field(default_factory=dict)
+    context: dict[str, Any] = field(default_factory=dict)
     source: str = ""  # 'gpio' | 'i2c' | 'serial' | 'mqtt' | 'sysfs' | 'psutil'
     fingerprint: str = ""
 
@@ -55,6 +55,9 @@ class ActionResult:
     action_taken: str  # actual action executed (may be safe_default)
     timestamp: int
     operator_response: str | None = None
+    proposal_id: str | None = None
+    safe_default_used: bool = False
+    correlation_id: str = ""
 
 
 @dataclass
@@ -62,7 +65,7 @@ class ReasoningResult:
     """Returned by the Intelligence Elevator after every reasoning call."""
 
     text: str
-    tier: str  # 'rule' | 'local_slm' | 'gateway' | 'cloud'
+    tier: str  # 'rule' | 'local_slm' | 'gateway'
     model: str
     tokens_used: int
     latency_ms: int
@@ -70,7 +73,11 @@ class ReasoningResult:
     action_tier: str = "A"  # Default: informational only
     proposed_action: str | None = None
     prompt: str = ""  # LLM prompt used to produce this result; "" for rule engine
-    reasoning: str = ""  # fuller explanation for Tier C approval messages; falls back to text
+    reasoning: str = (
+        ""  # fuller explanation for Tier C approval messages; falls back to text
+    )
+    reasoning_status: str = ""  # "complete" | "incomplete" | "skipped"
+    correlation_id: str = ""
 
 
 class ActionTier:

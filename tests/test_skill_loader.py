@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import base64
 import textwrap
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
@@ -17,6 +19,18 @@ from ori.skills.loader import (
     Trigger,
     _CooldownTracker,
 )
+from ori.skills.sandbox import SkillSecurityError
+from ori.skills.signing import canonical_skill_payload
+
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+    )
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+except Exception:  # pragma: no cover - environment without cryptography support
+    Ed25519PrivateKey = None
+    Encoding = None
+    PublicFormat = None
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -26,6 +40,14 @@ def _write_skill_yaml(skill_dir: Path, content: str) -> None:
     (skill_dir / "skill.yaml").write_text(textwrap.dedent(content))
 
 
+def _write_skill_yaml_mapping(skill_dir: Path, content: dict) -> None:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "skill.yaml").write_text(
+        yaml.safe_dump(content, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
 def _minimal_yaml(
     name: str = "test-skill",
     action_tier: str = "A",
@@ -33,12 +55,19 @@ def _minimal_yaml(
     safe_default: str | None = None,
 ) -> str:
     # 12 spaces keeps indentation correct after textwrap.dedent strips 8 spaces
-    bypass_line = f"\n            bypass_llm: {str(bypass_llm).lower()}" if bypass_llm is not None else ""
-    safe_line = f"\n            safe_default_action: {safe_default}" if safe_default else ""
+    bypass_line = (
+        f"\n            bypass_llm: {str(bypass_llm).lower()}"
+        if bypass_llm is not None
+        else ""
+    )
+    safe_line = (
+        f"\n            safe_default_action: {safe_default}" if safe_default else ""
+    )
     return f"""\
         name: {name}
         version: 0.1.0
         author: test
+        signature: bundled
         sensors_required:
           - type: current_clamp
             protocol: i2c
@@ -66,6 +95,33 @@ def _make_event(sensor_type: str = "current_clamp", value: float = 6.0) -> OriEv
         quality=1.0,
     )
     return OriEvent.from_reading(reading, "dev-01")
+
+
+def _community_skill_mapping(name: str = "community-skill") -> dict:
+    return {
+        "name": name,
+        "version": "0.1.0",
+        "author": "community-author",
+        "sensors_required": [{"type": "current_clamp", "protocol": "i2c"}],
+        "triggers": [
+            {
+                "name": "over_threshold",
+                "condition": "value > 5.0",
+                "cooldown_seconds": 10,
+                "action_tier": "A",
+            }
+        ],
+        "actions": {
+            "available": [{"name": "alert_whatsapp", "tier": "A"}],
+            "defaults": {"over_threshold": ["alert_whatsapp"]},
+        },
+    }
+
+
+def _sign_skill(raw_skill: dict, private_key: Ed25519PrivateKey) -> str:  # type: ignore
+    payload = canonical_skill_payload(raw_skill)
+    signature = private_key.sign(payload)
+    return "ed25519:" + base64.b64encode(signature).decode("ascii")
 
 
 # ─── Trigger dataclass ────────────────────────────────────────────────────────
@@ -96,7 +152,9 @@ class TestSkillGetDefaultActions:
             author="a",
             sensors_required=[{"type": "current_clamp", "protocol": "i2c"}],
             triggers=[Trigger(name="over_threshold", condition="x>1", action_tier="A")],
-            actions={"defaults": {"over_threshold": ["alert_whatsapp", "log_to_dashboard"]}},
+            actions={
+                "defaults": {"over_threshold": ["alert_whatsapp", "log_to_dashboard"]}
+            },
         )
 
     def test_returns_actions_for_matching_sensor(self):
@@ -110,7 +168,9 @@ class TestSkillGetDefaultActions:
 
     def test_returns_empty_when_no_defaults_configured(self):
         skill = Skill(
-            name="s", version="0.1.0", author="a",
+            name="s",
+            version="0.1.0",
+            author="a",
             sensors_required=[{"type": "current_clamp"}],
             triggers=[Trigger(name="t", condition="x>1", action_tier="A")],
             actions={},
@@ -169,6 +229,95 @@ class TestLoadOne:
         loader = SkillLoader()
         skill = loader.load_one(skill_dir)
         assert skill.triggers[0].action_tier == "B"
+
+    def test_trigger_reasoning_policy_parsed(self, tmp_path):
+        skill_dir = tmp_path / "s"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: test-skill
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+                protocol: i2c
+            triggers:
+              - name: over_threshold
+                condition: "value > 5.0"
+                action_tier: B
+                reasoning_policy: post_action
+            actions:
+              available:
+                - name: switch_power_source
+                  tier: B
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [switch_power_source, alert_whatsapp]
+            """,
+        )
+        loader = SkillLoader()
+        skill = loader.load_one(skill_dir)
+        assert skill.triggers[0].reasoning_policy == "post_action"
+
+    def test_trigger_requires_approval_parsed(self, tmp_path):
+        skill_dir = tmp_path / "s"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: test-skill
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+                protocol: i2c
+            triggers:
+              - name: over_threshold
+                condition: "value > 5.0"
+                action_tier: B
+                requires_approval: true
+            actions:
+              available:
+                - name: switch_power_source
+                  tier: B
+              defaults:
+                over_threshold: [switch_power_source]
+            """,
+        )
+        loader = SkillLoader()
+        skill = loader.load_one(skill_dir)
+        assert skill.triggers[0].requires_approval is True
+
+    def test_rejects_cloud_escalation_tier(self, tmp_path):
+        skill_dir = tmp_path / "s"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: test-skill
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+                protocol: i2c
+            triggers:
+              - name: over_threshold
+                condition: "value > 5.0"
+                action_tier: A
+                escalate_to: cloud
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [alert_whatsapp]
+            """,
+        )
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="use escalate_to: gateway"):
+            loader.load_one(skill_dir)
 
     def test_tier_d_forces_bypass_llm_true(self, tmp_path):
         skill_dir = tmp_path / "s"
@@ -229,11 +378,287 @@ class TestLoadOne:
         with pytest.raises(FileNotFoundError):
             loader.load_one(skill_dir)
 
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_loads_valid_signed_community_skill(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "community-valid"
+        raw = _community_skill_mapping()
+        private_key = Ed25519PrivateKey.generate()
+        public_key_b64 = base64.b64encode(
+            private_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        raw["signature"] = _sign_skill(raw, private_key)
+        _write_skill_yaml_mapping(skill_dir, raw)
+
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            public_key_b64,
+        )
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            skill = loader.load_one(skill_dir)
+        assert skill.name == raw["name"]
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_rejects_tampered_community_skill(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "community-tampered"
+        raw = _community_skill_mapping()
+        private_key = Ed25519PrivateKey.generate()
+        public_key_b64 = base64.b64encode(
+            private_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        raw["signature"] = _sign_skill(raw, private_key)
+        raw["version"] = "0.2.0"  # tamper after signature
+        _write_skill_yaml_mapping(skill_dir, raw)
+
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            public_key_b64,
+        )
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            with pytest.raises(
+                SkillSecurityError,
+                match="signature verification failed",
+            ):
+                loader.load_one(skill_dir)
+
+    def test_rejects_missing_community_signature(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "community-missing-signature"
+        raw = _community_skill_mapping()
+        _write_skill_yaml_mapping(skill_dir, raw)
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            "dGVzdA==",
+        )
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            with pytest.raises(
+                SkillSecurityError,
+                match="missing required 'signature' field",
+            ):
+                loader.load_one(skill_dir)
+
+    def test_rejects_invalid_signature_scheme(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "community-invalid-scheme"
+        raw = _community_skill_mapping()
+        raw["signature"] = "rsa:abc"
+        _write_skill_yaml_mapping(skill_dir, raw)
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            "dGVzdA==",
+        )
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            with pytest.raises(
+                SkillSecurityError,
+                match="unsupported signature scheme",
+            ):
+                loader.load_one(skill_dir)
+
+    def test_rejects_bundled_signature_sentinel_for_community_skill(
+        self, tmp_path, monkeypatch
+    ):
+        skill_dir = tmp_path / "community-bundled-sentinel"
+        raw = _community_skill_mapping()
+        raw["signature"] = "bundled"
+        _write_skill_yaml_mapping(skill_dir, raw)
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            "dGVzdA==",
+        )
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            with pytest.raises(
+                SkillSecurityError,
+                match="community skill uses bundled signature sentinel",
+            ):
+                loader.load_one(skill_dir)
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_loads_signed_community_skill_with_env_trust_anchor(
+        self, tmp_path, monkeypatch
+    ):
+        skill_dir = tmp_path / "community-valid-env-anchor"
+        raw = _community_skill_mapping()
+        private_key = Ed25519PrivateKey.generate()
+        public_key_b64 = base64.b64encode(
+            private_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        raw["signature"] = _sign_skill(raw, private_key)
+        _write_skill_yaml_mapping(skill_dir, raw)
+
+        monkeypatch.setattr(
+            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+            "PENDING_REPLACE_AT_HUB_LAUNCH",
+        )
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", public_key_b64)
+
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            skill = loader.load_one(skill_dir)
+        assert skill.name == raw["name"]
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_constructor_trust_anchor_overrides_env(self, tmp_path, monkeypatch):
+        skill_dir = tmp_path / "community-valid-ctor-anchor"
+        raw = _community_skill_mapping()
+        signing_key = Ed25519PrivateKey.generate()
+        signing_public_key_b64 = base64.b64encode(
+            signing_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        raw["signature"] = _sign_skill(raw, signing_key)
+        _write_skill_yaml_mapping(skill_dir, raw)
+
+        wrong_key = Ed25519PrivateKey.generate()
+        wrong_public_key_b64 = base64.b64encode(
+            wrong_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", wrong_public_key_b64)
+
+        loader = SkillLoader(
+            community_trust_anchor_public_key_b64=signing_public_key_b64
+        )
+        with patch.object(loader, "_is_bundled_skill", return_value=False):
+            skill = loader.load_one(skill_dir)
+        assert skill.name == raw["name"]
+
+    def test_bundled_unsigned_skill_still_loads(self, tmp_path):
+        skill_dir = tmp_path / "bundled-unsigned"
+        _write_skill_yaml(skill_dir, _minimal_yaml(name="bundled-unsigned"))
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=True):
+            skill = loader.load_one(skill_dir)
+        assert skill.name == "bundled-unsigned"
+
+    def test_require_signed_allows_core_bundled_sentinel(self, tmp_path):
+        skill_dir = tmp_path / "core-bundled"
+        _write_skill_yaml(skill_dir, _minimal_yaml(name="core-bundled"))
+        loader = SkillLoader(require_signed=True)
+        with (
+            patch.object(loader, "_is_bundled_skill", return_value=True),
+            patch.object(loader, "_is_core_bundled_skill", return_value=True),
+        ):
+            skill = loader.load_one(skill_dir)
+        assert skill.name == "core-bundled"
+
+    def test_require_signed_rejects_non_core_bundled_sentinel(self, tmp_path):
+        skill_dir = tmp_path / "local-unsigned"
+        _write_skill_yaml(skill_dir, _minimal_yaml(name="local-unsigned"))
+        loader = SkillLoader(require_signed=True)
+        with (
+            patch.object(loader, "_is_bundled_skill", return_value=True),
+            patch.object(loader, "_is_core_bundled_skill", return_value=False),
+            pytest.raises(SkillSecurityError, match="security.skills.require_signed"),
+        ):
+            loader.load_one(skill_dir)
+
+    def test_bundled_skill_rejects_unknown_signature_sentinel(self, tmp_path):
+        skill_dir = tmp_path / "bundled-bad-signature"
+        raw = _minimal_yaml(name="bundled-bad-signature").replace(
+            "signature: bundled", "signature: pending"
+        )
+        _write_skill_yaml(skill_dir, raw)
+        loader = SkillLoader()
+        with patch.object(loader, "_is_bundled_skill", return_value=True):
+            with pytest.raises(
+                SkillValidationError,
+                match="bundled skill signature must be either",
+            ):
+                loader.load_one(skill_dir)
+
 
 # ─── SkillLoader validation ───────────────────────────────────────────────────
 
 
 class TestValidation:
+    def test_history_placeholders_above_limit_raise(self, tmp_path):
+        placeholders = " ".join(
+            [f"{{history.last_n('load-current', {i})}}" for i in range(1, 18)]
+        )
+        yaml_content = f"""\
+            name: too-many-history-placeholders
+            version: 0.1.0
+            author: test
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: A
+            prompts:
+              over_threshold: "{placeholders}"
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [alert_whatsapp]
+        """
+        skill_dir = tmp_path / "too-many-history-placeholders"
+        _write_skill_yaml(skill_dir, yaml_content)
+        loader = SkillLoader()
+        with pytest.raises(
+            SkillValidationError,
+            match="contains 17 history placeholders; maximum allowed is 16",
+        ):
+            loader.load_one(skill_dir)
+
+    def test_history_placeholders_at_limit_loads(self, tmp_path):
+        placeholders = " ".join(
+            [f"{{history.last_n('load-current', {i})}}" for i in range(1, 17)]
+        )
+        yaml_content = f"""\
+            name: max-history-placeholders
+            version: 0.1.0
+            author: test
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: A
+            prompts:
+              over_threshold: "{placeholders}"
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [alert_whatsapp]
+        """
+        skill_dir = tmp_path / "max-history-placeholders"
+        _write_skill_yaml(skill_dir, yaml_content)
+        loader = SkillLoader()
+        skill = loader.load_one(skill_dir)
+        assert skill.name == "max-history-placeholders"
+
     def test_missing_action_tier_raises(self, tmp_path):
         yaml_content = """\
             name: bad-skill
@@ -249,7 +674,9 @@ class TestValidation:
         skill_dir = tmp_path / "bad"
         _write_skill_yaml(skill_dir, yaml_content)
         loader = SkillLoader()
-        with pytest.raises(SkillValidationError, match="missing required field 'action_tier'"):
+        with pytest.raises(
+            SkillValidationError, match="missing required field 'action_tier'"
+        ):
             loader.load_one(skill_dir)
 
     def test_invalid_action_tier_raises(self, tmp_path):
@@ -274,7 +701,126 @@ class TestValidation:
         skill_dir = tmp_path / "bad"
         _write_skill_yaml(skill_dir, _minimal_yaml(action_tier="A", bypass_llm=True))
         loader = SkillLoader()
-        with pytest.raises(SkillValidationError, match="bypass_llm is reserved for Tier D"):
+        with pytest.raises(
+            SkillValidationError, match="bypass_llm is reserved for Tier D"
+        ):
+            loader.load_one(skill_dir)
+
+    def test_post_action_without_tier_b_raises(self, tmp_path):
+        skill_dir = tmp_path / "bad-post-action"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: bad-post-action
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: A
+                reasoning_policy: post_action
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [alert_whatsapp]
+            """,
+        )
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="post_action is reserved"):
+            loader.load_one(skill_dir)
+
+    def test_invalid_reasoning_policy_raises(self, tmp_path):
+        skill_dir = tmp_path / "bad-reasoning-policy"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: bad-reasoning-policy
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: B
+                reasoning_policy: wait_for_reasoning
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [alert_whatsapp]
+            """,
+        )
+        loader = SkillLoader()
+        with pytest.raises(SkillValidationError, match="invalid reasoning_policy"):
+            loader.load_one(skill_dir)
+
+    def test_physical_tier_b_without_explicit_policy_raises(self, tmp_path):
+        skill_dir = tmp_path / "bad-tier-b"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: bad-tier-b
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: B
+            actions:
+              available:
+                - name: switch_power_source
+                  tier: B
+              defaults:
+                over_threshold: [switch_power_source]
+            """,
+        )
+        loader = SkillLoader()
+        with pytest.raises(
+            SkillValidationError,
+            match="declares neither requires_approval=true nor reasoning_policy=post_action",
+        ):
+            loader.load_one(skill_dir)
+
+    def test_post_action_tier_b_without_tier_a_notification_raises(self, tmp_path):
+        skill_dir = tmp_path / "bad-post-action-notification"
+        _write_skill_yaml(
+            skill_dir,
+            """
+            name: bad-post-action-notification
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: B
+                reasoning_policy: post_action
+            actions:
+              available:
+                - name: switch_power_source
+                  tier: B
+              defaults:
+                over_threshold: [switch_power_source]
+            """,
+        )
+        loader = SkillLoader()
+        with pytest.raises(
+            SkillValidationError,
+            match="no Tier A default action for post-action operator notification",
+        ):
             loader.load_one(skill_dir)
 
     def test_tier_c_without_safe_default_raises(self, tmp_path):
@@ -298,7 +844,9 @@ class TestValidation:
 
     def test_tier_c_with_safe_default_is_valid(self, tmp_path):
         skill_dir = tmp_path / "c"
-        _write_skill_yaml(skill_dir, _minimal_yaml(action_tier="C", safe_default="log_to_dashboard"))
+        _write_skill_yaml(
+            skill_dir, _minimal_yaml(action_tier="C", safe_default="log_to_dashboard")
+        )
         loader = SkillLoader()
         skill = loader.load_one(skill_dir)
         assert skill.triggers[0].action_tier == "C"
@@ -414,7 +962,9 @@ class TestValidation:
         skill_dir = tmp_path / "bad-meta"
         _write_skill_yaml(skill_dir, yaml_content)
         loader = SkillLoader()
-        with pytest.raises(SkillValidationError, match="triggers must be a non-empty list"):
+        with pytest.raises(
+            SkillValidationError, match="triggers must be a non-empty list"
+        ):
             loader.load_one(skill_dir)
 
     def test_missing_defaults_mapping_for_trigger_raises(self, tmp_path):
@@ -437,7 +987,9 @@ class TestValidation:
         skill_dir = tmp_path / "bad-defaults"
         _write_skill_yaml(skill_dir, yaml_content)
         loader = SkillLoader()
-        with pytest.raises(SkillValidationError, match="missing actions.defaults mapping"):
+        with pytest.raises(
+            SkillValidationError, match="missing actions.defaults mapping"
+        ):
             loader.load_one(skill_dir)
 
     def test_extra_defaults_key_without_trigger_raises(self, tmp_path):
@@ -523,6 +1075,26 @@ class TestLoadAll:
         assert "real-skill" in names
         assert "template" not in names
 
+    def test_security_failed_skill_is_skipped(self, tmp_path):
+        _write_skill_yaml(tmp_path / "good-skill", _minimal_yaml(name="good-skill"))
+        _write_skill_yaml(
+            tmp_path / "bad-community-skill",
+            _minimal_yaml(name="bad-community-skill"),
+        )
+        loader = SkillLoader()
+        original_load_one = loader.load_one
+
+        def _fake_load_one(path):
+            if Path(path).name == "bad-community-skill":
+                raise SkillSecurityError("signature verification failed")
+            return original_load_one(path)
+
+        with patch.object(loader, "load_one", side_effect=_fake_load_one):
+            skills = loader.load_all(str(tmp_path))
+
+        assert len(skills) == 1
+        assert skills[0].name == "good-skill"
+
 
 # ─── SkillLoader.register — EventBus handler ─────────────────────────────────
 
@@ -560,7 +1132,9 @@ class TestRegister:
             # Schedule it so it actually runs
             return asyncio.ensure_future(coro)
 
-        with patch("ori.skills.loader.asyncio.create_task", side_effect=fake_create_task):
+        with patch(
+            "ori.skills.loader.asyncio.create_task", side_effect=fake_create_task
+        ):
             await bus.publish(event)
             # Flush tasks
             await asyncio.sleep(0)
@@ -588,7 +1162,9 @@ class TestRegister:
             task_calls.append(coro)
             return asyncio.ensure_future(coro)
 
-        with patch("ori.skills.loader.asyncio.create_task", side_effect=fake_create_task):
+        with patch(
+            "ori.skills.loader.asyncio.create_task", side_effect=fake_create_task
+        ):
             await bus.publish(event)  # first — fires
             await bus.publish(event)  # second — blocked by cooldown (10s)
             await asyncio.sleep(0)

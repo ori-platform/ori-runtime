@@ -2,10 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import glob
 import logging
+import shutil
 import struct
-import time
-from functools import partial
+import subprocess
 from typing import Any
 
 from ori.hal.base import (
@@ -16,6 +17,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +48,8 @@ _DEFAULT_PARITY = "N"
 _DEFAULT_STOPBITS = 1
 _DEFAULT_TIMEOUT_S = 1.0
 _DEFAULT_SLAVE_ID = 1
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
+_DIRECT_SERIAL_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
+_TERMUX_USB_TIMEOUT_S = 2.0
 
 
 def _crc16(data: bytes) -> int:
@@ -105,6 +105,7 @@ class UsbSerialAdapter(BaseAdapter):
         self._stopbits: int = _DEFAULT_STOPBITS
         self._timeout_s: float = _DEFAULT_TIMEOUT_S
         self._slave_id: int = _DEFAULT_SLAVE_ID
+        self._transport: str = "serial"
         self._serial: Any = None
         self._breaker: HardwareCircuitBreaker | None = None
 
@@ -123,24 +124,39 @@ class UsbSerialAdapter(BaseAdapter):
         self._sensor_type = sensor_type
 
         self._device_path = str(config.get("device_path", "")).strip()
+        if not self._device_path and bool(config.get("auto_detect_device_path", False)):
+            self._device_path = _find_direct_serial_device()
         if not self._device_path:
+            termux_devices = await asyncio.to_thread(_list_termux_usb_devices_sync)
+            if termux_devices:
+                devices = ", ".join(termux_devices)
+                raise AdapterConnectionError(
+                    "UsbSerialAdapter: termux-usb can see USB device(s) "
+                    f"{devices}, but no serial stream is configured. Android's "
+                    "termux-usb handle is a raw USB device, not a /dev/ttyUSB* "
+                    "serial port. Configure device_path to a readable "
+                    "/dev/ttyUSB*/ttyACM* path or to a pyserial URL such as "
+                    "socket://127.0.0.1:7000 from an approved USB-serial bridge."
+                )
             raise AdapterConnectionError(
                 "UsbSerialAdapter: 'device_path' is required (e.g. /dev/ttyUSB0)"
             )
 
-        baud_from_cfg = config.get("baud_rate", config.get("baudrate", _DEFAULT_BAUD_RATE))
+        baud_from_cfg = config.get(
+            "baud_rate", config.get("baudrate", _DEFAULT_BAUD_RATE)
+        )
         self._baud_rate = int(baud_from_cfg)
         self._bytesize = int(config.get("bytesize", _DEFAULT_BYTESIZE))
         self._parity = str(config.get("parity", _DEFAULT_PARITY))
         self._stopbits = int(config.get("stopbits", _DEFAULT_STOPBITS))
         self._timeout_s = float(config.get("timeout_s", _DEFAULT_TIMEOUT_S))
         self._slave_id = int(config.get("slave_id", _DEFAULT_SLAVE_ID))
+        self._transport = _transport_for_path(self._device_path)
 
         self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
 
-        loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, self._open_port_sync)
+            await asyncio.to_thread(self._open_port_sync)
         except AdapterConnectionError:
             raise
         except Exception as exc:
@@ -149,6 +165,12 @@ class UsbSerialAdapter(BaseAdapter):
             ) from exc
 
         self._connected = True
+        logger.info(
+            "UsbSerialAdapter: connected device_path=%s transport=%s sensor_type=%s",
+            self._device_path,
+            self._transport,
+            self._sensor_type,
+        )
 
     async def read(self, sensor_id: str) -> SensorReading:
         if not _PYSERIAL_AVAILABLE:
@@ -160,18 +182,16 @@ class UsbSerialAdapter(BaseAdapter):
                 "UsbSerialAdapter: not connected — call connect() first"
             )
         if self._breaker is None:
-            raise AdapterReadError("UsbSerialAdapter: circuit breaker is not initialized")
+            raise AdapterReadError(
+                "UsbSerialAdapter: circuit breaker is not initialized"
+            )
 
         async with self._breaker:
             register, count, scale, unit = _SENSOR_MAP[self._sensor_type]
-            loop = asyncio.get_running_loop()
             read_timeout = self._timeout_s + 1.0
             try:
                 raw = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None,
-                        partial(self._read_sync, register, count),
-                    ),
+                    asyncio.to_thread(self._read_sync, register, count),
                     timeout=read_timeout,
                 )
             except asyncio.TimeoutError as exc:
@@ -190,11 +210,12 @@ class UsbSerialAdapter(BaseAdapter):
                 sensor_type=self._sensor_type,
                 value=round(raw * scale, 4),
                 unit=unit,
-                timestamp=_now_ms(),
+                timestamp=now_ms(),
                 quality=1.0,
                 metadata={
                     "source": "usb_serial",
                     "device_path": self._device_path,
+                    "transport": self._transport,
                     "slave_id": self._slave_id,
                     "register": register,
                     "raw": raw,
@@ -204,8 +225,7 @@ class UsbSerialAdapter(BaseAdapter):
     async def close(self) -> None:
         try:
             if self._serial is not None and self._serial.is_open:
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._serial.close)
+                await asyncio.to_thread(self._serial.close)
         except Exception:
             logger.warning(
                 "UsbSerialAdapter: exception during close on '%s'",
@@ -217,15 +237,21 @@ class UsbSerialAdapter(BaseAdapter):
 
     def _open_port_sync(self) -> None:
         if _serial_module is None:
-            raise AdapterConnectionError("UsbSerialAdapter: pyserial module unavailable")
-        self._serial = _serial_module.Serial(
-            port=self._device_path,
-            baudrate=self._baud_rate,
-            bytesize=self._bytesize,
-            parity=self._parity,
-            stopbits=self._stopbits,
-            timeout=self._timeout_s,
-        )
+            raise AdapterConnectionError(
+                "UsbSerialAdapter: pyserial module unavailable"
+            )
+        serial_kwargs = {
+            "baudrate": self._baud_rate,
+            "bytesize": self._bytesize,
+            "parity": self._parity,
+            "stopbits": self._stopbits,
+            "timeout": self._timeout_s,
+        }
+        serial_for_url = getattr(_serial_module, "serial_for_url", None)
+        if callable(serial_for_url) and "://" in self._device_path:
+            self._serial = serial_for_url(self._device_path, **serial_kwargs)
+            return
+        self._serial = _serial_module.Serial(port=self._device_path, **serial_kwargs)
 
     def _read_sync(self, register: int, count: int) -> int:
         request = _build_read_request(self._slave_id, register, count)
@@ -238,3 +264,51 @@ class UsbSerialAdapter(BaseAdapter):
                 f"on '{self._device_path}'"
             )
         return _parse_response(response, count)
+
+
+def _transport_for_path(device_path: str) -> str:
+    if device_path.startswith("socket://"):
+        return "socket"
+    if "://" in device_path:
+        return "pyserial_url"
+    return "serial"
+
+
+def _find_direct_serial_device() -> str:
+    candidates: list[str] = []
+    for pattern in _DIRECT_SERIAL_GLOBS:
+        candidates.extend(glob.glob(pattern))
+    if not candidates:
+        return ""
+    return sorted(candidates)[0]
+
+
+def _list_termux_usb_devices_sync() -> list[str]:
+    if shutil.which("termux-usb") is None:
+        return []
+    try:
+        result = subprocess.run(
+            ["termux-usb", "-l"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_TERMUX_USB_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    output = result.stdout.strip()
+    if not output:
+        return []
+    # termux-usb usually emits a JSON array but older builds can emit plain text.
+    if output.startswith("[") and output.endswith("]"):
+        try:
+            import json
+
+            parsed = json.loads(output)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if str(item).strip()]
+        except Exception:
+            return []
+    return [line.strip() for line in output.splitlines() if line.strip()]

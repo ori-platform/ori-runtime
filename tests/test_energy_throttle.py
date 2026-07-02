@@ -94,8 +94,8 @@ def _skill_tier_d() -> FakeSkill:
             }
         ],
         actions={
-            "available": [{"name": "trip_main_breaker", "tier": "D"}],
-            "defaults": {"dangerous_overcurrent": ["trip_main_breaker"]},
+            "available": [{"name": "open_safety_circuit", "tier": "D"}],
+            "defaults": {"dangerous_overcurrent": ["open_safety_circuit"]},
         },
     )
 
@@ -105,7 +105,6 @@ def _cfg(enabled: bool = True) -> object:
         "C",
         (object,),
         {
-            "offline_fallback": "local_slm",
             "escalation_threshold": 0.70,
             "energy_aware_reasoning": (
                 {
@@ -155,20 +154,18 @@ class TestEnergyAwareThrottle:
         conf = type(
             "C",
             (object,),
-            {"offline_fallback": "local_slm", "escalation_threshold": 0.70},
+            {"escalation_threshold": 0.70},
         )()
         elevator = IntelligenceElevator(config=conf)
         store = _state_store(battery_pct=5.0)
-        with patch("ori.reasoning.elevator._is_offline", return_value=False):
-            tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
+        tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
         assert tier == "local_slm"
 
     @pytest.mark.asyncio
     async def test_battery_above_threshold_normal(self):
         elevator = IntelligenceElevator(config=_cfg(enabled=True))
         store = _state_store(battery_pct=50.0)
-        with patch("ori.reasoning.elevator._is_offline", return_value=False):
-            tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
+        tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
         assert tier == "local_slm"
 
     @pytest.mark.asyncio
@@ -196,11 +193,13 @@ class TestEnergyAwareThrottle:
         elevator = IntelligenceElevator(config=_cfg(enabled=True))
         dispatcher = AsyncMock()
         store = _state_store(battery_pct=5.0)
-        await elevator.reason_and_dispatch(_event(value=5.0), _skill_tier_d(), store, dispatcher)
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), _skill_tier_d(), store, dispatcher
+        )
 
         dispatcher.dispatch.assert_called_once()
         kwargs = dispatcher.dispatch.call_args.kwargs
-        assert kwargs["action"] == "trip_main_breaker"
+        assert kwargs["action"] == "open_safety_circuit"
         assert kwargs["tier"] == "D"
 
     @pytest.mark.asyncio
@@ -232,6 +231,5 @@ class TestEnergyAwareThrottle:
         cfg.energy_aware_reasoning["battery_sensor_id"] = "inverter-battery"
         elevator = IntelligenceElevator(config=cfg)
         store = _state_store(battery_pct=None)
-        with patch("ori.reasoning.elevator._is_offline", return_value=False):
-            tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
+        tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
         assert tier == "local_slm"

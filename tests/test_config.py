@@ -1,28 +1,54 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import os
 import textwrap
 
 import pytest
+import yaml
 
 from ori.config import (
     Config,
     ConfigValidationError,
 )
+from ori.security.config_signatures import (
+    CONFIG_SIGNATURE_SCHEMA,
+    canonical_config_signature_payload,
+)
 
 EXAMPLE_YAML = os.path.join(os.path.dirname(__file__), "..", "ori.yaml.example")
+LINUX_EXAMPLE_YAML = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "ori.linux.yaml.example",
+)
+PHONE_EXAMPLE_YAML = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "ori.yaml.phone.example",
+)
+PHONE_GROWATT_EXAMPLE_YAML = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "ori.yaml.phone.growatt.example",
+)
+PHONE_VICTRON_EXAMPLE_YAML = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "ori.yaml.phone.victron.example",
+)
 
 
 @pytest.fixture
 def _mock_env_vars_for_examples(monkeypatch):
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "mock_sid")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "mock_token")
-    monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "mock_from")
-    monkeypatch.setenv("OWNER_WHATSAPP_NUMBER", "mock_owner")
+    monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+    monkeypatch.setenv("OWNER_WHATSAPP_NUMBER", "whatsapp:+2340000000000")
     monkeypatch.setenv("AT_API_KEY", "mock_key")
     monkeypatch.setenv("AT_USERNAME", "mock_user")
-    monkeypatch.setenv("OWNER_PHONE_NUMBER", "mock_phone")
+    monkeypatch.setenv("OWNER_PHONE_NUMBER", "+2340000000000")
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -32,6 +58,35 @@ def _write_yaml(tmp_path, content: str) -> str:
     p = tmp_path / "ori.yaml"
     p.write_text(textwrap.dedent(content))
     return str(p)
+
+
+def _sign_config_yaml(content: str, private_key) -> str:
+    raw = yaml.safe_load(textwrap.dedent(content))
+    raw["config_signature"] = {
+        "schema": CONFIG_SIGNATURE_SCHEMA,
+        "signer_id": "product-provisioning-test",
+        "signed_at_ms": 1_800_000_000_000,
+        "signature": "ed25519:",
+    }
+    signature = private_key.sign(canonical_config_signature_payload(raw))
+    raw["config_signature"]["signature"] = "ed25519:" + base64.b64encode(
+        signature
+    ).decode("ascii")
+    return yaml.safe_dump(raw, sort_keys=False)
+
+
+def _ed25519_keypair():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = Ed25519PrivateKey.generate()
+    public_key_b64 = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode("ascii")
+    return private_key, public_key_b64
 
 
 # ─── Loading ori.yaml.example ─────────────────────────────────────────────────
@@ -51,7 +106,9 @@ class TestLoadExample:
         assert cfg.device.id == "energy-monitor-ikeja-01"
         assert cfg.device.name == "Ikeja Office Energy Monitor"
         assert cfg.device.location == "Lagos, Nigeria"
+        assert cfg.device.site_type == "office"
         assert cfg.device.rated_capacity_amps == 10.0
+        assert cfg.device.country_code == "NG"
 
     def test_sensors_count_and_types(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -61,6 +118,14 @@ class TestLoadExample:
         assert "ads1115_current" in types
         assert "ads1115_voltage" in types
         assert "active_power" in types
+
+    def test_example_documents_runtime_inverter_profile_registry(self):
+        with open(EXAMPLE_YAML, encoding="utf-8") as fh:
+            text = fh.read()
+
+        assert "protocol: solarman_modbus" in text
+        assert "profile: deye_hybrid" in text
+        assert "Pi / Edge Node / phone" in text
 
     def test_sensor_poll_intervals(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -98,17 +163,528 @@ class TestLoadExample:
         r = cfg.reasoning
         assert r.default_tier == "local"
         assert r.local_model == "qwen2.5-0.5b-instruct-q4_k_m"
-        assert r.offline_fallback == "rule"
         assert r.escalation_threshold == pytest.approx(0.70)
 
     def test_gateway_disabled(self):
         cfg = Config.load(EXAMPLE_YAML)
         assert cfg.gateway.enabled is False
         assert "192.168.1.10" in cfg.gateway.broker_url
+        assert cfg.gateway.reasoning["enabled"] is True
+        assert cfg.gateway.reasoning["timeout_ms"] == 10_000
+        assert cfg.gateway.node_heartbeat["enabled"] is True
+        assert cfg.gateway.node_heartbeat["interval_seconds"] == 30
+        assert cfg.gateway.auth["enabled"] is False
+        assert cfg.gateway.auth["shared_secret_env"] == "GATEWAY_SHARED_SECRET"
+        assert cfg.gateway.auth["previous_shared_secret_env"] == ""
+        assert cfg.gateway.auth["max_clock_skew_ms"] == 300_000
+        assert cfg.gateway.auth["replay_ttl_ms"] == 300_000
+        assert cfg.gateway.tls["enabled"] is False
+        assert cfg.gateway.tls["ca_certfile"] == ""
+        assert cfg.gateway.tls["certfile"] == ""
+        assert cfg.gateway.tls["keyfile"] == ""
+        assert cfg.gateway.tls["keyfile_password_env"] == ""
+        assert cfg.gateway.encryption["enabled"] is False
+
+    def test_telemetry_export_disabled_by_default(self):
+        cfg = Config.load(EXAMPLE_YAML)
+        assert cfg.telemetry_export.enabled is False
+        assert (
+            cfg.telemetry_export.endpoint == "https://api.ori.energy/runtime/telemetry"
+        )
+        assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
+        assert cfg.telemetry_export.batch_size == 50
+
+    def test_gateway_node_heartbeat_interval_must_be_numeric(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              node_heartbeat:
+                enabled: true
+                interval_seconds: often
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(
+            ConfigValidationError, match="gateway.node_heartbeat.interval_seconds"
+        ):
+            Config.load(yaml_path)
+
+    def test_gateway_node_heartbeat_interval_must_be_at_least_one(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              node_heartbeat:
+                enabled: true
+                interval_seconds: 0
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="must be >= 1"):
+            Config.load(yaml_path)
+
+    def test_gateway_tls_keyfile_requires_certfile(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local
+              tls:
+                enabled: true
+                keyfile: /etc/ori/certs/runtime.key
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.tls.certfile"):
+            Config.load(yaml_path)
+
+    def test_gateway_tls_key_password_requires_keyfile(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local
+              tls:
+                enabled: true
+                certfile: /etc/ori/certs/runtime.crt
+                keyfile_password_env: MQTT_KEY_PASSWORD
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.tls.keyfile"):
+            Config.load(yaml_path)
+
+    def test_gateway_tls_rejects_insecure_skip_verify(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local
+              tls:
+                enabled: true
+                insecure_skip_verify: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="insecure_skip_verify"):
+            Config.load(yaml_path)
+
+    def test_gateway_auth_requires_secret_env_when_enabled(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              auth:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(
+            ConfigValidationError, match="gateway.auth.shared_secret_env"
+        ):
+            Config.load(yaml_path)
+
+    def test_gateway_auth_rejects_duplicate_previous_secret_env(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+                previous_shared_secret_env: GATEWAY_SHARED_SECRET
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="previous_shared_secret_env"):
+            Config.load(yaml_path)
+
+    def test_gateway_encryption_requires_auth_enabled(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.auth.enabled"):
+            Config.load(yaml_path)
+
+    def test_gateway_encryption_loads_when_auth_enabled(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.gateway.auth["enabled"] is True
+        assert cfg.gateway.encryption["enabled"] is True
+
+    def test_gateway_auth_bounds_must_be_positive(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+                max_clock_skew_ms: 999
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="max_clock_skew_ms"):
+            Config.load(yaml_path)
+
+    def test_gateway_reasoning_timeout_must_be_at_least_100ms(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              reasoning:
+                enabled: true
+                timeout_ms: 50
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.reasoning.timeout_ms"):
+            Config.load(yaml_path)
+
+    def test_gateway_reasoning_timeout_must_be_integer(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              reasoning:
+                enabled: true
+                timeout_ms: not-a-number
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.reasoning.timeout_ms"):
+            Config.load(yaml_path)
 
     def test_actions_primary_channel(self):
         cfg = Config.load(EXAMPLE_YAML)
         assert cfg.actions.primary_alert_channel == "sms"
+        assert cfg.actions.alert_outbox["retry_interval_minutes"] == pytest.approx(0.5)
+        assert cfg.actions.alert_outbox["max_non_tier_d_attempts"] == 10
+        assert cfg.actions.alert_outbox["tier_d_critical_warning_threshold"] == 3
+        assert cfg.actions.alert_outbox["batch_size"] == 50
+        assert cfg.actions.setup_notifications == {
+            "enabled": True,
+            "channels": ["primary"],
+        }
+
+    def test_setup_notifications_config(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: test-device
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: ""
+              model_path: ""
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              setup_notifications:
+                enabled: true
+                channels: [primary, whatsapp, sms, sms]
+              sms:
+                enabled: false
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.actions.setup_notifications == {
+            "enabled": True,
+            "channels": ["primary", "whatsapp", "sms"],
+        }
+
+    def test_setup_notifications_rejects_invalid_channel(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: test-device
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: ""
+              model_path: ""
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              setup_notifications:
+                enabled: true
+                channels: [telegram]
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="setup_notifications.channels"):
+            Config.load(yaml_path)
+
+    def test_alert_outbox_config_defaults(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: test-device
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: ""
+              model_path: ""
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.actions.alert_outbox == {
+            "retry_interval_minutes": 0.5,
+            "max_non_tier_d_attempts": 10,
+            "tier_d_critical_warning_threshold": 3,
+            "batch_size": 50,
+        }
+        assert cfg.actions.setup_notifications == {
+            "enabled": False,
+            "channels": ["primary"],
+        }
+
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("retry_interval_minutes", 0, "retry_interval_minutes"),
+            ("max_non_tier_d_attempts", 0, "max_non_tier_d_attempts"),
+            (
+                "tier_d_critical_warning_threshold",
+                0,
+                "tier_d_critical_warning_threshold",
+            ),
+            ("batch_size", 0, "batch_size"),
+            ("batch_size", 1001, "batch_size"),
+            ("batch_size", "not-a-number", "batch_size"),
+        ],
+    )
+    def test_alert_outbox_config_rejects_invalid_values(
+        self, tmp_path, field, value, message
+    ):
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: test-device
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: ""
+              model_path: ""
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              alert_outbox:
+                {field}: {value}
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match=message):
+            Config.load(yaml_path)
 
     def test_actions_relay(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -127,6 +703,1151 @@ class TestLoadExample:
         assert ext["enabled"] is False
         assert ext["gpio_pin"] == 17
         assert ext["ping_interval_s"] == 30
+        status = cfg.hal.status_signaling
+        assert status["enabled"] is False
+        assert status["power_led_pin"] == 17
+        assert status["relay_led_pin"] == 27
+        assert status["network_led_pin"] == 22
+        assert status["health_led_pin"] == 23
+        assert status["buzzer_pin"] == 24
+        assert status["tick_ms"] == 100
+
+    def test_health_socket_defaults(self):
+        cfg = Config.load(EXAMPLE_YAML)
+        assert cfg.health_socket["enabled"] is True
+        assert cfg.health_socket["path"] == "/run/ori/health.sock"
+        assert cfg.health_socket["mode"] == 0o660
+
+    def test_security_remote_commands_defaults(self):
+        cfg = Config.load(EXAMPLE_YAML)
+        remote = cfg.security["remote_commands"]
+        skills = cfg.security["skills"]
+        assert cfg.security["enforce_production_posture"] is False
+        assert remote["enabled"] is False
+        assert remote["hmac_secret_env"] == "ORI_REMOTE_COMMAND_HMAC_SECRET"
+        assert remote["previous_hmac_secret_env"] == ""
+        assert remote["max_skew_seconds"] == 300
+        assert remote["allow_unlisted_senders"] is False
+        assert remote["allowed_senders"] == {
+            "sms": ["+2340000000000"],
+            "whatsapp": ["whatsapp:+2340000000000"],
+        }
+        lockout = remote["lockout"]
+        assert lockout["risk_window_ms"] == 3_600_000
+        assert lockout["state_stale_after_ms"] == 3_600_000
+        assert lockout["incident_sender_limit"] == 50
+        assert lockout["elevated_incident_threshold"] == 1
+        assert lockout["critical_incident_threshold"] == 3
+        assert lockout["elevated_rejection_threshold"] == 5
+        assert lockout["critical_rejection_threshold"] == 15
+        assert lockout["enforcement_enabled"] is False
+        assert skills["require_signed"] is False
+
+    def test_security_skills_require_signed_parses_truthy(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              skills:
+                require_signed: "yes"
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.security["skills"]["require_signed"] is True
+
+    def test_security_skills_rejects_non_mapping(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              skills: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="security.skills"):
+            Config.load(yaml_path)
+
+    def test_signed_config_verifies_with_env_trust_anchor(self, tmp_path, monkeypatch):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        yaml_path = _write_yaml(
+            tmp_path,
+            _sign_config_yaml(
+                """
+                device:
+                  id: dev-01
+                  name: Test
+                  location: Lagos
+                sensors: []
+                skills: []
+                reasoning: {}
+                gateway: {}
+                actions:
+                  primary_alert_channel: sms
+                  sms:
+                    enabled: false
+                security:
+                  config_signature:
+                    require_signed: true
+                """,
+                private_key,
+            ),
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.security["config_signature"]["verified"] is True
+        assert cfg.security["config_signature"]["required"] is True
+        assert (
+            cfg.security["config_signature"]["signer_id"] == "product-provisioning-test"
+        )
+        assert cfg.security["config_signature"]["signed_at_ms"] == 1_800_000_000_000
+
+    def test_signed_config_is_checked_before_env_expansion(self, tmp_path, monkeypatch):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        monkeypatch.setenv("DEVICE_NAME_FROM_ENV", "Expanded Device Name")
+        yaml_path = _write_yaml(
+            tmp_path,
+            _sign_config_yaml(
+                """
+                device:
+                  id: dev-01
+                  name: ${DEVICE_NAME_FROM_ENV}
+                  location: Lagos
+                sensors: []
+                skills: []
+                reasoning: {}
+                gateway: {}
+                actions:
+                  primary_alert_channel: sms
+                  sms:
+                    enabled: false
+                security:
+                  config_signature:
+                    require_signed: true
+                """,
+                private_key,
+            ),
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.device.name == "Expanded Device Name"
+        assert cfg.security["config_signature"]["verified"] is True
+
+    def test_config_signature_tamper_fails_closed(self, tmp_path, monkeypatch):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        signed = _sign_config_yaml(
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              config_signature:
+                require_signed: true
+            """,
+            private_key,
+        ).replace("location: Lagos", "location: Tampered")
+        yaml_path = _write_yaml(tmp_path, signed)
+
+        with pytest.raises(
+            ConfigValidationError, match="signature verification failed"
+        ):
+            Config.load(yaml_path)
+
+    def test_present_config_signature_is_always_verified(self, tmp_path, monkeypatch):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        signed = _sign_config_yaml(
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              config_signature:
+                require_signed: false
+            """,
+            private_key,
+        ).replace("name: Test", "name: Tampered")
+        yaml_path = _write_yaml(tmp_path, signed)
+
+        with pytest.raises(
+            ConfigValidationError, match="signature verification failed"
+        ):
+            Config.load(yaml_path)
+
+    def test_required_config_signature_rejects_unsigned_config(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              config_signature:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="missing config_signature"):
+            Config.load(yaml_path)
+
+    def test_env_can_require_signed_config_even_if_yaml_does_not(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("ORI_CONFIG_REQUIRE_SIGNED", "true")
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="missing config_signature"):
+            Config.load(yaml_path)
+
+    def test_signed_config_requires_external_trust_anchor(self, tmp_path):
+        private_key, _ = _ed25519_keypair()
+        yaml_path = _write_yaml(
+            tmp_path,
+            _sign_config_yaml(
+                """
+                device:
+                  id: dev-01
+                  name: Test
+                  location: Lagos
+                sensors: []
+                skills: []
+                reasoning: {}
+                gateway: {}
+                actions:
+                  primary_alert_channel: sms
+                  sms:
+                    enabled: false
+                security:
+                  config_signature:
+                    require_signed: true
+                """,
+                private_key,
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="trust anchor env"):
+            Config.load(yaml_path)
+
+    def test_rejects_invalid_deployment_profile(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: prod
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="deployment_profile"):
+            Config.load(yaml_path)
+
+    def test_production_posture_requires_signed_skills(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              skills:
+                require_signed: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="require_signed"):
+            Config.load(yaml_path)
+
+    def test_staging_profile_enforces_production_posture(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: staging
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              skills:
+                require_signed: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="require_signed"):
+            Config.load(yaml_path)
+
+    def test_production_profile_cannot_disable_posture_enforcement(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: false
+              skills:
+                require_signed: false
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="require_signed"):
+            Config.load(yaml_path)
+
+    def test_production_posture_allows_loopback_gateway_without_site_tls(
+        self, tmp_path, monkeypatch
+    ):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
+        yaml_path = _write_yaml(
+            tmp_path,
+            _sign_config_yaml(
+                f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            database:
+              path: "{encrypted_dir / "ori_state.db"}"
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway:
+              enabled: true
+              broker_url: mqtt://127.0.0.1:1883
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              config_signature:
+                require_signed: true
+              skills:
+                require_signed: true
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "{encrypted_dir}"
+            """,
+                private_key,
+            ),
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.gateway.enabled is True
+        assert cfg.gateway.broker_url == "mqtt://127.0.0.1:1883"
+        assert cfg.database_path == str(encrypted_dir / "ori_state.db")
+
+    def test_production_posture_rejects_gateway_broker_without_hostname(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="include a hostname"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_plain_non_loopback_gateway(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://192.168.1.10:1883
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway TLS"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_gateway_without_auth(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local:8883
+              encryption:
+                enabled: false
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.auth.enabled"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_gateway_without_encryption(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local:8883
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="gateway.encryption.enabled"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_gateway_without_broker_posture(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://operator:secret@broker.local:8883
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="broker_posture"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_gateway_without_broker_credentials(
+        self, tmp_path
+    ):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtts://broker.local:8883
+              broker_posture:
+                deployment_check: required
+                anonymous_access: disabled
+                require_credentials: true
+                acl_policy: per_device_required
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="username and password"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_public_token_only_sms_webhook(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: true
+                transport: ip
+                AT_API_KEY: "key"
+                AT_USERNAME: "user"
+                incoming_webhook:
+                  enabled: true
+                  host: "0.0.0.0"
+                  allowed_source_cidrs:
+                    - "203.0.113.0/24"
+                  token: "token"
+                  signature:
+                    mode: token_only
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="token_only"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_public_sms_webhook_without_source_cidrs(
+        self, tmp_path
+    ):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: true
+                transport: ip
+                AT_API_KEY: "key"
+                AT_USERNAME: "user"
+                incoming_webhook:
+                  enabled: true
+                  host: "0.0.0.0"
+                  token: "token"
+                  signature:
+                    mode: token_and_hmac
+                    shared_secret: "hmac-secret"
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="allowed_source_cidrs"):
+            Config.load(yaml_path)
+
+    def test_production_posture_treats_empty_sms_webhook_host_as_public(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: true
+                transport: ip
+                AT_API_KEY: "key"
+                AT_USERNAME: "user"
+                incoming_webhook:
+                  enabled: true
+                  host: ""
+                  token: "token"
+                  signature:
+                    mode: token_and_hmac
+                    shared_secret: "hmac-secret"
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="allowed_source_cidrs"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_remote_command_test_allowlist(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+              remote_commands:
+                enabled: true
+                allow_unlisted_senders: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="allow_unlisted_senders"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_plaintext_state_store(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="state.encryption.mode"):
+            Config.load(yaml_path)
+
+    def test_state_encryption_rejects_relative_encrypted_prefix(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "relative/encrypted"
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="absolute paths"):
+            Config.load(yaml_path)
+
+    def test_state_encryption_rejects_root_encrypted_prefix(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "/"
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="root path"):
+            Config.load(yaml_path)
+
+    def test_production_posture_rejects_state_store_outside_encrypted_prefix(
+        self, tmp_path
+    ):
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            database:
+              path: "{tmp_path / "plain" / "ori_state.db"}"
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              skills:
+                require_signed: true
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "{encrypted_dir}"
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="database.path"):
+            Config.load(yaml_path)
+
+    def test_production_posture_accepts_state_store_marker_file(
+        self, tmp_path, monkeypatch
+    ):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        marker = tmp_path / ".ori-encrypted-volume"
+        marker.write_text("ok", encoding="utf-8")
+        yaml_path = _write_yaml(
+            tmp_path,
+            _sign_config_yaml(
+                f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              config_signature:
+                require_signed: true
+              skills:
+                require_signed: true
+            state:
+              encryption:
+                mode: filesystem_required
+                marker_file: "{marker}"
+            """,
+                private_key,
+            ),
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.state.encryption.marker_file == str(marker)
+
+    def test_production_posture_accepts_hardened_site_config(
+        self, tmp_path, monkeypatch
+    ):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
+        yaml_path = _write_yaml(
+            tmp_path,
+            _sign_config_yaml(
+                f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            database:
+              path: "{encrypted_dir / "ori_state.db"}"
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway:
+              enabled: true
+              broker_url: mqtts://operator:secret@broker.local:8883
+              broker_posture:
+                deployment_check: required
+                anonymous_access: disabled
+                require_credentials: true
+                acl_policy: per_device_required
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+              encryption:
+                enabled: true
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: true
+                transport: ip
+                AT_API_KEY: "key"
+                AT_USERNAME: "user"
+                incoming_webhook:
+                  enabled: true
+                  host: "0.0.0.0"
+                  allowed_source_cidrs:
+                    - "203.0.113.0/24"
+                  token: "token"
+                  signature:
+                    mode: token_and_hmac
+                    shared_secret: "hmac-secret"
+            security:
+              config_signature:
+                require_signed: true
+              skills:
+                require_signed: true
+              remote_commands:
+                enabled: true
+                allow_unlisted_senders: false
+                allowed_senders:
+                  sms:
+                    - "+2348012345678"
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "{encrypted_dir}"
+            """,
+                private_key,
+            ),
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.device.deployment_profile == "production"
+        assert cfg.security["skills"]["require_signed"] is True
+        assert cfg.gateway.broker_posture["acl_policy"] == "per_device_required"
+
+    def test_gateway_message_secret_separate_from_remote_command_secret(self):
+        cfg = Config.load(EXAMPLE_YAML)
+
+        assert cfg.gateway.auth["shared_secret_env"] == "GATEWAY_SHARED_SECRET"
+        assert (
+            cfg.gateway.auth["shared_secret_env"]
+            != cfg.security["remote_commands"]["hmac_secret_env"]
+        )
+
+    def test_security_remote_command_lockout_overrides(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                enabled: false
+                lockout:
+                  risk_window_ms: 120000
+                  state_stale_after_ms: 240000
+                  incident_sender_limit: 7
+                  elevated_incident_threshold: 2
+                  critical_incident_threshold: 4
+                  elevated_rejection_threshold: 8
+                  critical_rejection_threshold: 20
+                  enforcement_enabled: true
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        lockout = cfg.security["remote_commands"]["lockout"]
+        assert lockout["risk_window_ms"] == 120_000
+        assert lockout["state_stale_after_ms"] == 240_000
+        assert lockout["incident_sender_limit"] == 7
+        assert lockout["elevated_incident_threshold"] == 2
+        assert lockout["critical_incident_threshold"] == 4
+        assert lockout["elevated_rejection_threshold"] == 8
+        assert lockout["critical_rejection_threshold"] == 20
+        assert lockout["enforcement_enabled"] is False
+
+    def test_remote_command_rejects_duplicate_previous_secret_env(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                enabled: true
+                hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
+                previous_hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
+                allow_unlisted_senders: true
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="previous_hmac_secret_env"):
+            Config.load(yaml_path)
+
+    def test_security_remote_command_allowed_senders_are_normalized(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                enabled: true
+                hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
+                allow_unlisted_senders: true
+                allowed_senders:
+                  sms:
+                    - " +234 801 234 5678 "
+                    - "+2348012345678"
+                  whatsapp:
+                    - " WhatsApp:+2348012345678 "
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        remote = cfg.security["remote_commands"]
+        assert remote["allow_unlisted_senders"] is True
+        assert remote["allowed_senders"] == {
+            "sms": ["+2348012345678"],
+            "whatsapp": ["whatsapp:+2348012345678"],
+        }
+
+    def test_os_sandbox_defaults(self):
+        cfg = Config.load(EXAMPLE_YAML)
+        assert cfg.os_sandbox["enabled"] is True
+        assert cfg.os_sandbox["require_for_community"] is False
+        assert cfg.os_sandbox["exec_timeout_ms"] == 2000
+        assert cfg.os_sandbox["max_output_bytes"] == 65536
 
 
 # ─── DeviceConfig validation ──────────────────────────────────────────────────
@@ -147,7 +1868,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -171,7 +1891,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -196,7 +1915,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -222,7 +1940,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -235,6 +1952,117 @@ class TestDeviceValidation:
         )
         cfg = Config.load(yaml_path)
         assert cfg.device.deployment_type == "phone"
+
+    def test_edge_node_deployment_type(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: edge-node-01
+              name: Ori Edge Node
+              location: Lagos
+              deployment_type: edge_node
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+              relay:
+                enabled: true
+                gpio_pin: 26
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device.deployment_type == "edge_node"
+
+    def test_invalid_device_timezone_falls_back_to_host_tz_env(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("TZ", "Europe/London")
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              timezone: Invalid/Timezone
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device.timezone == "Europe/London"
+
+    def test_missing_device_timezone_falls_back_to_host_tz_env(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("TZ", "America/New_York")
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device.timezone == "America/New_York"
+
+    def test_timezone_falls_back_to_utc_when_config_and_host_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("ori.config._detect_host_timezone", lambda: None)
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              timezone: Invalid/Timezone
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device.timezone == "UTC"
 
     def test_rejects_invalid_deployment_type(self, tmp_path):
         yaml_path = _write_yaml(
@@ -251,7 +2079,6 @@ class TestDeviceValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -260,6 +2087,190 @@ class TestDeviceValidation:
             """,
         )
         with pytest.raises(ConfigValidationError, match="deployment_type"):
+            Config.load(yaml_path)
+
+    def test_accepts_valid_country_code(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Nairobi
+              country_code: ke
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device.country_code == "KE"
+
+    def test_rejects_invalid_country_code(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Test
+              country_code: NGR
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        with pytest.raises(ConfigValidationError, match="country_code"):
+            Config.load(yaml_path)
+
+
+# ─── Security validation ──────────────────────────────────────────────────────
+
+
+class TestSecurityValidation:
+    def test_rejects_non_mapping_security(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security: []
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="security"):
+            Config.load(yaml_path)
+
+    def test_rejects_invalid_remote_command_skew(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                enabled: true
+                hmac_secret_env: ORI_REMOTE_COMMAND_HMAC_SECRET
+                max_skew_seconds: -1
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="max_skew_seconds"):
+            Config.load(yaml_path)
+
+    def test_rejects_invalid_remote_command_lockout_value(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                lockout:
+                  risk_window_ms: -1
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="risk_window_ms"):
+            Config.load(yaml_path)
+
+    def test_rejects_invalid_remote_command_allowed_senders(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                allowed_senders:
+                  sms: "+2348012345678"
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="allowed_senders.sms"):
+            Config.load(yaml_path)
+
+    def test_rejects_remote_command_lockout_critical_below_elevated(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              remote_commands:
+                lockout:
+                  elevated_rejection_threshold: 10
+                  critical_rejection_threshold: 5
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="critical_rejection_threshold"):
             Config.load(yaml_path)
 
 
@@ -280,7 +2291,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -361,6 +2371,24 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "growatt"
 
+    def test_accepts_solarman_modbus_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: inverter-grid\n"
+                "    type: deye_grid_power\n"
+                "    protocol: solarman_modbus\n"
+                "    profile: deye_hybrid\n"
+                "    host: 192.168.1.50\n"
+                "    serial: '1234567890'\n"
+                "    poll_interval_ms: 5000"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+
+        assert cfg.sensors[0].protocol == "solarman_modbus"
+        assert cfg.sensors[0].metadata["profile"] == "deye_hybrid"
+
     def test_accepts_usb_serial_protocol(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
@@ -421,6 +2449,16 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "mqtt_perception"
 
+    def test_accepts_mqtt_protocol(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  - id: chiller-supply\n    type: temperature\n    protocol: mqtt\n    poll_interval_ms: 1000"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.sensors[0].protocol == "mqtt"
+
     def test_accepts_opcua_protocol(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
@@ -441,6 +2479,170 @@ actions:
         cfg = Config.load(yaml_path)
         assert cfg.sensors[0].protocol == "smart"
 
+    def test_accepts_coap_protocol_with_required_fields(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors:
+  - id: coap-temp-01
+    type: temperature
+    protocol: coap
+    poll_interval_ms: 1000
+    uri: coap://192.168.1.70/telemetry/temp
+    method: GET
+    json_path: metrics.temp_c
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+  coap:
+    enabled: false
+    allowed_hosts: ["192.168.1.70"]
+""",
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.sensors[0].protocol == "coap"
+        assert cfg.sensors[0].metadata["uri"].startswith("coap://")
+
+    def test_rejects_coap_sensor_without_uri(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors:
+  - id: coap-temp-01
+    type: temperature
+    protocol: coap
+    poll_interval_ms: 1000
+    json_path: metrics.temp_c
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+  coap:
+    enabled: false
+    allowed_hosts: ["192.168.1.70"]
+""",
+        )
+        with pytest.raises(ConfigValidationError, match="require 'uri'"):
+            Config.load(yaml_path)
+
+    def test_rejects_coap_sensor_when_host_not_in_global_allowlist(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors:
+  - id: coap-temp-01
+    type: temperature
+    protocol: coap
+    poll_interval_ms: 1000
+    uri: coap://10.0.0.9/telemetry/temp
+    method: GET
+    json_path: metrics.temp_c
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+  coap:
+    enabled: false
+    allowed_hosts: ["192.168.1.70"]
+""",
+        )
+        with pytest.raises(ConfigValidationError, match="allowed_hosts"):
+            Config.load(yaml_path)
+
+    def test_accepts_coap_action_config(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+  coap:
+    enabled: true
+    allowed_hosts: ["192.168.1.70"]
+    commands:
+      open_bypass_valve:
+        uri: coap://192.168.1.70/actuators/bypass
+        method: POST
+        payload: '{"state":"open"}'
+""",
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.coap["enabled"] is True
+        assert "open_bypass_valve" in cfg.actions.coap["commands"]
+
+    def test_rejects_coap_enabled_without_allowlist(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+  coap:
+    enabled: true
+    commands:
+      open_bypass_valve:
+        uri: coap://192.168.1.70/actuators/bypass
+        method: POST
+""",
+        )
+        with pytest.raises(ConfigValidationError, match="allowed_hosts"):
+            Config.load(yaml_path)
+
 
 # ─── SkillConfig / action_tier validation ─────────────────────────────────────
 
@@ -459,7 +2661,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -539,7 +2740,6 @@ class TestReasoningConfig:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -564,7 +2764,6 @@ class TestReasoningConfig:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
               escalation_threshold: 0.85
             gateway:
               enabled: false
@@ -590,7 +2789,6 @@ class TestReasoningConfig:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
               energy_aware_reasoning:
                 enabled: true
                 throttle_threshold_percent: 20
@@ -623,7 +2821,6 @@ class TestReasoningConfig:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
               causal_memory:
                 rejection_expiry_days: 30
             gateway:
@@ -636,6 +2833,98 @@ class TestReasoningConfig:
         cfg = Config.load(yaml_path)
         cm = cfg.reasoning.causal_memory
         assert cm["rejection_expiry_days"] == 30
+
+    def test_capability_posture_defaults(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        cp = cfg.reasoning.capability_posture
+        assert cp["enabled"] is True
+        assert cp["probe_interval_seconds"] == 30
+        assert cp["gateway_heartbeat_ttl_seconds"] == 30
+
+    def test_capability_posture_custom_values(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              capability_posture:
+                enabled: true
+                probe_interval_seconds: 20
+                gateway_heartbeat_ttl_seconds: 25
+                internet_probe_timeout_ms: 1500
+                internet_probe_port: 443
+                internet_probe_host: one.one.one.one
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cfg = Config.load(yaml_path)
+        cp = cfg.reasoning.capability_posture
+        assert cp["probe_interval_seconds"] == 20
+        assert cp["gateway_heartbeat_ttl_seconds"] == 25
+        assert cp["internet_probe_timeout_ms"] == 1500
+        assert cp["internet_probe_port"] == 443
+        assert cp["internet_probe_host"] == "one.one.one.one"
+
+    def test_capability_posture_rejects_probe_interval_over_30(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              capability_posture:
+                probe_interval_seconds: 31
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="probe_interval_seconds must be between 1 and 30",
+        ):
+            Config.load(yaml_path)
 
 
 # ─── ActionChannelConfig validation ───────────────────────────────────────────
@@ -656,7 +2945,6 @@ class TestActionsValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -681,7 +2969,6 @@ class TestActionsValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -711,7 +2998,6 @@ class TestActionsValidation:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -723,6 +3009,45 @@ class TestActionsValidation:
             """,
         )
         with pytest.raises(ConfigValidationError, match="gpio_pin=45"):
+            Config.load(yaml_path)
+
+    def test_relay_gpio_conflicts_status_signaling_relay_led_pin(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+              relay:
+                enabled: true
+                gpio_pin: 26
+            hal:
+              status_signaling:
+                enabled: true
+                power_led_pin: 17
+                relay_led_pin: 26
+                network_led_pin: 22
+                health_led_pin: 23
+                buzzer_pin: 24
+                tick_ms: 100
+            """,
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="hal.status_signaling.relay_led_pin conflicts with actions.relay.gpio_pin",
+        ):
             Config.load(yaml_path)
 
 
@@ -742,7 +3067,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -822,6 +3146,83 @@ hal:
         ):
             Config.load(yaml_path)
 
+    def test_status_signaling_pin_must_be_valid_bcm(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  status_signaling:\n"
+                "    enabled: true\n"
+                "    power_led_pin: 45\n"
+                "    relay_led_pin: 27\n"
+                "    network_led_pin: 22\n"
+                "    health_led_pin: 23\n"
+                "    buzzer_pin: 24\n"
+                "    tick_ms: 100"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError, match="hal.status_signaling.power_led_pin=45"
+        ):
+            Config.load(yaml_path)
+
+    def test_status_signaling_pins_must_be_unique(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  status_signaling:\n"
+                "    enabled: true\n"
+                "    power_led_pin: 17\n"
+                "    relay_led_pin: 17\n"
+                "    network_led_pin: 22\n"
+                "    health_led_pin: 23\n"
+                "    buzzer_pin: 24\n"
+                "    tick_ms: 100"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="pins must be unique"):
+            Config.load(yaml_path)
+
+    def test_status_signaling_tick_must_be_min_50(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  status_signaling:\n"
+                "    enabled: true\n"
+                "    power_led_pin: 17\n"
+                "    relay_led_pin: 27\n"
+                "    network_led_pin: 22\n"
+                "    health_led_pin: 23\n"
+                "    buzzer_pin: 24\n"
+                "    tick_ms: 40"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="tick_ms must be >= 50"):
+            Config.load(yaml_path)
+
+    def test_status_signaling_power_pin_conflicts_external_watchdog(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._base_yaml(
+                "  external_watchdog:\n"
+                "    enabled: true\n"
+                "    gpio_pin: 17\n"
+                "    ping_interval_s: 30\n"
+                "  status_signaling:\n"
+                "    enabled: true\n"
+                "    power_led_pin: 17\n"
+                "    relay_led_pin: 27\n"
+                "    network_led_pin: 22\n"
+                "    health_led_pin: 23\n"
+                "    buzzer_pin: 24\n"
+                "    tick_ms: 100"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="power_led_pin conflicts with hal.external_watchdog.gpio_pin",
+        ):
+            Config.load(yaml_path)
+
 
 # ─── Environment variable expansion ───────────────────────────────────────────
 
@@ -842,7 +3243,6 @@ class TestEnvExpansion:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -873,7 +3273,6 @@ class TestEnvExpansion:
               default_tier: local
               local_model: x
               model_path: /tmp
-              offline_fallback: rule
             gateway:
               enabled: false
               broker_url: mqtt://localhost
@@ -918,7 +3317,6 @@ reasoning:
   default_tier: local
   local_model: x
   model_path: /tmp
-  offline_fallback: rule
 gateway:
   enabled: false
   broker_url: mqtt://localhost
@@ -942,6 +3340,25 @@ actions:
         with pytest.raises(ConfigValidationError, match="TWILIO_ACCOUNT_SID"):
             Config.load(yaml_path)
 
+    def test_whatsapp_from_must_use_whatsapp_prefix(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TWILIO_ACCOUNT_SID", "sid")
+        monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: whatsapp\n"
+                "  whatsapp:\n"
+                "    enabled: true\n"
+                "    TWILIO_ACCOUNT_SID: '${TWILIO_ACCOUNT_SID}'\n"
+                "    TWILIO_AUTH_TOKEN: '${TWILIO_AUTH_TOKEN}'\n"
+                "    TWILIO_WHATSAPP_FROM: '+14155238886'\n"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError, match="must start with 'whatsapp:\\+'"
+        ):
+            Config.load(yaml_path)
+
     def test_sms_missing_critical_var_raises(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
@@ -954,6 +3371,83 @@ actions:
             ),
         )
         with pytest.raises(ConfigValidationError, match="AT_USERNAME"):
+            Config.load(yaml_path)
+
+    def test_sms_invalid_transport_raises(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    transport: satellite\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="actions.sms.transport"):
+            Config.load(yaml_path)
+
+    def test_sms_gsm_transport_does_not_require_at_credentials(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    transport: gsm\n"
+                "    gsm:\n"
+                "      enabled: true\n"
+                "      port: '/dev/ttyUSB0'\n"
+                "      baud: 115200\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.sms["transport"] == "gsm"
+
+    def test_sms_gsm_transport_requires_port(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    transport: gsm\n"
+                "    gsm:\n"
+                "      enabled: true\n"
+                "      baud: 115200\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="actions.sms.gsm.port"):
+            Config.load(yaml_path)
+
+    def test_sms_hybrid_transport_accepts_gsm_without_ip_credentials(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    transport: hybrid\n"
+                "    gsm:\n"
+                "      enabled: true\n"
+                "      port: '/dev/ttyUSB0'\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.sms["transport"] == "hybrid"
+
+    def test_sms_hybrid_transport_requires_at_least_one_path(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    transport: hybrid\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="at least one configured"):
             Config.load(yaml_path)
 
     def test_operator_contact_missing_warns(self, tmp_path, caplog):
@@ -1003,3 +3497,694 @@ actions:
         )
         cfg = Config.load(yaml_path)
         assert cfg.actions.sms["incoming_webhook"]["token"] == "super-secret-token"
+
+    def test_sms_incoming_webhook_allowed_source_cidrs_are_validated(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      allowed_source_cidrs:\n"
+                "        - 'not-a-cidr'\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="allowed_source_cidrs"):
+            Config.load(yaml_path)
+
+    def test_sms_incoming_webhook_rejects_catch_all_source_cidr(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      allowed_source_cidrs:\n"
+                "        - '0.0.0.0/0'\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="catch-all"):
+            Config.load(yaml_path)
+
+    def test_sms_incoming_webhook_hmac_missing_secret_raises(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      signature:\n"
+                "        mode: token_and_hmac\n"
+                "        shared_secret: '${ORI_SMS_WEBHOOK_HMAC_SECRET}'\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="ORI_SMS_WEBHOOK_HMAC_SECRET"):
+            Config.load(yaml_path)
+
+    def test_sms_incoming_webhook_hmac_secret_set_is_valid(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      signature:\n"
+                "        mode: token_and_hmac\n"
+                "        shared_secret: 'hmac-secret'\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert (
+            cfg.actions.sms["incoming_webhook"]["signature"]["shared_secret"]
+            == "hmac-secret"
+        )
+
+    def test_sms_incoming_webhook_previous_hmac_secret_set_is_valid(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      signature:\n"
+                "        mode: token_and_hmac\n"
+                "        shared_secret: 'hmac-secret'\n"
+                "        previous_shared_secret: 'previous-hmac-secret'\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert (
+            cfg.actions.sms["incoming_webhook"]["signature"]["previous_shared_secret"]
+            == "previous-hmac-secret"
+        )
+
+    def test_sms_incoming_webhook_duplicate_previous_hmac_secret_raises(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: 'super-secret-token'\n"
+                "      signature:\n"
+                "        mode: token_and_hmac\n"
+                "        shared_secret: 'hmac-secret'\n"
+                "        previous_shared_secret: 'hmac-secret'\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="previous_shared_secret"):
+            Config.load(yaml_path)
+
+    def test_sms_incoming_webhook_hmac_required_without_token_is_valid(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: true\n"
+                "    AT_API_KEY: 'key'\n"
+                "    AT_USERNAME: 'user'\n"
+                "    incoming_webhook:\n"
+                "      enabled: true\n"
+                "      token: ''\n"
+                "      signature:\n"
+                "        mode: hmac_required\n"
+                "        shared_secret: 'hmac-secret'\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.sms["incoming_webhook"]["token"] == ""
+        assert cfg.actions.sms["incoming_webhook"]["signature"]["mode"] == (
+            "hmac_required"
+        )
+
+    def test_approval_require_scoped_replies_parses_truthy_strings(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  approval_require_scoped_replies: 'yes'\n"
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: false\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.approval_require_scoped_replies is True
+
+    def test_approval_require_scoped_replies_parses_integer_one(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  approval_require_scoped_replies: 1\n"
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: false\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.approval_require_scoped_replies is True
+
+    def test_local_console_defaults(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml("  primary_alert_channel: sms\n  sms:\n    enabled: false\n"),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.local_console["enabled"] is False
+        assert cfg.actions.local_console["poll_interval_ms"] == 1000
+        assert cfg.actions.local_console["approval_channel_id"] == "local_console"
+        assert cfg.actions.offline_tokens["enabled"] is False
+        assert cfg.actions.offline_tokens["max_clock_skew_s"] == 300
+
+    def test_local_console_poll_interval_minimum(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  local_console:\n"
+                "    enabled: true\n"
+                "    poll_interval_ms: 10\n"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="actions.local_console.poll_interval_ms must be >= 100",
+        ):
+            Config.load(yaml_path)
+
+    def test_offline_tokens_enabled_requires_public_key(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: false\n"
+                "  offline_tokens:\n"
+                "    enabled: true\n"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="actions.offline_tokens.enabled=true requires",
+        ):
+            Config.load(yaml_path)
+
+    def test_offline_tokens_enabled_with_public_key_is_valid(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: sms\n"
+                "  sms:\n"
+                "    enabled: false\n"
+                "  offline_tokens:\n"
+                "    enabled: true\n"
+                "    public_key_b64: 'dGVzdA=='\n"
+                "    max_clock_skew_s: 10\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.actions.offline_tokens["enabled"] is True
+        assert cfg.actions.offline_tokens["max_clock_skew_s"] == 10
+
+
+class TestLoadPhoneExample:
+    def test_phone_example_loads_with_usb_power_and_telemetry_export(self):
+        cfg = Config.load(PHONE_EXAMPLE_YAML)
+
+        assert cfg.device.deployment_type == "phone"
+        assert cfg.gateway.enabled is False
+        assert cfg.actions.relay["enabled"] is False
+        assert cfg.sensors[0].protocol == "usb_serial"
+        assert cfg.sensors[0].type == "usb_power"
+        assert cfg.telemetry_export.enabled is False
+        assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
+        assert cfg.health_socket["path"] == (
+            "/data/data/com.termux/files/home/.ori/health.sock"
+        )
+
+    def test_phone_growatt_example_loads_with_inverter_profile(self):
+        cfg = Config.load(PHONE_GROWATT_EXAMPLE_YAML)
+
+        assert cfg.device.deployment_type == "phone"
+        assert cfg.gateway.enabled is False
+        assert cfg.actions.relay["enabled"] is False
+        assert {sensor.protocol for sensor in cfg.sensors} == {"growatt"}
+        assert {sensor.type for sensor in cfg.sensors} == {
+            "growatt_pv_power",
+            "growatt_grid_power",
+            "growatt_battery_soc",
+        }
+        assert cfg.sensors[0].metadata["host"] == "192.168.1.XXX"
+        assert cfg.sensors[0].metadata["serial"] == "XXXXXXXXXX"
+        assert cfg.health_socket["path"] == (
+            "/data/data/com.termux/files/home/.ori/health.sock"
+        )
+
+    def test_phone_victron_example_loads_with_inverter_profile(self):
+        cfg = Config.load(PHONE_VICTRON_EXAMPLE_YAML)
+
+        assert cfg.device.deployment_type == "phone"
+        assert cfg.gateway.enabled is False
+        assert cfg.actions.relay["enabled"] is False
+        assert {sensor.protocol for sensor in cfg.sensors} == {"victron"}
+        assert {sensor.type for sensor in cfg.sensors} == {
+            "victron_pv_power",
+            "victron_grid_power",
+            "victron_battery_soc",
+        }
+        assert cfg.sensors[0].metadata["broker_host"] == "192.168.1.50"
+        assert cfg.sensors[0].metadata["portal_id"] == "YOUR_PORTAL_ID"
+        assert cfg.health_socket["path"] == (
+            "/data/data/com.termux/files/home/.ori/health.sock"
+        )
+
+
+class TestLoadLinuxExample:
+    def test_linux_example_loads_without_error(self):
+        cfg = Config.load(LINUX_EXAMPLE_YAML)
+
+        assert isinstance(cfg, Config)
+        assert cfg.device.deployment_type == "server"
+        assert {sensor.protocol for sensor in cfg.sensors} == {"psutil"}
+
+    def test_linux_example_documents_runtime_inverter_profile_registry(self):
+        with open(LINUX_EXAMPLE_YAML, encoding="utf-8") as fh:
+            text = fh.read()
+
+        assert "protocol: solarman_modbus" in text
+        assert "profile: deye_hybrid" in text
+        assert "not phone-specific" in text
+
+
+class TestDevicePolicyConfig:
+    def _yaml(self, extra_block: str = "") -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+{extra_block}
+"""
+
+    def test_defaults_when_block_missing(self, tmp_path):
+        yaml_path = _write_yaml(tmp_path, self._yaml())
+        cfg = Config.load(yaml_path)
+        assert cfg.device_policy["enabled"] is False
+        assert cfg.device_policy["url"] == ""
+        assert cfg.device_policy["auth_token"] == ""
+        assert cfg.device_policy["public_key_b64"] == ""
+        assert cfg.device_policy["request_timeout_ms"] == 3000
+        assert cfg.device_policy["max_clock_skew_s"] == 300
+        assert cfg.device_policy["refresh_enabled"] is False
+        assert cfg.device_policy["refresh_interval_s"] == 21600
+
+    def test_enabled_requires_https_url(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "device_policy:\n"
+                "  enabled: true\n"
+                "  url: http://localhost/policy\n"
+                "  auth_token: token\n"
+                "  public_key_b64: key\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="must start with https://"):
+            Config.load(yaml_path)
+
+    def test_enabled_requires_auth_token(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "device_policy:\n"
+                "  enabled: true\n"
+                "  url: https://example.com/policy\n"
+                "  auth_token: ''\n"
+                "  public_key_b64: key\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="auth_token"):
+            Config.load(yaml_path)
+
+    def test_enabled_requires_public_key(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "device_policy:\n"
+                "  enabled: true\n"
+                "  url: https://example.com/policy\n"
+                "  auth_token: token\n"
+                "  public_key_b64: ''\n"
+            ),
+        )
+        with pytest.raises(ConfigValidationError, match="public_key_b64"):
+            Config.load(yaml_path)
+
+    def test_enabled_valid_configuration(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "device_policy:\n"
+                "  enabled: true\n"
+                "  url: https://example.com/policy\n"
+                "  auth_token: token\n"
+                "  public_key_b64: dGVzdA==\n"
+                "  request_timeout_ms: 5000\n"
+                "  max_clock_skew_s: 120\n"
+                "  refresh_enabled: true\n"
+                "  refresh_interval_s: 3600\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.device_policy["enabled"] is True
+        assert cfg.device_policy["url"] == "https://example.com/policy"
+        assert cfg.device_policy["request_timeout_ms"] == 5000
+        assert cfg.device_policy["max_clock_skew_s"] == 120
+        assert cfg.device_policy["refresh_enabled"] is True
+        assert cfg.device_policy["refresh_interval_s"] == 3600
+
+
+class TestTelemetryExportConfig:
+    def _yaml(self, extra_block: str = "") -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+{extra_block}
+"""
+
+    def test_defaults_when_block_missing(self, tmp_path):
+        yaml_path = _write_yaml(tmp_path, self._yaml())
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.telemetry_export.enabled is False
+        assert cfg.telemetry_export.endpoint == ""
+        assert cfg.telemetry_export.api_key_env == ""
+        assert cfg.telemetry_export.flush_interval_s == 30.0
+        assert cfg.telemetry_export.batch_size == 50
+        assert cfg.telemetry_export.timeout_ms == 3000
+        assert cfg.telemetry_export.max_queue_size == 1000
+
+    def test_enabled_valid_configuration(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: https://api.example.test/runtime/telemetry\n"
+                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+                "  flush_interval_s: 5\n"
+                "  batch_size: 10\n"
+                "  timeout_ms: 2500\n"
+                "  max_queue_size: 100\n"
+            ),
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.telemetry_export.enabled is True
+        assert cfg.telemetry_export.endpoint.endswith("/runtime/telemetry")
+        assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
+        assert cfg.telemetry_export.flush_interval_s == 5.0
+        assert cfg.telemetry_export.batch_size == 10
+        assert cfg.telemetry_export.timeout_ms == 2500
+        assert cfg.telemetry_export.max_queue_size == 100
+
+    def test_enabled_requires_endpoint(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: ''\n"
+                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="telemetry_export.endpoint"):
+            Config.load(yaml_path)
+
+    def test_enabled_requires_https_for_non_loopback(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: http://api.example.test/runtime/telemetry\n"
+                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="must use https"):
+            Config.load(yaml_path)
+
+    def test_enabled_allows_http_loopback(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: http://127.0.0.1:8000/runtime/telemetry\n"
+                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+            ),
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.telemetry_export.enabled is True
+
+    def test_enabled_requires_api_key_env_name(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: https://api.example.test/runtime/telemetry\n"
+                "  api_key_env: 'not valid'\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="api_key_env"):
+            Config.load(yaml_path)
+
+    def test_queue_size_must_cover_batch_size(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "telemetry_export:\n"
+                "  enabled: true\n"
+                "  endpoint: https://api.example.test/runtime/telemetry\n"
+                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+                "  batch_size: 20\n"
+                "  max_queue_size: 10\n"
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError, match="max_queue_size"):
+            Config.load(yaml_path)
+
+    def test_refresh_interval_minimum_enforced(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "device_policy:\n"
+                "  enabled: false\n"
+                "  refresh_enabled: true\n"
+                "  refresh_interval_s: 59\n"
+            ),
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="refresh_interval_s must be >= 60",
+        ):
+            Config.load(yaml_path)
+
+
+class TestHealthSocketConfig:
+    def _yaml(self, extra_block: str = "") -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+{extra_block}
+"""
+
+    def test_defaults_when_block_missing(self, tmp_path):
+        yaml_path = _write_yaml(tmp_path, self._yaml())
+        cfg = Config.load(yaml_path)
+        assert cfg.health_socket["enabled"] is True
+        assert cfg.health_socket["path"] == "/run/ori/health.sock"
+        assert cfg.health_socket["mode"] == 0o660
+
+    def test_rejects_empty_path(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml("health_socket:\n  enabled: true\n  path: ''\n"),
+        )
+        with pytest.raises(ConfigValidationError, match="health_socket.path"):
+            Config.load(yaml_path)
+
+    def test_rejects_invalid_mode(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml("health_socket:\n  enabled: true\n  mode: invalid\n"),
+        )
+        with pytest.raises(ConfigValidationError, match="health_socket.mode"):
+            Config.load(yaml_path)
+
+    def test_accepts_mode_string(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "health_socket:\n"
+                "  enabled: true\n"
+                "  path: /tmp/ori-health.sock\n"
+                "  mode: '0o666'\n"
+            ),
+        )
+        cfg = Config.load(yaml_path)
+        assert cfg.health_socket["mode"] == 0o666
+
+
+class TestOSSandboxConfig:
+    def _yaml(self, extra_block: str = "") -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+{extra_block}
+"""
+
+    def test_defaults_when_block_missing(self, tmp_path):
+        cfg = Config.load(_write_yaml(tmp_path, self._yaml()))
+        assert cfg.os_sandbox["enabled"] is True
+        assert cfg.os_sandbox["require_for_community"] is False
+        assert cfg.os_sandbox["exec_timeout_ms"] == 2000
+        assert cfg.os_sandbox["max_output_bytes"] == 65536
+
+    def test_rejects_invalid_numeric_fields(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml("os_sandbox:\n  exec_timeout_ms: abc\n"),
+        )
+        with pytest.raises(ConfigValidationError, match="os_sandbox.exec_timeout_ms"):
+            Config.load(yaml_path)
+
+    def test_rejects_too_small_limits(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml("os_sandbox:\n  exec_timeout_ms: 10\n  max_output_bytes: 100\n"),
+        )
+        with pytest.raises(ConfigValidationError, match="exec_timeout_ms"):
+            Config.load(yaml_path)
+
+
+class TestReasoningDefaultTierValidation:
+    def _yaml(self, tier: str) -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: {tier}
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: false
+  broker_url: mqtt://localhost
+actions:
+  primary_alert_channel: sms
+"""
+
+    def test_rejects_gateway_default_tier_pre_v1(self, tmp_path):
+        yaml_path = _write_yaml(tmp_path, self._yaml("gateway"))
+        with pytest.raises(ConfigValidationError, match="reasoning.default_tier"):
+            Config.load(yaml_path)
+
+    def test_rejects_cloud_default_tier_pre_v1(self, tmp_path):
+        yaml_path = _write_yaml(tmp_path, self._yaml("cloud"))
+        with pytest.raises(ConfigValidationError, match="reasoning.default_tier"):
+            Config.load(yaml_path)

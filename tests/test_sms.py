@@ -41,7 +41,11 @@ def _make_at_stub_empty_recipients() -> types.ModuleType:
     stub.SMS = type(
         "_SMS",
         (),
-        {"send": staticmethod(lambda msg, recip, sid: {"SMSMessageData": {"Recipients": []}})},
+        {
+            "send": staticmethod(
+                lambda msg, recip, sid: {"SMSMessageData": {"Recipients": []}}
+            )
+        },
     )
     stub.initialize = lambda username, api_key: None
     return stub
@@ -77,6 +81,20 @@ async def test_listen_returns_none_without_api_key(monkeypatch):
     action = SMSAction()
     result = await action.listen_for_response("+2340000000000", timeout_seconds=10)
     assert result is None
+
+
+@pytest.mark.parametrize("enabled_value", ["true", "1", "yes", "on", True])
+def test_gsm_enabled_accepts_common_truthy_values(enabled_value):
+    action = SMSAction(
+        config={
+            "transport": "gsm",
+            "gsm": {
+                "enabled": enabled_value,
+                "port": "/dev/ttyUSB0",
+            },
+        }
+    )
+    assert action._gsm_enabled is True
 
 
 # ── Successful send ───────────────────────────────────────────────────────────
@@ -156,7 +174,9 @@ async def test_send_uses_at_sender_id_env_var(monkeypatch):
 @pytest.mark.asyncio
 async def test_send_returns_false_on_non_success_status(monkeypatch):
     monkeypatch.setenv("AT_API_KEY", "test-key")
-    monkeypatch.setitem(sys.modules, "africastalking", _make_at_stub("InvalidPhoneNumber"))
+    monkeypatch.setitem(
+        sys.modules, "africastalking", _make_at_stub("InvalidPhoneNumber")
+    )
     action = SMSAction()
     ok = await action.send("Alert", "+000")
     assert ok is False
@@ -206,6 +226,7 @@ async def test_listen_for_response_returns_none(monkeypatch):
 async def test_listen_for_response_does_not_block(monkeypatch):
     """Stub must return immediately — no sleeping or polling."""
     import time
+
     monkeypatch.setenv("AT_API_KEY", "key")
     monkeypatch.setitem(sys.modules, "africastalking", _make_at_stub())
     action = SMSAction()
@@ -237,6 +258,20 @@ async def test_ingest_incoming_webhook_persists_message(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_ingest_incoming_webhook_rejects_unlisted_approval_sender(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
+    action = SMSAction(state_store=store, allowed_senders={"+2348000000000"})
+
+    ok = await action.ingest_incoming_webhook(
+        {"from": "+234 811 111 1111", "text": "YES-AB12CD34"}
+    )
+
+    assert ok is False
+    assert not store.store_incoming_message.called
+
+
+@pytest.mark.asyncio
 async def test_ingest_incoming_webhook_rejects_invalid_payload(monkeypatch):
     monkeypatch.delenv("AT_API_KEY", raising=False)
     store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
@@ -249,7 +284,9 @@ async def test_ingest_incoming_webhook_rejects_invalid_payload(monkeypatch):
 @pytest.mark.asyncio
 async def test_listen_for_response_reads_from_state_store(monkeypatch):
     monkeypatch.delenv("AT_API_KEY", raising=False)
-    store = types.SimpleNamespace(consume_incoming_message=AsyncMock(return_value="YES"))
+    store = types.SimpleNamespace(
+        consume_incoming_message=AsyncMock(return_value="YES")
+    )
     action = SMSAction(state_store=store)
 
     reply = await action.listen_for_response("+234 800 000 0000", timeout_seconds=1)
@@ -267,3 +304,107 @@ async def test_listen_for_response_returns_none_when_store_missing(monkeypatch):
     action = SMSAction(state_store=None)
     reply = await action.listen_for_response("+2348000000000", timeout_seconds=1)
     assert reply is None
+
+
+@pytest.mark.asyncio
+async def test_send_uses_gsm_transport_when_configured(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    monkeypatch.setattr("ori.actions.sms._PYSERIAL_AVAILABLE", True)
+    action = SMSAction(
+        config={
+            "enabled": True,
+            "transport": "gsm",
+            "gsm": {"enabled": True, "port": "/dev/ttyUSB0"},
+        }
+    )
+    send_gsm = AsyncMock(return_value=True)
+    send_ip = AsyncMock(return_value=False)
+    monkeypatch.setattr(action, "_send_gsm", send_gsm)
+    monkeypatch.setattr(action, "_send_ip", send_ip)
+
+    ok = await action.send("Alert", "+2348000000000")
+    assert ok is True
+    send_gsm.assert_awaited_once()
+    assert send_ip.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_send_hybrid_falls_back_to_gsm_when_ip_fails(monkeypatch):
+    monkeypatch.setenv("AT_API_KEY", "key")
+    monkeypatch.setenv("AT_USERNAME", "user")
+    monkeypatch.setitem(sys.modules, "africastalking", _make_at_stub("Success"))
+    monkeypatch.setattr("ori.actions.sms._PYSERIAL_AVAILABLE", True)
+
+    action = SMSAction(
+        config={
+            "enabled": True,
+            "transport": "hybrid",
+            "hybrid_order": "ip_first",
+            "gsm": {"enabled": True, "port": "/dev/ttyUSB0"},
+        }
+    )
+
+    call_order: list[str] = []
+
+    async def _ip(*_: object, **__: object) -> bool:
+        call_order.append("ip")
+        return False
+
+    async def _gsm(*_: object, **__: object) -> bool:
+        call_order.append("gsm")
+        return True
+
+    monkeypatch.setattr(action, "_send_ip", _ip)
+    monkeypatch.setattr(action, "_send_gsm", _gsm)
+
+    ok = await action.send("Alert", "+2348000000000")
+    assert ok is True
+    assert call_order == ["ip", "gsm"]
+
+
+@pytest.mark.asyncio
+async def test_send_hybrid_gsm_first_short_circuits_on_success(monkeypatch):
+    monkeypatch.setenv("AT_API_KEY", "key")
+    monkeypatch.setenv("AT_USERNAME", "user")
+    monkeypatch.setitem(sys.modules, "africastalking", _make_at_stub("Success"))
+    monkeypatch.setattr("ori.actions.sms._PYSERIAL_AVAILABLE", True)
+
+    action = SMSAction(
+        config={
+            "enabled": True,
+            "transport": "hybrid",
+            "hybrid_order": "gsm_first",
+            "gsm": {"enabled": True, "port": "/dev/ttyUSB0"},
+        }
+    )
+
+    call_order: list[str] = []
+
+    async def _ip(*_: object, **__: object) -> bool:
+        call_order.append("ip")
+        return True
+
+    async def _gsm(*_: object, **__: object) -> bool:
+        call_order.append("gsm")
+        return True
+
+    monkeypatch.setattr(action, "_send_ip", _ip)
+    monkeypatch.setattr(action, "_send_gsm", _gsm)
+
+    ok = await action.send("Alert", "+2348000000000")
+    assert ok is True
+    assert call_order == ["gsm"]
+
+
+@pytest.mark.asyncio
+async def test_send_unknown_transport_fails_closed(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    monkeypatch.setattr("ori.actions.sms._PYSERIAL_AVAILABLE", False)
+    action = SMSAction(
+        config={
+            "enabled": True,
+            "transport": "satellite",
+        }
+    )
+    ok = await action.send("Alert", "+2348000000000")
+    assert ok is False

@@ -19,7 +19,7 @@ def _load_skill():
 def test_skill_loads():
     skill = _load_skill()
     assert skill.name == "hvac-refrigerant-monitor"
-    assert len(skill.triggers) == 3
+    assert len(skill.triggers) == 4
 
 
 def test_gas_leak_trigger_is_tier_d():

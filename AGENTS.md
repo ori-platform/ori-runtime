@@ -15,7 +15,8 @@ the architecture.
 ## What this project is
 
 Ori is an agentic IoT runtime. It reads physical sensor data and takes
-autonomous actions based on LLM reasoning. It runs offline on a Raspberry Pi.
+autonomous actions based on LLM reasoning. It has an offline-capable safety
+core and runs on a Raspberry Pi.
 
 The key concept that every contributor must understand before touching code:
 
@@ -24,8 +25,8 @@ Ori is NOT a monitoring system.
 Ori is an agent that reasons about physical signals and acts on them.
 
 Tier A actions  — always autonomous (alerts, logs)
-Tier B actions  — autonomous by default (source switching, valve control)
-Tier C actions  — approval required (breaker trips, equipment shutdown)
+Tier B actions  — soft physical; explicit approval or post-action policy required
+Tier C actions  — approval required (relay/contactor-controlled shutdowns)
 Tier D actions  — always autonomous, highest priority (safety cutoffs)
 ```
 
@@ -44,6 +45,8 @@ ori/                    Python package — the runtime
 ├── reasoning/          Layer 4: LLM tiers + action dispatcher
 ├── skills/             Layer 5: skill loader and sandbox
 ├── actions/            Action executors called by the dispatcher
+├── gateway/            Runtime-side MQTT gateway export/reasoning clients
+├── utils/              Small shared helpers
 ├── state/              SQLite state store
 ├── config.py           ori.yaml loader
 └── runtime.py          Main event loop — ties everything together
@@ -167,7 +170,7 @@ name: your-skill-name
 version: 0.1.0
 author: your-github-handle
 license: Apache-2.0
-signature: ed25519:PENDING # filled by ori skill publish
+signature: bundled # use 'bundled' for repo-bundled skills; use ed25519:<sig> for community distribution
 
 sensors_required:
   - type: temperature # sensor types this skill needs
@@ -176,7 +179,7 @@ triggers:
   - name: your_trigger_name
     condition: "value > 30.0"
     cooldown_seconds: 300
-    escalate_to: local_slm # rule | local_slm | gateway | cloud
+    escalate_to: local_slm # rule | local_slm | gateway
     action_tier: A # A | B | C | D — REQUIRED, no default
 
 prompts:
@@ -197,9 +200,19 @@ actions:
 **Rules:**
 
 - `action_tier` is REQUIRED on every trigger. Missing tier = validation error.
+- Production deployments can set `security.skills.require_signed: true`.
+  In that mode, only first-party skills shipped in the repository may use
+  `signature: bundled`; local/non-core skills must carry an `ed25519:`
+  signature that verifies against the configured Hub trust anchor.
 - `bypass_llm: true` MUST be paired with `action_tier: D`. Never one without
   the other.
+- Physical Tier B triggers MUST declare either `requires_approval: true` or
+  `reasoning_policy: post_action`. Tier B immediate execution never uses
+  `bypass_llm: true`.
 - Tier C triggers MUST declare `safe_default_action`.
+- Tier C approval replies are scoped by default. Operators reply
+  `YES-<proposal_id>` or `NO-<proposal_id>`; bare remote `YES`/`NO` is legacy
+  compatibility only and must not be used in new flows.
 - Prompts must be in plain language — no technical jargon in the output.
   The end user is a Lagos SME owner, not a systems engineer.
 - `hooks.py` is optional. Only add it for calculations that cannot be
@@ -221,14 +234,14 @@ by the runtime. It provides dynamic, sandboxed access to sensor data
 and persistent state. **Never** access the StateStore or database
 directly from hooks — always go through these adapters.
 
-| Property | Type | Description |
-| --- | --- | --- |
-| `context.readings` | `dict[str, Any]` | Current sensor values keyed by sensor_id |
-| `context.history` | `HookHistoryAdapter` | Parameterised history queries (see below) |
-| `context.state` | `HookStateAdapter` | Skill-isolated key-value persistence |
-| `context.timestamp` | `int` | Event timestamp (unix milliseconds) |
-| `context.derived` | `dict[str, Any]` | Writable dict for computed values |
-| `context.trigger_name` | `str` | Name of the trigger that fired |
+| Property               | Type                 | Description                               |
+| ---------------------- | -------------------- | ----------------------------------------- |
+| `context.readings`     | `dict[str, Any]`     | Current sensor values keyed by sensor_id  |
+| `context.history`      | `HookHistoryAdapter` | Parameterised history queries (see below) |
+| `context.state`        | `HookStateAdapter`   | Skill-isolated key-value persistence      |
+| `context.timestamp`    | `int`                | Event timestamp (unix milliseconds)       |
+| `context.derived`      | `dict[str, Any]`     | Writable dict for computed values         |
+| `context.trigger_name` | `str`                | Name of the trigger that fired            |
 
 **HookHistoryAdapter methods:**
 
@@ -238,7 +251,17 @@ context.history.avg_last_n(sensor_id, count)  # -> float | None
 context.history.last_value(sensor_id)         # -> float | None
 context.history.last_timestamp(sensor_id)     # -> int | None
 context.history.fetch_history(sensor_id, limit=1)  # -> list[dict]
+context.history.same_weekday_hour_baseline(
+    sensor_id,
+    lookback_weeks=8,
+    min_weeks=3,
+)  # -> dict with avg_value, covered_weeks, sample_count, usable, reason
 ```
+
+`same_weekday_hour_baseline()` uses the event's site-local timezone and hourly
+retained history. It is for deterministic context-aware suppression such as
+"Monday 9 AM AC draw is normal for this building"; it must not suppress Tier D
+safety cutoffs.
 
 **HookStateAdapter methods** (state is isolated per skill — no cross-skill leakage):
 
@@ -420,21 +443,67 @@ that are hard to debug.
 3. Tier C actions ALWAYS run the approval workflow.
    There is no config flag to skip it. If you find yourself writing code
    to bypass Tier C approval, you are implementing this wrong.
+   Remote replies must be scoped to the active proposal ID by default
+   (`YES-<proposal_id>` or `NO-<proposal_id>`). Bare `YES`/`NO` is not an
+   approval under the hardened default.
 
 4. Tier D actions NEVER invoke an LLM.
    bypass_llm: true is set automatically. Do not add LLM calls to Tier D paths.
 
-5. Action executors never raise exceptions.
+5. Tier B immediate execution uses `reasoning_policy: post_action`, never
+   `bypass_llm: true`.
+   Physical Tier B triggers must explicitly choose either operator approval
+   (`requires_approval: true`) or post-action reasoning
+   (`reasoning_policy: post_action`). With `post_action`, the deterministic
+   Tier B action executes first, then reasoning enriches operator/audit text.
+   A `post_action` trigger must include a Tier A default action for follow-up
+   operator notification.
+   If enrichment fails, times out, or no reasoner is available, audit data must
+   record `reasoning_status: incomplete`; the already-executed physical action
+   result must not be rolled back, retried, or obscured. If the Tier B physical
+   action itself fails, post-action reasoning must be skipped and audit data
+   must record `reasoning_status: skipped`.
+
+6. Local SLM confidence is non-authoritative.
+   It may be logged as telemetry, but it must never be the sole reason to keep
+   reasoning on-device or to escalate to gateway. Gateway escalation must
+   be driven by deterministic signals evaluated before local SLM inference:
+   explicit `escalate_to: gateway`, missing baseline, history query failure,
+   calibrated range breach, or related-sensor conflict. Gateway reasoning uses
+   MQTT request/response on `ori/{device_id}/reasoning/request` and
+   `ori/{device_id}/reasoning/response`; it must remain provider-neutral and
+   must not introduce cloud SDK dependencies into the runtime. Cloud reasoning, when used, is a gateway backend, not a runtime dependency.
+   For matched triggers, action tier is trigger-authoritative. Unmatched
+   gateway reasoning must not be used to create autonomous physical action
+   authority; Tier C remains approval-gated and Tier D remains rule-only.
+
+7. Runtime-gateway MQTT envelopes are authenticated when gateway auth is enabled.
+   The runtime signs gateway reasoning requests, export responses, and
+   runtime-node heartbeat payloads, and verifies gateway reasoning responses,
+   export requests, and gateway heartbeat payloads, using the dedicated gateway
+   HMAC secret configured by `gateway.auth.shared_secret_env`. During rotation,
+   `gateway.auth.previous_shared_secret_env` is verify-only; the runtime must
+   continue signing outbound gateway MQTT envelopes with the current secret. Do
+   not reuse remote-command secrets for gateway MQTT. Replay protection for gateway
+   MQTT is in-memory and TTL-bounded; do not copy the remote-command SQLite
+   audit/replay pattern into this higher-frequency path. MQTT gateway messages
+   must never mutate runtime config, policy, update intent, relay state, or
+   actuator settings outside the separate authenticated remote-command path.
+   Production broker deployments must also follow `docs/MQTT_SECURITY.md`:
+   no anonymous clients, per-device topic ACLs, LAN/VLAN isolation, and separate
+   runtime/gateway MQTT users.
+
+8. Action executors never raise exceptions.
    They return False. The runtime must survive a failed action.
 
-6. The event loop is never blocked.
+9. The event loop is never blocked.
    time.sleep(), requests.get(), and any synchronous I/O are forbidden
    in async code paths.
 
-7. SQLite queries are always parameterised.
+10. SQLite queries are always parameterised.
    f-string or .format() SQL is a security and correctness error.
 
-8. ori.yaml is never committed to the repository.
+11. ori.yaml is never committed to the repository.
    It is in .gitignore. The example file is ori.yaml.example.
 ```
 
@@ -522,22 +591,183 @@ Violating them creates vulnerabilities that affect physical hardware.
 5. Never store credentials in code, comments, or git-tracked
    files. All secrets go in .env (gitignored).
 
-6. Never add a GitHub Actions workflow that processes untrusted
+6. Production deployments must enable production posture enforcement.
+   Set `device.deployment_profile: staging\|production` or
+   `security.enforce_production_posture: true`. Staging and production profiles
+   cannot opt out. In production posture the runtime must fail config load for
+   unsafe network/security settings:
+   non-loopback gateway brokers require TLS, MQTT credentials, declared
+   anonymous-client disablement, per-device ACL posture, gateway HMAC auth, and
+   encrypted sensitive exports; public SMS webhook ingress must use HMAC mode
+   plus source IP/CIDR allowlisting, not token-only mode; remote commands must
+   not allow unlisted senders; local/non-core skills must require Ed25519
+   signatures; and SQLite state must live under an operator-declared encrypted
+   filesystem posture (`state.encryption.mode: filesystem_required`).
+
+7. Never add a GitHub Actions workflow that processes untrusted
    input (issue titles, PR comments) with shell access.
 
-7. Never add postinstall scripts to pyproject.toml that
+8. Never add postinstall scripts to pyproject.toml that
    fetch from external URLs.
-8. If `_validate_sensor_value` raises `RuleEngineSafetyError`, the
+9. If `_validate_sensor_value` raises `RuleEngineSafetyError`, the
    calling code must fire a Tier A alert to the operator.
    A suspended Tier D path is a safety event requiring human
    awareness. It must never fail silently.
-9. relay.py is intentionally tier-agnostic. `RelayAction.trigger()` and
+10. relay.py is intentionally tier-agnostic. `RelayAction.trigger()` and
    `RelayAction.release()` must only be called through `ActionDispatcher`,
    never directly from skills, hooks, or any other layer. The Tier D
    CRITICAL escalation and emergency SMS path in `_execute_immediately()`
    depends on this contract — direct relay calls bypass it entirely.
 
+11. DevicePolicy.permits_action() and relay.enabled in ori.yaml govern Tier B and Tier C
+    relay actuation only. Tier D relay paths must:
+    (a) be initialised at boot regardless of relay.enabled or DevicePolicy state,
+    (b) bypass all DevicePolicy checks at dispatch time unconditionally.
+    A DevicePolicy enforcement mechanism that prevents Tier D actuation is a safety
+    failure, not a billing control. This invariant is verified by a test matrix covering:
+    - test_tier_d_relay_fires_when_policy_expired()
+    - test_tier_d_relay_fires_when_policy_missing()
+    - test_tier_d_relay_fires_when_policy_parse_fails()
+    - test_tier_d_relay_fires_when_policy_refresh_fails()
+
+12. Remote DevicePolicy payloads from ori-cloud must be verified for integrity before
+    any policy is applied. The runtime must verify:
+    (a) HTTPS transport,
+    (b) device authentication on the request (API key or JWT),
+    (c) policy version is not a downgrade (monotonically increasing),
+    (d) response timestamp is within 5 minutes of current device time,
+    (e) payload Ed25519 signature is valid against the stored ori-cloud public key.
+    A policy payload that fails any of these checks must be REJECTED.
+    Rejection behaviour: keep current policy, log at WARNING with audit trail.
+    NEVER reject silently. NEVER fail open by applying an unverified policy.
+    The phrase 'reject silently' must not appear in any policy enforcement code path.
+
+13. Database compaction logic must always query the physical tables to check for backwards clock skew
+    before deleting history. Relying on host clock calculations (`now_ms - 48h < now_ms - 1h`) is a
+    tautology and will blindly destroy data if the host clock jumps backward.
+
+14. SQLite state-store encryption at rest is a deployment posture, not a
+    runtime crypto layer. The runtime uses standard `sqlite3`; do not add
+    SQLCipher or custom row encryption without a separate design review.
+    Production posture requires `state.encryption.mode: filesystem_required`
+    and either a valid `state.encryption.marker_file` or a `database.path`
+    under one of `state.encryption.encrypted_path_prefixes`. This is an
+    operator attestation that the DB lives on an encrypted filesystem/mount.
+
+15. Remote commands that change configuration, policy, update intent, relay state,
+    or any other actuator-affecting setting must be authenticated before execution.
+    SMS, WhatsApp, and cloud-originated commands require HMAC, signature, offline
+    token, or an equivalent replay-resistant check. Tier D evaluation and
+    execution paths must not be disableable by any remote command, including SMS,
+    WhatsApp, or cloud API.
+    All remote command handlers must call `RemoteCommandVerifier` before executing
+    or queueing any state-changing command.
+    Remote command authentication must be bound to the ingress sender. When
+    remote commands are enabled, `security.remote_commands.allowed_senders`
+    must define the approved SMS/WhatsApp sender identities, or
+    `allow_unlisted_senders: true` must be explicitly set for test deployments.
+    A valid signature from an unapproved sender must be rejected and audited as
+    `sender_not_allowed`.
+    Verification does not imply execution permission. Authenticated remote commands
+    must pass through `ori.security.remote_command_policy` before any runtime side
+    effect is allowed.
+    `SET_THRESHOLD` must never make a Tier D trigger less sensitive than the
+    value configured in `ori.yaml`. For upper-bound conditions such as
+    `value > threshold`, raising the threshold above startup is forbidden. For
+    lower-bound conditions such as `value < threshold`, lowering the threshold
+    below startup is forbidden. If the runtime cannot prove the direction of a
+    Tier D threshold safely, the remote change must be rejected. After any
+    threshold change, the runtime must immediately re-evaluate active Tier D
+    conditions. A threshold change that would suppress an active Tier D
+    condition must be rejected.
+    Relay fail-safe direction configured in `ori.yaml` is immutable by remote
+    command. `SET_RELAY_MODE` must never change normally-closed to normally-open,
+    or perform any equivalent fail-safe inversion, regardless of authentication.
+    Tier C approval replies and remote commands are separate input classes.
+    Approval messages must carry a short `proposal_id`; scoped replies such as
+    `YES-<proposal_id>` and `NO-<proposal_id>` must match the active proposal
+    before approving or rejecting it. Bare remote `YES`/`NO` replies must not
+    approve Tier C unless a deployment explicitly opts into legacy
+    `actions.approval_require_scoped_replies: false`. Structured remote command payloads
+    (`ORI_COMMAND {json}` or raw JSON with the remote-command field set) must
+    never be treated as approval replies. The local-console approval channel is
+    not a remote command ingress; structured commands there must be consumed,
+    durably audited, and ignored for approval purposes. Unrecognised
+    local-console approval input must be logged and ignored until timeout, not
+    silently converted to NO.
+    Public SMS webhook ingress must use token-only mode only for loopback or
+    trusted provider paths. Internet-exposed deployments must configure
+    `actions.sms.incoming_webhook.allowed_source_cidrs` for provider or
+    reverse-proxy source IP ranges, and must configure
+    `actions.sms.incoming_webhook.signature.mode: token_and_hmac` or
+    `hmac_required`, with HMAC verified over the raw HTTP body before payload
+    parsing and nonce replay recorded in `StateStore`. Runtime sender
+    allowlisting is necessary but cannot prove carrier-origin identity; public
+    provider ingress must follow `docs/SMS_WEBHOOK_SECURITY.md`.
+    HMAC previous-secret fields are verify-only rotation aids. New outbound
+    signatures must use the current secret; accepted remote commands signed
+    with a previous secret must be audited distinctly.
+
+16. Runtime-gateway MQTT encryption protects sensitive export payloads only
+    when authenticated gateway envelopes are enabled. Do not enable
+    `gateway.encryption.enabled` without `gateway.auth.enabled`. Sensitive
+    export responses (`sensor_history`, `action_log`, `reasoning_log`, and
+    `tier_c_decision_log`) must be encrypted before HMAC signing so the broker
+    cannot read historical business/audit data and the gateway can still verify
+    ciphertext authenticity and replay freshness. Health exports may remain
+    plaintext operational posture.
+
 ---
+
+## Supply Chain Security Invariants
+
+These rules apply to every AI coding agent modifying this repository. Violating
+these rules can compromise the runtime that controls physical hardware.
+
+1. Never add `pull_request_target` workflows that checkout or execute untrusted
+   PR code. Use `pull_request` for fork PR workflows.
+
+2. Every GitHub Actions workflow must declare explicit least-privilege
+   permissions. Normal CI uses `contents: read` and `id-token: none`.
+
+3. `id-token: write` is allowed only in a dedicated release job in `release.yml`.
+   It must never appear in `ci.yml`.
+
+4. Release jobs must never restore dependency caches (`actions/cache`, package
+   manager caches, or setup action cache flags). Cache poisoning was a key part
+   of the TanStack May 2026 supply-chain attack.
+
+5. GitHub Actions must be pinned to full commit SHAs. Mutable tags such as
+   `@v4`, `@v5`, `@main`, and `@master` are forbidden. Add a human-readable
+   version comment next to each SHA.
+
+6. Never download and execute remote scripts in CI without hash or signature
+   verification. `curl URL | bash`, `curl URL -o script.py && python script.py`,
+   and equivalent patterns are forbidden.
+
+7. Python installs in CI must use hash-locked requirements files with
+   `--require-hashes`. Do not use `pip install -e '.[dev]'` to resolve
+   dependencies in CI.
+
+8. Device deployment to Pi or phone must install from signed artifacts or a
+   signed wheelhouse. Production deployment must not resolve dependencies live
+   from public package registries.
+
+9. Valid provenance does not imply safe code. The TanStack May 2026 incident
+   produced malicious packages through legitimate CI/OIDC pathways. For Ori,
+   Tier C/D skill review gates and runtime sandboxing remain mandatory
+   regardless of provenance or author reputation.
+
+10. Run `scripts/check_workflows.py` before merging workflow or pre-commit
+    configuration changes. The script fails on `pull_request_target`, mutable
+    action refs, unauthorized `id-token: write`, remote script execution
+    patterns, and remote pre-commit hooks that are not pinned to full commit
+    SHAs.
+
+11. Ed25519 signing implementations that must interoperate with the runtime use
+    `cryptography`, not PyNaCl. `ori-skills-hub` must use `cryptography` for Hub
+    root signing because the runtime verifies community skill signatures with
+    `cryptography`.
 
 ## Where to find things
 

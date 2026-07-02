@@ -9,7 +9,7 @@ description: >
   battery drain, and sleep-blocking processes. Runs on any
   laptop or server using psutil. No hardware required.
 license: Apache-2.0
-signature: ed25519:PENDING
+signature: bundled
 
 sensors_required:
   - type: cpu_percent

@@ -1,0 +1,117 @@
+# ori.yaml.phone.victron.example
+# Phone-as-Gateway deployment profile for Victron VenusOS MQTT systems.
+#
+# This profile removes the USB/PZEM requirement when the customer already has a
+# Victron system exposing VenusOS MQTT on the local network. The Android phone
+# must be on the same network as the Victron broker and must be installed with
+# the phone-victron dependency set or wheelhouse target.
+
+device:
+  id: phone-victron-ikeja-01
+  name: Ikeja Office Phone Victron Gateway
+  location: Lagos, Nigeria
+  timezone: Africa/Lagos
+  country_code: NG
+  deployment_type: phone
+  site_type: office
+
+sensors:
+  - id: victron-pv-power
+    type: victron_pv_power
+    protocol: victron
+    broker_host: "192.168.1.50"
+    portal_id: "YOUR_PORTAL_ID"
+    port: 1883
+    poll_interval_ms: 5000
+    mqtt:
+      client_id: "ori-victron-phone-01"
+      keepalive: 90
+      tls:
+        enabled: false
+
+  - id: victron-grid-power
+    type: victron_grid_power
+    protocol: victron
+    broker_host: "192.168.1.50"
+    portal_id: "YOUR_PORTAL_ID"
+    port: 1883
+    poll_interval_ms: 5000
+    mqtt:
+      client_id: "ori-victron-phone-01"
+      keepalive: 90
+      tls:
+        enabled: false
+
+  - id: victron-battery-soc
+    type: victron_battery_soc
+    protocol: victron
+    broker_host: "192.168.1.50"
+    portal_id: "YOUR_PORTAL_ID"
+    port: 1883
+    poll_interval_ms: 5000
+    mqtt:
+      client_id: "ori-victron-phone-01"
+      keepalive: 90
+      tls:
+        enabled: false
+
+skills:
+  - name: solar-performance-monitor
+    version: "0.1.0"
+    config:
+      installed_pv_capacity_watts: 5000
+      battery_capacity_wh: 10000
+      country_code: NG
+      currency_code: NGN
+
+  - name: battery-lifecycle-observer
+    version: "0.1.0"
+    config:
+      battery_sensor_id: victron-battery-soc
+      grid_power_sensor_id: victron-grid-power
+
+reasoning:
+  default_tier: local
+  local_model: qwen2.5-0.5b-instruct-q4_k_m
+  model_path: /data/data/com.termux/files/home/models/
+  offline_fallback: rule
+
+gateway:
+  enabled: false
+  broker_url: ""
+
+telemetry_export:
+  enabled: false
+  endpoint: "https://api.ori.energy/runtime/telemetry"
+  api_key_env: ORI_ENERGY_DEVICE_API_KEY
+  flush_interval_s: 30
+  batch_size: 50
+  timeout_ms: 3000
+  max_queue_size: 1000
+
+health_socket:
+  enabled: true
+  path: /data/data/com.termux/files/home/.ori/health.sock
+  mode: 0o660
+
+actions:
+  primary_alert_channel: sms
+  operator_contact: "+234XXXXXXXXXX"
+  secondary_contact: ""
+  whatsapp:
+    enabled: false
+  sms:
+    enabled: false
+  relay:
+    enabled: false
+    gpio_pin: 26
+
+hal:
+  circuit_breaker:
+    failure_threshold: 5
+    recovery_timeout_s: 300
+    success_threshold: 2
+
+logging:
+  level: INFO
+  file: ori.log

@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  id-token: none
+
 jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -17,32 +21,69 @@ jobs:
         python-version: ["3.11", "3.12"]
 
     steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
+        with:
+          egress-policy: audit
+
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Upgrade pip
-        run: python -m pip install --upgrade pip
+      - name: Show pip version
+        run: python -m pip --version
 
-      - name: Install dependencies
-        run: pip install -e ".[dev]"
+      - name: Guard supply-chain invariants
+        run: python scripts/check_workflows.py
 
-      - name: Lint — ruff
-        run: ruff check ori/ tests/ skills/
-
-      - name: Check license headers
+      - name: Install hash-locked dependencies
         run: |
-          missing=$(grep -rL "SPDX-License-Identifier: Apache-2.0" ori/ tests/ --include="*.py" || true)
-          if [ -n "$missing" ]; then
-            echo "❌ Missing Apache-2.0 license header in:"
-            echo "$missing"
-            exit 1
+          python -m pip install --require-hashes -r requirements-dev.txt
+          python -m pip install --no-deps -e .
+
+      - name: Type check runtime contract boundaries
+        run: bash scripts/typecheck-boundaries.sh
+
+      - name: Pre-commit (lint + format + hygiene)
+        env:
+          SKIP: no-commit-to-branch
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FROM_REF="${{ github.event.pull_request.base.sha }}"
+            TO_REF="${{ github.event.pull_request.head.sha }}"
+          else
+            FROM_REF="${{ github.event.before }}"
+            TO_REF="${{ github.sha }}"
           fi
-          echo "✅ All Python files have license headers"
+          # Some event refs may not exist in shallow/partial clones.
+          # If either commit is unavailable, fall back to all-files mode.
+          if ! git cat-file -e "${FROM_REF}^{commit}" 2>/dev/null || ! git cat-file -e "${TO_REF}^{commit}" 2>/dev/null; then
+            echo "Pre-commit refs unavailable in checkout (from=$FROM_REF to=$TO_REF); running all-files."
+            pre-commit run --show-diff-on-failure --all-files
+            exit $?
+          fi
+          if echo "$FROM_REF" | grep -Eq '^0+$'; then
+            echo "Running pre-commit on all files (no valid base ref)"
+            pre-commit run --show-diff-on-failure --all-files
+          else
+            echo "Running pre-commit from $FROM_REF to $TO_REF"
+            pre-commit run --show-diff-on-failure --from-ref "$FROM_REF" --to-ref "$TO_REF"
+          fi
+
+      - name: Guard Capability Matrix Updated
+        if: github.event_name == 'pull_request'
+        env:
+          GUARD_CAP_MATRIX_BYPASS_TEXT: ${{ github.event.pull_request.body || '' }}
+        run: |
+          FROM_REF="${{ github.event.pull_request.base.sha }}"
+          TO_REF="${{ github.event.pull_request.head.sha }}"
+          bash scripts/guard-capability-matrix.sh "$FROM_REF" "$TO_REF"
 
       - name: Guard Tier Escalation Invariants
         run: |
@@ -64,6 +105,28 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml \
             -m "not hardware"
+
+      - name: Audit pinned Python dependencies
+        run: |
+          python -m pip_audit -r requirements.txt
+          python -m pip_audit -r requirements-dev.txt
+
+      - name: Generate runtime SBOM
+        if: matrix.python-version == '3.12'
+        run: |
+          python -m cyclonedx_py requirements requirements.txt \
+            --pyproject pyproject.toml \
+            --output-reproducible \
+            --of JSON \
+            -o sbom-runtime.json
+
+      - name: Upload runtime SBOM
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-runtime
+          path: sbom-runtime.json
+          if-no-files-found: error
 
       - name: Validate bundled skills load cleanly
         run: |
@@ -92,8 +155,12 @@ jobs:
           print('All bundled skills loaded cleanly.')
           "
 
+      - name: Release wheel smoke test
+        if: matrix.python-version == '3.12'
+        run: bash scripts/smoke-release-wheel.sh
+
       - name: Upload coverage report
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         if: matrix.python-version == '3.11'
         with:
           files: ./coverage.xml

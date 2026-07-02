@@ -8,9 +8,12 @@ are mocked.  No real hardware, credentials, or network calls are made.
 """
 
 import asyncio
+import base64
+import json
 import logging
 import os
 import textwrap
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -18,17 +21,437 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ori.config import GatewayConfig, TelemetryExportConfig
+from ori.network.deduplicator import EventDeduplicator
+from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
+from ori.policy.device_policy import DevicePolicy
+from ori.policy.remote_fetch import FetchedRemotePolicy, RemotePolicyFetchError
+from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import SkillContext
 from ori.runtime import (
     OriRuntime,
+    _build_gateway_message_auth,
+    _build_gateway_message_encryptor,
+    _build_gateway_reasoner,
     _build_local_llm,
+    _build_remote_command_verifier,
+    _build_runtime_node_heartbeat_publisher,
+    _coap_command_from_context,
     _maybe_autoload_dotenv,
+    _message_from_context,
     _process_target_from_context,
+    _resolve_dispatcher_approval_timeout,
     _resolve_local_model_file,
+    _resolve_setup_notification_channels,
+    _setup_success_message,
+    _warn_sms_webhook_security_posture,
 )
+from ori.security.gateway_messages import (
+    GatewayMessageAuthConfig,
+    GatewayMessageAuthenticator,
+)
+from ori.security.remote_command_throttle import RemoteCommandThrottleDecision
+from ori.skills.signing import canonical_signed_payload
+from ori.state.store import StateStore
+
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+except Exception:  # pragma: no cover - environment without cryptography support
+    Ed25519PrivateKey = None
+    Encoding = None
+    PublicFormat = None
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
+
+def test_build_gateway_message_auth_uses_configured_env_secret(monkeypatch):
+    monkeypatch.setenv("GATEWAY_SHARED_SECRET", "site-local-secret")
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+                "max_clock_skew_ms": 300_000,
+                "replay_ttl_ms": 300_000,
+            },
+        )
+    )
+
+    auth = _build_gateway_message_auth(config)
+
+    assert auth is not None
+
+
+def test_remote_command_secret_env_names_are_not_logged(monkeypatch, caplog):
+    monkeypatch.delenv("ORI_REMOTE_COMMAND_HMAC_SECRET", raising=False)
+    config = SimpleNamespace(
+        device=SimpleNamespace(id="device-01"),
+        security={
+            "remote_commands": {
+                "enabled": True,
+                "hmac_secret_env": "ORI_REMOTE_COMMAND_HMAC_SECRET",
+                "previous_hmac_secret_env": "ORI_REMOTE_COMMAND_PREVIOUS_SECRET",
+            }
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        verifier = _build_remote_command_verifier(config)
+
+    assert verifier is not None
+    assert "ORI_REMOTE_COMMAND_HMAC_SECRET" not in caplog.text
+    assert "ORI_REMOTE_COMMAND_PREVIOUS_SECRET" not in caplog.text
+    assert "configured HMAC secret environment variable is not set" in caplog.text
+
+
+def test_resolve_setup_notification_channels_deduplicates_primary():
+    assert _resolve_setup_notification_channels(
+        ["primary", "sms", "whatsapp", "primary"],
+        "sms",
+    ) == ["sms", "whatsapp"]
+
+
+def test_setup_success_message_is_bounded_and_operational():
+    config = SimpleNamespace(
+        device=SimpleNamespace(
+            id="phone-01",
+            location="Temidayo Site",
+            deployment_type="phone",
+        )
+    )
+
+    message = _setup_success_message(
+        config=config,
+        connected_sensor_count=1,
+        loaded_skill_count=3,
+    )
+
+    assert len(message) <= 320
+    assert "Ori is now watching and protecting your site" in message
+    assert "phone-01" in message
+    assert "Sensors connected: 1" in message
+    assert "skills loaded: 3" in message
+    assert "detects risk" in message
+
+
+@pytest.mark.asyncio
+async def test_setup_success_notification_sends_enabled_channels():
+    class FakeAlertSender:
+        def __init__(self):
+            self.calls = []
+
+        async def send(self, *, message, to_number, preferred_channel=None):
+            raise AssertionError("setup notifications must use exact-channel send")
+
+        async def send_exact(self, *, message, to_number, channel):
+            self.calls.append(
+                {
+                    "message": message,
+                    "to_number": to_number,
+                    "channel": channel,
+                }
+            )
+            return True
+
+    runtime = OriRuntime()
+    runtime._operator_contact = "+2348000000000"
+    runtime._connected_sensor_ids = {"phone-main-power"}
+    runtime._loaded_skills = [SimpleNamespace(name="energy-anomaly-detector")]
+    runtime._last_alert_timestamps_by_channel = {}
+    runtime._last_alert_timestamps_by_trigger = {}
+    runtime._runtime_started_at_ms = 1_700_000_000_000
+    sender = FakeAlertSender()
+    config = SimpleNamespace(
+        device=SimpleNamespace(
+            id="phone-01",
+            location="Temidayo Site",
+            deployment_type="phone",
+        ),
+        actions=SimpleNamespace(
+            setup_notifications={"enabled": True, "channels": ["sms", "whatsapp"]},
+            primary_alert_channel="sms",
+            sms={"enabled": True},
+            whatsapp={"enabled": True},
+        ),
+    )
+
+    await runtime._send_setup_success_notifications(config, sender)
+
+    assert [call["channel"] for call in sender.calls] == ["sms", "whatsapp"]
+    assert all(call["to_number"] == "+2348000000000" for call in sender.calls)
+    assert all(
+        "Ori is now watching and protecting your site" in call["message"]
+        for call in sender.calls
+    )
+    assert runtime._last_alert_timestamps_by_trigger["runtime_setup_complete"] > 0
+
+
+@pytest.mark.asyncio
+async def test_start_telemetry_export_subscribes_wildcard_handler(monkeypatch):
+    served = asyncio.Event()
+
+    class FakeExporter:
+        def __init__(self, *, device_id, config):
+            self.device_id = device_id
+            self.config = config
+
+        async def handle_event(self, event):
+            return None
+
+        async def serve_until(self, shutdown_event):
+            served.set()
+            await shutdown_event.wait()
+
+    monkeypatch.setattr("ori.runtime.HttpTelemetryExporter", FakeExporter)
+    runtime = OriRuntime()
+    event_bus = EventBus()
+    config = SimpleNamespace(
+        device=SimpleNamespace(id="phone-01"),
+        telemetry_export=TelemetryExportConfig(
+            enabled=True,
+            endpoint="https://api.example.test/runtime/telemetry",
+            api_key_env="ORI_ENERGY_DEVICE_API_KEY",
+        ),
+    )
+
+    task = runtime._start_telemetry_export_if_enabled(config, event_bus)
+
+    try:
+        assert task is not None
+        assert event_bus.subscriber_count("*") == 1
+    finally:
+        runtime._shutdown_event.set()
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+def _sms_webhook_posture_config(
+    *,
+    host: str,
+    signature_mode: str = "token_only",
+    allowed_source_cidrs: list[str] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        actions=SimpleNamespace(
+            sms={
+                "incoming_webhook": {
+                    "enabled": True,
+                    "host": host,
+                    "allowed_source_cidrs": allowed_source_cidrs or [],
+                    "signature": {"mode": signature_mode},
+                }
+            }
+        )
+    )
+
+
+def test_sms_webhook_security_posture_warns_for_public_token_only(caplog):
+    config = _sms_webhook_posture_config(host="0.0.0.0")
+
+    with caplog.at_level(logging.WARNING):
+        _warn_sms_webhook_security_posture(config)
+
+    assert "signature.mode=token_only" in caplog.text
+    assert "allowed_source_cidrs is empty" in caplog.text
+
+
+def test_sms_webhook_security_posture_accepts_loopback_token_only(caplog):
+    config = _sms_webhook_posture_config(host="127.0.0.1")
+
+    with caplog.at_level(logging.WARNING):
+        _warn_sms_webhook_security_posture(config)
+
+    assert "SMS_WEBHOOK" not in caplog.text
+
+
+def test_sms_webhook_security_posture_accepts_public_signed_allowlisted(caplog):
+    config = _sms_webhook_posture_config(
+        host="192.0.2.10",
+        signature_mode="token_and_hmac",
+        allowed_source_cidrs=["203.0.113.0/24"],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        _warn_sms_webhook_security_posture(config)
+
+    assert "SMS_WEBHOOK" not in caplog.text
+
+
+def test_build_gateway_message_auth_accepts_previous_env_secret(monkeypatch):
+    monkeypatch.setenv("GATEWAY_SHARED_SECRET", "current-secret")
+    monkeypatch.setenv("GATEWAY_PREVIOUS_SHARED_SECRET", "previous-secret")
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+                "previous_shared_secret_env": "GATEWAY_PREVIOUS_SHARED_SECRET",
+                "max_clock_skew_ms": 300_000,
+                "replay_ttl_ms": 300_000,
+            },
+        )
+    )
+    previous_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="previous-secret")
+    )
+    payload = {
+        "request_id": "req-1",
+        "device_id": "dev-01",
+        "export_type": "health",
+    }
+    signed = previous_auth.sign(
+        payload,
+        message_type="export_response",
+        signed_at_ms=1_000,
+    )
+
+    auth = _build_gateway_message_auth(config)
+
+    assert auth is not None
+    assert (
+        auth.verify(
+            signed,
+            message_type="export_response",
+            expected_device_id="dev-01",
+            expected_request_id="req-1",
+            now_ms_value=1_000,
+        )
+        == payload
+    )
+
+
+def test_build_gateway_message_auth_rejects_missing_env_secret(monkeypatch):
+    monkeypatch.delenv("GATEWAY_SHARED_SECRET", raising=False)
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+                "max_clock_skew_ms": 300_000,
+                "replay_ttl_ms": 300_000,
+            },
+        )
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        _build_gateway_message_auth(config)
+    assert "GATEWAY_SHARED_SECRET" not in str(excinfo.value)
+    assert "configured shared-secret environment variable is empty" in str(
+        excinfo.value
+    )
+
+
+def test_build_gateway_message_auth_redacts_previous_env_secret(monkeypatch, caplog):
+    monkeypatch.setenv("GATEWAY_SHARED_SECRET", "current-secret")
+    monkeypatch.delenv("GATEWAY_PREVIOUS_SHARED_SECRET", raising=False)
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+                "previous_shared_secret_env": "GATEWAY_PREVIOUS_SHARED_SECRET",
+                "max_clock_skew_ms": 300_000,
+                "replay_ttl_ms": 300_000,
+            },
+        )
+    )
+
+    with caplog.at_level(logging.WARNING):
+        auth = _build_gateway_message_auth(config)
+
+    assert auth is not None
+    assert "GATEWAY_PREVIOUS_SHARED_SECRET" not in caplog.text
+    assert "previous shared-secret environment variable is configured but empty" in (
+        caplog.text
+    )
+
+
+def test_build_remote_command_verifier_passes_previous_env_secret(monkeypatch):
+    monkeypatch.setenv("ORI_REMOTE_COMMAND_HMAC_SECRET", "current-secret")
+    monkeypatch.setenv("ORI_REMOTE_COMMAND_PREVIOUS_HMAC_SECRET", "previous-secret")
+    config = SimpleNamespace(
+        device=SimpleNamespace(id="dev-01"),
+        security={
+            "remote_commands": {
+                "enabled": True,
+                "hmac_secret_env": "ORI_REMOTE_COMMAND_HMAC_SECRET",
+                "previous_hmac_secret_env": "ORI_REMOTE_COMMAND_PREVIOUS_HMAC_SECRET",
+                "max_skew_seconds": 300,
+                "allowed_senders": {"sms": ["+2348012345678"]},
+                "allow_unlisted_senders": False,
+            }
+        },
+    )
+
+    verifier = _build_remote_command_verifier(config)
+
+    assert verifier is not None
+
+
+def test_build_gateway_message_encryptor_uses_gateway_secret(monkeypatch):
+    monkeypatch.setenv("GATEWAY_SHARED_SECRET", "site-local-secret")
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+            },
+            encryption={"enabled": True},
+        )
+    )
+
+    encryptor = _build_gateway_message_encryptor(config)
+
+    assert encryptor is not None
+
+
+def test_build_gateway_message_encryptor_rejects_missing_env_secret(monkeypatch):
+    monkeypatch.delenv("GATEWAY_SHARED_SECRET", raising=False)
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={
+                "enabled": True,
+                "shared_secret_env": "GATEWAY_SHARED_SECRET",
+            },
+            encryption={"enabled": True},
+        )
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        _build_gateway_message_encryptor(config)
+    assert "GATEWAY_SHARED_SECRET" not in str(excinfo.value)
+    assert "configured shared-secret environment variable is empty" in str(
+        excinfo.value
+    )
+
+
+def test_build_gateway_message_encryptor_requires_auth_enabled():
+    config = SimpleNamespace(
+        gateway=GatewayConfig(
+            enabled=True,
+            broker_url="mqtt://broker.local",
+            auth={"enabled": False},
+            encryption={"enabled": True},
+        )
+    )
+
+    with pytest.raises(ValueError, match="gateway auth"):
+        _build_gateway_message_encryptor(config)
 
 
 @pytest.fixture
@@ -82,7 +505,6 @@ def minimal_config(tmp_path: Path) -> Path:
               default_tier: local
               local_model: ""
               model_path: ""
-              offline_fallback: rule
 
             gateway:
               enabled: false
@@ -158,7 +580,9 @@ class TestLocalSLMWiring:
         llm = _build_local_llm(reasoning_cfg, str(cfg_path))
         assert llm is None
 
-    def test_build_local_llm_constructs_with_resolved_model(self, tmp_path, monkeypatch):
+    def test_build_local_llm_constructs_with_resolved_model(
+        self, tmp_path, monkeypatch
+    ):
         model_dir = tmp_path / "models"
         model_dir.mkdir()
         model_file = model_dir / "qwen2.5-0.5b-instruct-q4_k_m.gguf"
@@ -201,8 +625,11 @@ class TestLocalSLMWiring:
 
         monkeypatch.setattr("ori.runtime._build_local_llm", lambda *_: sentinel)
 
-        def _elevator_factory(local_llm=None, config=None):
+        def _elevator_factory(
+            local_llm=None, gateway_reasoner=None, config=None, **_kw
+        ):
             captured["local_llm"] = local_llm
+            captured["gateway_reasoner"] = gateway_reasoner
             return _RealElevator(local_llm=local_llm, config=config)
 
         monkeypatch.setattr("ori.runtime.IntelligenceElevator", _elevator_factory)
@@ -215,6 +642,131 @@ class TestLocalSLMWiring:
 
         await asyncio.gather(runtime.start(), _stop())
         assert captured["local_llm"] is sentinel
+        assert captured["gateway_reasoner"] is None
+
+    def test_build_gateway_reasoner_returns_none_when_gateway_disabled(self):
+        cfg = SimpleNamespace(
+            gateway=SimpleNamespace(enabled=False, broker_url="", reasoning={}),
+            device=SimpleNamespace(id="test-device-01"),
+        )
+
+        assert _build_gateway_reasoner(cfg) is None
+
+    def test_build_gateway_reasoner_constructs_when_enabled(self, monkeypatch):
+        captured = {}
+
+        class _FakeGatewayReasoner:
+            def __init__(
+                self,
+                *,
+                broker_url,
+                device_id,
+                timeout_ms,
+                tls_config=None,
+                message_auth=None,
+            ):
+                captured["broker_url"] = broker_url
+                captured["device_id"] = device_id
+                captured["timeout_ms"] = timeout_ms
+                captured["tls_config"] = tls_config
+                captured["message_auth"] = message_auth
+
+        monkeypatch.setattr("ori.runtime.MqttGatewayReasoner", _FakeGatewayReasoner)
+        cfg = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=True,
+                broker_url="mqtt://broker.local:1884",
+                reasoning={"enabled": True, "timeout_ms": 2500},
+                tls={},
+            ),
+            device=SimpleNamespace(id="test-device-01"),
+        )
+
+        reasoner = _build_gateway_reasoner(cfg)
+
+        assert isinstance(reasoner, _FakeGatewayReasoner)
+        assert captured == {
+            "broker_url": "mqtt://broker.local:1884",
+            "device_id": "test-device-01",
+            "timeout_ms": 2500,
+            "tls_config": {},
+            "message_auth": None,
+        }
+
+    def test_build_runtime_node_heartbeat_returns_none_when_gateway_disabled(self):
+        cfg = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=False,
+                broker_url="",
+                node_heartbeat={"enabled": True, "interval_seconds": 30},
+            ),
+            device=SimpleNamespace(id="test-device-01"),
+        )
+
+        assert _build_runtime_node_heartbeat_publisher(cfg, lambda: {}) is None
+
+    def test_build_runtime_node_heartbeat_returns_none_when_disabled(self):
+        cfg = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=True,
+                broker_url="mqtt://broker.local",
+                node_heartbeat={"enabled": False, "interval_seconds": 30},
+            ),
+            device=SimpleNamespace(id="test-device-01"),
+        )
+
+        assert _build_runtime_node_heartbeat_publisher(cfg, lambda: {}) is None
+
+    def test_build_runtime_node_heartbeat_constructs_when_enabled(self, monkeypatch):
+        captured = {}
+
+        class _FakePublisher:
+            def __init__(
+                self,
+                *,
+                broker_url,
+                device_id,
+                health_snapshot_provider,
+                interval_seconds,
+                tls_config=None,
+                authenticator=None,
+            ):
+                captured["broker_url"] = broker_url
+                captured["device_id"] = device_id
+                captured["health_snapshot_provider"] = health_snapshot_provider
+                captured["interval_seconds"] = interval_seconds
+                captured["tls_config"] = tls_config
+                captured["authenticator"] = authenticator
+
+        monkeypatch.setattr(
+            "ori.runtime.MqttRuntimeNodeHeartbeatPublisher", _FakePublisher
+        )
+
+        def provider():
+            return {"status": "healthy"}
+
+        cfg = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=True,
+                broker_url="mqtt://broker.local:1884",
+                node_heartbeat={"enabled": True, "interval_seconds": 15},
+                auth={"enabled": False},
+                tls={},
+            ),
+            device=SimpleNamespace(id="test-device-01"),
+        )
+
+        publisher = _build_runtime_node_heartbeat_publisher(cfg, provider)
+
+        assert isinstance(publisher, _FakePublisher)
+        assert captured == {
+            "broker_url": "mqtt://broker.local:1884",
+            "device_id": "test-device-01",
+            "health_snapshot_provider": provider,
+            "interval_seconds": 15.0,
+            "tls_config": {},
+            "authenticator": None,
+        }
 
 
 class TestDotenvAutoload:
@@ -286,7 +838,6 @@ class TestAdapterProtocol:
                   default_tier: local
                   local_model: ""
                   model_path: ""
-                  offline_fallback: rule
                 gateway:
                   enabled: false
                   broker_url: ""
@@ -338,6 +889,23 @@ class TestLifecycle:
             await runtime.stop()  # second call — must be a no-op
 
         await asyncio.gather(runtime.start(), _double_stop())
+
+    def test_resolve_dispatcher_approval_timeout_uses_max_declared(self):
+        skills_cfg = [
+            SimpleNamespace(config={"approval_timeout_seconds": 90}),
+            SimpleNamespace(config={"approval_timeout_seconds": 600}),
+            SimpleNamespace(config={}),
+        ]
+        resolved = _resolve_dispatcher_approval_timeout(skills_cfg, 300)
+        assert resolved == 600
+
+    def test_resolve_dispatcher_approval_timeout_ignores_invalid_values(self):
+        skills_cfg = [
+            SimpleNamespace(config={"approval_timeout_seconds": "invalid"}),
+            SimpleNamespace(config={"approval_timeout_seconds": -1}),
+        ]
+        resolved = _resolve_dispatcher_approval_timeout(skills_cfg, 300)
+        assert resolved == 300
 
     async def test_start_does_not_duplicate_rotating_file_handler(
         self, minimal_config, monkeypatch
@@ -411,7 +979,6 @@ class TestLifecycle:
                   default_tier: local
                   local_model: ""
                   model_path: ""
-                  offline_fallback: rule
                 gateway:
                   enabled: false
                   broker_url: ""
@@ -428,7 +995,9 @@ class TestLifecycle:
             encoding="utf-8",
         )
         runtime = OriRuntime(config_path=str(cfg))
-        mocked_connect = AsyncMock(side_effect=AssertionError("relay should not connect"))
+        mocked_connect = AsyncMock(
+            side_effect=AssertionError("relay should not connect")
+        )
         monkeypatch.setattr("ori.actions.relay.RelayAction.connect", mocked_connect)
 
         async def _stop():
@@ -440,7 +1009,7 @@ class TestLifecycle:
 
         assert mocked_connect.await_count == 0
         assert any(
-            "deployment_type=phone with relay enabled" in r.message
+            "deployment_type=phone with relay configured" in r.message
             for r in caplog.records
         )
 
@@ -496,7 +1065,13 @@ class TestSkillReload:
 
         start_task = asyncio.create_task(runtime.start())
         try:
-            await asyncio.sleep(0.2)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if runtime._event_bus is not None and (
+                    runtime._event_bus.subscriber_count("cpu_percent") >= 1
+                ):
+                    break
+                await asyncio.sleep(0.05)
             assert runtime._event_bus is not None
             assert runtime._event_bus.subscriber_count("cpu_percent") == 1
 
@@ -541,7 +1116,13 @@ class TestSkillReload:
 
         start_task = asyncio.create_task(runtime.start())
         try:
-            await asyncio.sleep(0.2)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if runtime._event_bus is not None and (
+                    runtime._event_bus.subscriber_count("cpu_percent") >= 1
+                ):
+                    break
+                await asyncio.sleep(0.05)
             assert runtime._event_bus is not None
             before = runtime._event_bus.subscriber_count("cpu_percent")
             assert before == 1
@@ -600,12 +1181,8 @@ class TestWatchdog:
         with caplog.at_level(logging.WARNING):
             await asyncio.gather(runtime.start(), _stop())
 
-        watchdog_warnings = [
-            r.message
-            for r in caplog.records
-        ]
+        watchdog_warnings = [r.message for r in caplog.records]
         assert watchdog_warnings, "Expected watchdog 'not found' warning in logs"
-
 
     async def test_watchdog_writes_magic_v_on_shutdown(
         self, minimal_config, monkeypatch, caplog
@@ -650,6 +1227,21 @@ class TestWatchdog:
 
 
 class TestSensorPolling:
+    async def test_poll_sensor_returns_when_state_store_missing(self, caplog):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = None
+        runtime._shutdown_event = asyncio.Event()
+
+        class _NeverCalledAdapter:
+            async def read(self, sensor_id: str) -> SensorReading:
+                raise AssertionError("read() should not be called")
+
+        bus = AsyncMock()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        with caplog.at_level(logging.ERROR):
+            await runtime._poll_sensor(_NeverCalledAdapter(), sensor_cfg, bus, "dev-01")
+        assert "state_store unavailable for sensor poll task" in caplog.text
+
     async def test_sensor_read_error_does_not_crash_runtime(
         self, minimal_config, monkeypatch, caplog
     ):
@@ -670,7 +1262,11 @@ class TestSensorPolling:
         runtime = OriRuntime(config_path=str(minimal_config))
 
         async def _stop():
-            await asyncio.sleep(0.35)  # allow a few poll cycles
+            # Avoid startup timing races: wait until polling has actually
+            # happened (or timeout), then stop.
+            deadline = time.monotonic() + 2.0
+            while read_count < 2 and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
             await runtime.stop()
 
         with caplog.at_level(logging.WARNING):
@@ -679,6 +1275,416 @@ class TestSensorPolling:
         assert read_count >= 2, "Expected at least 2 poll attempts"
         warning_msgs = [r.message for r in caplog.records if "read failed" in r.message]
         assert warning_msgs, "Expected 'read failed' warning log"
+
+    async def test_poll_sensor_sets_non_empty_fingerprint(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = AsyncMock()
+        runtime._shutdown_event = asyncio.Event()
+
+        reading = SensorReading(
+            sensor_id="cpu-sensor",
+            sensor_type="cpu_percent",
+            value=42.4,
+            unit="percent",
+            timestamp=1_700_000_000_000,
+            quality=1.0,
+            metadata={"source": "psutil"},
+        )
+
+        class _OneShotAdapter:
+            async def read(self, sensor_id: str) -> SensorReading:
+                runtime._shutdown_event.set()
+                return reading
+
+        bus = AsyncMock()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        await runtime._poll_sensor(_OneShotAdapter(), sensor_cfg, bus, "dev-01")
+
+        event = bus.publish.call_args.args[0]
+        assert isinstance(event.fingerprint, str)
+        assert event.fingerprint != ""
+
+    async def test_poll_sensor_sets_site_context_from_device_site_type(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = AsyncMock()
+        runtime._shutdown_event = asyncio.Event()
+
+        reading = SensorReading(
+            sensor_id="cpu-sensor",
+            sensor_type="cpu_percent",
+            value=42.4,
+            unit="percent",
+            timestamp=1_700_000_000_000,
+            quality=1.0,
+            metadata={"source": "psutil"},
+        )
+
+        class _OneShotAdapter:
+            async def read(self, sensor_id: str) -> SensorReading:
+                runtime._shutdown_event.set()
+                return reading
+
+        bus = AsyncMock()
+        sensor_cfg = SimpleNamespace(
+            id="cpu-sensor",
+            poll_interval_ms=1,
+            calibration={"min_value": 0.0, "max_value": 100.0},
+        )
+        await runtime._poll_sensor(
+            _OneShotAdapter(),
+            sensor_cfg,
+            bus,
+            "dev-01",
+            device_timezone="Africa/Lagos",
+            device_country_code="NG",
+            device_location="Lagos, Nigeria",
+            device_site_type="pharmacy",
+        )
+
+        event = bus.publish.call_args.args[0]
+        assert event.context["device_timezone"] == "Africa/Lagos"
+        assert event.context["device_country_code"] == "NG"
+        assert event.context["location"] == "Lagos, Nigeria"
+        assert event.context["site_type"] == "pharmacy"
+        assert event.context["sensor_calibration"] == {
+            "min_value": 0.0,
+            "max_value": 100.0,
+        }
+
+    async def test_poll_sensor_fingerprint_stable_across_timestamp_changes(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = AsyncMock()
+        bus = AsyncMock()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+
+        async def _run_once(reading: SensorReading) -> OriEvent:
+            runtime._shutdown_event = asyncio.Event()
+
+            class _OneShotAdapter:
+                async def read(self, sensor_id: str) -> SensorReading:
+                    runtime._shutdown_event.set()
+                    return reading
+
+            await runtime._poll_sensor(_OneShotAdapter(), sensor_cfg, bus, "dev-01")
+            return bus.publish.call_args.args[0]
+
+        first = await _run_once(
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=42.44,  # rounds to 42.4
+                unit="percent",
+                timestamp=1_700_000_000_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            )
+        )
+        second = await _run_once(
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=42.44,  # same rounded value, different timestamp
+                unit="percent",
+                timestamp=1_700_000_060_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            )
+        )
+
+        assert first.fingerprint == second.fingerprint
+
+    async def test_sensor_staleness_loop_emits_transition_warning_once(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._shutdown_event = asyncio.Event()
+        runtime._sensor_poll_interval_ms = {"sensor-x": 100}
+        runtime._sensor_last_seen_ms = {"sensor-x": int(time.time() * 1000) - 1000}
+        runtime._stale_sensor_active = set()
+        runtime._primary_alert_channel = "sms"
+        runtime._operator_contact = "+2340000000000"
+        runtime._send_or_queue_alert = AsyncMock(return_value=True)
+        alert_sender = AsyncMock()
+
+        async def _stop():
+            await asyncio.sleep(0.05)
+            await runtime.stop()
+
+        await asyncio.gather(
+            runtime._sensor_staleness_loop(
+                alert_sender=alert_sender,
+                check_interval_s=0.01,
+            ),
+            _stop(),
+        )
+
+        runtime._send_or_queue_alert.assert_awaited_once()
+        kwargs = runtime._send_or_queue_alert.await_args.kwargs
+        assert kwargs["trigger_name"] == "sensor_stale_warning"
+        assert kwargs["channel"] == "sms"
+        assert "sensor-x" in kwargs["message"]
+
+    async def test_deduplicator_suppresses_identical_readings_within_5_seconds(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._shutdown_event = asyncio.Event()
+
+        class _Store:
+            def __init__(self) -> None:
+                self.events: list[OriEvent] = []
+
+            async def append_history(self, event: OriEvent) -> None:
+                self.events.append(event)
+
+        class _Bus:
+            def __init__(self) -> None:
+                self.events: list[OriEvent] = []
+
+            async def publish(self, event: OriEvent) -> None:
+                self.events.append(event)
+
+        class _SequenceAdapter:
+            def __init__(self, readings: list[SensorReading]) -> None:
+                self._readings = readings
+                self._idx = 0
+
+            async def read(self, sensor_id: str) -> SensorReading:
+                reading = self._readings[self._idx]
+                self._idx += 1
+                if self._idx >= len(self._readings):
+                    runtime._shutdown_event.set()
+                return reading
+
+        runtime._state_store = _Store()
+        bus = _Bus()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        readings = [
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=41.2,
+                unit="percent",
+                timestamp=1_700_000_000_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=41.2,
+                unit="percent",
+                timestamp=1_700_000_001_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+        ]
+
+        with patch("ori.network.deduplicator.now_ms", side_effect=[1_000, 2_000]):
+            await runtime._poll_sensor(
+                _SequenceAdapter(readings),
+                sensor_cfg,
+                bus,
+                "dev-01",
+                EventDeduplicator(),
+            )
+
+        assert len(bus.events) == 1
+        assert len(runtime._state_store.events) == 2
+
+    async def test_deduplicator_allows_identical_readings_after_6_seconds(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._shutdown_event = asyncio.Event()
+
+        class _Store:
+            def __init__(self) -> None:
+                self.events: list[OriEvent] = []
+
+            async def append_history(self, event: OriEvent) -> None:
+                self.events.append(event)
+
+        class _Bus:
+            def __init__(self) -> None:
+                self.events: list[OriEvent] = []
+
+            async def publish(self, event: OriEvent) -> None:
+                self.events.append(event)
+
+        class _SequenceAdapter:
+            def __init__(self, readings: list[SensorReading]) -> None:
+                self._readings = readings
+                self._idx = 0
+
+            async def read(self, sensor_id: str) -> SensorReading:
+                reading = self._readings[self._idx]
+                self._idx += 1
+                if self._idx >= len(self._readings):
+                    runtime._shutdown_event.set()
+                return reading
+
+        runtime._state_store = _Store()
+        bus = _Bus()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        readings = [
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=41.2,
+                unit="percent",
+                timestamp=1_700_000_000_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=41.2,
+                unit="percent",
+                timestamp=1_700_000_006_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+        ]
+
+        with patch("ori.network.deduplicator.now_ms", side_effect=[1_000, 7_001]):
+            await runtime._poll_sensor(
+                _SequenceAdapter(readings),
+                sensor_cfg,
+                bus,
+                "dev-01",
+                EventDeduplicator(),
+            )
+
+        assert len(bus.events) == 2
+        assert len(runtime._state_store.events) == 2
+
+    async def test_non_reading_events_bypass_deduplication(self):
+        bus = EventBus()
+        seen: list[OriEvent] = []
+
+        async def _handler(event: OriEvent) -> None:
+            seen.append(event)
+
+        bus.subscribe("system.alert", _handler)
+        deduplicator = EventDeduplicator()
+
+        first = OriEvent(
+            event_id="evt-1",
+            event_type="system.alert",
+            device_id="dev-01",
+            sensor_id="",
+            timestamp=1_700_000_000_000,
+            reading=None,
+        )
+        second = OriEvent(
+            event_id="evt-2",
+            event_type="system.alert",
+            device_id="dev-01",
+            sensor_id="",
+            timestamp=1_700_000_000_100,
+            reading=None,
+        )
+
+        for event in (first, second):
+            if event.reading is not None and deduplicator.process(event) is None:
+                continue
+            await bus.publish(event)
+
+        assert len(seen) == 2
+
+    async def test_deduplication_does_not_block_history_writes(self, tmp_path: Path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._shutdown_event = asyncio.Event()
+        runtime._state_store = StateStore(str(tmp_path / "ori.db"))
+        await runtime._state_store.open()
+
+        class _Bus:
+            def __init__(self) -> None:
+                self.events: list[OriEvent] = []
+
+            async def publish(self, event: OriEvent) -> None:
+                self.events.append(event)
+
+        class _SequenceAdapter:
+            def __init__(self, readings: list[SensorReading]) -> None:
+                self._readings = readings
+                self._idx = 0
+
+            async def read(self, sensor_id: str) -> SensorReading:
+                reading = self._readings[self._idx]
+                self._idx += 1
+                if self._idx >= len(self._readings):
+                    runtime._shutdown_event.set()
+                return reading
+
+        bus = _Bus()
+        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        readings = [
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=22.0,
+                unit="percent",
+                timestamp=1_700_000_000_000,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+            SensorReading(
+                sensor_id="cpu-sensor",
+                sensor_type="cpu_percent",
+                value=22.0,
+                unit="percent",
+                timestamp=1_700_000_000_100,
+                quality=1.0,
+                metadata={"source": "psutil"},
+            ),
+        ]
+
+        try:
+            with patch("ori.network.deduplicator.now_ms", side_effect=[1_000, 2_000]):
+                await runtime._poll_sensor(
+                    _SequenceAdapter(readings),
+                    sensor_cfg,
+                    bus,
+                    "dev-01",
+                    EventDeduplicator(),
+                )
+
+            history = await runtime._state_store.get_history("cpu-sensor", limit=10)
+            assert len(history) == 2
+            assert len(bus.events) == 1
+        finally:
+            await runtime._state_store.close()
+
+
+class TestCompactionLoop:
+    async def test_compaction_loop_runs_deduplicator_cleanup(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._shutdown_event = asyncio.Event()
+
+        cleanup_calls = {"count": 0}
+
+        class _Dedup:
+            def cleanup(self) -> None:
+                cleanup_calls["count"] += 1
+
+        async def _compact(*_args, **_kwargs) -> None:
+            runtime._shutdown_event.set()
+
+        runtime._state_store = AsyncMock()
+        runtime._state_store.compact_history.side_effect = _compact
+
+        async def _fake_wait_for(awaitable, timeout):  # noqa: ARG001
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            raise asyncio.TimeoutError
+
+        with patch(
+            "ori.runtime.asyncio.wait_for",
+            new=AsyncMock(side_effect=_fake_wait_for),
+        ):
+            await runtime._compaction_loop(_Dedup())
+
+        runtime._state_store.compact_history.assert_awaited_once_with(
+            max_backward_skew_ms=3600000
+        )
+        assert cleanup_calls["count"] == 1
 
 
 class TestProcessTargetResolution:
@@ -729,6 +1735,105 @@ class TestProcessTargetResolution:
             }
         )
         assert _process_target_from_context(ctx) == (2, "B")
+
+
+class TestCoapCommandResolution:
+    def test_prefers_event_context(self):
+        reading = SensorReading(
+            sensor_id="s-1",
+            sensor_type="temperature",
+            value=1.0,
+            unit="celsius",
+            timestamp=1_700_000_000_000,
+            quality=1.0,
+        )
+        event = OriEvent.from_reading(reading, "dev-01")
+        event.context = {
+            "coap_command": "open_bypass_valve",
+            "coap_payload": '{"state":"open"}',
+        }
+        ctx = SkillContext(
+            skill=SimpleNamespace(config={}),
+            event=event,
+            state_store=None,
+            trigger_name="trigger-a",
+        )
+        command, payload = _coap_command_from_context(ctx)
+        assert command == "open_bypass_valve"
+        assert payload == '{"state":"open"}'
+
+    def test_uses_skill_trigger_mapping(self):
+        reading = SensorReading(
+            sensor_id="s-1",
+            sensor_type="temperature",
+            value=1.0,
+            unit="celsius",
+            timestamp=1_700_000_000_000,
+            quality=1.0,
+        )
+        event = OriEvent.from_reading(reading, "dev-01")
+        ctx = SkillContext(
+            skill=SimpleNamespace(
+                config={
+                    "coap": {
+                        "trigger_commands": {
+                            "probable_c2_or_shell_foothold": "isolate_vlan",
+                        }
+                    }
+                }
+            ),
+            event=event,
+            state_store=None,
+            trigger_name="probable_c2_or_shell_foothold",
+        )
+        command, payload = _coap_command_from_context(ctx)
+        assert command == "isolate_vlan"
+        assert payload is None
+
+
+class TestMessageComposition:
+    def _ctx(self, *, context: dict | None = None):
+        reading = SensorReading(
+            sensor_id="sensor-1",
+            sensor_type="temperature",
+            value=27.5,
+            unit="celsius",
+            timestamp=1_700_000_000_000,
+            quality=1.0,
+        )
+        event = OriEvent.from_reading(reading, "dev-01")
+        event.context = context or {}
+        return SkillContext(skill=None, event=event, state_store=None)
+
+    def test_sms_uses_operator_message_and_caps_length(self):
+        ctx = self._ctx(context={"operator_message": "a" * 220})
+        msg = _message_from_context(ctx, "fallback", channel="sms")
+        assert len(msg) <= 160
+        assert msg.endswith("...")
+
+    def test_whatsapp_prefers_channel_specific_message(self):
+        ctx = self._ctx(
+            context={
+                "operator_message": "generic",
+                "channel_messages": {
+                    "whatsapp": "WhatsApp enriched message",
+                    "sms": "SMS compact message",
+                },
+            }
+        )
+        assert (
+            _message_from_context(ctx, "fallback", channel="whatsapp")
+            == "WhatsApp enriched message"
+        )
+        assert (
+            _message_from_context(ctx, "fallback", channel="sms")
+            == "SMS compact message"
+        )
+
+    def test_whatsapp_sensor_fallback_is_richer_layout(self):
+        ctx = self._ctx()
+        msg = _message_from_context(ctx, "fallback", channel="whatsapp")
+        assert "\nValue: " in msg
 
 
 class TestWebhookIngest:
@@ -799,7 +1904,6 @@ class TestWebhookServerStartup:
                   default_tier: local
                   local_model: ""
                   model_path: ""
-                  offline_fallback: rule
 
                 gateway:
                   enabled: false
@@ -814,6 +1918,111 @@ class TestWebhookServerStartup:
                     incoming_webhook:
                       enabled: true
                       host: "127.0.0.1"
+                      port: 0
+                      path: "/webhooks/sms/africastalking"
+                      allowed_source_cidrs:
+                        - "127.0.0.1/32"
+                      token: "test-token"
+                  relay:
+                    enabled: false
+
+                skills_dir: {str(tmp_path / "skills")}
+            """),
+            encoding="utf-8",
+        )
+
+        runtime = OriRuntime(config_path=str(cfg))
+
+        class _FakeServer:
+            def __init__(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+                self.serve_until = AsyncMock(side_effect=self._serve_until)
+
+            async def _serve_until(self, shutdown_event):
+                await shutdown_event.wait()
+
+        fake_instance = _FakeServer()
+
+        with patch("ori.runtime.SMSWebhookServer", return_value=fake_instance) as cls:
+
+            async def _stop():
+                await asyncio.sleep(0.1)
+                await runtime.stop()
+
+            await asyncio.gather(runtime.start(), _stop())
+
+        cls.assert_called_once()
+        assert cls.call_args.kwargs["allowed_source_cidrs"] == ["127.0.0.1/32"]
+        fake_instance.serve_until.assert_awaited_once()
+
+    async def test_runtime_webhook_defaults_host_to_localhost(
+        self, tmp_path, monkeypatch
+    ):
+        _patch_external(monkeypatch)
+
+        skill_dir = tmp_path / "skills" / "test-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "skill.yaml").write_text(
+            textwrap.dedent("""\
+                name: test-skill
+                version: 0.1.0
+                author: test
+                sensors_required:
+                  - type: cpu_percent
+                    protocol: psutil
+                triggers:
+                  - name: high_cpu
+                    condition: "value > 90"
+                    action_tier: A
+                    cooldown_seconds: 0
+                    escalate_to: local_slm
+                actions:
+                  available:
+                    - name: alert_whatsapp
+                      tier: A
+                  defaults:
+                    high_cpu: [alert_whatsapp]
+            """),
+            encoding="utf-8",
+        )
+
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text(
+            textwrap.dedent(f"""\
+                device:
+                  id: test-device-01
+                  name: Test Device
+                  location: Test Lab
+
+                sensors:
+                  - id: cpu-sensor
+                    type: cpu_percent
+                    protocol: psutil
+                    poll_interval_ms: 100
+
+                skills:
+                  - name: test-skill
+                    version: "0.1.0"
+                    config: {{}}
+
+                reasoning:
+                  default_tier: local
+                  local_model: ""
+                  model_path: ""
+
+                gateway:
+                  enabled: false
+                  broker_url: ""
+
+                actions:
+                  primary_alert_channel: sms
+                  whatsapp:
+                    enabled: false
+                  sms:
+                    enabled: false
+                    incoming_webhook:
+                      enabled: true
                       port: 0
                       path: "/webhooks/sms/africastalking"
                       token: "test-token"
@@ -839,6 +2048,7 @@ class TestWebhookServerStartup:
         fake_instance = _FakeServer()
 
         with patch("ori.runtime.SMSWebhookServer", return_value=fake_instance) as cls:
+
             async def _stop():
                 await asyncio.sleep(0.1)
                 await runtime.stop()
@@ -846,7 +2056,7 @@ class TestWebhookServerStartup:
             await asyncio.gather(runtime.start(), _stop())
 
         cls.assert_called_once()
-        fake_instance.serve_until.assert_awaited_once()
+        assert cls.call_args.kwargs["host"] == "127.0.0.1"
 
     async def test_runtime_skips_sms_webhook_without_token(self, tmp_path, monkeypatch):
         _patch_external(monkeypatch)
@@ -897,7 +2107,6 @@ class TestWebhookServerStartup:
                   default_tier: local
                   local_model: ""
                   model_path: ""
-                  offline_fallback: rule
                 gateway:
                   enabled: false
                   broker_url: ""
@@ -919,6 +2128,7 @@ class TestWebhookServerStartup:
 
         runtime = OriRuntime(config_path=str(cfg))
         with patch("ori.runtime.SMSWebhookServer") as cls:
+
             async def _stop():
                 await asyncio.sleep(0.1)
                 await runtime.stop()
@@ -926,3 +2136,828 @@ class TestWebhookServerStartup:
             await asyncio.gather(runtime.start(), _stop())
 
         cls.assert_not_called()
+
+
+class TestAlertOutbox:
+    async def test_send_or_queue_alert_queues_when_send_fails(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "outbox-queue.db"))
+        await runtime._state_store.open()
+
+        alert_sender = AsyncMock()
+        alert_sender.send = AsyncMock(return_value=False)
+
+        try:
+            handled = await runtime._send_or_queue_alert(
+                channel="sms",
+                message="alert message",
+                recipient="+2340000000000",
+                action_tier="A",
+                trigger_name="high_draw",
+                original_ts=1234567890,
+                alert_sender=alert_sender,
+            )
+            assert handled is True
+            queued = await runtime._state_store.get_retryable_alerts(limit=10)
+            assert len(queued) == 1
+            assert queued[0]["channel"] == "sms"
+            assert queued[0]["status"] == "pending"
+        finally:
+            await runtime._state_store.close()
+
+    async def test_send_or_queue_alert_respects_device_policy_monthly_cap(
+        self, tmp_path
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "alert-cap.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        dispatcher.update_policy(
+            DevicePolicy(
+                tier="restricted",
+                relay_b_enabled=False,
+                relay_c_enabled=False,
+                cloud_llm_enabled=False,
+                valid_until=int(time.time()) + 3600,
+                policy_version=3,
+                issued_at=int(time.time()),
+                signature="test",
+                alert_sms_monthly_cap=1,
+                alert_whatsapp_monthly_cap=1,
+            )
+        )
+        runtime._dispatcher = dispatcher
+        alert_sender = AsyncMock()
+        alert_sender.send = AsyncMock(return_value=True)
+
+        try:
+            first = await runtime._send_or_queue_alert(
+                channel="sms",
+                message="first alert",
+                recipient="+2340000000000",
+                action_tier="A",
+                trigger_name="high_draw",
+                original_ts=1234567890,
+                alert_sender=alert_sender,
+            )
+            second = await runtime._send_or_queue_alert(
+                channel="sms",
+                message="second alert",
+                recipient="+2340000000000",
+                action_tier="A",
+                trigger_name="high_draw",
+                original_ts=1234567891,
+                alert_sender=alert_sender,
+            )
+            assert first is True
+            assert second is False
+            alert_sender.send.assert_awaited_once()
+        finally:
+            await runtime._state_store.close()
+
+    async def test_send_or_queue_alert_never_caps_tier_d(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "alert-cap-tier-d.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        dispatcher.update_policy(
+            DevicePolicy(
+                tier="restricted",
+                relay_b_enabled=False,
+                relay_c_enabled=False,
+                cloud_llm_enabled=False,
+                valid_until=int(time.time()) + 3600,
+                policy_version=3,
+                issued_at=int(time.time()),
+                signature="test",
+                alert_sms_monthly_cap=0,
+                alert_whatsapp_monthly_cap=0,
+            )
+        )
+        runtime._dispatcher = dispatcher
+        alert_sender = AsyncMock()
+        alert_sender.send = AsyncMock(return_value=True)
+
+        try:
+            delivered = await runtime._send_or_queue_alert(
+                channel="sms",
+                message="tier d alert",
+                recipient="+2340000000000",
+                action_tier="D",
+                trigger_name="dangerous_overcurrent",
+                original_ts=1234567890,
+                alert_sender=alert_sender,
+            )
+            assert delivered is True
+            alert_sender.send.assert_awaited_once()
+        finally:
+            await runtime._state_store.close()
+
+    async def test_send_or_queue_alert_ignores_alert_count_persistence_failure(
+        self, tmp_path
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "alert-count-failure.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        dispatcher.update_policy(
+            DevicePolicy(
+                tier="restricted",
+                relay_b_enabled=False,
+                relay_c_enabled=False,
+                cloud_llm_enabled=False,
+                valid_until=int(time.time()) + 3600,
+                policy_version=3,
+                issued_at=int(time.time()),
+                signature="test",
+                alert_sms_monthly_cap=1,
+                alert_whatsapp_monthly_cap=1,
+            )
+        )
+        runtime._dispatcher = dispatcher
+        alert_sender = AsyncMock()
+        alert_sender.send = AsyncMock(return_value=True)
+        runtime._state_store.set_skill_state = AsyncMock(  # type: ignore[method-assign]
+            side_effect=RuntimeError("sqlite unavailable")
+        )
+
+        try:
+            delivered = await runtime._send_or_queue_alert(
+                channel="sms",
+                message="delivered alert",
+                recipient="+2340000000000",
+                action_tier="A",
+                trigger_name="high_draw",
+                original_ts=1234567890,
+                alert_sender=alert_sender,
+            )
+            assert delivered is True
+            alert_sender.send.assert_awaited_once()
+        finally:
+            await runtime._state_store.close()
+
+    async def test_remote_command_incident_emits_tier_a_alert(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "remote-lockout.db"))
+        await runtime._state_store.open()
+        runtime._primary_alert_channel = "sms"
+        runtime._operator_contact = "+2340000000000"
+        runtime._alert_sender = AsyncMock()
+        runtime._send_or_queue_alert = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        await runtime._state_store.log_remote_command_security_incident(
+            incident_id="incident-1",
+            channel="sms",
+            from_number="+2348012345678",
+            reason="remote_command_rejection_feedback_suppressed",
+            rejection_count=6,
+            threshold=5,
+            window_ms=600_000,
+        )
+        try:
+            decision = RemoteCommandThrottleDecision(
+                send_feedback=False,
+                incident_logged=True,
+                incident_id="incident-1",
+                channel="sms",
+                from_number="+2348012345678",
+                rejection_count=6,
+                threshold=5,
+                window_ms=600_000,
+            )
+
+            await runtime._handle_remote_command_incident(decision)
+
+            runtime._send_or_queue_alert.assert_awaited_once()
+            kwargs = runtime._send_or_queue_alert.await_args.kwargs
+            assert kwargs["channel"] == "sms"
+            assert kwargs["recipient"] == "+2340000000000"
+            assert kwargs["action_tier"] == "A"
+            assert kwargs["trigger_name"] == "remote_command_abuse"
+            assert "repeated rejected remote commands" in kwargs["message"]
+            assert "+2348012345678" in kwargs["message"]
+            states = list(runtime._remote_command_lockout_states.values())
+            assert states[0]["risk_level"] == "elevated"
+            assert states[0]["locked_out"] is False
+        finally:
+            await runtime._state_store.close()
+
+    async def test_load_remote_command_lockout_state_from_persisted_incidents(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "remote-lockout-load.db"))
+        await runtime._state_store.open()
+        now = 1_780_000_000_000
+        monkeypatch.setattr("ori.runtime.now_ms", lambda: now)
+        try:
+            await runtime._state_store.log_remote_command_security_incident(
+                incident_id="incident-recent",
+                channel="sms",
+                from_number="+2348012345678",
+                reason="remote_command_rejection_feedback_suppressed",
+                rejection_count=6,
+                threshold=5,
+                window_ms=600_000,
+                created_at_ms=now - 1_000,
+            )
+            await runtime._state_store.log_remote_command_security_incident(
+                incident_id="incident-old",
+                channel="whatsapp",
+                from_number="whatsapp:+2348099999999",
+                reason="remote_command_rejection_feedback_suppressed",
+                rejection_count=6,
+                threshold=5,
+                window_ms=600_000,
+                created_at_ms=now - 7_200_000,
+            )
+
+            await runtime._load_remote_command_lockout_state()
+
+            assert set(runtime._remote_command_lockout_states) == {"sms:+2348012345678"}
+            state = runtime._remote_command_lockout_states["sms:+2348012345678"]
+            assert state["risk_level"] == "elevated"
+            assert state["incident_count"] == 1
+            assert state["locked_out"] is False
+            snapshot = await runtime._build_health_snapshot()
+            senders = snapshot["remote_command_lockout"]["senders"]
+            assert len(senders) == 1
+            assert senders[0]["from_number"] == "+2348012345678"
+            assert senders[0]["stale"] is False
+        finally:
+            await runtime._state_store.close()
+
+    async def test_health_snapshot_reports_state_store_encryption_posture(
+        self, tmp_path
+    ):
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._device_id = "dev-01"
+        database_path = encrypted_dir / "ori_state.db"
+        runtime._config = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=False,
+                broker_url="",
+                broker_posture={},
+            ),
+            state=SimpleNamespace(
+                encryption=SimpleNamespace(
+                    mode="filesystem_required",
+                    encrypted_path_prefixes=[str(encrypted_dir)],
+                    marker_file="",
+                )
+            ),
+            database_path=str(database_path),
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        posture = snapshot["state_store_encryption"]
+        assert posture == {
+            "available": True,
+            "mode": "filesystem_required",
+            "satisfied": True,
+            "marker_configured": False,
+            "path_prefix_configured": True,
+        }
+        assert str(encrypted_dir) not in json.dumps(posture)
+
+    async def test_health_snapshot_reports_gateway_broker_posture(self):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._device_id = "dev-01"
+        runtime._config = SimpleNamespace(
+            gateway=SimpleNamespace(
+                enabled=True,
+                broker_url="mqtts://operator:secret@broker.local:8883",
+                broker_posture={
+                    "deployment_check": "required",
+                    "anonymous_access": "disabled",
+                    "require_credentials": True,
+                    "acl_policy": "per_device_required",
+                },
+            ),
+            state=SimpleNamespace(
+                encryption=SimpleNamespace(
+                    mode="disabled",
+                    encrypted_path_prefixes=[],
+                    marker_file="",
+                )
+            ),
+            database_path="ori_state.db",
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        posture = snapshot["gateway_broker_posture"]
+        assert posture == {
+            "available": True,
+            "gateway_enabled": True,
+            "deployment_check": "required",
+            "anonymous_access": "disabled",
+            "acl_policy": "per_device_required",
+            "require_credentials": True,
+            "credentials_configured": True,
+            "requires_acl_hardening": False,
+        }
+        assert "secret" not in json.dumps(posture)
+
+    async def test_load_remote_command_lockout_state_failure_is_non_blocking(self):
+        class _FailingIncidentStore:
+            async def get_recent_remote_command_incident_senders(
+                self, *, since_ms: int, limit: int
+            ):
+                raise RuntimeError("incident query failed")
+
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = _FailingIncidentStore()
+        runtime._remote_command_lockout_states["sms:+2348012345678"] = {
+            "channel": "sms",
+            "from_number": "+2348012345678",
+        }
+
+        await runtime._load_remote_command_lockout_state()
+
+        assert runtime._remote_command_lockout_states == {}
+
+    async def test_load_remote_command_lockout_state_uses_configured_bounds(
+        self, monkeypatch
+    ):
+        class _CapturingIncidentStore:
+            def __init__(self):
+                self.calls: list[dict[str, int]] = []
+
+            async def get_recent_remote_command_incident_senders(
+                self, *, since_ms: int, limit: int
+            ):
+                self.calls.append({"since_ms": since_ms, "limit": limit})
+                return []
+
+        now = 1_780_000_000_000
+        monkeypatch.setattr("ori.runtime.now_ms", lambda: now)
+        store = _CapturingIncidentStore()
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = store
+        runtime._remote_command_lockout_config = {
+            "risk_window_ms": 120_000,
+            "state_stale_after_ms": 240_000,
+            "incident_sender_limit": 7,
+            "elevated_incident_threshold": 2,
+            "critical_incident_threshold": 4,
+            "elevated_rejection_threshold": 8,
+            "critical_rejection_threshold": 20,
+            "enforcement_enabled": False,
+        }
+
+        await runtime._load_remote_command_lockout_state()
+
+        assert store.calls == [{"since_ms": now - 240_000, "limit": 7}]
+
+
+class TestRemoteDevicePolicy:
+    def _signed_policy_payload(self):
+        assert Ed25519PrivateKey is not None
+        private_key = Ed25519PrivateKey.generate()
+        payload = {
+            "tier": "cloud",
+            "relay_b_enabled": True,
+            "relay_c_enabled": False,
+            "cloud_llm_enabled": False,
+            "valid_until": int(time.time()) + 600,
+            "policy_version": 7,
+            "issued_at": int(time.time()) - 10,
+            "timestamp": int(time.time()),
+        }
+        signature = private_key.sign(canonical_signed_payload(payload))
+        payload["signature"] = "ed25519:" + base64.b64encode(signature).decode("ascii")
+        public_key_b64 = base64.b64encode(
+            private_key.public_key().public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+        ).decode("ascii")
+        raw_payload = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        return payload, raw_payload, public_key_b64
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    async def test_applies_verified_remote_policy(self, tmp_path, monkeypatch):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-apply.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        payload, raw_payload, public_key_b64 = self._signed_policy_payload()
+
+        async def _fake_fetch(*_args, **_kwargs):
+            return FetchedRemotePolicy(
+                policy=DevicePolicy(
+                    tier="cloud",
+                    relay_b_enabled=True,
+                    relay_c_enabled=False,
+                    cloud_llm_enabled=False,
+                    valid_until=int(time.time()) + 600,
+                    policy_version=7,
+                    issued_at=int(time.time()) - 10,
+                    signature=payload["signature"],
+                ),
+                raw_payload=raw_payload,
+                payload=payload,
+            )
+
+        monkeypatch.setattr(
+            "ori.runtime.fetch_remote_device_policy_bundle", _fake_fetch
+        )
+
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-01"),
+            device_policy={
+                "enabled": True,
+                "url": "https://example.com/device-policy",
+                "auth_token": "token",
+                "public_key_b64": public_key_b64,
+                "request_timeout_ms": 3000,
+                "max_clock_skew_s": 300,
+            },
+        )
+
+        try:
+            await runtime._maybe_refresh_remote_device_policy_once(cfg, dispatcher)
+            assert dispatcher.current_policy_version() == 7
+            assert dispatcher._policy is not None
+            assert dispatcher._policy.relay_c_enabled is False
+            cached = await runtime._state_store.get_latest_device_policy_cache()
+            assert cached is not None
+            assert cached["policy_version"] == 7
+            assert cached["raw_payload"] == raw_payload
+        finally:
+            await runtime._state_store.close()
+
+    async def test_rejection_is_persisted_to_override_log(self, tmp_path, monkeypatch):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-reject.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+
+        async def _fake_fetch(*_args, **_kwargs):
+            raise RemotePolicyFetchError(
+                "invalid_signature",
+                "signature verification failed",
+                policy_version=5,
+                payload_timestamp=1234567890,
+            )
+
+        monkeypatch.setattr(
+            "ori.runtime.fetch_remote_device_policy_bundle", _fake_fetch
+        )
+
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-02"),
+            device_policy={
+                "enabled": True,
+                "url": "https://example.com/device-policy",
+                "auth_token": "token",
+                "public_key_b64": "key",
+                "request_timeout_ms": 3000,
+                "max_clock_skew_s": 300,
+            },
+        )
+
+        try:
+            await runtime._maybe_refresh_remote_device_policy_once(cfg, dispatcher)
+            row = await runtime._state_store._run_read(
+                lambda conn: conn.execute(
+                    """
+                    SELECT override_type, action, reason, device_id
+                    FROM override_log
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            )
+            assert row is not None
+            assert row["override_type"] == "policy_rejection"
+            assert row["action"] == "refresh_device_policy"
+            assert row["device_id"] == "dev-02"
+            assert '"code":"invalid_signature"' in row["reason"]
+            assert '"policy_version":5' in row["reason"]
+        finally:
+            await runtime._state_store.close()
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    async def test_load_cached_policy_applies_when_signature_valid(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-cache-valid.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        payload, raw_payload, public_key_b64 = self._signed_policy_payload()
+
+        await runtime._state_store.upsert_device_policy_cache(
+            policy_version=int(payload["policy_version"]),
+            tier=str(payload["tier"]),
+            relay_b_enabled=bool(payload["relay_b_enabled"]),
+            relay_c_enabled=bool(payload["relay_c_enabled"]),
+            cloud_llm_enabled=bool(payload["cloud_llm_enabled"]),
+            valid_until=int(payload["valid_until"]),
+            issued_at=int(payload["issued_at"]),
+            signature=str(payload["signature"]),
+            raw_payload=raw_payload,
+        )
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-cache-01"),
+            device_policy={"public_key_b64": public_key_b64},
+        )
+
+        try:
+            await runtime._load_cached_device_policy(cfg, dispatcher)
+            assert dispatcher.current_policy_version() == int(payload["policy_version"])
+            assert dispatcher._policy is not None
+            assert dispatcher._policy.relay_c_enabled is False
+        finally:
+            await runtime._state_store.close()
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    async def test_load_cached_policy_rejects_invalid_signature_audits(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-cache-bad.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        payload, raw_payload, _public_key_b64 = self._signed_policy_payload()
+        _, _, wrong_public_key_b64 = self._signed_policy_payload()
+
+        await runtime._state_store.upsert_device_policy_cache(
+            policy_version=int(payload["policy_version"]),
+            tier=str(payload["tier"]),
+            relay_b_enabled=bool(payload["relay_b_enabled"]),
+            relay_c_enabled=bool(payload["relay_c_enabled"]),
+            cloud_llm_enabled=bool(payload["cloud_llm_enabled"]),
+            valid_until=int(payload["valid_until"]),
+            issued_at=int(payload["issued_at"]),
+            signature=str(payload["signature"]),
+            raw_payload=raw_payload,
+        )
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-cache-02"),
+            device_policy={"public_key_b64": wrong_public_key_b64},
+        )
+
+        try:
+            await runtime._load_cached_device_policy(cfg, dispatcher)
+            assert dispatcher.current_policy_version() == 0
+            row = await runtime._state_store._run_read(
+                lambda conn: conn.execute(
+                    """
+                    SELECT override_type, reason
+                    FROM override_log
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            )
+            assert row is not None
+            assert row["override_type"] == "policy_rejection"
+            assert '"code":"cache_invalid_payload"' in row["reason"]
+        finally:
+            await runtime._state_store.close()
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    async def test_policy_refresh_loop_applies_and_caches_policy(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-refresh-loop.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+        payload, raw_payload, public_key_b64 = self._signed_policy_payload()
+        calls = {"count": 0}
+
+        async def _fake_fetch(*_args, **_kwargs):
+            calls["count"] += 1
+            runtime._shutdown_event.set()
+            return FetchedRemotePolicy(
+                policy=DevicePolicy(
+                    tier=str(payload["tier"]),
+                    relay_b_enabled=bool(payload["relay_b_enabled"]),
+                    relay_c_enabled=bool(payload["relay_c_enabled"]),
+                    cloud_llm_enabled=bool(payload["cloud_llm_enabled"]),
+                    valid_until=int(payload["valid_until"]),
+                    policy_version=int(payload["policy_version"]),
+                    issued_at=int(payload["issued_at"]),
+                    signature=str(payload["signature"]),
+                ),
+                raw_payload=raw_payload,
+                payload=payload,
+            )
+
+        monkeypatch.setattr(
+            "ori.runtime.fetch_remote_device_policy_bundle",
+            _fake_fetch,
+        )
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-refresh-01"),
+            device_policy={
+                "enabled": True,
+                "url": "https://example.com/device-policy",
+                "auth_token": "token",
+                "public_key_b64": public_key_b64,
+                "request_timeout_ms": 3000,
+                "max_clock_skew_s": 300,
+                "refresh_enabled": True,
+                "refresh_interval_s": 60,
+            },
+        )
+
+        try:
+            await runtime._device_policy_refresh_loop(
+                config=cfg,
+                dispatcher=dispatcher,
+                refresh_interval_s=0.01,
+            )
+            assert calls["count"] == 1
+            assert dispatcher.current_policy_version() == int(payload["policy_version"])
+            cached = await runtime._state_store.get_latest_device_policy_cache()
+            assert cached is not None
+            assert cached["raw_payload"] == raw_payload
+        finally:
+            await runtime._state_store.close()
+
+    async def test_policy_refresh_transient_network_audit_dedupes(
+        self, tmp_path, monkeypatch
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "policy-refresh-dedupe.db"))
+        await runtime._state_store.open()
+        dispatcher = ActionDispatcher()
+
+        async def _fake_fetch(*_args, **_kwargs):
+            raise RemotePolicyFetchError(
+                "network_error",
+                "policy endpoint network error: offline",
+            )
+
+        monkeypatch.setattr(
+            "ori.runtime.fetch_remote_device_policy_bundle",
+            _fake_fetch,
+        )
+        cfg = SimpleNamespace(
+            device=SimpleNamespace(id="dev-refresh-02"),
+            device_policy={
+                "enabled": True,
+                "url": "https://example.com/device-policy",
+                "auth_token": "token",
+                "public_key_b64": "key",
+                "request_timeout_ms": 3000,
+                "max_clock_skew_s": 300,
+                "refresh_enabled": True,
+                "refresh_interval_s": 60,
+            },
+        )
+
+        try:
+            await runtime._refresh_remote_device_policy_once(
+                config=cfg,
+                dispatcher=dispatcher,
+                suppress_transient_audit=True,
+            )
+            await runtime._refresh_remote_device_policy_once(
+                config=cfg,
+                dispatcher=dispatcher,
+                suppress_transient_audit=True,
+            )
+            row = await runtime._state_store._run_read(
+                lambda conn: conn.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM override_log
+                    WHERE override_type='policy_rejection'
+                    """
+                ).fetchone()
+            )
+            assert row is not None
+            assert int(row["c"]) == 1
+        finally:
+            await runtime._state_store.close()
+
+    async def test_alert_delivery_loop_delivers_queued_alert(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "outbox-deliver.db"))
+        await runtime._state_store.open()
+        runtime._alert_outbox_retry_interval_s = 0.01
+
+        await runtime._state_store.enqueue_alert(
+            alert_id="deliver-1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+
+        async def _send_and_stop(
+            *, message: str, to_number: str, preferred_channel: str | None = None
+        ) -> bool:
+            runtime._shutdown_event.set()
+            return True
+
+        alert_sender = AsyncMock()
+        alert_sender.send.side_effect = _send_and_stop
+
+        try:
+            await runtime._alert_delivery_loop(alert_sender)
+            remaining = await runtime._state_store.get_retryable_alerts(limit=10)
+            assert remaining == []
+        finally:
+            await runtime._state_store.close()
+
+    async def test_alert_delivery_loop_tier_d_never_abandons(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "outbox-tierd.db"))
+        await runtime._state_store.open()
+        runtime._alert_outbox_retry_interval_s = 0.01
+
+        await runtime._state_store.enqueue_alert(
+            alert_id="tierd-1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="D",
+            trigger_name="critical",
+            original_ts=1234,
+        )
+        await runtime._state_store.mark_alert_attempt_failed("tierd-1")
+        await runtime._state_store.mark_alert_attempt_failed("tierd-1")
+
+        async def _fail_and_stop(
+            *, message: str, to_number: str, preferred_channel: str | None = None
+        ) -> bool:
+            runtime._shutdown_event.set()
+            return False
+
+        alert_sender = AsyncMock()
+        alert_sender.send.side_effect = _fail_and_stop
+
+        try:
+            await runtime._alert_delivery_loop(alert_sender)
+            rows = await runtime._state_store.get_retryable_alerts(limit=10)
+            assert len(rows) == 1
+            assert rows[0]["status"] == "failed"
+            assert rows[0]["attempt_count"] == 3
+        finally:
+            await runtime._state_store.close()
+
+    async def test_alert_delivery_loop_abandons_non_tier_d_at_threshold(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "outbox-abandon.db"))
+        await runtime._state_store.open()
+        runtime._alert_outbox_retry_interval_s = 0.01
+
+        await runtime._state_store.enqueue_alert(
+            alert_id="aband-1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+        for _ in range(9):
+            await runtime._state_store.mark_alert_attempt_failed("aband-1")
+
+        async def _fail_and_stop(
+            *, message: str, to_number: str, preferred_channel: str | None = None
+        ) -> bool:
+            runtime._shutdown_event.set()
+            return False
+
+        alert_sender = AsyncMock()
+        alert_sender.send.side_effect = _fail_and_stop
+
+        try:
+            await runtime._alert_delivery_loop(alert_sender)
+            retryable = await runtime._state_store.get_retryable_alerts(limit=10)
+            assert retryable == []
+
+            row = await runtime._state_store._run_read(
+                lambda conn: conn.execute(
+                    """
+                    SELECT status, attempt_count
+                    FROM alert_outbox
+                    WHERE alert_id = ?
+                    """,
+                    ("aband-1",),
+                ).fetchone()
+            )
+            assert row["status"] == "abandoned"
+            assert row["attempt_count"] == 10
+        finally:
+            await runtime._state_store.close()
