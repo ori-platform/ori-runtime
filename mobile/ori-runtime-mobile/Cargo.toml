@@ -1,0 +1,22 @@
+[package]
+name = "ori-runtime-mobile"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "ori-runtime-mobile"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+ed25519-dalek = "2.1"
+hex = "0.4"
+hmac = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+sha2 = "0.10"
+ureq = { version = "2.10", default-features = false, features = ["tls"] }
+uuid = { version = "1.10", features = ["v4"] }
