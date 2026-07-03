@@ -40,7 +40,9 @@ jobs:
         run: python -m pip --version
 
       - name: Guard supply-chain invariants
-        run: python scripts/check_workflows.py
+        run: |
+          python scripts/check_workflows.py
+          bash scripts/check_rust_supply_chain.sh
 
       - name: Install hash-locked dependencies
         run: |
