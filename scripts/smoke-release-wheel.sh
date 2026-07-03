@@ -6,7 +6,7 @@
 # the public integration boundary works from the installed artifact.
 #
 # This catches release-only failures that editable installs hide, especially
-# missing bundled skill data needed by ori-energy/demo FastAPI consumers.
+# missing bundled skill data needed by downstream API consumers.
 
 set -euo pipefail
 
@@ -91,7 +91,7 @@ def dependency_name(requirement):
 base_names = {dependency_name(req) for req in base_requires}
 if base_names != {"pyyaml"}:
     raise AssertionError(
-        "base ori-runtime install must stay slim for ori-energy/demo consumers; "
+        "base ori-runtime install must stay slim for downstream API consumers; "
         f"got base dependencies: {base_requires}"
     )
 

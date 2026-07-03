@@ -76,7 +76,7 @@ gateway:
 
 telemetry_export:
   enabled: {str(telemetry_enabled).lower()}
-  endpoint: "https://api.ori.energy/runtime/telemetry"
+  endpoint: "https://provisioning.example.invalid/runtime/telemetry"
   api_key_env: ORI_ENERGY_DEVICE_API_KEY
 
 health_socket:

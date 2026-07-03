@@ -314,7 +314,7 @@ Rationale:
   affecting another proposal.
 - Keeping local-console approval narrow preserves the offline recovery path
   without creating a second unauthenticated command channel.
-- The boundary supports Ori Energy and Ori Guard deployments where SMS,
+- The boundary supports energy and guard deployments where SMS,
   WhatsApp, and local fallback may all be active under degraded connectivity.
 
 ---
@@ -341,7 +341,7 @@ Rules:
 
 Rationale:
 
-- Ori Energy and Ori Guard need evidence-quality records of operator decisions,
+- Energy and guard deployments need evidence-quality records of operator decisions,
   not just action outcomes.
 - Capturing history and site context at runtime avoids fragile reconstruction
   later in the product layer.

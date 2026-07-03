@@ -71,7 +71,7 @@ gateway:
 
 telemetry_export:
   enabled: false
-  endpoint: "https://api.ori.energy/runtime/telemetry"
+  endpoint: "https://provisioning.example.invalid/runtime/telemetry"
   api_key_env: ORI_ENERGY_DEVICE_API_KEY
   flush_interval_s: 30
   batch_size: 50

@@ -22,7 +22,7 @@ For WiFi inverter mode:
   Victron VenusOS MQTT reachable on the local network
 - inverter connection details from the installer or owner
 
-Deye, Sunsynk, Felicity, Solis, Sofar, and other inverter brands are product
+Deye, Sunsynk, Felicity, Solis, Sofar, and other inverter brands are deployment
 targets, but they are not automatically covered by the Growatt example. Each
 brand/model needs a verified local transport and register/topic map before it
 is provisioned for a customer.
@@ -115,7 +115,7 @@ Edit `ori.yaml`:
   succeeds. Use `channels: [sms, whatsapp]` only when both transports are
   configured; disabled transports are skipped.
 
-After registering the device with the product backend, enable telemetry:
+After registering the device through provisioning, enable telemetry:
 
 ```sh
 export ORI_ENERGY_DEVICE_API_KEY="device-api-key-from-apps-api"
@@ -126,16 +126,16 @@ Then set:
 ```yaml
 telemetry_export:
   enabled: true
-  endpoint: "https://api.ori.energy/runtime/telemetry"
+  endpoint: "https://provisioning.example.invalid/runtime/telemetry"
   api_key_env: ORI_ENERGY_DEVICE_API_KEY
 ```
 
 For APK/provisioned deployments, the runtime config should also be signed by
-the product provisioning backend. The verification public key is not stored in
+provisioning. The verification public key is not stored in
 `ori.yaml`; provision it into the phone environment:
 
 ```sh
-export ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64="public-key-from-product-provisioning"
+export ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64="public-key-from-provisioning"
 export ORI_CONFIG_REQUIRE_SIGNED=true
 ```
 
@@ -159,7 +159,7 @@ development sources:
 ```sh
 export ORI_PROVISIONING_TOKEN="short-lived-token"
 ori-config-install \
-  --source https://api.ori.energy/runtime/config \
+  --source https://provisioning.example.invalid/runtime/config \
   --bearer-token-env ORI_PROVISIONING_TOKEN \
   --destination ori.yaml
 ```

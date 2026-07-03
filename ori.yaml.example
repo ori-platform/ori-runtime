@@ -307,11 +307,11 @@ gateway:
     timeout_ms: 10000                # per-phase timeout: connect/subscribe and response wait
 
 telemetry_export:
-  # Optional direct product-backend export for phone/lightweight deployments.
+  # Optional direct provisioned telemetry export for phone/lightweight deployments.
   # Separate from gateway MQTT exports. Mirrors real sensor.reading events only;
   # never affects Tier B/C/D action authority.
   enabled: false
-  endpoint: "https://api.ori.energy/runtime/telemetry"
+  endpoint: "https://provisioning.example.invalid/runtime/telemetry"
   api_key_env: ORI_ENERGY_DEVICE_API_KEY
   flush_interval_s: 30
   batch_size: 50
@@ -348,7 +348,7 @@ security:
   # cannot be weakened by setting this false.
   enforce_production_posture: false
   config_signature:
-    # Generated configs from Ori Energy / APK provisioning should set this true.
+    # Generated configs from APK provisioning should set this true.
     # The verification public key is supplied outside this YAML through the env
     # var below, so a tampered config cannot swap its own trust anchor.
     require_signed: false

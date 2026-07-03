@@ -1,12 +1,12 @@
 # ori.yaml.phone.example
 # Phone-as-Gateway deployment profile (Termux on Android)
 #
-# This profile is the Ori Energy phone wedge: an Android phone runs the runtime
-# in Termux and reads a USB serial energy meter through an OTG adapter. The
-# phone is an edge runtime and gateway substitute for Tier A intelligence; it is
-# not a substitute for certified Edge Node relay wiring. The operator contact
-# below is the customer's normal phone number; it is not assumed to be this
-# unattended runtime phone.
+# This profile is the phone deployment wedge: an Android phone runs the runtime
+# and reads a USB serial energy meter through an OTG adapter. The phone is an
+# edge runtime and gateway substitute for Tier A intelligence; it is not a
+# substitute for certified Edge Node relay wiring. The operator contact below
+# is the customer's normal phone number; it is not assumed to be this unattended
+# runtime phone.
 
 device:
   id: phone-gateway-ikeja-01
@@ -51,11 +51,11 @@ gateway:
   broker_url: ""
 
 telemetry_export:
-  # Phone deployments can push real sensor readings directly to the Ori Energy
-  # product backend. Leave disabled until the device is registered and the API
-  # key is provisioned in Termux as ORI_ENERGY_DEVICE_API_KEY.
+  # Phone deployments can push real sensor readings to a provisioned telemetry
+  # endpoint. Leave disabled until the device is registered and the API key is
+  # provisioned in the runtime environment as ORI_ENERGY_DEVICE_API_KEY.
   enabled: false
-  endpoint: "https://api.ori.energy/runtime/telemetry"
+  endpoint: "https://provisioning.example.invalid/runtime/telemetry"
   api_key_env: ORI_ENERGY_DEVICE_API_KEY
   flush_interval_s: 30
   batch_size: 50
@@ -72,7 +72,7 @@ health_socket:
 
 security:
   config_signature:
-    # Assisted Termux pilots may leave this false. The private APK / production
+    # Assisted Termux pilots may leave this false. APK / production
     # launcher should set require_signed true or ORI_CONFIG_REQUIRE_SIGNED=true
     # before loading backend-generated configs.
     require_signed: false

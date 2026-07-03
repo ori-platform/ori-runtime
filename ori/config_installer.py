@@ -1,13 +1,13 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""Install backend-generated Ori runtime configs after signature verification.
+"""Install provisioning-generated Ori runtime configs after signature verification.
 
-The private APK and assisted Termux provisioning paths need one narrow runtime
+APK and assisted Termux provisioning paths need one narrow runtime
 primitive: accept a generated config, prove it verifies with the same loader the
 runtime uses, then atomically write it as ``ori.yaml``. This module deliberately
 does not create configs, provision accounts, or store long-lived secrets; those
-belong to the product backend / Android shell.
+belong to the provisioning service / Android shell.
 """
 
 from __future__ import annotations

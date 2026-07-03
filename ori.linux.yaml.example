@@ -106,7 +106,7 @@ hal:
 
 security:
   config_signature:
-    # Generated configs from Ori Energy / future Edge Node provisioning should
+    # Generated configs from provisioning should
     # set this true. The public verification key is supplied by environment.
     require_signed: false
     trust_anchor_env: ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64
