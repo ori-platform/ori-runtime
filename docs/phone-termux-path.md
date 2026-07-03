@@ -1,6 +1,6 @@
 # Ori Phone Termux Path
 
-This document defines the phone-first product provisioning wedge. The phone path is a
+This document defines the phone-first provisioning wedge. The phone path is a
 low-friction deployment profile for early African SME sites, not the final
 hardware architecture for physical actuation.
 
@@ -13,7 +13,7 @@ energy intelligence:
 - build a site-local baseline for power draw;
 - detect sustained overdraw, sudden spikes, and unstable draw;
 - send operator alerts and dashboard logs;
-- export consented telemetry to the product provisioning backend for fleet
+- export consented telemetry to the provisioning service for fleet
   intelligence and Gemini-powered reports.
 
 The phone path does not provide certified relay control. Tier B/C physical
@@ -157,17 +157,17 @@ The Android Termux runtime remains the edge execution path because browsers and
 PWAs cannot reliably read USB serial meters, run offline background loops, or
 enforce Ori's runtime safety model.
 
-## Private Android APK Path
+## Android APK Path
 
-The private APK is the client-facing packaging layer for Phone Starter. It
+The APK is the client-facing packaging layer for Phone Starter. It
 does not change Ori's safety model; it wraps the same runtime capability behind
 normal Android install and permission screens.
 
 The APK must:
 
-- be signed and distributed from the authenticated product provisioning flow
+- be signed and distributed from the authenticated provisioning flow
   after trial or Paystack activation;
-- accept a short-lived provisioning token from the product backend;
+- accept a short-lived provisioning token from the provisioning service;
 - request USB Host permission for the approved meter or bridge;
 - run as a foreground service with a persistent status notification;
 - request wake-lock and battery-optimization exemptions explicitly;
@@ -182,7 +182,7 @@ The APK must:
 The APK must not:
 
 - enable Tier B/C relay actuation on a phone-only deployment;
-- call Gemini, cloud LLMs, or any product backend in the Tier D safety path;
+- call Gemini, cloud LLMs, or any provisioning endpoint in the Tier D safety path;
 - silently bypass Android USB, notification, background, or battery prompts;
 - embed long-lived client API keys or provisioning secrets in the APK;
 - treat the client PWA phone as the same device as the unattended runtime
@@ -193,7 +193,7 @@ The APK is the self-serve commercial installer that removes terminal setup
 while preserving the runtime's actuation-trust boundaries.
 
 Production provisioning should use one generic Ori Android Agent APK plus a
-backend-generated runtime profile. The product provisioning flow asks what the
+provisioning-generated runtime profile. The provisioning flow asks what the
 site has: USB/PZEM meter, Growatt SolarmanV5, Victron VenusOS, or an
 unqualified inverter. After payment or trial activation, the backend issues a
 short-lived provisioning token; the APK downloads the signed config for that
@@ -221,7 +221,7 @@ short-lived bearer token from an environment variable:
 ```sh
 export ORI_PROVISIONING_TOKEN="short-lived-token"
 ori-config-install \
-  --source https://api.ori.energy/runtime/config \
+  --source https://provisioning.example.invalid/runtime/config \
   --bearer-token-env ORI_PROVISIONING_TOKEN \
   --destination ori.yaml
 ```
@@ -229,7 +229,7 @@ ori-config-install \
 `ori-config-install` uses the runtime's normal `Config.load()` path, requires a
 verified `config_signature`, rejects non-HTTPS remote sources except explicit
 loopback development, writes the destination atomically with `0600`
-permissions, and does not persist the provisioning token. The product provisioning backend still owns
+permissions, and does not persist the provisioning token. The provisioning service still owns
 account creation, payment, token issuance, profile selection, and config
 generation; this tool is only the runtime-side install boundary.
 
@@ -334,7 +334,7 @@ when a phone is replaced.
 The phone should keep local readings available offline, but consented telemetry
 must not remain trapped on the handset. When `telemetry_export.enabled` is true,
 the runtime posts HMAC-signed `runtime.telemetry.v1` batches over HTTPS to the
-configured product backend endpoint. The runtime should export:
+configured telemetry endpoint. The runtime should export:
 
 - normalized sensor readings at a cloud-controlled sampling rate;
 - alert and action logs;
@@ -342,20 +342,20 @@ configured product backend endpoint. The runtime should export:
 - device health and sync status.
 
 The first runtime implementation exports real `sensor.reading` events. Alert,
-baseline, and health sync remain product-backend follow-up work. Telemetry
+baseline, and health sync remain provisioning-service follow-up work. Telemetry
 export is observational only; failed uploads must not affect local trigger
 evaluation, Tier D semantics, or operator alerts.
 
-Sensitive historical exports must follow the runtime-gateway/product security
+Sensitive historical exports must follow the runtime-gateway/provisioning security
 posture: authenticated envelopes, replay protection, and encryption for
 business/audit history when gateway encryption is enabled.
 
 ## Alerts On Phone
 
 Phone Starter should keep direct SMS or WhatsApp alerts available as a local
-runtime path. Product push notifications can be added through the PWA/backend,
+runtime path. Push notifications can be added through account-backed services,
 but they depend on account sync, browser notification permissions, and internet
-delivery. Direct runtime alerts remain the fallback when the product backend is
+delivery. Direct runtime alerts remain the fallback when the provisioning service is
 unavailable.
 
 The Android device running Ori should be treated as a dedicated edge node. It
@@ -369,14 +369,13 @@ For early deployments, configure at least one of:
 - WhatsApp via Twilio where approved;
 - GSM modem path only for Edge Node or a supported Android USB modem setup.
 
-## Product Backend Requirements
+## Provisioning Backend Requirements
 
-For early customer validation, the product provisioning backend (`ori-energy`
-`apps/api`) is the real backend for phone deployments. `[Ori Cloud](https://github.com/ori-platform/ori-cloud)`
-eventually absorbs these responsibilities, but the phone path should
-not point to `apps/demo-api`.
+Phone deployments need a real provisioning backend, not a scenario/demo
+backend. The runtime should not encode repository names or concrete deployment API
+hostnames; those belong to deployment/provisioning configuration.
 
-The product backend needs explicit support for phone deployments:
+The provisioning backend needs explicit support for phone deployments:
 
 - a `phone_starter` or equivalent subscription tier mapped to Tier A energy
   intelligence, no relay entitlement, and limited local/cloud reasoning;
@@ -393,6 +392,5 @@ The product backend needs explicit support for phone deployments:
 - upgrade flow from Phone Starter to Certified Edge Node without losing the
   site's historical baseline.
 
-`apps/demo-api` should remain a clearly marked scenario/demo backend for
-development only. The frontend's committed default API base URL for the
-phone path should target `apps/api`.
+Scenario/demo services should remain clearly marked development-only surfaces
+and must not be used as the committed default for a real phone deployment.

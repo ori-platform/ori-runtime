@@ -1,7 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""HTTP telemetry export for phone and lightweight product-backed deployments."""
+"""HTTP telemetry export for phone and lightweight provisioned deployments."""
 
 import asyncio
 import hashlib
@@ -33,8 +33,8 @@ class HttpTelemetryExporter:
     """Bounded, non-authoritative HTTP telemetry exporter.
 
     The exporter is intentionally outside the actuation path. It mirrors real
-    runtime events to the product backend for dashboards and reports, but
-    backend availability must never influence Tier B/C/D action authority.
+    runtime events to a provisioned telemetry endpoint, but endpoint
+    availability must never influence Tier B/C/D action authority.
     """
 
     def __init__(

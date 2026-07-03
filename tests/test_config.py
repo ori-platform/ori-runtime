@@ -189,7 +189,8 @@ class TestLoadExample:
         cfg = Config.load(EXAMPLE_YAML)
         assert cfg.telemetry_export.enabled is False
         assert (
-            cfg.telemetry_export.endpoint == "https://api.ori.energy/runtime/telemetry"
+            cfg.telemetry_export.endpoint
+            == "https://provisioning.example.invalid/runtime/telemetry"
         )
         assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
         assert cfg.telemetry_export.batch_size == 50
