@@ -1013,6 +1013,44 @@ class TestLifecycle:
             for r in caplog.records
         )
 
+    async def test_runtime_registers_close_gas_valve_as_relay_backed_tier_d_action(
+        self, minimal_config, monkeypatch
+    ):
+        _patch_external(monkeypatch)
+        cfg_path = Path(minimal_config)
+        config_text = cfg_path.read_text(encoding="utf-8")
+        relay_disabled = "  relay:\n    enabled: false\n"
+        assert relay_disabled in config_text
+        cfg_path.write_text(
+            config_text.replace(
+                relay_disabled,
+                "  relay:\n    enabled: true\n    gpio_pin: 26\n",
+            ),
+            encoding="utf-8",
+        )
+        connect = AsyncMock(return_value=None)
+        trigger = AsyncMock(return_value=True)
+        monkeypatch.setattr("ori.actions.relay.RelayAction.connect", connect)
+        monkeypatch.setattr("ori.actions.relay.RelayAction.trigger", trigger)
+
+        runtime = OriRuntime(config_path=str(cfg_path))
+
+        async def _stop():
+            await asyncio.sleep(0.1)
+            await runtime.stop()
+
+        await asyncio.gather(runtime.start(), _stop())
+
+        assert runtime._dispatcher is not None
+        close_gas_valve = runtime._dispatcher._executors["close_gas_valve"]
+        trip_relay = runtime._dispatcher._executors["trip_relay"]
+        assert close_gas_valve is trip_relay
+
+        await close_gas_valve("close_gas_valve", SimpleNamespace())
+
+        connect.assert_awaited_once_with(gpio_pin=26)
+        trigger.assert_awaited_once_with(duration_seconds=None)
+
 
 class TestStartupLogs:
     async def test_startup_logs_skill_tiers(self, minimal_config, monkeypatch, caplog):
