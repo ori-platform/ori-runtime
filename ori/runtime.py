@@ -575,7 +575,11 @@ class OriRuntime:
 
         dispatcher.register_executor("log_to_dashboard", _exec_log_to_dashboard)
 
-        # Relay executors — only if relay successfully connected
+        # Relay-backed safety executors — only if relay successfully connected.
+        # Semantic safety actions such as close_gas_valve still resolve through
+        # the physical relay path; commissioning must wire the relay output to
+        # the named fail-safe valve/contactor before that semantic action is
+        # safety-creditable.
         if relay_action is not None:
 
             async def _exec_trip_relay(*_: Any) -> None:
@@ -590,6 +594,7 @@ class OriRuntime:
 
             dispatcher.register_executor("trip_relay", _exec_trip_relay)
             dispatcher.register_executor("release_relay", _exec_release_relay)
+            dispatcher.register_executor("close_gas_valve", _exec_trip_relay)
 
         # ── Step D: Capability posture tracker + IntelligenceElevator ─────────
         posture_cfg = (

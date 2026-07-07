@@ -567,9 +567,10 @@ class ActionDispatcher:
     ) -> ActionResult:
         """Execute *action* without any approval step.
 
-        If an executor is registered for *action*, it is called.  If no
-        executor exists, the action is logged as executed (the intent is
-        recorded even if no physical action fired).
+        If an executor is registered for *action*, it is called. If no
+        executor exists, non-safety actions are logged as intent-only
+        compatibility behaviour. Tier D actions fail loudly instead: a missing
+        safety executor means the physical safety action did not happen.
 
         Args:
             action: Action name to execute.
@@ -592,13 +593,12 @@ class ActionDispatcher:
                 if maybe_ok is False:
                     executed = False
             else:
-                if (
-                    action in ("trip_relay", "release_relay")
-                    and tier == ActionTier.SAFETY_CRITICAL
-                ):
+                if tier == ActionTier.SAFETY_CRITICAL:
                     executed = False
                     logger.critical(
-                        "ActionDispatcher: Tier D relay executor is not registered (hardware initialization failed)."
+                        "ActionDispatcher: Tier D executor is not registered for action=%r. "
+                        "No physical safety action was taken.",
+                        action,
                     )
                 elif self._log_action_decisions:
                     logger.debug(

@@ -251,21 +251,28 @@ class TestTierA:
 
 class TestTierD:
     async def test_executes_immediately(self):
+        mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher()
+        d.register_executor("emergency_cutoff", mock_exec)
         result = await d.dispatch(
             "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
         )
         assert result.executed is True
+        mock_exec.assert_awaited_once()
 
     async def test_approved_is_none(self):
+        mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher()
+        d.register_executor("emergency_cutoff", mock_exec)
         result = await d.dispatch(
             "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
         )
         assert result.approved is None
 
     async def test_tier_d_in_result(self):
+        mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher()
+        d.register_executor("emergency_cutoff", mock_exec)
         result = await d.dispatch(
             "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
         )
@@ -280,12 +287,36 @@ class TestTierD:
         mock_exec.assert_awaited_once()
 
     async def test_bypasses_approval_workflow(self):
+        mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher()
+        d.register_executor("emergency_cutoff", mock_exec)
         with patch.object(d, "_approval_workflow", new=AsyncMock()) as mock_wf:
             await d.dispatch(
                 "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
             )
         mock_wf.assert_not_awaited()
+
+    async def test_missing_non_relay_executor_fails_loudly_and_alerts(self):
+        d = ActionDispatcher(config={"operator_contact": "+234000000000"})
+
+        with (
+            patch.object(d, "_emergency_sms", new=AsyncMock()) as mock_sms,
+            patch("ori.reasoning.action_dispatcher.logger") as mock_logger,
+        ):
+            result = await d.dispatch(
+                "close_gas_valve", ActionTier.SAFETY_CRITICAL, _context(), _result()
+            )
+
+        assert result.executed is False
+        assert result.action_taken == ""
+        critical_messages = [
+            str(call.args) for call in mock_logger.critical.call_args_list
+        ]
+        assert any(
+            "Tier D executor is not registered" in msg for msg in critical_messages
+        )
+        assert any("TIER D ACTION FAILED" in msg for msg in critical_messages)
+        mock_sms.assert_awaited_once_with("close_gas_valve", "dev-01")
 
     async def test_tier_d_tasks_are_tracked_without_task_attribute_hacks(self):
         running_flags: list[bool] = []
