@@ -1,0 +1,268 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+"""On-device evidence signing for Tier C/D actions (Verity chain client).
+
+The runtime consumes the Verity evidence chain as an exactly pinned,
+prebuilt artifact (see DECISIONS.md 2026-07-10). This module is the only
+runtime boundary to it: a lazy import of the ``ori_verity`` extension
+module, wrapped so that
+
+* a deployment without the artifact degrades to ``available = False``
+  with a WARNING — evidence signing never blocks the action path;
+* every chain call runs on one dedicated thread, because the pyo3
+  ``VerityChain`` class is not sendable between threads;
+* signing failures mark the action_log row ``failed`` and are repaired
+  by startup reconciliation where possible (Option B append-after-log —
+  explicitly weaker than single-transaction atomicity, which remains the
+  verifier-grade target).
+
+Late-signing semantics (be precise — verifiers will be adversarial):
+an action that fires while signing is unavailable stays visible as a gap
+(``attestation_status`` ``pending``/``failed``). Startup reconciliation
+may sign it late, and when it does, the lateness is explicit twice over:
+the signed payload carries ``attestation: reconciled_late`` (versus
+``at_emission`` on the normal path) and the chain independently records
+the write time next to the original ``emitted_at_ms``. Rows that still
+cannot be signed remain ``failed`` and visible. The runtime never
+presents late evidence as emission-time evidence.
+
+Idempotency: every attestation derives a deterministic ``event_id`` from
+(device_id, action_log id), which is UNIQUE in the chain schema. The
+attestor looks the id up before appending, so a crash between the chain
+append and the action_log status update cannot double-attest on retry.
+
+Artifact identity: the pin itself is enforced by deployment packaging
+(the offline wheelhouse installs an exact version — the runtime cannot
+verify provenance of an already-importable module). What the runtime
+does verify at startup is that the loaded artifact speaks the expected
+``PROTOCOL_VERSION`` and exposes the idempotent append surface; on
+mismatch, evidence stays unavailable and health says so, alongside the
+loaded ``ARTIFACT_VERSION``.
+
+Event vocabulary note: the Verity protocol v1 event types are business
+events; runtime Tier C/D actions are attested as ``MAINTENANCE_PERFORMED``
+with a fully descriptive payload (``kind: runtime_action``,
+``action_tier``, executed/approved state). A dedicated safety-action
+event type is a protocol vocabulary candidate for the specs process.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+_ATTESTED_TIERS = ("C", "D")
+
+EXPECTED_PROTOCOL_VERSION = "verity.v1"
+
+# Fixed namespace for deterministic attestation event ids. Never change:
+# ids derived from it are the idempotency keys of already-signed evidence.
+_ATTESTATION_EVENT_NAMESPACE = uuid.UUID("6f726920-7665-5269-7479-2065766e7431")
+
+
+def tier_requires_attestation(tier: str) -> bool:
+    """True when *tier* is on the evidence-signing path (Tier C/D)."""
+    return str(tier or "").upper() in _ATTESTED_TIERS
+
+
+class EvidenceAttestor:
+    """Signs Tier C/D action evidence into the local Verity chain."""
+
+    def __init__(
+        self,
+        *,
+        db_path: str,
+        key_path: str,
+        device_secret: str,
+        device_id: str,
+    ) -> None:
+        self._db_path = str(db_path)
+        self._key_path = str(key_path)
+        self._device_secret = str(device_secret)
+        self._device_id = str(device_id)
+        self._chain: Any = None
+        # The pyo3 VerityChain is unsendable: it must be constructed and
+        # used on the same thread. One dedicated worker guarantees that.
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="ori-evidence"
+        )
+        self._public_key_hex = ""
+        self._artifact_version = ""
+        self._protocol_version = ""
+
+    @property
+    def available(self) -> bool:
+        return self._chain is not None
+
+    @property
+    def public_key_hex(self) -> str:
+        """Device verification anchor (register off-device at provisioning)."""
+        return self._public_key_hex
+
+    @property
+    def artifact_version(self) -> str:
+        """Version of the loaded ori_verity artifact ('' when unavailable)."""
+        return self._artifact_version
+
+    @property
+    def protocol_version(self) -> str:
+        """Protocol version declared by the loaded artifact."""
+        return self._protocol_version
+
+    async def start(self) -> bool:
+        """Open (or create) the chain and key on the evidence thread.
+
+        First start on a device is key provisioning: the Ed25519 device key
+        is generated and sealed at ``key_path``, and the public anchor is
+        logged so the provisioning flow can register it off-device.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            chain = await loop.run_in_executor(self._executor, self._open_sync)
+            self._public_key_hex = await loop.run_in_executor(
+                self._executor, chain.public_key_hex
+            )
+        except Exception:
+            self._chain = None
+            logger.warning(
+                "[evidence] Verity chain unavailable; Tier C/D actions will be "
+                "recorded as attestation gaps until signing is restored.",
+                exc_info=True,
+            )
+            return False
+        if self._protocol_version != EXPECTED_PROTOCOL_VERSION or not hasattr(
+            chain, "seq_for_event_id"
+        ):
+            logger.warning(
+                "[evidence] loaded ori_verity artifact (version=%r, protocol=%r) "
+                "does not provide protocol %s with idempotent appends; evidence "
+                "signing stays unavailable — check the pinned artifact.",
+                self._artifact_version,
+                self._protocol_version,
+                EXPECTED_PROTOCOL_VERSION,
+            )
+            return False
+        self._chain = chain
+        logger.warning(
+            "[evidence] chain open db=%s artifact=%s — REGISTER this device "
+            "verification anchor off-device at provisioning: %s",
+            self._db_path,
+            self._artifact_version,
+            self._public_key_hex,
+        )
+        return True
+
+    def _open_sync(self) -> Any:
+        # The exact pin is enforced by deployment packaging (offline
+        # wheelhouse); the runtime verifies protocol identity in start().
+        # The artifact is optional and absent from dev/CI environments, so
+        # static analyzers cannot resolve it — that is expected.
+        import ori_verity  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
+
+        self._protocol_version = str(getattr(ori_verity, "PROTOCOL_VERSION", ""))
+        self._artifact_version = str(getattr(ori_verity, "ARTIFACT_VERSION", ""))
+        return ori_verity.VerityChain(
+            self._db_path, self._key_path, self._device_secret
+        )
+
+    def attestation_event_id(self, action_log_id: int) -> str:
+        """Deterministic idempotency key for one action_log row."""
+        return str(
+            uuid.uuid5(
+                _ATTESTATION_EVENT_NAMESPACE,
+                f"{self._device_id}:action_log:{int(action_log_id)}",
+            )
+        )
+
+    async def attest_action(
+        self, action_row: dict, *, reconciled: bool = False
+    ) -> int | None:
+        """Sign one action_log row into the chain; return the chain seq.
+
+        Idempotent: the deterministic event id is looked up first, so
+        retrying a row whose append succeeded but whose status update was
+        lost returns the existing seq instead of double-attesting.
+        ``reconciled=True`` marks the signed payload as late evidence.
+
+        Returns None (and logs) on failure — callers mark the row
+        ``failed`` and leave repair to reconciliation.
+        """
+        if self._chain is None:
+            return None
+        action_log_id = int(action_row.get("id", 0))
+        event_id = self.attestation_event_id(action_log_id)
+        payload = {
+            "kind": "runtime_action",
+            "attestation": "reconciled_late" if reconciled else "at_emission",
+            "action_log_id": action_log_id,
+            "action_name": str(action_row.get("action_name", "")),
+            "action_tier": str(action_row.get("tier", "")),
+            "executed": bool(action_row.get("executed")),
+            "approved": action_row.get("approved"),
+            "action_taken": str(action_row.get("action_taken", "")),
+            "trigger_name": str(action_row.get("trigger_name", "")),
+            "proposal_id": str(action_row.get("proposal_id", "") or ""),
+            "correlation_id": str(action_row.get("correlation_id", "") or ""),
+            "sensor_id": str(action_row.get("sensor_id", "") or ""),
+        }
+        emitted_at_ms = int(action_row.get("timestamp", 0))
+        loop = asyncio.get_running_loop()
+        try:
+            existing = await loop.run_in_executor(
+                self._executor, self._chain.seq_for_event_id, event_id
+            )
+            if existing is not None:
+                return int(existing)
+            seq = await loop.run_in_executor(
+                self._executor,
+                self._chain.append_event,
+                "MAINTENANCE_PERFORMED",
+                self._device_id,
+                emitted_at_ms,
+                json.dumps(payload),
+                event_id,
+            )
+            return int(seq)
+        except Exception:
+            logger.warning(
+                "[evidence] failed to sign action_log id=%s tier=%s",
+                action_row.get("id"),
+                action_row.get("tier"),
+                exc_info=True,
+            )
+            return None
+
+    async def chain_head_hash(self) -> str | None:
+        if self._chain is None:
+            return None
+        loop = asyncio.get_running_loop()
+        try:
+            head = await loop.run_in_executor(
+                self._executor, self._chain.chain_head_hash
+            )
+            return str(head) if head else None
+        except Exception:
+            logger.warning("[evidence] chain head read failed", exc_info=True)
+            return None
+
+    async def pending_export_count(self) -> int | None:
+        if self._chain is None:
+            return None
+        loop = asyncio.get_running_loop()
+        try:
+            return int(
+                await loop.run_in_executor(self._executor, self._chain.pending_count)
+            )
+        except Exception:
+            logger.warning("[evidence] pending count read failed", exc_info=True)
+            return None
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=False)

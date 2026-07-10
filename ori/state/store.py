@@ -389,6 +389,12 @@ class StateStore:
             ("sensor_id", "TEXT    NOT NULL DEFAULT ''"),
             ("sensor_type", "TEXT    NOT NULL DEFAULT ''"),
             ("correlation_id", "TEXT    NOT NULL DEFAULT ''"),
+            # Evidence attestation (Option B append-after-log): '' means the
+            # row predates evidence signing or signing is disabled; rows
+            # written while signing is enabled move pending -> signed/failed,
+            # and startup reconciliation repairs failures to 'reconciled'.
+            ("attestation_status", "TEXT    NOT NULL DEFAULT ''"),
+            ("attestation_seq", "INTEGER"),
         ):
             self._add_column_if_missing_on_conn(conn, "action_log", col, typedef)
         self._add_column_if_missing_on_conn(
@@ -1068,8 +1074,21 @@ class StateStore:
 
     # ─── action_log ───────────────────────────────────────────────────────────
 
-    async def log_action(self, result: ActionResult, trigger_name: str) -> None:
-        await self._run_write(self._log_action_sync, result, trigger_name, None)
+    async def log_action(
+        self,
+        result: ActionResult,
+        trigger_name: str,
+        *,
+        attestation_pending: bool = False,
+    ) -> int:
+        return await self._run_write(
+            self._log_action_sync,
+            result,
+            trigger_name,
+            {"attestation_pending": attestation_pending}
+            if attestation_pending
+            else None,
+        )
 
     async def log_action_for_event(
         self,
@@ -1079,9 +1098,10 @@ class StateStore:
         device_id: str = "",
         sensor_id: str = "",
         sensor_type: str = "",
-    ) -> None:
+        attestation_pending: bool = False,
+    ) -> int:
         """Persist action result with sensor/device context for reporting."""
-        await self._run_write(
+        return await self._run_write(
             self._log_action_sync,
             result,
             trigger_name,
@@ -1089,6 +1109,7 @@ class StateStore:
                 "device_id": device_id,
                 "sensor_id": sensor_id,
                 "sensor_type": sensor_type,
+                "attestation_pending": attestation_pending,
             },
         )
 
@@ -1097,19 +1118,23 @@ class StateStore:
         result: ActionResult,
         trigger_name: str,
         context_fields: dict | None = None,
-    ) -> None:
+    ) -> int:
         assert self._conn is not None
         context_fields = context_fields or {}
         approved_int: Optional[int] = None
         if result.approved is not None:
             approved_int = 1 if result.approved else 0
-        self._conn.execute(
+        attestation_status = (
+            "pending" if context_fields.get("attestation_pending") else ""
+        )
+        cursor = self._conn.execute(
             """
             INSERT INTO action_log
                 (action_name, tier, executed, approved, action_taken,
                  operator_response, proposal_id, safe_default_used, device_id,
-                 sensor_id, sensor_type, correlation_id, trigger_name, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 sensor_id, sensor_type, correlation_id, trigger_name, timestamp,
+                 attestation_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.action_name,
@@ -1126,9 +1151,92 @@ class StateStore:
                 result.correlation_id,
                 trigger_name,
                 result.timestamp,
+                attestation_status,
             ),
         )
         self._conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    async def set_action_attestation(
+        self,
+        action_id: int,
+        *,
+        status: str,
+        attestation_seq: int | None = None,
+    ) -> None:
+        """Record the evidence-signing outcome for one action_log row."""
+        await self._run_write(
+            self._set_action_attestation_sync, action_id, status, attestation_seq
+        )
+
+    def _set_action_attestation_sync(
+        self,
+        action_id: int,
+        status: str,
+        attestation_seq: int | None,
+    ) -> None:
+        assert self._conn is not None
+        if status not in {"pending", "signed", "failed", "reconciled"}:
+            raise ValueError(f"invalid attestation status: {status!r}")
+        self._conn.execute(
+            "UPDATE action_log SET attestation_status = ?, attestation_seq = ? "
+            "WHERE id = ?",
+            (status, attestation_seq, action_id),
+        )
+        self._conn.commit()
+
+    async def get_actions_needing_attestation(self, limit: int = 500) -> list[dict]:
+        """Rows whose evidence signing did not complete (pending/failed)."""
+        return await self._run_read(self._get_actions_needing_attestation_sync, limit)
+
+    def _get_actions_needing_attestation_sync(
+        self, conn: sqlite3.Connection, limit: int
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT id, action_name, tier, executed, approved, action_taken,
+                   proposal_id, safe_default_used, device_id, sensor_id,
+                   sensor_type, correlation_id, trigger_name, timestamp,
+                   attestation_status
+            FROM action_log
+            WHERE attestation_status IN ('pending', 'failed')
+            ORDER BY id
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_attestation_summary(self) -> dict:
+        """Aggregate evidence-signing state for health snapshots."""
+        return await self._run_read(self._get_attestation_summary_sync)
+
+    def _get_attestation_summary_sync(self, conn: sqlite3.Connection) -> dict:
+        status_rows = conn.execute(
+            """
+            SELECT attestation_status, COUNT(*) AS n
+            FROM action_log
+            WHERE attestation_status != ''
+            GROUP BY attestation_status
+            """
+        ).fetchall()
+        status_counts = {str(row[0]): int(row[1]) for row in status_rows}
+        last_attested = conn.execute(
+            """
+            SELECT MAX(id) FROM action_log
+            WHERE attestation_status IN ('signed', 'reconciled')
+            """
+        ).fetchone()
+        gap_count = int(
+            status_counts.get("pending", 0) + status_counts.get("failed", 0)
+        )
+        return {
+            "status_counts": status_counts,
+            "last_attested_action_id": (
+                int(last_attested[0]) if last_attested and last_attested[0] else None
+            ),
+            "attestation_gap_count": gap_count,
+        }
 
     async def get_action_log(self, limit: int = 50) -> list[dict]:
         return await self._run_read(self._get_action_log_sync, limit)
@@ -1138,7 +1246,8 @@ class StateStore:
             """
             SELECT action_name, tier, executed, approved, action_taken,
                    operator_response, proposal_id, safe_default_used, device_id,
-                   sensor_id, sensor_type, correlation_id, trigger_name, timestamp
+                   sensor_id, sensor_type, correlation_id, trigger_name, timestamp,
+                   attestation_status, attestation_seq
             FROM action_log
             ORDER BY timestamp DESC
             LIMIT ?
@@ -1166,6 +1275,8 @@ class StateStore:
                     "correlation_id": row["correlation_id"],
                     "trigger_name": row["trigger_name"],
                     "timestamp": row["timestamp"],
+                    "attestation_status": row["attestation_status"],
+                    "attestation_seq": row["attestation_seq"],
                 }
             )
         return result
@@ -1218,7 +1329,8 @@ class StateStore:
             """
             SELECT action_name, tier, executed, approved, action_taken,
                    operator_response, proposal_id, safe_default_used, device_id,
-                   sensor_id, sensor_type, correlation_id, trigger_name, timestamp
+                   sensor_id, sensor_type, correlation_id, trigger_name, timestamp,
+                   attestation_status, attestation_seq
             FROM action_log
             """
             + where_sql

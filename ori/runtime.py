@@ -65,6 +65,7 @@ from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfi
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.runtime_health_socket import RuntimeHealthSocketServer
+from ori.security.evidence import EvidenceAttestor
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
@@ -196,6 +197,7 @@ class OriRuntime:
             MqttRuntimeNodeHeartbeatPublisher | None
         ) = None
         self._telemetry_exporter: HttpTelemetryExporter | None = None
+        self._evidence_attestor: EvidenceAttestor | None = None
         self._health_socket_path: str = ""
         self._device_policy_enabled: bool = False
         self._device_id: str = ""
@@ -435,12 +437,18 @@ class OriRuntime:
         )
         rejection_expiry_days = int(causal_cfg.get("rejection_expiry_days", 30))
 
+        evidence_attestor = _build_evidence_attestor(config)
+        if evidence_attestor is not None:
+            await evidence_attestor.start()
+        self._evidence_attestor = evidence_attestor
+
         dispatcher = ActionDispatcher(
             state_store=self._state_store,
             alert_sender=alert_sender,
             emergency_sms_sender=sms_action,
             offline_token_verifier=_build_offline_token_verifier(config.actions),
             status_indicator=status_indicator,
+            evidence_attestor=evidence_attestor,
             config={
                 "operator_contact": _operator_contact,
                 "secondary_contact": _secondary_contact,
@@ -934,6 +942,8 @@ class OriRuntime:
 
         await self._start_health_socket_if_enabled(config)
 
+        await self._reconcile_pending_attestations()
+
         if status_indicator is not None:
             status_indicator.set_runtime_state(RuntimeHealthState.NORMAL)
 
@@ -1007,6 +1017,14 @@ class OriRuntime:
                 logger.exception("[shutdown] error closing health socket")
             self._health_socket_server = None
             self._health_socket_path = ""
+
+        # 2e. Stop evidence attestor executor.
+        if self._evidence_attestor is not None:
+            try:
+                self._evidence_attestor.close()
+            except Exception:
+                logger.exception("[shutdown] error closing evidence attestor")
+            self._evidence_attestor = None
 
         # 3. Close HAL adapters
         for adapter in self._adapters:
@@ -1764,6 +1782,89 @@ class OriRuntime:
             cfg.get("tier_d_critical_warning_threshold", 3)
         )
 
+    async def _reconcile_pending_attestations(self) -> None:
+        """Repair evidence gaps left by crashes or signing outages.
+
+        Option B append-after-log (DECISIONS.md 2026-07-10): rows stuck in
+        ``pending``/``failed`` are re-signed with their original timestamps
+        (the chain records write time separately, so late signing is
+        transparent) and marked ``reconciled``. Rows that still cannot be
+        signed stay ``failed`` and remain visible as gaps — never fabricated.
+        """
+        if self._evidence_attestor is None or self._state_store is None:
+            return
+        if not hasattr(self._state_store, "get_actions_needing_attestation"):
+            return
+        try:
+            rows = await self._state_store.get_actions_needing_attestation()
+        except Exception:
+            logger.exception("[evidence] reconciliation scan failed")
+            return
+        if not rows:
+            return
+        repaired = 0
+        for row in rows:
+            # reconciled=True stamps the signed payload as late evidence —
+            # a verifier must never mistake it for emission-time signing.
+            seq = await self._evidence_attestor.attest_action(
+                dict(row), reconciled=True
+            )
+            status = "reconciled" if seq is not None else "failed"
+            try:
+                await self._state_store.set_action_attestation(
+                    int(row["id"]), status=status, attestation_seq=seq
+                )
+            except Exception:
+                logger.exception(
+                    "[evidence] failed to record reconciliation for action id=%s",
+                    row.get("id"),
+                )
+                continue
+            if seq is not None:
+                repaired += 1
+        remaining = len(rows) - repaired
+        logger.warning(
+            "[evidence] startup reconciliation: %d repaired, %d still unsigned",
+            repaired,
+            remaining,
+        )
+
+    async def _evidence_health(self) -> dict[str, Any]:
+        attestor = self._evidence_attestor
+        enabled = bool(
+            self._config is not None
+            and getattr(self._config, "evidence", None) is not None
+            and self._config.evidence.enabled
+        )
+        health: dict[str, Any] = {
+            "enabled": enabled,
+            "available": bool(attestor is not None and attestor.available),
+            "public_key_hex": attestor.public_key_hex if attestor else "",
+            "artifact_version": attestor.artifact_version if attestor else "",
+            "protocol_version": attestor.protocol_version if attestor else "",
+            "chain_head_hash": None,
+            "pending_export_count": None,
+            "last_attested_action_id": None,
+            "attestation_gap_count": 0,
+            "status_counts": {},
+        }
+        if attestor is not None and attestor.available:
+            health["chain_head_hash"] = await attestor.chain_head_hash()
+            health["pending_export_count"] = await attestor.pending_export_count()
+        if (
+            enabled
+            and self._state_store is not None
+            and hasattr(self._state_store, "get_attestation_summary")
+        ):
+            try:
+                summary = await self._state_store.get_attestation_summary()
+                health["last_attested_action_id"] = summary["last_attested_action_id"]
+                health["attestation_gap_count"] = summary["attestation_gap_count"]
+                health["status_counts"] = summary["status_counts"]
+            except Exception:
+                logger.exception("[evidence] attestation summary read failed")
+        return health
+
     async def _build_health_snapshot(self) -> dict[str, Any]:
         now = now_ms()
         uptime_s = (
@@ -1885,6 +1986,7 @@ class OriRuntime:
                 ),
                 "senders": remote_command_lockout_senders,
             },
+            "evidence": await self._evidence_health(),
         }
 
     def _gateway_broker_posture_health(self) -> dict[str, Any]:
@@ -3378,6 +3480,31 @@ def _build_gateway_reasoner(config: Config) -> MqttGatewayReasoner | None:
         config.device.id,
     )
     return reasoner
+
+
+def _build_evidence_attestor(config: Config) -> EvidenceAttestor | None:
+    """Build the optional Tier C/D evidence attestor (Verity chain client).
+
+    Evidence signing is opt-in via ``evidence.enabled``. A configured but
+    missing device secret fails startup loudly — a silently unkeyed evidence
+    chain would defeat the point of enabling it.
+    """
+    evidence = getattr(config, "evidence", None)
+    if evidence is None or not bool(evidence.enabled):
+        return None
+    secret = os.environ.get(evidence.device_secret_env, "")
+    if not secret:
+        raise ValueError(
+            "evidence signing is enabled but the configured device-secret "
+            f"environment variable ({evidence.device_secret_env}) is empty; "
+            "provision a random install secret (not just the device serial)"
+        )
+    return EvidenceAttestor(
+        db_path=evidence.db_path,
+        key_path=evidence.key_path,
+        device_secret=secret,
+        device_id=config.device.id,
+    )
 
 
 def _build_gateway_message_auth(config: Config) -> GatewayMessageAuthenticator | None:
