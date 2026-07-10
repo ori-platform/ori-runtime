@@ -153,13 +153,27 @@ class MqttRuntimeNodeHeartbeatPublisher:
         if not isinstance(active_triggers, list):
             active_triggers = []
 
-        return {
+        payload: dict[str, Any] = {
             "device_id": self._device_id,
             "status": status,
             "last_seen_ms": current_ms,
             "gateway_seen_ms": 0,
             "active_triggers": [str(item) for item in active_triggers],
         }
+
+        # Evidence-chain truncation signal: the heartbeat carries the chain
+        # head so the site can spot a truncated/reset local chain in near
+        # real time. The persisted chain remains the evidence object.
+        evidence = snapshot.get("evidence")
+        if isinstance(evidence, dict) and evidence.get("enabled"):
+            payload["evidence"] = {
+                "chain_head_hash": str(evidence.get("chain_head_hash") or ""),
+                "attestation_gap_count": int(
+                    evidence.get("attestation_gap_count") or 0
+                ),
+                "available": bool(evidence.get("available")),
+            }
+        return payload
 
 
 def _default_client_factory(*, client_id: str) -> Any:

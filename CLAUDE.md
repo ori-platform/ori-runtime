@@ -890,6 +890,7 @@ AT_SENDER_ID=ORI
 
 # Cloud provider keys belong in the gateway/product environment, not runtime.
 GATEWAY_SHARED_SECRET=  # Site-local MQTT envelope HMAC/encryption root secret.
+ORI_EVIDENCE_DEVICE_SECRET=  # Random install secret sealing the evidence-chain device key.
 GATEWAY_PREVIOUS_SHARED_SECRET=  # Optional verify-only rotation secret.
 
 # Relay control (if physical relay wired)

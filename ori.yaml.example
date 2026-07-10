@@ -496,6 +496,17 @@ state:
     encrypted_path_prefixes: []      # e.g. ["/var/lib/ori-encrypted"]; required for production unless marker_file is set
     marker_file: ""                  # optional existing marker file; startup fails if missing
 
+evidence:
+  enabled: false                     # sign Tier C/D actions into the local Verity evidence chain
+  db_path: ori_verity.db             # chain database (separate from ori_state.db)
+  key_path: ori_verity.key           # sealed Ed25519 device key; created at first start (provisioning)
+  device_secret_env: ORI_EVIDENCE_DEVICE_SECRET # env var name; MUST be a random install secret, not just the device serial
+  # First start logs the device verification anchor (public key hex).
+  # Register that anchor OFF-DEVICE at provisioning — signed evidence
+  # without a registered anchor has weak provenance. Signed evidence
+  # cannot be backfilled: actions taken while signing is unavailable
+  # are recorded as attestation gaps, never fabricated later.
+
 logging:
   level: INFO                        # DEBUG | INFO | WARNING | ERROR
   file: ori.log

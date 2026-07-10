@@ -208,6 +208,16 @@ class LoggingConfig:
 
 
 @dataclass
+class EvidenceConfig:
+    """On-device evidence signing (Verity chain) configuration."""
+
+    enabled: bool = False
+    db_path: str = "ori_verity.db"
+    key_path: str = "ori_verity.key"
+    device_secret_env: str = "ORI_EVIDENCE_DEVICE_SECRET"
+
+
+@dataclass
 class Config:
     device: DeviceConfig
     sensors: list[SensorConfig]
@@ -224,6 +234,7 @@ class Config:
     health_socket: dict = field(default_factory=dict)
     os_sandbox: dict = field(default_factory=dict)
     state: StateConfig = field(default_factory=StateConfig)
+    evidence: EvidenceConfig = field(default_factory=EvidenceConfig)
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -297,6 +308,7 @@ class Config:
         health_socket = _parse_health_socket(data.get("health_socket"))
         os_sandbox = _parse_os_sandbox(data.get("os_sandbox"))
         state_cfg = _parse_state(data.get("state"))
+        evidence_cfg = _parse_evidence(data.get("evidence"))
         database_path = _parse_database_path(data.get("database"))
         logging_cfg = _parse_logging(data.get("logging"))
         _validate_coap_sensor_allowlist(sensors, actions.coap)
@@ -534,6 +546,7 @@ class Config:
             health_socket=health_socket,
             os_sandbox=os_sandbox,
             state=state_cfg,
+            evidence=evidence_cfg,
             logging=logging_cfg,
             database_path=database_path,
             raw=data,
@@ -2107,6 +2120,42 @@ def _parse_os_sandbox(data: Any) -> dict:
     if out["max_output_bytes"] < 4096:
         raise ConfigValidationError("os_sandbox.max_output_bytes must be >= 4096.")
     return out
+
+
+def _parse_evidence(data: Any) -> EvidenceConfig:
+    if data is None:
+        return EvidenceConfig()
+    if not isinstance(data, dict):
+        raise ConfigValidationError("'evidence' section must be a mapping.")
+    enabled = is_truthy(data.get("enabled", False))
+    db_path = str(data.get("db_path", "ori_verity.db") or "").strip()
+    key_path = str(data.get("key_path", "ori_verity.key") or "").strip()
+    device_secret_env = str(
+        data.get("device_secret_env", "ORI_EVIDENCE_DEVICE_SECRET") or ""
+    ).strip()
+    if enabled:
+        if not db_path:
+            raise ConfigValidationError(
+                "evidence.db_path is required when evidence.enabled is true"
+            )
+        if not key_path:
+            raise ConfigValidationError(
+                "evidence.key_path is required when evidence.enabled is true"
+            )
+        if not _ENV_NAME_RE.match(device_secret_env):
+            raise ConfigValidationError(
+                "evidence.device_secret_env must be a valid environment variable name"
+            )
+        if db_path == key_path:
+            raise ConfigValidationError(
+                "evidence.db_path and evidence.key_path must differ"
+            )
+    return EvidenceConfig(
+        enabled=enabled,
+        db_path=db_path,
+        key_path=key_path,
+        device_secret_env=device_secret_env,
+    )
 
 
 def _parse_state(data: Any) -> StateConfig:

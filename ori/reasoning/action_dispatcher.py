@@ -29,6 +29,7 @@ from ori.network.events import ActionResult, ActionTier, ReasoningResult
 from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
+from ori.security.evidence import tier_requires_attestation
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_commands import extract_remote_command_payload
 from ori.utils.bool_utils import is_truthy
@@ -156,11 +157,13 @@ class ActionDispatcher:
         offline_token_verifier: OfflineTierCTokenVerifier | None = None,
         status_indicator: Any = None,
         config: dict | None = None,
+        evidence_attestor: Any = None,
     ) -> None:
         self._state_store = state_store
         self._alert_sender = alert_sender
         self._emergency_sms_sender = emergency_sms_sender
         self._offline_token_verifier = offline_token_verifier
+        self._evidence_attestor = evidence_attestor
         self._config: dict = config or {}
         self._log_action_decisions = bool(
             self._config.get("log_action_decisions", True)
@@ -1383,23 +1386,90 @@ class ActionDispatcher:
             )
 
         trigger_name = context.event.sensor_id if context.event else ""
+        attest = bool(
+            self._evidence_attestor is not None
+            and tier_requires_attestation(action_result.tier)
+        )
+        action_row_id: int | None = None
+        sensor_id = ""
         try:
             if hasattr(store, "log_action_for_event"):
                 reading = context.event.reading if context.event else None
-                await store.log_action_for_event(
+                sensor_id = reading.sensor_id if reading is not None else ""
+                action_row_id = await store.log_action_for_event(
                     action_result,
                     trigger_name=trigger_name,
                     device_id=context.event.device_id if context.event else "",
-                    sensor_id=reading.sensor_id if reading is not None else "",
+                    sensor_id=sensor_id,
                     sensor_type=reading.sensor_type if reading is not None else "",
+                    attestation_pending=attest,
                 )
             else:
-                await store.log_action(action_result, trigger_name)
+                action_row_id = await store.log_action(
+                    action_result, trigger_name, attestation_pending=attest
+                )
         except Exception:
             logger.exception(
                 "ActionDispatcher: failed to log action=%r to action_log",
                 action_result.action_name,
             )
+            return
+
+        if attest and action_row_id:
+            await self._attest_action(
+                store, action_row_id, action_result, trigger_name, sensor_id
+            )
+
+    async def _attest_action(
+        self,
+        store: Any,
+        action_row_id: int,
+        action_result: ActionResult,
+        trigger_name: str,
+        sensor_id: str,
+    ) -> None:
+        """Sign a Tier C/D action into the evidence chain (append-after-log).
+
+        Option B atomicity (DECISIONS.md 2026-07-10): the action_log row is
+        committed first with ``attestation_status='pending'``; signing then
+        moves it to ``signed`` or ``failed``. Failures never affect the
+        action outcome and are repaired by startup reconciliation.
+        """
+        row = {
+            "id": action_row_id,
+            "action_name": action_result.action_name,
+            "tier": action_result.tier,
+            "executed": action_result.executed,
+            "approved": action_result.approved,
+            "action_taken": action_result.action_taken,
+            "trigger_name": trigger_name,
+            "proposal_id": action_result.proposal_id,
+            "correlation_id": action_result.correlation_id,
+            "sensor_id": sensor_id,
+            "timestamp": action_result.timestamp,
+        }
+        try:
+            seq = await self._evidence_attestor.attest_action(row)
+            status = "signed" if seq is not None else "failed"
+            if hasattr(store, "set_action_attestation"):
+                await store.set_action_attestation(
+                    action_row_id, status=status, attestation_seq=seq
+                )
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: evidence attestation errored for action_log id=%s",
+                action_row_id,
+            )
+            try:
+                if hasattr(store, "set_action_attestation"):
+                    await store.set_action_attestation(
+                        action_row_id, status="failed", attestation_seq=None
+                    )
+            except Exception:
+                logger.exception(
+                    "ActionDispatcher: failed to mark attestation failure for id=%s",
+                    action_row_id,
+                )
 
     def _resolve_state_store(self, context: SkillContext) -> Any:
         if hasattr(context, "state_store") and context.state_store is not None:
