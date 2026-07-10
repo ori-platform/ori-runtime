@@ -109,7 +109,10 @@ runtimes at the site subscribe to it.  The gateway publishes to it every 30 s
 (configurable).  When `gateway.auth.enabled: true`, the heartbeat payload must
 carry a valid HMAC ``auth`` envelope verified by
 ``GatewayMessageAuthenticator.verify_broadcast``; unsigned heartbeats are
-discarded with a WARNING.
+discarded with a WARNING. Staging/production posture rejects auth-disabled
+gateway brokers at config load — loopback included, since local processes can
+still reach a loopback broker (development deployments get a WARNING) — so
+hardened deployments never accept unsigned heartbeats.
 
 `ori/{device_id}/runtime/heartbeat` is the runtime's device-scoped liveness
 signal to the gateway. It is not sensor data and must not be routed through the
@@ -234,7 +237,7 @@ gateway reasoning/export transport also supports `mqtts://` broker URLs and the
 - [ ] Retained publishes are forbidden by client policy or broker policy on
       `ori/{device_id}/reasoning/*`, `ori/{device_id}/export/*`, and
       heartbeat topics.
-- [ ] `gateway.auth.enabled: true` in production.
+- [ ] `gateway.auth.enabled: true` for every gateway broker, loopback included.
 - [ ] `GATEWAY_SHARED_SECRET` is unique per site and separate from remote-command
       secrets.
 - [ ] Broker credentials and HMAC secret are provisioned outside git-tracked

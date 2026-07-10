@@ -17,10 +17,12 @@ what it is updating.
 
 When ``gateway.auth.enabled: true`` the heartbeat payload must carry a valid
 HMAC ``auth`` envelope (see ``GatewayMessageAuthenticator.verify_broadcast``).
-Unsigned, stale, or replayed heartbeats are discarded with a WARNING.  When
-auth is disabled the subscriber accepts unsigned heartbeats, which is the
-correct default for LAN deployments that rely on broker ACLs rather than
-payload-level HMAC (see DECISIONS.md 2026-06-06 and 2026-06-10).
+Unsigned, stale, or replayed heartbeats are discarded with a WARNING.  Staging
+and production posture reject auth-disabled gateway brokers at config load —
+loopback included, since local processes can still reach a loopback broker
+(development deployments log a WARNING instead); unsigned heartbeats are
+therefore limited to development deployments (see DECISIONS.md 2026-06-06 and
+2026-06-10).
 
 Authentication note
 -------------------

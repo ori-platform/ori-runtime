@@ -66,9 +66,14 @@ deterministic escalation policy or an explicit trigger floor. Cloud reasoning,
 when used, is a gateway backend, not a runtime dependency. The reasoning tier
 and action tier are selected together — they are not independent decisions.
 
-Runtime-gateway MQTT envelopes are optionally HMAC-authenticated. Production
-sites set `gateway.auth.enabled: true` and provide the shared secret through the
-environment variable named by `gateway.auth.shared_secret_env`. The gateway
+Runtime-gateway MQTT envelopes are optionally HMAC-authenticated. Staging and
+production posture requires `gateway.auth.enabled: true` and
+`gateway.encryption.enabled: true` for every enabled gateway broker — loopback
+included, since local processes can still reach a loopback broker — and
+additionally requires TLS, broker credentials, and declared broker posture for
+non-loopback brokers at config load; development deployments log a
+consolidated WARNING instead. The shared secret is provided through the environment
+variable named by `gateway.auth.shared_secret_env`. The gateway
 secret is separate from remote-command secrets. During rotation,
 `gateway.auth.previous_shared_secret_env` is verify-only; new outbound runtime
 messages are signed with the current secret. Authenticated deployments sign
@@ -92,6 +97,12 @@ SMS webhook ingress hardening is documented in `docs/SMS_WEBHOOK_SECURITY.md`.
 Runtime sender allowlisting is necessary but cannot prove carrier-origin
 identity. Internet-exposed Africa's Talking ingress must use source CIDR
 allowlisting plus an HMAC signing bridge or equivalent raw-body signing path.
+
+Authenticated remote commands support sender lockout: rejected-command volume
+and abuse incidents classify sender risk, and with
+`security.remote_commands.lockout.enforcement_enabled: true` critical-risk
+senders are blocked before a command can mutate runtime state. Production
+posture requires lockout enforcement when remote commands are enabled.
 
 ---
 

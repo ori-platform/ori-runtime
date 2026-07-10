@@ -300,6 +300,7 @@ class Config:
         database_path = _parse_database_path(data.get("database"))
         logging_cfg = _parse_logging(data.get("logging"))
         _validate_coap_sensor_allowlist(sensors, actions.coap)
+        _warn_gateway_network_posture(gateway)
         _validate_production_security_posture(
             device=device,
             gateway=gateway,
@@ -1052,6 +1053,53 @@ def _parse_gateway_broker_posture(data: Any) -> dict[str, Any]:
     }
 
 
+def _warn_gateway_network_posture(gateway: GatewayConfig) -> None:
+    """Warn about weak non-loopback gateway broker posture in development.
+
+    Staging and production profiles fail closed on the same conditions in
+    ``_validate_production_security_posture``; development deployments get a
+    single consolidated WARNING instead so LAN testing stays possible.
+    """
+    if not bool(gateway.enabled):
+        return
+
+    broker_url = str(gateway.broker_url or "").strip()
+    if not broker_url:
+        return
+    parsed = urlparse(broker_url if "://" in broker_url else f"mqtt://{broker_url}")
+    if parsed.hostname is None or _is_loopback_host(parsed.hostname):
+        return
+
+    missing: list[str] = []
+    if parsed.scheme.lower() != "mqtts" and not is_truthy(
+        gateway.tls.get("enabled", False)
+    ):
+        missing.append("gateway TLS (mqtts:// or gateway.tls.enabled: true)")
+    if not is_truthy(gateway.auth.get("enabled", False)):
+        missing.append("gateway.auth.enabled: true")
+    if not is_truthy(gateway.encryption.get("enabled", False)):
+        missing.append("gateway.encryption.enabled: true")
+
+    broker_posture = gateway.broker_posture
+    if broker_posture.get("deployment_check") != "required":
+        missing.append("gateway.broker_posture.deployment_check: required")
+    if broker_posture.get("anonymous_access") != "disabled":
+        missing.append("gateway.broker_posture.anonymous_access: disabled")
+    if broker_posture.get("acl_policy") != "per_device_required":
+        missing.append("gateway.broker_posture.acl_policy: per_device_required")
+    if not is_truthy(broker_posture.get("require_credentials", False)):
+        missing.append("gateway.broker_posture.require_credentials: true")
+    if not (parsed.username and parsed.password):
+        missing.append("MQTT username and password in gateway.broker_url")
+
+    if missing:
+        logger.warning(
+            "[config] non-loopback gateway broker is missing hardening that "
+            "staging/production posture requires: %s",
+            "; ".join(missing),
+        )
+
+
 def _parse_telemetry_export(data: Any) -> TelemetryExportConfig:
     if data is None:
         return TelemetryExportConfig()
@@ -1665,15 +1713,6 @@ def _parse_security(data: Any) -> dict:
         lockout = normalize_remote_command_lockout_config(remote.get("lockout"))
     except ValueError as exc:
         raise ConfigValidationError(str(exc)) from exc
-    raw_lockout = remote.get("lockout") or {}
-    if isinstance(raw_lockout, dict) and (
-        str(raw_lockout.get("enforcement_enabled", "")).strip().lower() == "true"
-        or raw_lockout.get("enforcement_enabled") is True
-    ):
-        logger.warning(
-            "[config] security.remote_commands.lockout.enforcement_enabled is ignored; "
-            "remote command lockout enforcement is not available yet."
-        )
 
     out["remote_commands"] = {
         **remote,
@@ -1769,6 +1808,15 @@ def _validate_production_security_posture(
                 "production posture requires "
                 "security.remote_commands.allowed_senders when remote commands are enabled"
             )
+        lockout = (
+            remote.get("lockout") if isinstance(remote.get("lockout"), dict) else {}
+        )
+        if not is_truthy(lockout.get("enforcement_enabled", False)):
+            raise ConfigValidationError(
+                "production posture requires "
+                "security.remote_commands.lockout.enforcement_enabled: true "
+                "when remote commands are enabled"
+            )
 
     if gateway.enabled:
         broker_url = str(gateway.broker_url or "").strip()
@@ -1782,22 +1830,25 @@ def _validate_production_security_posture(
             raise ConfigValidationError(
                 "production posture requires gateway.broker_url to include a hostname"
             )
+        # Payload-level protections do not depend on network position: a
+        # loopback broker is still reachable by other local processes, so
+        # HMAC auth and export encryption are required for every broker.
+        if not is_truthy(gateway.auth.get("enabled", False)):
+            raise ConfigValidationError(
+                "production posture requires gateway.auth.enabled: true "
+                "when gateway is enabled"
+            )
+        if not is_truthy(gateway.encryption.get("enabled", False)):
+            raise ConfigValidationError(
+                "production posture requires gateway.encryption.enabled: true "
+                "when gateway is enabled"
+            )
         non_loopback = not _is_loopback_host(parsed.hostname)
         if non_loopback:
             if scheme != "mqtts" and not is_truthy(gateway.tls.get("enabled", False)):
                 raise ConfigValidationError(
                     "production posture requires gateway TLS for non-loopback brokers "
                     "(use mqtts:// or gateway.tls.enabled: true)"
-                )
-            if not is_truthy(gateway.auth.get("enabled", False)):
-                raise ConfigValidationError(
-                    "production posture requires gateway.auth.enabled: true "
-                    "for non-loopback brokers"
-                )
-            if not is_truthy(gateway.encryption.get("enabled", False)):
-                raise ConfigValidationError(
-                    "production posture requires gateway.encryption.enabled: true "
-                    "for non-loopback brokers"
                 )
             broker_posture = gateway.broker_posture
             if broker_posture.get("deployment_check") != "required":
