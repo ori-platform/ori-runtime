@@ -2,15 +2,16 @@
 
 ## Versioned Notes
 
+- [`v2.0.0`](v2.0.0.md) — hardened runtime: fail-closed production security posture
 - [`v1.0.0`](v1.0.0.md) — first stable runtime release
 
 ## Version
 
-`v1.0.0`
+`v2.0.0`
 
 ## Stable Scope
 
-Guaranteed by the runtime v1 line:
+Guaranteed by the runtime v1/v2 line:
 
 - Tier A/B/C/D action authority invariants
 - deterministic Tier D rule-only safety behavior
