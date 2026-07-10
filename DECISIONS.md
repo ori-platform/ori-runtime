@@ -1258,3 +1258,125 @@ Non-goals:
 - The runtime does not maintain provider IP range lists automatically.
 - The runtime does not prove carrier-origin sender identity.
 - The runtime does not replace firewall or reverse-proxy controls.
+
+---
+
+## 2026-07-10 — Rust Is For Stable Kernels, Not A Runtime Rewrite
+
+**Status:** Accepted
+
+**Supersedes:** the early Phase 2 migration sketch that listed the HAL as the
+first Rust migration target ("high I/O frequency... benefits most from
+zero-overhead threading") and the EventBus as second.
+
+The runtime stays a Python modular monolith. Rust is reserved for small,
+semantically frozen kernels where Python's failure modes have physical or
+evidentiary consequences.
+
+Decisions:
+
+- **The general adapter HAL stays Python — permanently, not "for now".** The
+  adapter surface is the highest-churn code in the repo (every new inverter,
+  meter, and protocol lands here) and the primary community-contribution
+  surface. Freezing it in Rust would raise contribution friction exactly
+  where the open-core strategy needs it lowest. This reverses the earlier
+  migration plan; the community argument outranks the I/O-throughput argument
+  at real sensor rates (~1 Hz). Rust may own narrow safety-kernel I/O paths
+  that are not part of the community adapter surface; those are kernel
+  internals, not HAL adapters.
+- **EventBus stays Python.** It is async orchestration glue coupled to skills
+  and hooks, which are Python-facing by design. A Rust EventBus buys
+  microseconds at IoT event rates and costs a hostile FFI boundary.
+- **Rust targets, in order:** (1) the verifiable evidence chain (already built
+  as a separate crate), (2) a deterministic Tier D safety kernel, (3) selected
+  low-level safety I/O paths only as the kernel needs them. The deduplicator
+  joins the kernel only as part of its deterministic input path, not as a
+  standalone rewrite.
+
+Rationale for the safety kernel: on intermittent power, devices restart
+constantly and the Python runtime takes seconds to tens of seconds to boot
+(config, DB, local model load). During that window Tier D evaluation is
+absent; a commissioned fail-safe relay/contactor installation can cover the
+de-energised default, but active hazard evaluation is absent until the
+runtime is up — and NC wiring alone does not prove fail-safe behaviour for
+energise-to-trip or incorrectly wired downstream installations. A Rust kernel
+boots in milliseconds and holds the safety line through brownout cycles and
+Python crashes.
+
+Phasing and versioning:
+
+- v2.x: hardened Python runtime; evidence-chain signing lands as additive
+  minor releases. Release notes must distinguish v2 hardening from future
+  Rust authority.
+- v3.0.0: the Rust safety kernel becomes authoritative for Tier D. Before the
+  authority flip, the kernel runs in shadow mode with Python authoritative,
+  and the flip requires ALL of:
+  - zero unexplained divergences between the Rust kernel and the Python rule
+    engine across a full replay of the recorded event corpus from all live
+    sites;
+  - 30 consecutive live deployment days in shadow mode;
+  - a minimum of 250,000 rule evaluations observed in shadow mode;
+  - a minimum of 50 Tier D boundary evaluations, from replay or labelled
+    synthetic injection (injection must be logged as such);
+  - every divergence classified and signed off — "zero divergences" may not
+    be satisfied by zero evaluations.
+
+Non-goals:
+
+- No broad rewrite of runtime.py, skills, actions, or reasoning orchestration.
+- No Rust in the skills SDK or hooks surface.
+
+---
+
+## 2026-07-10 — The Evidence Chain Is Core Infrastructure, Consumed As A Pinned Dependency
+
+**Status:** Accepted
+
+The Verity evidence chain (device-side Ed25519 signing + hash-chain ledger,
+built in its own repository) is core runtime infrastructure, not an optional
+feature, because **signed evidence cannot be backfilled**: an event not signed
+at emission time is permanently unverifiable to any third-party verifier
+(insurers, auditors, financiers). The start date of on-device signing is the
+one irreversible clock in the roadmap; export, ingestion, and receipt
+verification can all arrive later and retroactively consume the chain, but
+signing cannot be retrofitted onto history.
+
+Decisions:
+
+- **Separate repository + exact pin is the default boundary.** The runtime
+  consumes the evidence crate as an exactly pinned, prebuilt artifact (wheel
+  or static binary in the offline wheelhouse), never a floating version. An
+  evidence protocol is more credible to auditors as an independently
+  specified, independently CI'd artifact than as a subdirectory of the thing
+  it attests — and the separation keeps its cross-compilation CI out of the
+  runtime's pipeline entirely. Vendoring into this repo is reconsidered only
+  if the boundary churns under packaging pressure, and would be a packaging
+  decision, not an architectural one.
+- **The irreducible first production slice** is: device key generated at
+  provisioning/install time; public verification anchor registered outside
+  the device; Tier C/D decision/action events signed at emission on the real
+  dispatch path; chain head persisted locally; runtime health and node
+  heartbeat expose evidence status. Heartbeat visibility is a truncation
+  *signal*, not the archive — the locally persisted, exportable chain is the
+  evidence object.
+- **Atomicity choice (documented fork):** first implementation uses
+  **append-after-log with reconciliation** (Option B), explicitly and
+  testedly weaker than single-transaction atomicity. Every action_log row
+  carries an `attestation_status` (`pending | signed | failed | reconciled`);
+  startup reconciliation detects, logs, and repairs missing attestations
+  where possible; health exposes `attestation_status` counts,
+  `chain_head_hash`, `last_attested_action_id`, and `attestation_gap_count`.
+  Single-transaction append (Option A — evidence append and action log in one
+  SQLite transaction or a formally equivalent commit protocol) is the target
+  for third-party-verifier-grade claims and requires extending the FFI
+  boundary to share the state store's connection.
+- Signing on Android/Termux may use the existing subprocess/JSON CLI bridge
+  pattern with a static binary if the Python-ABI wheel path proves costly;
+  the chain format is identical either way.
+
+Non-goals:
+
+- The runtime never fabricates or backfills evidence for events that predate
+  signing; gaps are recorded as gaps.
+- Chain export receipts and ingestion-side verification are contract work in
+  the platform specs, not runtime scope.
