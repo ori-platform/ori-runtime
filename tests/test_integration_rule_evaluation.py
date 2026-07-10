@@ -127,6 +127,91 @@ async def test_below_dangerous_overcurrent_threshold_does_not_match_tier_d() -> 
 
 
 @pytest.mark.asyncio
+async def test_grid_overvoltage_remains_tier_d_when_generator_action_is_available() -> (
+    None
+):
+    result = await evaluate_sensor_reading(
+        RuleEvaluationRequest(
+            sensor_id="grid-main_voltage",
+            sensor_type="voltage",
+            value=271.0,
+            unit="V",
+            timestamp_ms=1_710_000_000_123,
+            quality=1.0,
+            device_id="demo-site-a",
+            metadata={"source": "demo-api"},
+        )
+    )
+
+    assert result.matched is True
+    assert result.action_tier == "D"
+    assert result.trigger_name == "voltage_overvoltage"
+    assert result.bypass_llm is True
+    assert result.proposed_action == "switch_to_generator"
+    assert result.default_actions == (
+        "switch_to_generator",
+        "alert_whatsapp",
+        "log_to_dashboard",
+    )
+
+
+@pytest.mark.asyncio
+async def test_grid_sag_switches_to_inverter_as_tier_b_when_context_allows() -> None:
+    result = await evaluate_sensor_reading(
+        RuleEvaluationRequest(
+            sensor_id="grid-main_voltage",
+            sensor_type="voltage",
+            value=174.0,
+            unit="V",
+            timestamp_ms=1_710_000_000_123,
+            quality=1.0,
+            device_id="demo-site-a",
+            metadata={"source": "demo-api"},
+            skill_config_overrides={"grid_to_inverter_active": 1},
+        )
+    )
+
+    assert result.matched is True
+    assert result.action_tier == "B"
+    assert result.trigger_name == "grid_sag_switch_to_inverter"
+    assert result.proposed_action == "switch_to_inverter"
+    assert result.default_actions == (
+        "switch_to_inverter",
+        "alert_whatsapp",
+        "log_to_dashboard",
+    )
+
+
+@pytest.mark.asyncio
+async def test_grid_outage_switches_to_generator_as_tier_b_when_context_allows() -> (
+    None
+):
+    result = await evaluate_sensor_reading(
+        RuleEvaluationRequest(
+            sensor_id="grid-main_voltage",
+            sensor_type="voltage",
+            value=0.0,
+            unit="V",
+            timestamp_ms=1_710_000_000_123,
+            quality=1.0,
+            device_id="demo-site-a",
+            metadata={"source": "demo-api"},
+            skill_config_overrides={"grid_to_generator_active": 1},
+        )
+    )
+
+    assert result.matched is True
+    assert result.action_tier == "B"
+    assert result.trigger_name == "grid_outage_switch_to_generator"
+    assert result.proposed_action == "switch_to_generator"
+    assert result.default_actions == (
+        "switch_to_generator",
+        "alert_whatsapp",
+        "log_to_dashboard",
+    )
+
+
+@pytest.mark.asyncio
 async def test_skill_config_override_changes_threshold_without_editing_skill() -> None:
     result = await evaluate_sensor_reading(
         _request(52.0, skill_config_overrides={"dangerous_overcurrent_threshold": 50.0})
