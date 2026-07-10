@@ -1243,9 +1243,7 @@ class TestLoadExample:
             """,
         )
 
-        with pytest.raises(
-            ConfigValidationError, match="gateway.auth.enabled: true"
-        ):
+        with pytest.raises(ConfigValidationError, match="gateway.auth.enabled: true"):
             Config.load(yaml_path)
 
     def test_production_posture_rejects_gateway_broker_without_hostname(self, tmp_path):
