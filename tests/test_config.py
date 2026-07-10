@@ -446,6 +446,66 @@ class TestLoadExample:
         assert cfg.gateway.auth["enabled"] is True
         assert cfg.gateway.encryption["enabled"] is True
 
+    def test_non_loopback_gateway_warns_in_development(self, tmp_path, caplog):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+        with caplog.at_level("WARNING"):
+            cfg = Config.load(yaml_path)
+
+        assert cfg.gateway.enabled is True
+        assert any(
+            "non-loopback gateway broker is missing hardening" in record.message
+            for record in caplog.records
+        )
+
+    def test_non_loopback_gateway_fails_in_production(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(
+            ConfigValidationError, match="production posture requires gateway"
+        ):
+            Config.load(yaml_path)
+
     def test_gateway_auth_bounds_must_be_positive(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
@@ -1127,6 +1187,11 @@ class TestLoadExample:
             gateway:
               enabled: true
               broker_url: mqtt://127.0.0.1:1883
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+              encryption:
+                enabled: true
             actions:
               primary_alert_channel: sms
               sms:
@@ -1152,6 +1217,36 @@ class TestLoadExample:
         assert cfg.gateway.enabled is True
         assert cfg.gateway.broker_url == "mqtt://127.0.0.1:1883"
         assert cfg.database_path == str(encrypted_dir / "ori_state.db")
+
+    def test_production_posture_requires_auth_for_loopback_gateway(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://127.0.0.1:1883
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(
+            ConfigValidationError, match="gateway.auth.enabled: true"
+        ):
+            Config.load(yaml_path)
 
     def test_production_posture_rejects_gateway_broker_without_hostname(self, tmp_path):
         yaml_path = _write_yaml(
@@ -1708,6 +1803,8 @@ class TestLoadExample:
                 allowed_senders:
                   sms:
                     - "+2348012345678"
+                lockout:
+                  enforcement_enabled: true
             state:
               encryption:
                 mode: filesystem_required
@@ -1774,7 +1871,41 @@ class TestLoadExample:
         assert lockout["critical_incident_threshold"] == 4
         assert lockout["elevated_rejection_threshold"] == 8
         assert lockout["critical_rejection_threshold"] == 20
-        assert lockout["enforcement_enabled"] is False
+        assert lockout["enforcement_enabled"] is True
+
+    def test_production_remote_commands_require_lockout_enforcement(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              config_signature:
+                require_signed: false
+              skills:
+                require_signed: true
+              remote_commands:
+                enabled: true
+                allow_unlisted_senders: false
+                allowed_senders:
+                  sms:
+                    - "+2348012345678"
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="lockout.enforcement_enabled"):
+            Config.load(yaml_path)
 
     def test_remote_command_rejects_duplicate_previous_secret_env(self, tmp_path):
         yaml_path = _write_yaml(

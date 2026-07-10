@@ -39,6 +39,7 @@ def _command(
     command: str,
     command_id: str = "cmd-1",
     args: dict | None = None,
+    from_number: str = "",
 ) -> RemoteCommand:
     return RemoteCommand(
         command_id=command_id,
@@ -48,6 +49,7 @@ def _command(
         command=command,
         args=args or {},
         signature="hmac-sha256:test",
+        from_number=from_number,
     )
 
 
@@ -172,7 +174,7 @@ async def test_refresh_policy_dry_run_is_logged_without_refresh(store):
     assert rows[0]["executed"] is False
 
 
-async def test_advisory_lockout_risk_does_not_block_valid_signed_command(store):
+async def test_lockout_risk_does_not_block_when_enforcement_disabled(store):
     runtime = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(device_policy={"enabled": True})
@@ -194,12 +196,55 @@ async def test_advisory_lockout_risk_does_not_block_valid_signed_command(store):
     }
 
     result = await runtime._handle_remote_command(
-        _command("REFRESH_POLICY", command_id="refresh-under-risk")
+        _command(
+            "REFRESH_POLICY",
+            command_id="refresh-under-risk",
+            from_number="+2348012345678",
+        )
     )
 
     assert result.status == STATUS_EXECUTED
     assert result.executed is True
     runtime._refresh_remote_device_policy_once.assert_awaited_once()
+
+
+async def test_lockout_enforcement_blocks_critical_sender(store):
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._state_store = store
+    runtime._config = SimpleNamespace(device_policy={"enabled": True})
+    runtime._dispatcher = object()
+    runtime._remote_command_lockout_config = {
+        **runtime._remote_command_lockout_config,
+        "enforcement_enabled": True,
+        "critical_incident_threshold": 2,
+    }
+    runtime._refresh_remote_device_policy_once = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    for idx in range(2):
+        await store.log_remote_command_security_incident(
+            incident_id=f"incident-{idx}",
+            channel="sms",
+            from_number="+2348012345678",
+            reason="remote_command_rejection_feedback_suppressed",
+            rejection_count=6,
+            threshold=5,
+            window_ms=600_000,
+        )
+
+    result = await runtime._handle_remote_command(
+        _command(
+            "REFRESH_POLICY",
+            command_id="refresh-locked-out",
+            from_number="+2348012345678",
+        )
+    )
+
+    assert result.status == STATUS_PRECONDITION_FAILED
+    assert result.executed is False
+    assert "locked out" in result.detail
+    runtime._refresh_remote_device_policy_once.assert_not_awaited()
+    rows = await store.get_remote_command_execution_log()
+    assert rows[0]["command_id"] == "refresh-locked-out"
+    assert rows[0]["status"] == STATUS_PRECONDITION_FAILED
 
 
 async def test_unsupported_command_is_logged_without_execution(store):

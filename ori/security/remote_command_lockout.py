@@ -1,11 +1,11 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""Advisory lockout policy for remote command senders.
+"""Lockout policy for abusive remote command senders.
 
-This module deliberately separates risk calculation from enforcement.  The
-runtime can expose high-risk senders for operator visibility without blocking
-valid signed recovery commands until a safe recovery/override policy exists.
+Risk calculation is always available for runtime health and operator visibility.
+When enforcement is enabled, a sender classified as critical is blocked before
+authenticated remote commands can mutate runtime state.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
+from ori.utils.bool_utils import is_truthy
 from ori.utils.time_utils import now_ms
 
 LOCKOUT_RISK_NORMAL = "normal"
@@ -136,7 +137,7 @@ def remote_command_sender_key(*, channel: str, from_number: str) -> str:
 
 
 def default_remote_command_lockout_config() -> dict[str, Any]:
-    """Return advisory lockout defaults as a mutable config mapping."""
+    """Return lockout defaults as a mutable config mapping."""
     return {
         "risk_window_ms": DEFAULT_LOCKOUT_RISK_WINDOW_MS,
         "state_stale_after_ms": DEFAULT_LOCKOUT_STATE_STALE_AFTER_MS,
@@ -150,7 +151,7 @@ def default_remote_command_lockout_config() -> dict[str, Any]:
 
 
 def normalize_remote_command_lockout_config(data: Any) -> dict[str, Any]:
-    """Validate advisory lockout config while keeping enforcement disabled."""
+    """Validate lockout config."""
     if data is None:
         data = {}
     if not isinstance(data, Mapping):
@@ -191,5 +192,7 @@ def normalize_remote_command_lockout_config(data: Any) -> dict[str, Any]:
             "security.remote_commands.lockout.critical_rejection_threshold "
             "must be >= elevated_rejection_threshold."
         )
-    out["enforcement_enabled"] = False
+    out["enforcement_enabled"] = is_truthy(
+        data.get("enforcement_enabled", defaults["enforcement_enabled"])
+    )
     return out

@@ -1035,7 +1035,11 @@ class OriRuntime:
     ) -> RemoteCommandExecutionResult:
         """Apply runtime-owned execution policy for an authenticated command."""
         try:
-            result = await self._execute_remote_command(command)
+            lockout_result = await self._remote_command_lockout_precheck(command)
+            if lockout_result is not None:
+                result = lockout_result
+            else:
+                result = await self._execute_remote_command(command)
         except Exception:
             logger.exception(
                 "[runtime] remote command execution failed unexpectedly command_id=%s command=%s",
@@ -1051,6 +1055,55 @@ class OriRuntime:
 
         await self._log_remote_command_execution_result(result)
         return result
+
+    async def _remote_command_lockout_precheck(
+        self, command: RemoteCommand
+    ) -> RemoteCommandExecutionResult | None:
+        """Return a blocking result when sender lockout enforcement applies."""
+        cfg = self._remote_command_lockout_config
+        enforcement_enabled = is_truthy(cfg.get("enforcement_enabled", False))
+        try:
+            lockout_state = await self._evaluate_lockout_for_sender(
+                channel=command.channel,
+                from_number=command.from_number,
+            )
+        except Exception:
+            logger.exception(
+                "[runtime] remote command lockout evaluation failed command_id=%s channel=%s sender=%r",
+                command.command_id,
+                command.channel,
+                command.from_number,
+            )
+            if enforcement_enabled:
+                return command_result(
+                    command,
+                    status=STATUS_PRECONDITION_FAILED,
+                    detail="remote command lockout evaluation unavailable",
+                    executed=False,
+                )
+            return None
+
+        self._remote_command_lockout_states[
+            remote_command_sender_key(
+                channel=command.channel,
+                from_number=command.from_number,
+            )
+        ] = lockout_state.as_dict()
+        if lockout_state.locked_out:
+            logger.warning(
+                "[runtime] remote command blocked by lockout command_id=%s channel=%s sender=%r reason=%s",
+                command.command_id,
+                command.channel,
+                command.from_number,
+                lockout_state.reason,
+            )
+            return command_result(
+                command,
+                status=STATUS_PRECONDITION_FAILED,
+                detail=f"remote command sender locked out: {lockout_state.reason}",
+                executed=False,
+            )
+        return None
 
     async def _execute_remote_command(
         self, command: RemoteCommand
@@ -1515,7 +1568,7 @@ class OriRuntime:
             channel=channel,
             from_number=from_number,
             window_ms=int(cfg["risk_window_ms"]),
-            enforcement_enabled=False,
+            enforcement_enabled=is_truthy(cfg.get("enforcement_enabled", False)),
             elevated_incident_threshold=int(cfg["elevated_incident_threshold"]),
             critical_incident_threshold=int(cfg["critical_incident_threshold"]),
             elevated_rejection_threshold=int(cfg["elevated_rejection_threshold"]),
@@ -1817,7 +1870,11 @@ class OriRuntime:
             "alert_outbox": alert_outbox,
             "device_policy": device_policy_state,
             "remote_command_lockout": {
-                "enforcement_enabled": False,
+                "enforcement_enabled": is_truthy(
+                    self._remote_command_lockout_config.get(
+                        "enforcement_enabled", False
+                    )
+                ),
                 "risk_window_ms": int(
                     self._remote_command_lockout_config["risk_window_ms"]
                 ),

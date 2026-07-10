@@ -851,6 +851,34 @@ async def test_remote_command_lockout_risk_uses_configured_thresholds(store, fix
     assert state.reason == "critical_incident_volume"
 
 
+async def test_remote_command_lockout_enforcement_blocks_critical_risk(
+    store, fixed_now
+):
+    from_number = "+2348012345678"
+    for idx in range(2):
+        await _seed_security_incident(
+            store,
+            channel="sms",
+            from_number=from_number,
+            now=fixed_now,
+            incident_id=f"enforced-incident-{idx}",
+        )
+
+    state = await evaluate_remote_command_lockout(
+        state_store=store,
+        channel="sms",
+        from_number=from_number,
+        enforcement_enabled=True,
+        critical_incident_threshold=2,
+        now_ms_value=fixed_now,
+    )
+
+    assert state.risk_level == LOCKOUT_RISK_CRITICAL
+    assert state.locked_out is True
+    assert state.enforcement_enabled is True
+    assert state.reason == "critical_incident_volume"
+
+
 async def test_sms_rejection_incident_is_deduped_within_window(store, fixed_now):
     from_number = "+2348012345678"
     incident_handler = AsyncMock()
