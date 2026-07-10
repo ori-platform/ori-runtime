@@ -969,6 +969,9 @@ def _parse_gateway(data: Any) -> GatewayConfig:
         raise ConfigValidationError("gateway.auth.replay_ttl_ms must be >= 1000")
     auth["max_clock_skew_ms"] = max_clock_skew_ms
     auth["replay_ttl_ms"] = replay_ttl_ms
+    auth["persistent_replay_cache"] = is_truthy(
+        auth.get("persistent_replay_cache", True)
+    )
 
     tls_raw = data.get("tls") or {}
     if not isinstance(tls_raw, dict):

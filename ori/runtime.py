@@ -70,6 +70,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageEncryptionConfig,
     GatewayMessageEncryptor,
+    GatewayReplayCache,
 )
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_command_lockout import (
@@ -3401,13 +3402,29 @@ def _build_gateway_message_auth(config: Config) -> GatewayMessageAuthenticator |
             "[runtime] gateway auth previous shared-secret environment variable "
             "is configured but empty; previous-secret verification disabled."
         )
+    replay_ttl_ms = int(auth_cfg.get("replay_ttl_ms", 300_000))
+    replay_cache = None
+    if is_truthy(auth_cfg.get("persistent_replay_cache", True)):
+        # A restart is attacker-influenceable on a physically accessible
+        # device (pulling power is enough), so seen keys persist to the
+        # state database to keep the replay window closed across restarts.
+        replay_cache = GatewayReplayCache(
+            ttl_ms=replay_ttl_ms,
+            db_path=str(getattr(config, "database_path", "") or ""),
+        )
+        if not replay_cache.persistent:
+            logger.warning(
+                "[runtime] gateway replay cache persistence unavailable; "
+                "replay protection is in-memory only until the next restart."
+            )
     return GatewayMessageAuthenticator(
         GatewayMessageAuthConfig(
             shared_secret=secret,
             previous_shared_secret=previous_secret,
             max_skew_ms=int(auth_cfg.get("max_clock_skew_ms", 300_000)),
-            replay_ttl_ms=int(auth_cfg.get("replay_ttl_ms", 300_000)),
-        )
+            replay_ttl_ms=replay_ttl_ms,
+        ),
+        replay_cache=replay_cache,
     )
 
 

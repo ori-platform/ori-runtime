@@ -9,7 +9,13 @@ Gateway messages have a different trust model from remote commands:
 * gateway MQTT messages are site-local, short-lived, and higher frequency.
 
 This module therefore uses the same HMAC/canonical-JSON idea as remote
-commands, but keeps replay protection in memory with a bounded TTL cache.
+commands, with a bounded TTL replay cache. The cache is in-memory by
+default; when a database path is supplied it also persists seen keys to
+SQLite so a runtime restart does not reopen the replay window. Restarts
+are attacker-influenceable on physically accessible devices (pulling
+power is enough), so persistence is the hardened posture. Persistence
+failures degrade to in-memory protection with a WARNING — replay defense
+must never become an availability outage.
 """
 
 from __future__ import annotations
@@ -18,6 +24,8 @@ import hmac
 import json
 import logging
 import os
+import sqlite3
+import threading
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass
 from hashlib import sha256
@@ -65,28 +73,101 @@ class GatewayMessageEncryptionConfig:
 
 
 class GatewayReplayCache:
-    """In-memory TTL replay cache for short-lived gateway MQTT messages."""
+    """TTL replay cache for short-lived gateway MQTT messages.
+
+    In-memory by default. When *db_path* is supplied, seen keys are also
+    persisted to a ``gateway_replay_cache`` table at that path and warmed
+    back on construction, so a runtime restart cannot be used to reopen
+    the replay window. The cache is thread-safe: ``verify()`` runs on
+    MQTT client callback threads.
+    """
 
     def __init__(
         self,
         *,
         ttl_ms: int = DEFAULT_GATEWAY_AUTH_REPLAY_TTL_MS,
         max_entries: int = _MAX_REPLAY_ENTRIES,
+        db_path: str | None = None,
     ) -> None:
         self._ttl_ms = max(1, int(ttl_ms))
         self._max_entries = max(1, int(max_entries))
         self._seen_until_ms: dict[str, int] = {}
+        self._lock = threading.Lock()
+        self._conn: sqlite3.Connection | None = None
+        path = str(db_path or "").strip()
+        if path:
+            try:
+                conn = sqlite3.connect(path, check_same_thread=False)
+                conn.execute("PRAGMA busy_timeout = 5000")
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS gateway_replay_cache ("
+                    "key TEXT PRIMARY KEY, seen_until_ms INTEGER NOT NULL)"
+                )
+                conn.commit()
+                self._conn = conn
+                self._warm_from_db()
+            except sqlite3.Error:
+                logger.warning(
+                    "[gateway-auth] persistent replay cache unavailable at %s; "
+                    "falling back to in-memory replay protection.",
+                    path,
+                    exc_info=True,
+                )
+                self._conn = None
+
+    @property
+    def persistent(self) -> bool:
+        return self._conn is not None
 
     def mark_seen(self, key: str, *, now_ms_value: int | None = None) -> bool:
         """Return False when *key* is already present and unexpired."""
         current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
-        self._prune(current_ms)
-        if key in self._seen_until_ms:
-            return False
-        if len(self._seen_until_ms) >= self._max_entries:
-            return False
-        self._seen_until_ms[key] = current_ms + self._ttl_ms
-        return True
+        with self._lock:
+            self._prune(current_ms)
+            if key in self._seen_until_ms:
+                return False
+            if len(self._seen_until_ms) >= self._max_entries:
+                return False
+            expires_ms = current_ms + self._ttl_ms
+            self._seen_until_ms[key] = expires_ms
+            self._persist(key, expires_ms, current_ms)
+            return True
+
+    def _warm_from_db(self) -> None:
+        if self._conn is None:
+            return
+        # No wall-clock filter here: expiry is evaluated by _prune with the
+        # caller-supplied clock on every mark_seen, which keeps behaviour
+        # consistent with deterministic test clocks.
+        rows = self._conn.execute(
+            "SELECT key, seen_until_ms FROM gateway_replay_cache "
+            "ORDER BY seen_until_ms DESC LIMIT ?",
+            (self._max_entries,),
+        ).fetchall()
+        for key, seen_until_ms in rows:
+            self._seen_until_ms[str(key)] = int(seen_until_ms)
+
+    def _persist(self, key: str, expires_ms: int, current_ms: int) -> None:
+        if self._conn is None:
+            return
+        try:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO gateway_replay_cache "
+                "(key, seen_until_ms) VALUES (?, ?)",
+                (key, expires_ms),
+            )
+            self._conn.execute(
+                "DELETE FROM gateway_replay_cache WHERE seen_until_ms <= ?",
+                (current_ms,),
+            )
+            self._conn.commit()
+        except sqlite3.Error:
+            logger.warning(
+                "[gateway-auth] persistent replay cache write failed; "
+                "continuing with in-memory replay protection.",
+                exc_info=True,
+            )
+            self._conn = None
 
     def _prune(self, current_ms: int) -> None:
         expired = [
