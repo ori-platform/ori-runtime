@@ -441,3 +441,69 @@ def test_verify_broadcast_signature_bound_to_message_type():
         auth.verify_broadcast(
             signed, message_type="gateway.other_type", now_ms_value=10_000
         )
+
+
+def test_persistent_replay_cache_survives_restart(tmp_path):
+    db_path = str(tmp_path / "replay.db")
+    cache = GatewayReplayCache(ttl_ms=60_000, db_path=db_path)
+    assert cache.persistent is True
+    assert cache.mark_seen("envelope-key-1", now_ms_value=10_000) is True
+    assert cache.mark_seen("envelope-key-1", now_ms_value=10_500) is False
+
+    restarted = GatewayReplayCache(ttl_ms=60_000, db_path=db_path)
+    assert restarted.persistent is True
+    assert restarted.mark_seen("envelope-key-1", now_ms_value=11_000) is False
+    assert restarted.mark_seen("envelope-key-2", now_ms_value=11_000) is True
+
+
+def test_persistent_replay_cache_expires_keys_across_restart(tmp_path):
+    db_path = str(tmp_path / "replay.db")
+    cache = GatewayReplayCache(ttl_ms=1_000, db_path=db_path)
+    assert cache.mark_seen("short-lived", now_ms_value=10_000) is True
+    # Force expired rows to be pruned from the persistent table too.
+    assert cache.mark_seen("another", now_ms_value=12_000) is True
+
+    restarted = GatewayReplayCache(ttl_ms=1_000, db_path=db_path)
+    assert restarted.mark_seen("short-lived", now_ms_value=12_500) is True
+
+
+def test_persistent_replay_cache_falls_back_when_db_unavailable(tmp_path, caplog):
+    unwritable = tmp_path / "missing-dir" / "replay.db"
+    with caplog.at_level(logging.WARNING):
+        cache = GatewayReplayCache(ttl_ms=60_000, db_path=str(unwritable))
+
+    assert cache.persistent is False
+    assert any("in-memory replay protection" in r.message for r in caplog.records)
+    # In-memory protection still works.
+    assert cache.mark_seen("key", now_ms_value=10_000) is True
+    assert cache.mark_seen("key", now_ms_value=10_500) is False
+
+
+def test_authenticator_rejects_replay_across_cache_restart(tmp_path):
+    db_path = str(tmp_path / "replay.db")
+    config = GatewayMessageAuthConfig(
+        shared_secret="site-local-secret", max_skew_ms=60_000, replay_ttl_ms=60_000
+    )
+    first = GatewayMessageAuthenticator(
+        config, replay_cache=GatewayReplayCache(ttl_ms=60_000, db_path=db_path)
+    )
+    signed = first.sign(_payload(), message_type="export_response", signed_at_ms=10_000)
+    first.verify(
+        signed,
+        message_type="export_response",
+        expected_device_id="dev-01",
+        expected_request_id="req-001",
+        now_ms_value=10_000,
+    )
+
+    restarted = GatewayMessageAuthenticator(
+        config, replay_cache=GatewayReplayCache(ttl_ms=60_000, db_path=db_path)
+    )
+    with pytest.raises(GatewayMessageAuthError, match="replay_detected"):
+        restarted.verify(
+            signed,
+            message_type="export_response",
+            expected_device_id="dev-01",
+            expected_request_id="req-001",
+            now_ms_value=11_000,
+        )

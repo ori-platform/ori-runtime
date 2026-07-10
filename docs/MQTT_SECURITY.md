@@ -14,7 +14,11 @@ but does not replace, runtime-gateway HMAC envelopes.
 Use layered controls:
 
 1. **Payload authentication**: enable `gateway.auth` so reasoning/export
-   envelopes are HMAC signed and replay-checked.
+   envelopes are HMAC signed and replay-checked. Seen envelope keys are
+   persisted to the state database by default
+   (`gateway.auth.persistent_replay_cache: true`), so a power cycle — an
+   attacker-influenceable event on a physically accessible device — cannot
+   reopen the replay window.
 2. **Payload encryption**: enable `gateway.encryption` so sensitive runtime
    export responses are AES-GCM encrypted before the broker sees them.
 3. **Broker authentication and ACLs**: require MQTT usernames/passwords and
