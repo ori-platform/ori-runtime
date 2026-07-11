@@ -134,10 +134,22 @@ def test_cli_bridge_config_validate_reports_signed_phone_posture(
     assert public_key_b64 not in json.dumps(payload)
 
 
+def test_cli_bridge_config_validate_accepts_public_noun_verb_command(tmp_path, capsys):
+    config_path = _write_config(tmp_path, _base_config())
+
+    rc = cli_bridge.main(["config", "validate", "--path", str(config_path)])
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["command"] == "config validate"
+    assert payload["result"]["valid"] is True
+
+
 def test_cli_bridge_config_show_preserves_edge_node_deployment_type(tmp_path, capsys):
     config_path = _write_config(tmp_path, _base_config(deployment_type="edge_node"))
 
-    rc = cli_bridge.main(["config-show", "--path", str(config_path)])
+    rc = cli_bridge.main(["config", "show", "--path", str(config_path)])
 
     payload = _read_stdout_json(capsys)
     assert rc == 0
@@ -145,6 +157,19 @@ def test_cli_bridge_config_show_preserves_edge_node_deployment_type(tmp_path, ca
     assert result["device"]["deployment_type"] == "edge_node"
     assert result["phone_runtime_mobile"]["applies"] is False
     assert result["phone_runtime_mobile"]["tier_c_physical_authority"] is None
+
+
+def test_cli_bridge_config_show_accepts_legacy_alias_during_cli_migration(
+    tmp_path, capsys
+):
+    config_path = _write_config(tmp_path, _base_config(deployment_type="edge_node"))
+
+    rc = cli_bridge.main(["config-show", "--path", str(config_path)])
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 0
+    assert payload["ok"] is True
+    assert payload["command"] == "config show"
 
 
 def test_cli_bridge_invalid_config_returns_structured_json(tmp_path, capsys):
@@ -183,7 +208,8 @@ def test_cli_bridge_health_snapshot_preserves_device_policy_caps(monkeypatch, ca
 
     rc = cli_bridge.main(
         [
-            "health-snapshot",
+            "health",
+            "snapshot",
             "--socket",
             "/tmp/ori-health.sock",
             "--timeout-ms",
@@ -225,7 +251,9 @@ def test_cli_bridge_skills_validate_reports_invalid_skill(tmp_path, capsys):
         encoding="utf-8",
     )
 
-    rc = cli_bridge.main(["skills-validate", "--skills-dir", str(tmp_path / "skills")])
+    rc = cli_bridge.main(
+        ["skills", "validate", "--skills-dir", str(tmp_path / "skills")]
+    )
 
     payload = _read_stdout_json(capsys)
     assert rc == 0
@@ -242,3 +270,13 @@ def test_cli_bridge_unknown_command_returns_json_error(capsys):
     assert rc == 2
     assert payload["ok"] is False
     assert payload["error"]["code"] == "unknown_command"
+
+
+def test_cli_bridge_public_group_requires_supported_subcommand(capsys):
+    rc = cli_bridge.main(["config", "reload"])
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 2
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "unknown_command"
+    assert "expected one of: show, validate" in payload["error"]["detail"]
