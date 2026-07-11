@@ -1842,6 +1842,15 @@ class OriRuntime:
             "public_key_hex": attestor.public_key_hex if attestor else "",
             "artifact_version": attestor.artifact_version if attestor else "",
             "protocol_version": attestor.protocol_version if attestor else "",
+            # Vocabulary the device will emit for new Tier C/D attestations.
+            # Only meaningful while signing is available; '' otherwise, so a
+            # mixed-fleet rollout can be confirmed per device before the
+            # first Tier C/D action fires.
+            "action_event_type": (
+                attestor.action_event_type
+                if attestor is not None and attestor.available
+                else ""
+            ),
             "chain_head_hash": None,
             "pending_export_count": None,
             "last_attested_action_id": None,

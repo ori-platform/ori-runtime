@@ -70,18 +70,23 @@ class _FakeVerityChain:
 
 
 def _install_fake_verity(
-    monkeypatch, *, protocol_version: str = "verity.v1"
+    monkeypatch,
+    *,
+    protocol_version: str = "verity.v1",
+    artifact_version: str = "0.1.0",
 ) -> type[_FakeVerityChain]:
     module = types.ModuleType("ori_verity")
     module.VerityChain = _FakeVerityChain
     module.PROTOCOL_VERSION = protocol_version
-    module.ARTIFACT_VERSION = "0.1.0"
+    module.ARTIFACT_VERSION = artifact_version
     monkeypatch.setitem(sys.modules, "ori_verity", module)
     return _FakeVerityChain
 
 
-async def _started_attestor(monkeypatch, tmp_path) -> EvidenceAttestor:
-    _install_fake_verity(monkeypatch)
+async def _started_attestor(
+    monkeypatch, tmp_path, *, artifact_version: str = "0.1.0"
+) -> EvidenceAttestor:
+    _install_fake_verity(monkeypatch, artifact_version=artifact_version)
     attestor = EvidenceAttestor(
         db_path=str(tmp_path / "verity.db"),
         key_path=str(tmp_path / "verity.key"),
@@ -219,6 +224,75 @@ class TestEvidenceAttestor:
         attestor._chain.fail_append = True
         assert await attestor.attest_action({"id": 1, "timestamp": 1}) is None
         attestor.close()
+
+
+# ─── Event vocabulary selection ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestActionEventVocabulary:
+    """Artifacts >= 0.2.0 provide SAFETY_ACTION_EXECUTED; older or
+    unreadable versions must stay on the legacy type every artifact
+    accepts."""
+
+    async def test_legacy_artifact_uses_maintenance_performed(
+        self, monkeypatch, tmp_path
+    ):
+        attestor = await _started_attestor(
+            monkeypatch, tmp_path, artifact_version="0.1.0"
+        )
+        assert attestor.action_event_type == "MAINTENANCE_PERFORMED"
+        attestor.close()
+
+    async def test_vocabulary_artifact_uses_safety_action_executed(
+        self, monkeypatch, tmp_path
+    ):
+        attestor = await _started_attestor(
+            monkeypatch, tmp_path, artifact_version="0.2.0"
+        )
+        assert attestor.action_event_type == "SAFETY_ACTION_EXECUTED"
+        await attestor.attest_action({"id": 3, "tier": "D", "timestamp": 5})
+        event_type, _, _, payload_json, _ = attestor._chain.appended[0]
+        assert event_type == "SAFETY_ACTION_EXECUTED"
+        # Payload stays identical across vocabularies so verifiers can
+        # treat both forms uniformly.
+        assert '"kind": "runtime_action"' in payload_json
+        attestor.close()
+
+    async def test_unparseable_artifact_version_falls_back_to_legacy(
+        self, monkeypatch, tmp_path
+    ):
+        attestor = await _started_attestor(
+            monkeypatch, tmp_path, artifact_version="dev"
+        )
+        assert attestor.action_event_type == "MAINTENANCE_PERFORMED"
+        attestor.close()
+
+    async def test_unavailable_attestor_reports_legacy_type(
+        self, monkeypatch, tmp_path
+    ):
+        # Never started: the default must be the universally accepted type.
+        attestor = EvidenceAttestor(
+            db_path=str(tmp_path / "verity.db"),
+            key_path=str(tmp_path / "verity.key"),
+            device_secret="install-secret",
+            device_id="dev-01",
+        )
+        assert attestor.action_event_type == "MAINTENANCE_PERFORMED"
+        attestor.close()
+
+
+def test_version_gate_edge_cases():
+    from ori.security.evidence import _artifact_supports_safety_event
+
+    assert _artifact_supports_safety_event("0.2.0") is True
+    assert _artifact_supports_safety_event("0.2.1") is True
+    assert _artifact_supports_safety_event("0.10.0") is True
+    assert _artifact_supports_safety_event("1.0.0") is True
+    assert _artifact_supports_safety_event("0.1.9") is False
+    assert _artifact_supports_safety_event("0.2") is False
+    assert _artifact_supports_safety_event("0.2.0rc1") is False
+    assert _artifact_supports_safety_event("") is False
 
 
 # ─── Store attestation columns ────────────────────────────────────────────────
@@ -411,6 +485,7 @@ class TestEvidenceVisibility:
         assert health["enabled"] is False
         assert health["available"] is False
         assert health["attestation_gap_count"] == 0
+        assert health["action_event_type"] == ""
 
     async def test_evidence_health_reports_chain_state(self, monkeypatch, tmp_path):
         store = StateStore(db_path=str(tmp_path / "state.db"))
@@ -437,6 +512,8 @@ class TestEvidenceVisibility:
             assert health["chain_head_hash"] == "head-1"
             assert health["last_attested_action_id"] == row_id
             assert health["attestation_gap_count"] == 0
+            # 0.1.0 fake artifact: legacy vocabulary, visible pre-action.
+            assert health["action_event_type"] == "MAINTENANCE_PERFORMED"
         finally:
             attestor.close()
             await store.close()
@@ -457,6 +534,7 @@ class TestEvidenceVisibility:
                 "available": True,
                 "chain_head_hash": "head-9",
                 "attestation_gap_count": 2,
+                "action_event_type": "SAFETY_ACTION_EXECUTED",
             },
         }
 
@@ -475,6 +553,7 @@ class TestEvidenceVisibility:
             "chain_head_hash": "head-9",
             "attestation_gap_count": 2,
             "available": True,
+            "action_event_type": "SAFETY_ACTION_EXECUTED",
         }
 
     async def test_heartbeat_omits_evidence_when_disabled(self):
