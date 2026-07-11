@@ -40,11 +40,12 @@ does verify at startup is that the loaded artifact speaks the expected
 mismatch, evidence stays unavailable and health says so, alongside the
 loaded ``ARTIFACT_VERSION``.
 
-Event vocabulary note: the Verity protocol v1 event types are business
-events; runtime Tier C/D actions are attested as ``MAINTENANCE_PERFORMED``
-with a fully descriptive payload (``kind: runtime_action``,
-``action_tier``, executed/approved state). A dedicated safety-action
-event type is a protocol vocabulary candidate for the specs process.
+Event vocabulary: artifacts >= 0.2.0 provide the dedicated
+``SAFETY_ACTION_EXECUTED`` event type and new attestations use it.
+Older artifacts (or unparseable versions) fall back to
+``MAINTENANCE_PERFORMED`` with the same fully descriptive payload
+(``kind: runtime_action``) — the form all pre-0.2.0 chains carry.
+Verifiers must accept both forms (ori-specs ``evidence/v1.md``).
 """
 
 from __future__ import annotations
@@ -62,6 +63,12 @@ _ATTESTED_TIERS = ("C", "D")
 
 EXPECTED_PROTOCOL_VERSION = "verity.v1"
 
+SAFETY_ACTION_EVENT_TYPE = "SAFETY_ACTION_EXECUTED"
+LEGACY_ACTION_EVENT_TYPE = "MAINTENANCE_PERFORMED"
+# First artifact version whose event vocabulary includes the dedicated
+# safety-action type.
+_SAFETY_EVENT_MIN_ARTIFACT = (0, 2, 0)
+
 # Fixed namespace for deterministic attestation event ids. Never change:
 # ids derived from it are the idempotency keys of already-signed evidence.
 _ATTESTATION_EVENT_NAMESPACE = uuid.UUID("6f726920-7665-5269-7479-2065766e7431")
@@ -70,6 +77,23 @@ _ATTESTATION_EVENT_NAMESPACE = uuid.UUID("6f726920-7665-5269-7479-2065766e7431")
 def tier_requires_attestation(tier: str) -> bool:
     """True when *tier* is on the evidence-signing path (Tier C/D)."""
     return str(tier or "").upper() in _ATTESTED_TIERS
+
+
+def _artifact_supports_safety_event(artifact_version: str) -> bool:
+    """True when *artifact_version* provides ``SAFETY_ACTION_EXECUTED``.
+
+    Conservative on anything unparseable: the legacy event type is the
+    one every artifact accepts, so a version we cannot read must not
+    select the new vocabulary.
+    """
+    parts = str(artifact_version or "").split(".")
+    if len(parts) < 3:
+        return False
+    try:
+        parsed = tuple(int(p) for p in parts[:3])
+    except ValueError:
+        return False
+    return parsed >= _SAFETY_EVENT_MIN_ARTIFACT
 
 
 class EvidenceAttestor:
@@ -96,6 +120,7 @@ class EvidenceAttestor:
         self._public_key_hex = ""
         self._artifact_version = ""
         self._protocol_version = ""
+        self._action_event_type = LEGACY_ACTION_EVENT_TYPE
 
     @property
     def available(self) -> bool:
@@ -115,6 +140,11 @@ class EvidenceAttestor:
     def protocol_version(self) -> str:
         """Protocol version declared by the loaded artifact."""
         return self._protocol_version
+
+    @property
+    def action_event_type(self) -> str:
+        """Chain event type used for new Tier C/D attestations."""
+        return self._action_event_type
 
     async def start(self) -> bool:
         """Open (or create) the chain and key on the evidence thread.
@@ -149,6 +179,11 @@ class EvidenceAttestor:
                 EXPECTED_PROTOCOL_VERSION,
             )
             return False
+        self._action_event_type = (
+            SAFETY_ACTION_EVENT_TYPE
+            if _artifact_supports_safety_event(self._artifact_version)
+            else LEGACY_ACTION_EVENT_TYPE
+        )
         self._chain = chain
         logger.warning(
             "[evidence] chain open db=%s artifact=%s — REGISTER this device "
@@ -223,7 +258,7 @@ class EvidenceAttestor:
             seq = await loop.run_in_executor(
                 self._executor,
                 self._chain.append_event,
-                "MAINTENANCE_PERFORMED",
+                self._action_event_type,
                 self._device_id,
                 emitted_at_ms,
                 json.dumps(payload),

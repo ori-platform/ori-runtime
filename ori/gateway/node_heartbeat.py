@@ -172,6 +172,10 @@ class MqttRuntimeNodeHeartbeatPublisher:
                     evidence.get("attestation_gap_count") or 0
                 ),
                 "available": bool(evidence.get("available")),
+                # Emission vocabulary ('' while signing is unavailable) so
+                # the site can confirm a mixed-fleet vocabulary rollout
+                # without waiting for the first Tier C/D action.
+                "action_event_type": str(evidence.get("action_event_type") or ""),
             }
         return payload
 
