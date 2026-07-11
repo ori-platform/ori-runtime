@@ -27,12 +27,19 @@ from ori.skills.sandbox import SkillSecurityError
 _SCHEMA_VERSION = 1
 _DEFAULT_HEALTH_TIMEOUT_MS = 3000
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
-_KNOWN_COMMANDS = {
-    "config-validate",
-    "config-show",
-    "skills-list",
-    "skills-validate",
-    "health-snapshot",
+_LEGACY_COMMANDS = {
+    "config-validate": "config validate",
+    "config-show": "config show",
+    "skills-list": "skills list",
+    "skills-validate": "skills validate",
+    "health-snapshot": "health snapshot",
+}
+_PUBLIC_COMMANDS = {
+    ("config", "validate"): "config-validate",
+    ("config", "show"): "config-show",
+    ("skills", "list"): "skills-list",
+    ("skills", "validate"): "skills-validate",
+    ("health", "snapshot"): "health-snapshot",
 }
 _SENSITIVE_KEY_FRAGMENTS = (
     "authorization",
@@ -64,12 +71,11 @@ def main(argv: list[str] | None = None) -> int:
 def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
     """Execute a bridge command and return ``(exit_code, response_payload)``."""
 
-    command = argv[0] if argv else ""
+    command = ""
+    public_command = ""
     try:
-        if not command:
-            raise BridgeError("missing_command", "bridge command is required")
+        command, public_command, args = _parse_command(argv)
 
-        args = argv[1:]
         if command in {"config-validate", "config-show"}:
             path = _required_option(args, "--path", command)
             result = _config_result(path)
@@ -102,25 +108,25 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
             )
     except BridgeError as exc:
         return 2, _error(
-            command=_public_command(command),
+            command=public_command,
             code=exc.code,
             detail=exc.detail,
         )
     except ConfigValidationError as exc:
         return 2, _error(
-            command=_public_command(command),
+            command=public_command,
             code="config_validation_error",
             detail=str(exc),
         )
     except (OSError, ValueError, yaml.YAMLError) as exc:
         return 2, _error(
-            command=_public_command(command),
+            command=public_command,
             code="runtime_error",
             detail=str(exc),
         )
     except Exception as exc:
         return 1, _error(
-            command=_public_command(command),
+            command=public_command,
             code="internal_error",
             detail=str(exc),
         )
@@ -128,9 +134,49 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
     return 0, {
         "schema_version": _SCHEMA_VERSION,
         "ok": True,
-        "command": command,
+        "command": public_command,
         "result": result,
     }
+
+
+def _parse_command(argv: list[str]) -> tuple[str, str, list[str]]:
+    """Parse public noun/verb bridge commands with legacy aliases.
+
+    The public bridge shape mirrors operator-facing CLI grouping:
+    ``config validate --path ori.yaml``. The legacy single-token verbs are
+    accepted as compatibility aliases until all sibling CLIs migrate.
+    """
+
+    if not argv:
+        raise BridgeError("missing_command", "bridge command is required")
+
+    first = argv[0]
+    if first in _LEGACY_COMMANDS:
+        return first, _LEGACY_COMMANDS[first], argv[1:]
+
+    if first in {group for group, _ in _PUBLIC_COMMANDS}:
+        if len(argv) < 2:
+            raise BridgeError(
+                "invalid_arguments",
+                f"{first} requires a subcommand",
+            )
+        pair = (first, argv[1])
+        command = _PUBLIC_COMMANDS.get(pair)
+        if command is None:
+            allowed = sorted(
+                subcommand for group, subcommand in _PUBLIC_COMMANDS if group == first
+            )
+            raise BridgeError(
+                "unknown_command",
+                f"unsupported {first} subcommand {argv[1]!r}; expected one of: "
+                + ", ".join(allowed),
+            )
+        return command, " ".join(pair), argv[2:]
+
+    raise BridgeError(
+        "unknown_command",
+        "unsupported bridge command",
+    )
 
 
 def _required_option(args: list[str], name: str, command: str) -> str:
@@ -184,11 +230,6 @@ def _optional_int_option(
 
 def _flag_present(args: list[str], name: str) -> bool:
     return name in set(args)
-
-
-def _public_command(command: str) -> str:
-    """Return command only when it is one of the bridge's public verbs."""
-    return command if command in _KNOWN_COMMANDS else ""
 
 
 def _config_result(path: str) -> dict[str, Any]:
