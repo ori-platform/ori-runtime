@@ -1,0 +1,14 @@
+# Exact pin of the ori_verity evidence-chain artifact this runtime consumes.
+#
+# The runtime never vendors the chain implementation; deployments install a
+# prebuilt wheel from an offline wheelhouse and this file is the single
+# auditable record of which source ref that wheel must be built from. CI
+# builds the wheel from `ref` and runs tests/test_evidence_artifact.py
+# against it, so the runtime and the real artifact are proven to speak the
+# same protocol before merge — not just against the fake used by unit tests.
+#
+# Bump deliberately: update ref + expected_artifact_version together, in the
+# same PR as any runtime change that depends on the new artifact behaviour.
+repo=ori-platform/ori-verity
+ref=29913e28e54fa277ef785ffabba24cd328800522
+expected_artifact_version=0.2.0

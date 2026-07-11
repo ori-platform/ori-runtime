@@ -154,10 +154,15 @@ class EvidenceAttestor:
         logged so the provisioning flow can register it off-device.
         """
         loop = asyncio.get_running_loop()
+        # The chain lives in this single-slot holder, never in a bare
+        # local: on any rejection path the holder is handed whole to
+        # _release_chain(), so no frame keeps a reference that would make
+        # the unsendable pyo3 object drop on the wrong thread.
+        holder: list[Any] = [None]
         try:
-            chain = await loop.run_in_executor(self._executor, self._open_sync)
+            holder[0] = await loop.run_in_executor(self._executor, self._open_sync)
             self._public_key_hex = await loop.run_in_executor(
-                self._executor, chain.public_key_hex
+                self._executor, holder[0].public_key_hex
             )
         except Exception:
             self._chain = None
@@ -166,9 +171,10 @@ class EvidenceAttestor:
                 "recorded as attestation gaps until signing is restored.",
                 exc_info=True,
             )
+            self._release_chain(holder)
             return False
         if self._protocol_version != EXPECTED_PROTOCOL_VERSION or not hasattr(
-            chain, "seq_for_event_id"
+            holder[0], "seq_for_event_id"
         ):
             logger.warning(
                 "[evidence] loaded ori_verity artifact (version=%r, protocol=%r) "
@@ -178,13 +184,14 @@ class EvidenceAttestor:
                 self._protocol_version,
                 EXPECTED_PROTOCOL_VERSION,
             )
+            self._release_chain(holder)
             return False
         self._action_event_type = (
             SAFETY_ACTION_EVENT_TYPE
             if _artifact_supports_safety_event(self._artifact_version)
             else LEGACY_ACTION_EVENT_TYPE
         )
-        self._chain = chain
+        self._chain = holder.pop()
         logger.warning(
             "[evidence] chain open db=%s artifact=%s — REGISTER this device "
             "verification anchor off-device at provisioning: %s",
@@ -299,5 +306,29 @@ class EvidenceAttestor:
             logger.warning("[evidence] pending count read failed", exc_info=True)
             return None
 
+    def _release_chain(self, holder: list) -> None:
+        """Drop the chain held in *holder* on the evidence thread.
+
+        The pyo3 VerityChain is unsendable: its LAST reference must be
+        released on the thread that created it, or the extension raises
+        at GC time. This must run on EVERY path where a chain object
+        exists but is not (or no longer) retained — rejected starts
+        included. Callers must MOVE their only reference into *holder*
+        (and clear their local) before calling, so the reference cleared
+        here on the evidence thread is the final one.
+        """
+        if not holder or holder[0] is None:
+            return
+        try:
+            self._executor.submit(holder.clear).result(timeout=5)
+        except Exception:
+            logger.warning(
+                "[evidence] chain release on evidence thread failed",
+                exc_info=True,
+            )
+
     def close(self) -> None:
+        holder = [self._chain]
+        self._chain = None
+        self._release_chain(holder)
         self._executor.shutdown(wait=False)

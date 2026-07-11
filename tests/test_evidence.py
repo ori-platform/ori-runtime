@@ -11,6 +11,7 @@ graceful degradation when the artifact or chain is unavailable.
 """
 
 import sys
+import threading
 import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -279,6 +280,55 @@ class TestActionEventVocabulary:
             device_id="dev-01",
         )
         assert attestor.action_event_type == "MAINTENANCE_PERFORMED"
+        attestor.close()
+
+
+@pytest.mark.asyncio
+class TestChainReleaseThread:
+    """The pyo3 chain is unsendable: every path that lets go of a chain
+    object — close() and rejected starts alike — must drop it on the
+    evidence thread, or the real extension raises at GC time."""
+
+    @staticmethod
+    def _tracking_chain_cls():
+        class _TrackingChain(_FakeVerityChain):
+            deleted_on: list[str] = []
+
+            def __del__(self) -> None:
+                _TrackingChain.deleted_on.append(threading.current_thread().name)
+
+        return _TrackingChain
+
+    async def test_close_drops_chain_on_evidence_thread(self, monkeypatch, tmp_path):
+        cls = self._tracking_chain_cls()
+        _install_fake_verity(monkeypatch)
+        sys.modules["ori_verity"].VerityChain = cls
+        attestor = EvidenceAttestor(
+            db_path=str(tmp_path / "verity.db"),
+            key_path=str(tmp_path / "verity.key"),
+            device_secret="install-secret",
+            device_id="dev-01",
+        )
+        assert await attestor.start() is True
+        attestor.close()
+        assert len(cls.deleted_on) == 1
+        assert cls.deleted_on[0].startswith("ori-evidence")
+
+    async def test_rejected_start_drops_chain_on_evidence_thread(
+        self, monkeypatch, tmp_path
+    ):
+        cls = self._tracking_chain_cls()
+        _install_fake_verity(monkeypatch, protocol_version="verity.v0")
+        sys.modules["ori_verity"].VerityChain = cls
+        attestor = EvidenceAttestor(
+            db_path=str(tmp_path / "verity.db"),
+            key_path=str(tmp_path / "verity.key"),
+            device_secret="install-secret",
+            device_id="dev-01",
+        )
+        assert await attestor.start() is False
+        assert len(cls.deleted_on) == 1
+        assert cls.deleted_on[0].startswith("ori-evidence")
         attestor.close()
 
 

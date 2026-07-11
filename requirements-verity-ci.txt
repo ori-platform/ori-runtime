@@ -1,0 +1,5 @@
+# Build tool for the ori_verity FFI smoke job (CI, linux x86_64 only).
+# Hash-locked like every other CI dependency; maturin has no runtime
+# dependencies on Python >= 3.11 so it installs with --no-deps.
+maturin==1.14.1 \
+    --hash=sha256:dfc54ae32e6fcb18302193ab9a30b0b25eefffba994ae13238974805533ef75e
