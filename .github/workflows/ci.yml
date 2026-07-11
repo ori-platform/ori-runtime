@@ -167,3 +167,83 @@ jobs:
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
+
+  evidence-artifact:
+    name: Evidence FFI smoke (real ori_verity)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Read verity artifact pin
+        id: pin
+        run: |
+          repo="$(grep '^repo=' verity-artifact.pin | cut -d= -f2)"
+          ref="$(grep '^ref=' verity-artifact.pin | cut -d= -f2)"
+          version="$(grep '^expected_artifact_version=' verity-artifact.pin | cut -d= -f2)"
+          if [ -z "$repo" ] || [ -z "$ref" ] || [ -z "$version" ]; then
+            echo "verity-artifact.pin is missing repo/ref/expected_artifact_version" >&2
+            exit 1
+          fi
+          if ! echo "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "verity-artifact.pin ref must be a full commit SHA, got: $ref" >&2
+            exit 1
+          fi
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout pinned ori-verity source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ steps.pin.outputs.repo }}
+          ref: ${{ steps.pin.outputs.ref }}
+          token: ${{ secrets.ORI_VERITY_CI_TOKEN }}
+          path: .verity-src
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned Rust toolchain (from verity rust-toolchain.toml)
+        working-directory: .verity-src
+        run: rustup toolchain install
+
+      - name: Install hash-locked dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements-dev.txt
+          python -m pip install --require-hashes --no-deps -r requirements-verity-ci.txt
+          python -m pip install --no-deps -e .
+
+      - name: Build ori_verity wheel from the pinned ref
+        working-directory: .verity-src
+        run: |
+          maturin build --release --features python \
+            --manifest-path ori-verity/Cargo.toml \
+            --out ../verity-wheel
+
+      - name: Install built wheel and verify artifact identity
+        run: |
+          python -m pip install --no-deps verity-wheel/*.whl
+          python - <<'EOF'
+          import ori_verity
+          expected = "${{ steps.pin.outputs.version }}"
+          assert ori_verity.ARTIFACT_VERSION == expected, (
+              f"built artifact {ori_verity.ARTIFACT_VERSION!r} != pinned {expected!r}"
+          )
+          print(
+              f"ori_verity {ori_verity.ARTIFACT_VERSION} "
+              f"(protocol {ori_verity.PROTOCOL_VERSION}) OK"
+          )
+          EOF
+
+      - name: Run real-artifact FFI smoke tests
+        run: pytest tests/test_evidence_artifact.py -v
