@@ -7,7 +7,7 @@
 africastalking==2.0.2 \
     --hash=sha256:a09185a692dbba5a0f894c19f8d03454474fbd24922bc8e5b977f693bf89565e \
     --hash=sha256:e44240112070dec8527af9f7b0ae30773f1c52933017132bef12922bd396085a
-    # via -r requirements/phone.in
+    # via -r phone.in
 aiohappyeyeballs==2.6.2 \
     --hash=sha256:4708045e2d7a6c6bdf8aafa8ed39649eaf926a4543b54560659129e3365953c4 \
     --hash=sha256:e202810ee718bd01fc6ef49e8ea53d023d5cb6b581076d7925aa499fa55dbe64
@@ -422,7 +422,7 @@ cryptography==49.0.0 \
     --hash=sha256:f78ff2c9ed8dc2d036b0f4d640e22522213d047c1b14e61205a7e55c80a494d4 \
     --hash=sha256:f89660a348f4f78a92366240a61404e337586ef7f5909a2fef59ca88ef505493 \
     --hash=sha256:fc1e275c2f1d97b1a6450b8b0ea3ebfa6e087a611c2b26cb2404d48588abab7b
-    # via -r requirements/phone.in
+    # via -r phone.in
 frozenlist==1.8.0 \
     --hash=sha256:0325024fe97f94c41c08872db482cf8ac4800d80e79222c6b0b7b162d5b13686 \
     --hash=sha256:032efa2674356903cd0261c4317a561a6850f3ac864a63fc1583147fb05a79b0 \
@@ -568,7 +568,7 @@ httpcore==1.0.9 \
 httpx==0.28.1 \
     --hash=sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc \
     --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
-    # via -r requirements/phone.in
+    # via -r phone.in
 idna==3.18 \
     --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2 \
     --hash=sha256:ffb385a7e039654cef1ab9ef32c6fafe283c0c0467bba1d9029738ce4a14a848
@@ -863,7 +863,7 @@ pyjwt==2.13.0 \
 pyserial==3.5 \
     --hash=sha256:3c77e014170dfffbd816e6ffc205e9842efb10be9f58ec16d3e8675b4925cddb \
     --hash=sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0
-    # via -r requirements/phone.in
+    # via -r phone.in
 pyyaml==6.0.3 \
     --hash=sha256:00c4bdeba853cc34e7dd471f16b4114f4162dc03e6b7afcc2128711f0eca823c \
     --hash=sha256:0150219816b6a1fa26fb4699fb7daa9caf09eb1999f3b70fb6e786805e80375a \
@@ -939,7 +939,7 @@ pyyaml==6.0.3 \
     --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
     # via
-    #   -r requirements/phone.in
+    #   -r phone.in
     #   responses
 requests==2.34.2 \
     --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0 \
@@ -959,7 +959,7 @@ schema==0.7.8 \
 twilio==9.10.9 \
     --hash=sha256:1c50bfb394b5dbc044bacab24b2e3b550bee0c08da51c4a1fa4816293303e66c \
     --hash=sha256:eb74fc026c85a89372836414f57e262119efaa160b9419cf4d05b59056b8e89d
-    # via -r requirements/phone.in
+    # via -r phone.in
 typing-extensions==4.15.0 \
     --hash=sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466 \
     --hash=sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548
@@ -967,10 +967,10 @@ typing-extensions==4.15.0 \
     #   aiohttp
     #   aiosignal
     #   anyio
-tzdata==2026.2 \
-    --hash=sha256:9173fde7d80d9018e02a662e168e5a2d04f87c41ea174b139fbef642eda62d10 \
-    --hash=sha256:bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7
-    # via -r requirements/phone.in
+tzdata==2026.3 \
+    --hash=sha256:4a1518b8993086a7982523e071643f3c0e5f213e75b21318e78bcabfff9d1415 \
+    --hash=sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931
+    # via -r phone.in
 urllib3==2.7.0 \
     --hash=sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c \
     --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
