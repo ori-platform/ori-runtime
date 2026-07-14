@@ -7,16 +7,16 @@
 africastalking==2.0.2 \
     --hash=sha256:a09185a692dbba5a0f894c19f8d03454474fbd24922bc8e5b977f693bf89565e \
     --hash=sha256:e44240112070dec8527af9f7b0ae30773f1c52933017132bef12922bd396085a
-    # via -r requirements/runtime.txt
+    # via -r runtime.txt
 aiofiles==25.1.0 \
     --hash=sha256:a8d728f0a29de45dc521f18f07297428d56992a742f0cd2701ba86e44d23d5b2 \
     --hash=sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695
-    # via -r requirements/runtime.txt
+    # via -r runtime.txt
 aiohappyeyeballs==2.6.1 \
     --hash=sha256:c3f9d0113123803ccadfdf3f0faa505bc78e6a72d1cc4806cbd719826e943558 \
     --hash=sha256:f349ba8f4b75cb25c99c5c2d84e997e485204d2902a9597802b0371f09331fb8
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   aiohttp
 aiohttp==3.14.1 \
     --hash=sha256:03ab4530fdcb3a543a122ba4b65ac9919da9fe9f78a03d328a6e38ff962f7aa5 \
@@ -139,32 +139,32 @@ aiohttp==3.14.1 \
     --hash=sha256:faccab372e66bc76d5731525e7f1143c922271725b9d38c9f97edcc66266b451 \
     --hash=sha256:fc0cacab7ba4e56f0f81c82a98c09bed2f39c940107b03a34b168bdf7597edd3
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   aiohttp-retry
     #   twilio
 aiohttp-retry==2.9.1 \
     --hash=sha256:66d2759d1921838256a05a3f80ad7e724936f083e35be5abb5e16eed6be6dc54 \
     --hash=sha256:8eb75e904ed4ee5c2ec242fefe85bf04240f685391c4879d8f541d6028ff01f1
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   twilio
 aiosignal==1.4.0 \
     --hash=sha256:053243f8b92b990551949e63930a839ff0cf0b0ebbe0597b0f3fb19e1a0fe82e \
     --hash=sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   aiohttp
 aiosqlite==0.22.1 \
     --hash=sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650 \
     --hash=sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   asyncua
 anyio==4.13.0 \
     --hash=sha256:08b310f9e24a9594186fd75b4f73f4a4152069e3853f1ed8bfbf58369f4ad708 \
     --hash=sha256:334b70e641fd2221c1505b3890c69882fe4a2df910cba14d97019b90b24439dc
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   asyncua
     #   httpx
 arrow==1.4.0 \
@@ -209,12 +209,12 @@ ast-serialize==0.5.0 \
 asyncua==2.0.1 \
     --hash=sha256:f21d58c78f6fa9b592c7c29890527e530a35cbb4ac9f96002b6bddce7425a404 \
     --hash=sha256:f9f73804b4d56a12aaad7a2f062b15f08c856718d93a10c647d82a9f38f787df
-    # via -r requirements/runtime.txt
+    # via -r runtime.txt
 attrs==26.1.0 \
     --hash=sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309 \
     --hash=sha256:d03ceb89cb322a8fd706d4fb91940737b6642aa36998fe130a9bc96c985eff32
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   aiohttp
     #   jsonschema
     #   referencing
@@ -236,7 +236,7 @@ certifi==2026.2.25 \
     --hash=sha256:027692e4402ad994f1c42e52a4997a9763c646b73e4096e4d5d6db8af1d6f0fa \
     --hash=sha256:e887ab5cee78ea814d3472169153c2d12cd43b14bd03329a39a9c6e2e80bfba7
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   httpcore
     #   httpx
     #   requests
@@ -326,7 +326,7 @@ cffi==2.0.0 \
     --hash=sha256:fc7de24befaeae77ba923797c7c87834c73648a05a4bde34b3b7e5588973a453 \
     --hash=sha256:fe562eb1a64e67dd297ccc4f5addea2501664954f2692b69a76449ec7913ecbf
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   cryptography
 cfgv==3.5.0 \
     --hash=sha256:a8dc6b26ad22ff227d2634a65cb388215ce6cc96bbcc5cfde7641ae87e8dacc0 \
@@ -467,7 +467,7 @@ charset-normalizer==3.4.7 \
     --hash=sha256:fbccdc05410c9ee21bbf16a35f4c1d16123dcdeb8a1d38f33654fa21d0234f79 \
     --hash=sha256:fea24543955a6a729c45a73fe90e08c743f0b3334bbf3201e6c4bc1b0c7fa464
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   requests
 click==8.3.3 \
     --hash=sha256:398329ad4837b2ff7cbe1dd166a4c0f8900c3ca3a218de04466f38f6497f18a2 \
@@ -629,13 +629,13 @@ cryptography==49.0.0 \
     --hash=sha256:f89660a348f4f78a92366240a61404e337586ef7f5909a2fef59ca88ef505493 \
     --hash=sha256:fc1e275c2f1d97b1a6450b8b0ea3ebfa6e087a611c2b26cb2404d48588abab7b
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   asyncua
     #   pyopenssl
 cyclonedx-bom==7.3.0 \
     --hash=sha256:73d7d76b3a28ebadc50eabf424cbcf128785a74b8a59ce7893da2e29cfaab585 \
     --hash=sha256:d54080d65731980945de38e52009a5e5711f4a3c31377a3d13af96eaca5fcf3d
-    # via -r requirements/dev.in
+    # via -r dev.in
 cyclonedx-python-lib[validation]==11.7.0 \
     --hash=sha256:02fa4f15ddbba21ac9093039f8137c0d1813af7fe88b760c5dcd3311a8da2178 \
     --hash=sha256:fb1bc3dedfa31208444dbd743007f478ab6984010a184e5bd466bffd969e936e
@@ -793,25 +793,25 @@ frozenlist==1.8.0 \
     --hash=sha256:fb30f9626572a76dfe4293c7194a09fb1fe93ba94c7d4f720dfae3b646b45027 \
     --hash=sha256:fe3c58d2f5db5fbd18c2987cba06d51b0529f52bc3a6cdc33d3f4eab725104bd
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   aiohttp
     #   aiosignal
 h11==0.16.0 \
     --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \
     --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   httpcore
 httpcore==1.0.9 \
     --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55 \
     --hash=sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   httpx
 httpx==0.28.1 \
     --hash=sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc \
     --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
-    # via -r requirements/runtime.txt
+    # via -r runtime.txt
 identify==2.6.19 \
     --hash=sha256:20e6a87f786f768c092a721ad107fc9df0eb89347be9396cadf3f4abbd1fb78a \
     --hash=sha256:6be5020c38fcb07da56c53733538a3081ea5aa70d36a156f83044bfbf9173842
@@ -820,7 +820,7 @@ idna==3.15 \
     --hash=sha256:048adeaf8c2d788c40fee287673ccaa74c24ffd8dcf09ffa555a2fbb59f10ac8 \
     --hash=sha256:ca962446ea538f7092a95e057da437618e886f4d349216d2b1e294abfdb65fdc
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   anyio
     #   httpx
     #   jsonschema
@@ -1306,7 +1306,7 @@ multidict==6.7.1 \
     --hash=sha256:fc5907494fccf3e7d3f94f95c91d6336b092b5fc83811720fae5e2765890dfba \
     --hash=sha256:fcee94dfbd638784645b066074b338bc9cc155d4b4bffa4adce1615c5a426c19
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   aiohttp
     #   yarl
 mypy==2.1.0 \
@@ -1354,7 +1354,7 @@ mypy==2.1.0 \
     --hash=sha256:ecfe70d43775ab99562ab128ce49854a362044c9f894961f68f898c23cb7429d \
     --hash=sha256:fcaa0e479066e31f7cceb6a3bea39cb22b2ff51a6b2f24f193d19179ba17c389 \
     --hash=sha256:ff715050c127d724fd260a2e666e7747fdd83511c0c47d449d98238970aef780
-    # via -r requirements/dev.in
+    # via -r dev.in
 mypy-extensions==1.1.0 \
     --hash=sha256:1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505 \
     --hash=sha256:52e68efc3284861e772bbcd66823fde5ae21fd2fdb51c62a211403730b916558
@@ -1382,7 +1382,7 @@ packaging==26.0 \
 paho-mqtt==2.1.0 \
     --hash=sha256:12d6e7511d4137555a3f6ea167ae846af2c7357b10bc6fa4f7c3968fc1723834 \
     --hash=sha256:6db9ba9b34ed5bc6b6e3812718c7e06e2fd7444540df2455d2c51bd58808feee
-    # via -r requirements/runtime.txt
+    # via -r runtime.txt
 pathspec==1.1.1 \
     --hash=sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a \
     --hash=sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189
@@ -1394,7 +1394,7 @@ pip-api==0.0.34 \
 pip-audit==2.10.1 \
     --hash=sha256:1eb4565d19ebe5d48996f4b770b4d2b32887e12cb12cfa637f1a064011b55ffc \
     --hash=sha256:99ef3f600a317c1945f1e89e227ef26e1c2d618429b8bd3fa6f4f7c440c4611a
-    # via -r requirements/dev.in
+    # via -r dev.in
 pip-requirements-parser==32.0.1 \
     --hash=sha256:4659bc2a667783e7a15d190f6fccf8b2486685b6dba4c19c3876314769c57526 \
     --hash=sha256:b4fa3a7a0be38243123cf9d1f3518da10c51bdb165a2b2985566247f9155a7d3
@@ -1404,7 +1404,7 @@ pip-requirements-parser==32.0.1 \
 pip-tools==7.5.3 \
     --hash=sha256:3aac0c473240ae90db7213c033401f345b05197293ccbdd2704e52e7a783785e \
     --hash=sha256:8fa364779ebc010cbfe17cb9de404457ac733e100840423f28f6955de7742d41
-    # via -r requirements/dev.in
+    # via -r dev.in
 platformdirs==4.9.6 \
     --hash=sha256:3bfa75b0ad0db84096ae777218481852c0ebc6c727b3168c1b9e0118e458cf0a \
     --hash=sha256:e61adb1d5e5cb3441b4b7710bea7e4c12250ca49439228cc1021c00dcfac0917
@@ -1421,7 +1421,7 @@ pluggy==1.6.0 \
 pre-commit==4.6.0 \
     --hash=sha256:718d2208cef53fdc38206e40524a6d4d9576d103eb16f0fec11c875e7716e9d9 \
     --hash=sha256:e2cf246f7299edcabcf15f9b0571fdce06058527f0a06535068a86d38089f29b
-    # via -r requirements/dev.in
+    # via -r dev.in
 propcache==0.4.1 \
     --hash=sha256:0002004213ee1f36cfb3f9a42b5066100c44276b9b72b4e1504cddd3d692e86e \
     --hash=sha256:0013cb6f8dde4b2a2f66903b8ba740bdfe378c943c4377a200551ceb27f379e4 \
@@ -1546,7 +1546,7 @@ propcache==0.4.1 \
     --hash=sha256:fd6f30fdcf9ae2a70abd34da54f18da086160e4d7d9251f81f3da0ff84fc5a48 \
     --hash=sha256:fe49d0a85038f36ba9e3ffafa1103e61170b28e95b16622e11be0a0ea07c6781
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   aiohttp
     #   yarl
 psutil==7.2.2 \
@@ -1571,7 +1571,7 @@ psutil==7.2.2 \
     --hash=sha256:ed0cace939114f62738d808fdcecd4c869222507e266e574799e9c0faa17d486 \
     --hash=sha256:eed63d3b4d62449571547b60578c5b2c4bcccc5387148db46e0c2313dad0ee00 \
     --hash=sha256:fd04ef36b4a6d599bbdb225dd1d3f51e00105f6d48a28f006da7f9822f2606d8
-    # via -r requirements/runtime.txt
+    # via -r runtime.txt
 py-serializable==2.1.0 \
     --hash=sha256:9d5db56154a867a9b897c0163b33a793c804c80cee984116d02d49e4578fc103 \
     --hash=sha256:b56d5d686b5a03ba4f4db5e769dc32336e142fc3bd4d68a8c25579ebb0a67304
@@ -1580,7 +1580,7 @@ pycparser==3.0 \
     --hash=sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29 \
     --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   cffi
 pygments==2.20.0 \
     --hash=sha256:6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f \
@@ -1592,13 +1592,13 @@ pyjwt==2.13.0 \
     --hash=sha256:41571c89ca91598c79e8ef18a2d07367d4810fbbd6f637794879baf1b7703423 \
     --hash=sha256:66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   twilio
 pyopenssl==26.3.0 \
     --hash=sha256:46367f8f66b92271e6d218da9c87607e1ef5a0bc5c8dea5bb3db82f395c385a3 \
     --hash=sha256:589de7fae1c9ea670d18422ed00fc04da787bbde8e1454aea872aa57b49ad341
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   asyncua
 pyparsing==3.3.2 \
     --hash=sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d \
@@ -1614,32 +1614,32 @@ pyserial==3.5 \
     --hash=sha256:3c77e014170dfffbd816e6ffc205e9842efb10be9f58ec16d3e8675b4925cddb \
     --hash=sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   umodbus
 pysolarmanv5==3.0.6 \
     --hash=sha256:9e38e47914c5b8bf44166dd74056040ec041b1d7c44ff2ce94ec192eeae9fc5d \
     --hash=sha256:ec3c6c03ec47bd0ee811f32ee4da272a28cc53141ab1113b5dbec55834c8afb5
-    # via -r requirements/runtime.txt
+    # via -r runtime.txt
 pytest==9.1.1 \
     --hash=sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313 \
     --hash=sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c
     # via
-    #   -r requirements/dev.in
+    #   -r dev.in
     #   pytest-asyncio
     #   pytest-cov
 pytest-asyncio==1.4.0 \
     --hash=sha256:933ca923a23075a87fb7070c0ec272a6848489824d887c85c812670932835aa1 \
     --hash=sha256:c6c0d2259945122819f171a32ecea2c349ead889ee28176caaf492143424be42
-    # via -r requirements/dev.in
+    # via -r dev.in
 pytest-cov==7.1.0 \
     --hash=sha256:30674f2b5f6351aa09702a9c8c364f6a01c27aae0c1366ae8016160d1efc56b2 \
     --hash=sha256:a0461110b7865f9a271aa1b51e516c9a95de9d696734a2f71e3e78f46e1d4678
-    # via -r requirements/dev.in
+    # via -r dev.in
 python-dateutil==2.9.0.post0 \
     --hash=sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3 \
     --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   arrow
     #   asyncua
 python-discovery==1.3.1 \
@@ -1649,12 +1649,12 @@ python-discovery==1.3.1 \
 python-dotenv==1.2.2 \
     --hash=sha256:1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a \
     --hash=sha256:2c371a91fbd7ba082c2c1dc1f8bf89ca22564a087c2c287cd9b662adde799cf3
-    # via -r requirements/runtime.txt
+    # via -r runtime.txt
 pytz==2026.1.post1 \
     --hash=sha256:3378dde6a0c3d26719182142c56e60c7f9af7e968076f31aae569d72a0358ee1 \
     --hash=sha256:f2fd16142fda348286a75e1a524be810bb05d444e5a081f37f7affc635035f7a
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   asyncua
 pyyaml==6.0.3 \
     --hash=sha256:00c4bdeba853cc34e7dd471f16b4114f4162dc03e6b7afcc2128711f0eca823c \
@@ -1731,7 +1731,7 @@ pyyaml==6.0.3 \
     --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   pre-commit
     #   responses
 referencing==0.37.0 \
@@ -1745,7 +1745,7 @@ requests==2.33.1 \
     --hash=sha256:18817f8c57c6263968bc123d237e3b8b08ac046f5456bd1e307ee8f4250d3517 \
     --hash=sha256:4e6d1ef462f3626a1f0a0a9c42dd93c63bad33f9f1c1937509b8c5c8718ab56a
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   africastalking
     #   cachecontrol
     #   pip-audit
@@ -1755,7 +1755,7 @@ responses==0.26.0 \
     --hash=sha256:03ec4409088cd5c66b71ecbbbd27fe2c58ddfad801c66203457b3e6a04868c37 \
     --hash=sha256:c7f6923e6343ef3682816ba421c006626777893cb0d5e1434f674b649bac9eb4
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   africastalking
 rfc3339-validator==0.1.4 \
     --hash=sha256:138a2abdf93304ad60530167e51d2dfb9549521a836871b88d7f4695d0022f6b \
@@ -1892,44 +1892,44 @@ rpds-py==0.30.0 \
     # via
     #   jsonschema
     #   referencing
-ruff==0.15.20 \
-    --hash=sha256:00e188c53e499c3c1637f73c91dcf2fb56d576cab76ce1be50a27c4e80e37078 \
-    --hash=sha256:01cc00dd58f0df339d0e902219dd53990ea99996a0344e5d9cc8d45d5307e460 \
-    --hash=sha256:1416eb04349192646b54de98f146c4f59afe37d0decfc02c3cbbf396f3a28566 \
-    --hash=sha256:2d2374caa2f2c2f9e2b7da0a50802cfb8b79f55a9b5e49379f564544fbf56487 \
-    --hash=sha256:2f5b2a6d614e8700388806a14996c40fab2c47b819ef57d790a34878858ed9ca \
-    --hash=sha256:309809086c2acb67624950a3c8133e80f32d0d3e27106c0cd60ff26657c9f24b \
-    --hash=sha256:3413bb3c3d2ca6a8208f1f4809cd2dca3c6de6d0b491c0e70847672bde6e6efd \
-    --hash=sha256:5b9c0c367ad8e5d0d5b5b8537864c469a0a0e55417aadfbeca41fa61333be9f4 \
-    --hash=sha256:9ebd1fd9b9c95fc0bd7b2761aebec1f030013d2e193a2901b224af68fe47251b \
-    --hash=sha256:a1ed17b65293e0c2f22fc387bc13198a5de94bf4429589b0ff6946b0feaf21a3 \
-    --hash=sha256:a525c81c70fb0380344dd1d8745d8cc1c890b7fc94a58d5a07bd8eb9557b8415 \
-    --hash=sha256:b6df3b1e4610432f0386dba04d853b5f08cbbc903410c6fcc02f620f05aff53c \
-    --hash=sha256:bd7ec42b3bb3da066488db093308a69c4ac5ee6d2af333a86ba6e2eb2e7dd44b \
-    --hash=sha256:c5b16cdd67ca108185cd36dce98c576350c03b1660a751de725fb049193a0632 \
-    --hash=sha256:e1a36ad0eb77fba9aabfb69ede54de6f376d04ac18ebea022847046d340a8267 \
-    --hash=sha256:e89f198a1ea6ef0d727c1cf16088bc91a6cb0ab947dedc966715691647186eae \
-    --hash=sha256:ed65ef510e43a137207e0f01cfcf998aeddb1aeeda5c9d35023e910284d7cf21 \
-    --hash=sha256:f701305e66b38ea6c91882490eb73459796808e4c6362a1b765255e0cdcd4053
-    # via -r requirements/dev.in
+ruff==0.15.21 \
+    --hash=sha256:00eca240af5789fec6fe7df74c088cc1f9644ed83027113468efba7c92b94075 \
+    --hash=sha256:01d65b4831c6b2a4ba8ee6faa84049d44d982b7a706e622c4094c509e51673be \
+    --hash=sha256:01f8d5be84823c172b389e123174f781f9daf86d6c58719d603f941932195cdd \
+    --hash=sha256:0f212c5d7d54c01bbfe6dcab02b724a39300f3e34ed7acbe995ccb320a2c58bd \
+    --hash=sha256:16d090c0740916594157e75b80d666eab8e78083b39b3b0e1d698f4670a17b86 \
+    --hash=sha256:262ab31557a75141325e32d3357f3597645a7f084e732b6b054dde428ecd9341 \
+    --hash=sha256:2c5a913a589120ce67933d5d05fd6ddbcc2481c6a054980ee767f7414c72b4fd \
+    --hash=sha256:3a10e74757dd65004d779b73e2f3c5210156d9980b41224d50d2ebcf1db51e67 \
+    --hash=sha256:5ef04b681d02ad4dc9620f00f83ac5c22f652d0e9a9cfe431d219b16ad5ccc41 \
+    --hash=sha256:63ea0e965e5d73c90e95b2434beeafc70820536717f561b32ab6e777cb9bdf5d \
+    --hash=sha256:659c4e7a4212f83306045ec7c5e5a356d16d9a6ef4ae0c7a4d872914fc655d9d \
+    --hash=sha256:6e83115d4b9377c1cbc13abf0e051f069fab0ef815ea0504a8a008cee24dd0a8 \
+    --hash=sha256:9e866eab611a5f959d36df2d10e446973a3610bc42b0c15b31dc27977d59c233 \
+    --hash=sha256:bab0905d2f29e0d9fbc3c373ed23db0095edaa3f71f1f4f519ec15134d9e85c8 \
+    --hash=sha256:d0cfc841c572283c36548f82664a54ce6565567f1b0d5b4cf2caac693d8b7500 \
+    --hash=sha256:d4b8d9a2f0f12b816b50447f6eccb9f4bb01a6b82c86b50fb3b5354b458dc6d3 \
+    --hash=sha256:e6312e41bc96791299614995ea3a977c5857c3b5662b1ecef6755b02b87cb646 \
+    --hash=sha256:e89bc93c0d3803ba870b55c29671bad9dc6d94bb1eb181b056b52eb05b52854f
+    # via -r dev.in
 schema==0.7.8 \
     --hash=sha256:00bd977fadc7d9521bf289850cd8a8aa5f4948f575476b8daaa5c1b57af2dce1 \
     --hash=sha256:e86cc08edd6fe6e2522648f4e47e3a31920a76e82cce8937535422e310862ab5
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   africastalking
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \
     --hash=sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   python-dateutil
     #   rfc3339-validator
 sortedcontainers==2.4.0 \
     --hash=sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88 \
     --hash=sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   asyncua
     #   cyclonedx-python-lib
 tomli==2.4.1 \
@@ -1988,16 +1988,16 @@ tomli-w==1.2.0 \
 twilio==9.10.9 \
     --hash=sha256:1c50bfb394b5dbc044bacab24b2e3b550bee0c08da51c4a1fa4816293303e66c \
     --hash=sha256:eb74fc026c85a89372836414f57e262119efaa160b9419cf4d05b59056b8e89d
-    # via -r requirements/runtime.txt
+    # via -r runtime.txt
 types-pyyaml==6.0.12.20260518 \
     --hash=sha256:d2150f75a231c9fe9c7463bd29487d93e60bac90400287351384bc2284eba7cd \
     --hash=sha256:d917f83fb38462550338c1297faedd860b3ec83912b96b1e3d73255f7473e466
-    # via -r requirements/dev.in
+    # via -r dev.in
 typing-extensions==4.15.0 \
     --hash=sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466 \
     --hash=sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   aiohttp
     #   aiosignal
     #   anyio
@@ -2015,7 +2015,7 @@ umodbus==1.0.4 \
     --hash=sha256:26bbbeff02d6d8a3e29bb0f9d9044c672d55fc1687afe4297a2f7d68175103a7 \
     --hash=sha256:aab3e61488d8bef638466687b360192ddf046a23b61a9ba3734b4f48d31efe16
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   pysolarmanv5
 uri-template==1.3.0 \
     --hash=sha256:0e00f8eb65e18c7de20d595a14336e9f337ead580c70934141624b6d1ffdacc7 \
@@ -2025,19 +2025,13 @@ urllib3==2.7.0 \
     --hash=sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c \
     --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   requests
     #   responses
 virtualenv==21.3.3 \
     --hash=sha256:7d5987d8369e098e41406efb780a3d4ca79280097293899e351a6407ee153ab3 \
     --hash=sha256:f5bda277e553b1c2b3c1a8debfc30496e1288cc93ce6b7b71b3280047e317328
     # via pre-commit
-wait-for2==0.3.2 ; python_version < "3.12" \
-    --hash=sha256:93863026dc35f3471104ecf7de1f4a0b31f4c8b12a2241c0d6ee26dcc0c2092a
-    # via
-    #   -r requirements/dev.in
-    #   -r requirements/runtime.txt
-    #   asyncua
 webcolors==25.10.0 \
     --hash=sha256:032c727334856fc0b968f63daa252a1ac93d33db2f5267756623c210e57a4f1d \
     --hash=sha256:62abae86504f66d0f6364c2a8520de4a0c47b80c03fc3a5f1815fedbef7c19bf
@@ -2176,7 +2170,7 @@ yarl==1.23.0 \
     --hash=sha256:fe8f8f5e70e6dbdfca9882cd9deaac058729bcf323cf7a58660901e55c9c94f6 \
     --hash=sha256:fffc45637bcd6538de8b85f51e3df3223e4ad89bccbfca0481c08c7fc8b7ed7d
     # via
-    #   -r requirements/runtime.txt
+    #   -r runtime.txt
     #   aiohttp
 
 # The following packages are considered to be unsafe in a requirements file:
