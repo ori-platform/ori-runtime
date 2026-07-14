@@ -1,6 +1,6 @@
 # Phone/Termux Growatt SolarmanV5 LAN inverter dependencies.
 #
-# Build this as an additive lock on top of requirements-phone.txt. Do not add
+# Build this as an additive lock on top of phone.txt. Do not add
 # these dependencies to the base phone wheelhouse; USB/PZEM deployments should
 # stay small.
 pysolarmanv5>=3.0

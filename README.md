@@ -31,6 +31,11 @@ Built for the world's majority condition — unreliable power, intermittent conn
   must meet the hardened gateway, remote-command, webhook, skill-signing,
   state-encryption, and signed-config requirements or the runtime refuses to
   start. Development-profile deployments remain warning-only.
+- Verity Layer 2 action attestation is implemented behind `evidence.enabled`:
+  Tier C/D dispatch records can be signed through the pinned `ori_verity`
+  artifact, reconciled after restart, and surfaced through runtime health and
+  gateway heartbeat evidence. Verity Layer 1 device-origin telemetry is
+  specified in `ori-specs` and belongs in `ori-edge-firmware`, not this runtime.
 - Safety invariants (tier guards, strict skill validation, sandbox boundaries) are CI-enforced on every PR.
 - Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0.
 - Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
@@ -42,6 +47,8 @@ Related repos in the org:
 - Skills registry: `ori-platform/ori-skills`
 - CLI: `ori-platform/ori-cli`
 - Gateway: `ori-platform/ori-gateway`
+- Verity: `ori-platform/ori-verity`
+- Edge firmware: `ori-platform/ori-edge-firmware`
 - SDK (Python): `ori-platform/ori-sdk-python`
 - Dashboard: `ori-platform/ori-dashboard`
 - Specs/RFCs: `ori-platform/ori-specs`
@@ -111,6 +118,11 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 ```
 
 Layers 1–4 run on the device. **Layers 3 and 4 are inseparable** — the runtime always pairs a reasoning decision with an action decision. Layer 5 is the community. Layer 6 is the business.
+
+`ori-edge-firmware` is a Layer 1 companion, not a second runtime. Firmware nodes
+will sign sensor-origin telemetry at the point of measurement; this runtime
+normalises those readings, reasons over them, acts through the Action Tier
+Framework, and records Tier C/D action evidence through `ori-verity`.
 
 For the full architectural specification, read [`CLAUDE.md`](CLAUDE.md). For the design philosophy, read [`PRINCIPLES.md`](PRINCIPLES.md).
 
@@ -207,6 +219,11 @@ Ori is designed for [physical actuation trust](PRINCIPLES.md). The safety archit
 - **Hardware circuit breakers** — failing sensor buses are auto-isolated using a three-state (CLOSED → OPEN → HALF_OPEN) circuit breaker so one bad sensor doesn't crash the runtime
 - **Approval workflows for hard physical actions** — Tier C actions always require operator approval via WhatsApp/SMS. No config flag to skip it
 - **Alert transport failover** — approval requests use the configured primary channel first, then fail over to the secondary channel if delivery fails
+- **Evidence chain for high-authority actions** — when configured,
+  `ori-verity` signs Tier C/D dispatch records and exposes chain head, gap
+  count, artifact version, and selected action-event vocabulary in health. This
+  is runtime action evidence; device-origin telemetry attestation is the
+  firmware/Layer 1 contract.
 
 For constrained deployments, a common pattern is MQTT for continuous telemetry plus CoAP for low-overhead command delivery.
 
@@ -454,12 +471,13 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 
 ## Roadmap
 
-| Phase  | Status         | Milestone                                                             |
-| ------ | -------------- | --------------------------------------------------------------------- |
-| Core   | ✅ Stable v1   | Core runtime with 6-layer architecture and 4-tier action framework    |
-| PoC    | 🔨 In Progress | Energy skill deployed in Lagos. HVAC refrigerant monitor. Demo video. |
-| Launch | 🔨 In Progress | Skills Hub. CLI tooling. Phone-as-gateway (Termux path live).         |
-| Growth | 🗓️ Planned     | Rust HAL rewrite. 500+ skills. ori-cloud. Enterprise pilots.          |
+| Phase             | Status           | Milestone                                                                 |
+| ----------------- | ---------------- | ------------------------------------------------------------------------- |
+| Runtime core      | ✅ Stable v2.0    | Production posture, typed integration boundary, and Verity Layer 2 hooks   |
+| Product wedge     | ✅ Shipping       | Ori Energy demo/API integration, private APK path, and Phone Starter flows |
+| Evidence hardware | 🔨 In Progress   | Verity Layer 1 contract and `ori-edge-firmware` bootstrap                  |
+| Safety kernel     | 🗓️ Planned       | Rust-owned Tier D kernel after shadow-mode evidence, not a broad rewrite   |
+| Growth            | 🗓️ Planned       | Skills Hub, Edge Node hardware, ori-cloud, and enterprise pilots           |
 
 ---
 

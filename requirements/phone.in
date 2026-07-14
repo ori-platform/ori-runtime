@@ -1,6 +1,6 @@
 # Phone/Termux runtime dependencies.
 #
-# Keep this narrower than requirements.in. The phone wedge needs USB serial
+# Keep this narrower than requirements/runtime.in. The phone wedge needs USB serial
 # telemetry, backend export, runtime envelope crypto, and optional alert
 # transports. Gateway MQTT, industrial protocols, Pi GPIO, and PC
 # process-control packages stay out of the phone wheelhouse.
