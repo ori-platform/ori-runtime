@@ -10,4 +10,4 @@ pip-tools>=7.4
 pip-audit>=2.10.1
 cyclonedx-bom>=6.0
 
-wait-for2==0.3.2; python_version < "3.12"
+wait-for2==0.4.1; python_version < "3.12"

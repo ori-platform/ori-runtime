@@ -1058,8 +1058,9 @@ urllib3==2.7.0 \
     #   -r requirements/runtime.in
     #   requests
     #   responses
-wait-for2==0.3.2 ; python_version < "3.12" \
-    --hash=sha256:93863026dc35f3471104ecf7de1f4a0b31f4c8b12a2241c0d6ee26dcc0c2092a
+wait-for2==0.4.1 ; python_version < "3.12" \
+    --hash=sha256:7f415415d21845c441391d6b4abe68f5959d2c0fbe927c2f61be28a297bc2acb \
+    --hash=sha256:c694503e8c7420929e8a86bcffd9b00d55acaec2c14223a2b1e92bdc2ebf2154
     # via
     #   -r requirements/runtime.in
     #   asyncua

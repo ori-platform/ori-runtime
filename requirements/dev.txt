@@ -2032,8 +2032,9 @@ virtualenv==21.3.3 \
     --hash=sha256:7d5987d8369e098e41406efb780a3d4ca79280097293899e351a6407ee153ab3 \
     --hash=sha256:f5bda277e553b1c2b3c1a8debfc30496e1288cc93ce6b7b71b3280047e317328
     # via pre-commit
-wait-for2==0.3.2 ; python_version < "3.12" \
-    --hash=sha256:93863026dc35f3471104ecf7de1f4a0b31f4c8b12a2241c0d6ee26dcc0c2092a
+wait-for2==0.4.1 ; python_version < "3.12" \
+    --hash=sha256:7f415415d21845c441391d6b4abe68f5959d2c0fbe927c2f61be28a297bc2acb \
+    --hash=sha256:c694503e8c7420929e8a86bcffd9b00d55acaec2c14223a2b1e92bdc2ebf2154
     # via
     #   -r requirements/dev.in
     #   -r requirements/runtime.txt
