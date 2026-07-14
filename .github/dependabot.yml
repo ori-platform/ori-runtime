@@ -1,24 +1,6 @@
 version: 2
 updates:
   - package-ecosystem: pip
-    directory: "/"
-    schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-      timezone: Africa/Lagos
-    open-pull-requests-limit: 5
-    ignore:
-      # Pin major versions manually — breaking changes need a human decision
-      - dependency-name: "anthropic"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "twilio"
-        update-types: ["version-update:semver-major"]
-    commit-message:
-      prefix: "build(deps)"
-      include: scope
-
-  - package-ecosystem: pip
     directory: "/requirements"
     schedule:
       interval: weekly
