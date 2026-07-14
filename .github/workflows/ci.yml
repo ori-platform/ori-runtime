@@ -46,7 +46,7 @@ jobs:
 
       - name: Install hash-locked dependencies
         run: |
-          python -m pip install --require-hashes -r requirements-dev.txt
+          python -m pip install --require-hashes -r requirements/dev.txt
           python -m pip install --no-deps -e .
 
       - name: Type check runtime contract boundaries
@@ -110,13 +110,13 @@ jobs:
 
       - name: Audit pinned Python dependencies
         run: |
-          python -m pip_audit -r requirements.txt
-          python -m pip_audit -r requirements-dev.txt
+          python -m pip_audit -r requirements/runtime.txt
+          python -m pip_audit -r requirements/dev.txt
 
       - name: Generate runtime SBOM
         if: matrix.python-version == '3.12'
         run: |
-          python -m cyclonedx_py requirements requirements.txt \
+          python -m cyclonedx_py requirements requirements/runtime.txt \
             --pyproject pyproject.toml \
             --output-reproducible \
             --of JSON \
@@ -170,6 +170,11 @@ jobs:
 
   evidence-artifact:
     name: Evidence FFI smoke (real ori_verity)
+    # Dependabot pull requests cannot read repository secrets, so the private
+    # ori-verity checkout token is intentionally unavailable there. The Python
+    # matrix still validates dependency bumps; real artifact smoke runs on main
+    # pushes and human-authored PRs.
+    if: github.event_name != 'pull_request' || github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
 
     steps:
@@ -219,8 +224,8 @@ jobs:
 
       - name: Install hash-locked dependencies
         run: |
-          python -m pip install --require-hashes -r requirements-dev.txt
-          python -m pip install --require-hashes --no-deps -r requirements-verity-ci.txt
+          python -m pip install --require-hashes -r requirements/dev.txt
+          python -m pip install --require-hashes --no-deps -r requirements/verity-ci.txt
           python -m pip install --no-deps -e .
 
       - name: Build ori_verity wheel from the pinned ref

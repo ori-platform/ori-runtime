@@ -109,7 +109,7 @@ def test_all_bundled_skills_are_packaged_as_data_files() -> None:
 def test_phone_requirements_input_excludes_gateway_pi_and_pc_deps() -> None:
     deps = {
         _dependency_name(line.strip())
-        for line in Path("requirements-phone.in")
+        for line in Path("requirements/phone.in")
         .read_text(encoding="utf-8")
         .splitlines()
         if line.strip() and not line.lstrip().startswith("#")
@@ -126,7 +126,7 @@ def test_phone_requirements_input_excludes_gateway_pi_and_pc_deps() -> None:
 def test_phone_requirements_lockfile_is_hashed_and_excludes_broad_runtime_deps() -> (
     None
 ):
-    lockfile = Path("requirements-phone.txt").read_text(encoding="utf-8")
+    lockfile = Path("requirements/phone.txt").read_text(encoding="utf-8")
     deps = {
         _dependency_name(line.strip())
         for line in lockfile.splitlines()
@@ -145,8 +145,8 @@ def test_phone_requirements_lockfile_is_hashed_and_excludes_broad_runtime_deps()
 
 
 def test_phone_inverter_profile_lockfiles_are_additive_and_hashed() -> None:
-    growatt = Path("requirements-phone-growatt.txt").read_text(encoding="utf-8")
-    victron = Path("requirements-phone-victron.txt").read_text(encoding="utf-8")
+    growatt = Path("requirements/phone-growatt.txt").read_text(encoding="utf-8")
+    victron = Path("requirements/phone-victron.txt").read_text(encoding="utf-8")
     growatt_deps = {
         _dependency_name(line.strip())
         for line in growatt.splitlines()
@@ -183,7 +183,7 @@ def test_phone_wheelhouse_build_allows_platform_local_wheels() -> None:
     assert "Building phone profile dependency wheels" in script
     assert "--no-build-isolation" in script
     assert "Writing phone install requirements from built wheels" in script
-    assert "requirements-phone.txt is the source/build lockfile" in script
+    assert "requirements/phone.txt is the source/build lockfile" in script
     assert "--only-binary=:all:" in script
 
 

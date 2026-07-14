@@ -22,7 +22,7 @@ echo "Using Python: $(${PYTHON_BIN} --version)"
 
 echo "Installing hash-locked project dependencies..."
 "${PYTHON_BIN}" -m pip --version
-"${PYTHON_BIN}" -m pip install --require-hashes -r requirements-dev.txt
+"${PYTHON_BIN}" -m pip install --require-hashes -r requirements/dev.txt
 "${PYTHON_BIN}" -m pip install --no-deps -e .
 
 echo "Installing git hooks..."

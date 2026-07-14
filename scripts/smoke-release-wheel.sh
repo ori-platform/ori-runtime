@@ -14,13 +14,13 @@ PYTHON="${ORI_PYTHON:-python3}"
 KEEP_TMP="${ORI_RELEASE_SMOKE_KEEP_TMP:-false}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [ ! -f "${ROOT}/pyproject.toml" ] || [ ! -f "${ROOT}/requirements.txt" ]; then
+if [ ! -f "${ROOT}/pyproject.toml" ] || [ ! -f "${ROOT}/requirements/runtime.txt" ]; then
   echo "ERROR: run from a complete ori-runtime checkout." >&2
   exit 1
 fi
 
-if ! grep -q "sha256:" "${ROOT}/requirements.txt"; then
-  echo "ERROR: requirements.txt must be hash-locked for release smoke tests." >&2
+if ! grep -q "sha256:" "${ROOT}/requirements/runtime.txt"; then
+  echo "ERROR: requirements/runtime.txt must be hash-locked for release smoke tests." >&2
   exit 1
 fi
 
@@ -29,7 +29,7 @@ import importlib.util
 import sys
 
 if importlib.util.find_spec("build") is None:
-    print("ERROR: Python package 'build' is required. Install requirements-dev.txt.", file=sys.stderr)
+    print("ERROR: Python package 'build' is required. Install requirements/dev.txt.", file=sys.stderr)
     raise SystemExit(1)
 PY
 
@@ -137,7 +137,7 @@ else
 fi
 
 echo "Installing hash-locked runtime dependencies..."
-"${VENV_PYTHON}" -m pip install --require-hashes -r "${ROOT}/requirements.txt"
+"${VENV_PYTHON}" -m pip install --require-hashes -r "${ROOT}/requirements/runtime.txt"
 
 echo "Installing built wheel without dependency resolution..."
 "${VENV_PYTHON}" -m pip install --no-deps "${WHEEL}"

@@ -110,7 +110,8 @@ Android-compatible PyPI wheels. Inside the finished wheelhouse,
 `requirements-phone.txt` records the base source/build lockfile,
 `requirements-phone-growatt.txt` or `requirements-phone-victron.txt` records the
 optional profile lockfile, and `requirements.txt` is generated from the actual
-built wheels so offline phone installs can still use `--require-hashes`.
+built wheels so offline phone installs can still use `--require-hashes`. The
+tracked source lockfiles live under `requirements/` in this repo.
 
 `termux-usb -l` is a readiness signal, not a runtime transport by itself. It can
 show that Android sees the USB meter, but the runtime still needs the meter to
