@@ -34,8 +34,11 @@ Built for the world's majority condition — unreliable power, intermittent conn
 - Verity Layer 2 action attestation is implemented behind `evidence.enabled`:
   Tier C/D dispatch records can be signed through the pinned `ori_verity`
   artifact, reconciled after restart, and surfaced through runtime health and
-  gateway heartbeat evidence. Verity Layer 1 device-origin telemetry is
-  specified in `ori-specs` and belongs in `ori-edge-firmware`, not this runtime.
+  gateway heartbeat evidence. Verity Layer 1 device-origin telemetry is now
+  consumed by the runtime verification gate: firmware signs readings at the
+  physical edge, the runtime verifies and trust-grades them, and `ori-verity`
+  verifies the shared golden bytes/signatures without owning firmware
+  canonicalization.
 - Safety invariants (tier guards, strict skill validation, sandbox boundaries) are CI-enforced on every PR.
 - Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0.
 - Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
@@ -102,27 +105,31 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│  Layer 6  Business       ori-cloud · dashboard · fleet       │
+│  Runtime L6  Business     ori-cloud · dashboard · fleet      │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 5  Application    Skills · Skills Hub · SDK           │
+│  Runtime L5  Application  Skills · Skills Hub · SDK          │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 4  Reasoning+Action  Intelligence Elevator            │
-│                             + Action Tier Framework          │
+│  Runtime L4  Reasoning+Action  Intelligence Elevator         │
+│                                + Action Tier Framework       │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 3  Middleware      Runtime · Event Loop · Dispatcher  │
+│  Runtime L3  Middleware   Runtime · Event Loop · Dispatcher  │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 2  Network         EventBus · Protocol Normaliser     │
+│  Runtime L2  Network      EventBus · Protocol Normaliser     │
 ├──────────────────────────────────────────────────────────────┤
-│  Layer 1  Perception      HAL · GPIO · I2C · RS485 · psutil  │
+│  Runtime L1  Perception   HAL · GPIO · I2C · RS485 · psutil  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-Layers 1–4 run on the device. **Layers 3 and 4 are inseparable** — the runtime always pairs a reasoning decision with an action decision. Layer 5 is the community. Layer 6 is the business.
+These are **runtime architecture layers**, not Verity protocol layers. Runtime
+Layers 1–4 run on the device. **Runtime Layers 3 and 4 are inseparable** — the
+runtime always pairs a reasoning decision with an action decision. Runtime Layer
+5 is the community. Runtime Layer 6 is the business.
 
 `ori-edge-firmware` is a Layer 1 companion, not a second runtime. Firmware nodes
-will sign sensor-origin telemetry at the point of measurement; this runtime
-normalises those readings, reasons over them, acts through the Action Tier
-Framework, and records Tier C/D action evidence through `ori-verity`.
+are **Verity Layer 1** producers: they sign sensor-origin telemetry at the point
+of measurement. This runtime verifies and normalises those readings, reasons
+over them, acts through the Action Tier Framework, and records Tier C/D action
+evidence through `ori-verity` as **Verity Layer 2**.
 
 For the full architectural specification, read [`CLAUDE.md`](CLAUDE.md). For the design philosophy, read [`PRINCIPLES.md`](PRINCIPLES.md).
 

@@ -1380,3 +1380,54 @@ Non-goals:
   signing; gaps are recorded as gaps.
 - Chain export receipts and ingestion-side verification are contract work in
   the platform specs, not runtime scope.
+
+## 2026-07-15 — Firmware Telemetry Verification Lands In The Runtime Store, Chain Atomicity Stays The Verifier-Grade Target
+
+**Status:** Accepted
+
+The runtime now verifies device-signed firmware telemetry per
+`ori-specs/firmware-telemetry/v1.md`: provisioning anchors, capability-hash
+pinning, Ed25519 envelope verification, `(boot_id, seq)` freshness, and
+receiver-derived trust grades (`attested` / `attested_dev` / `unattested` /
+`rejected`).
+
+Decisions:
+
+- **The device registry and freshness high-water marks live in the runtime
+  state store**, not in the Verity chain database. The replay state is
+  consumer-local by contract ("receivers must maintain replay state per
+  device_id and public-key epoch"); holding it in `ori_state.db` keeps the
+  verification path synchronous and keeps the frozen `verity_chain` schema
+  untouched. The high-water-mark advance is a guarded single-statement
+  UPDATE (`WHERE` enforces strict monotonicity), so a stale writer can never
+  regress it.
+- **Single-transaction atomicity between the high-water-mark advance and a
+  Verity chain append remains the verifier-grade target**, consistent with
+  the evidence module's documented Option B posture. Until the pinned
+  artifact exposes a combined operation, the runtime's replay defence is
+  authoritative locally and honest about that boundary.
+- **Trust grades are receiver-derived metadata, never signed by firmware.**
+  `sealed_flash` and `hardware_key` both grade `attested`; the posture field
+  is preserved alongside the grade everywhere it is recorded, and
+  development-posture readings grade `attested_dev` and are never eligible
+  for insurer-facing export.
+- **Heartbeat envelopes (`readings: []`) advance liveness and freshness but
+  never construct a `SensorReading`** and never trigger reasoning or
+  actions.
+- **The shared golden vectors are committed into the runtime test suite.**
+  One set of vectors, three repositories: the C producer emits the canonical
+  Layer 1 bytes, this Python verifier accepts and normalises them, and the
+  Rust Verity crate verifies the exact same bytes/signatures. CI enforces the
+  shared contract in each repository without pretending Verity produces
+  firmware envelopes.
+
+Alternatives considered:
+
+- Registry inside the Verity database with FFI-mediated access. Rejected
+  for now: puts a per-reading FFI hop and thread handoff on the hot
+  ingestion path, and the pinned artifact exposes no registry surface yet.
+  Revisit when the combined atomic append lands in the artifact.
+- Trusting the envelope's posture claim without a registry pin. Rejected:
+  posture is part of the signed payload but its trustworthiness derives
+  from the provisioning anchor; a device must not be able to upgrade its
+  own grade by changing a field.
