@@ -7,11 +7,14 @@ import hashlib
 import json
 import os
 import sqlite3
-from typing import Any, Optional
+from typing import Any, Callable, Concatenate, Optional, ParamSpec, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
 from ori.utils.time_utils import now_ms
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS sensor_history (
@@ -307,6 +310,23 @@ CREATE TABLE IF NOT EXISTS sensor_history_daily (
     sample_count INTEGER NOT NULL,
     UNIQUE(sensor_id, bucket_ms)
 );
+
+CREATE TABLE IF NOT EXISTS firmware_device_registry (
+    device_id         TEXT    PRIMARY KEY,
+    public_key_b64    TEXT    NOT NULL,
+    alg               TEXT    NOT NULL DEFAULT 'ed25519',
+    posture           TEXT    NOT NULL,
+    capability_hash   TEXT    NOT NULL,
+    manifest_json     TEXT    NOT NULL DEFAULT '{}',
+    channel_map_json  TEXT    NOT NULL DEFAULT '{}',
+    board_profile     TEXT    NOT NULL DEFAULT '',
+    approved          INTEGER NOT NULL DEFAULT 0,
+    provisioned_at_ms INTEGER NOT NULL,
+    last_boot_id      INTEGER NOT NULL DEFAULT 0,
+    last_seq          INTEGER NOT NULL DEFAULT 0,
+    revoked           INTEGER NOT NULL DEFAULT 0,
+    revoked_at_ms     INTEGER
+);
 """
 
 
@@ -409,6 +429,13 @@ class StateStore:
             "from_number",
             "TEXT    NOT NULL DEFAULT ''",
         )
+        for col, typedef in (
+            ("manifest_json", "TEXT    NOT NULL DEFAULT '{}'"),
+            ("channel_map_json", "TEXT    NOT NULL DEFAULT '{}'"),
+        ):
+            self._add_column_if_missing_on_conn(
+                conn, "firmware_device_registry", col, typedef
+            )
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_remote_command_log_sender_rejections
@@ -437,28 +464,52 @@ class StateStore:
                 return
             raise
 
-    async def _run_write(self, fn, *args):
+    async def _run_write(
+        self, fn: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs
+    ) -> _T:
         """Run a synchronous write callable in the executor under write lock."""
         async with self._write_lock:
-            return await asyncio.to_thread(fn, *args)
+            return await asyncio.to_thread(fn, *args, **kwargs)
 
-    async def _run_read(self, fn, *args):
+    async def _run_read(
+        self,
+        fn: Callable[Concatenate[sqlite3.Connection, _P], _T],
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _T:
         """Run a synchronous read callable in the executor without write lock."""
         if self._db_path == ":memory:":
             # In-memory SQLite cannot be shared with short-lived read
             # connections, so route reads through the primary connection
             # under the write lock to avoid cross-thread misuse.
-            return await self._run_write(self._run_read_on_primary_conn, fn, *args)
-        return await asyncio.to_thread(self._run_read_with_conn, fn, *args)
+            def call_primary() -> _T:
+                return self._run_read_on_primary_conn(fn, *args, **kwargs)
 
-    def _run_read_on_primary_conn(self, fn, *args):
+            return await self._run_write(call_primary)
+
+        def call_with_conn() -> _T:
+            return self._run_read_with_conn(fn, *args, **kwargs)
+
+        return await asyncio.to_thread(call_with_conn)
+
+    def _run_read_on_primary_conn(
+        self,
+        fn: Callable[Concatenate[sqlite3.Connection, _P], _T],
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _T:
         assert self._conn is not None
-        return fn(self._conn, *args)
+        return fn(self._conn, *args, **kwargs)
 
-    def _run_read_with_conn(self, fn, *args):
+    def _run_read_with_conn(
+        self,
+        fn: Callable[Concatenate[sqlite3.Connection, _P], _T],
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _T:
         conn, close_when_done = self._open_read_conn_sync()
         try:
-            return fn(conn, *args)
+            return fn(conn, *args, **kwargs)
         finally:
             if close_when_done:
                 conn.close()
@@ -2224,6 +2275,183 @@ class StateStore:
         )
         self._conn.commit()
 
+    # ─── firmware_device_registry ────────────────────────────────────────────
+
+    async def upsert_firmware_device_anchor(
+        self,
+        *,
+        device_id: str,
+        public_key_b64: str,
+        posture: str,
+        capability_hash: str,
+        manifest_json: str,
+        channel_map_json: str,
+        board_profile: str = "",
+        provisioned_at_ms: int | None = None,
+    ) -> None:
+        """Store (or replace) a provisioning anchor. Re-provisioning a
+        device resets approval and freshness state: a new anchor is a
+        new key epoch."""
+        await self._run_write(
+            self._upsert_firmware_device_anchor_sync,
+            device_id,
+            public_key_b64,
+            posture,
+            capability_hash,
+            manifest_json,
+            channel_map_json,
+            board_profile,
+            provisioned_at_ms if provisioned_at_ms is not None else now_ms(),
+        )
+
+    def _upsert_firmware_device_anchor_sync(
+        self,
+        device_id: str,
+        public_key_b64: str,
+        posture: str,
+        capability_hash: str,
+        manifest_json: str,
+        channel_map_json: str,
+        board_profile: str,
+        provisioned_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO firmware_device_registry
+                (device_id, public_key_b64, posture, capability_hash, manifest_json,
+                 channel_map_json, board_profile,
+                 approved, provisioned_at_ms, last_boot_id, last_seq, revoked, revoked_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, NULL)
+            ON CONFLICT(device_id) DO UPDATE SET
+                public_key_b64 = excluded.public_key_b64,
+                posture = excluded.posture,
+                capability_hash = excluded.capability_hash,
+                manifest_json = excluded.manifest_json,
+                channel_map_json = excluded.channel_map_json,
+                board_profile = excluded.board_profile,
+                approved = 0,
+                provisioned_at_ms = excluded.provisioned_at_ms,
+                last_boot_id = 0,
+                last_seq = 0,
+                revoked = 0,
+                revoked_at_ms = NULL
+            """,
+            (
+                device_id,
+                public_key_b64,
+                posture,
+                capability_hash,
+                manifest_json,
+                channel_map_json,
+                board_profile,
+                provisioned_at_ms,
+            ),
+        )
+        self._conn.commit()
+
+    async def get_firmware_device(self, device_id: str) -> dict | None:
+        return await self._run_read(self._get_firmware_device_sync, device_id)
+
+    def _get_firmware_device_sync(
+        self, conn: sqlite3.Connection, device_id: str
+    ) -> dict | None:
+        row = conn.execute(
+            """
+            SELECT device_id, public_key_b64, alg, posture, capability_hash,
+                   manifest_json, channel_map_json, board_profile, approved,
+                   provisioned_at_ms, last_boot_id, last_seq, revoked, revoked_at_ms
+            FROM firmware_device_registry WHERE device_id = ?
+            """,
+            (device_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "device_id": row[0],
+            "public_key_b64": row[1],
+            "alg": row[2],
+            "posture": row[3],
+            "capability_hash": row[4],
+            "manifest": json.loads(row[5]),
+            "channel_map": json.loads(row[6]),
+            "board_profile": row[7],
+            "approved": bool(row[8]),
+            "provisioned_at_ms": int(row[9]),
+            "last_boot_id": int(row[10]),
+            "last_seq": int(row[11]),
+            "revoked": bool(row[12]),
+            "revoked_at_ms": int(row[13]) if row[13] is not None else None,
+        }
+
+    async def approve_firmware_device(self, device_id: str) -> bool:
+        """Operator approval for the currently verified provisioning anchor."""
+        return await self._run_write(self._approve_firmware_device_sync, device_id)
+
+    def _approve_firmware_device_sync(self, device_id: str) -> bool:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            UPDATE firmware_device_registry
+            SET approved = 1
+            WHERE device_id = ? AND revoked = 0
+            """,
+            (device_id,),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    async def revoke_firmware_device(
+        self, device_id: str, *, revoked_at_ms: int | None = None
+    ) -> bool:
+        return await self._run_write(
+            self._revoke_firmware_device_sync,
+            device_id,
+            revoked_at_ms if revoked_at_ms is not None else now_ms(),
+        )
+
+    def _revoke_firmware_device_sync(self, device_id: str, revoked_at_ms: int) -> bool:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            UPDATE firmware_device_registry
+            SET revoked = 1, approved = 0, revoked_at_ms = ?
+            WHERE device_id = ?
+            """,
+            (revoked_at_ms, device_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    async def advance_firmware_freshness(
+        self, device_id: str, *, boot_id: int, seq: int
+    ) -> bool:
+        """Advance the replay high-water mark, strictly monotonically.
+
+        The WHERE clause is the atomicity guarantee: a concurrent or
+        replayed writer whose (boot_id, seq) does not strictly advance
+        the stored mark updates zero rows, and the caller must treat
+        that as a replay."""
+        return await self._run_write(
+            self._advance_firmware_freshness_sync, device_id, boot_id, seq
+        )
+
+    def _advance_firmware_freshness_sync(
+        self, device_id: str, boot_id: int, seq: int
+    ) -> bool:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            UPDATE firmware_device_registry
+            SET last_boot_id = ?, last_seq = ?
+            WHERE device_id = ? AND revoked = 0 AND approved = 1
+              AND ? >= last_boot_id AND ? > last_seq
+            """,
+            (boot_id, seq, device_id, boot_id, seq),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     # ─── device_policy_cache ─────────────────────────────────────────────────
 
     async def upsert_device_policy_cache(
@@ -2533,7 +2761,7 @@ class StateStore:
             (now_ms(), pattern_key),
         )
         self._conn.commit()
-        return row["resolution"]
+        return str(row["resolution"])
 
     async def store_causal_memory(
         self, pattern_key: str, resolution: str, confidence: float

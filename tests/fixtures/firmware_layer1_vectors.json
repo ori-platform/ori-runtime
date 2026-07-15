@@ -1,0 +1,309 @@
+{
+  "contract": "ori-specs/firmware-telemetry/v1.md",
+  "version": 1,
+  "comment": "Cross-language golden vectors for Verity Layer 1. Shared with ori-verity and ori-runtime; all implementations must produce and verify these bytes exactly. Signed with the TEST-ONLY seed in test_keypair.json — never provision that seed.",
+  "canonical_rules": {
+    "keys": "sorted lexicographically at every nesting level",
+    "whitespace": "none outside string values",
+    "encoding": "UTF-8; RFC 8259 escapes; non-ASCII unescaped",
+    "numbers": "integers |n| <= 2^53-1; floats finite and either 0 or with magnitude in [1e-4, 1e16), fixed notation, shortest round-trip digits, mandatory fractional part (DECISIONS.md D-011)"
+  },
+  "signature_encoding": "ed25519:<standard-base64-64-byte-signature>",
+  "public_key_hex": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+  "public_key_b64": "IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI=",
+  "cases": [
+    {
+      "name": "manifest_minimal_dev",
+      "kind": "manifest",
+      "input": {
+        "v": 1,
+        "alg": "ed25519",
+        "device_id": "ori-fw-dev00001",
+        "firmware_version": "0.1.0",
+        "board_profile": "esp32s3-devkit",
+        "device_mode": "sensor_node",
+        "public_key_b64": "IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI=",
+        "posture": "development",
+        "secure_boot_enabled": false,
+        "flash_encryption_enabled": false,
+        "key_storage": "dev_flash",
+        "transports": [
+          "mqtt"
+        ],
+        "channels": [
+          {
+            "channel": "ch0",
+            "sensor_type": "current",
+            "unit": "ampere",
+            "protocol": "adc",
+            "source": "ads1115",
+            "quality_floor": 0.8
+          }
+        ],
+        "actions": [],
+        "interlocks": []
+      },
+      "canonical_hex": "7b22616374696f6e73223a5b5d2c22616c67223a2265643235353139222c22626f6172645f70726f66696c65223a22657370333273332d6465766b6974222c226368616e6e656c73223a5b7b226368616e6e656c223a22636830222c2270726f746f636f6c223a22616463222c227175616c6974795f666c6f6f72223a302e382c2273656e736f725f74797065223a2263757272656e74222c22736f75726365223a2261647331313135222c22756e6974223a22616d70657265227d5d2c226465766963655f6964223a226f72692d66772d6465763030303031222c226465766963655f6d6f6465223a2273656e736f725f6e6f6465222c226669726d776172655f76657273696f6e223a22302e312e30222c22666c6173685f656e6372797074696f6e5f656e61626c6564223a66616c73652c22696e7465726c6f636b73223a5b5d2c226b65795f73746f72616765223a226465765f666c617368222c22706f7374757265223a22646576656c6f706d656e74222c227075626c69635f6b65795f623634223a2249564c34305a7435485352464d6b4c6858793672624c66502b6e747158744d416c35594f427069423278493d222c227365637572655f626f6f745f656e61626c6564223a66616c73652c227472616e73706f727473223a5b226d717474225d2c2276223a317d",
+      "canonical_sha256_hex": "abcacedd4f1632e5db3c604fb63356d9f8bc8b567ac6a3e524a284a416681330",
+      "signature_b64": "Amc9eFpmT4eie7KWsp/hjtKRqp06RqdzcN3ByW+bgemZ/HgCENHTT5ywXcHLW5w70Ygo9oOg4NKQMbp9TFnmDg==",
+      "manifest_hash": "sha256:abcacedd4f1632e5db3c604fb63356d9f8bc8b567ac6a3e524a284a416681330"
+    },
+    {
+      "name": "manifest_full_sealed",
+      "kind": "manifest",
+      "input": {
+        "v": 1,
+        "alg": "ed25519",
+        "device_id": "ori-fw-7c9f2b3a",
+        "firmware_version": "0.1.0",
+        "board_profile": "esp32s3-poe-8di8do",
+        "device_mode": "mixed",
+        "public_key_b64": "IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI=",
+        "posture": "sealed_flash",
+        "secure_boot_enabled": true,
+        "flash_encryption_enabled": true,
+        "key_storage": "nvs_encrypted",
+        "transports": [
+          "mqtt"
+        ],
+        "channels": [
+          {
+            "channel": "ch0",
+            "sensor_type": "current",
+            "unit": "ampere",
+            "protocol": "adc",
+            "source": "ads1115",
+            "quality_floor": 0.8
+          },
+          {
+            "channel": "ch1",
+            "sensor_type": "voltage",
+            "unit": "volt",
+            "protocol": "adc",
+            "source": "ads1115",
+            "quality_floor": 0.5
+          }
+        ],
+        "actions": [
+          {
+            "action": "relay_open",
+            "channel": "relay0",
+            "authority": "runtime_commanded"
+          },
+          {
+            "action": "relay_open",
+            "channel": "relay1",
+            "authority": "local_interlock_only"
+          }
+        ],
+        "interlocks": [
+          {
+            "name": "local_overcurrent_interlock",
+            "channel": "ch0",
+            "action": "relay_open"
+          }
+        ]
+      },
+      "canonical_hex": "7b22616374696f6e73223a5b7b22616374696f6e223a2272656c61795f6f70656e222c22617574686f72697479223a2272756e74696d655f636f6d6d616e646564222c226368616e6e656c223a2272656c617930227d2c7b22616374696f6e223a2272656c61795f6f70656e222c22617574686f72697479223a226c6f63616c5f696e7465726c6f636b5f6f6e6c79222c226368616e6e656c223a2272656c617931227d5d2c22616c67223a2265643235353139222c22626f6172645f70726f66696c65223a22657370333273332d706f652d38646938646f222c226368616e6e656c73223a5b7b226368616e6e656c223a22636830222c2270726f746f636f6c223a22616463222c227175616c6974795f666c6f6f72223a302e382c2273656e736f725f74797065223a2263757272656e74222c22736f75726365223a2261647331313135222c22756e6974223a22616d70657265227d2c7b226368616e6e656c223a22636831222c2270726f746f636f6c223a22616463222c227175616c6974795f666c6f6f72223a302e352c2273656e736f725f74797065223a22766f6c74616765222c22736f75726365223a2261647331313135222c22756e6974223a22766f6c74227d5d2c226465766963655f6964223a226f72692d66772d3763396632623361222c226465766963655f6d6f6465223a226d69786564222c226669726d776172655f76657273696f6e223a22302e312e30222c22666c6173685f656e6372797074696f6e5f656e61626c6564223a747275652c22696e7465726c6f636b73223a5b7b22616374696f6e223a2272656c61795f6f70656e222c226368616e6e656c223a22636830222c226e616d65223a226c6f63616c5f6f76657263757272656e745f696e7465726c6f636b227d5d2c226b65795f73746f72616765223a226e76735f656e63727970746564222c22706f7374757265223a227365616c65645f666c617368222c227075626c69635f6b65795f623634223a2249564c34305a7435485352464d6b4c6858793672624c66502b6e747158744d416c35594f427069423278493d222c227365637572655f626f6f745f656e61626c6564223a747275652c227472616e73706f727473223a5b226d717474225d2c2276223a317d",
+      "canonical_sha256_hex": "13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+      "signature_b64": "m/TRQ6GkIcdYsjQeF09zPQiKS6yMyBCS0j9MQmxwRBB8ZbwMpbcFxEyjjaDWsF4/q2fAwisYVk6/7gTx/qxPAA==",
+      "manifest_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d"
+    },
+    {
+      "name": "telemetry_single_reading",
+      "kind": "telemetry",
+      "input": {
+        "v": 1,
+        "alg": "ed25519",
+        "device_id": "ori-fw-7c9f2b3a",
+        "boot_id": 41,
+        "seq": 130482,
+        "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+        "posture": "sealed_flash",
+        "device_uptime_ms": 918233,
+        "emitted_at_ms": null,
+        "readings": [
+          {
+            "channel": "ch0",
+            "sensor_type": "current",
+            "unit": "ampere",
+            "value": 8.21,
+            "quality": 1.0
+          }
+        ]
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22626f6f745f6964223a34312c226361706162696c6974795f68617368223a227368613235363a31333735316235333335636365646364346666636338326262646132386562666237353538383539663336613734653731306631613062306162323364613864222c226465766963655f6964223a226f72692d66772d3763396632623361222c226465766963655f757074696d655f6d73223a3931383233332c22656d69747465645f61745f6d73223a6e756c6c2c22706f7374757265223a227365616c65645f666c617368222c2272656164696e6773223a5b7b226368616e6e656c223a22636830222c227175616c697479223a312e302c2273656e736f725f74797065223a2263757272656e74222c22756e6974223a22616d70657265222c2276616c7565223a382e32317d5d2c22736571223a3133303438322c2276223a317d",
+      "canonical_sha256_hex": "d9a43395114d2af1f4bc14e0c1d88414d0c6082bb8dbc85569817a937381a9e5",
+      "signature_b64": "7oThYHjhhGLdI+vnmsU7M/R4ivAj2tjzCfMhxsjK3ljZB+KnKMEVWbN7f/ikWEj28MpWhAE8gXrq1JHCZ8UGCg=="
+    },
+    {
+      "name": "telemetry_multi_reading",
+      "kind": "telemetry",
+      "input": {
+        "v": 1,
+        "alg": "ed25519",
+        "device_id": "ori-fw-7c9f2b3a",
+        "boot_id": 41,
+        "seq": 130483,
+        "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+        "posture": "sealed_flash",
+        "device_uptime_ms": 919233,
+        "emitted_at_ms": null,
+        "readings": [
+          {
+            "channel": "ch0",
+            "sensor_type": "current",
+            "unit": "ampere",
+            "value": 8.24,
+            "quality": 1.0
+          },
+          {
+            "channel": "ch1",
+            "sensor_type": "voltage",
+            "unit": "volt",
+            "value": 229.9,
+            "quality": 1.0
+          }
+        ]
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22626f6f745f6964223a34312c226361706162696c6974795f68617368223a227368613235363a31333735316235333335636365646364346666636338326262646132386562666237353538383539663336613734653731306631613062306162323364613864222c226465766963655f6964223a226f72692d66772d3763396632623361222c226465766963655f757074696d655f6d73223a3931393233332c22656d69747465645f61745f6d73223a6e756c6c2c22706f7374757265223a227365616c65645f666c617368222c2272656164696e6773223a5b7b226368616e6e656c223a22636830222c227175616c697479223a312e302c2273656e736f725f74797065223a2263757272656e74222c22756e6974223a22616d70657265222c2276616c7565223a382e32347d2c7b226368616e6e656c223a22636831222c227175616c697479223a312e302c2273656e736f725f74797065223a22766f6c74616765222c22756e6974223a22766f6c74222c2276616c7565223a3232392e397d5d2c22736571223a3133303438332c2276223a317d",
+      "canonical_sha256_hex": "7a943ab273889afaee248d1a5c160fb645de253d0e027a87ba7c730152bbe459",
+      "signature_b64": "PyQ7ljR8vSYv4QIH9L8Lq6sHJ4smFAG73H/6v6/tv67XHtYqgr0AAJIAH3jx2NiIDO1by6WktohbX2JTDrFjAQ=="
+    },
+    {
+      "name": "telemetry_heartbeat_zero_readings",
+      "kind": "telemetry",
+      "input": {
+        "v": 1,
+        "alg": "ed25519",
+        "device_id": "ori-fw-7c9f2b3a",
+        "boot_id": 41,
+        "seq": 130484,
+        "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+        "posture": "sealed_flash",
+        "device_uptime_ms": 920233,
+        "emitted_at_ms": null,
+        "readings": []
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22626f6f745f6964223a34312c226361706162696c6974795f68617368223a227368613235363a31333735316235333335636365646364346666636338326262646132386562666237353538383539663336613734653731306631613062306162323364613864222c226465766963655f6964223a226f72692d66772d3763396632623361222c226465766963655f757074696d655f6d73223a3932303233332c22656d69747465645f61745f6d73223a6e756c6c2c22706f7374757265223a227365616c65645f666c617368222c2272656164696e6773223a5b5d2c22736571223a3133303438342c2276223a317d",
+      "canonical_sha256_hex": "d6165c0010fb995af3eff79a2fdab24c13bdc71bcf0d010bcf03f9e9a077a036",
+      "signature_b64": "qXrLDmG1JN10T8UxDmT9R8ZbFu9CYm39Kclt4477GZJVaFYdHvu8jm3s16ObnNd5FfPR8G1AGsspLPV1F6pzDA=="
+    },
+    {
+      "name": "telemetry_unicode_channel",
+      "kind": "telemetry",
+      "input": {
+        "v": 1,
+        "alg": "ed25519",
+        "device_id": "ori-fw-dev00001",
+        "boot_id": 7,
+        "seq": 1025,
+        "capability_hash": "sha256:abcacedd4f1632e5db3c604fb63356d9f8bc8b567ac6a3e524a284a416681330",
+        "posture": "development",
+        "device_uptime_ms": 5123,
+        "emitted_at_ms": null,
+        "readings": [
+          {
+            "channel": "temp-éàü-⚡🔥",
+            "sensor_type": "temperature",
+            "unit": "celsius",
+            "value": 24.5,
+            "quality": 1.0
+          },
+          {
+            "channel": "ch\"q\\b\nn\u0007",
+            "sensor_type": "current",
+            "unit": "ampere",
+            "value": 0.5,
+            "quality": 0.5
+          }
+        ]
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22626f6f745f6964223a372c226361706162696c6974795f68617368223a227368613235363a61626361636564643466313633326535646233633630346662363333353664396638626338623536376163366133653532346132383461343136363831333330222c226465766963655f6964223a226f72692d66772d6465763030303031222c226465766963655f757074696d655f6d73223a353132332c22656d69747465645f61745f6d73223a6e756c6c2c22706f7374757265223a22646576656c6f706d656e74222c2272656164696e6773223a5b7b226368616e6e656c223a2274656d702dc3a9c3a0c3bc2de29aa1f09f94a5222c227175616c697479223a312e302c2273656e736f725f74797065223a2274656d7065726174757265222c22756e6974223a2263656c73697573222c2276616c7565223a32342e357d2c7b226368616e6e656c223a2263685c22715c5c625c6e6e5c7530303037222c227175616c697479223a302e352c2273656e736f725f74797065223a2263757272656e74222c22756e6974223a22616d70657265222c2276616c7565223a302e357d5d2c22736571223a313032352c2276223a317d",
+      "canonical_sha256_hex": "d53d619e54d5408e2fd56b23103448f14e9fc9e5951a384d88e6409c61705534",
+      "signature_b64": "ONNzNqirm08KJdYDmiOAHluEO1M5N9t7YOB6tHtCEXJpTQUUMT8Q5+mbH1oCET1CZ83dbOL8Y9jsqQzCUPd1Aw=="
+    },
+    {
+      "name": "telemetry_float_edges",
+      "kind": "telemetry",
+      "input": {
+        "v": 1,
+        "alg": "ed25519",
+        "device_id": "ori-fw-dev00001",
+        "boot_id": 7,
+        "seq": 1026,
+        "capability_hash": "sha256:abcacedd4f1632e5db3c604fb63356d9f8bc8b567ac6a3e524a284a416681330",
+        "posture": "development",
+        "device_uptime_ms": 6123,
+        "emitted_at_ms": null,
+        "readings": [
+          {
+            "channel": "ch0",
+            "sensor_type": "current",
+            "unit": "ampere",
+            "value": 0.0001,
+            "quality": 1.0
+          },
+          {
+            "channel": "ch0",
+            "sensor_type": "current",
+            "unit": "ampere",
+            "value": 0.30000000000000004,
+            "quality": 0.5
+          },
+          {
+            "channel": "ch0",
+            "sensor_type": "energy",
+            "unit": "watt_hour",
+            "value": 9007199254740991.0,
+            "quality": 0.0
+          },
+          {
+            "channel": "ch0",
+            "sensor_type": "current",
+            "unit": "ampere",
+            "value": -0.0,
+            "quality": 1.0
+          },
+          {
+            "channel": "ch0",
+            "sensor_type": "energy",
+            "unit": "watt_hour",
+            "value": 1000000000000000.0,
+            "quality": 0.25
+          }
+        ]
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22626f6f745f6964223a372c226361706162696c6974795f68617368223a227368613235363a61626361636564643466313633326535646233633630346662363333353664396638626338623536376163366133653532346132383461343136363831333330222c226465766963655f6964223a226f72692d66772d6465763030303031222c226465766963655f757074696d655f6d73223a363132332c22656d69747465645f61745f6d73223a6e756c6c2c22706f7374757265223a22646576656c6f706d656e74222c2272656164696e6773223a5b7b226368616e6e656c223a22636830222c227175616c697479223a312e302c2273656e736f725f74797065223a2263757272656e74222c22756e6974223a22616d70657265222c2276616c7565223a302e303030317d2c7b226368616e6e656c223a22636830222c227175616c697479223a302e352c2273656e736f725f74797065223a2263757272656e74222c22756e6974223a22616d70657265222c2276616c7565223a302e33303030303030303030303030303030347d2c7b226368616e6e656c223a22636830222c227175616c697479223a302e302c2273656e736f725f74797065223a22656e65726779222c22756e6974223a22776174745f686f7572222c2276616c7565223a393030373139393235343734303939312e307d2c7b226368616e6e656c223a22636830222c227175616c697479223a312e302c2273656e736f725f74797065223a2263757272656e74222c22756e6974223a22616d70657265222c2276616c7565223a2d302e307d2c7b226368616e6e656c223a22636830222c227175616c697479223a302e32352c2273656e736f725f74797065223a22656e65726779222c22756e6974223a22776174745f686f7572222c2276616c7565223a313030303030303030303030303030302e307d5d2c22736571223a313032362c2276223a317d",
+      "canonical_sha256_hex": "bdc33af8b204a908b06123d5d467cae93ee98f1f3d6f0a2cb16d0fe96488f0be",
+      "signature_b64": "jBrzSq4u8G4mMDeK0pHUnngQITafCUF9qbN9iWDPryOmiA3jAo2qO/mQIkMVij/8X6RNG5fk4xjyuxuRFRlzAw=="
+    },
+    {
+      "name": "telemetry_max_counters",
+      "kind": "telemetry",
+      "input": {
+        "v": 1,
+        "alg": "ed25519",
+        "device_id": "ori-fw-7c9f2b3a",
+        "boot_id": 4294967295,
+        "seq": 9007199254740991,
+        "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+        "posture": "sealed_flash",
+        "device_uptime_ms": 9007199254740991,
+        "emitted_at_ms": 1752451200000,
+        "readings": [
+          {
+            "channel": "ch0",
+            "sensor_type": "current",
+            "unit": "ampere",
+            "value": 8.21,
+            "quality": 1.0
+          }
+        ]
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22626f6f745f6964223a343239343936373239352c226361706162696c6974795f68617368223a227368613235363a31333735316235333335636365646364346666636338326262646132386562666237353538383539663336613734653731306631613062306162323364613864222c226465766963655f6964223a226f72692d66772d3763396632623361222c226465766963655f757074696d655f6d73223a393030373139393235343734303939312c22656d69747465645f61745f6d73223a313735323435313230303030302c22706f7374757265223a227365616c65645f666c617368222c2272656164696e6773223a5b7b226368616e6e656c223a22636830222c227175616c697479223a312e302c2273656e736f725f74797065223a2263757272656e74222c22756e6974223a22616d70657265222c2276616c7565223a382e32317d5d2c22736571223a393030373139393235343734303939312c2276223a317d",
+      "canonical_sha256_hex": "e38c2dc76880a0d2640b8113daab88645db5f60ccacd7ba04483a5893a3a6e30",
+      "signature_b64": "kgDTI3bmqtyBZSkj4/4ST4wmp/hEvTh2SujHqIm++WVzp4qIvZdEyae4ZlCTEuBkbr0zHOjNnBfQSmlqu1bKBQ=="
+    }
+  ]
+}
