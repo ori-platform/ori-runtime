@@ -76,7 +76,6 @@ GRADE_REJECTED = "rejected"
 
 # Error vocabulary from the contract's error-semantics table.
 ERR_UNKNOWN_DEVICE = "unknown_device"
-ERR_ANCHOR_MISSING = "anchor_missing"
 ERR_INVALID_SIGNATURE_FORMAT = "invalid_signature_format"
 ERR_PUBLIC_KEY_MISMATCH = "public_key_mismatch"
 ERR_SIGNATURE_FAILED = "signature_verification_failed"

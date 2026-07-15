@@ -30,7 +30,6 @@ from typing import Any
 
 from ori.network.events import SensorReading
 from ori.security.firmware_telemetry import (
-    ERR_ANCHOR_MISSING,
     ERR_SEQUENCE_REPLAY,
     GRADE_REJECTED,
     FirmwareVerificationError,
@@ -44,6 +43,8 @@ from ori.security.firmware_telemetry import (
 logger = logging.getLogger(__name__)
 
 __all__ = ["FirmwareTelemetryGate"]
+
+ERR_ANCHOR_MISSING = "anchor_missing"
 
 
 def _now_ms() -> int:
