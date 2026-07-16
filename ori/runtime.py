@@ -36,6 +36,7 @@ from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import Config, ConfigValidationError
 from ori.gateway.export import GatewayExportResponder, MqttGatewayExportServer
+from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
 from ori.gateway.heartbeat import MqttGatewayHeartbeatSubscriber
 from ori.gateway.node_heartbeat import MqttRuntimeNodeHeartbeatPublisher
 from ori.gateway.reasoning import MqttGatewayReasoner
@@ -66,6 +67,7 @@ from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.security.evidence import EvidenceAttestor
+from ori.security.firmware_ingest import FirmwareTelemetryGate
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
@@ -924,6 +926,20 @@ class OriRuntime:
                 asyncio.create_task(
                     hb_subscriber.serve_until(self._shutdown_event),
                     name="gateway-heartbeat",
+                )
+            )
+
+        firmware_telemetry_subscriber = _build_firmware_telemetry_subscriber(
+            config,
+            event_bus,
+            self._state_store,
+            self._deduplicator,
+        )
+        if firmware_telemetry_subscriber is not None:
+            self._background_tasks.append(
+                asyncio.create_task(
+                    firmware_telemetry_subscriber.serve_until(self._shutdown_event),
+                    name="firmware-telemetry",
                 )
             )
 
@@ -3616,6 +3632,44 @@ def _build_gateway_heartbeat_subscriber(
         "[runtime] MQTT gateway heartbeat subscriber enabled on %s (auth=%s)",
         "ori/gateway/health",
         "enabled" if auth_enabled else "disabled",
+    )
+    return subscriber
+
+
+def _build_firmware_telemetry_subscriber(
+    config: Config,
+    event_bus: EventBus,
+    state_store: StateStore,
+    deduplicator: EventDeduplicator | None,
+) -> MqttFirmwareTelemetrySubscriber | None:
+    """Instantiate the signed firmware telemetry subscriber when configured."""
+    if not bool(config.gateway.enabled):
+        return None
+    firmware_cfg = (
+        config.gateway.firmware_telemetry
+        if isinstance(getattr(config.gateway, "firmware_telemetry", {}), dict)
+        else {}
+    )
+    if not bool(firmware_cfg.get("enabled", False)):
+        return None
+    try:
+        subscriber = MqttFirmwareTelemetrySubscriber(
+            broker_url=config.gateway.broker_url,
+            telemetry_gate=FirmwareTelemetryGate(state_store),
+            event_bus=event_bus,
+            state_store=state_store,
+            runtime_device_id=config.device.id,
+            topic=str(firmware_cfg.get("topic", "ori/fw/+/telemetry")),
+            qos=int(firmware_cfg.get("qos", 1)),
+            tls_config=getattr(config.gateway, "tls", {}),
+            deduplicator=deduplicator,
+        )
+    except Exception:
+        logger.exception("[runtime] invalid firmware telemetry MQTT configuration")
+        return None
+    logger.info(
+        "[runtime] MQTT firmware telemetry subscriber enabled on %s",
+        firmware_cfg.get("topic", "ori/fw/+/telemetry"),
     )
     return subscriber
 

@@ -4318,3 +4318,73 @@ actions:
         yaml_path = _write_yaml(tmp_path, self._yaml("cloud"))
         with pytest.raises(ConfigValidationError, match="reasoning.default_tier"):
             Config.load(yaml_path)
+
+
+class TestGatewayFirmwareTelemetryConfig:
+    def _yaml(self, gateway_extra: str = "") -> str:
+        return f"""
+device:
+  id: dev-01
+  name: Test
+  location: Lagos
+sensors: []
+skills: []
+reasoning:
+  default_tier: local
+  local_model: x
+  model_path: /tmp
+gateway:
+  enabled: true
+  broker_url: mqtt://localhost
+{gateway_extra}
+actions:
+  primary_alert_channel: sms
+"""
+
+    def test_defaults_to_disabled(self, tmp_path):
+        cfg = Config.load(_write_yaml(tmp_path, self._yaml()))
+        assert cfg.gateway.firmware_telemetry["enabled"] is False
+        assert cfg.gateway.firmware_telemetry["topic"] == "ori/fw/+/telemetry"
+        assert cfg.gateway.firmware_telemetry["qos"] == 1
+
+    def test_accepts_explicit_firmware_telemetry_subscription(self, tmp_path):
+        cfg = Config.load(
+            _write_yaml(
+                tmp_path,
+                self._yaml(
+                    "  firmware_telemetry:\n"
+                    "    enabled: true\n"
+                    "    topic: ori/fw/site-a/telemetry\n"
+                    "    qos: 2\n"
+                ),
+            )
+        )
+        assert cfg.gateway.firmware_telemetry == {
+            "enabled": True,
+            "topic": "ori/fw/site-a/telemetry",
+            "qos": 2,
+        }
+
+    def test_rejects_hash_wildcard_topic(self, tmp_path):
+        with pytest.raises(ConfigValidationError, match="firmware_telemetry.topic"):
+            Config.load(
+                _write_yaml(
+                    tmp_path,
+                    self._yaml(
+                        "  firmware_telemetry:\n"
+                        "    enabled: true\n"
+                        "    topic: ori/fw/#\n"
+                    ),
+                )
+            )
+
+    def test_rejects_invalid_qos(self, tmp_path):
+        with pytest.raises(ConfigValidationError, match="firmware_telemetry.qos"):
+            Config.load(
+                _write_yaml(
+                    tmp_path,
+                    self._yaml(
+                        "  firmware_telemetry:\n    enabled: true\n    qos: 3\n"
+                    ),
+                )
+            )

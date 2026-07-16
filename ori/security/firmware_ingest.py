@@ -32,10 +32,12 @@ from ori.network.events import SensorReading
 from ori.security.firmware_telemetry import (
     ERR_SEQUENCE_REPLAY,
     GRADE_REJECTED,
+    FirmwareFaultVerification,
     FirmwareVerificationError,
     TelemetryVerification,
     canonical_json_bytes,
     manifest_channel_map,
+    verify_fault_message,
     verify_manifest_message,
     verify_telemetry_message,
 )
@@ -193,6 +195,7 @@ class FirmwareTelemetryGate:
                 timestamp=received,
                 quality=reading["quality"],
                 metadata={
+                    "source": "firmware",
                     "attestation": verification.grade,
                     "posture": verification.posture,
                     "firmware_device_id": verification.device_id,
@@ -208,11 +211,105 @@ class FirmwareTelemetryGate:
         ]
         return verification, readings
 
+    async def ingest_fault(
+        self,
+        message: dict[str, Any],
+        *,
+        received_at_ms: int | None = None,
+    ) -> FirmwareFaultVerification:
+        """Verify and durably record one signed firmware fault event.
+
+        Fault events consume the same device freshness stream as
+        telemetry, but they must never become ``SensorReading`` objects
+        and must never trigger runtime actions.
+        """
+        received = received_at_ms if received_at_ms is not None else _now_ms()
+
+        fault = message.get("fault") if isinstance(message, dict) else None
+        device_id = ""
+        if isinstance(fault, dict) and isinstance(fault.get("device_id"), str):
+            device_id = fault["device_id"]
+
+        row = await self._store.get_firmware_device(device_id) if device_id else None
+        if row is None:
+            verification = FirmwareFaultVerification(
+                grade=GRADE_REJECTED,
+                device_id=device_id,
+                error_code=ERR_ANCHOR_MISSING,
+                error_detail="no provisioning anchor for device",
+            )
+            self._log_fault_rejection(verification)
+            return verification
+
+        verification = verify_fault_message(
+            message,
+            anchor_device_id=row["device_id"],
+            anchor_public_key_b64=row["public_key_b64"],
+            anchor_posture=row["posture"],
+            accepted_manifest_hash=row["capability_hash"],
+            last_boot_id=row["last_boot_id"],
+            last_seq=row["last_seq"],
+            approved=row["approved"],
+            revoked=row["revoked"],
+        )
+        if not verification.accepted:
+            self._log_fault_rejection(verification)
+            return verification
+
+        advanced = await self._store.advance_firmware_freshness(
+            verification.device_id,
+            boot_id=verification.boot_id,
+            seq=verification.seq,
+        )
+        if not advanced:
+            verification = FirmwareFaultVerification(
+                grade=GRADE_REJECTED,
+                device_id=verification.device_id,
+                error_code=ERR_SEQUENCE_REPLAY,
+                error_detail="high-water mark advanced by a newer message",
+            )
+            self._log_fault_rejection(verification)
+            return verification
+
+        await self._store.append_firmware_fault_event(
+            device_id=verification.device_id,
+            boot_id=verification.boot_id,
+            seq=verification.seq,
+            grade=verification.grade,
+            posture=verification.posture,
+            capability_hash=row["capability_hash"],
+            code=verification.code,
+            subject=verification.subject,
+            detail=verification.detail,
+            device_uptime_ms=verification.device_uptime_ms,
+            received_at_ms=received,
+            fault_json=canonical_json_bytes(fault).decode("utf-8")
+            if isinstance(fault, dict)
+            else "{}",
+        )
+        logger.warning(
+            "firmware fault accepted: device=%s code=%s subject=%s detail=%s",
+            verification.device_id,
+            verification.code,
+            verification.subject or "<none>",
+            verification.detail or "<none>",
+        )
+        return verification
+
     @staticmethod
     def _log_rejection(verification: TelemetryVerification) -> None:
         # Auditable, never silently downgraded to a low-quality reading.
         logger.warning(
             "firmware telemetry rejected: device=%s code=%s detail=%s",
+            verification.device_id or "<unknown>",
+            verification.error_code,
+            verification.error_detail,
+        )
+
+    @staticmethod
+    def _log_fault_rejection(verification: FirmwareFaultVerification) -> None:
+        logger.warning(
+            "firmware fault rejected: device=%s code=%s detail=%s",
             verification.device_id or "<unknown>",
             verification.error_code,
             verification.error_detail,

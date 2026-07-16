@@ -1414,6 +1414,18 @@ Decisions:
 - **Heartbeat envelopes (`readings: []`) advance liveness and freshness but
   never construct a `SensorReading`** and never trigger reasoning or
   actions.
+- **Signed fault events share the same freshness stream but never become
+  readings.** `command_rejected`, local-interlock, sensor, and brownout fault
+  messages are verified against the same anchor, manifest pin, signature, and
+  `(boot_id, seq)` rules, then recorded in `firmware_fault_events`. They are
+  evidence about firmware-side refusals or backstops, not action authority.
+- **MQTT is transport glue, not the trust boundary.** When
+  `gateway.firmware_telemetry.enabled` is set, the runtime subscribes to
+  `ori/fw/+/telemetry` over the configured gateway broker. Accepted telemetry
+  enters the normal `SensorReading`/`OriEvent` path; rejected messages and
+  signed faults do not reach skills or action dispatch. Broker ACLs remain an
+  operational requirement, but Layer 1 authenticity is Ed25519 at the firmware
+  envelope.
 - **The shared golden vectors are committed into the runtime test suite.**
   One set of vectors, three repositories: the C producer emits the canonical
   Layer 1 bytes, this Python verifier accepts and normalises them, and the

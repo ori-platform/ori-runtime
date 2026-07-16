@@ -139,6 +139,7 @@ class GatewayConfig:
     broker_url: str
     reasoning: dict = field(default_factory=dict)
     node_heartbeat: dict = field(default_factory=dict)
+    firmware_telemetry: dict = field(default_factory=dict)
     auth: dict = field(default_factory=dict)
     tls: dict = field(default_factory=dict)
     encryption: dict = field(default_factory=dict)
@@ -943,6 +944,36 @@ def _parse_gateway(data: Any) -> GatewayConfig:
         raise ConfigValidationError("gateway.reasoning.timeout_ms must be >= 100")
     reasoning["timeout_ms"] = timeout_ms
 
+    firmware_telemetry_raw = data.get("firmware_telemetry") or {}
+    if not isinstance(firmware_telemetry_raw, dict):
+        raise ConfigValidationError(
+            "'gateway.firmware_telemetry' section must be a mapping."
+        )
+    firmware_telemetry = dict(firmware_telemetry_raw)
+    firmware_telemetry["enabled"] = (
+        str(firmware_telemetry.get("enabled", "false")).strip().lower() == "true"
+        or firmware_telemetry.get("enabled") is True
+    )
+    topic = str(firmware_telemetry.get("topic", "ori/fw/+/telemetry") or "").strip()
+    if firmware_telemetry["enabled"] and not topic:
+        raise ConfigValidationError(
+            "gateway.firmware_telemetry.topic must not be empty when enabled"
+        )
+    if "#" in topic:
+        raise ConfigValidationError(
+            "gateway.firmware_telemetry.topic must not use # wildcard"
+        )
+    try:
+        firmware_qos = int(firmware_telemetry.get("qos", 1))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "gateway.firmware_telemetry.qos must be an integer"
+        ) from exc
+    if firmware_qos not in {0, 1, 2}:
+        raise ConfigValidationError("gateway.firmware_telemetry.qos must be 0, 1, or 2")
+    firmware_telemetry["topic"] = topic or "ori/fw/+/telemetry"
+    firmware_telemetry["qos"] = firmware_qos
+
     auth_raw = data.get("auth") or {}
     if not isinstance(auth_raw, dict):
         raise ConfigValidationError("'gateway.auth' section must be a mapping.")
@@ -1029,6 +1060,7 @@ def _parse_gateway(data: Any) -> GatewayConfig:
         broker_url=str(data.get("broker_url", "")),
         reasoning=reasoning,
         node_heartbeat=node_heartbeat,
+        firmware_telemetry=firmware_telemetry,
         auth=auth,
         tls=tls,
         encryption=encryption,

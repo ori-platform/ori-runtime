@@ -50,10 +50,12 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 __all__ = [
+    "FirmwareFaultVerification",
     "FirmwareVerificationError",
     "TelemetryVerification",
     "canonical_json_bytes",
     "manifest_channel_map",
+    "verify_fault_message",
     "verify_manifest_message",
     "verify_telemetry_message",
 ]
@@ -89,6 +91,17 @@ ERR_INVALID_ENVELOPE = "invalid_envelope"
 ERR_UNSUPPORTED_ALG = "unsupported_alg"
 ERR_DEVICE_REVOKED = "device_revoked"
 ERR_DEVICE_NOT_APPROVED = "device_not_approved"
+
+FIRMWARE_FAULT_CODES = frozenset(
+    {
+        "command_rejected",
+        "interlock_input_fault",
+        "interlock_recovered",
+        "interlock_tripped",
+        "sensor_fault",
+        "brownout_relay_fault",
+    }
+)
 
 
 class FirmwareVerificationError(Exception):
@@ -411,6 +424,27 @@ class TelemetryVerification:
         return self.grade in (GRADE_ATTESTED, GRADE_ATTESTED_DEV)
 
 
+@dataclass
+class FirmwareFaultVerification:
+    """Outcome of one signed firmware fault-event verification."""
+
+    grade: str
+    device_id: str
+    boot_id: int = 0
+    seq: int = 0
+    posture: str = ""
+    device_uptime_ms: int = 0
+    code: str = ""
+    subject: str = ""
+    detail: str = ""
+    error_code: str = ""
+    error_detail: str = ""
+
+    @property
+    def accepted(self) -> bool:
+        return self.grade in (GRADE_ATTESTED, GRADE_ATTESTED_DEV)
+
+
 def _validate_reading(
     reading: Any,
     index: int,
@@ -604,6 +638,134 @@ def verify_telemetry_message(
             device_uptime_ms=uptime,
             is_heartbeat=len(readings) == 0,
             readings=readings,
+        )
+    except FirmwareVerificationError as exc:
+        return rejected(exc.code, exc.detail)
+
+
+def verify_fault_message(
+    message: dict[str, Any],
+    *,
+    anchor_device_id: str,
+    anchor_public_key_b64: str,
+    anchor_posture: str,
+    accepted_manifest_hash: str,
+    last_boot_id: int,
+    last_seq: int,
+    approved: bool = True,
+    revoked: bool = False,
+) -> FirmwareFaultVerification:
+    """Verify one signed firmware fault event.
+
+    Fault events share the telemetry freshness stream and signature
+    contract but never become ``SensorReading`` objects. They are
+    evidence about a device-side refusal, suspension, or backstop.
+    """
+
+    def rejected(code: str, detail: str = "") -> FirmwareFaultVerification:
+        return FirmwareFaultVerification(
+            grade=GRADE_REJECTED,
+            device_id=anchor_device_id,
+            error_code=code,
+            error_detail=detail,
+        )
+
+    try:
+        if revoked:
+            raise FirmwareVerificationError(ERR_DEVICE_REVOKED)
+        if not approved:
+            raise FirmwareVerificationError(ERR_DEVICE_NOT_APPROVED)
+        if not isinstance(message, dict) or not isinstance(message.get("fault"), dict):
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE, "missing fault object"
+            )
+        fault: dict[str, Any] = message["fault"]
+
+        allowed_keys = {
+            "v",
+            "alg",
+            "device_id",
+            "boot_id",
+            "seq",
+            "capability_hash",
+            "posture",
+            "device_uptime_ms",
+            "code",
+            "subject",
+            "detail",
+        }
+        if set(fault) != allowed_keys:
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE, "fault object has unexpected fields"
+            )
+        if fault.get("v") != 1:
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE, "unsupported fault version"
+            )
+        if fault.get("alg") != SUPPORTED_ALG:
+            raise FirmwareVerificationError(ERR_UNSUPPORTED_ALG, str(fault.get("alg")))
+        if _require_str(fault, "device_id", ERR_INVALID_ENVELOPE) != anchor_device_id:
+            raise FirmwareVerificationError(
+                ERR_UNKNOWN_DEVICE, "fault device_id mismatch"
+            )
+
+        capability_hash = _require_str(
+            fault, "capability_hash", ERR_CAPABILITY_HASH_MISMATCH
+        )
+        if capability_hash != accepted_manifest_hash:
+            raise FirmwareVerificationError(
+                ERR_CAPABILITY_HASH_MISMATCH,
+                "capability hash does not match pinned manifest",
+            )
+
+        posture = _require_str(fault, "posture", ERR_INVALID_POSTURE)
+        if posture not in POSTURES:
+            raise FirmwareVerificationError(ERR_INVALID_POSTURE, posture)
+        if posture != anchor_posture:
+            raise FirmwareVerificationError(
+                ERR_INVALID_POSTURE, "posture does not match provisioning anchor"
+            )
+
+        boot_id = _require_int(fault, "boot_id", ERR_INVALID_ENVELOPE)
+        seq = _require_int(fault, "seq", ERR_INVALID_ENVELOPE)
+        uptime = _require_int(fault, "device_uptime_ms", ERR_INVALID_ENVELOPE)
+        code = _require_str(fault, "code", ERR_INVALID_ENVELOPE)
+        if code not in FIRMWARE_FAULT_CODES:
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE, f"unsupported fault code {code!r}"
+            )
+        subject = fault.get("subject")
+        detail = fault.get("detail")
+        if not isinstance(subject, str) or not isinstance(detail, str):
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE, "fault subject and detail must be strings"
+            )
+
+        canonical = canonical_json_bytes(fault)
+        public_key = _decode_public_key(anchor_public_key_b64)
+        signature = _decode_wire_signature(str(message.get("signature", "")))
+        _verify_signature(public_key, canonical, signature)
+
+        if boot_id < last_boot_id:
+            raise FirmwareVerificationError(
+                ERR_BOOT_ROLLBACK, f"boot_id {boot_id} < {last_boot_id}"
+            )
+        if seq <= last_seq:
+            raise FirmwareVerificationError(
+                ERR_SEQUENCE_REPLAY, f"seq {seq} <= {last_seq}"
+            )
+
+        grade = GRADE_ATTESTED if posture in PRODUCTION_POSTURES else GRADE_ATTESTED_DEV
+        return FirmwareFaultVerification(
+            grade=grade,
+            device_id=anchor_device_id,
+            boot_id=boot_id,
+            seq=seq,
+            posture=posture,
+            device_uptime_ms=uptime,
+            code=code,
+            subject=subject,
+            detail=detail,
         )
     except FirmwareVerificationError as exc:
         return rejected(exc.code, exc.detail)
