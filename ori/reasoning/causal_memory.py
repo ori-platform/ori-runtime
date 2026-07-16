@@ -45,11 +45,13 @@ def generate_key(event: OriEvent, trigger_name: str) -> str:
 
 
 class CausalMemoryStore(Protocol):
-    async def lookup_causal_memory(self, pattern_key: str) -> str | None: ...
+    async def lookup_causal_memory(self, pattern_key: str) -> str | None:
+        pass
 
     async def store_causal_memory(
         self, pattern_key: str, resolution: str, confidence: float
-    ) -> None: ...
+    ) -> None:
+        pass
 
 
 class CausalMemory:

@@ -81,10 +81,10 @@ def _normalise_input_evidence(grade_value: Any, posture_value: Any) -> tuple[str
     if grade == "unattested":
         return "unattested", ""
     if grade == "attested_dev":
-        if posture == "development":
+        if posture in _INPUT_POSTURES and posture == "development":
             return "attested_dev", "development"
         return "unattested", ""
-    if posture in {"sealed_flash", "hardware_key"}:
+    if posture in _INPUT_POSTURES and posture != "development":
         return "attested", posture
     return "unattested", ""
 
