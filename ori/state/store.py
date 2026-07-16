@@ -327,6 +327,23 @@ CREATE TABLE IF NOT EXISTS firmware_device_registry (
     revoked           INTEGER NOT NULL DEFAULT 0,
     revoked_at_ms     INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS firmware_fault_events (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id         TEXT    NOT NULL,
+    boot_id           INTEGER NOT NULL,
+    seq               INTEGER NOT NULL,
+    grade             TEXT    NOT NULL,
+    posture           TEXT    NOT NULL,
+    capability_hash   TEXT    NOT NULL,
+    code              TEXT    NOT NULL,
+    subject           TEXT    NOT NULL DEFAULT '',
+    detail            TEXT    NOT NULL DEFAULT '',
+    device_uptime_ms  INTEGER NOT NULL,
+    received_at_ms    INTEGER NOT NULL,
+    fault_json        TEXT    NOT NULL,
+    UNIQUE(device_id, boot_id, seq)
+);
 """
 
 
@@ -2448,6 +2465,85 @@ class StateStore:
               AND ? >= last_boot_id AND ? > last_seq
             """,
             (boot_id, seq, device_id, boot_id, seq),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    async def append_firmware_fault_event(
+        self,
+        *,
+        device_id: str,
+        boot_id: int,
+        seq: int,
+        grade: str,
+        posture: str,
+        capability_hash: str,
+        code: str,
+        subject: str,
+        detail: str,
+        device_uptime_ms: int,
+        received_at_ms: int,
+        fault_json: str,
+    ) -> bool:
+        """Record an accepted signed firmware fault event.
+
+        Faults are Layer 1 evidence about device-side refusals and
+        protections. They must be durable, but they must never flow into
+        the sensor event bus as readings.
+        """
+        return await self._run_write(
+            self._append_firmware_fault_event_sync,
+            device_id,
+            boot_id,
+            seq,
+            grade,
+            posture,
+            capability_hash,
+            code,
+            subject,
+            detail,
+            device_uptime_ms,
+            received_at_ms,
+            fault_json,
+        )
+
+    def _append_firmware_fault_event_sync(
+        self,
+        device_id: str,
+        boot_id: int,
+        seq: int,
+        grade: str,
+        posture: str,
+        capability_hash: str,
+        code: str,
+        subject: str,
+        detail: str,
+        device_uptime_ms: int,
+        received_at_ms: int,
+        fault_json: str,
+    ) -> bool:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            INSERT OR IGNORE INTO firmware_fault_events
+                (device_id, boot_id, seq, grade, posture, capability_hash,
+                 code, subject, detail, device_uptime_ms, received_at_ms, fault_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                device_id,
+                boot_id,
+                seq,
+                grade,
+                posture,
+                capability_hash,
+                code,
+                subject,
+                detail,
+                device_uptime_ms,
+                received_at_ms,
+                fault_json,
+            ),
         )
         self._conn.commit()
         return cur.rowcount > 0

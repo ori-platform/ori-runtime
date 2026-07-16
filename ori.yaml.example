@@ -303,6 +303,10 @@ gateway:
   node_heartbeat:
     enabled: true                    # publish runtime liveness to ori/{device_id}/runtime/heartbeat
     interval_seconds: 30
+  firmware_telemetry:
+    enabled: false                   # subscribe to signed Verity Layer 1 firmware telemetry
+    topic: ori/fw/+/telemetry        # signed telemetry and signed fault events
+    qos: 1                           # firmware publishes QoS 1; receiver deduplicates by boot_id/seq
   reasoning:
     enabled: true                    # Tier 3 request/response on ori/{device_id}/reasoning/*
     timeout_ms: 10000                # per-phase timeout: connect/subscribe and response wait

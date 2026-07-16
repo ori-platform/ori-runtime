@@ -19,12 +19,14 @@ import json
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from ori.security.firmware_ingest import FirmwareTelemetryGate
 from ori.security.firmware_telemetry import (
     FirmwareVerificationError,
     canonical_json_bytes,
     manifest_channel_map,
+    verify_fault_message,
     verify_manifest_message,
     verify_telemetry_message,
 )
@@ -57,6 +59,35 @@ def manifest_message(case_name: str) -> dict:
         "manifest": copy.deepcopy(case["input"]),
         "manifest_hash": "sha256:" + case["canonical_sha256_hex"],
         "signature": wire_signature(case),
+    }
+
+
+def signed_fault_message(
+    *,
+    seq: int = 130_486,
+    code: str = "command_rejected",
+    subject: str = "relay0",
+    detail: str = "replayed",
+) -> dict:
+    """Build a real signed fault message with the shared test-only seed."""
+    fault = {
+        "v": 1,
+        "alg": "ed25519",
+        "device_id": SEALED_DEVICE,
+        "boot_id": 41,
+        "seq": seq,
+        "capability_hash": SEALED_HASH,
+        "posture": "sealed_flash",
+        "device_uptime_ms": 925_000,
+        "code": code,
+        "subject": subject,
+        "detail": detail,
+    }
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes([0x42]) * 32)
+    signature = private_key.sign(canonical_json_bytes(fault))
+    return {
+        "fault": fault,
+        "signature": "ed25519:" + base64.b64encode(signature).decode("ascii"),
     }
 
 
@@ -332,6 +363,35 @@ class TestFailClosed:
             canonical_json_bytes({"value": 1.5e-7})
         canonical_json_bytes({"value": 0.0001})  # in-zone boundary is legal
 
+    def test_signed_fault_event_verifies_without_becoming_telemetry(self) -> None:
+        result = verify_fault_message(
+            signed_fault_message(),
+            anchor_device_id=SEALED_DEVICE,
+            anchor_public_key_b64=PUBLIC_KEY_B64,
+            anchor_posture="sealed_flash",
+            accepted_manifest_hash=SEALED_HASH,
+            last_boot_id=0,
+            last_seq=0,
+        )
+        assert result.accepted
+        assert result.grade == "attested"
+        assert result.code == "command_rejected"
+        assert result.subject == "relay0"
+        assert result.detail == "replayed"
+
+    def test_fault_event_rejects_unknown_code(self) -> None:
+        result = verify_fault_message(
+            signed_fault_message(code="made_up_fault"),
+            anchor_device_id=SEALED_DEVICE,
+            anchor_public_key_b64=PUBLIC_KEY_B64,
+            anchor_posture="sealed_flash",
+            accepted_manifest_hash=SEALED_HASH,
+            last_boot_id=0,
+            last_seq=0,
+        )
+        assert result.grade == "rejected"
+        assert result.error_code == "invalid_envelope"
+
 
 @pytest.fixture
 async def store(tmp_path):
@@ -490,3 +550,40 @@ class TestFirmwareTelemetryGate:
         # Older boot after a newer boot was accepted: a rollback signal.
         rolled, _ = await gate.ingest(telemetry_message("telemetry_multi_reading"))
         assert rolled.error_code == "boot_rollback"
+
+    async def test_signed_fault_is_recorded_and_consumes_freshness(
+        self, gate, store
+    ) -> None:
+        await provision_and_approve(gate, "manifest_full_sealed")
+        verification = await gate.ingest_fault(
+            signed_fault_message(), received_at_ms=1_752_537_600_123
+        )
+        assert verification.accepted
+        assert verification.code == "command_rejected"
+
+        def _fault_rows(conn):
+            return conn.execute(
+                """
+                SELECT device_id, boot_id, seq, code, subject, detail, received_at_ms
+                FROM firmware_fault_events
+                """
+            ).fetchall()
+
+        rows = [tuple(row) for row in await store._run_read(_fault_rows)]
+        assert rows == [
+            (
+                SEALED_DEVICE,
+                41,
+                130_486,
+                "command_rejected",
+                "relay0",
+                "replayed",
+                1_752_537_600_123,
+            )
+        ]
+
+        replayed, readings = await gate.ingest(
+            telemetry_message("telemetry_single_reading")
+        )
+        assert replayed.error_code == "sequence_replay"
+        assert readings == []
