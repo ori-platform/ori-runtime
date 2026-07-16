@@ -24,7 +24,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ori.network.events import OriEvent, ReasoningResult
@@ -354,14 +354,16 @@ class IntelligenceElevator:
                 tier = "local_slm"
 
         if tier in ("local_slm",) and self._local_llm is not None:
-            pattern_key: str | None = None
+            causal_pattern_key: str | None = None
             if self._causal_memory_enabled() and rule_result.matched:
                 trigger_name = str(getattr(rule_result, "rule_name", "") or "")
                 if trigger_name and event.reading is not None:
                     try:
-                        pattern_key = CausalMemory.generate_key(event, trigger_name)
+                        causal_pattern_key = CausalMemory.generate_key(
+                            event, trigger_name
+                        )
                     except Exception:
-                        pattern_key = None
+                        causal_pattern_key = None
             prompt = await self._build_prompt(
                 event,
                 skill,
@@ -383,7 +385,7 @@ class IntelligenceElevator:
                 result.proposed_action = result.proposed_action or rule_result.action
                 await self._store_causal_resolution(
                     state_store=state_store,
-                    pattern_key=pattern_key,
+                    pattern_key=causal_pattern_key,
                     text=result.text,
                     confidence=float(getattr(result, "confidence", 0.0) or 0.0),
                 )
@@ -417,19 +419,22 @@ class IntelligenceElevator:
         try:
             signature = inspect.signature(reason)
         except (TypeError, ValueError):
-            return await reason(prompt)
+            return cast(ReasoningResult, await reason(prompt))
         params = signature.parameters
         accepts_context = any(
             param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values()
         ) or {"event", "rule_result", "state_store"}.issubset(params)
         if accepts_context:
-            return await reason(
-                prompt,
-                event=event,
-                rule_result=rule_result,
-                state_store=state_store,
+            return cast(
+                ReasoningResult,
+                await reason(
+                    prompt,
+                    event=event,
+                    rule_result=rule_result,
+                    state_store=state_store,
+                ),
             )
-        return await reason(prompt)
+        return cast(ReasoningResult, await reason(prompt))
 
     @staticmethod
     def _gateway_floor_selected(event: OriEvent) -> bool:
@@ -893,7 +898,7 @@ class IntelligenceElevator:
         actions: list[str],
         max_tier: str,
     ) -> list[str]:
-        available = []
+        available: list[Any] = []
         if hasattr(skill, "actions") and isinstance(skill.actions, dict):
             available = skill.actions.get("available") or []
         if not isinstance(available, list):
@@ -912,10 +917,10 @@ class IntelligenceElevator:
         max_rank = self._tier_rank(max_tier)
         filtered: list[str] = []
         for action_name in actions:
-            tier = tiers_by_action.get(action_name)
-            if tier is None:
+            action_tier = tiers_by_action.get(action_name)
+            if action_tier is None:
                 continue
-            if self._tier_rank(tier) <= max_rank:
+            if self._tier_rank(action_tier) <= max_rank:
                 filtered.append(action_name)
         return filtered
 
@@ -993,7 +998,7 @@ class IntelligenceElevator:
 
     @staticmethod
     def _action_tiers(skill: Any) -> dict[str, str]:
-        available = []
+        available: list[Any] = []
         if hasattr(skill, "actions") and isinstance(skill.actions, dict):
             available = skill.actions.get("available") or []
         tiers: dict[str, str] = {}

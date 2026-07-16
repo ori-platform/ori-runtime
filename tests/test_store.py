@@ -473,6 +473,25 @@ class TestActionLog:
         log = await store.get_action_log()
         assert log[0]["correlation_id"] == "corr-test-123"
 
+    async def test_log_action_normalizes_invalid_input_attestation(self, store):
+        await store.log_action_for_event(
+            _action_result(action_name="open_safety_circuit", tier="D", timestamp=1),
+            trigger_name="dangerous_overcurrent",
+            input_attestation_grade="rejected",
+            input_posture="sealed_flash",
+        )
+        await store.log_action_for_event(
+            _action_result(action_name="open_safety_circuit", tier="D", timestamp=2),
+            trigger_name="dangerous_overcurrent",
+            input_attestation_grade="attested",
+        )
+
+        rows = await store.get_action_log(limit=2)
+        assert rows[0]["input_attestation_grade"] == "unattested"
+        assert rows[0]["input_posture"] == ""
+        assert rows[1]["input_attestation_grade"] == "unattested"
+        assert rows[1]["input_posture"] == ""
+
     async def test_log_tier_c_rejected(self, store):
         result = _action_result(
             tier="C",
@@ -525,6 +544,8 @@ class TestActionLog:
             device_id="dev-01",
             sensor_id="load-current",
             sensor_type="current_clamp",
+            input_attestation_grade="attested",
+            input_posture="hardware_key",
         )
         await store.log_action_for_event(
             _action_result(
@@ -553,6 +574,8 @@ class TestActionLog:
         assert row["device_id"] == "dev-01"
         assert row["sensor_id"] == "load-current"
         assert row["sensor_type"] == "current_clamp"
+        assert row["input_attestation_grade"] == "attested"
+        assert row["input_posture"] == "hardware_key"
         assert row["trigger_name"] == "overcurrent"
         assert row["safe_default_used"] is True
         assert row["proposal_id"] == "AB12CD34"

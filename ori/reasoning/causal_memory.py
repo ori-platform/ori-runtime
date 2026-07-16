@@ -3,6 +3,7 @@
 
 import datetime
 import hashlib
+from typing import Protocol
 
 from ori.network.events import OriEvent
 
@@ -43,6 +44,14 @@ def generate_key(event: OriEvent, trigger_name: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
+class CausalMemoryStore(Protocol):
+    async def lookup_causal_memory(self, pattern_key: str) -> str | None: ...
+
+    async def store_causal_memory(
+        self, pattern_key: str, resolution: str, confidence: float
+    ) -> None: ...
+
+
 class CausalMemory:
     """Pattern cache that short-circuits LLM inference on known situations.
 
@@ -55,7 +64,7 @@ class CausalMemory:
         state_store: An open :class:`~ori.state.store.StateStore` instance.
     """
 
-    def __init__(self, state_store: object) -> None:
+    def __init__(self, state_store: CausalMemoryStore) -> None:
         self._store = state_store
 
     # ── Public API ────────────────────────────────────────────────────────────

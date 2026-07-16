@@ -49,11 +49,41 @@ _TIER_RANK: dict[str, int] = {
     ActionTier.HARD_PHYSICAL: 3,
     ActionTier.SAFETY_CRITICAL: 4,
 }
+_INPUT_ATTESTATION_GRADES = frozenset({"attested", "attested_dev", "unattested"})
+_INPUT_POSTURES = frozenset({"development", "sealed_flash", "hardware_key"})
 
 
 def _generate_proposal_id(length: int = 8) -> str:
     """Generate a short human-readable identifier for a Tier C proposal."""
     return "".join(secrets.choice(_PROPOSAL_ID_ALPHABET) for _ in range(length))
+
+
+def _input_attestation_evidence(context: Any) -> tuple[str, str]:
+    """Receiver-derived trust grade and posture of the triggering reading.
+
+    Firmware telemetry accepted by :class:`FirmwareTelemetryGate` carries
+    ``metadata["attestation"]`` and ``metadata["posture"]``. All legacy/local
+    HAL readings are explicit ``unattested`` inputs for evidence purposes
+    rather than silently blank.
+    """
+    event = getattr(context, "event", None)
+    reading = getattr(event, "reading", None)
+    metadata = getattr(reading, "metadata", None)
+    if not isinstance(metadata, dict):
+        return "unattested", ""
+    grade = str(metadata.get("attestation") or "").strip().lower()
+    posture = str(metadata.get("posture") or "").strip().lower()
+    if grade not in _INPUT_ATTESTATION_GRADES or posture not in _INPUT_POSTURES:
+        return "unattested", ""
+    if grade == "unattested":
+        return "unattested", ""
+    if grade == "attested_dev":
+        if posture == "development":
+            return "attested_dev", "development"
+        return "unattested", ""
+    if posture in {"sealed_flash", "hardware_key"}:
+        return "attested", posture
+    return "unattested", ""
 
 
 def _normalize_proposal_id(value: str | None) -> str:
@@ -1054,7 +1084,7 @@ class ActionDispatcher:
                     if now_ms() >= deadline_ms:
                         return None
                     continue
-                return response
+                return str(response) if response is not None else None
             if now_ms() >= deadline_ms:
                 return None
             await asyncio.sleep(poll_s)
@@ -1171,13 +1201,15 @@ class ActionDispatcher:
             return None
 
         try:
-            return await listener(
+            response = await listener(
                 from_number=from_number,
                 timeout_seconds=timeout_seconds,
             )
+            return str(response) if response is not None else None
         except TypeError:
             # Compatibility with listeners that only accept positional args.
-            return await listener(from_number, timeout_seconds)
+            response = await listener(from_number, timeout_seconds)
+            return str(response) if response is not None else None
         except Exception:
             logger.exception(
                 "ActionDispatcher: failed while listening for operator response"
@@ -1392,6 +1424,7 @@ class ActionDispatcher:
         )
         action_row_id: int | None = None
         sensor_id = ""
+        input_attestation_grade, input_posture = _input_attestation_evidence(context)
         try:
             if hasattr(store, "log_action_for_event"):
                 reading = context.event.reading if context.event else None
@@ -1402,6 +1435,8 @@ class ActionDispatcher:
                     device_id=context.event.device_id if context.event else "",
                     sensor_id=sensor_id,
                     sensor_type=reading.sensor_type if reading is not None else "",
+                    input_attestation_grade=input_attestation_grade,
+                    input_posture=input_posture,
                     attestation_pending=attest,
                 )
             else:
@@ -1417,7 +1452,13 @@ class ActionDispatcher:
 
         if attest and action_row_id:
             await self._attest_action(
-                store, action_row_id, action_result, trigger_name, sensor_id
+                store,
+                action_row_id,
+                action_result,
+                trigger_name,
+                sensor_id,
+                input_attestation_grade,
+                input_posture,
             )
 
     async def _attest_action(
@@ -1427,6 +1468,8 @@ class ActionDispatcher:
         action_result: ActionResult,
         trigger_name: str,
         sensor_id: str,
+        input_attestation_grade: str,
+        input_posture: str,
     ) -> None:
         """Sign a Tier C/D action into the evidence chain (append-after-log).
 
@@ -1446,6 +1489,8 @@ class ActionDispatcher:
             "proposal_id": action_result.proposal_id,
             "correlation_id": action_result.correlation_id,
             "sensor_id": sensor_id,
+            "input_attestation_grade": input_attestation_grade,
+            "input_posture": input_posture,
             "timestamp": action_result.timestamp,
         }
         try:

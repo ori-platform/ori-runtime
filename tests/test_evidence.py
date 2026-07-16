@@ -20,7 +20,7 @@ import pytest
 
 from ori.config import Config, ConfigValidationError, EvidenceConfig, _parse_evidence
 from ori.gateway.node_heartbeat import MqttRuntimeNodeHeartbeatPublisher
-from ori.network.events import ActionResult
+from ori.network.events import ActionResult, OriEvent, SensorReading
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.runtime import OriRuntime, _build_evidence_attestor
 from ori.security.evidence import EvidenceAttestor, tier_requires_attestation
@@ -219,6 +219,29 @@ class TestEvidenceAttestor:
         assert '"attestation": "at_emission"' in payload_json
         assert event_id == attestor.attestation_event_id(7)
         attestor.close()
+
+    async def test_attest_action_downgrades_invalid_input_evidence(
+        self, monkeypatch, tmp_path
+    ):
+        attestor = await _started_attestor(monkeypatch, tmp_path)
+        try:
+            await attestor.attest_action(
+                {
+                    "id": 8,
+                    "action_name": "emergency_cutoff",
+                    "tier": "D",
+                    "executed": True,
+                    "action_taken": "emergency_cutoff",
+                    "input_attestation_grade": "attested",
+                    "input_posture": "",
+                    "timestamp": 1,
+                }
+            )
+            payload_json = attestor._chain.appended[0][3]
+            assert '"input_attestation_grade": "unattested"' in payload_json
+            assert '"input_posture": ""' in payload_json
+        finally:
+            attestor.close()
 
     async def test_append_failure_returns_none(self, monkeypatch, tmp_path):
         attestor = await _started_attestor(monkeypatch, tmp_path)
@@ -429,6 +452,44 @@ class TestDispatcherAttestation:
             assert summary["status_counts"] == {"signed": 1}
             assert summary["attestation_gap_count"] == 0
             assert len(attestor._chain.appended) == 1
+            payload = attestor._chain.appended[0][3]
+            assert '"input_attestation_grade": "unattested"' in payload
+            assert '"input_posture": ""' in payload
+        finally:
+            attestor.close()
+            await store.close()
+
+    async def test_signed_action_carries_firmware_input_attestation_grade(
+        self, monkeypatch, tmp_path
+    ):
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        attestor = await _started_attestor(monkeypatch, tmp_path)
+        try:
+            dispatcher = self._dispatcher(store, attestor)
+            reading = SensorReading(
+                sensor_id="ori-fw-7c9f2b3a:ch0",
+                sensor_type="current",
+                value=21.0,
+                unit="ampere",
+                timestamp=1,
+                quality=1.0,
+                metadata={
+                    "source": "firmware",
+                    "attestation": "attested",
+                    "posture": "sealed_flash",
+                },
+            )
+            event = OriEvent.from_reading(reading, "runtime-01")
+            context = SimpleNamespace(state_store=store, event=event)
+            await dispatcher._log_action(_result("D", approved=None), context)
+
+            row = (await store.get_action_log(limit=1))[0]
+            assert row["input_attestation_grade"] == "attested"
+            assert row["input_posture"] == "sealed_flash"
+            payload = attestor._chain.appended[0][3]
+            assert '"input_attestation_grade": "attested"' in payload
+            assert '"input_posture": "sealed_flash"' in payload
         finally:
             attestor.close()
             await store.close()
@@ -750,6 +811,8 @@ class TestEvidenceTrustProperties:
                 _result("C"),
                 trigger_name="critical_fault",
                 device_id="dev-01",
+                input_attestation_grade="attested_dev",
+                input_posture="development",
                 attestation_pending=True,
             )
             await store.set_action_attestation(
@@ -759,9 +822,13 @@ class TestEvidenceTrustProperties:
             read = (await store.get_action_log(limit=1))[0]
             assert read["attestation_status"] == "signed"
             assert read["attestation_seq"] == 9
+            assert read["input_attestation_grade"] == "attested_dev"
+            assert read["input_posture"] == "development"
 
             exported = (await store.export_action_log(device_id="dev-01"))[0]
             assert exported["attestation_status"] == "signed"
             assert exported["attestation_seq"] == 9
+            assert exported["input_attestation_grade"] == "attested_dev"
+            assert exported["input_posture"] == "development"
         finally:
             await store.close()

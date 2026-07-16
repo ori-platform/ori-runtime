@@ -1411,6 +1411,18 @@ Decisions:
   is preserved alongside the grade everywhere it is recorded, and
   development-posture readings grade `attested_dev` and are never eligible
   for insurer-facing export.
+- **Amended 2026-07-16 — Tier C/D action evidence states the triggering
+  input's trust grade and posture.** The dispatcher records
+  `input_attestation_grade` and `input_posture` on every action log row.
+  Valid action-input grades are `attested`, `attested_dev`, and
+  `unattested`; `rejected` is a firmware-ingest verdict and must never be
+  presented as an action input. `attested` requires `sealed_flash` or
+  `hardware_key` posture, `attested_dev` requires `development` posture, and
+  invalid/missing combinations normalize to `unattested` with empty posture.
+  New Verity action attestations include both fields in the signed payload,
+  so an insurer or auditor can distinguish "Ori acted on sealed/device-key
+  attested evidence" from "Ori acted on legacy local adapter input" without
+  inference.
 - **Heartbeat envelopes (`readings: []`) advance liveness and freshness but
   never construct a `SensorReading`** and never trigger reasoning or
   actions.
