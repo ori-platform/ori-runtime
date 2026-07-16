@@ -60,6 +60,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _ATTESTED_TIERS = ("C", "D")
+_INPUT_ATTESTATION_GRADES = frozenset({"attested", "attested_dev", "unattested"})
+_INPUT_POSTURES = frozenset({"development", "sealed_flash", "hardware_key"})
 
 EXPECTED_PROTOCOL_VERSION = "verity.v1"
 
@@ -68,6 +70,24 @@ LEGACY_ACTION_EVENT_TYPE = "MAINTENANCE_PERFORMED"
 # First artifact version whose event vocabulary includes the dedicated
 # safety-action type.
 _SAFETY_EVENT_MIN_ARTIFACT = (0, 2, 0)
+
+
+def _normalise_input_evidence(grade_value: Any, posture_value: Any) -> tuple[str, str]:
+    """Return a verifier-safe input grade/posture pair for action payloads."""
+    grade = str(grade_value or "").strip().lower()
+    posture = str(posture_value or "").strip().lower()
+    if grade not in _INPUT_ATTESTATION_GRADES:
+        return "unattested", ""
+    if grade == "unattested":
+        return "unattested", ""
+    if grade == "attested_dev":
+        if posture in _INPUT_POSTURES and posture == "development":
+            return "attested_dev", "development"
+        return "unattested", ""
+    if posture in _INPUT_POSTURES and posture != "development":
+        return "attested", posture
+    return "unattested", ""
+
 
 # Fixed namespace for deterministic attestation event ids. Never change:
 # ids derived from it are the idempotency keys of already-signed evidence.
@@ -206,7 +226,7 @@ class EvidenceAttestor:
         # wheelhouse); the runtime verifies protocol identity in start().
         # The artifact is optional and absent from dev/CI environments, so
         # static analyzers cannot resolve it — that is expected.
-        import ori_verity  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
+        import ori_verity  # pyright: ignore[reportMissingImports]
 
         self._protocol_version = str(getattr(ori_verity, "PROTOCOL_VERSION", ""))
         self._artifact_version = str(getattr(ori_verity, "ARTIFACT_VERSION", ""))
@@ -240,6 +260,10 @@ class EvidenceAttestor:
             return None
         action_log_id = int(action_row.get("id", 0))
         event_id = self.attestation_event_id(action_log_id)
+        input_attestation_grade, input_posture = _normalise_input_evidence(
+            action_row.get("input_attestation_grade", "unattested"),
+            action_row.get("input_posture", ""),
+        )
         payload = {
             "kind": "runtime_action",
             "attestation": "reconciled_late" if reconciled else "at_emission",
@@ -253,6 +277,8 @@ class EvidenceAttestor:
             "proposal_id": str(action_row.get("proposal_id", "") or ""),
             "correlation_id": str(action_row.get("correlation_id", "") or ""),
             "sensor_id": str(action_row.get("sensor_id", "") or ""),
+            "input_attestation_grade": input_attestation_grade,
+            "input_posture": input_posture,
         }
         emitted_at_ms = int(action_row.get("timestamp", 0))
         loop = asyncio.get_running_loop()

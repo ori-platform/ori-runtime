@@ -16,6 +16,29 @@ from ori.utils.time_utils import now_ms
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 
+_INPUT_ATTESTATION_GRADES = frozenset({"attested", "attested_dev", "unattested"})
+_INPUT_POSTURES = frozenset({"development", "sealed_flash", "hardware_key"})
+
+
+def _normalise_input_attestation_grade(value: Any) -> str:
+    grade = str(value or "").strip().lower()
+    return grade if grade in _INPUT_ATTESTATION_GRADES else "unattested"
+
+
+def _normalise_input_evidence(grade_value: Any, posture_value: Any) -> tuple[str, str]:
+    grade = _normalise_input_attestation_grade(grade_value)
+    posture = str(posture_value or "").strip().lower()
+    if grade == "unattested":
+        return "unattested", ""
+    if grade == "attested_dev":
+        if posture == "development":
+            return "attested_dev", "development"
+        return "unattested", ""
+    if posture in _INPUT_POSTURES - {"development"}:
+        return "attested", posture
+    return "unattested", ""
+
+
 _DDL = """
 CREATE TABLE IF NOT EXISTS sensor_history (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +102,8 @@ CREATE TABLE IF NOT EXISTS action_log (
     device_id         TEXT    NOT NULL DEFAULT '',
     sensor_id         TEXT    NOT NULL DEFAULT '',
     sensor_type       TEXT    NOT NULL DEFAULT '',
+    input_attestation_grade TEXT NOT NULL DEFAULT 'unattested',
+    input_posture     TEXT    NOT NULL DEFAULT '',
     correlation_id    TEXT    NOT NULL DEFAULT '',
     trigger_name      TEXT    NOT NULL,
     timestamp         INTEGER NOT NULL
@@ -425,6 +450,8 @@ class StateStore:
             ("device_id", "TEXT    NOT NULL DEFAULT ''"),
             ("sensor_id", "TEXT    NOT NULL DEFAULT ''"),
             ("sensor_type", "TEXT    NOT NULL DEFAULT ''"),
+            ("input_attestation_grade", "TEXT    NOT NULL DEFAULT 'unattested'"),
+            ("input_posture", "TEXT    NOT NULL DEFAULT ''"),
             ("correlation_id", "TEXT    NOT NULL DEFAULT ''"),
             # Evidence attestation (Option B append-after-log): '' means the
             # row predates evidence signing or signing is disabled; rows
@@ -1166,6 +1193,8 @@ class StateStore:
         device_id: str = "",
         sensor_id: str = "",
         sensor_type: str = "",
+        input_attestation_grade: str = "unattested",
+        input_posture: str = "",
         attestation_pending: bool = False,
     ) -> int:
         """Persist action result with sensor/device context for reporting."""
@@ -1177,6 +1206,8 @@ class StateStore:
                 "device_id": device_id,
                 "sensor_id": sensor_id,
                 "sensor_type": sensor_type,
+                "input_attestation_grade": input_attestation_grade,
+                "input_posture": input_posture,
                 "attestation_pending": attestation_pending,
             },
         )
@@ -1195,14 +1226,18 @@ class StateStore:
         attestation_status = (
             "pending" if context_fields.get("attestation_pending") else ""
         )
+        input_grade, input_posture = _normalise_input_evidence(
+            context_fields.get("input_attestation_grade", "unattested"),
+            context_fields.get("input_posture", ""),
+        )
         cursor = self._conn.execute(
             """
             INSERT INTO action_log
                 (action_name, tier, executed, approved, action_taken,
                  operator_response, proposal_id, safe_default_used, device_id,
-                 sensor_id, sensor_type, correlation_id, trigger_name, timestamp,
-                 attestation_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 sensor_id, sensor_type, input_attestation_grade, input_posture,
+                 correlation_id, trigger_name, timestamp, attestation_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.action_name,
@@ -1216,6 +1251,8 @@ class StateStore:
                 str(context_fields.get("device_id", "") or ""),
                 str(context_fields.get("sensor_id", "") or ""),
                 str(context_fields.get("sensor_type", "") or ""),
+                input_grade,
+                input_posture,
                 result.correlation_id,
                 trigger_name,
                 result.timestamp,
@@ -1264,8 +1301,8 @@ class StateStore:
             """
             SELECT id, action_name, tier, executed, approved, action_taken,
                    proposal_id, safe_default_used, device_id, sensor_id,
-                   sensor_type, correlation_id, trigger_name, timestamp,
-                   attestation_status
+                   sensor_type, input_attestation_grade, input_posture, correlation_id,
+                   trigger_name, timestamp, attestation_status
             FROM action_log
             WHERE attestation_status IN ('pending', 'failed')
             ORDER BY id
@@ -1314,8 +1351,9 @@ class StateStore:
             """
             SELECT action_name, tier, executed, approved, action_taken,
                    operator_response, proposal_id, safe_default_used, device_id,
-                   sensor_id, sensor_type, correlation_id, trigger_name, timestamp,
-                   attestation_status, attestation_seq
+                   sensor_id, sensor_type, input_attestation_grade, input_posture,
+                   correlation_id,
+                   trigger_name, timestamp, attestation_status, attestation_seq
             FROM action_log
             ORDER BY timestamp DESC
             LIMIT ?
@@ -1340,6 +1378,8 @@ class StateStore:
                     "device_id": row["device_id"],
                     "sensor_id": row["sensor_id"],
                     "sensor_type": row["sensor_type"],
+                    "input_attestation_grade": row["input_attestation_grade"],
+                    "input_posture": row["input_posture"],
                     "correlation_id": row["correlation_id"],
                     "trigger_name": row["trigger_name"],
                     "timestamp": row["timestamp"],
@@ -1397,8 +1437,9 @@ class StateStore:
             """
             SELECT action_name, tier, executed, approved, action_taken,
                    operator_response, proposal_id, safe_default_used, device_id,
-                   sensor_id, sensor_type, correlation_id, trigger_name, timestamp,
-                   attestation_status, attestation_seq
+                   sensor_id, sensor_type, input_attestation_grade, input_posture,
+                   correlation_id,
+                   trigger_name, timestamp, attestation_status, attestation_seq
             FROM action_log
             """
             + where_sql
