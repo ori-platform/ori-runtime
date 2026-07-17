@@ -169,11 +169,11 @@ jobs:
           fail_ci_if_error: false
 
   evidence-artifact:
-    name: Evidence FFI smoke (real ori_verity)
+    name: Evidence FFI smoke (private artifact)
     # Dependabot pull requests cannot read repository secrets, so the private
-    # ori-verity checkout token is intentionally unavailable there. The Python
-    # matrix still validates dependency bumps; real artifact smoke runs on main
-    # pushes and human-authored PRs.
+    # artifact source and checkout token are intentionally unavailable there.
+    # The Python matrix still validates dependency bumps; real artifact smoke
+    # runs on main pushes and human-authored PRs.
     if: github.event_name != 'pull_request' || github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
 
@@ -186,31 +186,67 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Read verity artifact pin
-        id: pin
+      - name: Validate private evidence artifact source inputs
+        env:
+          ORI_EVIDENCE_ARTIFACT_REPOSITORY: ${{ secrets.ORI_EVIDENCE_ARTIFACT_REPOSITORY }}
+          ORI_EVIDENCE_ARTIFACT_REF: ${{ secrets.ORI_EVIDENCE_ARTIFACT_REF }}
+          ORI_EVIDENCE_ARTIFACT_TOKEN: ${{ secrets.ORI_EVIDENCE_ARTIFACT_TOKEN }}
+          ORI_EVIDENCE_ARTIFACT_VERSION: ${{ secrets.ORI_EVIDENCE_ARTIFACT_VERSION }}
+          ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION: ${{ secrets.ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION }}
+          ORI_EVIDENCE_ARTIFACT_MODULE: ${{ secrets.ORI_EVIDENCE_ARTIFACT_MODULE }}
+          ORI_EVIDENCE_ARTIFACT_CLASS: ${{ secrets.ORI_EVIDENCE_ARTIFACT_CLASS }}
+          ORI_EVIDENCE_ARTIFACT_MANIFEST_PATH: ${{ secrets.ORI_EVIDENCE_ARTIFACT_MANIFEST_PATH }}
+          ORI_EVIDENCE_ARTIFACT_CHAIN_TABLE: ${{ secrets.ORI_EVIDENCE_ARTIFACT_CHAIN_TABLE }}
         run: |
-          repo="$(grep '^repo=' verity-artifact.pin | cut -d= -f2)"
-          ref="$(grep '^ref=' verity-artifact.pin | cut -d= -f2)"
-          version="$(grep '^expected_artifact_version=' verity-artifact.pin | cut -d= -f2)"
-          if [ -z "$repo" ] || [ -z "$ref" ] || [ -z "$version" ]; then
-            echo "verity-artifact.pin is missing repo/ref/expected_artifact_version" >&2
+          if [ -z "$ORI_EVIDENCE_ARTIFACT_REPOSITORY" ] ||
+             [ -z "$ORI_EVIDENCE_ARTIFACT_REF" ] ||
+             [ -z "$ORI_EVIDENCE_ARTIFACT_TOKEN" ] ||
+             [ -z "$ORI_EVIDENCE_ARTIFACT_VERSION" ] ||
+             [ -z "$ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION" ] ||
+             [ -z "$ORI_EVIDENCE_ARTIFACT_MODULE" ] ||
+             [ -z "$ORI_EVIDENCE_ARTIFACT_CLASS" ] ||
+             [ -z "$ORI_EVIDENCE_ARTIFACT_MANIFEST_PATH" ] ||
+             [ -z "$ORI_EVIDENCE_ARTIFACT_CHAIN_TABLE" ]; then
+            echo "private evidence artifact source secrets are not configured" >&2
             exit 1
           fi
-          if ! echo "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo "verity-artifact.pin ref must be a full commit SHA, got: $ref" >&2
+          if ! printf '%s' "$ORI_EVIDENCE_ARTIFACT_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "private evidence artifact source ref must be a full commit SHA" >&2
             exit 1
           fi
-          echo "repo=$repo" >> "$GITHUB_OUTPUT"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if ! printf '%s' "$ORI_EVIDENCE_ARTIFACT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "private evidence artifact source version must be semver-like (x.y.z)" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION" | grep -Eq '^[A-Za-z0-9_.-]+$'; then
+            echo "private evidence artifact protocol version has an invalid shape" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$ORI_EVIDENCE_ARTIFACT_MODULE" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$'; then
+            echo "private evidence artifact module has an invalid shape" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$ORI_EVIDENCE_ARTIFACT_CLASS" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$'; then
+            echo "private evidence artifact class has an invalid shape" >&2
+            exit 1
+          fi
+          if printf '%s' "$ORI_EVIDENCE_ARTIFACT_MANIFEST_PATH" | grep -Eq '(^/|(^|/)\.\.(/|$))' ||
+             ! printf '%s' "$ORI_EVIDENCE_ARTIFACT_MANIFEST_PATH" | grep -Eq 'Cargo\.toml$'; then
+            echo "private evidence artifact manifest path has an invalid shape" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$ORI_EVIDENCE_ARTIFACT_CHAIN_TABLE" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$'; then
+            echo "private evidence artifact chain table has an invalid shape" >&2
+            exit 1
+          fi
 
-      - name: Checkout pinned ori-verity source
+      - name: Checkout pinned evidence artifact source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: ${{ steps.pin.outputs.repo }}
-          ref: ${{ steps.pin.outputs.ref }}
-          token: ${{ secrets.ORI_VERITY_CI_TOKEN }}
-          path: .verity-src
+          repository: ${{ secrets.ORI_EVIDENCE_ARTIFACT_REPOSITORY }}
+          ref: ${{ secrets.ORI_EVIDENCE_ARTIFACT_REF }}
+          token: ${{ secrets.ORI_EVIDENCE_ARTIFACT_TOKEN }}
+          path: .evidence-src
           persist-credentials: false
 
       - name: Set up Python 3.12
@@ -218,37 +254,56 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install pinned Rust toolchain (from verity rust-toolchain.toml)
-        working-directory: .verity-src
+      - name: Install pinned Rust toolchain
+        working-directory: .evidence-src
         run: rustup toolchain install
 
       - name: Install hash-locked dependencies
         run: |
           python -m pip install --require-hashes -r requirements/dev.txt
-          python -m pip install --require-hashes --no-deps -r requirements/verity-ci.txt
+          python -m pip install --require-hashes --no-deps -r requirements/evidence-artifact-ci.txt
           python -m pip install --no-deps -e .
 
-      - name: Build ori_verity wheel from the pinned ref
-        working-directory: .verity-src
+      - name: Build private evidence artifact wheel from the pinned ref
+        working-directory: .evidence-src
+        env:
+          ORI_EVIDENCE_ARTIFACT_MANIFEST_PATH: ${{ secrets.ORI_EVIDENCE_ARTIFACT_MANIFEST_PATH }}
         run: |
           maturin build --release --features python \
-            --manifest-path ori-verity/Cargo.toml \
-            --out ../verity-wheel
+            --manifest-path "$ORI_EVIDENCE_ARTIFACT_MANIFEST_PATH" \
+            --out ../evidence-wheel
 
       - name: Install built wheel and verify artifact identity
+        env:
+          ORI_EVIDENCE_ARTIFACT_VERSION: ${{ secrets.ORI_EVIDENCE_ARTIFACT_VERSION }}
+          ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION: ${{ secrets.ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION }}
+          ORI_EVIDENCE_ARTIFACT_MODULE: ${{ secrets.ORI_EVIDENCE_ARTIFACT_MODULE }}
         run: |
-          python -m pip install --no-deps verity-wheel/*.whl
+          python -m pip install --no-deps evidence-wheel/*.whl
           python - <<'EOF'
-          import ori_verity
-          expected = "${{ steps.pin.outputs.version }}"
-          assert ori_verity.ARTIFACT_VERSION == expected, (
-              f"built artifact {ori_verity.ARTIFACT_VERSION!r} != pinned {expected!r}"
+          import importlib
+          import os
+          artifact = importlib.import_module(os.environ["ORI_EVIDENCE_ARTIFACT_MODULE"])
+          expected = os.environ["ORI_EVIDENCE_ARTIFACT_VERSION"]
+          expected_protocol = os.environ["ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION"]
+          assert artifact.ARTIFACT_VERSION == expected, (
+              f"built artifact {artifact.ARTIFACT_VERSION!r} != expected {expected!r}"
+          )
+          assert artifact.PROTOCOL_VERSION == expected_protocol, (
+              f"built protocol {artifact.PROTOCOL_VERSION!r} "
+              f"!= expected {expected_protocol!r}"
           )
           print(
-              f"ori_verity {ori_verity.ARTIFACT_VERSION} "
-              f"(protocol {ori_verity.PROTOCOL_VERSION}) OK"
+              f"private evidence artifact {artifact.ARTIFACT_VERSION} "
+              f"(protocol {artifact.PROTOCOL_VERSION}) OK"
           )
           EOF
 
       - name: Run real-artifact FFI smoke tests
+        env:
+          ORI_EVIDENCE_ARTIFACT_VERSION: ${{ secrets.ORI_EVIDENCE_ARTIFACT_VERSION }}
+          ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION: ${{ secrets.ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION }}
+          ORI_EVIDENCE_ARTIFACT_MODULE: ${{ secrets.ORI_EVIDENCE_ARTIFACT_MODULE }}
+          ORI_EVIDENCE_ARTIFACT_CLASS: ${{ secrets.ORI_EVIDENCE_ARTIFACT_CLASS }}
+          ORI_EVIDENCE_ARTIFACT_CHAIN_TABLE: ${{ secrets.ORI_EVIDENCE_ARTIFACT_CHAIN_TABLE }}
         run: pytest tests/test_evidence_artifact.py -v

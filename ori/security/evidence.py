@@ -1,17 +1,17 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""On-device evidence signing for Tier C/D actions (Verity chain client).
+"""On-device evidence signing for Tier C/D actions.
 
-The runtime consumes the Verity evidence chain as an exactly pinned,
-prebuilt artifact (see DECISIONS.md 2026-07-10). This module is the only
-runtime boundary to it: a lazy import of the ``ori_verity`` extension
-module, wrapped so that
+The runtime consumes a private evidence-chain artifact as an exactly pinned,
+prebuilt dependency (see DECISIONS.md 2026-07-10). This module is the only
+runtime boundary to it: a lazy import of the configured extension module,
+wrapped so that
 
 * a deployment without the artifact degrades to ``available = False``
   with a WARNING — evidence signing never blocks the action path;
 * every chain call runs on one dedicated thread, because the pyo3
-  ``VerityChain`` class is not sendable between threads;
+  chain class is not sendable between threads;
 * signing failures mark the action_log row ``failed`` and are repaired
   by startup reconciliation where possible (Option B append-after-log —
   explicitly weaker than single-transaction atomicity, which remains the
@@ -51,8 +51,11 @@ Verifiers must accept both forms (ori-specs ``evidence/v1.md``).
 from __future__ import annotations
 
 import asyncio
+import base64
+import importlib
 import json
 import logging
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -63,13 +66,49 @@ _ATTESTED_TIERS = ("C", "D")
 _INPUT_ATTESTATION_GRADES = frozenset({"attested", "attested_dev", "unattested"})
 _INPUT_POSTURES = frozenset({"development", "sealed_flash", "hardware_key"})
 
-EXPECTED_PROTOCOL_VERSION = "verity.v1"
+DEFAULT_PROTOCOL_VERSION = "evidence.v1"
 
 SAFETY_ACTION_EVENT_TYPE = "SAFETY_ACTION_EXECUTED"
 LEGACY_ACTION_EVENT_TYPE = "MAINTENANCE_PERFORMED"
 # First artifact version whose event vocabulary includes the dedicated
 # safety-action type.
 _SAFETY_EVENT_MIN_ARTIFACT = (0, 2, 0)
+# 0.3.0 exposed append_event_with_freshness, but 0.4.0 is the first
+# Python FFI artifact that also exposes Layer 1 device registry seeding.
+_ATOMIC_FRESHNESS_MIN_ARTIFACT = (0, 4, 0)
+
+
+def expected_protocol_version() -> str:
+    """Protocol version expected from the configured private artifact."""
+    return (
+        os.environ.get("ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION", "").strip()
+        or DEFAULT_PROTOCOL_VERSION
+    )
+
+
+def _artifact_module_name() -> str:
+    """Import name for the configured private evidence-chain artifact."""
+    module_name = os.environ.get("ORI_EVIDENCE_ARTIFACT_MODULE", "").strip()
+    if not module_name:
+        raise ImportError("private evidence artifact module is not configured")
+    if module_name.startswith(".") or any(
+        part == "" for part in module_name.split(".")
+    ):
+        raise ImportError("private evidence artifact module name is invalid")
+    for part in module_name.split("."):
+        if not part.replace("_", "").isalnum() or part[0].isdigit():
+            raise ImportError("private evidence artifact module name is invalid")
+    return module_name
+
+
+def _artifact_chain_class_name() -> str:
+    """Class name for the configured private evidence-chain artifact."""
+    class_name = os.environ.get("ORI_EVIDENCE_ARTIFACT_CLASS", "").strip()
+    if not class_name:
+        return "EvidenceChain"
+    if not class_name.replace("_", "").isalnum() or class_name[0].isdigit():
+        raise ImportError("private evidence artifact chain class name is invalid")
+    return class_name
 
 
 def _normalise_input_evidence(grade_value: Any, posture_value: Any) -> tuple[str, str]:
@@ -116,8 +155,40 @@ def _artifact_supports_safety_event(artifact_version: str) -> bool:
     return parsed >= _SAFETY_EVENT_MIN_ARTIFACT
 
 
+def _artifact_supports_atomic_freshness(artifact_version: str) -> bool:
+    """True when *artifact_version* exposes atomic Layer 1 freshness append."""
+    parts = str(artifact_version or "").split(".")
+    if len(parts) < 3:
+        return False
+    try:
+        parsed = tuple(int(p) for p in parts[:3])
+    except ValueError:
+        return False
+    return parsed >= _ATOMIC_FRESHNESS_MIN_ARTIFACT
+
+
+def _firmware_freshness_source(action_row: dict) -> tuple[str, int, int] | None:
+    """Return Layer 1 source freshness for this row, when safely present."""
+    source_device_id = str(action_row.get("input_firmware_device_id", "") or "").strip()
+    try:
+        boot_id = int(action_row.get("input_firmware_boot_id", 0) or 0)
+        seq = int(action_row.get("input_firmware_seq", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if not source_device_id or boot_id <= 0 or seq <= 0:
+        return None
+    return source_device_id, boot_id, seq
+
+
+def _public_key_b64_to_hex(value: Any) -> str:
+    raw = base64.b64decode(str(value or ""), validate=True)
+    if len(raw) != 32:
+        raise ValueError("Layer 1 public key must decode to 32 bytes")
+    return raw.hex()
+
+
 class EvidenceAttestor:
-    """Signs Tier C/D action evidence into the local Verity chain."""
+    """Signs Tier C/D action evidence into the local evidence chain."""
 
     def __init__(
         self,
@@ -132,7 +203,7 @@ class EvidenceAttestor:
         self._device_secret = str(device_secret)
         self._device_id = str(device_id)
         self._chain: Any = None
-        # The pyo3 VerityChain is unsendable: it must be constructed and
+        # The pyo3 chain object is unsendable: it must be constructed and
         # used on the same thread. One dedicated worker guarantees that.
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="ori-evidence"
@@ -141,6 +212,7 @@ class EvidenceAttestor:
         self._artifact_version = ""
         self._protocol_version = ""
         self._action_event_type = LEGACY_ACTION_EVENT_TYPE
+        self._atomic_freshness_available = False
 
     @property
     def available(self) -> bool:
@@ -153,7 +225,7 @@ class EvidenceAttestor:
 
     @property
     def artifact_version(self) -> str:
-        """Version of the loaded ori_verity artifact ('' when unavailable)."""
+        """Version of the loaded evidence artifact ('' when unavailable)."""
         return self._artifact_version
 
     @property
@@ -165,6 +237,11 @@ class EvidenceAttestor:
     def action_event_type(self) -> str:
         """Chain event type used for new Tier C/D attestations."""
         return self._action_event_type
+
+    @property
+    def atomic_freshness_available(self) -> bool:
+        """Whether the loaded artifact can atomically bind Layer 1 freshness."""
+        return self._atomic_freshness_available
 
     async def start(self) -> bool:
         """Open (or create) the chain and key on the evidence thread.
@@ -187,22 +264,24 @@ class EvidenceAttestor:
         except Exception:
             self._chain = None
             logger.warning(
-                "[evidence] Verity chain unavailable; Tier C/D actions will be "
+                "[evidence] private evidence chain unavailable; Tier C/D actions will be "
                 "recorded as attestation gaps until signing is restored.",
                 exc_info=True,
             )
             self._release_chain(holder)
             return False
-        if self._protocol_version != EXPECTED_PROTOCOL_VERSION or not hasattr(
-            holder[0], "seq_for_event_id"
+        required = ("seq_for_event_id", "append_event")
+        protocol_version = expected_protocol_version()
+        if self._protocol_version != protocol_version or not all(
+            hasattr(holder[0], name) for name in required
         ):
             logger.warning(
-                "[evidence] loaded ori_verity artifact (version=%r, protocol=%r) "
+                "[evidence] loaded evidence artifact (version=%r, protocol=%r) "
                 "does not provide protocol %s with idempotent appends; evidence "
                 "signing stays unavailable — check the pinned artifact.",
                 self._artifact_version,
                 self._protocol_version,
-                EXPECTED_PROTOCOL_VERSION,
+                protocol_version,
             )
             self._release_chain(holder)
             return False
@@ -210,6 +289,12 @@ class EvidenceAttestor:
             SAFETY_ACTION_EVENT_TYPE
             if _artifact_supports_safety_event(self._artifact_version)
             else LEGACY_ACTION_EVENT_TYPE
+        )
+        self._atomic_freshness_available = bool(
+            _artifact_supports_atomic_freshness(self._artifact_version)
+            and hasattr(holder[0], "append_event_with_freshness")
+            and hasattr(holder[0], "register_layer1_device")
+            and hasattr(holder[0], "registered_layer1_device")
         )
         self._chain = holder.pop()
         logger.warning(
@@ -226,13 +311,12 @@ class EvidenceAttestor:
         # wheelhouse); the runtime verifies protocol identity in start().
         # The artifact is optional and absent from dev/CI environments, so
         # static analyzers cannot resolve it — that is expected.
-        import ori_verity  # pyright: ignore[reportMissingImports]
+        artifact = importlib.import_module(_artifact_module_name())
 
-        self._protocol_version = str(getattr(ori_verity, "PROTOCOL_VERSION", ""))
-        self._artifact_version = str(getattr(ori_verity, "ARTIFACT_VERSION", ""))
-        return ori_verity.VerityChain(
-            self._db_path, self._key_path, self._device_secret
-        )
+        self._protocol_version = str(getattr(artifact, "PROTOCOL_VERSION", ""))
+        self._artifact_version = str(getattr(artifact, "ARTIFACT_VERSION", ""))
+        chain_class = getattr(artifact, _artifact_chain_class_name())
+        return chain_class(self._db_path, self._key_path, self._device_secret)
 
     def attestation_event_id(self, action_log_id: int) -> str:
         """Deterministic idempotency key for one action_log row."""
@@ -280,6 +364,12 @@ class EvidenceAttestor:
             "input_attestation_grade": input_attestation_grade,
             "input_posture": input_posture,
         }
+        freshness_source = _firmware_freshness_source(action_row)
+        if freshness_source is not None:
+            source_device_id, boot_id, source_seq = freshness_source
+            payload["input_firmware_device_id"] = source_device_id
+            payload["input_firmware_boot_id"] = boot_id
+            payload["input_firmware_seq"] = source_seq
         emitted_at_ms = int(action_row.get("timestamp", 0))
         loop = asyncio.get_running_loop()
         try:
@@ -288,15 +378,31 @@ class EvidenceAttestor:
             )
             if existing is not None:
                 return int(existing)
-            seq = await loop.run_in_executor(
-                self._executor,
-                self._chain.append_event,
-                self._action_event_type,
-                self._device_id,
-                emitted_at_ms,
-                json.dumps(payload),
-                event_id,
-            )
+            if self._atomic_freshness_available and freshness_source is not None:
+                source_device_id, boot_id, source_seq = freshness_source
+                await self._sync_layer1_device_registration(action_row)
+                seq = await loop.run_in_executor(
+                    self._executor,
+                    self._chain.append_event_with_freshness,
+                    self._action_event_type,
+                    self._device_id,
+                    emitted_at_ms,
+                    json.dumps(payload),
+                    source_device_id,
+                    boot_id,
+                    source_seq,
+                    event_id,
+                )
+            else:
+                seq = await loop.run_in_executor(
+                    self._executor,
+                    self._chain.append_event,
+                    self._action_event_type,
+                    self._device_id,
+                    emitted_at_ms,
+                    json.dumps(payload),
+                    event_id,
+                )
             return int(seq)
         except Exception:
             logger.warning(
@@ -306,6 +412,57 @@ class EvidenceAttestor:
                 exc_info=True,
             )
             return None
+
+    async def _sync_layer1_device_registration(self, action_row: dict) -> None:
+        """Ensure the private chain has the source device anchor before atomic append."""
+        registration = action_row.get("input_firmware_registration")
+        if not isinstance(registration, dict):
+            raise ValueError("Layer 1 source device registration is missing")
+        source_device_id = str(
+            action_row.get("input_firmware_device_id", "") or ""
+        ).strip()
+        if registration.get("device_id") != source_device_id:
+            raise ValueError("Layer 1 source device registration mismatch")
+        if not registration.get("approved") or registration.get("revoked"):
+            raise ValueError("Layer 1 source device is not approved")
+
+        public_key_hex = _public_key_b64_to_hex(registration.get("public_key_b64"))
+        expected = {
+            "device_id": source_device_id,
+            "public_key": public_key_hex,
+            "alg": str(registration.get("alg", "") or ""),
+            "posture": str(registration.get("posture", "") or ""),
+            "capability_hash": str(registration.get("capability_hash", "") or ""),
+            "hardware_profile": str(registration.get("board_profile", "") or ""),
+        }
+        loop = asyncio.get_running_loop()
+        existing = await loop.run_in_executor(
+            self._executor,
+            self._chain.registered_layer1_device,
+            source_device_id,
+        )
+        if existing is not None:
+            for key, value in expected.items():
+                if existing.get(key) != value:
+                    raise ValueError(f"Layer 1 registry mismatch for {key}")
+            if not existing.get("approved") or existing.get("revoked"):
+                raise ValueError(
+                    "Layer 1 source device is not approved in evidence chain"
+                )
+            return
+
+        await loop.run_in_executor(
+            self._executor,
+            self._chain.register_layer1_device,
+            source_device_id,
+            public_key_hex,
+            expected["alg"],
+            expected["posture"],
+            expected["capability_hash"],
+            expected["hardware_profile"],
+            int(registration.get("provisioned_at_ms", 0) or 0),
+            True,
+        )
 
     async def chain_head_hash(self) -> str | None:
         if self._chain is None:
@@ -335,7 +492,7 @@ class EvidenceAttestor:
     def _release_chain(self, holder: list) -> None:
         """Drop the chain held in *holder* on the evidence thread.
 
-        The pyo3 VerityChain is unsendable: its LAST reference must be
+        The pyo3 chain object is unsendable: its LAST reference must be
         released on the thread that created it, or the extension raises
         at GC time. This must run on EVERY path where a chain object
         exists but is not (or no longer) retained — rejected starts

@@ -3,13 +3,14 @@
 
 """Tier C/D evidence signing: attestor, dispatcher wiring, reconciliation.
 
-The Verity chain artifact (``ori_verity``) is a pinned prebuilt dependency
-that is not installed in runtime CI, so these tests inject a fake module.
-What they pin down is the runtime's side of the contract: Option B
-append-after-log attestation statuses, gap visibility, reconciliation, and
-graceful degradation when the artifact or chain is unavailable.
+The private evidence-chain artifact is a pinned prebuilt dependency that is
+not installed in runtime CI, so these tests inject a fake module. What they pin
+down is the runtime's side of the contract: Option B append-after-log
+attestation statuses, gap visibility, reconciliation, and graceful degradation
+when the artifact or chain is unavailable.
 """
 
+import base64
 import sys
 import threading
 import types
@@ -26,13 +27,17 @@ from ori.runtime import OriRuntime, _build_evidence_attestor
 from ori.security.evidence import EvidenceAttestor, tier_requires_attestation
 from ori.state.store import StateStore
 
-# ─── Fake ori_verity artifact ─────────────────────────────────────────────────
+_FAKE_ARTIFACT_MODULE = "ori_private_evidence_test_artifact"
+
+# ─── Fake private evidence artifact ───────────────────────────────────────────
 
 
-class _FakeVerityChain:
+class _FakeEvidenceChain:
     def __init__(self, db_path: str, key_path: str, device_secret: str) -> None:
         self.db_path = db_path
         self.appended: list[tuple] = []
+        self.atomic_appended: list[tuple] = []
+        self.layer1_devices: dict[str, dict] = {}
         self._seq_by_event_id: dict[str, int] = {}
         self._seq = 0
         self.fail_append = False
@@ -51,7 +56,7 @@ class _FakeVerityChain:
         if self.fail_append:
             raise ValueError("chain unavailable")
         if event_id in self._seq_by_event_id:
-            raise ValueError("UNIQUE constraint failed: verity_chain.event_id")
+            raise ValueError("UNIQUE constraint failed: evidence_chain.event_id")
         self._seq += 1
         if event_id:
             self._seq_by_event_id[event_id] = self._seq
@@ -60,8 +65,69 @@ class _FakeVerityChain:
         )
         return self._seq
 
+    def append_event_with_freshness(
+        self,
+        event_type: str,
+        device_id: str,
+        emitted_at_ms: int,
+        payload_json: str,
+        source_device_id: str,
+        boot_id: int,
+        seq: int,
+        event_id: str | None = None,
+    ) -> int:
+        if self.fail_append:
+            raise ValueError("chain unavailable")
+        if event_id in self._seq_by_event_id:
+            raise ValueError("UNIQUE constraint failed: evidence_chain.event_id")
+        self._seq += 1
+        if event_id:
+            self._seq_by_event_id[event_id] = self._seq
+        self.atomic_appended.append(
+            (
+                event_type,
+                device_id,
+                emitted_at_ms,
+                payload_json,
+                source_device_id,
+                boot_id,
+                seq,
+                event_id,
+            )
+        )
+        return self._seq
+
     def seq_for_event_id(self, event_id: str) -> int | None:
         return self._seq_by_event_id.get(event_id)
+
+    def register_layer1_device(
+        self,
+        device_id: str,
+        public_key: str,
+        alg: str,
+        posture: str,
+        capability_hash: str,
+        hardware_profile: str,
+        provisioned_at_ms: int,
+        approved: bool = False,
+    ) -> None:
+        self.layer1_devices[device_id] = {
+            "device_id": device_id,
+            "public_key": public_key,
+            "alg": alg,
+            "posture": posture,
+            "capability_hash": capability_hash,
+            "hardware_profile": hardware_profile,
+            "approved": approved,
+            "provisioned_at_ms": provisioned_at_ms,
+            "last_boot_id": 0,
+            "last_seq": 0,
+            "revoked": False,
+            "revoked_at_ms": None,
+        }
+
+    def registered_layer1_device(self, device_id: str) -> dict | None:
+        return self.layer1_devices.get(device_id)
 
     def chain_head_hash(self) -> str | None:
         return f"head-{self._seq}" if self._seq else None
@@ -70,27 +136,29 @@ class _FakeVerityChain:
         return self._seq
 
 
-def _install_fake_verity(
+def _install_fake_artifact(
     monkeypatch,
     *,
-    protocol_version: str = "verity.v1",
+    protocol_version: str = "evidence.v1",
     artifact_version: str = "0.1.0",
-) -> type[_FakeVerityChain]:
-    module = types.ModuleType("ori_verity")
-    module.VerityChain = _FakeVerityChain
+) -> type[_FakeEvidenceChain]:
+    module = types.ModuleType(_FAKE_ARTIFACT_MODULE)
+    module.EvidenceChain = _FakeEvidenceChain
     module.PROTOCOL_VERSION = protocol_version
     module.ARTIFACT_VERSION = artifact_version
-    monkeypatch.setitem(sys.modules, "ori_verity", module)
-    return _FakeVerityChain
+    monkeypatch.setenv("ORI_EVIDENCE_ARTIFACT_MODULE", _FAKE_ARTIFACT_MODULE)
+    monkeypatch.setenv("ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION", "evidence.v1")
+    monkeypatch.setitem(sys.modules, _FAKE_ARTIFACT_MODULE, module)
+    return _FakeEvidenceChain
 
 
 async def _started_attestor(
     monkeypatch, tmp_path, *, artifact_version: str = "0.1.0"
 ) -> EvidenceAttestor:
-    _install_fake_verity(monkeypatch, artifact_version=artifact_version)
+    _install_fake_artifact(monkeypatch, artifact_version=artifact_version)
     attestor = EvidenceAttestor(
-        db_path=str(tmp_path / "verity.db"),
-        key_path=str(tmp_path / "verity.key"),
+        db_path=str(tmp_path / "evidence.db"),
+        key_path=str(tmp_path / "evidence.key"),
         device_secret="install-secret",
         device_id="dev-01",
     )
@@ -136,13 +204,13 @@ class TestEvidenceConfig:
         cfg = _parse_evidence(
             {
                 "enabled": True,
-                "db_path": "/var/lib/ori/verity.db",
-                "key_path": "/etc/ori/verity.key",
+                "db_path": "/var/lib/ori/evidence.db",
+                "key_path": "/etc/ori/evidence.key",
                 "device_secret_env": "ORI_EVIDENCE_DEVICE_SECRET",
             }
         )
         assert cfg.enabled is True
-        assert cfg.db_path == "/var/lib/ori/verity.db"
+        assert cfg.db_path == "/var/lib/ori/evidence.db"
 
     def test_config_load_defaults_when_section_absent(self, tmp_path):
         yaml_path = tmp_path / "ori.yaml"
@@ -178,10 +246,11 @@ class TestEvidenceAttestor:
         attestor.close()
 
     async def test_missing_artifact_degrades_gracefully(self, monkeypatch, tmp_path):
-        monkeypatch.setitem(sys.modules, "ori_verity", None)  # import -> error
+        monkeypatch.setenv("ORI_EVIDENCE_ARTIFACT_MODULE", _FAKE_ARTIFACT_MODULE)
+        monkeypatch.setitem(sys.modules, _FAKE_ARTIFACT_MODULE, None)
         attestor = EvidenceAttestor(
-            db_path=str(tmp_path / "verity.db"),
-            key_path=str(tmp_path / "verity.key"),
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "evidence.key"),
             device_secret="install-secret",
             device_id="dev-01",
         )
@@ -297,8 +366,8 @@ class TestActionEventVocabulary:
     ):
         # Never started: the default must be the universally accepted type.
         attestor = EvidenceAttestor(
-            db_path=str(tmp_path / "verity.db"),
-            key_path=str(tmp_path / "verity.key"),
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "evidence.key"),
             device_secret="install-secret",
             device_id="dev-01",
         )
@@ -314,7 +383,7 @@ class TestChainReleaseThread:
 
     @staticmethod
     def _tracking_chain_cls():
-        class _TrackingChain(_FakeVerityChain):
+        class _TrackingChain(_FakeEvidenceChain):
             deleted_on: list[str] = []
 
             def __del__(self) -> None:
@@ -324,11 +393,11 @@ class TestChainReleaseThread:
 
     async def test_close_drops_chain_on_evidence_thread(self, monkeypatch, tmp_path):
         cls = self._tracking_chain_cls()
-        _install_fake_verity(monkeypatch)
-        sys.modules["ori_verity"].VerityChain = cls
+        _install_fake_artifact(monkeypatch)
+        sys.modules[_FAKE_ARTIFACT_MODULE].EvidenceChain = cls
         attestor = EvidenceAttestor(
-            db_path=str(tmp_path / "verity.db"),
-            key_path=str(tmp_path / "verity.key"),
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "evidence.key"),
             device_secret="install-secret",
             device_id="dev-01",
         )
@@ -341,11 +410,11 @@ class TestChainReleaseThread:
         self, monkeypatch, tmp_path
     ):
         cls = self._tracking_chain_cls()
-        _install_fake_verity(monkeypatch, protocol_version="verity.v0")
-        sys.modules["ori_verity"].VerityChain = cls
+        _install_fake_artifact(monkeypatch, protocol_version="evidence.v0")
+        sys.modules[_FAKE_ARTIFACT_MODULE].EvidenceChain = cls
         attestor = EvidenceAttestor(
-            db_path=str(tmp_path / "verity.db"),
-            key_path=str(tmp_path / "verity.key"),
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "evidence.key"),
             device_secret="install-secret",
             device_id="dev-01",
         )
@@ -478,6 +547,9 @@ class TestDispatcherAttestation:
                     "source": "firmware",
                     "attestation": "attested",
                     "posture": "sealed_flash",
+                    "firmware_device_id": "ori-fw-7c9f2b3a",
+                    "boot_id": 7,
+                    "seq": 42,
                 },
             )
             event = OriEvent.from_reading(reading, "runtime-01")
@@ -487,9 +559,73 @@ class TestDispatcherAttestation:
             row = (await store.get_action_log(limit=1))[0]
             assert row["input_attestation_grade"] == "attested"
             assert row["input_posture"] == "sealed_flash"
+            assert row["input_firmware_device_id"] == "ori-fw-7c9f2b3a"
+            assert row["input_firmware_boot_id"] == 7
+            assert row["input_firmware_seq"] == 42
             payload = attestor._chain.appended[0][3]
             assert '"input_attestation_grade": "attested"' in payload
             assert '"input_posture": "sealed_flash"' in payload
+            assert '"input_firmware_device_id": "ori-fw-7c9f2b3a"' in payload
+            assert '"input_firmware_boot_id": 7' in payload
+            assert '"input_firmware_seq": 42' in payload
+        finally:
+            attestor.close()
+            await store.close()
+
+    async def test_artifact_0_4_uses_atomic_freshness_append_for_firmware_input(
+        self, monkeypatch, tmp_path
+    ):
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        attestor = await _started_attestor(
+            monkeypatch, tmp_path, artifact_version="0.4.0"
+        )
+        try:
+            assert attestor.atomic_freshness_available is True
+            await store.upsert_firmware_device_anchor(
+                device_id="ori-fw-7c9f2b3a",
+                public_key_b64=base64.b64encode(bytes([0x42]) * 32).decode("ascii"),
+                posture="sealed_flash",
+                capability_hash=(
+                    "sha256:"
+                    "13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d"
+                ),
+                manifest_json="{}",
+                channel_map_json="{}",
+                board_profile="esp32-s3-pzem-v1",
+                provisioned_at_ms=1_760_000_000_000,
+            )
+            assert await store.approve_firmware_device("ori-fw-7c9f2b3a")
+            dispatcher = self._dispatcher(store, attestor)
+            reading = SensorReading(
+                sensor_id="ori-fw-7c9f2b3a:ch0",
+                sensor_type="current",
+                value=21.0,
+                unit="ampere",
+                timestamp=1,
+                quality=1.0,
+                metadata={
+                    "source": "firmware",
+                    "attestation": "attested",
+                    "posture": "sealed_flash",
+                    "firmware_device_id": "ori-fw-7c9f2b3a",
+                    "boot_id": 7,
+                    "seq": 42,
+                },
+            )
+            event = OriEvent.from_reading(reading, "runtime-01")
+            context = SimpleNamespace(state_store=store, event=event)
+            await dispatcher._log_action(_result("D", approved=None), context)
+
+            assert attestor._chain.appended == []
+            assert len(attestor._chain.atomic_appended) == 1
+            assert attestor._chain.layer1_devices["ori-fw-7c9f2b3a"]["public_key"] == (
+                "42" * 32
+            )
+            atomic = attestor._chain.atomic_appended[0]
+            assert atomic[4:7] == ("ori-fw-7c9f2b3a", 7, 42)
+            payload = atomic[3]
+            assert '"input_firmware_device_id": "ori-fw-7c9f2b3a"' in payload
         finally:
             attestor.close()
             await store.close()
@@ -781,23 +917,23 @@ class TestEvidenceTrustProperties:
     async def test_protocol_mismatch_keeps_evidence_unavailable(
         self, monkeypatch, tmp_path
     ):
-        _install_fake_verity(monkeypatch, protocol_version="verity.v999")
+        _install_fake_artifact(monkeypatch, protocol_version="evidence.v999")
         attestor = EvidenceAttestor(
-            db_path=str(tmp_path / "verity.db"),
-            key_path=str(tmp_path / "verity.key"),
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "evidence.key"),
             device_secret="install-secret",
             device_id="dev-01",
         )
         assert await attestor.start() is False
         assert attestor.available is False
-        assert attestor.protocol_version == "verity.v999"
+        assert attestor.protocol_version == "evidence.v999"
         attestor.close()
 
     async def test_artifact_identity_reported_when_available(
         self, monkeypatch, tmp_path
     ):
         attestor = await _started_attestor(monkeypatch, tmp_path)
-        assert attestor.protocol_version == "verity.v1"
+        assert attestor.protocol_version == "evidence.v1"
         assert attestor.artifact_version == "0.1.0"
         attestor.close()
 

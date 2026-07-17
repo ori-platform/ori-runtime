@@ -31,12 +31,12 @@ Built for the world's majority condition — unreliable power, intermittent conn
   must meet the hardened gateway, remote-command, webhook, skill-signing,
   state-encryption, and signed-config requirements or the runtime refuses to
   start. Development-profile deployments remain warning-only.
-- Verity Layer 2 action attestation is implemented behind `evidence.enabled`:
-  Tier C/D dispatch records can be signed through the pinned `ori_verity`
+- High-authority action evidence is implemented behind `evidence.enabled`:
+  Tier C/D dispatch records can be signed through a privately supplied evidence
   artifact, reconciled after restart, and surfaced through runtime health and
-  gateway heartbeat evidence. Verity Layer 1 device-origin telemetry is now
-  consumed by the runtime verification gate: firmware signs readings at the
-  physical edge, the runtime verifies and trust-grades them, and `ori-verity`
+  gateway heartbeat evidence. Device-origin telemetry is now consumed by the
+  runtime verification gate: firmware signs readings at the physical edge, the
+  runtime verifies and trust-grades them, and the private evidence artifact
   verifies the shared golden bytes/signatures without owning firmware
   canonicalization.
 - Safety invariants (tier guards, strict skill validation, sandbox boundaries) are CI-enforced on every PR.
@@ -44,17 +44,19 @@ Built for the world's majority condition — unreliable power, intermittent conn
 - Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
 - Release notes: [`docs/releases/v2.0.0.md`](docs/releases/v2.0.0.md)
 
-Related repos in the org:
+Related public repos in the org:
 
 - Runtime: `ori-platform/ori-runtime` (this repo)
 - Skills registry: `ori-platform/ori-skills`
 - CLI: `ori-platform/ori-cli`
 - Gateway: `ori-platform/ori-gateway`
-- Verity: `ori-platform/ori-verity`
-- Edge firmware: `ori-platform/ori-edge-firmware`
 - SDK (Python): `ori-platform/ori-sdk-python`
 - Dashboard: `ori-platform/ori-dashboard`
 - Specs/RFCs: `ori-platform/ori-specs`
+
+Private evidence-chain and edge-firmware artifacts integrate through the public
+contracts in `ori-specs`; their source coordinates are intentionally not part of
+this public runtime repository.
 
 ---
 
@@ -120,16 +122,16 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 └──────────────────────────────────────────────────────────────┘
 ```
 
-These are **runtime architecture layers**, not Verity protocol layers. Runtime
+These are **runtime architecture layers**, not evidence protocol layers. Runtime
 Layers 1–4 run on the device. **Runtime Layers 3 and 4 are inseparable** — the
 runtime always pairs a reasoning decision with an action decision. Runtime Layer
 5 is the community. Runtime Layer 6 is the business.
 
 `ori-edge-firmware` is a Layer 1 companion, not a second runtime. Firmware nodes
-are **Verity Layer 1** producers: they sign sensor-origin telemetry at the point
-of measurement. This runtime verifies and normalises those readings, reasons
-over them, acts through the Action Tier Framework, and records Tier C/D action
-evidence through `ori-verity` as **Verity Layer 2**.
+are **evidence Layer 1** producers: they sign sensor-origin telemetry at the
+point of measurement. This runtime verifies and normalises those readings,
+reasons over them, acts through the Action Tier Framework, and records Tier C/D
+action evidence through the private evidence artifact as **evidence Layer 2**.
 
 For the full architectural specification, read [`CLAUDE.md`](CLAUDE.md). For the design philosophy, read [`PRINCIPLES.md`](PRINCIPLES.md).
 
@@ -226,8 +228,8 @@ Ori is designed for [physical actuation trust](PRINCIPLES.md). The safety archit
 - **Hardware circuit breakers** — failing sensor buses are auto-isolated using a three-state (CLOSED → OPEN → HALF_OPEN) circuit breaker so one bad sensor doesn't crash the runtime
 - **Approval workflows for hard physical actions** — Tier C actions always require operator approval via WhatsApp/SMS. No config flag to skip it
 - **Alert transport failover** — approval requests use the configured primary channel first, then fail over to the secondary channel if delivery fails
-- **Evidence chain for high-authority actions** — when configured,
-  `ori-verity` signs Tier C/D dispatch records and exposes chain head, gap
+- **Evidence chain for high-authority actions** — when configured, a private
+  evidence artifact signs Tier C/D dispatch records and exposes chain head, gap
   count, artifact version, and selected action-event vocabulary in health. This
   is runtime action evidence; device-origin telemetry attestation is the
   firmware/Layer 1 contract.
@@ -480,9 +482,9 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 
 | Phase             | Status           | Milestone                                                                 |
 | ----------------- | ---------------- | ------------------------------------------------------------------------- |
-| Runtime core      | ✅ Stable v2.0    | Production posture, typed integration boundary, and Verity Layer 2 hooks   |
+| Runtime core      | ✅ Stable v2.0    | Production posture, typed integration boundary, and evidence Layer 2 hooks |
 | Product wedge     | ✅ Shipping       | Ori Energy demo/API integration, private APK path, and Phone Starter flows |
-| Evidence hardware | 🔨 In Progress   | Verity Layer 1 contract and `ori-edge-firmware` bootstrap                  |
+| Evidence hardware | 🔨 In Progress   | Evidence Layer 1 contract and `ori-edge-firmware` bootstrap                |
 | Safety kernel     | 🗓️ Planned       | Rust-owned Tier D kernel after shadow-mode evidence, not a broad rewrite   |
 | Growth            | 🗓️ Planned       | Skills Hub, Edge Node hardware, ori-cloud, and enterprise pilots           |
 

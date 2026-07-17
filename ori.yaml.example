@@ -304,7 +304,7 @@ gateway:
     enabled: true                    # publish runtime liveness to ori/{device_id}/runtime/heartbeat
     interval_seconds: 30
   firmware_telemetry:
-    enabled: false                   # subscribe to signed Verity Layer 1 firmware telemetry
+    enabled: false                   # subscribe to signed evidence Layer 1 firmware telemetry
     topic: ori/fw/+/telemetry        # signed telemetry and signed fault events
     qos: 1                           # firmware publishes QoS 1; receiver deduplicates by boot_id/seq
   reasoning:
@@ -501,9 +501,9 @@ state:
     marker_file: ""                  # optional existing marker file; startup fails if missing
 
 evidence:
-  enabled: false                     # sign Tier C/D actions into the local Verity evidence chain
-  db_path: ori_verity.db             # chain database (separate from ori_state.db)
-  key_path: ori_verity.key           # sealed Ed25519 device key; created at first start (provisioning)
+  enabled: false                     # sign Tier C/D actions into the local private evidence chain
+  db_path: ori_evidence.db           # chain database (separate from ori_state.db)
+  key_path: ori_evidence.key         # sealed Ed25519 device key; created at first start (provisioning)
   device_secret_env: ORI_EVIDENCE_DEVICE_SECRET # env var name; MUST be a random install secret, not just the device serial
   # First start logs the device verification anchor (public key hex).
   # Register that anchor OFF-DEVICE at provisioning — signed evidence

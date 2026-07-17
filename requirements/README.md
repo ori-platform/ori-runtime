@@ -19,7 +19,7 @@ outputs out of the project root.
 | `phone-victron.txt` | Hash-locked Victron phone profile dependencies | No |
 | `pi.in` | Raspberry Pi hardware constraints | Yes |
 | `pi.txt` | Hash-locked Raspberry Pi hardware dependencies | No |
-| `verity-ci.txt` | Hash-locked build dependency for real `ori_verity` FFI smoke | No |
+| `evidence-artifact-ci.txt` | Hash-locked build dependency for private evidence-artifact FFI smoke | No |
 
 ## Updating Locks
 
