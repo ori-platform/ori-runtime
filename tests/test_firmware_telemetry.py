@@ -379,6 +379,30 @@ class TestFailClosed:
         assert result.subject == "relay0"
         assert result.detail == "replayed"
 
+    def test_ingress_degraded_fault_verifies_with_each_detail(self) -> None:
+        # firmware-telemetry/v1: ingress loss is never silent. Each
+        # machine-readable detail token rides the same signed fault path.
+        for i, detail in enumerate(
+            ["inbound_overflow", "subscribe_failed", "anchor_persist_failed"]
+        ):
+            result = verify_fault_message(
+                signed_fault_message(
+                    seq=130_500 + i,
+                    code="ingress_degraded",
+                    subject="inbound",
+                    detail=detail,
+                ),
+                anchor_device_id=SEALED_DEVICE,
+                anchor_public_key_b64=PUBLIC_KEY_B64,
+                anchor_posture="sealed_flash",
+                accepted_manifest_hash=SEALED_HASH,
+                last_boot_id=0,
+                last_seq=0,
+            )
+            assert result.accepted
+            assert result.code == "ingress_degraded"
+            assert result.detail == detail
+
     def test_fault_event_rejects_unknown_code(self) -> None:
         result = verify_fault_message(
             signed_fault_message(code="made_up_fault"),

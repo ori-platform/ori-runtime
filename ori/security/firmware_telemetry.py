@@ -100,6 +100,7 @@ FIRMWARE_FAULT_CODES = frozenset(
         "interlock_tripped",
         "sensor_fault",
         "brownout_relay_fault",
+        "ingress_degraded",
     }
 )
 
