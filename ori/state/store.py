@@ -349,6 +349,7 @@ CREATE TABLE IF NOT EXISTS firmware_device_registry (
     provisioned_at_ms INTEGER NOT NULL,
     last_boot_id      INTEGER NOT NULL DEFAULT 0,
     last_seq          INTEGER NOT NULL DEFAULT 0,
+    last_cmd_seq      INTEGER NOT NULL DEFAULT 0,
     revoked           INTEGER NOT NULL DEFAULT 0,
     revoked_at_ms     INTEGER
 );
@@ -461,6 +462,12 @@ class StateStore:
             ("attestation_seq", "INTEGER"),
         ):
             self._add_column_if_missing_on_conn(conn, "action_log", col, typedef)
+        self._add_column_if_missing_on_conn(
+            conn,
+            "firmware_device_registry",
+            "last_cmd_seq",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
         self._add_column_if_missing_on_conn(
             conn,
             "tier_c_decision_log",
@@ -2480,6 +2487,36 @@ class StateStore:
         )
         self._conn.commit()
         return cur.rowcount > 0
+
+    async def allocate_firmware_command_seq(self, device_id: str) -> int:
+        """Allocate the next strictly increasing command sequence for a
+        provisioned device (firmware-commands contract: one strictly
+        increasing cmd_seq per device, continuing across command-key
+        rotation and never reused — including for retries of lost
+        commands). Raises KeyError for unknown devices."""
+        return await self._run_write(
+            self._allocate_firmware_command_seq_sync, device_id
+        )
+
+    def _allocate_firmware_command_seq_sync(self, device_id: str) -> int:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            UPDATE firmware_device_registry
+            SET last_cmd_seq = last_cmd_seq + 1
+            WHERE device_id = ?
+            """,
+            (device_id,),
+        )
+        if cur.rowcount != 1:
+            self._conn.rollback()
+            raise KeyError(f"unknown firmware device: {device_id!r}")
+        row = self._conn.execute(
+            "SELECT last_cmd_seq FROM firmware_device_registry WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+        self._conn.commit()
+        return int(row[0])
 
     async def advance_firmware_freshness(
         self, device_id: str, *, boot_id: int, seq: int

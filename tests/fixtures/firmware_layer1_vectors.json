@@ -110,6 +110,69 @@
       "manifest_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d"
     },
     {
+      "name": "manifest_command_bench",
+      "kind": "manifest",
+      "input": {
+        "v": 1,
+        "alg": "ed25519",
+        "device_id": "ori-fw-7c9f2b3a",
+        "firmware_version": "0.1.1",
+        "board_profile": "esp32s3-poe-8di8do",
+        "device_mode": "mixed",
+        "public_key_b64": "IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI=",
+        "posture": "sealed_flash",
+        "secure_boot_enabled": true,
+        "flash_encryption_enabled": true,
+        "key_storage": "nvs_encrypted",
+        "transports": [
+          "mqtt"
+        ],
+        "channels": [
+          {
+            "channel": "ch0",
+            "sensor_type": "current",
+            "unit": "ampere",
+            "protocol": "adc",
+            "source": "ads1115",
+            "quality_floor": 0.8
+          }
+        ],
+        "actions": [
+          {
+            "action": "relay_close",
+            "channel": "relay0",
+            "authority": "runtime_commanded"
+          },
+          {
+            "action": "relay_close",
+            "channel": "relay1",
+            "authority": "runtime_commanded"
+          },
+          {
+            "action": "relay_open",
+            "channel": "relay0",
+            "authority": "runtime_commanded"
+          },
+          {
+            "action": "relay_open",
+            "channel": "relay1",
+            "authority": "runtime_commanded"
+          }
+        ],
+        "interlocks": [
+          {
+            "name": "local_overcurrent_interlock",
+            "channel": "ch0",
+            "action": "relay_open"
+          }
+        ]
+      },
+      "canonical_hex": "7b22616374696f6e73223a5b7b22616374696f6e223a2272656c61795f636c6f7365222c22617574686f72697479223a2272756e74696d655f636f6d6d616e646564222c226368616e6e656c223a2272656c617930227d2c7b22616374696f6e223a2272656c61795f636c6f7365222c22617574686f72697479223a2272756e74696d655f636f6d6d616e646564222c226368616e6e656c223a2272656c617931227d2c7b22616374696f6e223a2272656c61795f6f70656e222c22617574686f72697479223a2272756e74696d655f636f6d6d616e646564222c226368616e6e656c223a2272656c617930227d2c7b22616374696f6e223a2272656c61795f6f70656e222c22617574686f72697479223a2272756e74696d655f636f6d6d616e646564222c226368616e6e656c223a2272656c617931227d5d2c22616c67223a2265643235353139222c22626f6172645f70726f66696c65223a22657370333273332d706f652d38646938646f222c226368616e6e656c73223a5b7b226368616e6e656c223a22636830222c2270726f746f636f6c223a22616463222c227175616c6974795f666c6f6f72223a302e382c2273656e736f725f74797065223a2263757272656e74222c22736f75726365223a2261647331313135222c22756e6974223a22616d70657265227d5d2c226465766963655f6964223a226f72692d66772d3763396632623361222c226465766963655f6d6f6465223a226d69786564222c226669726d776172655f76657273696f6e223a22302e312e31222c22666c6173685f656e6372797074696f6e5f656e61626c6564223a747275652c22696e7465726c6f636b73223a5b7b22616374696f6e223a2272656c61795f6f70656e222c226368616e6e656c223a22636830222c226e616d65223a226c6f63616c5f6f76657263757272656e745f696e7465726c6f636b227d5d2c226b65795f73746f72616765223a226e76735f656e63727970746564222c22706f7374757265223a227365616c65645f666c617368222c227075626c69635f6b65795f623634223a2249564c34305a7435485352464d6b4c6858793672624c66502b6e747158744d416c35594f427069423278493d222c227365637572655f626f6f745f656e61626c6564223a747275652c227472616e73706f727473223a5b226d717474225d2c2276223a317d",
+      "canonical_sha256_hex": "943dadca53c0890a5afe2aed44cbb4942779f2a697cdaccd92b78cfe4fb1fa8d",
+      "signature_b64": "6ywnGXIC4ml1Kg00PD/iSNNOg1cT1vWU1q35uA/1ZiaUbC6j7MAQtdWLVKYun+CBxaqH1OVdutS2T63kf6xbBQ==",
+      "manifest_hash": "sha256:943dadca53c0890a5afe2aed44cbb4942779f2a697cdaccd92b78cfe4fb1fa8d"
+    },
+    {
       "name": "telemetry_single_reading",
       "kind": "telemetry",
       "input": {
