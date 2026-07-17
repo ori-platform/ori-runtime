@@ -27,16 +27,23 @@ bytes against the C verifier in ``ori-edge-firmware``.
 
 from __future__ import annotations
 
+import base64
 import re
 from typing import Any
 
-__all__ = ["FirmwareCommandSigner", "FirmwareCommandError", "build_command_bytes"]
+__all__ = [
+    "FirmwareCommandSigner",
+    "FirmwareCommandError",
+    "build_command_bytes",
+    "build_provisioning_approval_bytes",
+]
 
 _FLEET_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}$")
 _CAPABILITY_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_MAX = 31
 _CHANNEL_MAX = 31
 _CMD_SEQ_MAX = 2**53 - 1
+_POSTURES = frozenset({"development", "sealed_flash", "hardware_key"})
 # The v1 action vocabulary; part of signed payloads, wire-contract frozen.
 _ACTIONS = frozenset({"relay_open", "relay_close"})
 
@@ -92,6 +99,91 @@ def build_command_bytes(
         '"cmd_seq":%d,"device_id":"%s","v":1}'
         % (action, capability_hash, channel, cmd_seq, device_id)
     ).encode("utf-8")
+
+
+def _require_canonical_b64_32(value: str, field: str) -> str:
+    if not isinstance(value, str):
+        raise FirmwareCommandError(f"{field} must be canonical base64")
+    try:
+        raw = base64.b64decode(value.encode("ascii"), validate=True)
+    except Exception as exc:
+        raise FirmwareCommandError(f"{field} must be canonical base64") from exc
+    if len(raw) != 32 or base64.b64encode(raw).decode("ascii") != value:
+        raise FirmwareCommandError(f"{field} must encode exactly 32 bytes")
+    return value
+
+
+def _build_approval_object_bytes(
+    *,
+    capability_hash: str,
+    device_id: str,
+    posture: str,
+    public_key_b64: str,
+    runtime_public_key_b64: str,
+) -> bytes:
+    _require_fleet_id(device_id, "device_id")
+    if not isinstance(capability_hash, str) or not _CAPABILITY_HASH.match(
+        capability_hash
+    ):
+        raise FirmwareCommandError("capability_hash must be sha256: + 64 lowercase hex")
+    if posture not in _POSTURES:
+        raise FirmwareCommandError(f"posture outside the v1 vocabulary: {posture!r}")
+    _require_canonical_b64_32(public_key_b64, "public_key_b64")
+    _require_canonical_b64_32(runtime_public_key_b64, "runtime_public_key_b64")
+    return (
+        '{"capability_hash":"%s","device_id":"%s","posture":"%s",'
+        '"public_key_b64":"%s","runtime_public_key_b64":"%s","v":1}'
+        % (
+            capability_hash,
+            device_id,
+            posture,
+            public_key_b64,
+            runtime_public_key_b64,
+        )
+    ).encode("utf-8")
+
+
+def build_provisioning_approval_bytes(
+    *,
+    capability_hash: str,
+    device_id: str,
+    posture: str,
+    public_key_b64: str,
+    runtime_public_key_b64: str,
+    provisioner_private_key_bytes: bytes,
+) -> bytes:
+    """Build one signed provisioning approval message.
+
+    The approval object is signed in the exact fixed grammar defined by
+    ``ori-specs/firmware-commands/v1.md``. The outer message is retained on
+    ``ori/fw/<device_id>/provision`` so a rebooted firmware node can rehydrate
+    the current runtime command key without waiting for a fresh publish.
+    """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    if (
+        not isinstance(provisioner_private_key_bytes, bytes)
+        or len(provisioner_private_key_bytes) != 32
+    ):
+        raise FirmwareCommandError("provisioner key must be 32 raw Ed25519 seed bytes")
+    approval = _build_approval_object_bytes(
+        capability_hash=capability_hash,
+        device_id=device_id,
+        posture=posture,
+        public_key_b64=public_key_b64,
+        runtime_public_key_b64=runtime_public_key_b64,
+    )
+    signature = Ed25519PrivateKey.from_private_bytes(
+        provisioner_private_key_bytes
+    ).sign(approval)
+    sig_b64 = base64.b64encode(signature).decode("ascii")
+    return (
+        b'{"approval":'
+        + approval
+        + b',"signature":"ed25519:'
+        + sig_b64.encode()
+        + b'"}'
+    )
 
 
 def _manifest_authorizes(manifest: Any, action: str, channel: str) -> bool:
