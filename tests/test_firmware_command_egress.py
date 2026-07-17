@@ -30,6 +30,14 @@ RUNTIME_SEED = bytes.fromhex(COMMAND_VECTORS["runtime_test_seed_hex"])
 PROVISIONER_SEED = bytes([0x22]) * 32
 PROVISIONER_PUBLIC = Ed25519PrivateKey.from_private_bytes(PROVISIONER_SEED).public_key()
 
+APPROVAL_VECTORS = json.loads(
+    (
+        Path(__file__).parent
+        / "fixtures"
+        / "firmware_provisioning_approval_vectors.json"
+    ).read_text()
+)
+
 TELEMETRY_VECTORS = json.loads(
     (Path(__file__).parent / "fixtures" / "firmware_layer1_vectors.json").read_text()
 )
@@ -108,6 +116,28 @@ def test_provisioning_approval_message_uses_fixed_grammar_and_signature() -> Non
     PROVISIONER_PUBLIC.verify(signature, approval)
     decoded = json.loads(message)
     assert decoded["approval"]["runtime_public_key_b64"] == _runtime_public_b64()
+
+
+@pytest.mark.parametrize(
+    "case", APPROVAL_VECTORS["cases"], ids=lambda case: case["name"]
+)
+def test_provisioning_approval_reproduces_shared_golden_vectors(case: dict) -> None:
+    """Python signer and C verifier agree on the entire retained wire message."""
+    assert RUNTIME_SEED.hex() == APPROVAL_VECTORS["runtime_command_test_seed_hex"]
+    assert (
+        PROVISIONER_PUBLIC.public_bytes_raw().hex()
+        == APPROVAL_VECTORS["provisioner_public_key_hex"]
+    )
+    values = case["input"]
+    message = build_provisioning_approval_bytes(
+        capability_hash=values["capability_hash"],
+        device_id=values["device_id"],
+        posture=values["posture"],
+        public_key_b64=values["public_key_b64"],
+        runtime_public_key_b64=values["runtime_public_key_b64"],
+        provisioner_private_key_bytes=PROVISIONER_SEED,
+    )
+    assert message.hex() == case["message_hex"]
 
 
 def test_provisioning_approval_rejects_noncanonical_inputs() -> None:
