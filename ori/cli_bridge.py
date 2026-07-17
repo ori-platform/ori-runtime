@@ -21,11 +21,15 @@ from urllib.parse import urlparse
 import yaml
 
 from ori.config import Config, ConfigValidationError, SensorConfig
+from ori.network.events import SensorReading
 from ori.skills.loader import Skill, SkillLoader, SkillValidationError
 from ori.skills.sandbox import SkillSecurityError
+from ori.state.store import StateStore
 
 _SCHEMA_VERSION = 1
 _DEFAULT_HEALTH_TIMEOUT_MS = 3000
+_DEFAULT_STATE_DB_PATH = "ori_state.db"
+_MAX_STATE_LIMIT = 1000
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _LEGACY_COMMANDS = {
     "config-validate": "config validate",
@@ -40,6 +44,8 @@ _PUBLIC_COMMANDS = {
     ("skills", "list"): "skills-list",
     ("skills", "validate"): "skills-validate",
     ("health", "snapshot"): "health-snapshot",
+    ("state", "action-log"): "state-action-log",
+    ("state", "history"): "state-history",
 }
 _SENSITIVE_KEY_FRAGMENTS = (
     "authorization",
@@ -101,6 +107,10 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
                 command=command,
             )
             result = asyncio.run(_read_health_snapshot(socket_path, timeout_ms))
+        elif command == "state-action-log":
+            result = asyncio.run(_read_state_action_log(args))
+        elif command == "state-history":
+            result = asyncio.run(_read_state_history(args))
         else:
             raise BridgeError(
                 "unknown_command",
@@ -491,6 +501,123 @@ async def _read_health_snapshot(socket_path: str, timeout_ms: int) -> dict[str, 
             "health socket response must be a JSON object",
         )
     return response
+
+
+async def _read_state_action_log(args: list[str]) -> list[dict[str, Any]]:
+    filters = _parse_state_filters(
+        args,
+        command="state action-log",
+        allowed={"limit"},
+    )
+    limit = _state_limit(filters.get("limit"), default=50)
+    store = _state_store_from_default_path()
+    await store.open()
+    try:
+        return await store.get_action_log(limit=limit)
+    finally:
+        await store.close()
+
+
+async def _read_state_history(args: list[str]) -> list[dict[str, Any]]:
+    filters = _parse_state_filters(
+        args,
+        command="state history",
+        allowed={"sensor_id", "limit"},
+    )
+    sensor_id = str(filters.get("sensor_id", "") or "").strip()
+    if not sensor_id:
+        raise BridgeError(
+            "invalid_arguments",
+            "state history requires sensor_id",
+        )
+    limit = _state_limit(filters.get("limit"), default=100)
+    store = _state_store_from_default_path()
+    await store.open()
+    try:
+        readings = await store.get_history(sensor_id=sensor_id, limit=limit)
+    finally:
+        await store.close()
+    return [_sensor_reading_to_dict(reading) for reading in readings]
+
+
+def _parse_state_filters(
+    args: list[str],
+    *,
+    command: str,
+    allowed: set[str],
+) -> dict[str, str]:
+    filters: dict[str, str] = {}
+    for raw in args:
+        if "=" not in raw:
+            raise BridgeError(
+                "invalid_arguments",
+                f"{command} filter {raw!r} must use key=value syntax",
+            )
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        if not key or key not in allowed:
+            expected = ", ".join(sorted(allowed))
+            raise BridgeError(
+                "invalid_arguments",
+                f"{command} unsupported filter {key!r}; expected one of: {expected}",
+            )
+        if key in filters:
+            raise BridgeError(
+                "invalid_arguments",
+                f"{command} received duplicate filter {key!r}",
+            )
+        if value == "":
+            raise BridgeError(
+                "invalid_arguments",
+                f"{command} filter {key!r} requires a non-empty value",
+            )
+        filters[key] = value
+    return filters
+
+
+def _state_limit(raw: str | None, *, default: int) -> int:
+    if raw is None:
+        return default
+    try:
+        limit = int(raw)
+    except ValueError as exc:
+        raise BridgeError(
+            "invalid_arguments",
+            "limit must be an integer",
+        ) from exc
+    if limit < 1 or limit > _MAX_STATE_LIMIT:
+        raise BridgeError(
+            "invalid_arguments",
+            f"limit must be between 1 and {_MAX_STATE_LIMIT}",
+        )
+    return limit
+
+
+def _state_store_from_default_path() -> StateStore:
+    path = Path(_DEFAULT_STATE_DB_PATH)
+    if not path.exists():
+        raise BridgeError(
+            "state_store_unavailable",
+            f"state database does not exist: {_DEFAULT_STATE_DB_PATH}",
+        )
+    if not path.is_file():
+        raise BridgeError(
+            "state_store_unavailable",
+            f"state database path is not a file: {_DEFAULT_STATE_DB_PATH}",
+        )
+    return StateStore(str(path))
+
+
+def _sensor_reading_to_dict(reading: SensorReading) -> dict[str, Any]:
+    return {
+        "sensor_id": reading.sensor_id,
+        "sensor_type": reading.sensor_type,
+        "value": reading.value,
+        "unit": reading.unit,
+        "timestamp": reading.timestamp,
+        "quality": reading.quality,
+        "metadata": reading.metadata,
+    }
 
 
 def _optional_str(value: Any) -> str | None:
