@@ -104,6 +104,9 @@ CREATE TABLE IF NOT EXISTS action_log (
     sensor_type       TEXT    NOT NULL DEFAULT '',
     input_attestation_grade TEXT NOT NULL DEFAULT 'unattested',
     input_posture     TEXT    NOT NULL DEFAULT '',
+    input_firmware_device_id TEXT NOT NULL DEFAULT '',
+    input_firmware_boot_id INTEGER NOT NULL DEFAULT 0,
+    input_firmware_seq INTEGER NOT NULL DEFAULT 0,
     correlation_id    TEXT    NOT NULL DEFAULT '',
     trigger_name      TEXT    NOT NULL,
     timestamp         INTEGER NOT NULL
@@ -453,6 +456,9 @@ class StateStore:
             ("sensor_type", "TEXT    NOT NULL DEFAULT ''"),
             ("input_attestation_grade", "TEXT    NOT NULL DEFAULT 'unattested'"),
             ("input_posture", "TEXT    NOT NULL DEFAULT ''"),
+            ("input_firmware_device_id", "TEXT    NOT NULL DEFAULT ''"),
+            ("input_firmware_boot_id", "INTEGER NOT NULL DEFAULT 0"),
+            ("input_firmware_seq", "INTEGER NOT NULL DEFAULT 0"),
             ("correlation_id", "TEXT    NOT NULL DEFAULT ''"),
             # Evidence attestation (Option B append-after-log): '' means the
             # row predates evidence signing or signing is disabled; rows
@@ -1202,6 +1208,9 @@ class StateStore:
         sensor_type: str = "",
         input_attestation_grade: str = "unattested",
         input_posture: str = "",
+        input_firmware_device_id: str = "",
+        input_firmware_boot_id: int = 0,
+        input_firmware_seq: int = 0,
         attestation_pending: bool = False,
     ) -> int:
         """Persist action result with sensor/device context for reporting."""
@@ -1215,6 +1224,9 @@ class StateStore:
                 "sensor_type": sensor_type,
                 "input_attestation_grade": input_attestation_grade,
                 "input_posture": input_posture,
+                "input_firmware_device_id": input_firmware_device_id,
+                "input_firmware_boot_id": input_firmware_boot_id,
+                "input_firmware_seq": input_firmware_seq,
                 "attestation_pending": attestation_pending,
             },
         )
@@ -1243,8 +1255,9 @@ class StateStore:
                 (action_name, tier, executed, approved, action_taken,
                  operator_response, proposal_id, safe_default_used, device_id,
                  sensor_id, sensor_type, input_attestation_grade, input_posture,
+                 input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
                  correlation_id, trigger_name, timestamp, attestation_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.action_name,
@@ -1260,6 +1273,9 @@ class StateStore:
                 str(context_fields.get("sensor_type", "") or ""),
                 input_grade,
                 input_posture,
+                str(context_fields.get("input_firmware_device_id", "") or ""),
+                int(context_fields.get("input_firmware_boot_id", 0) or 0),
+                int(context_fields.get("input_firmware_seq", 0) or 0),
                 result.correlation_id,
                 trigger_name,
                 result.timestamp,
@@ -1309,6 +1325,7 @@ class StateStore:
             SELECT id, action_name, tier, executed, approved, action_taken,
                    proposal_id, safe_default_used, device_id, sensor_id,
                    sensor_type, input_attestation_grade, input_posture, correlation_id,
+                   input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
                    trigger_name, timestamp, attestation_status
             FROM action_log
             WHERE attestation_status IN ('pending', 'failed')
@@ -1359,6 +1376,7 @@ class StateStore:
             SELECT action_name, tier, executed, approved, action_taken,
                    operator_response, proposal_id, safe_default_used, device_id,
                    sensor_id, sensor_type, input_attestation_grade, input_posture,
+                   input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
                    correlation_id,
                    trigger_name, timestamp, attestation_status, attestation_seq
             FROM action_log
@@ -1387,6 +1405,9 @@ class StateStore:
                     "sensor_type": row["sensor_type"],
                     "input_attestation_grade": row["input_attestation_grade"],
                     "input_posture": row["input_posture"],
+                    "input_firmware_device_id": row["input_firmware_device_id"],
+                    "input_firmware_boot_id": row["input_firmware_boot_id"],
+                    "input_firmware_seq": row["input_firmware_seq"],
                     "correlation_id": row["correlation_id"],
                     "trigger_name": row["trigger_name"],
                     "timestamp": row["timestamp"],
@@ -1445,6 +1466,7 @@ class StateStore:
             SELECT action_name, tier, executed, approved, action_taken,
                    operator_response, proposal_id, safe_default_used, device_id,
                    sensor_id, sensor_type, input_attestation_grade, input_posture,
+                   input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
                    correlation_id,
                    trigger_name, timestamp, attestation_status, attestation_seq
             FROM action_log

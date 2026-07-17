@@ -10,6 +10,7 @@ append-after-log attestation statuses, gap visibility, reconciliation, and
 graceful degradation when the artifact or chain is unavailable.
 """
 
+import base64
 import sys
 import threading
 import types
@@ -33,6 +34,8 @@ class _FakeVerityChain:
     def __init__(self, db_path: str, key_path: str, device_secret: str) -> None:
         self.db_path = db_path
         self.appended: list[tuple] = []
+        self.atomic_appended: list[tuple] = []
+        self.layer1_devices: dict[str, dict] = {}
         self._seq_by_event_id: dict[str, int] = {}
         self._seq = 0
         self.fail_append = False
@@ -60,8 +63,69 @@ class _FakeVerityChain:
         )
         return self._seq
 
+    def append_event_with_freshness(
+        self,
+        event_type: str,
+        device_id: str,
+        emitted_at_ms: int,
+        payload_json: str,
+        source_device_id: str,
+        boot_id: int,
+        seq: int,
+        event_id: str | None = None,
+    ) -> int:
+        if self.fail_append:
+            raise ValueError("chain unavailable")
+        if event_id in self._seq_by_event_id:
+            raise ValueError("UNIQUE constraint failed: verity_chain.event_id")
+        self._seq += 1
+        if event_id:
+            self._seq_by_event_id[event_id] = self._seq
+        self.atomic_appended.append(
+            (
+                event_type,
+                device_id,
+                emitted_at_ms,
+                payload_json,
+                source_device_id,
+                boot_id,
+                seq,
+                event_id,
+            )
+        )
+        return self._seq
+
     def seq_for_event_id(self, event_id: str) -> int | None:
         return self._seq_by_event_id.get(event_id)
+
+    def register_layer1_device(
+        self,
+        device_id: str,
+        public_key: str,
+        alg: str,
+        posture: str,
+        capability_hash: str,
+        hardware_profile: str,
+        provisioned_at_ms: int,
+        approved: bool = False,
+    ) -> None:
+        self.layer1_devices[device_id] = {
+            "device_id": device_id,
+            "public_key": public_key,
+            "alg": alg,
+            "posture": posture,
+            "capability_hash": capability_hash,
+            "hardware_profile": hardware_profile,
+            "approved": approved,
+            "provisioned_at_ms": provisioned_at_ms,
+            "last_boot_id": 0,
+            "last_seq": 0,
+            "revoked": False,
+            "revoked_at_ms": None,
+        }
+
+    def registered_layer1_device(self, device_id: str) -> dict | None:
+        return self.layer1_devices.get(device_id)
 
     def chain_head_hash(self) -> str | None:
         return f"head-{self._seq}" if self._seq else None
@@ -478,6 +542,9 @@ class TestDispatcherAttestation:
                     "source": "firmware",
                     "attestation": "attested",
                     "posture": "sealed_flash",
+                    "firmware_device_id": "ori-fw-7c9f2b3a",
+                    "boot_id": 7,
+                    "seq": 42,
                 },
             )
             event = OriEvent.from_reading(reading, "runtime-01")
@@ -487,9 +554,73 @@ class TestDispatcherAttestation:
             row = (await store.get_action_log(limit=1))[0]
             assert row["input_attestation_grade"] == "attested"
             assert row["input_posture"] == "sealed_flash"
+            assert row["input_firmware_device_id"] == "ori-fw-7c9f2b3a"
+            assert row["input_firmware_boot_id"] == 7
+            assert row["input_firmware_seq"] == 42
             payload = attestor._chain.appended[0][3]
             assert '"input_attestation_grade": "attested"' in payload
             assert '"input_posture": "sealed_flash"' in payload
+            assert '"input_firmware_device_id": "ori-fw-7c9f2b3a"' in payload
+            assert '"input_firmware_boot_id": 7' in payload
+            assert '"input_firmware_seq": 42' in payload
+        finally:
+            attestor.close()
+            await store.close()
+
+    async def test_artifact_0_4_uses_atomic_freshness_append_for_firmware_input(
+        self, monkeypatch, tmp_path
+    ):
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        attestor = await _started_attestor(
+            monkeypatch, tmp_path, artifact_version="0.4.0"
+        )
+        try:
+            assert attestor.atomic_freshness_available is True
+            await store.upsert_firmware_device_anchor(
+                device_id="ori-fw-7c9f2b3a",
+                public_key_b64=base64.b64encode(bytes([0x42]) * 32).decode("ascii"),
+                posture="sealed_flash",
+                capability_hash=(
+                    "sha256:"
+                    "13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d"
+                ),
+                manifest_json="{}",
+                channel_map_json="{}",
+                board_profile="esp32-s3-pzem-v1",
+                provisioned_at_ms=1_760_000_000_000,
+            )
+            assert await store.approve_firmware_device("ori-fw-7c9f2b3a")
+            dispatcher = self._dispatcher(store, attestor)
+            reading = SensorReading(
+                sensor_id="ori-fw-7c9f2b3a:ch0",
+                sensor_type="current",
+                value=21.0,
+                unit="ampere",
+                timestamp=1,
+                quality=1.0,
+                metadata={
+                    "source": "firmware",
+                    "attestation": "attested",
+                    "posture": "sealed_flash",
+                    "firmware_device_id": "ori-fw-7c9f2b3a",
+                    "boot_id": 7,
+                    "seq": 42,
+                },
+            )
+            event = OriEvent.from_reading(reading, "runtime-01")
+            context = SimpleNamespace(state_store=store, event=event)
+            await dispatcher._log_action(_result("D", approved=None), context)
+
+            assert attestor._chain.appended == []
+            assert len(attestor._chain.atomic_appended) == 1
+            assert attestor._chain.layer1_devices["ori-fw-7c9f2b3a"]["public_key"] == (
+                "42" * 32
+            )
+            atomic = attestor._chain.atomic_appended[0]
+            assert atomic[4:7] == ("ori-fw-7c9f2b3a", 7, 42)
+            payload = atomic[3]
+            assert '"input_firmware_device_id": "ori-fw-7c9f2b3a"' in payload
         finally:
             attestor.close()
             await store.close()

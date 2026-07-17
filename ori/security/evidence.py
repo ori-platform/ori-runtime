@@ -51,6 +51,7 @@ Verifiers must accept both forms (ori-specs ``evidence/v1.md``).
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import uuid
@@ -70,6 +71,9 @@ LEGACY_ACTION_EVENT_TYPE = "MAINTENANCE_PERFORMED"
 # First artifact version whose event vocabulary includes the dedicated
 # safety-action type.
 _SAFETY_EVENT_MIN_ARTIFACT = (0, 2, 0)
+# 0.3.0 exposed append_event_with_freshness, but 0.4.0 is the first
+# Python FFI artifact that also exposes Layer 1 device registry seeding.
+_ATOMIC_FRESHNESS_MIN_ARTIFACT = (0, 4, 0)
 
 
 def _normalise_input_evidence(grade_value: Any, posture_value: Any) -> tuple[str, str]:
@@ -116,6 +120,38 @@ def _artifact_supports_safety_event(artifact_version: str) -> bool:
     return parsed >= _SAFETY_EVENT_MIN_ARTIFACT
 
 
+def _artifact_supports_atomic_freshness(artifact_version: str) -> bool:
+    """True when *artifact_version* exposes atomic Layer 1 freshness append."""
+    parts = str(artifact_version or "").split(".")
+    if len(parts) < 3:
+        return False
+    try:
+        parsed = tuple(int(p) for p in parts[:3])
+    except ValueError:
+        return False
+    return parsed >= _ATOMIC_FRESHNESS_MIN_ARTIFACT
+
+
+def _firmware_freshness_source(action_row: dict) -> tuple[str, int, int] | None:
+    """Return Layer 1 source freshness for this row, when safely present."""
+    source_device_id = str(action_row.get("input_firmware_device_id", "") or "").strip()
+    try:
+        boot_id = int(action_row.get("input_firmware_boot_id", 0) or 0)
+        seq = int(action_row.get("input_firmware_seq", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    if not source_device_id or boot_id <= 0 or seq <= 0:
+        return None
+    return source_device_id, boot_id, seq
+
+
+def _public_key_b64_to_hex(value: Any) -> str:
+    raw = base64.b64decode(str(value or ""), validate=True)
+    if len(raw) != 32:
+        raise ValueError("Layer 1 public key must decode to 32 bytes")
+    return raw.hex()
+
+
 class EvidenceAttestor:
     """Signs Tier C/D action evidence into the local Verity chain."""
 
@@ -141,6 +177,7 @@ class EvidenceAttestor:
         self._artifact_version = ""
         self._protocol_version = ""
         self._action_event_type = LEGACY_ACTION_EVENT_TYPE
+        self._atomic_freshness_available = False
 
     @property
     def available(self) -> bool:
@@ -165,6 +202,11 @@ class EvidenceAttestor:
     def action_event_type(self) -> str:
         """Chain event type used for new Tier C/D attestations."""
         return self._action_event_type
+
+    @property
+    def atomic_freshness_available(self) -> bool:
+        """Whether the loaded artifact can atomically bind Layer 1 freshness."""
+        return self._atomic_freshness_available
 
     async def start(self) -> bool:
         """Open (or create) the chain and key on the evidence thread.
@@ -193,8 +235,9 @@ class EvidenceAttestor:
             )
             self._release_chain(holder)
             return False
-        if self._protocol_version != EXPECTED_PROTOCOL_VERSION or not hasattr(
-            holder[0], "seq_for_event_id"
+        required = ("seq_for_event_id", "append_event")
+        if self._protocol_version != EXPECTED_PROTOCOL_VERSION or not all(
+            hasattr(holder[0], name) for name in required
         ):
             logger.warning(
                 "[evidence] loaded ori_verity artifact (version=%r, protocol=%r) "
@@ -210,6 +253,12 @@ class EvidenceAttestor:
             SAFETY_ACTION_EVENT_TYPE
             if _artifact_supports_safety_event(self._artifact_version)
             else LEGACY_ACTION_EVENT_TYPE
+        )
+        self._atomic_freshness_available = bool(
+            _artifact_supports_atomic_freshness(self._artifact_version)
+            and hasattr(holder[0], "append_event_with_freshness")
+            and hasattr(holder[0], "register_layer1_device")
+            and hasattr(holder[0], "registered_layer1_device")
         )
         self._chain = holder.pop()
         logger.warning(
@@ -280,6 +329,12 @@ class EvidenceAttestor:
             "input_attestation_grade": input_attestation_grade,
             "input_posture": input_posture,
         }
+        freshness_source = _firmware_freshness_source(action_row)
+        if freshness_source is not None:
+            source_device_id, boot_id, source_seq = freshness_source
+            payload["input_firmware_device_id"] = source_device_id
+            payload["input_firmware_boot_id"] = boot_id
+            payload["input_firmware_seq"] = source_seq
         emitted_at_ms = int(action_row.get("timestamp", 0))
         loop = asyncio.get_running_loop()
         try:
@@ -288,15 +343,31 @@ class EvidenceAttestor:
             )
             if existing is not None:
                 return int(existing)
-            seq = await loop.run_in_executor(
-                self._executor,
-                self._chain.append_event,
-                self._action_event_type,
-                self._device_id,
-                emitted_at_ms,
-                json.dumps(payload),
-                event_id,
-            )
+            if self._atomic_freshness_available and freshness_source is not None:
+                source_device_id, boot_id, source_seq = freshness_source
+                await self._sync_layer1_device_registration(action_row)
+                seq = await loop.run_in_executor(
+                    self._executor,
+                    self._chain.append_event_with_freshness,
+                    self._action_event_type,
+                    self._device_id,
+                    emitted_at_ms,
+                    json.dumps(payload),
+                    source_device_id,
+                    boot_id,
+                    source_seq,
+                    event_id,
+                )
+            else:
+                seq = await loop.run_in_executor(
+                    self._executor,
+                    self._chain.append_event,
+                    self._action_event_type,
+                    self._device_id,
+                    emitted_at_ms,
+                    json.dumps(payload),
+                    event_id,
+                )
             return int(seq)
         except Exception:
             logger.warning(
@@ -306,6 +377,55 @@ class EvidenceAttestor:
                 exc_info=True,
             )
             return None
+
+    async def _sync_layer1_device_registration(self, action_row: dict) -> None:
+        """Ensure Verity has the source device anchor before atomic append."""
+        registration = action_row.get("input_firmware_registration")
+        if not isinstance(registration, dict):
+            raise ValueError("Layer 1 source device registration is missing")
+        source_device_id = str(
+            action_row.get("input_firmware_device_id", "") or ""
+        ).strip()
+        if registration.get("device_id") != source_device_id:
+            raise ValueError("Layer 1 source device registration mismatch")
+        if not registration.get("approved") or registration.get("revoked"):
+            raise ValueError("Layer 1 source device is not approved")
+
+        public_key_hex = _public_key_b64_to_hex(registration.get("public_key_b64"))
+        expected = {
+            "device_id": source_device_id,
+            "public_key": public_key_hex,
+            "alg": str(registration.get("alg", "") or ""),
+            "posture": str(registration.get("posture", "") or ""),
+            "capability_hash": str(registration.get("capability_hash", "") or ""),
+            "hardware_profile": str(registration.get("board_profile", "") or ""),
+        }
+        loop = asyncio.get_running_loop()
+        existing = await loop.run_in_executor(
+            self._executor,
+            self._chain.registered_layer1_device,
+            source_device_id,
+        )
+        if existing is not None:
+            for key, value in expected.items():
+                if existing.get(key) != value:
+                    raise ValueError(f"Layer 1 registry mismatch for {key}")
+            if not existing.get("approved") or existing.get("revoked"):
+                raise ValueError("Layer 1 source device is not approved in Verity")
+            return
+
+        await loop.run_in_executor(
+            self._executor,
+            self._chain.register_layer1_device,
+            source_device_id,
+            public_key_hex,
+            expected["alg"],
+            expected["posture"],
+            expected["capability_hash"],
+            expected["hardware_profile"],
+            int(registration.get("provisioned_at_ms", 0) or 0),
+            True,
+        )
 
     async def chain_head_hash(self) -> str | None:
         if self._chain is None:

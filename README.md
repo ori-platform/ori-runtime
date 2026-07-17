@@ -32,29 +32,31 @@ Built for the world's majority condition — unreliable power, intermittent conn
   state-encryption, and signed-config requirements or the runtime refuses to
   start. Development-profile deployments remain warning-only.
 - Verity Layer 2 action attestation is implemented behind `evidence.enabled`:
-  Tier C/D dispatch records can be signed through the pinned `ori_verity`
-  artifact, reconciled after restart, and surfaced through runtime health and
-  gateway heartbeat evidence. Verity Layer 1 device-origin telemetry is now
-  consumed by the runtime verification gate: firmware signs readings at the
-  physical edge, the runtime verifies and trust-grades them, and `ori-verity`
-  verifies the shared golden bytes/signatures without owning firmware
-  canonicalization.
+  Tier C/D dispatch records can be signed through a privately pinned
+  `ori_verity` artifact, reconciled after restart, and surfaced through runtime
+  health and gateway heartbeat evidence. Verity Layer 1 device-origin telemetry
+  is now consumed by the runtime verification gate: firmware signs readings at
+  the physical edge, the runtime verifies and trust-grades them, and the private
+  evidence artifact verifies the shared golden bytes/signatures without owning
+  firmware canonicalization.
 - Safety invariants (tier guards, strict skill validation, sandbox boundaries) are CI-enforced on every PR.
 - Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0.
 - Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
 - Release notes: [`docs/releases/v2.0.0.md`](docs/releases/v2.0.0.md)
 
-Related repos in the org:
+Related public repos in the org:
 
 - Runtime: `ori-platform/ori-runtime` (this repo)
 - Skills registry: `ori-platform/ori-skills`
 - CLI: `ori-platform/ori-cli`
 - Gateway: `ori-platform/ori-gateway`
-- Verity: `ori-platform/ori-verity`
-- Edge firmware: `ori-platform/ori-edge-firmware`
 - SDK (Python): `ori-platform/ori-sdk-python`
 - Dashboard: `ori-platform/ori-dashboard`
 - Specs/RFCs: `ori-platform/ori-specs`
+
+Private evidence-chain and edge-firmware artifacts integrate through the public
+contracts in `ori-specs`; their source coordinates are intentionally not part of
+this public runtime repository.
 
 ---
 

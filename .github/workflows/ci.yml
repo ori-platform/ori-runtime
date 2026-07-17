@@ -171,9 +171,9 @@ jobs:
   evidence-artifact:
     name: Evidence FFI smoke (real ori_verity)
     # Dependabot pull requests cannot read repository secrets, so the private
-    # ori-verity checkout token is intentionally unavailable there. The Python
-    # matrix still validates dependency bumps; real artifact smoke runs on main
-    # pushes and human-authored PRs.
+    # artifact source and checkout token are intentionally unavailable there.
+    # The Python matrix still validates dependency bumps; real artifact smoke
+    # runs on main pushes and human-authored PRs.
     if: github.event_name != 'pull_request' || github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
 
@@ -186,30 +186,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Read verity artifact pin
-        id: pin
+      - name: Validate private evidence artifact source inputs
+        env:
+          ORI_EVIDENCE_ARTIFACT_REPOSITORY: ${{ secrets.ORI_EVIDENCE_ARTIFACT_REPOSITORY }}
+          ORI_EVIDENCE_ARTIFACT_REF: ${{ secrets.ORI_EVIDENCE_ARTIFACT_REF }}
+          ORI_EVIDENCE_ARTIFACT_TOKEN: ${{ secrets.ORI_EVIDENCE_ARTIFACT_TOKEN }}
+          ORI_EVIDENCE_ARTIFACT_VERSION: ${{ secrets.ORI_EVIDENCE_ARTIFACT_VERSION }}
         run: |
-          repo="$(grep '^repo=' verity-artifact.pin | cut -d= -f2)"
-          ref="$(grep '^ref=' verity-artifact.pin | cut -d= -f2)"
-          version="$(grep '^expected_artifact_version=' verity-artifact.pin | cut -d= -f2)"
-          if [ -z "$repo" ] || [ -z "$ref" ] || [ -z "$version" ]; then
-            echo "verity-artifact.pin is missing repo/ref/expected_artifact_version" >&2
+          if [ -z "$ORI_EVIDENCE_ARTIFACT_REPOSITORY" ] ||
+             [ -z "$ORI_EVIDENCE_ARTIFACT_REF" ] ||
+             [ -z "$ORI_EVIDENCE_ARTIFACT_TOKEN" ] ||
+             [ -z "$ORI_EVIDENCE_ARTIFACT_VERSION" ]; then
+            echo "private evidence artifact source secrets are not configured" >&2
             exit 1
           fi
-          if ! echo "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
-            echo "verity-artifact.pin ref must be a full commit SHA, got: $ref" >&2
+          if ! printf '%s' "$ORI_EVIDENCE_ARTIFACT_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "private evidence artifact source ref must be a full commit SHA" >&2
             exit 1
           fi
-          echo "repo=$repo" >> "$GITHUB_OUTPUT"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if ! printf '%s' "$ORI_EVIDENCE_ARTIFACT_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "private evidence artifact source version must be semver-like (x.y.z)" >&2
+            exit 1
+          fi
 
-      - name: Checkout pinned ori-verity source
+      - name: Checkout pinned evidence artifact source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: ${{ steps.pin.outputs.repo }}
-          ref: ${{ steps.pin.outputs.ref }}
-          token: ${{ secrets.ORI_VERITY_CI_TOKEN }}
+          repository: ${{ secrets.ORI_EVIDENCE_ARTIFACT_REPOSITORY }}
+          ref: ${{ secrets.ORI_EVIDENCE_ARTIFACT_REF }}
+          token: ${{ secrets.ORI_EVIDENCE_ARTIFACT_TOKEN }}
           path: .verity-src
           persist-credentials: false
 
@@ -236,13 +241,16 @@ jobs:
             --out ../verity-wheel
 
       - name: Install built wheel and verify artifact identity
+        env:
+          ORI_EVIDENCE_ARTIFACT_VERSION: ${{ secrets.ORI_EVIDENCE_ARTIFACT_VERSION }}
         run: |
           python -m pip install --no-deps verity-wheel/*.whl
           python - <<'EOF'
+          import os
           import ori_verity
-          expected = "${{ steps.pin.outputs.version }}"
+          expected = os.environ["ORI_EVIDENCE_ARTIFACT_VERSION"]
           assert ori_verity.ARTIFACT_VERSION == expected, (
-              f"built artifact {ori_verity.ARTIFACT_VERSION!r} != pinned {expected!r}"
+              f"built artifact {ori_verity.ARTIFACT_VERSION!r} != expected {expected!r}"
           )
           print(
               f"ori_verity {ori_verity.ARTIFACT_VERSION} "
@@ -251,4 +259,6 @@ jobs:
           EOF
 
       - name: Run real-artifact FFI smoke tests
+        env:
+          ORI_EVIDENCE_ARTIFACT_VERSION: ${{ secrets.ORI_EVIDENCE_ARTIFACT_VERSION }}
         run: pytest tests/test_evidence_artifact.py -v

@@ -86,6 +86,31 @@ def _input_attestation_evidence(context: Any) -> tuple[str, str]:
     return "unattested", ""
 
 
+def _input_firmware_freshness(context: Any) -> tuple[str, int, int]:
+    """Layer 1 source freshness identity for Verity atomic attestation.
+
+    These fields are receiver-derived from an already-accepted firmware
+    reading. Missing or malformed values become the empty tuple, which
+    forces the evidence path to use the normal runtime-only append.
+    """
+    event = getattr(context, "event", None)
+    reading = getattr(event, "reading", None)
+    metadata = getattr(reading, "metadata", None)
+    if not isinstance(metadata, dict):
+        return "", 0, 0
+    if str(metadata.get("source") or "").strip().lower() != "firmware":
+        return "", 0, 0
+    firmware_device_id = str(metadata.get("firmware_device_id") or "").strip()
+    try:
+        boot_id = int(metadata.get("boot_id", 0))
+        seq = int(metadata.get("seq", 0))
+    except (TypeError, ValueError):
+        return "", 0, 0
+    if not firmware_device_id or boot_id <= 0 or seq <= 0:
+        return "", 0, 0
+    return firmware_device_id, boot_id, seq
+
+
 def _normalize_proposal_id(value: str | None) -> str:
     return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
 
@@ -1425,6 +1450,11 @@ class ActionDispatcher:
         action_row_id: int | None = None
         sensor_id = ""
         input_attestation_grade, input_posture = _input_attestation_evidence(context)
+        (
+            input_firmware_device_id,
+            input_firmware_boot_id,
+            input_firmware_seq,
+        ) = _input_firmware_freshness(context)
         try:
             if hasattr(store, "log_action_for_event"):
                 reading = context.event.reading if context.event else None
@@ -1437,6 +1467,9 @@ class ActionDispatcher:
                     sensor_type=reading.sensor_type if reading is not None else "",
                     input_attestation_grade=input_attestation_grade,
                     input_posture=input_posture,
+                    input_firmware_device_id=input_firmware_device_id,
+                    input_firmware_boot_id=input_firmware_boot_id,
+                    input_firmware_seq=input_firmware_seq,
                     attestation_pending=attest,
                 )
             else:
@@ -1459,6 +1492,9 @@ class ActionDispatcher:
                 sensor_id,
                 input_attestation_grade,
                 input_posture,
+                input_firmware_device_id,
+                input_firmware_boot_id,
+                input_firmware_seq,
             )
 
     async def _attest_action(
@@ -1470,6 +1506,9 @@ class ActionDispatcher:
         sensor_id: str,
         input_attestation_grade: str,
         input_posture: str,
+        input_firmware_device_id: str,
+        input_firmware_boot_id: int,
+        input_firmware_seq: int,
     ) -> None:
         """Sign a Tier C/D action into the evidence chain (append-after-log).
 
@@ -1491,8 +1530,15 @@ class ActionDispatcher:
             "sensor_id": sensor_id,
             "input_attestation_grade": input_attestation_grade,
             "input_posture": input_posture,
+            "input_firmware_device_id": input_firmware_device_id,
+            "input_firmware_boot_id": input_firmware_boot_id,
+            "input_firmware_seq": input_firmware_seq,
             "timestamp": action_result.timestamp,
         }
+        if input_firmware_device_id and hasattr(store, "get_firmware_device"):
+            row["input_firmware_registration"] = await store.get_firmware_device(
+                input_firmware_device_id
+            )
         try:
             seq = await self._evidence_attestor.attest_action(row)
             status = "signed" if seq is not None else "failed"

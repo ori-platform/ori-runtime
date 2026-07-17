@@ -13,15 +13,18 @@ back to "evidence unavailable".
 This module closes that gap. It auto-skips when ``ori_verity`` is not
 importable (dev machines and the main CI matrix), and runs in the
 dedicated ``evidence-artifact`` CI job, which builds the wheel from the
-exact ref recorded in ``verity-artifact.pin`` and installs it first.
+private artifact source ref supplied by CI secrets, then checks it
+matches the expected private artifact version supplied by CI secrets.
 Everything here drives the real EvidenceAttestor against the real chain:
-key provisioning, signing, idempotent re-append, late-marking, chain
-verification against the provisioned anchor, and restart persistence.
+key provisioning, signing, idempotent re-append, atomic Layer 1
+freshness binding, late-marking, chain verification against the
+provisioned anchor, and restart persistence.
 """
 
+import base64
 import json
+import os
 import sqlite3
-from pathlib import Path
 
 import pytest
 
@@ -35,17 +38,9 @@ from ori.security.evidence import (  # noqa: E402
     _artifact_supports_safety_event,
 )
 
-_PIN_FILE = Path(__file__).resolve().parents[1] / "verity-artifact.pin"
 
-
-def _pinned_artifact_version() -> str | None:
-    if not _PIN_FILE.exists():
-        return None
-    for line in _PIN_FILE.read_text().splitlines():
-        line = line.strip()
-        if line.startswith("expected_artifact_version="):
-            return line.split("=", 1)[1].strip()
-    return None
+def _expected_artifact_version() -> str | None:
+    return os.environ.get("ORI_EVIDENCE_ARTIFACT_VERSION")
 
 
 def _attestor(tmp_path, *, device_secret: str = "install-secret") -> EvidenceAttestor:
@@ -70,6 +65,34 @@ def _tier_d_row(row_id: int) -> dict:
     }
 
 
+def _firmware_tier_d_row(row_id: int) -> dict:
+    row = _tier_d_row(row_id)
+    row.update(
+        {
+            "input_attestation_grade": "attested",
+            "input_posture": "sealed_flash",
+            "input_firmware_device_id": "ori-fw-artifact-01",
+            "input_firmware_boot_id": 7,
+            "input_firmware_seq": 11,
+            "input_firmware_registration": {
+                "device_id": "ori-fw-artifact-01",
+                "public_key_b64": base64.b64encode(bytes([0x42]) * 32).decode("ascii"),
+                "alg": "ed25519",
+                "posture": "sealed_flash",
+                "capability_hash": (
+                    "sha256:"
+                    "13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d"
+                ),
+                "board_profile": "esp32-s3-pzem-v1",
+                "approved": True,
+                "provisioned_at_ms": 1_760_000_000_000,
+                "revoked": False,
+            },
+        }
+    )
+    return row
+
+
 def _chain_row(db_path: str, seq: int) -> dict:
     # Test-only forensic read; the runtime itself never reads chain SQLite.
     with sqlite3.connect(db_path) as conn:
@@ -83,16 +106,16 @@ def _chain_row(db_path: str, seq: int) -> dict:
     return dict(row)
 
 
-def test_artifact_identity_matches_pin():
+def test_artifact_identity_matches_expected_private_version():
     assert ori_verity.PROTOCOL_VERSION == EXPECTED_PROTOCOL_VERSION
-    pinned = _pinned_artifact_version()
-    assert pinned, "verity-artifact.pin missing expected_artifact_version"
-    assert ori_verity.ARTIFACT_VERSION == pinned, (
+    expected = _expected_artifact_version()
+    if not expected:
+        pytest.skip("ORI_EVIDENCE_ARTIFACT_VERSION is not configured")
+    assert ori_verity.ARTIFACT_VERSION == expected, (
         f"installed artifact {ori_verity.ARTIFACT_VERSION!r} does not match "
-        f"verity-artifact.pin {pinned!r} — bump ref and "
-        f"expected_artifact_version together"
+        f"expected private artifact version {expected!r}"
     )
-    # The pinned artifact must be vocabulary-capable; the runtime selects
+    # The expected private artifact must be vocabulary-capable; the runtime selects
     # SAFETY_ACTION_EXECUTED from it.
     assert _artifact_supports_safety_event(ori_verity.ARTIFACT_VERSION)
 
@@ -129,6 +152,15 @@ async def test_provisioning_signing_idempotency_and_verification(tmp_path):
         assert await attestor.attest_action(_tier_d_row(2), reconciled=True) == 2
         late = json.loads(_chain_row(attestor._db_path, 2)["payload_json"])
         assert late["attestation"] == "reconciled_late"
+
+        assert attestor.atomic_freshness_available is True
+        assert await attestor.attest_action(_firmware_tier_d_row(3)) == 3
+        firmware = json.loads(_chain_row(attestor._db_path, 3)["payload_json"])
+        assert firmware["input_attestation_grade"] == "attested"
+        assert firmware["input_posture"] == "sealed_flash"
+        assert firmware["input_firmware_device_id"] == "ori-fw-artifact-01"
+        assert firmware["input_firmware_boot_id"] == 7
+        assert firmware["input_firmware_seq"] == 11
 
         # The whole chain verifies against the provisioned anchor. The pyo3
         # chain is unsendable, so the call must run on the attestor's
