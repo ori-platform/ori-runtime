@@ -140,6 +140,7 @@ class GatewayConfig:
     reasoning: dict = field(default_factory=dict)
     node_heartbeat: dict = field(default_factory=dict)
     firmware_telemetry: dict = field(default_factory=dict)
+    firmware_commands: dict = field(default_factory=dict)
     auth: dict = field(default_factory=dict)
     tls: dict = field(default_factory=dict)
     encryption: dict = field(default_factory=dict)
@@ -974,6 +975,54 @@ def _parse_gateway(data: Any) -> GatewayConfig:
     firmware_telemetry["topic"] = topic or "ori/fw/+/telemetry"
     firmware_telemetry["qos"] = firmware_qos
 
+    firmware_commands_raw = data.get("firmware_commands") or {}
+    if not isinstance(firmware_commands_raw, dict):
+        raise ConfigValidationError(
+            "'gateway.firmware_commands' section must be a mapping."
+        )
+    firmware_commands = dict(firmware_commands_raw)
+    firmware_commands["enabled"] = (
+        str(firmware_commands.get("enabled", "false")).strip().lower() == "true"
+        or firmware_commands.get("enabled") is True
+    )
+    try:
+        command_qos = int(firmware_commands.get("qos", 1))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "gateway.firmware_commands.qos must be an integer"
+        ) from exc
+    if command_qos != 1:
+        raise ConfigValidationError(
+            "gateway.firmware_commands.qos must be 1 per firmware-commands/v1"
+        )
+    try:
+        publish_timeout_s = float(firmware_commands.get("publish_timeout_s", 10.0))
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "gateway.firmware_commands.publish_timeout_s must be a number"
+        ) from exc
+    if publish_timeout_s <= 0:
+        raise ConfigValidationError(
+            "gateway.firmware_commands.publish_timeout_s must be > 0"
+        )
+    runtime_command_key_env = str(
+        firmware_commands.get("runtime_command_key_env", "") or ""
+    ).strip()
+    provisioner_key_env = str(
+        firmware_commands.get("provisioner_key_env", "") or ""
+    ).strip()
+    if firmware_commands["enabled"] and (
+        not runtime_command_key_env or not provisioner_key_env
+    ):
+        raise ConfigValidationError(
+            "gateway.firmware_commands.runtime_command_key_env and "
+            "gateway.firmware_commands.provisioner_key_env are required when enabled"
+        )
+    firmware_commands["qos"] = command_qos
+    firmware_commands["publish_timeout_s"] = publish_timeout_s
+    firmware_commands["runtime_command_key_env"] = runtime_command_key_env
+    firmware_commands["provisioner_key_env"] = provisioner_key_env
+
     auth_raw = data.get("auth") or {}
     if not isinstance(auth_raw, dict):
         raise ConfigValidationError("'gateway.auth' section must be a mapping.")
@@ -1061,6 +1110,7 @@ def _parse_gateway(data: Any) -> GatewayConfig:
         reasoning=reasoning,
         node_heartbeat=node_heartbeat,
         firmware_telemetry=firmware_telemetry,
+        firmware_commands=firmware_commands,
         auth=auth,
         tls=tls,
         encryption=encryption,

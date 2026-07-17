@@ -4346,6 +4346,13 @@ actions:
         assert cfg.gateway.firmware_telemetry["enabled"] is False
         assert cfg.gateway.firmware_telemetry["topic"] == "ori/fw/+/telemetry"
         assert cfg.gateway.firmware_telemetry["qos"] == 1
+        assert cfg.gateway.firmware_commands == {
+            "enabled": False,
+            "qos": 1,
+            "publish_timeout_s": 10.0,
+            "runtime_command_key_env": "",
+            "provisioner_key_env": "",
+        }
 
     def test_accepts_explicit_firmware_telemetry_subscription(self, tmp_path):
         cfg = Config.load(
@@ -4385,6 +4392,68 @@ actions:
                     tmp_path,
                     self._yaml(
                         "  firmware_telemetry:\n    enabled: true\n    qos: 3\n"
+                    ),
+                )
+            )
+
+    def test_accepts_explicit_firmware_command_egress(self, tmp_path):
+        cfg = Config.load(
+            _write_yaml(
+                tmp_path,
+                self._yaml(
+                    "  firmware_commands:\n"
+                    "    enabled: true\n"
+                    "    runtime_command_key_env: ORI_FW_RUNTIME_COMMAND_KEY\n"
+                    "    provisioner_key_env: ORI_FW_PROVISIONER_KEY\n"
+                    "    publish_timeout_s: 4.5\n"
+                ),
+            )
+        )
+        assert cfg.gateway.firmware_commands == {
+            "enabled": True,
+            "qos": 1,
+            "publish_timeout_s": 4.5,
+            "runtime_command_key_env": "ORI_FW_RUNTIME_COMMAND_KEY",
+            "provisioner_key_env": "ORI_FW_PROVISIONER_KEY",
+        }
+
+    def test_rejects_enabled_firmware_commands_without_key_envs(self, tmp_path):
+        with pytest.raises(ConfigValidationError, match="firmware_commands"):
+            Config.load(
+                _write_yaml(
+                    tmp_path,
+                    self._yaml("  firmware_commands:\n    enabled: true\n"),
+                )
+            )
+
+    def test_rejects_non_qos1_firmware_commands(self, tmp_path):
+        with pytest.raises(ConfigValidationError, match="firmware_commands.qos"):
+            Config.load(
+                _write_yaml(
+                    tmp_path,
+                    self._yaml(
+                        "  firmware_commands:\n"
+                        "    enabled: true\n"
+                        "    runtime_command_key_env: ORI_FW_RUNTIME_COMMAND_KEY\n"
+                        "    provisioner_key_env: ORI_FW_PROVISIONER_KEY\n"
+                        "    qos: 0\n"
+                    ),
+                )
+            )
+
+    def test_rejects_invalid_firmware_command_timeout(self, tmp_path):
+        with pytest.raises(
+            ConfigValidationError, match="firmware_commands.publish_timeout_s"
+        ):
+            Config.load(
+                _write_yaml(
+                    tmp_path,
+                    self._yaml(
+                        "  firmware_commands:\n"
+                        "    enabled: true\n"
+                        "    runtime_command_key_env: ORI_FW_RUNTIME_COMMAND_KEY\n"
+                        "    provisioner_key_env: ORI_FW_PROVISIONER_KEY\n"
+                        "    publish_timeout_s: 0\n"
                     ),
                 )
             )

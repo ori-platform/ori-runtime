@@ -36,6 +36,11 @@ from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import Config, ConfigValidationError
 from ori.gateway.export import GatewayExportResponder, MqttGatewayExportServer
+from ori.gateway.firmware_commands import (
+    FirmwareCommandService,
+    MqttFirmwareCommandPublisher,
+    load_raw_ed25519_seed_from_env,
+)
 from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
 from ori.gateway.heartbeat import MqttGatewayHeartbeatSubscriber
 from ori.gateway.node_heartbeat import MqttRuntimeNodeHeartbeatPublisher
@@ -198,6 +203,8 @@ class OriRuntime:
         self._runtime_node_heartbeat_publisher: (
             MqttRuntimeNodeHeartbeatPublisher | None
         ) = None
+        self._firmware_command_publisher: MqttFirmwareCommandPublisher | None = None
+        self._firmware_command_service: FirmwareCommandService | None = None
         self._telemetry_exporter: HttpTelemetryExporter | None = None
         self._evidence_attestor: EvidenceAttestor | None = None
         self._health_socket_path: str = ""
@@ -270,6 +277,30 @@ class OriRuntime:
                 skills_dir,
             )
             return True
+
+    async def approve_firmware_commands(self, device_id: str) -> bytes:
+        """Publish the retained provisioning approval for one firmware device."""
+        if self._firmware_command_service is None:
+            raise RuntimeError("firmware command egress is not enabled")
+        return await self._firmware_command_service.publish_provisioning_approval(
+            device_id
+        )
+
+    async def publish_firmware_command(
+        self,
+        *,
+        device_id: str,
+        action: str,
+        channel: str,
+    ) -> bytes:
+        """Sign and publish one non-retained firmware command."""
+        if self._firmware_command_service is None:
+            raise RuntimeError("firmware command egress is not enabled")
+        return await self._firmware_command_service.publish_command(
+            device_id=device_id,
+            action=action,
+            channel=channel,
+        )
 
     async def start(self) -> None:
         """Full startup sequence. Blocks until a shutdown signal is received."""
@@ -943,6 +974,21 @@ class OriRuntime:
                 )
             )
 
+        firmware_command_pair = _build_firmware_command_service(
+            config,
+            self._state_store,
+        )
+        if firmware_command_pair is not None:
+            publisher, service = firmware_command_pair
+            try:
+                await publisher.connect()
+            except Exception:
+                logger.exception("[runtime] failed to connect firmware command MQTT")
+                raise
+            self._firmware_command_publisher = publisher
+            self._firmware_command_service = service
+            logger.info("[runtime] MQTT firmware command egress enabled")
+
         node_heartbeat = _build_runtime_node_heartbeat_publisher(
             config,
             self._build_health_snapshot,
@@ -1025,7 +1071,16 @@ class OriRuntime:
                 logger.exception("[shutdown] error closing runtime node heartbeat")
             self._runtime_node_heartbeat_publisher = None
 
-        # 2d. Stop local health socket service.
+        # 2d. Stop firmware command egress.
+        if self._firmware_command_publisher is not None:
+            try:
+                await self._firmware_command_publisher.close()
+            except Exception:
+                logger.exception("[shutdown] error closing firmware command publisher")
+            self._firmware_command_publisher = None
+            self._firmware_command_service = None
+
+        # 2e. Stop local health socket service.
         if self._health_socket_server is not None:
             try:
                 await self._health_socket_server.close()
@@ -1034,7 +1089,7 @@ class OriRuntime:
             self._health_socket_server = None
             self._health_socket_path = ""
 
-        # 2e. Stop evidence attestor executor.
+        # 2f. Stop evidence attestor executor.
         if self._evidence_attestor is not None:
             try:
                 self._evidence_attestor.close()
@@ -3672,6 +3727,48 @@ def _build_firmware_telemetry_subscriber(
         firmware_cfg.get("topic", "ori/fw/+/telemetry"),
     )
     return subscriber
+
+
+def _build_firmware_command_service(
+    config: Config,
+    state_store: StateStore,
+) -> tuple[MqttFirmwareCommandPublisher, FirmwareCommandService] | None:
+    """Instantiate firmware command egress when explicitly configured."""
+    if not bool(config.gateway.enabled):
+        return None
+    command_cfg = (
+        config.gateway.firmware_commands
+        if isinstance(getattr(config.gateway, "firmware_commands", {}), dict)
+        else {}
+    )
+    if not bool(command_cfg.get("enabled", False)):
+        return None
+    try:
+        runtime_key = load_raw_ed25519_seed_from_env(
+            str(command_cfg.get("runtime_command_key_env", "")),
+            label="runtime command key",
+        )
+        provisioner_key = load_raw_ed25519_seed_from_env(
+            str(command_cfg.get("provisioner_key_env", "")),
+            label="firmware provisioner key",
+        )
+        publisher = MqttFirmwareCommandPublisher(
+            broker_url=config.gateway.broker_url,
+            runtime_device_id=config.device.id,
+            qos=int(command_cfg.get("qos", 1)),
+            tls_config=getattr(config.gateway, "tls", {}),
+            publish_timeout_s=float(command_cfg.get("publish_timeout_s", 10.0)),
+        )
+        service = FirmwareCommandService(
+            store=state_store,
+            publisher=publisher,
+            runtime_command_key_bytes=runtime_key,
+            provisioner_key_bytes=provisioner_key,
+        )
+    except Exception:
+        logger.exception("[runtime] invalid firmware command egress configuration")
+        raise
+    return publisher, service
 
 
 def _build_runtime_node_heartbeat_publisher(
