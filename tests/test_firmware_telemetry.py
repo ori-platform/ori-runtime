@@ -5,9 +5,9 @@
 
 The vectors in tests/fixtures/firmware_layer1_vectors.json are the
 cross-language signing contract shared with ori-edge-firmware (C
-producer) and ori-verity (Rust chain). Every case must verify here
-byte-for-byte; a divergence is a fleet-wide signature break, not a unit
-test failure.
+producer) and the private evidence-chain artifact. Every case must
+verify here byte-for-byte; a divergence is a fleet-wide signature break,
+not a unit test failure.
 """
 
 from __future__ import annotations

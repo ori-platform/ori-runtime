@@ -3563,7 +3563,7 @@ def _build_gateway_reasoner(config: Config) -> MqttGatewayReasoner | None:
 
 
 def _build_evidence_attestor(config: Config) -> EvidenceAttestor | None:
-    """Build the optional Tier C/D evidence attestor (Verity chain client).
+    """Build the optional Tier C/D evidence attestor.
 
     Evidence signing is opt-in via ``evidence.enabled``. A configured but
     missing device secret fails startup loudly — a silently unkeyed evidence

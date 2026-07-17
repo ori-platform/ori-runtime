@@ -211,11 +211,11 @@ class LoggingConfig:
 
 @dataclass
 class EvidenceConfig:
-    """On-device evidence signing (Verity chain) configuration."""
+    """On-device Tier C/D evidence signing configuration."""
 
     enabled: bool = False
-    db_path: str = "ori_verity.db"
-    key_path: str = "ori_verity.key"
+    db_path: str = "ori_evidence.db"
+    key_path: str = "ori_evidence.key"
     device_secret_env: str = "ORI_EVIDENCE_DEVICE_SECRET"
 
 
@@ -2210,8 +2210,8 @@ def _parse_evidence(data: Any) -> EvidenceConfig:
     if not isinstance(data, dict):
         raise ConfigValidationError("'evidence' section must be a mapping.")
     enabled = is_truthy(data.get("enabled", False))
-    db_path = str(data.get("db_path", "ori_verity.db") or "").strip()
-    key_path = str(data.get("key_path", "ori_verity.key") or "").strip()
+    db_path = str(data.get("db_path", "ori_evidence.db") or "").strip()
+    key_path = str(data.get("key_path", "ori_evidence.key") or "").strip()
     device_secret_env = str(
         data.get("device_secret_env", "ORI_EVIDENCE_DEVICE_SECRET") or ""
     ).strip()

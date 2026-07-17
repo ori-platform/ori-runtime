@@ -1,14 +1,14 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verification of device-signed firmware telemetry (Verity Layer 1).
+"""Verification of device-signed firmware telemetry (evidence Layer 1).
 
 Implements the consumer side of ``ori-specs/firmware-telemetry/v1.md``:
 provisioning anchors, capability-manifest pinning, Ed25519 envelope
 verification, ``(boot_id, seq)`` freshness, and receiver-derived trust
 grades. The canonical JSON rules here are the byte-level signing
-contract shared with the C producer (ori-edge-firmware) and the Rust
-chain (ori-verity); the shared golden vectors are committed under
+contract shared with the C producer (ori-edge-firmware) and the private
+evidence-chain artifact; the shared golden vectors are committed under
 ``tests/fixtures`` and any divergence is a fleet-wide signature break.
 
 Grade semantics (never signed by firmware — receiver-derived):

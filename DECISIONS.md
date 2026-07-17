@@ -1332,8 +1332,8 @@ Non-goals:
 
 **Status:** Accepted
 
-The Verity evidence chain (device-side Ed25519 signing + hash-chain ledger,
-built in its own repository) is core runtime infrastructure, not an optional
+The private evidence chain (device-side Ed25519 signing + hash-chain ledger,
+built as a separate artifact) is core runtime infrastructure, not an optional
 feature, because **signed evidence cannot be backfilled**: an event not signed
 at emission time is permanently unverifiable to any third-party verifier
 (insurers, auditors, financiers). The start date of on-device signing is the
@@ -1394,15 +1394,15 @@ receiver-derived trust grades (`attested` / `attested_dev` / `unattested` /
 Decisions:
 
 - **The device registry and freshness high-water marks live in the runtime
-  state store**, not in the Verity chain database. The replay state is
+  state store**, not in the private evidence-chain database. The replay state is
   consumer-local by contract ("receivers must maintain replay state per
   device_id and public-key epoch"); holding it in `ori_state.db` keeps the
-  verification path synchronous and keeps the frozen `verity_chain` schema
-  untouched. The high-water-mark advance is a guarded single-statement
+  verification path synchronous and keeps the frozen chain schema untouched.
+  The high-water-mark advance is a guarded single-statement
   UPDATE (`WHERE` enforces strict monotonicity), so a stale writer can never
   regress it.
 - **Single-transaction atomicity between the high-water-mark advance and a
-  Verity chain append remains the verifier-grade target**, consistent with
+  private evidence-chain append remains the verifier-grade target**, consistent with
   the evidence module's documented Option B posture. Until the pinned
   artifact exposes a combined operation, the runtime's replay defence is
   authoritative locally and honest about that boundary.
@@ -1419,7 +1419,7 @@ Decisions:
   presented as an action input. `attested` requires `sealed_flash` or
   `hardware_key` posture, `attested_dev` requires `development` posture, and
   invalid/missing combinations normalize to `unattested` with empty posture.
-  New Verity action attestations include both fields in the signed payload,
+  New action attestations include both fields in the signed payload,
   so an insurer or auditor can distinguish "Ori acted on sealed/device-key
   attested evidence" from "Ori acted on legacy local adapter input" without
   inference.
@@ -1441,13 +1441,13 @@ Decisions:
 - **The shared golden vectors are committed into the runtime test suite.**
   One set of vectors, three repositories: the C producer emits the canonical
   Layer 1 bytes, this Python verifier accepts and normalises them, and the
-  Rust Verity crate verifies the exact same bytes/signatures. CI enforces the
-  shared contract in each repository without pretending Verity produces
-  firmware envelopes.
+  private evidence-chain artifact verifies the exact same bytes/signatures.
+  CI enforces the shared contract in each repository without pretending the
+  chain artifact produces firmware envelopes.
 
 Alternatives considered:
 
-- Registry inside the Verity database with FFI-mediated access. Rejected
+- Registry inside the private evidence-chain database with FFI-mediated access. Rejected
   for now: puts a per-reading FFI hop and thread handoff on the hot
   ingestion path, and the pinned artifact exposes no registry surface yet.
   Revisit when the combined atomic append lands in the artifact.

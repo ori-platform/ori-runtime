@@ -1,7 +1,7 @@
 {
   "contract": "ori-specs/firmware-telemetry/v1.md",
   "version": 1,
-  "comment": "Cross-language golden vectors for Verity Layer 1. Shared with ori-verity and ori-runtime; all implementations must produce and verify these bytes exactly. Signed with the TEST-ONLY seed in test_keypair.json — never provision that seed.",
+  "comment": "Cross-language golden vectors for evidence Layer 1. Shared with the firmware, runtime, and private evidence-chain implementations; all implementations must produce and verify these bytes exactly. Signed with the TEST-ONLY seed in test_keypair.json — never provision that seed.",
   "canonical_rules": {
     "keys": "sorted lexicographically at every nesting level",
     "whitespace": "none outside string values",
