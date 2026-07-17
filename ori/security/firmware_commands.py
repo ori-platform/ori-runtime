@@ -20,9 +20,10 @@ Contract rules enforced here (fail closed, before signing):
   increasing per device — allocate through the state store, never
   locally, and never reuse a value even for retries.
 
-The shared golden command vectors
-(``tests/fixtures/firmware_command_vectors.json``) pin this signer's
-bytes against the C verifier in ``ori-edge-firmware``.
+The shared command and provisioning-approval golden vectors
+(``tests/fixtures/firmware_command_vectors.json`` and
+``tests/fixtures/firmware_provisioning_approval_vectors.json``) pin the
+runtime's signed bytes against the C verifier in the firmware project.
 """
 
 from __future__ import annotations
