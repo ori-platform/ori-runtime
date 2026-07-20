@@ -6,7 +6,7 @@ ruff>=0.4
 pre-commit>=3.7
 mypy>=1.18
 types-PyYAML>=6.0
-pip-tools>=7.4
+pip-tools>=7.6.0
 pip-audit>=2.10.1
 cyclonedx-bom>=6.0
 
