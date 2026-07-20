@@ -280,7 +280,9 @@ class TestGoldenFaultVectors:
         assert result.accepted, f"{name} was not accepted: {result.error_code}"
         # Posture drives the trust grade: a development-posture device
         # never earns the sealed-flash grade, even with a valid signature.
-        expected_grade = "attested" if fault["posture"] == "sealed_flash" else "attested_dev"
+        expected_grade = (
+            "attested" if fault["posture"] == "sealed_flash" else "attested_dev"
+        )
         assert result.grade == expected_grade
         assert result.code == fault["code"]
         assert result.subject == fault["subject"]
