@@ -104,6 +104,17 @@ FIRMWARE_FAULT_CODES = frozenset(
     }
 )
 
+# firmware-telemetry/v1: ``subject`` and ``detail`` are fleet-safe tokens
+# bounded at 63 characters (the producer's 64-byte buffers include the
+# NUL). The receiver enforces the same bound as the producer: accepting a
+# shape the firmware could never emit would let a forged-but-unsigned
+# field shape through the contract, and would let the two sides disagree
+# about what is representable.
+FAULT_TOKEN_MAX_LEN = 63
+_FLEET_TOKEN_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
+)
+
 
 class FirmwareVerificationError(Exception):
     """A verification failure with a contract error code.
@@ -741,6 +752,17 @@ def verify_fault_message(
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE, "fault subject and detail must be strings"
             )
+        for _name, _token in (("subject", subject), ("detail", detail)):
+            if len(_token) > FAULT_TOKEN_MAX_LEN:
+                raise FirmwareVerificationError(
+                    ERR_INVALID_ENVELOPE,
+                    f"fault {_name} exceeds {FAULT_TOKEN_MAX_LEN} characters",
+                )
+            if not _FLEET_TOKEN_CHARS.issuperset(_token):
+                raise FirmwareVerificationError(
+                    ERR_INVALID_ENVELOPE,
+                    f"fault {_name} leaves the fleet-safe token alphabet",
+                )
 
         canonical = canonical_json_bytes(fault)
         public_key = _decode_public_key(anchor_public_key_b64)
