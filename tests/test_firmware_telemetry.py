@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from ori.security.firmware_ingest import FirmwareTelemetryGate
 from ori.security.firmware_telemetry import (
+    FAULT_TOKEN_MAX_LEN,
     FirmwareVerificationError,
     canonical_json_bytes,
     manifest_channel_map,
@@ -108,6 +109,33 @@ def verify(case_name: str, **overrides):
 
 TELEMETRY_CASES = [name for name, case in CASES.items() if case["kind"] == "telemetry"]
 MANIFEST_CASES = [name for name, case in CASES.items() if case["kind"] == "manifest"]
+
+# Signed fault-event vectors, shared byte-for-byte with ori-edge-firmware
+# (C producer) and ori-verity (Rust verifier). The runtime is the
+# receiving end: these bytes and signatures are the contract it must
+# accept, not a shape it gets to reinterpret.
+FAULT_VECTORS = json.loads(
+    (Path(__file__).parent / "fixtures" / "firmware_fault_vectors.json").read_text()
+)
+FAULT_CASES = {case["name"]: case for case in FAULT_VECTORS["cases"]}
+
+# The closed vocabulary of ori-specs/firmware-telemetry/v1.md. Additions
+# are additive contract changes and land in all three repos together.
+FAULT_CODE_VOCABULARY = {
+    "brownout_relay_fault",
+    "command_rejected",
+    "ingress_degraded",
+    "interlock_input_fault",
+    "interlock_recovered",
+    "interlock_tripped",
+    "sensor_fault",
+}
+
+
+def golden_fault_message(case_name: str) -> dict:
+    """The exact signed wire message the firmware publishes."""
+    case = FAULT_CASES[case_name]
+    return {"fault": copy.deepcopy(case["input"]), "signature": wire_signature(case)}
 
 
 class TestGoldenVectors:
@@ -208,6 +236,145 @@ class TestGoldenVectors:
                 anchor_public_key_b64=PUBLIC_KEY_B64,
             )
         assert excinfo.value.code == "capability_hash_mismatch"
+
+
+class TestGoldenFaultVectors:
+    """The runtime's own verifier, run over the committed shared fault
+    vectors. This is the receiving end of the cross-language loop: the C
+    producer signs these bytes, ori-verity's ring verifier accepts them,
+    and the ingestion gate must accept the identical bytes here."""
+
+    @pytest.mark.parametrize("name", list(FAULT_CASES))
+    def test_canonical_bytes_match(self, name: str) -> None:
+        case = FAULT_CASES[name]
+        assert canonical_json_bytes(case["input"]).hex() == case["canonical_hex"]
+        assert (
+            hashlib.sha256(bytes.fromhex(case["canonical_hex"])).hexdigest()
+            == case["canonical_sha256_hex"]
+        )
+
+    @pytest.mark.parametrize("name", list(FAULT_CASES))
+    def test_wire_message_matches(self, name: str) -> None:
+        case = FAULT_CASES[name]
+        message = (
+            b'{"fault":'
+            + bytes.fromhex(case["canonical_hex"])
+            + b',"signature":"ed25519:'
+            + case["signature_b64"].encode()
+            + b'"}'
+        )
+        assert message.hex() == case["message_hex"]
+
+    @pytest.mark.parametrize("name", list(FAULT_CASES))
+    def test_golden_fault_verifies(self, name: str) -> None:
+        fault = FAULT_CASES[name]["input"]
+        result = verify_fault_message(
+            golden_fault_message(name),
+            anchor_device_id=fault["device_id"],
+            anchor_public_key_b64=PUBLIC_KEY_B64,
+            anchor_posture=fault["posture"],
+            accepted_manifest_hash=fault["capability_hash"],
+            last_boot_id=0,
+            last_seq=0,
+        )
+        assert result.accepted, f"{name} was not accepted: {result.error_code}"
+        # Posture drives the trust grade: a development-posture device
+        # never earns the sealed-flash grade, even with a valid signature.
+        expected_grade = (
+            "attested" if fault["posture"] == "sealed_flash" else "attested_dev"
+        )
+        assert result.grade == expected_grade
+        assert result.code == fault["code"]
+        assert result.subject == fault["subject"]
+        assert result.detail == fault["detail"]
+
+    @pytest.mark.parametrize("name", list(FAULT_CASES))
+    def test_tampered_golden_fault_rejected(self, name: str) -> None:
+        fault = FAULT_CASES[name]["input"]
+        message = golden_fault_message(name)
+        message["fault"]["device_uptime_ms"] += 1
+        result = verify_fault_message(
+            message,
+            anchor_device_id=fault["device_id"],
+            anchor_public_key_b64=PUBLIC_KEY_B64,
+            anchor_posture=fault["posture"],
+            accepted_manifest_hash=fault["capability_hash"],
+            last_boot_id=0,
+            last_seq=0,
+        )
+        assert result.grade == "rejected"
+
+    def test_vectors_cover_the_closed_vocabulary(self) -> None:
+        covered = {case["input"]["code"] for case in FAULT_CASES.values()}
+        assert covered == FAULT_CODE_VOCABULARY
+
+    def test_fixture_metadata_is_self_consistent(self) -> None:
+        # The fault corpus carries its own key metadata; the runtime must
+        # verify against that, not against the telemetry corpus by luck.
+        assert FAULT_VECTORS["contract"] == "ori-specs/firmware-telemetry/v1.md"
+        assert FAULT_VECTORS["version"] == 1
+        assert FAULT_VECTORS["public_key_b64"] == PUBLIC_KEY_B64
+        names = [case["name"] for case in FAULT_VECTORS["cases"]]
+        assert len(names) == len(set(names)), f"duplicate case names: {names}"
+
+    def test_max_bound_vector_sits_exactly_on_the_limit(self) -> None:
+        # The boundary the producer can actually emit: 63 characters.
+        fault = FAULT_CASES["fault_max_bounds"]["input"]
+        assert len(fault["subject"]) == FAULT_TOKEN_MAX_LEN
+        assert len(fault["detail"]) == FAULT_TOKEN_MAX_LEN
+
+    @pytest.mark.parametrize("field", ["subject", "detail"])
+    def test_token_over_max_length_rejected(self, field: str) -> None:
+        # A signed fault whose token exceeds what the producer's buffers
+        # can hold is not a shape the firmware could have emitted; the
+        # receiver must refuse it rather than accept a wider contract.
+        result = verify_fault_message(
+            signed_fault_message(**{field: "x" * (FAULT_TOKEN_MAX_LEN + 1)}),
+            anchor_device_id=SEALED_DEVICE,
+            anchor_public_key_b64=PUBLIC_KEY_B64,
+            anchor_posture="sealed_flash",
+            accepted_manifest_hash=SEALED_HASH,
+            last_boot_id=0,
+            last_seq=0,
+        )
+        assert result.grade == "rejected"
+        assert result.error_code == "invalid_envelope"
+
+    @pytest.mark.parametrize("field", ["subject", "detail"])
+    @pytest.mark.parametrize("bad", ["relay/0", "bad token", "relay:0", "réf"])
+    def test_token_outside_fleet_alphabet_rejected(self, field: str, bad: str) -> None:
+        result = verify_fault_message(
+            signed_fault_message(**{field: bad}),
+            anchor_device_id=SEALED_DEVICE,
+            anchor_public_key_b64=PUBLIC_KEY_B64,
+            anchor_posture="sealed_flash",
+            accepted_manifest_hash=SEALED_HASH,
+            last_boot_id=0,
+            last_seq=0,
+        )
+        assert result.grade == "rejected"
+        assert result.error_code == "invalid_envelope"
+
+    @pytest.mark.parametrize("field", ["subject", "detail"])
+    def test_token_at_max_length_accepted(self, field: str) -> None:
+        result = verify_fault_message(
+            signed_fault_message(**{field: "x" * FAULT_TOKEN_MAX_LEN}),
+            anchor_device_id=SEALED_DEVICE,
+            anchor_public_key_b64=PUBLIC_KEY_B64,
+            anchor_posture="sealed_flash",
+            accepted_manifest_hash=SEALED_HASH,
+            last_boot_id=0,
+            last_seq=0,
+        )
+        assert result.accepted
+
+    def test_golden_fault_never_becomes_telemetry(self) -> None:
+        # A fault carries evidence about the device's own refusals; it
+        # must never be readable as a SensorReading source.
+        for name in FAULT_CASES:
+            message = golden_fault_message(name)
+            assert "envelope" not in message
+            assert "readings" not in message["fault"]
 
 
 class TestFailClosed:
