@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from ori.policy.device_policy import DevicePolicy
 from ori.policy.remote_fetch import (
     RemotePolicyFetchError,
     fetch_remote_device_policy_bundle,
@@ -120,6 +121,46 @@ async def test_fetch_remote_policy_accepts_alert_caps(monkeypatch):
         action_tier="D",
         current_month_count=999,
     )
+
+
+@pytest.mark.skipif(
+    Ed25519PrivateKey is None,
+    reason="cryptography ed25519 is unavailable",
+)
+@pytest.mark.asyncio
+async def test_fetch_remote_policy_rejects_alert_cap_below_minus_one(monkeypatch):
+    private_key = Ed25519PrivateKey.generate()
+    public_key_b64 = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=Encoding.Raw,
+            format=PublicFormat.Raw,
+        )
+    ).decode("ascii")
+    payload = _signed_payload(private_key, alert_sms_monthly_cap=-2)
+    monkeypatch.setattr(
+        "ori.policy.remote_fetch._http_get_json",
+        lambda _cfg: (json.dumps(payload), payload),
+    )
+
+    with pytest.raises(
+        RemotePolicyFetchError, match="must be null, -1, or non-negative"
+    ):
+        await fetch_remote_device_policy_bundle(_base_config(public_key_b64))
+
+
+def test_device_policy_constructor_rejects_alert_cap_below_minus_one() -> None:
+    with pytest.raises(ValueError, match="must be null, -1, or non-negative"):
+        DevicePolicy(
+            tier="cloud",
+            relay_b_enabled=True,
+            relay_c_enabled=True,
+            cloud_llm_enabled=True,
+            valid_until=1,
+            policy_version=1,
+            issued_at=1,
+            signature="test",
+            alert_sms_monthly_cap=-2,
+        )
 
 
 @pytest.mark.skipif(
