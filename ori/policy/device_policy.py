@@ -19,6 +19,14 @@ class DevicePolicy:
     alert_sms_monthly_cap: Optional[int] = None
     alert_whatsapp_monthly_cap: Optional[int] = None
 
+    def __post_init__(self) -> None:
+        for field_name, cap in (
+            ("alert_sms_monthly_cap", self.alert_sms_monthly_cap),
+            ("alert_whatsapp_monthly_cap", self.alert_whatsapp_monthly_cap),
+        ):
+            if cap is not None and cap < -1:
+                raise ValueError(f"{field_name} must be null, -1, or non-negative")
+
     def permits_action(self, action_tier: str) -> bool:
         if action_tier in ("D", "A"):  # Tier D: Invariant 10. Tier A: always.
             return True
@@ -47,7 +55,7 @@ class DevicePolicy:
         if action_tier == "D":
             return True
         cap = self.alert_monthly_cap(channel)
-        if cap is None or cap < 0:
+        if cap is None or cap == -1:
             return True
         return int(current_month_count) < cap
 

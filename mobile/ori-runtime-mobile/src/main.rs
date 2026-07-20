@@ -22,6 +22,7 @@ const CONFIG_SIGNATURE_SCHEMA: &str = "ori.config_signature.v1";
 const CONFIG_REQUIRE_SIGNED_ENV: &str = "ORI_CONFIG_REQUIRE_SIGNED";
 const DEFAULT_CONFIG_TRUST_ANCHOR_ENV: &str = "ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64";
 const TELEMETRY_SCHEMA_VERSION: &str = "runtime.telemetry.v1";
+const JSON_SAFE_INT_MAX: u64 = 9_007_199_254_740_991;
 const USER_AGENT: &str = "ori-runtime-mobile/0.1";
 
 type HmacSha256 = Hmac<Sha256>;
@@ -419,8 +420,7 @@ fn post_telemetry_batch(
         "sent_at_ms": now_ms(),
         "events": events,
     });
-    let body = serde_json::to_vec(&payload)
-        .map_err(|error| format!("failed to serialize telemetry payload: {error}"))?;
+    let body = canonical_telemetry_json(&payload)?;
     let timestamp_ms = now_ms().to_string();
     let signature = telemetry_signature(api_key.as_bytes(), timestamp_ms.as_bytes(), &body)?;
     let response = ureq::post(&config.telemetry_export.endpoint)
@@ -448,6 +448,49 @@ fn telemetry_signature(key: &[u8], timestamp_ms: &[u8], body: &[u8]) -> Result<S
     mac.update(b".");
     mac.update(body);
     Ok(hex::encode(mac.finalize().into_bytes()))
+}
+
+fn canonical_telemetry_json(value: &JsonValue) -> Result<Vec<u8>, String> {
+    validate_canonical_numbers(value, "$")?;
+    serde_json::to_vec(value)
+        .map_err(|error| format!("failed to serialize telemetry payload: {error}"))
+}
+
+fn validate_canonical_numbers(value: &JsonValue, path: &str) -> Result<(), String> {
+    match value {
+        JsonValue::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                if integer.unsigned_abs() > JSON_SAFE_INT_MAX {
+                    return Err(format!("integer outside JSON-safe range at {path}"));
+                }
+            } else if let Some(integer) = number.as_u64() {
+                if integer > JSON_SAFE_INT_MAX {
+                    return Err(format!("integer outside JSON-safe range at {path}"));
+                }
+            } else if let Some(number) = number.as_f64() {
+                let magnitude = number.abs();
+                if !number.is_finite() || (magnitude != 0.0 && !(1e-4..1e16).contains(&magnitude)) {
+                    return Err(format!(
+                        "float outside cross-language canonical zone at {path}"
+                    ));
+                }
+            } else {
+                return Err(format!("unsupported JSON number at {path}"));
+            }
+        }
+        JsonValue::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                validate_canonical_numbers(item, &format!("{path}[{index}]"))?;
+            }
+        }
+        JsonValue::Object(items) => {
+            for (key, item) in items {
+                validate_canonical_numbers(item, &format!("{path}.{key}"))?;
+            }
+        }
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::String(_) => {}
+    }
+    Ok(())
 }
 
 fn compute_fingerprint(device_id: &str, reading: &SensorReading) -> String {
@@ -641,4 +684,41 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0))
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GOLDEN_BODY: &str = concat!(
+        "{\"device_id\":\"phone-gateway-ikeja-01\",\"events\":[{\"context\":{\"location\":\"Ìkẹjà\"},",
+        "\"device_id\":\"phone-gateway-ikeja-01\",\"event_id\":\"00000000-0000-4000-8000-000000000001\",",
+        "\"event_type\":\"sensor.reading\",\"fingerprint\":\"\",\"reading\":{\"metadata\":{\"label\":\"Mains – east\"},",
+        "\"quality\":1.0,\"sensor_id\":\"phone-main-power\",\"sensor_type\":\"usb_power\",",
+        "\"timestamp\":1719000000000,\"unit\":\"watt\",\"value\":1240.5},\"sensor_id\":\"phone-main-power\",",
+        "\"source\":\"usb_serial\",\"timestamp\":1719000000000}],\"schema_version\":\"runtime.telemetry.v1\",",
+        "\"sent_at_ms\":1719000000000,\"sequence\":1}"
+    );
+
+    #[test]
+    fn runtime_telemetry_matches_specs_golden_fixture() {
+        let payload: JsonValue = serde_json::from_str(GOLDEN_BODY).expect("valid fixture");
+        let body = canonical_telemetry_json(&payload).expect("canonical fixture");
+        assert_eq!(body, GOLDEN_BODY.as_bytes());
+        assert_eq!(
+            hex::encode(Sha256::digest(&body)),
+            "51e7a268d28c96f7ba516593b7d4ca160848ff641888ce1b3b513f2bbf2370ea"
+        );
+        assert_eq!(
+            telemetry_signature(b"test-runtime-telemetry-key", b"1719000000123", &body)
+                .expect("HMAC"),
+            "5ed66b6fc38a5d68e8c0c16bf18ade62968549432fb52baeb8b56625927dba79"
+        );
+    }
+
+    #[test]
+    fn runtime_telemetry_rejects_numbers_outside_agreement_zone() {
+        assert!(canonical_telemetry_json(&json!({"value": 1e-5})).is_err());
+        assert!(canonical_telemetry_json(&json!({"value": 9_007_199_254_740_992_u64})).is_err());
+    }
 }

@@ -4,8 +4,6 @@
 """HTTP telemetry export for phone and lightweight provisioned deployments."""
 
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -14,6 +12,7 @@ from typing import Any
 
 from ori.config import TelemetryExportConfig
 from ori.network.events import OriEvent, SensorReading
+from ori.telemetry.canonical import canonical_telemetry_bytes, telemetry_hmac_sha256
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -158,17 +157,9 @@ class HttpTelemetryExporter:
             "sent_at_ms": now_ms(),
             "events": batch,
         }
-        body = json.dumps(
-            payload,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        body = canonical_telemetry_bytes(payload)
         timestamp_ms = str(now_ms())
-        signature = hmac.new(
-            api_key.encode("utf-8"),
-            timestamp_ms.encode("utf-8") + b"." + body,
-            hashlib.sha256,
-        ).hexdigest()
+        signature = telemetry_hmac_sha256(api_key, timestamp_ms, body)
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
