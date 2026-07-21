@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import stat
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -161,7 +162,7 @@ class TestTransactionControls:
         assert _register(bench) == 0
         assert _approve(bench) == 0
         assert _publish(bench) == 0
-        approval = json.loads(open(bench["out"]).read())["approval"]
+        approval = json.loads(Path(bench["out"]).read_text())["approval"]
         assert approval["device_id"] == "ori-fw-bench0001"
         assert approval["public_key_b64"] == bench["device_key"]
 
@@ -190,11 +191,11 @@ class TestTransactionControls:
         # Corrupt the on-disk manifest after registration. The approval
         # must still reflect the stored row, because the registry is the
         # source of truth once the anchor exists.
-        bad = json.loads(open(bench["manifest"]).read())
+        bad = json.loads(Path(bench["manifest"]).read_text())
         bad["manifest"]["device_id"] = "ori-fw-someone-else"
-        open(bench["manifest"], "w").write(json.dumps(bad))
+        Path(bench["manifest"]).write_text(json.dumps(bad))
         assert _publish(bench) == 0
-        approval = json.loads(open(bench["out"]).read())["approval"]
+        approval = json.loads(Path(bench["out"]).read_text())["approval"]
         assert approval["device_id"] == "ori-fw-bench0001"
 
 
@@ -212,9 +213,9 @@ class TestIdentityConfirmation:
 
 class TestRegistration:
     def test_tampered_manifest_is_not_registered(self, bench) -> None:
-        message = json.loads(open(bench["manifest"]).read())
+        message = json.loads(Path(bench["manifest"]).read_text())
         message["manifest"]["firmware_version"] = "9.9.9"
-        open(bench["manifest"], "w").write(json.dumps(message))
+        Path(bench["manifest"]).write_text(json.dumps(message))
         assert _register(bench) == 2
 
     def test_inconsistent_posture_is_not_registered(self, bench, tmp_path) -> None:
