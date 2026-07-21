@@ -71,6 +71,7 @@ SUPPORTED_CHANNEL_PROTOCOLS = frozenset(
     {"adc", "gpio", "i2c", "uart", "modbus_rtu", "rs232", "pulse", "one_wire"}
 )
 SUPPORTED_ACTION_AUTHORITIES = frozenset({"local_interlock_only", "runtime_commanded"})
+SUPPORTED_FIRMWARE_ACTIONS = frozenset({"relay_open", "relay_close"})
 
 GRADE_ATTESTED = "attested"
 GRADE_ATTESTED_DEV = "attested_dev"
@@ -161,6 +162,22 @@ FIRMWARE_FAULT_CODES = frozenset(
         "sensor_fault",
         "brownout_relay_fault",
         "ingress_degraded",
+    }
+)
+
+# firmware-commands/v1: command rejection details are a closed wire
+# vocabulary. Accepting an invented token would make a valid signature look
+# contract-compliant even though no conforming firmware command verifier can
+# emit it.
+COMMAND_REJECTION_VERDICTS = frozenset(
+    {
+        "malformed",
+        "wrong_device",
+        "bad_signature",
+        "replayed",
+        "capability_mismatch",
+        "unknown_action",
+        "storage_failure",
     }
 )
 
@@ -328,6 +345,10 @@ def _validate_manifest_actions(manifest: dict[str, Any]) -> None:
                 ERR_INVALID_ENVELOPE, f"action {index} is not an object"
             )
         name = _require_str(action, "action", ERR_INVALID_ENVELOPE)
+        if name not in SUPPORTED_FIRMWARE_ACTIONS:
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE, f"unsupported firmware action {name!r}"
+            )
         _require_str(action, "channel", ERR_INVALID_ENVELOPE)
         authority = _require_str(action, "authority", ERR_INVALID_ENVELOPE)
         if authority not in SUPPORTED_ACTION_AUTHORITIES:
@@ -823,6 +844,11 @@ def verify_fault_message(
                     ERR_INVALID_ENVELOPE,
                     f"fault {_name} leaves the fleet-safe token alphabet",
                 )
+        if code == "command_rejected" and detail not in COMMAND_REJECTION_VERDICTS:
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE,
+                f"unsupported command rejection verdict {detail!r}",
+            )
 
         canonical = canonical_json_bytes(fault)
         public_key = _decode_public_key(anchor_public_key_b64)
