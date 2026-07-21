@@ -5,10 +5,11 @@
 The corpus (``tests/fixtures/device_lifecycle_vectors.json``) is the
 contract in executable form: ori-specs/device-provisioning/v1.md requires
 lifecycle vectors "agreed byte-for-byte by every implementing repository"
-before an implementation may claim the contract. The corpus is written
-to be shared with ori-verity, which must derive the same epoch
-identifiers from the same bytes; that adoption is a separate change and
-has not landed yet.
+before an implementation may claim the contract. ori-verity holds the
+same bytes and derives the same epoch identifiers from them with its own
+canonicalizer. It does not yet implement the anchor lifecycle, so it
+executes the epoch half of this corpus and declares the scenario half
+explicitly unimplemented.
 
 These tests drive the **real** ``StateStore``. No scenario expectation
 is derived from the store: the generator never observes it, and every
@@ -24,6 +25,7 @@ fixture is exactly what the generator produces.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -35,6 +37,14 @@ from ori.state.store import StateStore
 
 FIXTURE = Path(__file__).parent / "fixtures" / "device_lifecycle_vectors.json"
 VECTORS = json.loads(FIXTURE.read_text())
+
+# SHA-256 of the complete corpus. ori-verity pins this same constant over
+# its own copy, and both must be updated together. Pinning it in only one
+# repository would not catch drift: each copy would still match its own
+# stale constant while the two files diverged. Asserting the identical
+# digest on both sides means a regeneration that is not mirrored fails on
+# the side that moved.
+FIXTURE_SHA256 = "27b9418a9bf42abb4ae1fc50545661e730bc4b936edf70c22d28e35011bee79b"
 
 ANCHORS = VECTORS["anchors"]
 DEVICE_ID = VECTORS["device_id"]
@@ -78,10 +88,25 @@ async def store(tmp_path):
         await s.close()
 
 
+def test_fixture_digest_is_pinned():
+    """Changing the corpus must be a deliberate, cross-repo act.
+
+    ori-verity consumes these exact bytes. Regenerating here without
+    mirroring there would leave the two stores disagreeing about the
+    contract while both test suites stayed green.
+    """
+    digest = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
+    assert digest == FIXTURE_SHA256, (
+        "the lifecycle corpus changed. Copy it to ori-verity's "
+        "tests/fixtures/ and update the pinned digest in BOTH "
+        f"repositories to {digest}"
+    )
+
+
 def test_fixture_matches_its_generator():
     """The committed corpus must be exactly what the generator produces.
 
-    ori-verity is to consume this file byte-for-byte. If it could drift
+    ori-verity consumes this file byte-for-byte. If it could drift
     from its generator, a hand-edit would become the cross-store contract
     without anything noticing, and regenerating would then silently
     revert another repository's expectations.
@@ -129,8 +154,6 @@ def test_epoch_canonical_preimages_hash_to_the_declared_ids():
     every implementation reading only the hash would still pass, leaving
     another language no way to localise a mismatch.
     """
-    import hashlib
-
     for v in VECTORS["epoch_vectors"]:
         for pre_key, id_key in (
             ("key_epoch_canonical_hex", "key_epoch_id"),
@@ -273,6 +296,13 @@ async def test_lifecycle_scenario(store, scenario):
     for t in audited:
         assert t["actor"].strip(), f"{t['transition']} recorded without an actor"
         assert t["reason"].strip(), f"{t['transition']} recorded without a reason"
+
+
+def test_scenario_names_are_unique():
+    """Two scenarios sharing a name makes one invisible to every check
+    keyed on it, here and in ori-verity's unimplemented-scenario list."""
+    names = [s["name"] for s in VECTORS["scenarios"]]
+    assert len(names) == len(set(names))
 
 
 async def test_every_contract_operation_is_covered():
