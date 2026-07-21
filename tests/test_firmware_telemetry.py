@@ -16,10 +16,12 @@ import base64
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from ori.security.firmware_ingest import FirmwareTelemetryGate
 from ori.security.firmware_telemetry import (
@@ -136,6 +138,57 @@ def golden_fault_message(case_name: str) -> dict:
     """The exact signed wire message the firmware publishes."""
     case = FAULT_CASES[case_name]
     return {"fault": copy.deepcopy(case["input"]), "signature": wire_signature(case)}
+
+
+def signed_manifest_for_key(seed: bytes, *, device_id: str, **overrides) -> dict:
+    """Build a manifest message genuinely signed by `seed`.
+
+    Needed so a changed-key test presents a SELF-CONSISTENT manifest —
+    exactly the attacker shape: someone signs a manifest with a key they
+    control, claiming a device_id they do not own. A manifest signed by
+    one key but presented with another is rejected at verification and
+    never reaches the anchor lifecycle.
+    """
+    pub = base64.b64encode(
+        Ed25519PrivateKey.from_private_bytes(seed)
+        .public_key()
+        .public_bytes(Encoding.Raw, PublicFormat.Raw)
+    ).decode("ascii")
+    manifest = {
+        "v": 1,
+        "alg": "ed25519",
+        "device_id": device_id,
+        "firmware_version": "0.1.0",
+        "board_profile": "esp32s3-devkit",
+        "device_mode": "sensor_node",
+        "public_key_b64": pub,
+        "posture": "development",
+        "secure_boot_enabled": False,
+        "flash_encryption_enabled": False,
+        "key_storage": "dev_flash",
+        "transports": ["mqtt"],
+        "channels": [
+            {
+                "channel": "ch0",
+                "sensor_type": "current",
+                "unit": "ampere",
+                "protocol": "adc",
+                "source": "ads1115",
+                "quality_floor": 0.8,
+            }
+        ],
+        "actions": [],
+        "interlocks": [],
+    }
+    manifest.update(overrides)
+    canonical = canonical_json_bytes(manifest)
+    sig = Ed25519PrivateKey.from_private_bytes(seed).sign(canonical)
+    return {
+        "manifest": manifest,
+        "manifest_hash": "sha256:" + hashlib.sha256(canonical).hexdigest(),
+        "signature": "ed25519:" + base64.b64encode(sig).decode("ascii"),
+        "public_key_b64": pub,
+    }
 
 
 class TestGoldenVectors:
@@ -778,3 +831,112 @@ class TestFirmwareTelemetryGate:
         )
         assert replayed.error_code == "sequence_replay"
         assert readings == []
+
+
+class TestRegistrationLifecycle:
+    """ori-specs/device-provisioning/v1.md.
+
+    Registration decides what a receiver will trust for everything
+    afterwards, so it must never silently overwrite an anchor, clear a
+    revocation, or re-open a replay window.
+    """
+
+    async def _register(self, gate, case="manifest_minimal_dev"):
+        case_data = CASES[case]
+        return await gate.register_device(
+            device_id=case_data["input"]["device_id"],
+            public_key_b64=PUBLIC_KEY_B64,
+            posture=case_data["input"]["posture"],
+            manifest_message=manifest_message(case),
+        )
+
+    @pytest.mark.asyncio
+    async def test_exact_reregistration_is_idempotent(self, gate) -> None:
+        await self._register(gate)
+        await gate.approve_device(DEV_DEVICE)
+        # Actually advance it, so a reset would be visible.
+        await gate._store.advance_firmware_freshness(DEV_DEVICE, boot_id=3, seq=99)
+        row_before = await gate._store.get_firmware_device(DEV_DEVICE)
+        assert row_before["last_seq"] == 99
+
+        await self._register(gate)  # identical anchor, again
+
+        row_after = await gate._store.get_firmware_device(DEV_DEVICE)
+        # Approval must survive: re-publishing a manifest is not an event.
+        assert row_after["approved"] == row_before["approved"] == 1
+        assert row_after["last_boot_id"] == row_before["last_boot_id"]
+        assert row_after["last_seq"] == row_before["last_seq"]
+
+    @pytest.mark.asyncio
+    async def test_revocation_survives_registration(self, gate) -> None:
+        await self._register(gate)
+        await gate.approve_device(DEV_DEVICE)
+        await gate.revoke_device(DEV_DEVICE)
+
+        # The whole point: a device re-publishing its manifest is not a
+        # decision to trust it again.
+        with pytest.raises(FirmwareVerificationError) as excinfo:
+            await self._register(gate)
+        assert excinfo.value.code == "device_revoked"
+
+        row = await gate._store.get_firmware_device(DEV_DEVICE)
+        assert row["revoked"] == 1
+        assert row["approved"] == 0
+
+    @pytest.mark.asyncio
+    async def test_changed_key_is_refused(self, gate) -> None:
+        await self._register(gate)
+        await gate.approve_device(DEV_DEVICE)
+
+        # The attacker shape: a manifest SIGNED BY A KEY THEY CONTROL,
+        # claiming a device_id they do not own. It is internally
+        # consistent, so it passes verification — which is precisely why
+        # the anchor lifecycle, not the signature check, must refuse it.
+        attacker = signed_manifest_for_key(os.urandom(32), device_id=DEV_DEVICE)
+        with pytest.raises(FirmwareVerificationError) as excinfo:
+            await gate.register_device(
+                device_id=DEV_DEVICE,
+                public_key_b64=attacker["public_key_b64"],
+                posture="development",
+                manifest_message=attacker,
+            )
+        assert excinfo.value.code == "key_change_requires_reprovisioning"
+
+        # The stored anchor is untouched.
+        row = await gate._store.get_firmware_device(DEV_DEVICE)
+        assert row["public_key_b64"] == PUBLIC_KEY_B64
+        assert row["approved"] == 1
+
+    @pytest.mark.asyncio
+    async def test_manifest_change_fails_closed_for_now(self, gate) -> None:
+        # The contract requires a same-key manifest change to become a
+        # PENDING candidate beside the still-active anchor. That state
+        # model is not implemented yet, so this refuses rather than
+        # overwriting the active anchor — the behaviour the contract
+        # forbids, and what this method used to do.
+        await gate.register_device(
+            device_id=SEALED_DEVICE,
+            public_key_b64=PUBLIC_KEY_B64,
+            posture="sealed_flash",
+            manifest_message=manifest_message("manifest_full_sealed"),
+        )
+        await gate.approve_device(SEALED_DEVICE)
+        await gate._store.advance_firmware_freshness(SEALED_DEVICE, boot_id=7, seq=1234)
+        before = await gate._store.get_firmware_device(SEALED_DEVICE)
+
+        with pytest.raises(FirmwareVerificationError) as excinfo:
+            await gate.register_device(
+                device_id=SEALED_DEVICE,
+                public_key_b64=PUBLIC_KEY_B64,
+                posture="sealed_flash",
+                manifest_message=manifest_message("manifest_command_bench"),
+            )
+        assert excinfo.value.code == "manifest_epoch_unsupported"
+
+        # Nothing moved: the active anchor, its approval, and the replay
+        # window are all exactly as they were.
+        after = await gate._store.get_firmware_device(SEALED_DEVICE)
+        assert after["capability_hash"] == before["capability_hash"]
+        assert after["approved"] == 1
+        assert after["last_boot_id"] == 7
+        assert after["last_seq"] == 1234
