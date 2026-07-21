@@ -450,6 +450,41 @@ CREATE TABLE IF NOT EXISTS firmware_fault_events (
 """
 
 
+# Marks a migrated identity whose activation history cannot be
+# reconstructed. Revocation sets `approved = 0`, so a pre-lifecycle
+# revoked row is identical whether it was revoked after being promoted or
+# before ever being promoted. Compared as a constant rather than matched
+# as text, so the marker and its reader cannot drift apart.
+_MIGRATION_ACTIVATION_UNPROVABLE = (
+    "backfilled from a pre-lifecycle revoked registry row; whether this "
+    "anchor was ever promoted cannot be determined, because revocation "
+    "cleared the approval flag"
+)
+
+# The reason written by the first lifecycle release's backfill. Databases
+# upgraded by that release already hold an anchor row, so the backfill
+# skips them; this constant is how the follow-up migration recognises
+# them and completes their activation history.
+_MIGRATION_BACKFILL_REASON = "backfilled from a pre-lifecycle registry row"
+
+# Appended by the follow-up migration when an already-backfilled anchor's
+# activation cannot be safely reconstructed.
+_MIGRATION_ACTIVATION_UNRECONSTRUCTABLE = (
+    "already backfilled by an earlier release; whether this anchor was "
+    "ever promoted cannot be reconstructed from the recorded history"
+)
+
+# Recorded for an approved legacy row. Being approved proves the anchor is
+# active when the migration observes it; it does not prove when the
+# approval happened. `provisioned_at_ms` is when the device was
+# provisioned, which can be long before it was approved, so using it as
+# the start would vouch for evidence produced in between.
+_MIGRATION_ACTIVATION_START_UNKNOWN = (
+    "observed active at the migration boundary; the original approval was "
+    "never recorded, so activation before this point is unknown"
+)
+
+
 def _require_attribution(operation: str, actor: str, reason: str) -> None:
     """Mandatory audit fields for a trust transition.
 
@@ -589,6 +624,10 @@ class StateStore:
                 conn, "firmware_device_registry", col, typedef
             )
         self._backfill_firmware_anchor_epochs_on_conn(conn)
+        # Runs after, and independently: it repairs identities the first
+        # lifecycle release already backfilled, which the call above skips
+        # because they now have an anchor row.
+        self._complete_backfilled_activation_history_on_conn(conn)
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_remote_command_log_sender_rejections
@@ -629,11 +668,16 @@ class StateStore:
             key_epoch_id as _key_epoch_id,
         )
 
+        # The receiver-anchored boundary: the moment this store observed
+        # these rows. Every inferred activation starts here, never at a
+        # timestamp carried over from the old schema.
+        migration_at_ms = now_ms()
+
         rows = conn.execute(
             """
             SELECT r.device_id, r.public_key_b64, r.posture, r.capability_hash,
                    r.manifest_json, r.channel_map_json, r.board_profile,
-                   r.approved, r.revoked, r.provisioned_at_ms
+                   r.approved, r.revoked, r.provisioned_at_ms, r.revoked_at_ms
               FROM firmware_device_registry r
              WHERE NOT EXISTS (
                        SELECT 1 FROM firmware_device_anchors a
@@ -696,10 +740,212 @@ class StateStore:
                 INSERT INTO firmware_anchor_transitions
                     (device_id, transition, from_epoch_id, to_epoch_id,
                      key_epoch_id, actor, reason, occurred_at_ms)
-                VALUES (?, 'registered', NULL, ?, ?, 'migration',
-                        'backfilled from a pre-lifecycle registry row', ?)
+                VALUES (?, 'registered', NULL, ?, ?, 'migration', ?, ?)
                 """,
-                (row["device_id"], aid, kid, row["provisioned_at_ms"]),
+                (
+                    row["device_id"],
+                    aid,
+                    kid,
+                    _MIGRATION_ACTIVATION_UNPROVABLE
+                    if state == "revoked"
+                    else _MIGRATION_BACKFILL_REASON,
+                    row["provisioned_at_ms"],
+                ),
+            )
+
+            # An approved, unrevoked legacy row IS active, so it was
+            # promoted at some point. Recording that is what stops the
+            # derived activation history from reporting the anchor as
+            # never active and losing the attribution for everything it
+            # authorised before the upgrade.
+            #
+            # A REVOKED row is deliberately excluded. Revocation sets
+            # `approved = 0`, so a revoked legacy row reads
+            # `approved=0, revoked=1` whether it was revoked after being
+            # promoted or before ever being promoted. The two are
+            # indistinguishable in a pre-lifecycle database, and inventing
+            # a promotion for both would manufacture authorisation for an
+            # identity that may never have had any — failing open on
+            # exactly the question this history exists to answer. Its
+            # activation history is unprovable, and is recorded as such
+            # rather than guessed.
+            #
+            # The interval opens at the MIGRATION BOUNDARY, not at
+            # `provisioned_at_ms`. Approval proves the anchor is active
+            # when the migration observes it; it says nothing about when
+            # the approval happened, and a device is often provisioned
+            # long before it is approved. Starting the interval at
+            # provisioning would vouch for evidence produced in between,
+            # which is precisely the window nobody can account for.
+            if state == "active":
+                conn.execute(
+                    """
+                    INSERT INTO firmware_anchor_transitions
+                        (device_id, transition, from_epoch_id, to_epoch_id,
+                         key_epoch_id, actor, reason, occurred_at_ms)
+                    VALUES (?, 'promoted', NULL, ?, ?, 'migration', ?, ?)
+                    """,
+                    (
+                        row["device_id"],
+                        aid,
+                        kid,
+                        _MIGRATION_ACTIVATION_START_UNKNOWN,
+                        migration_at_ms,
+                    ),
+                )
+
+    def _complete_backfilled_activation_history_on_conn(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Finish the activation history of rows an earlier release already
+        backfilled.
+
+        The first lifecycle release gave pre-lifecycle rows an anchor and a
+        generic ``registered`` transition. Those identities therefore have
+        an anchor row, so the backfill above — which only fires when there
+        is none — never revisits them, and they would keep an activation
+        history that says an approved device was never active.
+
+        The transition log is append-only, so nothing here rewrites the
+        earlier entry; this appends what was missing.
+
+        Idempotent: each branch first checks whether its entry is already
+        present, so reopening a database adds nothing.
+        """
+        migration_at_ms = now_ms()
+
+        rows = conn.execute(
+            """
+            SELECT a.device_id, a.anchor_epoch_id, a.key_epoch_id, a.state,
+                   a.created_at_ms,
+                   (SELECT MIN(t.id) FROM firmware_anchor_transitions t
+                     WHERE t.device_id = a.device_id
+                       AND t.actor = 'migration'
+                       AND t.reason = ?
+                       AND t.to_epoch_id = a.anchor_epoch_id) AS backfill_id
+              FROM firmware_device_anchors a
+             WHERE backfill_id IS NOT NULL
+            """,
+            (_MIGRATION_BACKFILL_REASON,),
+        ).fetchall()
+
+        for row in rows:
+            aid = row["anchor_epoch_id"]
+
+            already_repaired = conn.execute(
+                """
+                SELECT 1 FROM firmware_anchor_transitions
+                 WHERE device_id = ? AND actor = 'migration' AND reason IN (?, ?)
+                 LIMIT 1
+                """,
+                (
+                    row["device_id"],
+                    _MIGRATION_ACTIVATION_START_UNKNOWN,
+                    _MIGRATION_ACTIVATION_UNRECONSTRUCTABLE,
+                ),
+            ).fetchone()
+            if already_repaired is not None:
+                continue
+
+            # The earlier release wrote the same generic reason whichever
+            # state it chose, so the log does not say directly whether this
+            # anchor was backfilled `active` or `pending`. The first
+            # transition to touch the anchor afterwards does say.
+            #
+            # An anchor backfilled PENDING leaves that state one of two
+            # ways, and both are provable:
+            #   `promoted to=A`    a real, recorded first activation
+            #   `discarded from=A` replaced as a candidate. Only a PENDING
+            #                      anchor is ever discarded, so this proves
+            #                      it was never active.
+            #
+            # An anchor backfilled ACTIVE must first LEAVE active, so its
+            # first subsequent mention carries it in from_epoch_id
+            # (`revoked from=A`, or `promoted from=A` when another anchor
+            # superseded it). Its pre-migration activation was never
+            # recorded, and a later re-promotion does not make that earlier
+            # interval provable.
+            first_after = conn.execute(
+                """
+                SELECT transition, from_epoch_id, to_epoch_id
+                  FROM firmware_anchor_transitions
+                 WHERE device_id = ? AND id > ?
+                   AND (from_epoch_id = ? OR to_epoch_id = ?)
+                 ORDER BY id ASC LIMIT 1
+                """,
+                (row["device_id"], row["backfill_id"], aid, aid),
+            ).fetchone()
+
+            if first_after is not None:
+                if (
+                    first_after["transition"] == "promoted"
+                    and first_after["to_epoch_id"] == aid
+                ):
+                    # Backfilled pending, then genuinely promoted. Nothing
+                    # is missing and nothing is uncertain.
+                    continue
+                if (
+                    first_after["transition"] == "discarded"
+                    and first_after["from_epoch_id"] == aid
+                ):
+                    # Backfilled pending, then replaced as a candidate.
+                    # Provably never active, which is a stronger answer
+                    # than "cannot say" — marking it unprovable would
+                    # discard a fact the log does establish.
+                    continue
+                # Backfilled active. Fall through to the marker below: the
+                # promotion that would have to be reconstructed sits before
+                # entries already in the log, and an append cannot express
+                # that without misordering the interval.
+                row = dict(row)
+                row["state"] = "_was_active_before_migration"
+
+            if row["state"] == "active":
+                # It is active now, so it is known active from this
+                # boundary onward. When it BECAME active is unknown, and
+                # `created_at_ms` is the backfill's own timestamp rather
+                # than an approval, so the interval opens here and not
+                # there. Nothing closes it, so appending cannot misorder.
+                conn.execute(
+                    """
+                    INSERT INTO firmware_anchor_transitions
+                        (device_id, transition, from_epoch_id, to_epoch_id,
+                         key_epoch_id, actor, reason, occurred_at_ms)
+                    VALUES (?, 'promoted', NULL, ?, ?, 'migration', ?, ?)
+                    """,
+                    (
+                        row["device_id"],
+                        aid,
+                        row["key_epoch_id"],
+                        _MIGRATION_ACTIVATION_START_UNKNOWN,
+                        migration_at_ms,
+                    ),
+                )
+                continue
+
+            if row["state"] == "pending":
+                # Provably never promoted: the earlier backfill only chose
+                # `pending` for a row that was never approved.
+                continue
+
+            # `revoked`, an anchor that was active before the migration, or
+            # `superseded`/`discarded` reached by later activity. None of
+            # these can say when — or whether — the anchor was active
+            # before the upgrade, so all fail closed.
+            conn.execute(
+                """
+                INSERT INTO firmware_anchor_transitions
+                    (device_id, transition, from_epoch_id, to_epoch_id,
+                     key_epoch_id, actor, reason, occurred_at_ms)
+                VALUES (?, 'registered', NULL, ?, ?, 'migration', ?, ?)
+                """,
+                (
+                    row["device_id"],
+                    aid,
+                    row["key_epoch_id"],
+                    _MIGRATION_ACTIVATION_UNRECONSTRUCTABLE,
+                    migration_at_ms,
+                ),
             )
 
     def _add_column_if_missing_on_conn(
@@ -2863,6 +3109,183 @@ class StateStore:
             (device_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    async def firmware_anchor_activation_intervals(
+        self, device_id: str, anchor_epoch_id: str
+    ) -> list[dict]:
+        """Every interval during which an anchor epoch was active.
+
+        ori-specs/device-provisioning/v1.md requires implementations to be
+        able to determine, for any anchor epoch, whether it was ever
+        active and over which intervals.
+
+        The anchor's ``state`` column cannot answer this. An anchor that
+        was active, was superseded, and has since been re-registered
+        reads ``pending`` today, because an anchor epoch has exactly one
+        record whose state is its *current* state. Evidence produced
+        while it was active is still legitimately attributed to it, so a
+        consumer reading only the current state would treat correctly
+        signed history as never having been authorised.
+
+        The transition log is the append-only record, and this derives
+        the intervals from it rather than storing them, so there is one
+        source of truth.
+
+        Ordering is receiver-anchored: ``seq`` is the log's own append
+        order and ``at_ms`` is assigned by this store when the transition
+        is recorded. Device wall-clock time is never consulted — a device
+        supplying its own timestamps could otherwise place its evidence
+        inside an interval when its anchor was active, which is the very
+        question being decided.
+
+        An interval with ``deactivated_seq`` of ``None`` is still open:
+        the anchor is active now.
+        """
+        return await self._run_read(
+            self._firmware_anchor_activation_intervals_sync,
+            device_id,
+            anchor_epoch_id,
+        )
+
+    def _firmware_anchor_activation_intervals_sync(
+        self, conn: sqlite3.Connection, device_id: str, anchor_epoch_id: str
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT id, transition, from_epoch_id, to_epoch_id, occurred_at_ms
+              FROM firmware_anchor_transitions
+             WHERE device_id = ?
+             ORDER BY id ASC
+            """,
+            (device_id,),
+        ).fetchall()
+
+        intervals: list[dict] = []
+        open_interval: dict | None = None
+
+        for r in rows:
+            # Promotion is the only thing that makes an anchor active, so
+            # it is the only thing that opens an interval.
+            if r["transition"] == "promoted" and r["to_epoch_id"] == anchor_epoch_id:
+                if open_interval is None:
+                    open_interval = {
+                        "activated_seq": int(r["id"]),
+                        "activated_at_ms": int(r["occurred_at_ms"]),
+                        "deactivated_seq": None,
+                        "deactivated_at_ms": None,
+                    }
+                    intervals.append(open_interval)
+                continue
+
+            # Two things end an interval: another anchor being promoted
+            # over this one, and the identity being revoked.
+            #
+            # `reprovisioned` deliberately does NOT, even though it also
+            # carries this anchor in from_epoch_id: re-provisioning stores
+            # the new key as PENDING and leaves the current anchor active
+            # until it is promoted. Treating it as a deactivation would
+            # report a gap in which the device was in fact still trusted.
+            ends = r["transition"] in ("promoted", "revoked")
+            if ends and r["from_epoch_id"] == anchor_epoch_id:
+                if open_interval is not None:
+                    open_interval["deactivated_seq"] = int(r["id"])
+                    open_interval["deactivated_at_ms"] = int(r["occurred_at_ms"])
+                    open_interval = None
+
+        return intervals
+
+    async def firmware_anchor_was_active_at(
+        self, device_id: str, anchor_epoch_id: str, *, at_ms: int
+    ) -> bool:
+        """Whether this anchor was *known* active at a receiver-anchored
+        instant.
+
+        ``at_ms`` MUST be a time this receiver assigned — its record of
+        when evidence arrived, or a position derived from the Verity
+        chain. It must never be a device-reported timestamp: a device
+        choosing its own would place its evidence inside an interval when
+        its anchor was active, which is the question being decided.
+
+        Returns ``False`` outside every known interval. For a migrated
+        identity that means anything before the migration boundary is
+        refused, because when its approval originally happened was never
+        recorded — see ``firmware_activation_history_is_provable``.
+        """
+        intervals = await self.firmware_anchor_activation_intervals(
+            device_id, anchor_epoch_id
+        )
+        for iv in intervals:
+            if at_ms < iv["activated_at_ms"]:
+                continue
+            if iv["deactivated_at_ms"] is None or at_ms < iv["deactivated_at_ms"]:
+                return True
+        return False
+
+    async def firmware_activation_history_is_provable(self, device_id: str) -> bool:
+        """Whether this identity's activation history can be trusted as
+        complete.
+
+        ``False`` for an identity migrated from a pre-lifecycle database
+        while revoked. Revocation sets ``approved = 0``, so such a row is
+        identical whether it was revoked after being promoted or before
+        ever being promoted, and the migration refuses to guess.
+
+        Also ``False`` for an identity this store has never heard of.
+        Absence of a marker is not evidence of a complete history when
+        there is no history at all, and a caller asking about an unknown
+        device must not be told its records are trustworthy.
+
+        Callers deciding historical authorisation MUST treat ``False`` as
+        "unknown", not as "never active", and fail closed. An empty
+        interval list means *provably never promoted* only when this
+        returns ``True``.
+        """
+        return await self._run_read(
+            self._firmware_activation_history_is_provable_sync, device_id
+        )
+
+    def _firmware_activation_history_is_provable_sync(
+        self, conn: sqlite3.Connection, device_id: str
+    ) -> bool:
+        known = conn.execute(
+            "SELECT 1 FROM firmware_device_registry WHERE device_id = ? LIMIT 1",
+            (device_id,),
+        ).fetchone()
+        if known is None:
+            return False
+
+        row = conn.execute(
+            """
+            SELECT 1 FROM firmware_anchor_transitions
+             WHERE device_id = ? AND actor = 'migration' AND reason IN (?, ?, ?)
+             LIMIT 1
+            """,
+            (
+                device_id,
+                _MIGRATION_ACTIVATION_UNPROVABLE,
+                _MIGRATION_ACTIVATION_UNRECONSTRUCTABLE,
+                _MIGRATION_ACTIVATION_START_UNKNOWN,
+            ),
+        ).fetchone()
+        return row is None
+
+    async def firmware_anchor_was_ever_active(
+        self, device_id: str, anchor_epoch_id: str
+    ) -> bool:
+        """Whether this anchor epoch is *known* to have been active.
+
+        Distinct from ``state == 'active'``, which is only true right
+        now, and from ``state == 'superseded'``, which a re-registration
+        clears. Evidence resolution needs this question, not that one.
+
+        ``False`` means "no recorded activation", which is not the same
+        as "never active" for an identity migrated while revoked — see
+        ``firmware_activation_history_is_provable``.
+        """
+        intervals = await self.firmware_anchor_activation_intervals(
+            device_id, anchor_epoch_id
+        )
+        return bool(intervals)
 
     async def get_firmware_device(self, device_id: str) -> dict | None:
         return await self._run_read(self._get_firmware_device_sync, device_id)
