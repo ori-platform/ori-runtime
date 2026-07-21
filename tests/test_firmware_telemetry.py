@@ -266,6 +266,20 @@ class TestGoldenVectors:
             )
         assert excinfo.value.code == "invalid_envelope"
 
+    @pytest.mark.parametrize("action", ["", "relay_toggle", "tier_d_cutoff"])
+    def test_manifest_rejects_action_outside_closed_vocabulary(
+        self, action: str
+    ) -> None:
+        message = manifest_message("manifest_full_sealed")
+        message["manifest"]["actions"][0]["action"] = action
+        with pytest.raises(FirmwareVerificationError) as excinfo:
+            verify_manifest_message(
+                message,
+                anchor_device_id=SEALED_DEVICE,
+                anchor_public_key_b64=PUBLIC_KEY_B64,
+            )
+        assert excinfo.value.code == "invalid_envelope"
+
     def test_tampered_envelope_rejected(self) -> None:
         message = telemetry_message("telemetry_single_reading")
         message["envelope"]["readings"][0]["value"] = 9.21
@@ -413,7 +427,9 @@ class TestGoldenFaultVectors:
     @pytest.mark.parametrize("field", ["subject", "detail"])
     def test_token_at_max_length_accepted(self, field: str) -> None:
         result = verify_fault_message(
-            signed_fault_message(**{field: "x" * FAULT_TOKEN_MAX_LEN}),
+            signed_fault_message(
+                code="sensor_fault", **{field: "x" * FAULT_TOKEN_MAX_LEN}
+            ),
             anchor_device_id=SEALED_DEVICE,
             anchor_public_key_b64=PUBLIC_KEY_B64,
             anchor_posture="sealed_flash",
@@ -600,6 +616,44 @@ class TestFailClosed:
         assert result.code == "command_rejected"
         assert result.subject == "relay0"
         assert result.detail == "replayed"
+
+    @pytest.mark.parametrize(
+        "detail",
+        [
+            "malformed",
+            "wrong_device",
+            "bad_signature",
+            "replayed",
+            "capability_mismatch",
+            "unknown_action",
+            "storage_failure",
+        ],
+    )
+    def test_command_rejected_fault_accepts_closed_verdicts(self, detail: str) -> None:
+        result = verify_fault_message(
+            signed_fault_message(detail=detail),
+            anchor_device_id=SEALED_DEVICE,
+            anchor_public_key_b64=PUBLIC_KEY_B64,
+            anchor_posture="sealed_flash",
+            accepted_manifest_hash=SEALED_HASH,
+            last_boot_id=0,
+            last_seq=0,
+        )
+        assert result.accepted
+        assert result.detail == detail
+
+    @pytest.mark.parametrize("detail", ["", "invented_verdict"])
+    def test_command_rejected_fault_rejects_unknown_verdict(self, detail: str) -> None:
+        result = verify_fault_message(
+            signed_fault_message(detail=detail),
+            anchor_device_id=SEALED_DEVICE,
+            anchor_public_key_b64=PUBLIC_KEY_B64,
+            anchor_posture="sealed_flash",
+            accepted_manifest_hash=SEALED_HASH,
+            last_boot_id=0,
+            last_seq=0,
+        )
+        assert result.error_code == "invalid_envelope"
 
     def test_ingress_degraded_fault_verifies_with_each_detail(self) -> None:
         # firmware-telemetry/v1: ingress loss is never silent. Each
