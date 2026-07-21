@@ -30,6 +30,9 @@ from typing import Any
 
 from ori.network.events import SensorReading
 from ori.security.firmware_telemetry import (
+    ERR_DEVICE_REVOKED,
+    ERR_KEY_CHANGE_REQUIRES_REPROVISIONING,
+    ERR_MANIFEST_EPOCH_UNSUPPORTED,
     ERR_SEQUENCE_REPLAY,
     GRADE_REJECTED,
     FirmwareFaultVerification,
@@ -88,7 +91,7 @@ class FirmwareTelemetryGate:
                 "manifest posture does not match provisioning posture",
             )
         channel_map = manifest_channel_map(manifest)
-        await self._store.upsert_firmware_device_anchor(
+        outcome = await self._store.upsert_firmware_device_anchor(
             device_id=device_id,
             public_key_b64=public_key_b64,
             posture=posture,
@@ -103,11 +106,43 @@ class FirmwareTelemetryGate:
                 allow_nan=False,
             ),
         )
-        logger.info(
-            "firmware device %s provisioned (posture=%s, awaiting approval)",
-            device_id,
-            posture,
-        )
+
+        # ori-specs/device-provisioning/v1.md. Registration may refuse; it
+        # never silently overwrites an anchor or clears a revocation.
+        if outcome == "refused_revoked":
+            raise FirmwareVerificationError(
+                ERR_DEVICE_REVOKED,
+                f"device {device_id!r} is revoked; reinstatement is an explicit "
+                "operation, never a side effect of registration",
+            )
+        if outcome == "refused_manifest_epoch_unsupported":
+            raise FirmwareVerificationError(
+                ERR_MANIFEST_EPOCH_UNSUPPORTED,
+                f"device {device_id!r} published a new capability hash under its "
+                "existing key. The lifecycle requires this to become a pending "
+                "candidate beside the active anchor; that state model is not "
+                "implemented yet, so it is refused rather than overwriting the "
+                "active anchor.",
+            )
+        if outcome == "refused_key_change":
+            raise FirmwareVerificationError(
+                ERR_KEY_CHANGE_REQUIRES_REPROVISIONING,
+                f"device {device_id!r} presented a different public key; a key "
+                "change requires an explicit re-provisioning transaction with "
+                "independent identity confirmation",
+            )
+
+        if outcome == "unchanged":
+            logger.debug(
+                "firmware device %s re-published an identical anchor (no-op)",
+                device_id,
+            )
+        else:
+            logger.info(
+                "firmware device %s provisioned (posture=%s, awaiting approval)",
+                device_id,
+                posture,
+            )
         return manifest_hash
 
     async def approve_device(self, device_id: str) -> bool:

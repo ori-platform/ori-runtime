@@ -186,9 +186,7 @@ def _load_manifest_message(path: str) -> dict[str, Any]:
     return message
 
 
-async def _register(
-    db_path: str, manifest_path: str, allow_revoked: bool = False
-) -> tuple[str, str]:
+async def _register(db_path: str, manifest_path: str) -> tuple[str, str]:
     from ori.security.firmware_ingest import FirmwareTelemetryGate
 
     message = _load_manifest_message(manifest_path)
@@ -203,18 +201,10 @@ async def _register(
 
     store = await _open_store(db_path)
     try:
-        # Re-registering silently clears `revoked` in the store's upsert,
-        # so a revoked device could be quietly re-armed by running this
-        # command again. Refuse unless the operator says so explicitly —
-        # un-revoking is a deliberate act, not a side effect of
-        # re-registration. (Tracked upstream; see the CLI docstring.)
-        existing = await store.get_firmware_device(device_id)
-        if existing is not None and existing.get("revoked") and not allow_revoked:
-            raise ProvisionerError(
-                f"device {device_id!r} is REVOKED. Re-registering would clear that "
-                "revocation. If you genuinely intend to re-provision this device, "
-                "pass --allow-revoked and record why."
-            )
+        # The store refuses a revoked identity and a changed key outright
+        # (ori-specs/device-provisioning/v1.md), so no flag here could
+        # override it. Returning a revoked identity to service is
+        # reinstatement: an explicit, audited operation.
         gate = FirmwareTelemetryGate(store)
         capability_hash = await gate.register_device(
             device_id=device_id,
@@ -231,9 +221,7 @@ async def _register(
 
 
 def cmd_register(args: argparse.Namespace) -> int:
-    device_pub, capability_hash = asyncio.run(
-        _register(args.db, args.manifest, allow_revoked=args.allow_revoked)
-    )
+    device_pub, capability_hash = asyncio.run(_register(args.db, args.manifest))
     print("registered UNAPPROVED — telemetry is not accepted until approval")
     print(f"  capability hash : {capability_hash}")
     print(f"  device key (b64): {device_pub}")
@@ -412,11 +400,6 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("register", help="store a device anchor, unapproved")
     p.add_argument("--db", required=True)
     p.add_argument("--manifest", required=True)
-    p.add_argument(
-        "--allow-revoked",
-        action="store_true",
-        help="re-register a REVOKED device, clearing its revocation (deliberate act)",
-    )
     p.set_defaults(func=cmd_register)
 
     p = sub.add_parser("approve", help="record explicit operator approval")

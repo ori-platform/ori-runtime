@@ -2375,11 +2375,34 @@ class StateStore:
         channel_map_json: str,
         board_profile: str = "",
         provisioned_at_ms: int | None = None,
-    ) -> None:
-        """Store (or replace) a provisioning anchor. Re-provisioning a
-        device resets approval and freshness state: a new anchor is a
-        new key epoch."""
-        await self._run_write(
+    ) -> str:
+        """Register a provisioning anchor, per the lifecycle in
+        ori-specs/device-provisioning/v1.md.
+
+        Returns an outcome code rather than silently overwriting:
+
+        ``registered``
+            No prior anchor; stored unapproved.
+        ``unchanged``
+            The anchor already matches exactly. Idempotent no-op — nothing
+            is touched, including approval and freshness.
+        ``refused_manifest_epoch_unsupported``
+            Same key, new capability hash. The contract requires this to
+            be stored as a PENDING candidate beside the still-active
+            anchor; that state model does not exist yet, so this fails
+            closed rather than overwriting the active anchor.
+        ``refused_revoked``
+            The identity is revoked. Revocation belongs to the identity
+            and is never cleared by registration.
+        ``refused_key_change``
+            The device key differs. A changed key through ordinary
+            registration is indistinguishable from a takeover attempt and
+            requires an explicit re-provisioning transaction.
+
+        The decision is made inside the write transaction so a concurrent
+        revocation cannot be raced.
+        """
+        return await self._run_write(
             self._upsert_firmware_device_anchor_sync,
             device_id,
             public_key_b64,
@@ -2391,7 +2414,7 @@ class StateStore:
             provisioned_at_ms if provisioned_at_ms is not None else now_ms(),
         )
 
-    def _upsert_firmware_device_anchor_sync(
+    def _upsert_firmware_device_anchor_sync(  # noqa: PLR0913
         self,
         device_id: str,
         public_key_b64: str,
@@ -2401,41 +2424,75 @@ class StateStore:
         channel_map_json: str,
         board_profile: str,
         provisioned_at_ms: int,
-    ) -> None:
+    ) -> str:
         assert self._conn is not None
-        self._conn.execute(
+        # Decide inside the transaction: a read-then-write in the caller
+        # could be raced by a concurrent revocation.
+        row = self._conn.execute(
             """
-            INSERT INTO firmware_device_registry
-                (device_id, public_key_b64, posture, capability_hash, manifest_json,
-                 channel_map_json, board_profile,
-                 approved, provisioned_at_ms, last_boot_id, last_seq, revoked, revoked_at_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, NULL)
-            ON CONFLICT(device_id) DO UPDATE SET
-                public_key_b64 = excluded.public_key_b64,
-                posture = excluded.posture,
-                capability_hash = excluded.capability_hash,
-                manifest_json = excluded.manifest_json,
-                channel_map_json = excluded.channel_map_json,
-                board_profile = excluded.board_profile,
-                approved = 0,
-                provisioned_at_ms = excluded.provisioned_at_ms,
-                last_boot_id = 0,
-                last_seq = 0,
-                revoked = 0,
-                revoked_at_ms = NULL
+            SELECT public_key_b64, posture, capability_hash, revoked
+              FROM firmware_device_registry
+             WHERE device_id = ?
             """,
-            (
-                device_id,
-                public_key_b64,
-                posture,
-                capability_hash,
-                manifest_json,
-                channel_map_json,
-                board_profile,
-                provisioned_at_ms,
-            ),
-        )
-        self._conn.commit()
+            (device_id,),
+        ).fetchone()
+
+        if row is None:
+            self._conn.execute(
+                """
+                INSERT INTO firmware_device_registry
+                    (device_id, public_key_b64, posture, capability_hash,
+                     manifest_json, channel_map_json, board_profile,
+                     approved, provisioned_at_ms, last_boot_id, last_seq,
+                     revoked, revoked_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, NULL)
+                """,
+                (
+                    device_id,
+                    public_key_b64,
+                    posture,
+                    capability_hash,
+                    manifest_json,
+                    channel_map_json,
+                    board_profile,
+                    provisioned_at_ms,
+                ),
+            )
+            self._conn.commit()
+            return "registered"
+
+        # Revocation belongs to the identity. It is never cleared as a
+        # side effect of a device re-publishing its manifest.
+        if row["revoked"]:
+            return "refused_revoked"
+
+        # A changed key through ordinary registration is indistinguishable
+        # from an attacker presenting a key they control for an identity
+        # they do not own: the manifest is self-signed, so verifying it
+        # against the key inside it proves consistency, never provenance.
+        if row["public_key_b64"] != public_key_b64:
+            return "refused_key_change"
+
+        if row["posture"] == posture and row["capability_hash"] == capability_hash:
+            # Exact match: idempotent. Touch nothing — not approval, not
+            # freshness, not provisioned_at_ms. Re-publishing a manifest
+            # is not an event.
+            return "unchanged"
+
+        # Same key, new manifest (or posture).
+        #
+        # The contract (ori-specs/device-provisioning/v1.md) requires this
+        # to become a PENDING candidate while the active anchor keeps
+        # operating — which needs the anchor state model and append-only
+        # history that this store does not have yet.
+        #
+        # Until it does, this FAILS CLOSED. Overwriting the active anchor
+        # and clearing approval, as this method used to, is the behaviour
+        # the contract forbids: it lets a device replace its own accepted
+        # capability surface by publishing. Refusing is the honest
+        # interim: an operator can still revoke and re-provision
+        # deliberately, and nothing is silently accepted.
+        return "refused_manifest_epoch_unsupported"
 
     async def get_firmware_device(self, device_id: str) -> dict | None:
         return await self._run_read(self._get_firmware_device_sync, device_id)

@@ -91,6 +91,13 @@ ERR_INVALID_ENVELOPE = "invalid_envelope"
 ERR_UNSUPPORTED_ALG = "unsupported_alg"
 ERR_DEVICE_REVOKED = "device_revoked"
 ERR_DEVICE_NOT_APPROVED = "device_not_approved"
+# ori-specs/device-provisioning/v1.md: a changed key may never arrive
+# through ordinary registration.
+ERR_KEY_CHANGE_REQUIRES_REPROVISIONING = "key_change_requires_reprovisioning"
+# Interim: the pending-anchor state model is not implemented yet, so a
+# same-key manifest change fails closed instead of overwriting the active
+# anchor. Removed when anchor epochs and pending state land.
+ERR_MANIFEST_EPOCH_UNSUPPORTED = "manifest_epoch_unsupported"
 
 FIRMWARE_FAULT_CODES = frozenset(
     {

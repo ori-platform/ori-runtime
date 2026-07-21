@@ -104,6 +104,7 @@ def bench(tmp_path):
         "manifest": str(manifest_path),
         "message": message,
         "device_key": message["manifest"]["public_key_b64"],
+        "device_seed": device_seed,
         "auth_seed": str(tmp_path / "provisioner_seed.b64"),
         "rt_seed": str(tmp_path / "runtime_command_seed.b64"),
         "out": str(tmp_path / "approval.json"),
@@ -277,10 +278,11 @@ class TestContractDiagnostic:
         assert "reproduced byte-for-byte" in capsys.readouterr().out
 
 
-class TestRevocationIsNotSilentlyCleared:
-    """The store's anchor upsert resets `revoked` to 0. Re-registering a
-    revoked device would therefore re-arm it silently, so the CLI
-    requires the operator to say so explicitly."""
+class TestRevocationSurvivesRegistration:
+    """ori-specs/device-provisioning/v1.md: revocation belongs to the
+    identity. The store refuses registration of a revoked identity, so no
+    CLI flag can clear it — returning a device to service is reinstatement,
+    an explicit operation."""
 
     def _revoke(self, bench) -> None:
         import asyncio
@@ -300,24 +302,22 @@ class TestRevocationIsNotSilentlyCleared:
         assert _register(bench) == 0
         assert _approve(bench) == 0
         self._revoke(bench)
-        # Without this guard the upsert would clear the revocation and a
-        # subsequent approve+publish would re-arm a revoked device.
+        # Registration must not re-arm a revoked identity, and there is no
+        # flag that would let it.
         assert _register(bench) == 2
         assert _publish(bench) == 2
 
-    def test_reregistration_is_possible_when_explicit(self, bench) -> None:
+    def test_revocation_survives_a_manifest_change(self, bench) -> None:
         assert _register(bench) == 0
+        assert _approve(bench) == 0
         self._revoke(bench)
-        rc = main(
-            [
-                "register",
-                "--db",
-                bench["db"],
-                "--manifest",
-                bench["manifest"],
-                "--allow-revoked",
-            ]
-        )
-        assert rc == 0
-        # Still unapproved: clearing revocation does not grant authority.
+
+        # RE-SIGNED with the device's own key, so the manifest is valid and
+        # the refusal comes from the anchor lifecycle rather than from
+        # signature verification. An unsigned edit would be rejected before
+        # revocation was ever consulted, and would prove nothing.
+        changed = signed_manifest(bench["device_seed"], firmware_version="0.2.0")
+        Path(bench["manifest"]).write_text(json.dumps(changed))
+
+        assert _register(bench) == 2
         assert _publish(bench) == 2
