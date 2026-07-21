@@ -94,6 +94,11 @@ ERR_DEVICE_NOT_APPROVED = "device_not_approved"
 # ori-specs/device-provisioning/v1.md: a changed key may never arrive
 # through ordinary registration.
 ERR_KEY_CHANGE_REQUIRES_REPROVISIONING = "key_change_requires_reprovisioning"
+# Re-provisioning must actually replace the key. Submitting the current key
+# changes nothing, and returning to a previously used one would make
+# rotation reversible by whoever still holds the old key.
+ERR_SAME_KEY_NOT_A_ROTATION = "same_key_not_a_rotation"
+ERR_KEY_EPOCH_REUSED = "key_epoch_reused"
 
 
 def key_epoch_id(*, device_id: str, public_key_b64: str) -> str:

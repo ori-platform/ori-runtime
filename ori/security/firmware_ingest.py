@@ -32,7 +32,10 @@ from ori.network.events import SensorReading
 from ori.security.firmware_telemetry import (
     ERR_DEVICE_REVOKED,
     ERR_KEY_CHANGE_REQUIRES_REPROVISIONING,
+    ERR_KEY_EPOCH_REUSED,
+    ERR_SAME_KEY_NOT_A_ROTATION,
     ERR_SEQUENCE_REPLAY,
+    ERR_UNKNOWN_DEVICE,
     GRADE_REJECTED,
     FirmwareFaultVerification,
     FirmwareVerificationError,
@@ -162,6 +165,101 @@ class FirmwareTelemetryGate:
                 device_id, actor=actor, reason=reason
             )
         )
+
+    async def reinstate_device(
+        self, device_id: str, *, actor: str, reason: str
+    ) -> bool:
+        """Return a revoked identity to service.
+
+        Clears the revoked flag and returns the retained anchor to
+        **pending**. It activates nothing: promotion stays a separate,
+        separately audited act.
+        """
+        return bool(
+            await self._store.reinstate_firmware_device(
+                device_id, actor=actor, reason=reason
+            )
+        )
+
+    async def reprovision_device(
+        self,
+        *,
+        device_id: str,
+        public_key_b64: str,
+        posture: str,
+        manifest_message: dict[str, Any],
+        actor: str,
+        reason: str,
+        board_profile: str = "",
+    ) -> str:
+        """Accept a NEW key for an existing identity.
+
+        Ordinary registration refuses a changed key because a self-signed
+        manifest proves consistency, never provenance. This is the
+        deliberate path, and the caller is responsible for having
+        confirmed the device identity independently of the manifest.
+
+        Stores the new-key anchor as pending; the previously active anchor
+        stays active until promotion.
+        """
+        manifest_hash = verify_manifest_message(
+            manifest_message,
+            anchor_device_id=device_id,
+            anchor_public_key_b64=public_key_b64,
+        )
+        manifest = manifest_message["manifest"]
+        if manifest.get("posture") != posture:
+            raise FirmwareVerificationError(
+                "invalid_posture",
+                "manifest posture does not match provisioning posture",
+            )
+        channel_map = manifest_channel_map(manifest)
+        outcome = await self._store.reprovision_firmware_device(
+            device_id=device_id,
+            public_key_b64=public_key_b64,
+            posture=posture,
+            capability_hash=manifest_hash,
+            manifest_json=canonical_json_bytes(manifest).decode("utf-8"),
+            channel_map_json=json.dumps(
+                channel_map,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ),
+            board_profile=str(manifest.get("board_profile", board_profile)),
+            actor=actor,
+            reason=reason,
+        )
+        if outcome == "unknown_device":
+            raise FirmwareVerificationError(
+                ERR_UNKNOWN_DEVICE, f"cannot re-provision unknown device {device_id!r}"
+            )
+        if outcome == "revoked":
+            raise FirmwareVerificationError(
+                ERR_DEVICE_REVOKED,
+                f"device {device_id!r} is revoked; reinstate it first, or it "
+                "would return to service without anyone saying so",
+            )
+        if outcome == "refused_same_key":
+            raise FirmwareVerificationError(
+                ERR_SAME_KEY_NOT_A_ROTATION,
+                f"device {device_id!r} submitted its CURRENT key; re-provisioning "
+                "replaces a key, and accepting this would move the active anchor "
+                "back to pending while the registry still trusted it",
+            )
+        if outcome == "refused_key_reuse":
+            raise FirmwareVerificationError(
+                ERR_KEY_EPOCH_REUSED,
+                f"device {device_id!r} has used that key before. An old key may "
+                "be the one rotated away from because it was compromised, so "
+                "returning to it would make rotation reversible",
+            )
+        logger.info(
+            "firmware device %s re-provisioned with a new key; pending promotion",
+            device_id,
+        )
+        return manifest_hash
 
     async def ingest(
         self,

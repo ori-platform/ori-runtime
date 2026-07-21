@@ -407,3 +407,121 @@ class TestActorIsAuthenticated:
         actor = authenticated_actor()
         assert actor.startswith("uid=")
         assert ":" not in actor
+
+
+class TestPromotionConfirmsTheAnchorBeingActivated:
+    """`approve` must confirm the key of the anchor about to be ACTIVATED,
+    not the one currently active. After re-provisioning they differ, and
+    checking the active key made a re-keyed device impossible to promote."""
+
+    def _manifest_for(self, bench, seed, path):
+        message = signed_manifest(seed)
+        Path(path).write_text(json.dumps(message))
+        return message["manifest"]["public_key_b64"]
+
+    def test_reprovisioned_key_can_be_promoted(self, bench, tmp_path) -> None:
+        import os
+
+        assert _register(bench) == 0
+        assert _approve(bench) == 0
+
+        new_seed = os.urandom(32)
+        new_manifest = tmp_path / "m2.json"
+        new_key = self._manifest_for(bench, new_seed, new_manifest)
+
+        assert (
+            main(
+                [
+                    "reprovision",
+                    "--db",
+                    bench["db"],
+                    "--manifest",
+                    str(new_manifest),
+                    "--confirm-device-key",
+                    new_key,
+                    "--reason",
+                    "device re-keyed",
+                ]
+            )
+            == 0
+        )
+        # Confirming the NEW key promotes it.
+        assert _approve(bench, key=new_key) == 0
+
+    def test_confirming_the_superseded_key_is_refused(self, bench, tmp_path) -> None:
+        import os
+
+        assert _register(bench) == 0
+        assert _approve(bench) == 0
+        new_seed = os.urandom(32)
+        new_manifest = tmp_path / "m3.json"
+        new_key = self._manifest_for(bench, new_seed, new_manifest)
+        main(
+            [
+                "reprovision",
+                "--db",
+                bench["db"],
+                "--manifest",
+                str(new_manifest),
+                "--confirm-device-key",
+                new_key,
+                "--reason",
+                "re-keyed",
+            ]
+        )
+        # The old key is no longer the one being activated.
+        assert _approve(bench, key=bench["device_key"]) == 2
+
+    def test_reprovision_requires_the_key_to_match_the_manifest(
+        self, bench, tmp_path
+    ) -> None:
+        import os
+
+        assert _register(bench) == 0
+        assert _approve(bench) == 0
+        new_manifest = tmp_path / "m4.json"
+        self._manifest_for(bench, os.urandom(32), new_manifest)
+        # Confirming a key that is not the one in the manifest defeats the
+        # whole point of independent confirmation.
+        assert (
+            main(
+                [
+                    "reprovision",
+                    "--db",
+                    bench["db"],
+                    "--manifest",
+                    str(new_manifest),
+                    "--confirm-device-key",
+                    _pub_b64(os.urandom(32)),
+                    "--reason",
+                    "x",
+                ]
+            )
+            == 2
+        )
+
+
+class TestBackfillDoesNotFireOnNewDevices:
+    def test_reopening_does_not_add_a_migration_transition(self, bench) -> None:
+        """A freshly registered device has an empty anchor_epoch_id by
+        design — nothing is promoted yet. Detecting legacy rows by that
+        emptiness made the backfill fire on every new device and write a
+        spurious 'migration' audit row."""
+        import asyncio
+
+        from ori.state.store import StateStore
+
+        assert _register(bench) == 0
+
+        async def transitions():
+            store = StateStore(db_path=bench["db"])
+            await store.open()  # runs migrations again
+            rows = await store.list_firmware_anchor_transitions("ori-fw-bench0001")
+            await store.close()
+            return rows
+
+        first = asyncio.run(transitions())
+        second = asyncio.run(transitions())
+        assert len(first) == len(second) == 1
+        assert second[0]["actor"] == ""
+        assert "migration" not in {t["actor"] for t in second}
