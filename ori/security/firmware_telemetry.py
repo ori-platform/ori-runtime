@@ -94,10 +94,58 @@ ERR_DEVICE_NOT_APPROVED = "device_not_approved"
 # ori-specs/device-provisioning/v1.md: a changed key may never arrive
 # through ordinary registration.
 ERR_KEY_CHANGE_REQUIRES_REPROVISIONING = "key_change_requires_reprovisioning"
-# Interim: the pending-anchor state model is not implemented yet, so a
-# same-key manifest change fails closed instead of overwriting the active
-# anchor. Removed when anchor epochs and pending state land.
-ERR_MANIFEST_EPOCH_UNSUPPORTED = "manifest_epoch_unsupported"
+
+
+def key_epoch_id(*, device_id: str, public_key_b64: str) -> str:
+    """The epoch identifier for a device identity and its key.
+
+    ori-specs/device-provisioning/v1.md. Deterministically derived so two
+    independent stores compute the same value without coordinating —
+    that is what makes "both accepted the same epoch" checkable rather
+    than asserted. Changes ONLY when the device key changes, which is why
+    it is the epoch telemetry replay state is scoped to.
+    """
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            canonical_json_bytes(
+                {"device_id": device_id, "public_key_b64": public_key_b64, "v": 1}
+            )
+        ).hexdigest()
+    )
+
+
+def anchor_epoch_id(
+    *,
+    device_id: str,
+    public_key_b64: str,
+    posture: str,
+    capability_hash: str,
+) -> str:
+    """The epoch identifier for a whole anchor.
+
+    Changes when the key, posture, or capability hash changes. Posture is
+    included because a device that becomes ``sealed_flash`` is materially
+    a different trust proposition from the same device in
+    ``development``, even with an unchanged key and manifest.
+
+    This is the value cross-store agreement is expressed in.
+    """
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "capability_hash": capability_hash,
+                    "device_id": device_id,
+                    "posture": posture,
+                    "public_key_b64": public_key_b64,
+                    "v": 1,
+                }
+            )
+        ).hexdigest()
+    )
+
 
 FIRMWARE_FAULT_CODES = frozenset(
     {

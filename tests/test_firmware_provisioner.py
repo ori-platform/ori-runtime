@@ -144,6 +144,8 @@ def _approve(bench, key=None):
             "ori-fw-bench0001",
             "--confirm-device-key",
             key if key is not None else bench["device_key"],
+            "--reason",
+            "bench provisioning",
         ]
     )
 
@@ -179,7 +181,9 @@ class TestTransactionControls:
         async def revoke():
             store = StateStore(db_path=bench["db"])
             await store.open()
-            await FirmwareTelemetryGate(store).revoke_device("ori-fw-bench0001")
+            await FirmwareTelemetryGate(store).revoke_device(
+                "ori-fw-bench0001", actor="test-operator", reason="test"
+            )
             await store.close()
 
         asyncio.run(revoke())
@@ -293,7 +297,9 @@ class TestRevocationSurvivesRegistration:
         async def go():
             store = StateStore(db_path=bench["db"])
             await store.open()
-            await FirmwareTelemetryGate(store).revoke_device("ori-fw-bench0001")
+            await FirmwareTelemetryGate(store).revoke_device(
+                "ori-fw-bench0001", actor="test-operator", reason="test"
+            )
             await store.close()
 
         asyncio.run(go())
@@ -321,3 +327,83 @@ class TestRevocationSurvivesRegistration:
 
         assert _register(bench) == 2
         assert _publish(bench) == 2
+
+
+class TestActorIsAuthenticated:
+    """The contract requires the *authenticated* operator. A name typed on
+    the command line is an assertion; anyone can type any name."""
+
+    def test_actor_is_derived_from_the_os_principal(self) -> None:
+        from ori.firmware_provisioner import authenticated_actor
+
+        actor = authenticated_actor()
+        assert actor.startswith("uid=")
+        assert actor.strip() == actor and actor != ""
+
+    def test_actor_ignores_caller_controlled_environment(self, monkeypatch) -> None:
+        # getpass.getuser() trusts LOGNAME/USER, so it would be spoofable
+        # by the very caller being attributed. The real UID is not.
+        from ori.firmware_provisioner import authenticated_actor
+
+        before = authenticated_actor()
+        monkeypatch.setenv("USER", "someone-else")
+        monkeypatch.setenv("LOGNAME", "someone-else")
+        assert authenticated_actor() == before
+        assert "someone-else" not in authenticated_actor()
+
+    def test_label_annotates_but_never_replaces_the_principal(self) -> None:
+        from ori.firmware_provisioner import authenticated_actor
+
+        principal = authenticated_actor()
+        labelled = authenticated_actor("bench operator")
+        assert labelled.startswith(principal)
+        assert "bench operator" in labelled
+
+    def test_approve_records_the_authenticated_actor(self, bench) -> None:
+        import asyncio
+
+        from ori.firmware_provisioner import authenticated_actor
+        from ori.state.store import StateStore
+
+        assert _register(bench) == 0
+        assert _approve(bench) == 0
+
+        async def transitions():
+            store = StateStore(db_path=bench["db"])
+            await store.open()
+            rows = await store.list_firmware_anchor_transitions("ori-fw-bench0001")
+            await store.close()
+            return rows
+
+        promoted = [
+            t for t in asyncio.run(transitions()) if t["transition"] == "promoted"
+        ]
+        assert promoted[0]["actor"] == authenticated_actor()
+        assert promoted[0]["reason"] == "bench provisioning"
+
+    def test_fails_closed_without_a_real_uid(self, monkeypatch) -> None:
+        # On a platform with no real UID there is nothing to authenticate
+        # against. Recording a placeholder would put an unattributable row
+        # in the audit log while looking like attribution, so the
+        # operation is refused instead.
+        import os as os_module
+
+        from ori.firmware_provisioner import ProvisionerError, authenticated_actor
+
+        monkeypatch.delattr(os_module, "getuid", raising=False)
+        with pytest.raises(ProvisionerError, match="authenticated OS principal"):
+            authenticated_actor()
+
+    def test_uid_without_a_passwd_entry_still_authenticates(self, monkeypatch) -> None:
+        # A UID with no passwd entry is still an authenticated principal;
+        # only the display name is missing.
+        import pwd
+
+        from ori.firmware_provisioner import authenticated_actor
+
+        monkeypatch.setattr(
+            pwd, "getpwuid", lambda _uid: (_ for _ in ()).throw(KeyError("no entry"))
+        )
+        actor = authenticated_actor()
+        assert actor.startswith("uid=")
+        assert ":" not in actor

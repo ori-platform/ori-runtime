@@ -595,7 +595,9 @@ class TestDispatcherAttestation:
                 board_profile="esp32-s3-pzem-v1",
                 provisioned_at_ms=1_760_000_000_000,
             )
-            assert await store.approve_firmware_device("ori-fw-7c9f2b3a")
+            assert await store.approve_firmware_device(
+                "ori-fw-7c9f2b3a", actor="test-operator", reason="test"
+            )
             dispatcher = self._dispatcher(store, attestor)
             reading = SensorReading(
                 sensor_id="ori-fw-7c9f2b3a:ch0",

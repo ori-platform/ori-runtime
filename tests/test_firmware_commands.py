@@ -116,7 +116,9 @@ async def provision(store) -> str:
         posture=manifest["posture"],
         manifest_message=manifest_message("manifest_full_sealed"),
     )
-    assert await gate.approve_device(manifest["device_id"])
+    assert await gate.approve_device(
+        manifest["device_id"], actor="test-operator", reason="test"
+    )
     return manifest["device_id"]
 
 
@@ -186,15 +188,20 @@ class TestSequenceAllocation:
                 "authority": "runtime_commanded",
             }
         ]
+        # A different manifest is a different capability hash, so this is
+        # a new anchor epoch: it arrives as a pending candidate and must be
+        # promoted before it grants anything.
         await store.upsert_firmware_device_anchor(
             device_id=device_id,
             public_key_b64=row["public_key_b64"],
             posture=row["posture"],
-            capability_hash=row["capability_hash"],
+            capability_hash="sha256:" + "ee" * 32,
             manifest_json=json.dumps(doctored),
             channel_map_json="{}",
         )
-        assert await store.approve_firmware_device(device_id)
+        assert await store.approve_firmware_device(
+            device_id, actor="test-operator", reason="test"
+        )
         with pytest.raises(FirmwareCommandError, match="vocabulary"):
             await signer.sign_command(
                 device_id=device_id, action="ota_begin", channel="relay0"
@@ -217,11 +224,15 @@ class TestSequenceAllocation:
             await signer.sign_command(
                 device_id=manifest["device_id"], action="relay_open", channel="relay0"
             )
-        assert await gate.approve_device(manifest["device_id"])
+        assert await gate.approve_device(
+            manifest["device_id"], actor="test-operator", reason="test"
+        )
         await signer.sign_command(
             device_id=manifest["device_id"], action="relay_open", channel="relay0"
         )
-        assert await gate.revoke_device(manifest["device_id"])
+        assert await gate.revoke_device(
+            manifest["device_id"], actor="test-operator", reason="test"
+        )
         with pytest.raises(FirmwareCommandError):
             await signer.sign_command(
                 device_id=manifest["device_id"], action="relay_open", channel="relay0"
