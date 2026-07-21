@@ -75,7 +75,9 @@ async def _register_device(store: StateStore, *, approve: bool = True) -> str:
         manifest_message=_manifest_message("manifest_full_sealed"),
     )
     if approve:
-        assert await gate.approve_device(manifest["device_id"])
+        assert await gate.approve_device(
+            manifest["device_id"], actor="test-operator", reason="test"
+        )
     return manifest["device_id"]
 
 
@@ -313,8 +315,12 @@ async def test_service_refuses_approval_for_unapproved_or_revoked_device(store) 
     with pytest.raises(FirmwareCommandError, match="not approved"):
         await service.publish_provisioning_approval(device_id)
 
-    assert await store.approve_firmware_device(device_id)
-    assert await store.revoke_firmware_device(device_id)
+    assert await store.approve_firmware_device(
+        device_id, actor="test-operator", reason="test"
+    )
+    assert await store.revoke_firmware_device(
+        device_id, actor="test-operator", reason="test"
+    )
     with pytest.raises(FirmwareCommandError, match="revoked"):
         await service.publish_provisioning_approval(device_id)
 

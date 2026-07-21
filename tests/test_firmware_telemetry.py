@@ -39,6 +39,8 @@ VECTORS = json.loads(
     (Path(__file__).parent / "fixtures" / "firmware_layer1_vectors.json").read_text()
 )
 PUBLIC_KEY_B64 = VECTORS["public_key_b64"]
+# The fixed TEST-ONLY seed the shared vectors are signed with.
+GOLDEN_SEED = bytes([0x42]) * 32
 CASES = {case["name"]: case for case in VECTORS["cases"]}
 
 SEALED_DEVICE = "ori-fw-7c9f2b3a"
@@ -660,7 +662,9 @@ async def provision_and_approve(gate: FirmwareTelemetryGate, manifest_case: str)
         posture=manifest["posture"],
         manifest_message=manifest_message(manifest_case),
     )
-    assert await gate.approve_device(manifest["device_id"])
+    assert await gate.approve_device(
+        manifest["device_id"], actor="test-operator", reason="test"
+    )
     return manifest_hash
 
 
@@ -706,7 +710,9 @@ class TestFirmwareTelemetryGate:
         before = await store.get_firmware_device(SEALED_DEVICE)
         assert before["approved"] is False
         assert before["capability_hash"] == SEALED_HASH
-        assert await store.approve_firmware_device(SEALED_DEVICE)
+        assert await store.approve_firmware_device(
+            SEALED_DEVICE, actor="test-operator", reason="test"
+        )
         after = await store.get_firmware_device(SEALED_DEVICE)
         assert after["approved"] is True
         assert after["capability_hash"] == SEALED_HASH
@@ -767,7 +773,9 @@ class TestFirmwareTelemetryGate:
             telemetry_message("telemetry_single_reading")
         )
         assert verification.error_code == "device_not_approved"
-        assert await gate.approve_device(SEALED_DEVICE)
+        assert await gate.approve_device(
+            SEALED_DEVICE, actor="test-operator", reason="test"
+        )
         verification, _ = await gate.ingest(
             telemetry_message("telemetry_single_reading")
         )
@@ -775,7 +783,9 @@ class TestFirmwareTelemetryGate:
 
     async def test_revoked_device_rejected(self, gate) -> None:
         await provision_and_approve(gate, "manifest_full_sealed")
-        assert await gate.revoke_device(SEALED_DEVICE)
+        assert await gate.revoke_device(
+            SEALED_DEVICE, actor="test-operator", reason="test"
+        )
         verification, _ = await gate.ingest(
             telemetry_message("telemetry_single_reading")
         )
@@ -853,7 +863,7 @@ class TestRegistrationLifecycle:
     @pytest.mark.asyncio
     async def test_exact_reregistration_is_idempotent(self, gate) -> None:
         await self._register(gate)
-        await gate.approve_device(DEV_DEVICE)
+        await gate.approve_device(DEV_DEVICE, actor="test-operator", reason="test")
         # Actually advance it, so a reset would be visible.
         await gate._store.advance_firmware_freshness(DEV_DEVICE, boot_id=3, seq=99)
         row_before = await gate._store.get_firmware_device(DEV_DEVICE)
@@ -870,8 +880,8 @@ class TestRegistrationLifecycle:
     @pytest.mark.asyncio
     async def test_revocation_survives_registration(self, gate) -> None:
         await self._register(gate)
-        await gate.approve_device(DEV_DEVICE)
-        await gate.revoke_device(DEV_DEVICE)
+        await gate.approve_device(DEV_DEVICE, actor="test-operator", reason="test")
+        await gate.revoke_device(DEV_DEVICE, actor="test-operator", reason="test")
 
         # The whole point: a device re-publishing its manifest is not a
         # decision to trust it again.
@@ -886,7 +896,7 @@ class TestRegistrationLifecycle:
     @pytest.mark.asyncio
     async def test_changed_key_is_refused(self, gate) -> None:
         await self._register(gate)
-        await gate.approve_device(DEV_DEVICE)
+        await gate.approve_device(DEV_DEVICE, actor="test-operator", reason="test")
 
         # The attacker shape: a manifest SIGNED BY A KEY THEY CONTROL,
         # claiming a device_id they do not own. It is internally
@@ -908,35 +918,515 @@ class TestRegistrationLifecycle:
         assert row["approved"] == 1
 
     @pytest.mark.asyncio
-    async def test_manifest_change_fails_closed_for_now(self, gate) -> None:
-        # The contract requires a same-key manifest change to become a
-        # PENDING candidate beside the still-active anchor. That state
-        # model is not implemented yet, so this refuses rather than
-        # overwriting the active anchor — the behaviour the contract
-        # forbids, and what this method used to do.
+    async def test_manifest_change_becomes_a_pending_candidate(self, gate) -> None:
+        # The contract: a same-key manifest change is a PENDING candidate
+        # beside the still-active anchor. Overwriting the active anchor
+        # would let a device replace its own accepted capability surface
+        # by publishing, and would reset a replay window that never left
+        # its key epoch.
         await gate.register_device(
             device_id=SEALED_DEVICE,
             public_key_b64=PUBLIC_KEY_B64,
             posture="sealed_flash",
             manifest_message=manifest_message("manifest_full_sealed"),
         )
-        await gate.approve_device(SEALED_DEVICE)
+        await gate.approve_device(SEALED_DEVICE, actor="test-operator", reason="test")
         await gate._store.advance_firmware_freshness(SEALED_DEVICE, boot_id=7, seq=1234)
         before = await gate._store.get_firmware_device(SEALED_DEVICE)
 
-        with pytest.raises(FirmwareVerificationError) as excinfo:
-            await gate.register_device(
-                device_id=SEALED_DEVICE,
-                public_key_b64=PUBLIC_KEY_B64,
-                posture="sealed_flash",
-                manifest_message=manifest_message("manifest_command_bench"),
-            )
-        assert excinfo.value.code == "manifest_epoch_unsupported"
+        await gate.register_device(
+            device_id=SEALED_DEVICE,
+            public_key_b64=PUBLIC_KEY_B64,
+            posture="sealed_flash",
+            manifest_message=manifest_message("manifest_command_bench"),
+        )
 
-        # Nothing moved: the active anchor, its approval, and the replay
-        # window are all exactly as they were.
+        # The ACTIVE anchor is untouched: same capability hash, still
+        # approved, replay window intact.
         after = await gate._store.get_firmware_device(SEALED_DEVICE)
         assert after["capability_hash"] == before["capability_hash"]
         assert after["approved"] == 1
         assert after["last_boot_id"] == 7
         assert after["last_seq"] == 1234
+        # The key epoch never changed, so freshness had no reason to move.
+        assert after["key_epoch_id"] == before["key_epoch_id"]
+
+        # The new manifest is recorded as a pending candidate.
+        pending = await gate._store.get_pending_firmware_anchor(SEALED_DEVICE)
+        assert pending is not None
+        assert pending["capability_hash"] != before["capability_hash"]
+        assert pending["state"] == "pending"
+        assert pending["key_epoch_id"] == before["key_epoch_id"]
+
+    @pytest.mark.asyncio
+    async def test_second_manifest_replaces_the_pending_candidate(self, gate) -> None:
+        # A pending anchor grants nothing, so replacing one loses no
+        # authority; refusing would strand a device whose earlier manifest
+        # nobody promoted.
+        await gate.register_device(
+            device_id=SEALED_DEVICE,
+            public_key_b64=PUBLIC_KEY_B64,
+            posture="sealed_flash",
+            manifest_message=manifest_message("manifest_full_sealed"),
+        )
+        await gate.approve_device(SEALED_DEVICE, actor="test-operator", reason="test")
+        await gate.register_device(
+            device_id=SEALED_DEVICE,
+            public_key_b64=PUBLIC_KEY_B64,
+            posture="sealed_flash",
+            manifest_message=manifest_message("manifest_command_bench"),
+        )
+        first_pending = await gate._store.get_pending_firmware_anchor(SEALED_DEVICE)
+
+        # A third manifest: same key, different hash again.
+        third = signed_manifest_for_key(
+            GOLDEN_SEED,
+            device_id=SEALED_DEVICE,
+            posture="sealed_flash",
+            secure_boot_enabled=True,
+            flash_encryption_enabled=True,
+            key_storage="nvs_encrypted",
+            firmware_version="9.9.9",
+        )
+        await gate.register_device(
+            device_id=SEALED_DEVICE,
+            public_key_b64=PUBLIC_KEY_B64,
+            posture="sealed_flash",
+            manifest_message=third,
+        )
+
+        now_pending = await gate._store.get_pending_firmware_anchor(SEALED_DEVICE)
+        assert now_pending["anchor_epoch_id"] != first_pending["anchor_epoch_id"]
+
+        # The replaced candidate is retained as discarded, never deleted:
+        # it was never active, so no evidence is attributed to it.
+        history = await gate._store.list_firmware_anchor_history(SEALED_DEVICE)
+        discarded = [a for a in history if a["state"] == "discarded"]
+        assert first_pending["anchor_epoch_id"] in {
+            a["anchor_epoch_id"] for a in discarded
+        }
+
+    @pytest.mark.asyncio
+    async def test_transitions_are_recorded(self, gate) -> None:
+        await self._register(gate)
+        transitions = await gate._store.list_firmware_anchor_transitions(DEV_DEVICE)
+        assert [t["transition"] for t in transitions] == ["registered"]
+        assert transitions[0]["to_epoch_id"].startswith("sha256:")
+        assert transitions[0]["key_epoch_id"].startswith("sha256:")
+
+
+class TestLifecycleMigration:
+    """A database created before the lifecycle must not become invisible
+    to it. The backfill derives epoch ids from what is already stored and
+    records the anchor, so existing devices keep working."""
+
+    @pytest.mark.asyncio
+    async def test_preexisting_approved_device_backfills_as_active(
+        self, tmp_path
+    ) -> None:
+        import sqlite3
+
+        from ori.state.store import StateStore
+
+        db = str(tmp_path / "legacy.db")
+        # Build the pre-lifecycle shape: a registry row with no epoch ids
+        # and no anchor history.
+        store = StateStore(db_path=db)
+        await store.open()
+        await store.close()
+        conn = sqlite3.connect(db)
+        conn.execute("DELETE FROM firmware_device_anchors")
+        conn.execute("DELETE FROM firmware_anchor_transitions")
+        conn.execute(
+            """
+            INSERT INTO firmware_device_registry
+                (device_id, public_key_b64, posture, capability_hash,
+                 manifest_json, channel_map_json, board_profile, approved,
+                 provisioned_at_ms, last_boot_id, last_seq, revoked,
+                 revoked_at_ms, anchor_epoch_id, key_epoch_id)
+            VALUES ('ori-fw-legacy01', ?, 'development', ?, '{}', '{}', '',
+                    1, 1000, 5, 500, 0, NULL, '', '')
+            """,
+            (PUBLIC_KEY_B64, "sha256:" + "ab" * 32),
+        )
+        conn.commit()
+        conn.close()
+
+        # Reopening runs the migration.
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            row = await store.get_firmware_device("ori-fw-legacy01")
+            assert row["anchor_epoch_id"].startswith("sha256:")
+            assert row["key_epoch_id"].startswith("sha256:")
+            # Approval and freshness are preserved by the migration.
+            assert row["approved"] is True
+            assert row["last_seq"] == 500
+
+            history = await store.list_firmware_anchor_history("ori-fw-legacy01")
+            assert len(history) == 1
+            assert history[0]["state"] == "active"
+            assert history[0]["anchor_epoch_id"] == row["anchor_epoch_id"]
+
+            transitions = await store.list_firmware_anchor_transitions(
+                "ori-fw-legacy01"
+            )
+            assert transitions[0]["actor"] == "migration"
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_preexisting_unapproved_device_backfills_as_pending(
+        self, tmp_path
+    ) -> None:
+        import sqlite3
+
+        from ori.state.store import StateStore
+
+        db = str(tmp_path / "legacy2.db")
+        store = StateStore(db_path=db)
+        await store.open()
+        await store.close()
+        conn = sqlite3.connect(db)
+        conn.execute("DELETE FROM firmware_device_anchors")
+        conn.execute(
+            """
+            INSERT INTO firmware_device_registry
+                (device_id, public_key_b64, posture, capability_hash,
+                 manifest_json, channel_map_json, board_profile, approved,
+                 provisioned_at_ms, last_boot_id, last_seq, revoked,
+                 revoked_at_ms, anchor_epoch_id, key_epoch_id)
+            VALUES ('ori-fw-legacy02', ?, 'development', ?, '{}', '{}', '',
+                    0, 1000, 0, 0, 0, NULL, '', '')
+            """,
+            (PUBLIC_KEY_B64, "sha256:" + "cd" * 32),
+        )
+        conn.commit()
+        conn.close()
+
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            # Never approved, so never trusted for acceptance: pending.
+            history = await store.list_firmware_anchor_history("ori-fw-legacy02")
+            assert history[0]["state"] == "pending"
+        finally:
+            await store.close()
+
+
+class TestAnchorStateInvariant:
+    """ "Two active anchors" is a state no amount of careful calling code
+    should be trusted to prevent, so the database enforces it."""
+
+    @pytest.mark.asyncio
+    async def test_database_refuses_a_second_active_or_pending(self, tmp_path) -> None:
+        import sqlite3
+
+        from ori.state.store import StateStore
+
+        db = str(tmp_path / "inv.db")
+        store = StateStore(db_path=db)
+        await store.open()
+        await store.close()
+
+        conn = sqlite3.connect(db)
+
+        def insert(epoch_id: str, state: str, device: str = "d1") -> None:
+            conn.execute(
+                """
+                INSERT INTO firmware_device_anchors
+                    (anchor_epoch_id, device_id, key_epoch_id, public_key_b64,
+                     posture, capability_hash, state, created_at_ms,
+                     state_changed_at_ms)
+                VALUES (?, ?, 'k', 'p', 'development', 'h', ?, 1, 1)
+                """,
+                (epoch_id, device, state),
+            )
+
+        insert("a1", "active")
+        insert("p1", "pending")
+        conn.commit()
+
+        for epoch_id, state in (("a2", "active"), ("p2", "pending")):
+            with pytest.raises(sqlite3.IntegrityError):
+                insert(epoch_id, state)
+                conn.commit()
+            conn.rollback()
+
+        # History is append-only, so these repeat freely.
+        insert("s1", "superseded")
+        insert("s2", "superseded")
+        insert("x1", "discarded")
+        # A different identity is unaffected.
+        insert("b1", "active", device="d2")
+        conn.commit()
+        conn.close()
+
+
+class TestRegistryAndHistoryAgree:
+    """The legacy registry and the anchor history must never disagree
+    about which anchor is trusted. Each test here is a path where they
+    previously could."""
+
+    async def _register(self, gate, case):
+        c = CASES[case]
+        return await gate.register_device(
+            device_id=c["input"]["device_id"],
+            public_key_b64=PUBLIC_KEY_B64,
+            posture=c["input"]["posture"],
+            manifest_message=manifest_message(case),
+        )
+
+    @pytest.mark.asyncio
+    async def test_approval_promotes_the_anchor(self, gate) -> None:
+        await self._register(gate, "manifest_minimal_dev")
+        history = await gate._store.list_firmware_anchor_history(DEV_DEVICE)
+        assert history[0]["state"] == "pending"
+
+        await gate.approve_device(DEV_DEVICE, actor="test-operator", reason="test")
+
+        # Approval is promotion: history says active, and the registry
+        # points at the same anchor. Accepting telemetry while history
+        # still said "pending" was the split-brain.
+        history = await gate._store.list_firmware_anchor_history(DEV_DEVICE)
+        active = [a for a in history if a["state"] == "active"]
+        assert len(active) == 1
+        row = await gate._store.get_firmware_device(DEV_DEVICE)
+        assert row["approved"] is True
+        assert row["anchor_epoch_id"] == active[0]["anchor_epoch_id"]
+
+        transitions = await gate._store.list_firmware_anchor_transitions(DEV_DEVICE)
+        assert [t["transition"] for t in transitions] == ["registered", "promoted"]
+
+    @pytest.mark.asyncio
+    async def test_promoting_a_manifest_epoch_supersedes_the_previous(
+        self, gate
+    ) -> None:
+        await self._register(gate, "manifest_full_sealed")
+        await gate.approve_device(SEALED_DEVICE, actor="test-operator", reason="test")
+        first = await gate._store.get_firmware_device(SEALED_DEVICE)
+
+        await self._register(gate, "manifest_command_bench")
+        await gate.approve_device(SEALED_DEVICE, actor="test-operator", reason="test")
+
+        history = await gate._store.list_firmware_anchor_history(SEALED_DEVICE)
+        states = {a["anchor_epoch_id"]: a["state"] for a in history}
+        assert states[first["anchor_epoch_id"]] == "superseded"
+        row = await gate._store.get_firmware_device(SEALED_DEVICE)
+        assert states[row["anchor_epoch_id"]] == "active"
+        # The superseded anchor is retained, never deleted: evidence
+        # outlives the anchor that authorised it.
+        assert first["anchor_epoch_id"] in states
+
+    @pytest.mark.asyncio
+    async def test_revocation_moves_the_anchor_and_discards_pending(self, gate) -> None:
+        await self._register(gate, "manifest_full_sealed")
+        await gate.approve_device(SEALED_DEVICE, actor="test-operator", reason="test")
+        active_id = (await gate._store.get_firmware_device(SEALED_DEVICE))[
+            "anchor_epoch_id"
+        ]
+        await self._register(gate, "manifest_command_bench")
+        pending_id = (await gate._store.get_pending_firmware_anchor(SEALED_DEVICE))[
+            "anchor_epoch_id"
+        ]
+
+        await gate.revoke_device(SEALED_DEVICE, actor="test-operator", reason="test")
+
+        history = await gate._store.list_firmware_anchor_history(SEALED_DEVICE)
+        states = {a["anchor_epoch_id"]: a["state"] for a in history}
+        # Retained so reinstatement has something to return to.
+        assert states[active_id] == "revoked"
+        # An unpromoted candidate must not survive a revocation and
+        # become promotable later.
+        assert states[pending_id] == "discarded"
+        assert await gate._store.get_pending_firmware_anchor(SEALED_DEVICE) is None
+
+        transitions = await gate._store.list_firmware_anchor_transitions(SEALED_DEVICE)
+        assert transitions[-1]["transition"] == "revoked"
+
+    @pytest.mark.asyncio
+    async def test_promotion_after_revocation_is_refused(self, gate) -> None:
+        await self._register(gate, "manifest_minimal_dev")
+        await gate.approve_device(DEV_DEVICE, actor="test-operator", reason="test")
+        await gate.revoke_device(DEV_DEVICE, actor="test-operator", reason="test")
+        # Nothing pending, identity revoked: there is nothing to promote
+        # and promotion must not invent an anchor.
+        assert (
+            await gate.approve_device(DEV_DEVICE, actor="test-operator", reason="test")
+            is False
+        )
+
+    @pytest.mark.asyncio
+    async def test_registry_never_points_at_a_discarded_anchor(self, gate) -> None:
+        # Pending A, then manifest B: A is discarded and B becomes the
+        # candidate. The registry must follow B — previously it still
+        # described A, so promotion would have activated the wrong
+        # manifest.
+        await self._register(gate, "manifest_full_sealed")
+        first_pending = await gate._store.get_pending_firmware_anchor(SEALED_DEVICE)
+
+        await self._register(gate, "manifest_command_bench")
+        row = await gate._store.get_firmware_device(SEALED_DEVICE)
+        second_pending = await gate._store.get_pending_firmware_anchor(SEALED_DEVICE)
+
+        assert second_pending["anchor_epoch_id"] != first_pending["anchor_epoch_id"]
+        assert row["capability_hash"] == second_pending["capability_hash"]
+
+        await gate.approve_device(SEALED_DEVICE, actor="test-operator", reason="test")
+        promoted = await gate._store.get_firmware_device(SEALED_DEVICE)
+        assert promoted["anchor_epoch_id"] == second_pending["anchor_epoch_id"]
+
+    @pytest.mark.asyncio
+    async def test_republishing_a_discarded_anchor_is_not_unchanged(self, gate) -> None:
+        # "unchanged" must be decided from the live anchor, not from the
+        # registry pointer: a discarded anchor re-published is a new
+        # candidate, not a no-op.
+        await self._register(gate, "manifest_full_sealed")
+        first = await gate._store.get_pending_firmware_anchor(SEALED_DEVICE)
+        await self._register(gate, "manifest_command_bench")
+        await self._register(gate, "manifest_full_sealed")
+
+        now_pending = await gate._store.get_pending_firmware_anchor(SEALED_DEVICE)
+        assert now_pending["anchor_epoch_id"] == first["anchor_epoch_id"]
+        assert now_pending["state"] == "pending"
+
+
+class TestRevokedLegacyMigration:
+    @pytest.mark.asyncio
+    async def test_revoked_legacy_row_does_not_become_promotable(
+        self, tmp_path
+    ) -> None:
+        """A revoked legacy identity must not acquire a pending anchor:
+        that would hand it a promotable candidate it never earned."""
+        import sqlite3
+
+        from ori.state.store import StateStore
+
+        db = str(tmp_path / "legacy_revoked.db")
+        store = StateStore(db_path=db)
+        await store.open()
+        await store.close()
+        conn = sqlite3.connect(db)
+        conn.execute("DELETE FROM firmware_device_anchors")
+        conn.execute(
+            """
+            INSERT INTO firmware_device_registry
+                (device_id, public_key_b64, posture, capability_hash,
+                 manifest_json, channel_map_json, board_profile, approved,
+                 provisioned_at_ms, last_boot_id, last_seq, revoked,
+                 revoked_at_ms, anchor_epoch_id, key_epoch_id)
+            VALUES ('ori-fw-legacy03', ?, 'development', ?, '{}', '{}', '',
+                    0, 1000, 0, 0, 1, 2000, '', '')
+            """,
+            (PUBLIC_KEY_B64, "sha256:" + "ef" * 32),
+        )
+        conn.commit()
+        conn.close()
+
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            history = await store.list_firmware_anchor_history("ori-fw-legacy03")
+            assert history[0]["state"] == "revoked"
+            # Nothing promotable exists.
+            assert await store.get_pending_firmware_anchor("ori-fw-legacy03") is None
+            assert (
+                await store.approve_firmware_device(
+                    "ori-fw-legacy03", actor="test-operator", reason="test"
+                )
+                is False
+            )
+        finally:
+            await store.close()
+
+
+class TestTrustTransitionsAreAttributed:
+    """ori-specs/device-provisioning/v1.md requires actor and reason on
+    every operator decision that changes acceptance. An unattributed
+    anchor change is indistinguishable from a compromise after the fact,
+    so it must be impossible rather than merely discouraged."""
+
+    async def _registered(self, gate):
+        c = CASES["manifest_minimal_dev"]
+        await gate.register_device(
+            device_id=DEV_DEVICE,
+            public_key_b64=PUBLIC_KEY_B64,
+            posture=c["input"]["posture"],
+            manifest_message=manifest_message("manifest_minimal_dev"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_promotion_requires_actor_and_reason(self, gate) -> None:
+        await self._registered(gate)
+        for actor, reason in (("", "why"), ("op", ""), ("  ", "why"), ("op", "  ")):
+            with pytest.raises(ValueError, match="audited"):
+                await gate.approve_device(DEV_DEVICE, actor=actor, reason=reason)
+        # Nothing moved: the refusal happens before any state changes.
+        history = await gate._store.list_firmware_anchor_history(DEV_DEVICE)
+        assert history[0]["state"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_revocation_requires_actor_and_reason(self, gate) -> None:
+        await self._registered(gate)
+        await gate.approve_device(DEV_DEVICE, actor="op", reason="bench")
+        with pytest.raises(ValueError, match="audited"):
+            await gate.revoke_device(DEV_DEVICE, actor="", reason="compromised")
+        row = await gate._store.get_firmware_device(DEV_DEVICE)
+        assert row["revoked"] is False
+
+    @pytest.mark.asyncio
+    async def test_attribution_is_recorded(self, gate) -> None:
+        await self._registered(gate)
+        await gate.approve_device(
+            DEV_DEVICE, actor="alice@ops", reason="bench bring-up"
+        )
+        transitions = await gate._store.list_firmware_anchor_transitions(DEV_DEVICE)
+        promoted = [t for t in transitions if t["transition"] == "promoted"][0]
+        assert promoted["actor"] == "alice@ops"
+        assert promoted["reason"] == "bench bring-up"
+
+    @pytest.mark.asyncio
+    async def test_database_refuses_an_unattributed_trust_transition(
+        self, tmp_path
+    ) -> None:
+        # Belt and braces: even a direct INSERT cannot write one.
+        import sqlite3
+
+        from ori.state.store import StateStore
+
+        db = str(tmp_path / "audit.db")
+        store = StateStore(db_path=db)
+        await store.open()
+        await store.close()
+        conn = sqlite3.connect(db)
+
+        def insert(transition: str, actor: str, reason: str) -> None:
+            conn.execute(
+                """
+                INSERT INTO firmware_anchor_transitions
+                    (device_id, transition, key_epoch_id, actor, reason,
+                     occurred_at_ms)
+                VALUES ('d1', ?, 'k', ?, ?, 1)
+                """,
+                (transition, actor, reason),
+            )
+
+        for transition in ("promoted", "revoked", "reinstated", "reprovisioned"):
+            with pytest.raises(sqlite3.IntegrityError):
+                insert(transition, "", "")
+                conn.commit()
+            conn.rollback()
+
+        # Whitespace is attribution in form only: `actor <> \'\'` would
+        # have accepted it.
+        for transition in ("promoted", "revoked"):
+            with pytest.raises(sqlite3.IntegrityError):
+                insert(transition, "   ", "   ")
+                conn.commit()
+            conn.rollback()
+
+        # Device-initiated events grant nothing, so they may be unattributed.
+        insert("registered", "", "")
+        insert("discarded", "", "")
+        conn.commit()
+        conn.close()

@@ -32,7 +32,6 @@ from ori.network.events import SensorReading
 from ori.security.firmware_telemetry import (
     ERR_DEVICE_REVOKED,
     ERR_KEY_CHANGE_REQUIRES_REPROVISIONING,
-    ERR_MANIFEST_EPOCH_UNSUPPORTED,
     ERR_SEQUENCE_REPLAY,
     GRADE_REJECTED,
     FirmwareFaultVerification,
@@ -115,15 +114,6 @@ class FirmwareTelemetryGate:
                 f"device {device_id!r} is revoked; reinstatement is an explicit "
                 "operation, never a side effect of registration",
             )
-        if outcome == "refused_manifest_epoch_unsupported":
-            raise FirmwareVerificationError(
-                ERR_MANIFEST_EPOCH_UNSUPPORTED,
-                f"device {device_id!r} published a new capability hash under its "
-                "existing key. The lifecycle requires this to become a pending "
-                "candidate beside the active anchor; that state model is not "
-                "implemented yet, so it is refused rather than overwriting the "
-                "active anchor.",
-            )
         if outcome == "refused_key_change":
             raise FirmwareVerificationError(
                 ERR_KEY_CHANGE_REQUIRES_REPROVISIONING,
@@ -132,7 +122,14 @@ class FirmwareTelemetryGate:
                 "independent identity confirmation",
             )
 
-        if outcome == "unchanged":
+        if outcome == "pending_manifest_epoch":
+            logger.info(
+                "firmware device %s published a new manifest epoch; stored as a "
+                "PENDING candidate awaiting promotion (the active anchor is "
+                "unchanged)",
+                device_id,
+            )
+        elif outcome == "unchanged":
             logger.debug(
                 "firmware device %s re-published an identical anchor (no-op)",
                 device_id,
@@ -145,12 +142,26 @@ class FirmwareTelemetryGate:
             )
         return manifest_hash
 
-    async def approve_device(self, device_id: str) -> bool:
-        """Operator approval for the currently stored verified anchor."""
-        return bool(await self._store.approve_firmware_device(device_id))
+    async def approve_device(self, device_id: str, *, actor: str, reason: str) -> bool:
+        """Promote the pending anchor to active.
 
-    async def revoke_device(self, device_id: str) -> bool:
-        return bool(await self._store.revoke_firmware_device(device_id))
+        `actor` and `reason` are mandatory: promotion is a trust
+        transition, and ori-specs/device-provisioning/v1.md requires every
+        one to be attributed.
+        """
+        return bool(
+            await self._store.approve_firmware_device(
+                device_id, actor=actor, reason=reason
+            )
+        )
+
+    async def revoke_device(self, device_id: str, *, actor: str, reason: str) -> bool:
+        """Take an identity out of service. Attribution is mandatory."""
+        return bool(
+            await self._store.revoke_firmware_device(
+                device_id, actor=actor, reason=reason
+            )
+        )
 
     async def ingest(
         self,

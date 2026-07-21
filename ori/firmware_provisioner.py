@@ -28,7 +28,12 @@ The transaction, in the order the subcommands run:
     key for the operator to confirm out of band.
 
 ``approve``
-    Record explicit operator approval, but only after the operator
+    Promote the pending anchor to active. Requires ``--reason``:
+    promotion is a trust transition and every one is audited. The actor
+    is the authenticated OS principal, derived from the real UID rather
+    than supplied on the command line, because a typed name is an
+    assertion rather than attribution. Records explicit operator approval, but only after the
+    operator
     supplies the device public key they observed independently — read
     from the device's serial console, which prints
     ``ori: device public key (b64) <KEY>`` at boot, not from the
@@ -135,6 +140,42 @@ def read_seed(path: Path, label: str) -> bytes:
     return seed
 
 
+def authenticated_actor(label: str = "") -> str:
+    """The OS principal running this command, for the audit log.
+
+    The contract requires the *authenticated* operator. A caller-supplied
+    name is an assertion, not attribution: anyone can type any name. So
+    the recorded actor is derived from the real UID via the passwd
+    database — deliberately not ``getpass.getuser()``, which trusts the
+    LOGNAME/USER environment variables and is therefore caller-controlled.
+
+    An optional display label is appended for human context but never
+    replaces the principal. Raises :class:`ProvisionerError` where no real
+    UID is available, rather than recording a placeholder that would look
+    like attribution.
+    """
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        # No real UID to authenticate against. Recording a placeholder
+        # would put an unattributable row in the audit log while looking
+        # like attribution, so fail closed instead.
+        raise ProvisionerError(
+            "cannot determine an authenticated OS principal on this platform; "
+            "trust transitions must be attributable, so this operation is "
+            "refused rather than audited to a placeholder"
+        )
+    uid = getuid()
+    try:
+        import pwd
+
+        principal = f"uid={uid}:{pwd.getpwuid(uid).pw_name}"
+    except (ImportError, KeyError):
+        # The UID itself is still authenticated even without a name.
+        principal = f"uid={uid}"
+    clean = str(label).strip()
+    return f"{principal} ({clean})" if clean else principal
+
+
 def cmd_keygen(args: argparse.Namespace) -> int:
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -238,7 +279,9 @@ def cmd_register(args: argparse.Namespace) -> int:
     return 0
 
 
-async def _approve(db_path: str, device_id: str, confirmed_key: str) -> None:
+async def _approve(
+    db_path: str, device_id: str, confirmed_key: str, actor: str, reason: str
+) -> None:
     from ori.security.firmware_ingest import FirmwareTelemetryGate
 
     store = await _open_store(db_path)
@@ -262,14 +305,25 @@ async def _approve(db_path: str, device_id: str, confirmed_key: str) -> None:
                 "Approving would bind authority to a device you did not verify."
             )
         gate = FirmwareTelemetryGate(store)
-        if not await gate.approve_device(device_id):
-            raise ProvisionerError(f"registry refused to approve {device_id!r}")
+        if not await gate.approve_device(device_id, actor=actor, reason=reason):
+            raise ProvisionerError(
+                f"registry refused to promote {device_id!r}: there is no pending "
+                "anchor to promote, or the identity is revoked"
+            )
     finally:
         await store.close()
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
-    asyncio.run(_approve(args.db, args.device_id, args.confirm_device_key))
+    asyncio.run(
+        _approve(
+            args.db,
+            args.device_id,
+            args.confirm_device_key,
+            authenticated_actor(args.actor_label),
+            args.reason,
+        )
+    )
     print(f"{args.device_id} approved in the runtime registry")
     print("Run `publish` to sign and publish the retained approval.")
     return 0
@@ -410,6 +464,17 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         metavar="B64",
         help="device public key as observed on the device itself, not from the manifest",
+    )
+    p.add_argument(
+        "--actor-label",
+        default="",
+        help="optional display name; the audit log always records the "
+        "authenticated OS principal regardless",
+    )
+    p.add_argument(
+        "--reason",
+        required=True,
+        help="why this device is being approved; recorded in the audit log",
     )
     p.set_defaults(func=cmd_approve)
 

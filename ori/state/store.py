@@ -357,6 +357,80 @@ CREATE TABLE IF NOT EXISTS firmware_device_registry (
     revoked_at_ms     INTEGER
 );
 
+-- Append-only anchor history for the device provisioning lifecycle
+-- (ori-specs/device-provisioning/v1.md).
+--
+-- firmware_device_registry holds the ACTIVE anchor and identity-level
+-- state (revocation, freshness). This table holds every anchor an
+-- identity has ever had, including pending candidates that were never
+-- promoted. Rows are never updated in place except to move `state`,
+-- because evidence outlives the anchor that authorised it: an
+-- overwritten anchor makes old evidence unattributable.
+CREATE TABLE IF NOT EXISTS firmware_device_anchors (
+    anchor_epoch_id     TEXT    PRIMARY KEY,
+    device_id           TEXT    NOT NULL,
+    key_epoch_id        TEXT    NOT NULL,
+    public_key_b64      TEXT    NOT NULL,
+    alg                 TEXT    NOT NULL DEFAULT 'ed25519',
+    posture             TEXT    NOT NULL,
+    capability_hash     TEXT    NOT NULL,
+    manifest_json       TEXT    NOT NULL DEFAULT '{}',
+    channel_map_json    TEXT    NOT NULL DEFAULT '{}',
+    board_profile       TEXT    NOT NULL DEFAULT '',
+    -- The normative anchor states. `revoked` is the anchor retained when
+    -- the identity was revoked, so reinstatement has something to return
+    -- to. Constrained by the database: an unrecognised state would make
+    -- every acceptance decision below unsound.
+    state               TEXT    NOT NULL
+        CHECK (state IN ('pending', 'active', 'superseded', 'discarded',
+                         'revoked')),
+    created_at_ms       INTEGER NOT NULL,
+    state_changed_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_firmware_anchors_device
+    ON firmware_device_anchors (device_id, state);
+
+-- At most one active and one pending anchor per identity. Enforced by
+-- the database rather than by convention, because "two active anchors"
+-- is a state no amount of careful calling code should be trusted to
+-- prevent.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_firmware_anchors_one_active
+    ON firmware_device_anchors (device_id) WHERE state = 'active';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_firmware_anchors_one_pending
+    ON firmware_device_anchors (device_id) WHERE state = 'pending';
+
+-- Append-only audit of every trust transition. An unattributed anchor
+-- change is indistinguishable from a compromise after the fact.
+CREATE TABLE IF NOT EXISTS firmware_anchor_transitions (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id      TEXT    NOT NULL,
+    -- registered | promoted | superseded | discarded | revoked
+    -- | reinstated | reprovisioned
+    transition     TEXT    NOT NULL,
+    from_epoch_id  TEXT,
+    to_epoch_id    TEXT,
+    key_epoch_id   TEXT    NOT NULL DEFAULT '',
+    actor          TEXT    NOT NULL DEFAULT '',
+    reason         TEXT    NOT NULL DEFAULT '',
+    occurred_at_ms INTEGER NOT NULL,
+    -- Promotion, revocation, reinstatement and re-provisioning are
+    -- operator decisions that change what a receiver will accept, so they
+    -- MUST be attributed. Only device-initiated registration and the
+    -- replacement of a pending candidate may be unattributed — they grant
+    -- nothing. Enforced here so an unattributed trust transition cannot be
+    -- written by any code path, however careful.
+    -- trim(): `actor <> ''` would accept "   ", which is attribution in
+    -- form only.
+    CHECK (
+        transition IN ('registered', 'discarded')
+        OR (length(trim(actor)) > 0 AND length(trim(reason)) > 0)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_firmware_anchor_transitions_device
+    ON firmware_anchor_transitions (device_id, occurred_at_ms DESC);
+
 CREATE TABLE IF NOT EXISTS firmware_fault_events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id         TEXT    NOT NULL,
@@ -374,6 +448,24 @@ CREATE TABLE IF NOT EXISTS firmware_fault_events (
     UNIQUE(device_id, boot_id, seq)
 );
 """
+
+
+def _require_attribution(operation: str, actor: str, reason: str) -> None:
+    """Mandatory audit fields for a trust transition.
+
+    ori-specs/device-provisioning/v1.md requires actor and reason on every
+    operator decision that changes acceptance. An unattributed anchor
+    change is indistinguishable from a compromise after the fact, so this
+    refuses before any state moves rather than writing a blank row.
+    """
+    if not str(actor).strip():
+        raise ValueError(
+            f"{operation} requires an actor: trust transitions are audited"
+        )
+    if not str(reason).strip():
+        raise ValueError(
+            f"{operation} requires a reason: trust transitions are audited"
+        )
 
 
 class StateStore:
@@ -489,10 +581,14 @@ class StateStore:
         for col, typedef in (
             ("manifest_json", "TEXT    NOT NULL DEFAULT '{}'"),
             ("channel_map_json", "TEXT    NOT NULL DEFAULT '{}'"),
+            # Device provisioning lifecycle: the active anchor's epochs.
+            ("anchor_epoch_id", "TEXT    NOT NULL DEFAULT ''"),
+            ("key_epoch_id", "TEXT    NOT NULL DEFAULT ''"),
         ):
             self._add_column_if_missing_on_conn(
                 conn, "firmware_device_registry", col, typedef
             )
+        self._backfill_firmware_anchor_epochs_on_conn(conn)
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_remote_command_log_sender_rejections
@@ -505,6 +601,100 @@ class StateStore:
         """Backward-compatible helper used by tests and migrations."""
         assert self._conn is not None
         self._add_column_if_missing_on_conn(self._conn, table, column, typedef)
+
+    def _backfill_firmware_anchor_epochs_on_conn(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Give pre-lifecycle rows their epoch identifiers and an anchor
+        history entry.
+
+        Databases created before the provisioning lifecycle hold an
+        active anchor in firmware_device_registry with no epoch ids and
+        no row in firmware_device_anchors. Derive the ids from what is
+        already stored and record the anchor, so existing devices are not
+        invisible to the lifecycle.
+
+        An approved, unrevoked row becomes `active`. A revoked row becomes
+        `revoked` — never `pending`, which would hand a revoked identity a
+        promotable anchor. Anything else becomes `pending`, because it was
+        never trusted for acceptance.
+        """
+        from ori.security.firmware_telemetry import (
+            anchor_epoch_id as _anchor_epoch_id,
+        )
+        from ori.security.firmware_telemetry import (
+            key_epoch_id as _key_epoch_id,
+        )
+
+        rows = conn.execute(
+            """
+            SELECT device_id, public_key_b64, posture, capability_hash,
+                   manifest_json, channel_map_json, board_profile,
+                   approved, revoked, provisioned_at_ms
+              FROM firmware_device_registry
+             WHERE anchor_epoch_id = '' OR key_epoch_id = ''
+            """
+        ).fetchall()
+        for row in rows:
+            kid = _key_epoch_id(
+                device_id=row["device_id"], public_key_b64=row["public_key_b64"]
+            )
+            aid = _anchor_epoch_id(
+                device_id=row["device_id"],
+                public_key_b64=row["public_key_b64"],
+                posture=row["posture"],
+                capability_hash=row["capability_hash"],
+            )
+            conn.execute(
+                """
+                UPDATE firmware_device_registry
+                   SET anchor_epoch_id = ?, key_epoch_id = ?
+                 WHERE device_id = ?
+                """,
+                (aid, kid, row["device_id"]),
+            )
+            if row["revoked"]:
+                # A revoked identity must NOT acquire a promotable pending
+                # anchor. The anchor is retained in `revoked` so a later
+                # reinstatement has something to return to.
+                state = "revoked"
+            elif row["approved"]:
+                state = "active"
+            else:
+                state = "pending"
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO firmware_device_anchors
+                    (anchor_epoch_id, device_id, key_epoch_id, public_key_b64,
+                     posture, capability_hash, manifest_json, channel_map_json,
+                     board_profile, state, created_at_ms, state_changed_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    aid,
+                    row["device_id"],
+                    kid,
+                    row["public_key_b64"],
+                    row["posture"],
+                    row["capability_hash"],
+                    row["manifest_json"],
+                    row["channel_map_json"],
+                    row["board_profile"],
+                    state,
+                    row["provisioned_at_ms"],
+                    row["provisioned_at_ms"],
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO firmware_anchor_transitions
+                    (device_id, transition, from_epoch_id, to_epoch_id,
+                     key_epoch_id, actor, reason, occurred_at_ms)
+                VALUES (?, 'registered', NULL, ?, ?, 'migration',
+                        'backfilled from a pre-lifecycle registry row', ?)
+                """,
+                (row["device_id"], aid, kid, row["provisioned_at_ms"]),
+            )
 
     def _add_column_if_missing_on_conn(
         self,
@@ -2386,11 +2576,10 @@ class StateStore:
         ``unchanged``
             The anchor already matches exactly. Idempotent no-op — nothing
             is touched, including approval and freshness.
-        ``refused_manifest_epoch_unsupported``
-            Same key, new capability hash. The contract requires this to
-            be stored as a PENDING candidate beside the still-active
-            anchor; that state model does not exist yet, so this fails
-            closed rather than overwriting the active anchor.
+        ``pending_manifest_epoch``
+            Same key, new capability hash. Stored as a PENDING candidate
+            beside the still-active anchor, which is untouched. Nothing is
+            accepted against it until it is promoted.
         ``refused_revoked``
             The identity is revoked. Revocation belongs to the identity
             and is never cleared by registration.
@@ -2426,16 +2615,70 @@ class StateStore:
         provisioned_at_ms: int,
     ) -> str:
         assert self._conn is not None
+        from ori.security.firmware_telemetry import (
+            anchor_epoch_id as _anchor_epoch_id,
+        )
+        from ori.security.firmware_telemetry import (
+            key_epoch_id as _key_epoch_id,
+        )
+
+        kid = _key_epoch_id(device_id=device_id, public_key_b64=public_key_b64)
+        aid = _anchor_epoch_id(
+            device_id=device_id,
+            public_key_b64=public_key_b64,
+            posture=posture,
+            capability_hash=capability_hash,
+        )
+
         # Decide inside the transaction: a read-then-write in the caller
         # could be raced by a concurrent revocation.
         row = self._conn.execute(
             """
-            SELECT public_key_b64, posture, capability_hash, revoked
+            SELECT public_key_b64, posture, capability_hash, revoked,
+                   anchor_epoch_id, key_epoch_id
               FROM firmware_device_registry
              WHERE device_id = ?
             """,
             (device_id,),
         ).fetchone()
+
+        def _record_anchor(state: str) -> None:
+            self._conn.execute(  # type: ignore[union-attr]
+                """
+                INSERT OR REPLACE INTO firmware_device_anchors
+                    (anchor_epoch_id, device_id, key_epoch_id, public_key_b64,
+                     posture, capability_hash, manifest_json, channel_map_json,
+                     board_profile, state, created_at_ms, state_changed_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    aid,
+                    device_id,
+                    kid,
+                    public_key_b64,
+                    posture,
+                    capability_hash,
+                    manifest_json,
+                    channel_map_json,
+                    board_profile,
+                    state,
+                    provisioned_at_ms,
+                    provisioned_at_ms,
+                ),
+            )
+
+        def _record_transition(
+            transition: str, from_epoch: str | None, to_epoch: str | None
+        ) -> None:
+            self._conn.execute(  # type: ignore[union-attr]
+                """
+                INSERT INTO firmware_anchor_transitions
+                    (device_id, transition, from_epoch_id, to_epoch_id,
+                     key_epoch_id, actor, reason, occurred_at_ms)
+                VALUES (?, ?, ?, ?, ?, '', '', ?)
+                """,
+                (device_id, transition, from_epoch, to_epoch, kid, provisioned_at_ms),
+            )
 
         if row is None:
             self._conn.execute(
@@ -2444,8 +2687,10 @@ class StateStore:
                     (device_id, public_key_b64, posture, capability_hash,
                      manifest_json, channel_map_json, board_profile,
                      approved, provisioned_at_ms, last_boot_id, last_seq,
-                     revoked, revoked_at_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, NULL)
+                     revoked, revoked_at_ms, anchor_epoch_id, key_epoch_id)
+                -- anchor_epoch_id stays empty until promotion: it names the
+                -- ACTIVE anchor, and nothing is active yet.
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, 0, NULL, '', ?)
                 """,
                 (
                     device_id,
@@ -2456,8 +2701,11 @@ class StateStore:
                     channel_map_json,
                     board_profile,
                     provisioned_at_ms,
+                    kid,
                 ),
             )
+            _record_anchor("pending")
+            _record_transition("registered", None, aid)
             self._conn.commit()
             return "registered"
 
@@ -2473,26 +2721,142 @@ class StateStore:
         if row["public_key_b64"] != public_key_b64:
             return "refused_key_change"
 
-        if row["posture"] == posture and row["capability_hash"] == capability_hash:
-            # Exact match: idempotent. Touch nothing — not approval, not
-            # freshness, not provisioned_at_ms. Re-publishing a manifest
-            # is not an event.
+        # Authoritative: the anchors table, not the registry pointer. For
+        # an identity with no active anchor the registry tracks the pending
+        # candidate, so consulting it alone would call a superseded or
+        # discarded anchor "unchanged".
+        existing_anchor = self._conn.execute(
+            "SELECT state FROM firmware_device_anchors WHERE anchor_epoch_id = ?",
+            (aid,),
+        ).fetchone()
+        if existing_anchor is not None and existing_anchor["state"] in (
+            "active",
+            "pending",
+        ):
+            # Exact match against the live anchor: idempotent. Touch
+            # nothing — not approval, not freshness, not
+            # provisioned_at_ms. Re-publishing a manifest is not an event.
             return "unchanged"
 
-        # Same key, new manifest (or posture).
-        #
-        # The contract (ori-specs/device-provisioning/v1.md) requires this
-        # to become a PENDING candidate while the active anchor keeps
-        # operating — which needs the anchor state model and append-only
-        # history that this store does not have yet.
-        #
-        # Until it does, this FAILS CLOSED. Overwriting the active anchor
-        # and clearing approval, as this method used to, is the behaviour
-        # the contract forbids: it lets a device replace its own accepted
-        # capability surface by publishing. Refusing is the honest
-        # interim: an operator can still revoke and re-provision
-        # deliberately, and nothing is silently accepted.
-        return "refused_manifest_epoch_unsupported"
+        # Same key, new manifest or posture: a PENDING candidate beside
+        # the still-active anchor. The active anchor is deliberately
+        # untouched — overwriting it would let a device replace its own
+        # accepted capability surface by publishing, and would reset a
+        # replay window that never left its key epoch.
+        existing_pending = self._conn.execute(
+            """
+            SELECT anchor_epoch_id FROM firmware_device_anchors
+             WHERE device_id = ? AND state = 'pending'
+            """,
+            (device_id,),
+        ).fetchone()
+        if existing_pending is not None:
+            if existing_pending["anchor_epoch_id"] == aid:
+                return "unchanged"
+            # A pending anchor grants nothing, so replacing one loses no
+            # authority; refusing would strand a device whose earlier
+            # manifest nobody promoted.
+            self._conn.execute(
+                """
+                UPDATE firmware_device_anchors
+                   SET state = 'discarded', state_changed_at_ms = ?
+                 WHERE anchor_epoch_id = ?
+                """,
+                (provisioned_at_ms, existing_pending["anchor_epoch_id"]),
+            )
+            _record_transition("discarded", existing_pending["anchor_epoch_id"], aid)
+
+        _record_anchor("pending")
+        _record_transition("registered", row["anchor_epoch_id"] or None, aid)
+
+        has_active = self._conn.execute(
+            "SELECT 1 FROM firmware_device_anchors "
+            "WHERE device_id = ? AND state = 'active'",
+            (device_id,),
+        ).fetchone()
+        if has_active is None:
+            # Nothing is active, so the registry row is the identity's
+            # description of its only candidate. Point it at the new one —
+            # otherwise it would still describe the anchor just discarded,
+            # and promotion would activate the wrong manifest.
+            self._conn.execute(
+                """
+                UPDATE firmware_device_registry
+                   SET posture = ?, capability_hash = ?, manifest_json = ?,
+                       channel_map_json = ?, board_profile = ?,
+                       provisioned_at_ms = ?
+                 WHERE device_id = ?
+                """,
+                (
+                    posture,
+                    capability_hash,
+                    manifest_json,
+                    channel_map_json,
+                    board_profile,
+                    provisioned_at_ms,
+                    device_id,
+                ),
+            )
+        self._conn.commit()
+        return "pending_manifest_epoch"
+
+    async def get_pending_firmware_anchor(self, device_id: str) -> dict | None:
+        """The pending candidate for a device, if one is awaiting
+        promotion. A pending anchor grants nothing."""
+        return await self._run_read(self._get_pending_firmware_anchor_sync, device_id)
+
+    def _get_pending_firmware_anchor_sync(
+        self, conn: sqlite3.Connection, device_id: str
+    ) -> dict | None:
+        row = conn.execute(
+            """
+            SELECT * FROM firmware_device_anchors
+             WHERE device_id = ? AND state = 'pending'
+            """,
+            (device_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    async def list_firmware_anchor_history(self, device_id: str) -> list[dict]:
+        """Every anchor this identity has held, newest first.
+
+        Append-only: evidence outlives the anchor that authorised it, so
+        superseded and discarded anchors are retained rather than
+        overwritten.
+        """
+        return await self._run_read(self._list_firmware_anchor_history_sync, device_id)
+
+    def _list_firmware_anchor_history_sync(
+        self, conn: sqlite3.Connection, device_id: str
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT * FROM firmware_device_anchors
+             WHERE device_id = ?
+             ORDER BY state_changed_at_ms DESC, rowid DESC
+            """,
+            (device_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    async def list_firmware_anchor_transitions(self, device_id: str) -> list[dict]:
+        """The audited trust transitions for an identity, oldest first."""
+        return await self._run_read(
+            self._list_firmware_anchor_transitions_sync, device_id
+        )
+
+    def _list_firmware_anchor_transitions_sync(
+        self, conn: sqlite3.Connection, device_id: str
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT * FROM firmware_anchor_transitions
+             WHERE device_id = ?
+             ORDER BY occurred_at_ms ASC, id ASC
+            """,
+            (device_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     async def get_firmware_device(self, device_id: str) -> dict | None:
         return await self._run_read(self._get_firmware_device_sync, device_id)
@@ -2504,7 +2868,8 @@ class StateStore:
             """
             SELECT device_id, public_key_b64, alg, posture, capability_hash,
                    manifest_json, channel_map_json, board_profile, approved,
-                   provisioned_at_ms, last_boot_id, last_seq, revoked, revoked_at_ms
+                   provisioned_at_ms, last_boot_id, last_seq, revoked,
+                   revoked_at_ms, anchor_epoch_id, key_epoch_id
             FROM firmware_device_registry WHERE device_id = ?
             """,
             (device_id,),
@@ -2526,36 +2891,163 @@ class StateStore:
             "last_seq": int(row[11]),
             "revoked": bool(row[12]),
             "revoked_at_ms": int(row[13]) if row[13] is not None else None,
+            "anchor_epoch_id": row[14],
+            "key_epoch_id": row[15],
         }
 
-    async def approve_firmware_device(self, device_id: str) -> bool:
-        """Operator approval for the currently verified provisioning anchor."""
-        return await self._run_write(self._approve_firmware_device_sync, device_id)
+    async def approve_firmware_device(
+        self,
+        device_id: str,
+        *,
+        actor: str,
+        reason: str,
+        occurred_at_ms: int | None = None,
+    ) -> bool:
+        """Promote the pending anchor to active (ori-specs
+        device-provisioning/v1.md). Promotion is the only path to active.
 
-    def _approve_firmware_device_sync(self, device_id: str) -> bool:
+        `actor` and `reason` are REQUIRED and recorded in the transition
+        log. Promotion is a trust transition; an unattributed one is
+        indistinguishable from a compromise after the fact.
+        """
+        return await self._run_write(
+            self._approve_firmware_device_sync,
+            device_id,
+            actor,
+            reason,
+            occurred_at_ms if occurred_at_ms is not None else now_ms(),
+        )
+
+    def _approve_firmware_device_sync(
+        self, device_id: str, actor: str, reason: str, occurred_at_ms: int
+    ) -> bool:
+        """Promotion: the ONLY path an anchor becomes active.
+
+        Moves the pending candidate to `active`, the previously active
+        anchor to `superseded`, and points the registry at the promoted
+        anchor — all in one transaction, so the registry and the anchor
+        history cannot disagree about which anchor is trusted.
+        """
         assert self._conn is not None
-        cur = self._conn.execute(
+        _require_attribution("promotion", actor, reason)
+        registry = self._conn.execute(
+            "SELECT revoked, anchor_epoch_id FROM firmware_device_registry "
+            "WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+        if registry is None or registry["revoked"]:
+            return False
+
+        pending = self._conn.execute(
+            "SELECT * FROM firmware_device_anchors "
+            "WHERE device_id = ? AND state = 'pending'",
+            (device_id,),
+        ).fetchone()
+        if pending is None:
+            # Nothing to promote. An already-active anchor is not
+            # re-promoted, and inventing one here would be the implicit
+            # transition this model exists to remove.
+            return False
+
+        previous = self._conn.execute(
+            "SELECT anchor_epoch_id FROM firmware_device_anchors "
+            "WHERE device_id = ? AND state = 'active'",
+            (device_id,),
+        ).fetchone()
+        if previous is not None:
+            self._conn.execute(
+                "UPDATE firmware_device_anchors SET state = 'superseded', "
+                "state_changed_at_ms = ? WHERE anchor_epoch_id = ?",
+                (occurred_at_ms, previous["anchor_epoch_id"]),
+            )
+
+        self._conn.execute(
+            "UPDATE firmware_device_anchors SET state = 'active', "
+            "state_changed_at_ms = ? WHERE anchor_epoch_id = ?",
+            (occurred_at_ms, pending["anchor_epoch_id"]),
+        )
+
+        # The registry now reflects the promoted anchor. Freshness is left
+        # alone: promotion within one key epoch must not re-open a replay
+        # window, and a key change cannot reach here (ordinary
+        # registration refuses it).
+        self._conn.execute(
             """
             UPDATE firmware_device_registry
-            SET approved = 1
-            WHERE device_id = ? AND revoked = 0
+               SET approved = 1,
+                   public_key_b64 = ?,
+                   posture = ?,
+                   capability_hash = ?,
+                   manifest_json = ?,
+                   channel_map_json = ?,
+                   board_profile = ?,
+                   anchor_epoch_id = ?,
+                   key_epoch_id = ?
+             WHERE device_id = ? AND revoked = 0
             """,
-            (device_id,),
+            (
+                pending["public_key_b64"],
+                pending["posture"],
+                pending["capability_hash"],
+                pending["manifest_json"],
+                pending["channel_map_json"],
+                pending["board_profile"],
+                pending["anchor_epoch_id"],
+                pending["key_epoch_id"],
+                device_id,
+            ),
+        )
+        self._conn.execute(
+            """
+            INSERT INTO firmware_anchor_transitions
+                (device_id, transition, from_epoch_id, to_epoch_id,
+                 key_epoch_id, actor, reason, occurred_at_ms)
+            VALUES (?, 'promoted', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                device_id,
+                previous["anchor_epoch_id"] if previous is not None else None,
+                pending["anchor_epoch_id"],
+                pending["key_epoch_id"],
+                actor,
+                reason,
+                occurred_at_ms,
+            ),
         )
         self._conn.commit()
-        return cur.rowcount > 0
+        return True
 
     async def revoke_firmware_device(
-        self, device_id: str, *, revoked_at_ms: int | None = None
+        self,
+        device_id: str,
+        *,
+        revoked_at_ms: int | None = None,
+        actor: str,
+        reason: str,
     ) -> bool:
+        """Take an identity out of service: the active anchor is retained
+        as `revoked`, any pending candidate is discarded, and the
+        transition is recorded."""
         return await self._run_write(
             self._revoke_firmware_device_sync,
             device_id,
             revoked_at_ms if revoked_at_ms is not None else now_ms(),
+            actor,
+            reason,
         )
 
-    def _revoke_firmware_device_sync(self, device_id: str, revoked_at_ms: int) -> bool:
+    def _revoke_firmware_device_sync(
+        self, device_id: str, revoked_at_ms: int, actor: str, reason: str
+    ) -> bool:
+        """Takes an identity out of service, in one transaction.
+
+        The active anchor is retained as `revoked` so reinstatement has
+        something to return to, and any pending candidate is discarded —
+        an unpromoted candidate must not survive a revocation and become
+        promotable later.
+        """
         assert self._conn is not None
+        _require_attribution("revocation", actor, reason)
         cur = self._conn.execute(
             """
             UPDATE firmware_device_registry
@@ -2564,8 +3056,49 @@ class StateStore:
             """,
             (revoked_at_ms, device_id),
         )
+        if cur.rowcount == 0:
+            return False
+
+        active = self._conn.execute(
+            "SELECT anchor_epoch_id, key_epoch_id FROM firmware_device_anchors "
+            "WHERE device_id = ? AND state = 'active'",
+            (device_id,),
+        ).fetchone()
+        if active is not None:
+            self._conn.execute(
+                "UPDATE firmware_device_anchors SET state = 'revoked', "
+                "state_changed_at_ms = ? WHERE anchor_epoch_id = ?",
+                (revoked_at_ms, active["anchor_epoch_id"]),
+            )
+        pending = self._conn.execute(
+            "SELECT anchor_epoch_id FROM firmware_device_anchors "
+            "WHERE device_id = ? AND state = 'pending'",
+            (device_id,),
+        ).fetchone()
+        if pending is not None:
+            self._conn.execute(
+                "UPDATE firmware_device_anchors SET state = 'discarded', "
+                "state_changed_at_ms = ? WHERE anchor_epoch_id = ?",
+                (revoked_at_ms, pending["anchor_epoch_id"]),
+            )
+        self._conn.execute(
+            """
+            INSERT INTO firmware_anchor_transitions
+                (device_id, transition, from_epoch_id, to_epoch_id,
+                 key_epoch_id, actor, reason, occurred_at_ms)
+            VALUES (?, 'revoked', ?, NULL, ?, ?, ?, ?)
+            """,
+            (
+                device_id,
+                active["anchor_epoch_id"] if active is not None else None,
+                active["key_epoch_id"] if active is not None else "",
+                actor,
+                reason,
+                revoked_at_ms,
+            ),
+        )
         self._conn.commit()
-        return cur.rowcount > 0
+        return True
 
     async def allocate_firmware_command_seq(self, device_id: str) -> int:
         """Allocate the next strictly increasing command sequence for a
