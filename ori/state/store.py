@@ -107,6 +107,12 @@ CREATE TABLE IF NOT EXISTS action_log (
     input_firmware_device_id TEXT NOT NULL DEFAULT '',
     input_firmware_boot_id INTEGER NOT NULL DEFAULT 0,
     input_firmware_seq INTEGER NOT NULL DEFAULT 0,
+    -- The provisioning registration snapshot, including approval
+    -- provenance, captured at attestation time. Persisted so a crash or
+    -- signing outage does not lose it: reconciliation reloads the exact
+    -- decision that was published rather than re-querying a registry that
+    -- may have moved on. '' when the action had no firmware source.
+    input_firmware_registration TEXT NOT NULL DEFAULT '',
     correlation_id    TEXT    NOT NULL DEFAULT '',
     trigger_name      TEXT    NOT NULL,
     timestamp         INTEGER NOT NULL
@@ -586,6 +592,7 @@ class StateStore:
             ("input_firmware_device_id", "TEXT    NOT NULL DEFAULT ''"),
             ("input_firmware_boot_id", "INTEGER NOT NULL DEFAULT 0"),
             ("input_firmware_seq", "INTEGER NOT NULL DEFAULT 0"),
+            ("input_firmware_registration", "TEXT    NOT NULL DEFAULT ''"),
             ("correlation_id", "TEXT    NOT NULL DEFAULT ''"),
             # Evidence attestation (Option B append-after-log): '' means the
             # row predates evidence signing or signing is disabled; rows
@@ -1653,9 +1660,16 @@ class StateStore:
         input_firmware_device_id: str = "",
         input_firmware_boot_id: int = 0,
         input_firmware_seq: int = 0,
+        input_firmware_registration: str = "",
         attestation_pending: bool = False,
     ) -> int:
-        """Persist action result with sensor/device context for reporting."""
+        """Persist action result with sensor/device context for reporting.
+
+        ``input_firmware_registration`` is the provisioning snapshot with
+        approval provenance, stored in the SAME insert as the action row so
+        a crash cannot leave a pending action whose provenance was to be
+        written by a later transaction.
+        """
         return await self._run_write(
             self._log_action_sync,
             result,
@@ -1669,6 +1683,7 @@ class StateStore:
                 "input_firmware_device_id": input_firmware_device_id,
                 "input_firmware_boot_id": input_firmware_boot_id,
                 "input_firmware_seq": input_firmware_seq,
+                "input_firmware_registration": input_firmware_registration,
                 "attestation_pending": attestation_pending,
             },
         )
@@ -1698,8 +1713,9 @@ class StateStore:
                  operator_response, proposal_id, safe_default_used, device_id,
                  sensor_id, sensor_type, input_attestation_grade, input_posture,
                  input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
+                 input_firmware_registration,
                  correlation_id, trigger_name, timestamp, attestation_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.action_name,
@@ -1718,6 +1734,7 @@ class StateStore:
                 str(context_fields.get("input_firmware_device_id", "") or ""),
                 int(context_fields.get("input_firmware_boot_id", 0) or 0),
                 int(context_fields.get("input_firmware_seq", 0) or 0),
+                str(context_fields.get("input_firmware_registration", "") or ""),
                 result.correlation_id,
                 trigger_name,
                 result.timestamp,
@@ -1768,6 +1785,7 @@ class StateStore:
                    proposal_id, safe_default_used, device_id, sensor_id,
                    sensor_type, input_attestation_grade, input_posture, correlation_id,
                    input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
+                   input_firmware_registration,
                    trigger_name, timestamp, attestation_status
             FROM action_log
             WHERE attestation_status IN ('pending', 'failed')
@@ -1776,7 +1794,15 @@ class StateStore:
             """,
             (int(limit),),
         ).fetchall()
-        return [dict(row) for row in rows]
+        out: list[dict] = []
+        for row in rows:
+            d = dict(row)
+            # Restore the persisted registration snapshot so reconciliation
+            # has the same durable provenance the original attestation did.
+            raw = d.pop("input_firmware_registration", "") or ""
+            d["input_firmware_registration"] = json.loads(raw) if raw else None
+            out.append(d)
+        return out
 
     async def get_attestation_summary(self) -> dict:
         """Aggregate evidence-signing state for health snapshots."""
@@ -3096,6 +3122,53 @@ class StateStore:
         return await self._run_read(
             self._list_firmware_anchor_transitions_sync, device_id
         )
+
+    async def firmware_active_promotion_attribution(
+        self, device_id: str
+    ) -> dict | None:
+        """The actor and reason of the promotion that made the CURRENT
+        active anchor active.
+
+        This is the provenance a coordinating store (ori-verity) must
+        record when it mirrors the approval: the same operator decision,
+        not a fresh or generic one. It is resolved precisely -- the latest
+        ``promoted`` transition whose ``to_epoch_id`` is the registry's
+        currently active ``anchor_epoch_id`` -- so a later re-provisioning
+        or an unrelated promotion cannot be mistaken for it.
+
+        ``None`` if the device is unknown, not approved, or has no such
+        promotion (e.g. a legacy row whose activation was inferred by the
+        migration -- that attribution is ``migration``, which is returned
+        as recorded rather than hidden).
+        """
+        return await self._run_read(
+            self._firmware_active_promotion_attribution_sync, device_id
+        )
+
+    def _firmware_active_promotion_attribution_sync(
+        self, conn: sqlite3.Connection, device_id: str
+    ) -> dict | None:
+        row = conn.execute(
+            """
+            SELECT t.actor, t.reason, t.occurred_at_ms, t.to_epoch_id
+              FROM firmware_anchor_transitions t
+              JOIN firmware_device_registry r
+                ON r.device_id = t.device_id
+               AND r.anchor_epoch_id = t.to_epoch_id
+             WHERE t.device_id = ?
+               AND t.transition = 'promoted'
+               AND r.approved = 1
+               AND r.revoked = 0
+             -- The transition id is this store's append order: the
+             -- receiver-anchored ordering. occurred_at_ms is a recorded
+             -- wall-clock that can regress or collide, so it must not
+             -- decide which promotion is latest.
+             ORDER BY t.id DESC
+             LIMIT 1
+            """,
+            (device_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
 
     def _list_firmware_anchor_transitions_sync(
         self, conn: sqlite3.Connection, device_id: str

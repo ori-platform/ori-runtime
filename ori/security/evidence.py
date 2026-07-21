@@ -426,6 +426,20 @@ class EvidenceAttestor:
         if not registration.get("approved") or registration.get("revoked"):
             raise ValueError("Layer 1 source device is not approved")
 
+        # The approval is a register-AND-PROMOTE in the evidence chain, and
+        # promotion there requires attribution. It must be the SAME operator
+        # decision recorded when this device was approved in the runtime, so
+        # it is read from the durable snapshot rather than invented here. A
+        # snapshot without it cannot be mirrored honestly, so refuse.
+        approval_actor = str(registration.get("approval_actor", "") or "").strip()
+        approval_reason = str(registration.get("approval_reason", "") or "").strip()
+        if not approval_actor or not approval_reason:
+            raise ValueError(
+                "Layer 1 source device registration lacks approval provenance "
+                "(approval_actor / approval_reason); cannot attribute the "
+                "evidence-chain promotion"
+            )
+
         public_key_hex = _public_key_b64_to_hex(registration.get("public_key_b64"))
         expected = {
             "device_id": source_device_id,
@@ -462,6 +476,8 @@ class EvidenceAttestor:
             expected["hardware_profile"],
             int(registration.get("provisioned_at_ms", 0) or 0),
             True,
+            approval_actor,
+            approval_reason,
         )
 
     async def chain_head_hash(self) -> str | None:
