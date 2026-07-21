@@ -1430,3 +1430,242 @@ class TestTrustTransitionsAreAttributed:
         insert("discarded", "", "")
         conn.commit()
         conn.close()
+
+
+class TestLifecycleSequences:
+    """The three recovery sequences ori-specs/device-provisioning/v1.md
+    requires. Each was unexecutable before these operations existed."""
+
+    async def _registered_and_active(self, gate, case="manifest_minimal_dev"):
+        c = CASES[case]
+        await gate.register_device(
+            device_id=c["input"]["device_id"],
+            public_key_b64=PUBLIC_KEY_B64,
+            posture=c["input"]["posture"],
+            manifest_message=manifest_message(case),
+        )
+        await gate.approve_device(c["input"]["device_id"], actor="op", reason="initial")
+
+    @pytest.mark.asyncio
+    async def test_revoked_key_unchanged__reinstate_then_promote(self, gate) -> None:
+        await self._registered_and_active(gate)
+        await gate.revoke_device(DEV_DEVICE, actor="op", reason="suspected")
+        original = (await gate._store.list_firmware_anchor_history(DEV_DEVICE))[0]
+
+        assert await gate.reinstate_device(
+            DEV_DEVICE, actor="op", reason="cleared investigation"
+        )
+        # Reinstatement activates NOTHING: the anchor is pending.
+        row = await gate._store.get_firmware_device(DEV_DEVICE)
+        assert row["revoked"] is False
+        assert row["approved"] is False
+        pending = await gate._store.get_pending_firmware_anchor(DEV_DEVICE)
+        assert pending["anchor_epoch_id"] == original["anchor_epoch_id"]
+
+        assert await gate.approve_device(DEV_DEVICE, actor="op", reason="back")
+        row = await gate._store.get_firmware_device(DEV_DEVICE)
+        assert row["approved"] is True
+
+        names = [
+            t["transition"]
+            for t in await gate._store.list_firmware_anchor_transitions(DEV_DEVICE)
+        ]
+        assert names == ["registered", "promoted", "revoked", "reinstated", "promoted"]
+
+    @pytest.mark.asyncio
+    async def test_revoked_and_key_changed__all_three_operations(self, gate) -> None:
+        await self._registered_and_active(gate)
+        # Give the device a command-sequence history to protect.
+        assert await gate._store.allocate_firmware_command_seq(DEV_DEVICE) == 1
+        assert await gate._store.allocate_firmware_command_seq(DEV_DEVICE) == 2
+        await gate._store.advance_firmware_freshness(DEV_DEVICE, boot_id=4, seq=900)
+        await gate.revoke_device(DEV_DEVICE, actor="op", reason="key compromised")
+
+        # Re-provisioning a revoked identity is refused: reinstate first,
+        # or the device returns to service without anyone saying so.
+        new_seed = os.urandom(32)
+        new_manifest = signed_manifest_for_key(new_seed, device_id=DEV_DEVICE)
+        with pytest.raises(FirmwareVerificationError):
+            await gate.reprovision_device(
+                device_id=DEV_DEVICE,
+                public_key_b64=new_manifest["public_key_b64"],
+                posture="development",
+                manifest_message=new_manifest,
+                actor="op",
+                reason="new key",
+            )
+
+        assert await gate.reinstate_device(DEV_DEVICE, actor="op", reason="rebuild")
+        await gate.reprovision_device(
+            device_id=DEV_DEVICE,
+            public_key_b64=new_manifest["public_key_b64"],
+            posture="development",
+            manifest_message=new_manifest,
+            actor="op",
+            reason="nvs erased, device re-keyed",
+        )
+        # Still not active: the new key is pending.
+        row = await gate._store.get_firmware_device(DEV_DEVICE)
+        assert row["public_key_b64"] == PUBLIC_KEY_B64
+
+        assert await gate.approve_device(DEV_DEVICE, actor="op", reason="confirmed")
+        row = await gate._store.get_firmware_device(DEV_DEVICE)
+        assert row["public_key_b64"] == new_manifest["public_key_b64"]
+
+        # A re-keyed device restarts its counters, so the new key epoch
+        # starts a fresh replay window rather than refusing it.
+        assert row["last_boot_id"] == 0
+        assert row["last_seq"] == 0
+        # But cmd_seq is per DEVICE, not per key, and must continue.
+        assert await gate._store.allocate_firmware_command_seq(DEV_DEVICE) == 3
+
+        names = [
+            t["transition"]
+            for t in await gate._store.list_firmware_anchor_transitions(DEV_DEVICE)
+        ]
+        assert names == [
+            "registered",
+            "promoted",
+            "revoked",
+            "reinstated",
+            "reprovisioned",
+            "promoted",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_manifest_promotion_does_not_reset_freshness(self, gate) -> None:
+        # The contrast with the key-change case above: same key, so the
+        # replay window must NOT re-open.
+        await self._registered_and_active(gate, "manifest_full_sealed")
+        await gate._store.advance_firmware_freshness(SEALED_DEVICE, boot_id=4, seq=900)
+        await gate.register_device(
+            device_id=SEALED_DEVICE,
+            public_key_b64=PUBLIC_KEY_B64,
+            posture="sealed_flash",
+            manifest_message=manifest_message("manifest_command_bench"),
+        )
+        await gate.approve_device(SEALED_DEVICE, actor="op", reason="new manifest")
+        row = await gate._store.get_firmware_device(SEALED_DEVICE)
+        assert row["last_boot_id"] == 4
+        assert row["last_seq"] == 900
+
+    @pytest.mark.asyncio
+    async def test_reinstating_a_live_identity_is_refused(self, gate) -> None:
+        await self._registered_and_active(gate)
+        # Clearing a flag that is not set would write an audit row
+        # describing an event that did not happen.
+        assert await gate.reinstate_device(DEV_DEVICE, actor="op", reason="x") is False
+
+    @pytest.mark.asyncio
+    async def test_operations_require_attribution(self, gate) -> None:
+        await self._registered_and_active(gate)
+        await gate.revoke_device(DEV_DEVICE, actor="op", reason="r")
+        with pytest.raises(ValueError, match="audited"):
+            await gate.reinstate_device(DEV_DEVICE, actor="", reason="r")
+        with pytest.raises(ValueError, match="audited"):
+            await gate.reinstate_device(DEV_DEVICE, actor="op", reason="  ")
+
+
+class TestReprovisioningMustActuallyRotate:
+    """Re-provisioning REPLACES a key. Submitting the current one changes
+    nothing, and it previously overwrote the active anchor row with a
+    pending one while the registry still said approved."""
+
+    async def _active(self, gate):
+        c = CASES["manifest_minimal_dev"]
+        await gate.register_device(
+            device_id=DEV_DEVICE,
+            public_key_b64=PUBLIC_KEY_B64,
+            posture=c["input"]["posture"],
+            manifest_message=manifest_message("manifest_minimal_dev"),
+        )
+        await gate.approve_device(DEV_DEVICE, actor="op", reason="init")
+
+    @pytest.mark.asyncio
+    async def test_same_key_is_refused_and_changes_nothing(self, gate) -> None:
+        await self._active(gate)
+        before = await gate._store.get_firmware_device(DEV_DEVICE)
+        history_before = await gate._store.list_firmware_anchor_history(DEV_DEVICE)
+        audit_before = await gate._store.list_firmware_anchor_transitions(DEV_DEVICE)
+
+        with pytest.raises(FirmwareVerificationError) as excinfo:
+            await gate.reprovision_device(
+                device_id=DEV_DEVICE,
+                public_key_b64=PUBLIC_KEY_B64,
+                posture="development",
+                manifest_message=manifest_message("manifest_minimal_dev"),
+                actor="op",
+                reason="same key",
+            )
+        assert excinfo.value.code == "same_key_not_a_rotation"
+
+        # Registry, history and audit are all untouched.
+        after = await gate._store.get_firmware_device(DEV_DEVICE)
+        assert after == before
+        history_after = await gate._store.list_firmware_anchor_history(DEV_DEVICE)
+        assert [h["state"] for h in history_after] == [
+            h["state"] for h in history_before
+        ]
+        assert "active" in {h["state"] for h in history_after}
+        audit_after = await gate._store.list_firmware_anchor_transitions(DEV_DEVICE)
+        assert len(audit_after) == len(audit_before)
+
+    @pytest.mark.asyncio
+    async def test_previously_used_key_is_refused(self, gate) -> None:
+        # An old key may be exactly the one rotated away from because it
+        # was compromised. Returning to it would make rotation reversible
+        # by whoever still holds it.
+        await self._active(gate)
+        original = manifest_message("manifest_minimal_dev")
+
+        second = signed_manifest_for_key(os.urandom(32), device_id=DEV_DEVICE)
+        await gate.reprovision_device(
+            device_id=DEV_DEVICE,
+            public_key_b64=second["public_key_b64"],
+            posture="development",
+            manifest_message=second,
+            actor="op",
+            reason="rotate",
+        )
+        await gate.approve_device(DEV_DEVICE, actor="op", reason="promote")
+
+        history_before = await gate._store.list_firmware_anchor_history(DEV_DEVICE)
+        with pytest.raises(FirmwareVerificationError) as excinfo:
+            await gate.reprovision_device(
+                device_id=DEV_DEVICE,
+                public_key_b64=PUBLIC_KEY_B64,
+                posture="development",
+                manifest_message=original,
+                actor="op",
+                reason="back to the old key",
+            )
+        assert excinfo.value.code == "key_epoch_reused"
+
+        history_after = await gate._store.list_firmware_anchor_history(DEV_DEVICE)
+        assert len(history_after) == len(history_before)
+        row = await gate._store.get_firmware_device(DEV_DEVICE)
+        assert row["public_key_b64"] == second["public_key_b64"]
+
+    @pytest.mark.asyncio
+    async def test_history_is_append_only_across_rotation(self, gate) -> None:
+        await self._active(gate)
+        first_id = (await gate._store.get_firmware_device(DEV_DEVICE))[
+            "anchor_epoch_id"
+        ]
+        new = signed_manifest_for_key(os.urandom(32), device_id=DEV_DEVICE)
+        await gate.reprovision_device(
+            device_id=DEV_DEVICE,
+            public_key_b64=new["public_key_b64"],
+            posture="development",
+            manifest_message=new,
+            actor="op",
+            reason="rotate",
+        )
+        await gate.approve_device(DEV_DEVICE, actor="op", reason="promote")
+
+        history = await gate._store.list_firmware_anchor_history(DEV_DEVICE)
+        ids = {h["anchor_epoch_id"] for h in history}
+        # The original anchor is retained, not overwritten: evidence
+        # outlives the anchor that authorised it.
+        assert first_id in ids
+        assert len(history) == 2

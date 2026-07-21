@@ -296,12 +296,21 @@ async def _approve(
                 f"device {device_id!r} is revoked; approving it here would contradict "
                 "the registry — re-provision deliberately instead"
             )
-        stored_key = str(row.get("public_key_b64", ""))
+        # Confirm the key of the anchor about to be ACTIVATED, not the one
+        # currently active. After re-provisioning they differ, and checking
+        # the active key would make a re-keyed device impossible to promote.
+        pending = await store.get_pending_firmware_anchor(device_id)
+        if pending is None:
+            raise ProvisionerError(
+                f"device {device_id!r} has no pending anchor to promote"
+            )
+        stored_key = str(pending.get("public_key_b64", ""))
         if confirmed_key != stored_key:
             raise ProvisionerError(
-                "the confirmed device key does not match the registered anchor.\n"
-                f"  registered: {stored_key}\n"
-                f"  confirmed : {confirmed_key}\n"
+                "the confirmed device key does not match the anchor awaiting "
+                "promotion.\n"
+                f"  awaiting promotion: {stored_key}\n"
+                f"  confirmed         : {confirmed_key}\n"
                 "Approving would bind authority to a device you did not verify."
             )
         gate = FirmwareTelemetryGate(store)
@@ -403,6 +412,98 @@ def cmd_publish(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _reinstate(db_path: str, device_id: str, actor: str, reason: str) -> None:
+    from ori.security.firmware_ingest import FirmwareTelemetryGate
+
+    store = await _open_store(db_path)
+    try:
+        if not await FirmwareTelemetryGate(store).reinstate_device(
+            device_id, actor=actor, reason=reason
+        ):
+            raise ProvisionerError(
+                f"cannot reinstate {device_id!r}: it is unknown, or it is not revoked"
+            )
+    finally:
+        await store.close()
+
+
+def cmd_reinstate(args: argparse.Namespace) -> int:
+    asyncio.run(
+        _reinstate(
+            args.db,
+            args.device_id,
+            authenticated_actor(args.actor_label),
+            args.reason,
+        )
+    )
+    print(f"{args.device_id} reinstated; its retained anchor is PENDING")
+    print("Reinstatement activates nothing. Run `approve` to promote it.")
+    return 0
+
+
+async def _reprovision(
+    db_path: str,
+    manifest_path: str,
+    confirmed_key: str,
+    actor: str,
+    reason: str,
+) -> str:
+    from ori.security.firmware_ingest import FirmwareTelemetryGate
+
+    message = _load_manifest_message(manifest_path)
+    manifest = message["manifest"]
+    device_id = manifest.get("device_id")
+    device_pub = manifest.get("public_key_b64")
+    posture = manifest.get("posture")
+    if not all(isinstance(v, str) for v in (device_id, device_pub, posture)):
+        raise ProvisionerError(
+            "manifest is missing device_id, public_key_b64, or posture"
+        )
+
+    # The whole reason re-provisioning is a separate operation: the new key
+    # must be confirmed against the device itself, not against the manifest
+    # that asserts it.
+    if confirmed_key != device_pub:
+        raise ProvisionerError(
+            "the confirmed device key does not match the key in the manifest.\n"
+            f"  manifest : {device_pub}\n"
+            f"  confirmed: {confirmed_key}\n"
+            "Re-provisioning binds authority to a NEW key; confirm it from the "
+            "device's own console before proceeding."
+        )
+
+    store = await _open_store(db_path)
+    try:
+        return await FirmwareTelemetryGate(store).reprovision_device(
+            device_id=str(device_id),
+            public_key_b64=str(device_pub),
+            posture=str(posture),
+            manifest_message=message,
+            actor=actor,
+            reason=reason,
+        )
+    except FirmwareVerificationError as exc:
+        raise ProvisionerError(f"re-provisioning refused: {exc}") from exc
+    finally:
+        await store.close()
+
+
+def cmd_reprovision(args: argparse.Namespace) -> int:
+    capability_hash = asyncio.run(
+        _reprovision(
+            args.db,
+            args.manifest,
+            args.confirm_device_key,
+            authenticated_actor(args.actor_label),
+            args.reason,
+        )
+    )
+    print("new key accepted as a PENDING anchor; the previous anchor stays active")
+    print(f"  capability hash: {capability_hash}")
+    print("Run `approve` to promote it.")
+    return 0
+
+
 # ── contract diagnostic ──────────────────────────────────────────────
 
 
@@ -487,6 +588,30 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--runtime-command-seed", required=True)
     p.add_argument("--out")
     p.set_defaults(func=cmd_publish)
+
+    p = sub.add_parser(
+        "reinstate", help="return a revoked identity to service (anchor -> pending)"
+    )
+    p.add_argument("--db", required=True)
+    p.add_argument("--device-id", required=True)
+    p.add_argument("--reason", required=True, help="recorded in the audit log")
+    p.add_argument("--actor-label", default="", help="optional display name")
+    p.set_defaults(func=cmd_reinstate)
+
+    p = sub.add_parser(
+        "reprovision", help="accept a NEW device key (explicit, audited)"
+    )
+    p.add_argument("--db", required=True)
+    p.add_argument("--manifest", required=True)
+    p.add_argument(
+        "--confirm-device-key",
+        required=True,
+        metavar="B64",
+        help="the NEW device public key as observed on the device itself",
+    )
+    p.add_argument("--reason", required=True, help="recorded in the audit log")
+    p.add_argument("--actor-label", default="", help="optional display name")
+    p.set_defaults(func=cmd_reprovision)
 
     p = sub.add_parser("selfcheck", help="reproduce the shared golden vectors")
     p.set_defaults(func=cmd_selfcheck)
