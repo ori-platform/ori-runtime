@@ -110,7 +110,14 @@ class _FakeEvidenceChain:
         hardware_profile: str,
         provisioned_at_ms: int,
         approved: bool = False,
+        actor: str = "",
+        reason: str = "",
     ) -> None:
+        # The lifecycle FFI requires attribution when approved: a promotion
+        # is an operator decision. The mock records it so tests can assert
+        # the runtime forwarded the persisted provenance.
+        if approved and (not actor.strip() or not reason.strip()):
+            raise ValueError("approved registration requires actor and reason")
         self.layer1_devices[device_id] = {
             "device_id": device_id,
             "public_key": public_key,
@@ -119,6 +126,8 @@ class _FakeEvidenceChain:
             "capability_hash": capability_hash,
             "hardware_profile": hardware_profile,
             "approved": approved,
+            "approval_actor": actor,
+            "approval_reason": reason,
             "provisioned_at_ms": provisioned_at_ms,
             "last_boot_id": 0,
             "last_seq": 0,
@@ -968,5 +977,145 @@ class TestEvidenceTrustProperties:
             assert exported["attestation_seq"] == 9
             assert exported["input_attestation_grade"] == "attested_dev"
             assert exported["input_posture"] == "development"
+        finally:
+            await store.close()
+
+
+class TestLayer1RegistrationProvenance:
+    """The evidence-chain approval is a register-and-promote, and promotion
+    there requires attribution. It must be the SAME operator decision the
+    runtime recorded, carried in the durable snapshot -- not invented at
+    the boundary."""
+
+    def _registration(self, **overrides) -> dict:
+        reg = {
+            "device_id": "fw-node-01",
+            "public_key_b64": "ERERERERERERERERERERERERERERERERERERERERERE=",
+            "alg": "ed25519",
+            "posture": "sealed_flash",
+            "capability_hash": "sha256:" + "ab" * 32,
+            "board_profile": "esp32-s3-pzem-v1",
+            "provisioned_at_ms": 1_751_500_900_000,
+            "approved": True,
+            "revoked": False,
+            "approval_actor": "uid=42:alice",
+            "approval_reason": "bench bring-up",
+        }
+        reg.update(overrides)
+        return reg
+
+    async def _attestor(self, monkeypatch, tmp_path):
+        attestor = await _started_attestor(monkeypatch, tmp_path)
+        attestor._chain = _FakeEvidenceChain(
+            str(tmp_path / "chain.db"), str(tmp_path / "chain.key"), "secret"
+        )
+        return attestor
+
+    async def test_forwards_persisted_provenance_to_the_chain(
+        self, monkeypatch, tmp_path
+    ):
+        attestor = await self._attestor(monkeypatch, tmp_path)
+        try:
+            await attestor._sync_layer1_device_registration(
+                {
+                    "input_firmware_device_id": "fw-node-01",
+                    "input_firmware_registration": self._registration(),
+                }
+            )
+            recorded = attestor._chain.layer1_devices["fw-node-01"]
+            assert recorded["approved"] is True
+            # The exact operator decision, not a constant.
+            assert recorded["approval_actor"] == "uid=42:alice"
+            assert recorded["approval_reason"] == "bench bring-up"
+        finally:
+            attestor.close()
+
+    async def test_snapshot_without_provenance_is_refused(self, monkeypatch, tmp_path):
+        attestor = await self._attestor(monkeypatch, tmp_path)
+        try:
+            reg = self._registration()
+            del reg["approval_actor"]
+            with pytest.raises(ValueError, match="approval provenance"):
+                await attestor._sync_layer1_device_registration(
+                    {
+                        "input_firmware_device_id": "fw-node-01",
+                        "input_firmware_registration": reg,
+                    }
+                )
+            # Nothing was mirrored.
+            assert "fw-node-01" not in attestor._chain.layer1_devices
+        finally:
+            attestor.close()
+
+    async def test_blank_provenance_is_refused(self, monkeypatch, tmp_path):
+        attestor = await self._attestor(monkeypatch, tmp_path)
+        try:
+            with pytest.raises(ValueError, match="approval provenance"):
+                await attestor._sync_layer1_device_registration(
+                    {
+                        "input_firmware_device_id": "fw-node-01",
+                        "input_firmware_registration": self._registration(
+                            approval_actor="   ", approval_reason="x"
+                        ),
+                    }
+                )
+        finally:
+            attestor.close()
+
+
+class TestReconciliationProvenanceRecovery:
+    """A failed attestation of firmware-sourced evidence must stay
+    recoverable: the registration snapshot and its approval provenance
+    are persisted with the action row, not held only in memory."""
+
+    async def test_persisted_snapshot_survives_reload(self, tmp_path):
+        import json as _json
+
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        try:
+            snapshot = {
+                "device_id": "fw-node-01",
+                "public_key_b64": "ERERERERERERERERERERERERERERERERERERERERERE=",
+                "alg": "ed25519",
+                "posture": "sealed_flash",
+                "capability_hash": "sha256:" + "ab" * 32,
+                "board_profile": "esp32-s3-pzem-v1",
+                "provisioned_at_ms": 1,
+                "approved": True,
+                "revoked": False,
+                "approval_actor": "uid=7:carol",
+                "approval_reason": "field commissioning",
+            }
+            # Logged atomically with the snapshot -- the same insert the
+            # dispatcher uses, not a follow-up mutation.
+            action_id = await store.log_action_for_event(
+                _result("D"),
+                trigger_name="dangerous_overcurrent",
+                input_firmware_device_id="fw-node-01",
+                input_firmware_registration=_json.dumps(snapshot, sort_keys=True),
+                attestation_pending=True,
+            )
+
+            # Reconciliation reloads from the database, not memory.
+            reloaded = await store.get_actions_needing_attestation()
+            row = next(r for r in reloaded if r["id"] == action_id)
+            reg = row["input_firmware_registration"]
+            assert reg is not None, "snapshot must survive the reload"
+            assert reg["approval_actor"] == "uid=7:carol"
+            assert reg["approval_reason"] == "field commissioning"
+        finally:
+            await store.close()
+
+    async def test_actions_without_firmware_reload_with_no_snapshot(self, tmp_path):
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        try:
+            action_id = await store.log_action(
+                _result("C"), "trigger", attestation_pending=True
+            )
+            reloaded = await store.get_actions_needing_attestation()
+            row = next(r for r in reloaded if r["id"] == action_id)
+            assert row["input_firmware_registration"] is None
         finally:
             await store.close()

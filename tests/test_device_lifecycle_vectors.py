@@ -400,3 +400,68 @@ async def test_every_outcome_code_is_exercised():
         "refused_same_key",
         "refused_key_reuse",
     } <= expected_outcomes
+
+
+async def test_active_promotion_attribution_is_the_exact_transition(store):
+    """The provenance a coordinating store mirrors must be the promotion
+    that made the CURRENT active anchor active -- not a later one, and not
+    a generic latest transition."""
+    d = "ori-edge-attrib-01"
+
+    async def reg(anchor):
+        a = ANCHORS[anchor]
+        return await store.upsert_firmware_device_anchor(
+            device_id=d,
+            public_key_b64=a["public_key_b64"],
+            posture=a["posture"],
+            capability_hash=a["capability_hash"],
+            manifest_json="{}",
+            channel_map_json="{}",
+        )
+
+    # Unknown device: no attribution.
+    assert await store.firmware_active_promotion_attribution(d) is None
+
+    await reg("A1")
+    # Registered but not promoted: still none.
+    assert await store.firmware_active_promotion_attribution(d) is None
+
+    await store.approve_firmware_device(d, actor="uid=1:alice", reason="bring-up")
+    got = await store.firmware_active_promotion_attribution(d)
+    assert got["actor"] == "uid=1:alice"
+    assert got["reason"] == "bring-up"
+
+    # Promote a new manifest epoch with different attribution. The active
+    # anchor is now A2, so the attribution must follow it.
+    await reg("A2")
+    await store.approve_firmware_device(d, actor="uid=2:bob", reason="manifest update")
+    got = await store.firmware_active_promotion_attribution(d)
+    assert got["actor"] == "uid=2:bob"
+    assert got["reason"] == "manifest update"
+
+    # The query is anchored to the ACTIVE anchor, not merely the latest
+    # promotion. Inject a spurious later `promoted` transition targeting a
+    # DIFFERENT epoch than the registry's active one -- the kind of split
+    # this model exists to refuse -- and confirm the attribution still
+    # follows the active anchor (A2/bob), not the newer row.
+    def _inject() -> None:
+        store._conn.execute(
+            """
+            INSERT INTO firmware_anchor_transitions
+                (device_id, transition, from_epoch_id, to_epoch_id,
+                 key_epoch_id, actor, reason, occurred_at_ms)
+            VALUES (?, 'promoted', NULL, 'sha256:deadbeef', '',
+                    'uid=9:intruder', 'not the active anchor', 99999999999999)
+            """,
+            (d,),
+        )
+        store._conn.commit()
+
+    await store._run_write(_inject)
+    got = await store.firmware_active_promotion_attribution(d)
+    assert got is not None
+    assert got["actor"] == "uid=2:bob", "attribution must follow the active anchor"
+
+    # Revoked: no active anchor, so no attribution to mirror.
+    await store.revoke_firmware_device(d, actor="uid=2:bob", reason="compromised")
+    assert await store.firmware_active_promotion_attribution(d) is None

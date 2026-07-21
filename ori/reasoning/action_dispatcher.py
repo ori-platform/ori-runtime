@@ -19,6 +19,7 @@ must never crash the runtime.
 
 import asyncio
 import datetime
+import json
 import logging
 import secrets
 import string
@@ -1455,6 +1456,31 @@ class ActionDispatcher:
             input_firmware_boot_id,
             input_firmware_seq,
         ) = _input_firmware_freshness(context)
+        # Build the registration snapshot with approval provenance BEFORE
+        # logging, so it lands in the same insert as the action row. A
+        # follow-up write would leave a crash window in which a pending
+        # action has no provenance and can never be reconciled.
+        #
+        # A store read failure here must not stop the action being logged:
+        # the evidence gap should fail visibly (an unsigned or
+        # provenance-less row a verifier can see) rather than silently
+        # losing the action record itself.
+        try:
+            firmware_registration = await self._build_firmware_registration_snapshot(
+                store, input_firmware_device_id
+            )
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: failed to build firmware registration "
+                "snapshot for device=%r; logging action without it",
+                input_firmware_device_id,
+            )
+            firmware_registration = None
+        firmware_registration_json = (
+            json.dumps(firmware_registration, sort_keys=True)
+            if firmware_registration is not None
+            else ""
+        )
         try:
             if hasattr(store, "log_action_for_event"):
                 reading = context.event.reading if context.event else None
@@ -1470,6 +1496,7 @@ class ActionDispatcher:
                     input_firmware_device_id=input_firmware_device_id,
                     input_firmware_boot_id=input_firmware_boot_id,
                     input_firmware_seq=input_firmware_seq,
+                    input_firmware_registration=firmware_registration_json,
                     attestation_pending=attest,
                 )
             else:
@@ -1495,7 +1522,32 @@ class ActionDispatcher:
                 input_firmware_device_id,
                 input_firmware_boot_id,
                 input_firmware_seq,
+                firmware_registration,
             )
+
+    async def _build_firmware_registration_snapshot(
+        self, store: Any, device_id: str
+    ) -> dict | None:
+        """The provisioning registration plus the approval provenance.
+
+        Returns ``None`` when there is no firmware source or the store
+        cannot supply one. The approval provenance is the actor and reason
+        of the promotion that made the device's current anchor active --
+        the SAME operator decision, resolved by the store, never invented
+        here.
+        """
+        if not device_id or not hasattr(store, "get_firmware_device"):
+            return None
+        registration = await store.get_firmware_device(device_id)
+        if registration is None:
+            return None
+        registration = dict(registration)
+        if hasattr(store, "firmware_active_promotion_attribution"):
+            attribution = await store.firmware_active_promotion_attribution(device_id)
+            if attribution is not None:
+                registration["approval_actor"] = attribution["actor"]
+                registration["approval_reason"] = attribution["reason"]
+        return registration
 
     async def _attest_action(
         self,
@@ -1509,6 +1561,7 @@ class ActionDispatcher:
         input_firmware_device_id: str,
         input_firmware_boot_id: int,
         input_firmware_seq: int,
+        firmware_registration: dict | None = None,
     ) -> None:
         """Sign a Tier C/D action into the evidence chain (append-after-log).
 
@@ -1535,10 +1588,10 @@ class ActionDispatcher:
             "input_firmware_seq": input_firmware_seq,
             "timestamp": action_result.timestamp,
         }
-        if input_firmware_device_id and hasattr(store, "get_firmware_device"):
-            row["input_firmware_registration"] = await store.get_firmware_device(
-                input_firmware_device_id
-            )
+        # The snapshot was built and stored in the action row's own insert
+        # (see _log_action), so it is already durable. Reuse it here rather
+        # than re-querying, so what is attested is exactly what was logged.
+        row["input_firmware_registration"] = firmware_registration
         try:
             seq = await self._evidence_attestor.attest_action(row)
             status = "signed" if seq is not None else "failed"

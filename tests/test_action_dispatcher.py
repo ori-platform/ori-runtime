@@ -1655,3 +1655,103 @@ class TestOfflineTokenApproval:
         assert result.approved is False
         assert result.action_taken == "log_to_dashboard"
         safe_default.assert_awaited_once()
+
+
+class TestFirmwareProvenanceAtomicity:
+    """The registration snapshot with approval provenance must be inserted
+    in the SAME transaction as the action row, so a crash between logging
+    and attestation cannot strand a pending action without provenance."""
+
+    async def test_snapshot_is_in_the_initial_action_row_insert(self, tmp_path):
+        from ori.state.store import StateStore
+
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        try:
+            snapshot = json.dumps(
+                {
+                    "device_id": "fw-1",
+                    "approval_actor": "uid=3:dana",
+                    "approval_reason": "commissioning",
+                    "approved": True,
+                },
+                sort_keys=True,
+            )
+            # log_action_for_event is the single insert. The snapshot is a
+            # parameter of THAT call, not a follow-up update.
+            result = ActionResult(
+                action_name="emergency_cutoff",
+                tier="D",
+                executed=True,
+                approved=None,
+                action_taken="emergency_cutoff",
+                timestamp=1_760_000_000_000,
+            )
+            action_id = await store.log_action_for_event(
+                result,
+                trigger_name="dangerous_overcurrent",
+                input_firmware_device_id="fw-1",
+                input_firmware_registration=snapshot,
+                attestation_pending=True,
+            )
+
+            # Read the raw column directly: it is already populated, with no
+            # intervening write.
+            row = await store._run_read(
+                lambda conn, _id: conn.execute(
+                    "SELECT input_firmware_registration FROM action_log WHERE id = ?",
+                    (_id,),
+                ).fetchone(),
+                action_id,
+            )
+            assert row[0] == snapshot
+        finally:
+            await store.close()
+
+
+class TestSnapshotBuildFailureIsContained:
+    """A store read failure while building the provenance snapshot must not
+    stop the action being logged. The evidence gap should fail visibly, not
+    take the action record down with it."""
+
+    async def test_action_is_still_logged_when_snapshot_build_raises(self):
+        store = _mock_store()
+        store.log_action_for_event = AsyncMock(return_value=101)
+        # The snapshot build reads the firmware device; make it explode.
+        store.get_firmware_device = AsyncMock(side_effect=RuntimeError("db down"))
+        store.firmware_active_promotion_attribution = AsyncMock(return_value=None)
+
+        reading = SensorReading(
+            sensor_id="load-current",
+            sensor_type="current_clamp",
+            value=9.0,
+            unit="ampere",
+            timestamp=_ms(),
+            quality=1.0,
+            metadata={
+                "source": "firmware",
+                "firmware_device_id": "fw-1",
+                "boot_id": 3,
+                "seq": 7,
+                "attestation": "attested",
+                "posture": "sealed_flash",
+            },
+        )
+        event = OriEvent.from_reading(reading, "dev-01")
+        ctx = SkillContext(skill=FakeSkill(), event=event, state_store=store)
+
+        d = ActionDispatcher()
+        # Tier D executes immediately and logs; no attestor wired, so no
+        # attestation is attempted -- we only assert the action was logged
+        # despite the snapshot build failing.
+        await d.dispatch(
+            "emergency_cutoff",
+            ActionTier.SAFETY_CRITICAL,
+            ctx,
+            _result(action_tier="D"),
+        )
+
+        store.log_action_for_event.assert_awaited()
+        # The snapshot could not be built, so nothing spurious was logged.
+        _, kwargs = store.log_action_for_event.await_args
+        assert kwargs["input_firmware_registration"] == ""

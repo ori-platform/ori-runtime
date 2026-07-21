@@ -101,6 +101,12 @@ def _firmware_tier_d_row(row_id: int) -> dict:
                 "approved": True,
                 "provisioned_at_ms": 1_760_000_000_000,
                 "revoked": False,
+                # The evidence-chain approval is a register-and-promote and
+                # requires the promotion's provenance. The real dispatcher
+                # captures it from the runtime's transition log; the smoke
+                # fixture supplies it directly.
+                "approval_actor": "uid=0:artifact-smoke",
+                "approval_reason": "ffi smoke provisioning",
             },
         }
     )
