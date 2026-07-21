@@ -1110,6 +1110,529 @@ class TestLifecycleMigration:
             # Never approved, so never trusted for acceptance: pending.
             history = await store.list_firmware_anchor_history("ori-fw-legacy02")
             assert history[0]["state"] == "pending"
+
+            # ...and never active, so no activation interval is invented.
+            epoch = history[0]["anchor_epoch_id"]
+            assert not await store.firmware_anchor_was_ever_active(
+                "ori-fw-legacy02", epoch
+            )
+        finally:
+            await store.close()
+
+    async def _legacy_db(self, tmp_path, name, device_id, *, approved, revoked):
+        """A pre-lifecycle registry row: no epoch ids, no anchor history."""
+        import sqlite3
+
+        from ori.state.store import StateStore
+
+        db = str(tmp_path / name)
+        store = StateStore(db_path=db)
+        await store.open()
+        await store.close()
+        conn = sqlite3.connect(db)
+        conn.execute("DELETE FROM firmware_device_anchors")
+        conn.execute("DELETE FROM firmware_anchor_transitions")
+        conn.execute(
+            """
+            INSERT INTO firmware_device_registry
+                (device_id, public_key_b64, posture, capability_hash,
+                 manifest_json, channel_map_json, board_profile, approved,
+                 provisioned_at_ms, last_boot_id, last_seq, revoked,
+                 revoked_at_ms, anchor_epoch_id, key_epoch_id)
+            VALUES (?, ?, 'development', ?, '{}', '{}', '',
+                    ?, 1000, 0, 0, ?, ?, '', '')
+            """,
+            (
+                device_id,
+                PUBLIC_KEY_B64,
+                "sha256:" + "ef" * 32,
+                1 if approved else 0,
+                1 if revoked else 0,
+                2000 if revoked else None,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return db
+
+    @pytest.mark.asyncio
+    async def test_migrated_approved_device_is_still_ever_active(
+        self, tmp_path
+    ) -> None:
+        """A device approved before the lifecycle existed WAS active.
+
+        The migration is the only place that knows this: pre-lifecycle
+        databases recorded no promotion, so without an inferred one the
+        activation history would report the anchor as never active and
+        evidence it legitimately authorised would read as unauthorised.
+        """
+        from ori.state.store import StateStore
+
+        db = await self._legacy_db(
+            tmp_path, "legacy3.db", "ori-fw-legacy03", approved=True, revoked=False
+        )
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            history = await store.list_firmware_anchor_history("ori-fw-legacy03")
+            assert history[0]["state"] == "active"
+            epoch = history[0]["anchor_epoch_id"]
+
+            assert await store.firmware_anchor_was_ever_active("ori-fw-legacy03", epoch)
+            intervals = await store.firmware_anchor_activation_intervals(
+                "ori-fw-legacy03", epoch
+            )
+            assert len(intervals) == 1
+            # Still active, so the interval is open.
+            assert intervals[0]["deactivated_seq"] is None
+
+            # It opens at the migration boundary, NOT at provisioned_at_ms
+            # (1000). A device is often provisioned long before it is
+            # approved, and starting there would vouch for evidence
+            # produced in a window nobody can account for.
+            boundary = intervals[0]["activated_at_ms"]
+            assert boundary > 1000
+            assert not await store.firmware_anchor_was_active_at(
+                "ori-fw-legacy03", epoch, at_ms=1500
+            )
+            assert await store.firmware_anchor_was_active_at(
+                "ori-fw-legacy03", epoch, at_ms=boundary + 1
+            )
+
+            # ...so the complete historical record is not provable, even
+            # though the anchor is provably active now.
+            assert not await store.firmware_activation_history_is_provable(
+                "ori-fw-legacy03"
+            )
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_migrated_revoked_device_invents_no_activation(
+        self, tmp_path
+    ) -> None:
+        """A revoked legacy row must not be credited with an activation.
+
+        Revocation sets ``approved = 0``, so the stored shape is
+        ``approved=0, revoked=1`` whether the identity was revoked after
+        being promoted or before it was ever promoted. The two are
+        indistinguishable in a pre-lifecycle database. Inventing a
+        promotion would manufacture authorisation for an identity that may
+        never have had any, so the migration records the history as
+        unprovable and fails closed.
+        """
+        from ori.state.store import StateStore
+
+        db = await self._legacy_db(
+            tmp_path, "legacy4.db", "ori-fw-legacy04", approved=False, revoked=True
+        )
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            history = await store.list_firmware_anchor_history("ori-fw-legacy04")
+            assert history[0]["state"] == "revoked"
+            epoch = history[0]["anchor_epoch_id"]
+
+            assert (
+                await store.firmware_anchor_activation_intervals(
+                    "ori-fw-legacy04", epoch
+                )
+                == []
+            )
+            assert not await store.firmware_anchor_was_ever_active(
+                "ori-fw-legacy04", epoch
+            )
+
+            # ...but that emptiness means "cannot say", not "never active",
+            # and a caller deciding authorisation must be able to tell.
+            assert not await store.firmware_activation_history_is_provable(
+                "ori-fw-legacy04"
+            )
+        finally:
+            await store.close()
+
+    async def _already_backfilled_db(self, tmp_path, name, device_id, *, state):
+        """The state the FIRST lifecycle release's migration produced.
+
+        Such a database already has an anchor row, so the pre-lifecycle
+        backfill never revisits it -- which is exactly why the follow-up
+        migration exists.
+        """
+        import sqlite3
+
+        from ori.state.store import StateStore
+
+        db = str(tmp_path / name)
+        store = StateStore(db_path=db)
+        await store.open()
+        await store.close()
+
+        conn = sqlite3.connect(db)
+        conn.execute("DELETE FROM firmware_device_anchors")
+        conn.execute("DELETE FROM firmware_anchor_transitions")
+        aid = "sha256:" + "11" * 32
+        kid = "sha256:" + "22" * 32
+        conn.execute(
+            """
+            INSERT INTO firmware_device_registry
+                (device_id, public_key_b64, posture, capability_hash,
+                 manifest_json, channel_map_json, board_profile, approved,
+                 provisioned_at_ms, last_boot_id, last_seq, revoked,
+                 revoked_at_ms, anchor_epoch_id, key_epoch_id)
+            VALUES (?, ?, 'development', ?, '{}', '{}', '', ?, 1000, 0, 0,
+                    ?, ?, ?, ?)
+            """,
+            (
+                device_id,
+                PUBLIC_KEY_B64,
+                "sha256:" + "ef" * 32,
+                1 if state == "active" else 0,
+                1 if state == "revoked" else 0,
+                2000 if state == "revoked" else None,
+                aid,
+                kid,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO firmware_device_anchors
+                (anchor_epoch_id, device_id, key_epoch_id, public_key_b64,
+                 posture, capability_hash, manifest_json, channel_map_json,
+                 board_profile, state, created_at_ms, state_changed_at_ms)
+            VALUES (?, ?, ?, ?, 'development', ?, '{}', '{}', '', ?, 1000, 1000)
+            """,
+            (aid, device_id, kid, PUBLIC_KEY_B64, "sha256:" + "ef" * 32, state),
+        )
+        # The generic transition the earlier release wrote, and nothing else.
+        conn.execute(
+            """
+            INSERT INTO firmware_anchor_transitions
+                (device_id, transition, from_epoch_id, to_epoch_id,
+                 key_epoch_id, actor, reason, occurred_at_ms)
+            VALUES (?, 'registered', NULL, ?, ?, 'migration',
+                    'backfilled from a pre-lifecycle registry row', 1000)
+            """,
+            (device_id, aid, kid),
+        )
+        conn.commit()
+        conn.close()
+        return db, aid
+
+    @pytest.mark.asyncio
+    async def test_already_backfilled_approved_row_gains_its_activation(
+        self, tmp_path
+    ) -> None:
+        """An identity the first lifecycle release migrated is repaired.
+
+        It already has an anchor row, so the pre-lifecycle backfill skips
+        it, and without the follow-up migration an approved device would
+        keep an activation history saying it was never active.
+        """
+        from ori.state.store import StateStore
+
+        db, aid = await self._already_backfilled_db(
+            tmp_path, "upgraded1.db", "ori-fw-upgraded01", state="active"
+        )
+
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            assert await store.firmware_anchor_was_ever_active("ori-fw-upgraded01", aid)
+            intervals = await store.firmware_anchor_activation_intervals(
+                "ori-fw-upgraded01", aid
+            )
+            assert len(intervals) == 1
+            assert intervals[0]["deactivated_seq"] is None
+
+            # The interval opens at the migration boundary, not at the
+            # backfill's carried-over timestamp. Being approved proves the
+            # anchor is active NOW; it says nothing about when it became
+            # active, so the full record is not provable.
+            assert intervals[0]["activated_at_ms"] > 1000
+            assert not await store.firmware_activation_history_is_provable(
+                "ori-fw-upgraded01"
+            )
+
+            # Evidence the receiver timed before the boundary fails closed;
+            # evidence after it resolves.
+            boundary = intervals[0]["activated_at_ms"]
+            assert not await store.firmware_anchor_was_active_at(
+                "ori-fw-upgraded01", aid, at_ms=boundary - 1
+            )
+            assert await store.firmware_anchor_was_active_at(
+                "ori-fw-upgraded01", aid, at_ms=boundary + 1
+            )
+        finally:
+            await store.close()
+
+        # Reopening must not append a second inferred promotion.
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            transitions = await store.list_firmware_anchor_transitions(
+                "ori-fw-upgraded01"
+            )
+            assert [t["transition"] for t in transitions].count("promoted") == 1
+            assert (
+                len(
+                    await store.firmware_anchor_activation_intervals(
+                        "ori-fw-upgraded01", aid
+                    )
+                )
+                == 1
+            )
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_already_backfilled_revoked_row_stays_explicitly_unknown(
+        self, tmp_path
+    ) -> None:
+        """A revoked identity migrated by the earlier release stays unknown.
+
+        Its stored shape cannot say whether it was ever promoted, so the
+        follow-up migration marks it rather than inventing an activation.
+        """
+        from ori.state.store import StateStore
+
+        db, aid = await self._already_backfilled_db(
+            tmp_path, "upgraded2.db", "ori-fw-upgraded02", state="revoked"
+        )
+
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            assert not await store.firmware_anchor_was_ever_active(
+                "ori-fw-upgraded02", aid
+            )
+            assert not await store.firmware_activation_history_is_provable(
+                "ori-fw-upgraded02"
+            )
+        finally:
+            await store.close()
+
+        # Reopening must not append a second marker.
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            transitions = await store.list_firmware_anchor_transitions(
+                "ori-fw-upgraded02"
+            )
+            markers = [
+                t for t in transitions if "cannot be reconstructed" in t["reason"]
+            ]
+            assert len(markers) == 1
+            assert not await store.firmware_activation_history_is_provable(
+                "ori-fw-upgraded02"
+            )
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_re_promotion_does_not_make_pre_migration_history_provable(
+        self, tmp_path
+    ) -> None:
+        """A later real promotion says nothing about the earlier interval.
+
+        Sequence: active before the lifecycle existed, backfilled by the
+        first release, then revoked, reinstated and promoted again -- all
+        before this repair runs. The anchor now has a genuine `promoted`
+        transition, but when it was active *before* the migration was
+        never recorded, so the history must stay unprovable rather than
+        being credited by the later promotion.
+        """
+        import sqlite3
+
+        from ori.state.store import StateStore
+
+        db, aid = await self._already_backfilled_db(
+            tmp_path, "upgraded3.db", "ori-fw-upgraded03", state="active"
+        )
+
+        # Post-backfill lifecycle activity, written directly so it lands
+        # before the repair ever sees the database.
+        conn = sqlite3.connect(db)
+        for transition, frm, to in (
+            ("revoked", aid, None),
+            ("reinstated", aid, aid),
+            ("promoted", None, aid),
+        ):
+            conn.execute(
+                """
+                INSERT INTO firmware_anchor_transitions
+                    (device_id, transition, from_epoch_id, to_epoch_id,
+                     key_epoch_id, actor, reason, occurred_at_ms)
+                VALUES ('ori-fw-upgraded03', ?, ?, ?, ?, 'op', 'r', 3000)
+                """,
+                (transition, frm, to, "sha256:" + "22" * 32),
+            )
+        conn.execute(
+            "UPDATE firmware_device_anchors SET state = 'active' "
+            "WHERE anchor_epoch_id = ?",
+            (aid,),
+        )
+        conn.commit()
+        conn.close()
+
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            # The recorded re-promotion is real, so there IS an interval.
+            assert await store.firmware_anchor_was_ever_active("ori-fw-upgraded03", aid)
+            # ...but the pre-migration interval was never recorded, so the
+            # complete record is not provable.
+            assert not await store.firmware_activation_history_is_provable(
+                "ori-fw-upgraded03"
+            )
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_backfilled_pending_row_promoted_later_is_provable(
+        self, tmp_path
+    ) -> None:
+        """The other side of the same distinction.
+
+        An anchor the earlier release backfilled as `pending` was never
+        approved before the lifecycle, so a promotion after the upgrade is
+        its genuine first activation and the history is complete.
+        """
+        import sqlite3
+
+        from ori.state.store import StateStore
+
+        db, aid = await self._already_backfilled_db(
+            tmp_path, "upgraded4.db", "ori-fw-upgraded04", state="pending"
+        )
+
+        conn = sqlite3.connect(db)
+        conn.execute(
+            """
+            INSERT INTO firmware_anchor_transitions
+                (device_id, transition, from_epoch_id, to_epoch_id,
+                 key_epoch_id, actor, reason, occurred_at_ms)
+            VALUES ('ori-fw-upgraded04', 'promoted', NULL, ?, ?, 'op', 'r', 3000)
+            """,
+            (aid, "sha256:" + "22" * 32),
+        )
+        conn.execute(
+            "UPDATE firmware_device_anchors SET state = 'active' "
+            "WHERE anchor_epoch_id = ?",
+            (aid,),
+        )
+        conn.commit()
+        conn.close()
+
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            assert await store.firmware_anchor_was_ever_active("ori-fw-upgraded04", aid)
+            assert await store.firmware_activation_history_is_provable(
+                "ori-fw-upgraded04"
+            )
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_backfilled_pending_row_later_discarded_stays_provable(
+        self, tmp_path
+    ) -> None:
+        """Being discarded proves an anchor was pending, never active.
+
+        Only a pending candidate is ever discarded, so a backfilled anchor
+        whose first subsequent transition discards it is provably never
+        active. Marking it "cannot say" would throw away a fact the log
+        does establish, and fail closed where failing closed is not
+        warranted.
+        """
+        import sqlite3
+
+        from ori.state.store import StateStore
+
+        db, aid = await self._already_backfilled_db(
+            tmp_path, "upgraded5.db", "ori-fw-upgraded05", state="pending"
+        )
+
+        other = "sha256:" + "33" * 32
+        conn = sqlite3.connect(db)
+        conn.execute(
+            """
+            INSERT INTO firmware_anchor_transitions
+                (device_id, transition, from_epoch_id, to_epoch_id,
+                 key_epoch_id, actor, reason, occurred_at_ms)
+            VALUES ('ori-fw-upgraded05', 'discarded', ?, ?, ?, '', '', 3000)
+            """,
+            (aid, other, "sha256:" + "22" * 32),
+        )
+        conn.execute(
+            "UPDATE firmware_device_anchors SET state = 'discarded' "
+            "WHERE anchor_epoch_id = ?",
+            (aid,),
+        )
+        conn.commit()
+        conn.close()
+
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            assert not await store.firmware_anchor_was_ever_active(
+                "ori-fw-upgraded05", aid
+            )
+            # Provably never active, so the history is complete.
+            assert await store.firmware_activation_history_is_provable(
+                "ori-fw-upgraded05"
+            )
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_activation_history_is_not_provable_for_an_unknown_device(
+        self, tmp_path
+    ) -> None:
+        """Absence of a marker is not evidence when there are no records."""
+        from ori.state.store import StateStore
+
+        store = StateStore(db_path=str(tmp_path / "empty.db"))
+        await store.open()
+        try:
+            assert not await store.firmware_activation_history_is_provable(
+                "ori-fw-does-not-exist"
+            )
+        finally:
+            await store.close()
+
+    @pytest.mark.asyncio
+    async def test_migration_marks_the_inferred_promotion_as_inferred(
+        self, tmp_path
+    ) -> None:
+        """The inferred promotion must not read as a recorded operator act.
+
+        Pre-lifecycle databases never stored when a promotion happened, so
+        it is reconstructed from the registry's flags. An operator reading
+        the audit trail has to be able to tell.
+        """
+        from ori.state.store import StateStore
+
+        db = await self._legacy_db(
+            tmp_path, "legacy5.db", "ori-fw-legacy05", approved=True, revoked=False
+        )
+        store = StateStore(db_path=db)
+        await store.open()
+        try:
+            transitions = await store.list_firmware_anchor_transitions(
+                "ori-fw-legacy05"
+            )
+            promoted = [t for t in transitions if t["transition"] == "promoted"]
+            assert len(promoted) == 1
+            assert promoted[0]["actor"] == "migration"
+            assert "never recorded" in promoted[0]["reason"]
+            assert "unknown" in promoted[0]["reason"]
+
+            # Active now, but when it became active was never recorded, so
+            # the complete record is not provable.
+            assert not await store.firmware_activation_history_is_provable(
+                "ori-fw-legacy05"
+            )
         finally:
             await store.close()
 

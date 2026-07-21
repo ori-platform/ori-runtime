@@ -44,7 +44,7 @@ VECTORS = json.loads(FIXTURE.read_text())
 # stale constant while the two files diverged. Asserting the identical
 # digest on both sides means a regeneration that is not mirrored fails on
 # the side that moved.
-FIXTURE_SHA256 = "27b9418a9bf42abb4ae1fc50545661e730bc4b936edf70c22d28e35011bee79b"
+FIXTURE_SHA256 = "360f240ab321941bbb8134bbb6e82ac4bdea086cd03fc6013e8b2929a9a8bfac"
 
 ANCHORS = VECTORS["anchors"]
 DEVICE_ID = VECTORS["device_id"]
@@ -286,6 +286,44 @@ async def test_lifecycle_scenario(store, scenario):
     want = {epoch_of(n): s for n, s in expected["anchor_states"].items()}
     assert got == want
 
+    # "Was this anchor ever active, and over which intervals" must survive
+    # the anchor's current state changing. This is compared as a COMPLETE
+    # mapping over every anchor the scenario touches: an anchor absent
+    # from the expectation must have no activation intervals at all, so a
+    # store that invented one could not pass by omission.
+    want_counts = expected["activation_counts"]
+    for name in scenario["anchors_used"]:
+        epoch = epoch_of(name)
+        intervals = await store.firmware_anchor_activation_intervals(DEVICE_ID, epoch)
+        assert len(intervals) == want_counts.get(name, 0), (
+            f"{name}: expected {want_counts.get(name, 0)} activation "
+            f"interval(s), got {len(intervals)}"
+        )
+
+        ever = await store.firmware_anchor_was_ever_active(DEVICE_ID, epoch)
+        assert ever is (name in want_counts)
+
+        for iv in intervals:
+            # Receiver-anchored ordering: the log's own append order and a
+            # timestamp this store assigned. The contract forbids deciding
+            # this from device wall-clock time.
+            assert iv["activated_seq"] is not None
+            assert iv["activated_at_ms"] is not None
+            if iv["deactivated_seq"] is not None:
+                assert iv["deactivated_seq"] > iv["activated_seq"]
+
+        # An interval must be open exactly while the anchor is active, and
+        # closed otherwise. Without this the intervals could end at the
+        # wrong moment and still have the right count -- an implementation
+        # that closed one at re-provisioning rather than at the promotion
+        # that followed would look identical in every scenario that
+        # promotes afterwards.
+        open_intervals = [i for i in intervals if i["deactivated_seq"] is None]
+        is_active_now = expected["active"] == name
+        assert len(open_intervals) == (1 if is_active_now else 0), (
+            f"{name}: active={is_active_now} but {len(open_intervals)} open interval(s)"
+        )
+
     if "last_boot_id" in expected:
         assert row["last_boot_id"] == expected["last_boot_id"]
     if "last_seq" in expected:
@@ -296,6 +334,24 @@ async def test_lifecycle_scenario(store, scenario):
     for t in audited:
         assert t["actor"].strip(), f"{t['transition']} recorded without an actor"
         assert t["reason"].strip(), f"{t['transition']} recorded without a reason"
+
+
+def test_every_scenario_declares_activation_counts():
+    """No scenario may opt out of the ever-active assertion.
+
+    Without this, a scenario could quietly drop the field and stop
+    checking the property #245 exists to protect.
+    """
+    for s in VECTORS["scenarios"]:
+        assert "activation_counts" in s["final_state"], s["name"]
+
+
+def test_a_superseded_anchor_that_is_re_registered_is_covered():
+    """The contract requires evidence for this specific case, and it is
+    the one where current state and history disagree."""
+    names = {s["name"] for s in VECTORS["scenarios"]}
+    assert "superseded_anchor_re_registered_stays_ever_active" in names
+    assert "discarded_anchor_re_registered_returns_to_pending" in names
 
 
 def test_scenario_names_are_unique():

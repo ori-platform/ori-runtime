@@ -136,6 +136,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": None,
             "pending": "A1",
             "anchor_states": {"A1": "pending"},
+            "activation_counts": {},
             "transitions": [],
         },
     },
@@ -159,6 +160,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": "A1",
             "pending": None,
             "anchor_states": {"A1": "active"},
+            "activation_counts": {"A1": 1},
             "last_boot_id": 7,
             "last_seq": 42,
             "transitions": ["promoted"],
@@ -178,6 +180,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": None,
             "pending": "A1",
             "anchor_states": {"A1": "pending"},
+            "activation_counts": {},
             "transitions": [],
         },
     },
@@ -201,6 +204,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": "A1",
             "pending": "A2",
             "anchor_states": {"A1": "active", "A2": "pending"},
+            "activation_counts": {"A1": 1},
             # Freshness is scoped to the KEY epoch, which did not change.
             "last_boot_id": 3,
             "last_seq": 9,
@@ -226,6 +230,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": "A1",
             "pending": "A6",
             "anchor_states": {"A1": "active", "A6": "pending"},
+            "activation_counts": {"A1": 1},
             "transitions": ["promoted"],
         },
     },
@@ -250,6 +255,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": "A1",
             "pending": "A3",
             "anchor_states": {"A1": "active", "A2": "discarded", "A3": "pending"},
+            "activation_counts": {"A1": 1},
             "transitions": ["promoted"],
         },
     },
@@ -273,10 +279,80 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": "A2",
             "pending": None,
             "anchor_states": {"A1": "superseded", "A2": "active"},
+            "activation_counts": {"A1": 1, "A2": 1},
             # Same key epoch throughout, so the replay window stays closed.
             "last_boot_id": 4,
             "last_seq": 11,
             "transitions": ["promoted", "promoted"],
+        },
+    },
+    {
+        "name": "superseded_anchor_re_registered_stays_ever_active",
+        "contract_ref": (
+            "Anchor History / Re-registering an anchor the identity has held before"
+        ),
+        "why": (
+            "An anchor epoch has one record whose state is its CURRENT "
+            "state, so re-registering a superseded anchor returns it to "
+            "pending and the state field stops showing it was ever "
+            "active. Evidence produced while it WAS active is still "
+            "attributed to it. An implementation that answered "
+            "'was this authorised' from current state would read "
+            "correctly signed history as never authorised, so the "
+            "active intervals must survive the re-registration."
+        ),
+        "steps": [
+            {"op": "register", "anchor": "A1", "expect": "registered"},
+            {"op": "promote", "expect": True},
+            {"op": "register", "anchor": "A2", "expect": "pending_manifest_epoch"},
+            {"op": "promote", "expect": True},
+            # A1 is superseded here; registering it again returns it to
+            # pending, which is what erases "was active" from the state.
+            {"op": "register", "anchor": "A1", "expect": "pending_manifest_epoch"},
+        ],
+        "final_state": {
+            "approved": True,
+            "revoked": False,
+            "active": "A2",
+            "pending": "A1",
+            "anchor_states": {"A1": "pending", "A2": "active"},
+            # The point of the scenario: A1 reads pending, and is still
+            # identifiable as having been active.
+            "activation_counts": {"A1": 1, "A2": 1},
+            "transitions": ["promoted", "promoted"],
+        },
+    },
+    {
+        "name": "discarded_anchor_re_registered_returns_to_pending",
+        "contract_ref": ("Re-registering an anchor the identity has held before"),
+        "why": (
+            "A discarded candidate was never active, so returning it to "
+            "pending attributes no evidence and grants nothing. It is "
+            "still not neutral: it displaces whatever candidate was "
+            "pending, which is recorded discarded in its place. The "
+            "judgement belongs at promotion, which has not happened."
+        ),
+        "steps": [
+            {"op": "register", "anchor": "A1", "expect": "registered"},
+            {"op": "promote", "expect": True},
+            {"op": "register", "anchor": "A2", "expect": "pending_manifest_epoch"},
+            {"op": "register", "anchor": "A3", "expect": "pending_manifest_epoch"},
+            # A2 is discarded here; registering it again brings it back
+            # and displaces A3 in turn.
+            {"op": "register", "anchor": "A2", "expect": "pending_manifest_epoch"},
+        ],
+        "final_state": {
+            "approved": True,
+            "revoked": False,
+            "active": "A1",
+            "pending": "A2",
+            "anchor_states": {
+                "A1": "active",
+                "A2": "pending",
+                "A3": "discarded",
+            },
+            "activation_counts": {"A1": 1},
+            "transitions": ["promoted"],
         },
     },
     {
@@ -298,6 +374,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": "A1",
             "pending": None,
             "anchor_states": {"A1": "active"},
+            "activation_counts": {"A1": 1},
             "transitions": ["promoted"],
         },
     },
@@ -321,6 +398,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": None,
             "pending": None,
             "anchor_states": {"A1": "revoked", "A2": "discarded"},
+            "activation_counts": {"A1": 1},
             "transitions": ["promoted", "revoked"],
         },
     },
@@ -345,6 +423,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": None,
             "pending": None,
             "anchor_states": {"A1": "revoked"},
+            "activation_counts": {"A1": 1},
             "transitions": ["promoted", "revoked"],
         },
     },
@@ -368,6 +447,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": None,
             "pending": None,
             "anchor_states": {"A1": "revoked"},
+            "activation_counts": {"A1": 1},
             "transitions": ["promoted", "revoked"],
         },
     },
@@ -391,6 +471,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": None,
             "pending": "A1",
             "anchor_states": {"A1": "pending"},
+            "activation_counts": {"A1": 1},
             "transitions": ["promoted", "revoked", "reinstated"],
         },
     },
@@ -419,6 +500,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": None,
             "pending": None,
             "anchor_states": {"A1": "discarded"},
+            "activation_counts": {},
             "transitions": ["revoked", "reinstated"],
         },
     },
@@ -445,6 +527,7 @@ SCENARIOS: list[dict[str, Any]] = [
             # A1 stays discarded. The history proves the candidate that was
             # discarded at revocation was retained and never resurrected.
             "anchor_states": {"A1": "discarded", "A2": "active"},
+            "activation_counts": {"A2": 1},
             "transitions": ["revoked", "reinstated", "promoted"],
         },
     },
@@ -465,7 +548,36 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": "A1",
             "pending": None,
             "anchor_states": {"A1": "active"},
+            "activation_counts": {"A1": 2},
             "transitions": ["promoted", "revoked", "reinstated", "promoted"],
+        },
+    },
+    {
+        "name": "reprovision_leaves_the_previous_anchor_active",
+        "contract_ref": "Re-provisioning (key replacement)",
+        "why": (
+            "Re-provisioning stores the new key as PENDING and leaves the "
+            "current anchor active until an operator promotes. The device "
+            "keeps working under its existing key throughout. This "
+            "scenario deliberately ENDS at the re-provisioning: every "
+            "other rotation case promotes afterwards, which would close "
+            "the old anchor's active interval anyway and hide an "
+            "implementation that ended it too early."
+        ),
+        "steps": [
+            {"op": "register", "anchor": "A1", "expect": "registered"},
+            {"op": "promote", "expect": True},
+            {"op": "reprovision", "anchor": "A4", "expect": "reprovisioned"},
+        ],
+        "final_state": {
+            "approved": True,
+            "revoked": False,
+            "active": "A1",
+            "pending": "A4",
+            "anchor_states": {"A1": "active", "A4": "pending"},
+            # A1's interval is still OPEN here: it is active now.
+            "activation_counts": {"A1": 1},
+            "transitions": ["promoted", "reprovisioned"],
         },
     },
     {
@@ -501,6 +613,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": "A4",
             "pending": None,
             "anchor_states": {"A1": "superseded", "A4": "active"},
+            "activation_counts": {"A1": 1, "A4": 1},
             "last_boot_id": 0,
             "last_seq": 0,
             "transitions": ["promoted", "reprovisioned", "promoted"],
@@ -526,6 +639,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": "A1",
             "pending": None,
             "anchor_states": {"A1": "active"},
+            "activation_counts": {"A1": 1},
             "transitions": ["promoted"],
         },
     },
@@ -551,6 +665,7 @@ SCENARIOS: list[dict[str, Any]] = [
             "active": "A4",
             "pending": None,
             "anchor_states": {"A1": "superseded", "A4": "active"},
+            "activation_counts": {"A1": 1, "A4": 1},
             "transitions": ["promoted", "reprovisioned", "promoted"],
         },
     },
@@ -580,6 +695,7 @@ SCENARIOS: list[dict[str, Any]] = [
                 "A4": "superseded",
                 "A5": "active",
             },
+            "activation_counts": {"A1": 1, "A4": 1, "A5": 1},
             "transitions": [
                 "promoted",
                 "reprovisioned",
