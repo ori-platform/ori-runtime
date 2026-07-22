@@ -437,6 +437,32 @@ CREATE TABLE IF NOT EXISTS firmware_anchor_transitions (
 CREATE INDEX IF NOT EXISTS idx_firmware_anchor_transitions_device
     ON firmware_anchor_transitions (device_id, occurred_at_ms DESC);
 
+-- Cross-store epoch confirmation, per ori-specs/device-provisioning/v1.md.
+-- An approval promotes an anchor locally, but MUST NOT reach firmware until
+-- the evidence store (Verity) has confirmed the identical anchor_epoch_id.
+-- This table is the durable outbox that records that obligation: a grant is
+-- confirmation_pending until the evidence store agrees (confirmed) or is found to
+-- disagree (quarantined). It lives with the provisioning lifecycle; the
+-- reconciliation worker services retries against it.
+CREATE TABLE IF NOT EXISTS firmware_confirmation_outbox (
+    device_id        TEXT    NOT NULL,
+    -- The exact epoch approved locally. One obligation per epoch: a new
+    -- key or manifest promotes a new anchor_epoch_id and a new row; a
+    -- superseded epoch's row is retained as history.
+    anchor_epoch_id  TEXT    NOT NULL,
+    status           TEXT    NOT NULL DEFAULT 'confirmation_pending'
+                       CHECK (status IN
+                         ('confirmation_pending', 'confirmed', 'quarantined')),
+    attempt_count    INTEGER NOT NULL DEFAULT 0,
+    created_at_ms    INTEGER NOT NULL,
+    last_attempt_ms  INTEGER,
+    resolved_at_ms   INTEGER,
+    PRIMARY KEY (device_id, anchor_epoch_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_firmware_confirmation_outbox_status
+    ON firmware_confirmation_outbox (status, created_at_ms ASC);
+
 CREATE TABLE IF NOT EXISTS firmware_fault_events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id         TEXT    NOT NULL,
@@ -635,6 +661,7 @@ class StateStore:
         # lifecycle release already backfilled, which the call above skips
         # because they now have an anchor row.
         self._complete_backfilled_activation_history_on_conn(conn)
+        self._backfill_firmware_confirmation_obligations_on_conn(conn)
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_remote_command_log_sender_rejections
@@ -800,6 +827,48 @@ class StateStore:
                         migration_at_ms,
                     ),
                 )
+
+    def _backfill_firmware_confirmation_obligations_on_conn(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Give every active anchor without an obligation a fail-closed one.
+
+        Cross-store confirmation was introduced after devices had already
+        been approved. Those anchors are active in the runtime store but
+        have no ``firmware_confirmation_outbox`` row, so the command and
+        evidence gates — which treat a missing row as *not confirmed* —
+        would refuse them, while the coordinator's resolve update, finding
+        no row to update, would change nothing yet report success. Neither
+        state is trustworthy.
+
+        The safe reconciliation is to enrol each active anchor as
+        ``confirmation_pending``, exactly as a fresh approval would. The
+        obligation is then visible to the reconciliation path and becomes
+        effective only once the evidence store confirms the identical
+        epoch. Failing closed here means a legacy device pauses until it is
+        confirmed, never that it operates on authority the evidence store
+        cannot back.
+
+        Only ``active`` anchors are enrolled: a pending, superseded, or
+        revoked anchor asserts no current authority to confirm. Idempotent
+        via ``ON CONFLICT DO NOTHING`` — a device already carrying an
+        obligation (including a ``confirmed`` or ``quarantined`` one) keeps
+        it untouched, so reopening a database backfills nothing and never
+        reopens a resolved obligation.
+        """
+        created_at_ms = now_ms()
+        conn.execute(
+            """
+            INSERT INTO firmware_confirmation_outbox
+                (device_id, anchor_epoch_id, status, attempt_count,
+                 created_at_ms)
+            SELECT a.device_id, a.anchor_epoch_id, 'confirmation_pending', 0, ?
+              FROM firmware_device_anchors a
+             WHERE a.state = 'active'
+            ON CONFLICT (device_id, anchor_epoch_id) DO NOTHING
+            """,
+            (created_at_ms,),
+        )
 
     def _complete_backfilled_activation_history_on_conn(
         self, conn: sqlite3.Connection
@@ -3117,6 +3186,161 @@ class StateStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    # ── cross-store confirmation outbox ──────────────────────────────
+
+    async def get_firmware_confirmation_status(
+        self, device_id: str, anchor_epoch_id: str
+    ) -> str | None:
+        """The confirmation status of one approved epoch, or ``None`` if no
+        obligation was recorded for it.
+
+        The publish gate reads this: a grant may reach firmware only when
+        its active anchor's epoch is ``confirmed``.
+        """
+        return await self._run_read(
+            self._get_firmware_confirmation_status_sync, device_id, anchor_epoch_id
+        )
+
+    def _get_firmware_confirmation_status_sync(
+        self, conn: sqlite3.Connection, device_id: str, anchor_epoch_id: str
+    ) -> str | None:
+        row = conn.execute(
+            "SELECT status FROM firmware_confirmation_outbox "
+            "WHERE device_id = ? AND anchor_epoch_id = ?",
+            (device_id, anchor_epoch_id),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    async def list_pending_firmware_confirmations(self, limit: int = 100) -> list[dict]:
+        """Obligations still awaiting the evidence store's confirmation, oldest first.
+
+        The reconciliation worker drains this. `quarantined` and `confirmed`
+        rows are terminal and never returned — a quarantine is resolved by
+        an operator, not a retry.
+        """
+        return await self._run_read(
+            self._list_pending_firmware_confirmations_sync, limit
+        )
+
+    def _list_pending_firmware_confirmations_sync(
+        self, conn: sqlite3.Connection, limit: int
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT device_id, anchor_epoch_id, attempt_count, created_at_ms,
+                   last_attempt_ms
+              FROM firmware_confirmation_outbox
+             WHERE status = 'confirmation_pending'
+             ORDER BY created_at_ms ASC, device_id ASC
+             LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    async def record_firmware_confirmation_attempt(
+        self, device_id: str, anchor_epoch_id: str, at_ms: int
+    ) -> None:
+        """Bump the attempt counter for a still-pending obligation.
+
+        Recorded even when the attempt did not resolve (evidence store unreachable),
+        so a stuck grant is visibly being worked rather than silently idle.
+        """
+        await self._run_write(
+            self._record_firmware_confirmation_attempt_sync,
+            device_id,
+            anchor_epoch_id,
+            at_ms,
+        )
+
+    def _record_firmware_confirmation_attempt_sync(
+        self, device_id: str, anchor_epoch_id: str, at_ms: int
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE firmware_confirmation_outbox
+               SET attempt_count = attempt_count + 1, last_attempt_ms = ?
+             WHERE device_id = ? AND anchor_epoch_id = ?
+               AND status = 'confirmation_pending'
+            """,
+            (at_ms, device_id, anchor_epoch_id),
+        )
+        self._conn.commit()
+
+    async def resolve_firmware_confirmation(
+        self, device_id: str, anchor_epoch_id: str, *, status: str, at_ms: int
+    ) -> None:
+        """Move an obligation to a terminal state: ``confirmed`` or
+        ``quarantined``.
+
+        Only a `confirmation_pending` row is resolved, so a late or
+        duplicate attempt cannot move a `quarantined` grant to `confirmed`
+        or re-resolve one — the reconciliation is idempotent.
+        """
+        if status not in ("confirmed", "quarantined"):
+            raise ValueError(f"invalid confirmation resolution: {status!r}")
+        await self._run_write(
+            self._resolve_firmware_confirmation_sync,
+            device_id,
+            anchor_epoch_id,
+            status,
+            at_ms,
+        )
+
+    def _resolve_firmware_confirmation_sync(
+        self, device_id: str, anchor_epoch_id: str, status: str, at_ms: int
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE firmware_confirmation_outbox
+               SET status = ?, resolved_at_ms = ?,
+                   attempt_count = attempt_count + 1, last_attempt_ms = ?
+             WHERE device_id = ? AND anchor_epoch_id = ?
+               AND status = 'confirmation_pending'
+            """,
+            (status, at_ms, at_ms, device_id, anchor_epoch_id),
+        )
+        self._conn.commit()
+
+    async def get_firmware_confirmation_summary(self, now_ms_value: int) -> dict:
+        """Counts and oldest-pending age for the health snapshot.
+
+        `oldest_pending_age_ms` is derived from the receiver-recorded
+        `created_at_ms`, so a stuck grant's age is measured from when this
+        store recorded the obligation, not any device-reported time.
+        """
+        return await self._run_read(
+            self._get_firmware_confirmation_summary_sync, now_ms_value
+        )
+
+    def _get_firmware_confirmation_summary_sync(
+        self, conn: sqlite3.Connection, now_ms_value: int
+    ) -> dict:
+        row = conn.execute(
+            """
+            SELECT
+              SUM(CASE WHEN status = 'confirmation_pending' THEN 1 ELSE 0 END),
+              SUM(CASE WHEN status = 'quarantined' THEN 1 ELSE 0 END),
+              MIN(CASE WHEN status = 'confirmation_pending'
+                       THEN created_at_ms END)
+            FROM firmware_confirmation_outbox
+            """,
+        ).fetchone()
+        pending = int(row[0] or 0)
+        quarantined = int(row[1] or 0)
+        oldest_created = row[2]
+        return {
+            "confirmation_pending_count": pending,
+            "quarantined_count": quarantined,
+            "oldest_pending_age_ms": (
+                max(0, now_ms_value - int(oldest_created))
+                if oldest_created is not None
+                else None
+            ),
+        }
+
     async def list_firmware_anchor_transitions(self, device_id: str) -> list[dict]:
         """The audited trust transitions for an identity, oldest first."""
         return await self._run_read(
@@ -3129,7 +3353,7 @@ class StateStore:
         """The actor and reason of the promotion that made the CURRENT
         active anchor active.
 
-        This is the provenance a coordinating store (ori-verity) must
+        This is the provenance the coordinating evidence store must
         record when it mirrors the approval: the same operator decision,
         not a fresh or generic one. It is resolved precisely -- the latest
         ``promoted`` transition whose ``to_epoch_id`` is the registry's
@@ -3452,6 +3676,20 @@ class StateStore:
             # transition this model exists to remove.
             return False
 
+        # A quarantined epoch is a cross-store disagreement awaiting
+        # explicit operator resolution. Re-approving it must NOT silently
+        # clear the quarantine, so the promotion is refused here rather
+        # than proceeding and re-opening the obligation below. Returning
+        # nothing changes state: the operator must resolve the quarantine
+        # first (ori-specs/device-provisioning/v1.md).
+        quarantined = self._conn.execute(
+            "SELECT 1 FROM firmware_confirmation_outbox "
+            "WHERE device_id = ? AND anchor_epoch_id = ? AND status = 'quarantined'",
+            (device_id, pending["anchor_epoch_id"]),
+        ).fetchone()
+        if quarantined is not None:
+            return False
+
         previous = self._conn.execute(
             "SELECT anchor_epoch_id FROM firmware_device_anchors "
             "WHERE device_id = ? AND state = 'active'",
@@ -3529,6 +3767,31 @@ class StateStore:
                 reason,
                 occurred_at_ms,
             ),
+        )
+        # Record the cross-store confirmation obligation in the SAME
+        # transaction as the promotion, so a crash cannot leave an anchor
+        # active locally with no record that the evidence store must still confirm it.
+        #
+        # A promotion always re-opens confirmation, even for an epoch this
+        # identity held before. The only way the same epoch is promoted
+        # twice is revoke -> reinstate -> approve, and by then the earlier
+        # revocation may have propagated to the evidence store, so the grant genuinely
+        # needs re-confirming. The row is reused (the transition log, not
+        # this outbox, is the history), with a fresh age and attempt count.
+        self._conn.execute(
+            """
+            INSERT INTO firmware_confirmation_outbox
+                (device_id, anchor_epoch_id, status, created_at_ms)
+            VALUES (?, ?, 'confirmation_pending', ?)
+            ON CONFLICT(device_id, anchor_epoch_id) DO UPDATE SET
+                status = 'confirmation_pending',
+                attempt_count = 0,
+                created_at_ms = excluded.created_at_ms,
+                last_attempt_ms = NULL,
+                resolved_at_ms = NULL
+              WHERE firmware_confirmation_outbox.status != 'quarantined'
+            """,
+            (device_id, pending["anchor_epoch_id"], occurred_at_ms),
         )
         self._conn.commit()
         return True

@@ -266,6 +266,24 @@ class FirmwareCommandSigner:
             raise FirmwareCommandError(f"device {device_id!r} is revoked")
         if not row.get("approved"):
             raise FirmwareCommandError(f"device {device_id!r} is not approved")
+        # `approved` is only local intent. A command must not reach firmware
+        # until the evidence store has confirmed the identical
+        # anchor_epoch_id (ori-specs/device-provisioning/v1.md): the gate,
+        # not the flag, defines effective authority. A store without the
+        # confirmation surface is treated as unconfirmed rather than
+        # bypassing the gate.
+        epoch = str(row.get("anchor_epoch_id", "") or "")
+        status = None
+        if epoch and hasattr(self._store, "get_firmware_confirmation_status"):
+            status = await self._store.get_firmware_confirmation_status(
+                device_id, epoch
+            )
+        if status != "confirmed":
+            raise FirmwareCommandError(
+                f"device {device_id!r} epoch is not cross-store confirmed "
+                f"(status={status or 'unknown'!r}); no command may be signed "
+                "until the evidence store confirms the same anchor_epoch_id"
+            )
         # The accepted manifest is the authority surface: never sign a
         # command the device would refuse as unknown_action — it would
         # spend a sequence on a knowingly impossible instruction.

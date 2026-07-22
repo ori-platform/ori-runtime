@@ -72,6 +72,12 @@ from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.security.evidence import EvidenceAttestor
+from ori.security.firmware_confirmation import (
+    CONFIRMED as _FIRMWARE_CONFIRMED,
+)
+from ori.security.firmware_confirmation import (
+    FirmwareConfirmationCoordinator,
+)
 from ori.security.firmware_ingest import FirmwareTelemetryGate
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
@@ -207,6 +213,9 @@ class OriRuntime:
         self._firmware_command_service: FirmwareCommandService | None = None
         self._telemetry_exporter: HttpTelemetryExporter | None = None
         self._evidence_attestor: EvidenceAttestor | None = None
+        self._firmware_confirmation_coordinator: (
+            FirmwareConfirmationCoordinator | None
+        ) = None
         self._health_socket_path: str = ""
         self._device_policy_enabled: bool = False
         self._device_id: str = ""
@@ -474,6 +483,24 @@ class OriRuntime:
         if evidence_attestor is not None:
             await evidence_attestor.start()
         self._evidence_attestor = evidence_attestor
+
+        # The confirmation coordinator reconciles a locally-approved anchor
+        # with the evidence store before its authority is treated as
+        # effective. It is runtime-owned and drives the chain only through
+        # the attestor's executor-bound handle, so the unsendable chain
+        # stays on its owning thread.
+        if (
+            evidence_attestor is not None
+            and self._state_store is not None
+            and evidence_attestor.available
+        ):
+            confirmation_chain = evidence_attestor.confirmation_chain()
+            if confirmation_chain is not None:
+                self._firmware_confirmation_coordinator = (
+                    FirmwareConfirmationCoordinator(
+                        store=self._state_store, chain=confirmation_chain
+                    )
+                )
 
         dispatcher = ActionDispatcher(
             state_store=self._state_store,
@@ -1004,6 +1031,7 @@ class OriRuntime:
 
         await self._start_health_socket_if_enabled(config)
 
+        await self._drain_pending_firmware_confirmations()
         await self._reconcile_pending_attestations()
 
         if status_indicator is not None:
@@ -1875,6 +1903,15 @@ class OriRuntime:
             return
         repaired = 0
         for row in rows:
+            # Cross-store confirmation gate: firmware-sourced evidence is
+            # accepted only once the source device's active epoch is
+            # confirmed in the evidence store. The coordinator reconciles the
+            # two stores and returns the stored status; anything short of
+            # confirmed leaves the row pending (fail closed) rather than
+            # signing under authority the evidence store cannot back. The
+            # local approved flag is deliberately NOT the gate here.
+            if not await self._firmware_source_confirmed(row):
+                continue
             # reconciled=True stamps the signed payload as late evidence —
             # a verifier must never mistake it for emission-time signing.
             seq = await self._evidence_attestor.attest_action(
@@ -1899,6 +1936,88 @@ class OriRuntime:
             repaired,
             remaining,
         )
+
+    async def _drain_pending_firmware_confirmations(self) -> None:
+        """Reconcile every outstanding confirmation obligation once, now.
+
+        Approval records a durable confirmation_pending obligation but cannot
+        itself reach the evidence store (the provisioner is offline). At the
+        runtime's earliest opportunity, drain every pending obligation
+        through the coordinator, so a normally-approved device -- one with no
+        firmware action waiting -- still gets its epoch confirmed and can
+        publish approvals and receive commands. Recurring reconnect and
+        periodic retries are layered on later around this same coordinator.
+        """
+        coordinator = self._firmware_confirmation_coordinator
+        store = self._state_store
+        if coordinator is None or store is None:
+            return
+        if not hasattr(store, "list_pending_firmware_confirmations"):
+            return
+        try:
+            pending = await store.list_pending_firmware_confirmations()
+        except Exception:
+            logger.exception("[confirmation] failed to list pending confirmations")
+            return
+        # One confirm() reconciles a device's active epoch, so collapse the
+        # obligations to their distinct devices (order preserved).
+        device_ids: list[str] = []
+        seen: set[str] = set()
+        for row in pending:
+            device_id = str(row.get("device_id", "") or "")
+            if device_id and device_id not in seen:
+                seen.add(device_id)
+                device_ids.append(device_id)
+        if not device_ids:
+            return
+        confirmed = 0
+        for device_id in device_ids:
+            try:
+                status = await coordinator.confirm(device_id)
+            except Exception:
+                logger.warning(
+                    "[confirmation] reconciling %s failed", device_id, exc_info=True
+                )
+                continue
+            if status == _FIRMWARE_CONFIRMED:
+                confirmed += 1
+        logger.info(
+            "[confirmation] startup drain: %d of %d devices confirmed",
+            confirmed,
+            len(device_ids),
+        )
+
+    async def _firmware_source_confirmed(self, row: dict) -> bool:
+        """Whether a firmware-sourced action may be signed yet.
+
+        A row with no firmware source device is not gated -- there is no
+        cross-store anchor to confirm. For a firmware-sourced row, the
+        coordinator reconciles the runtime and evidence stores and returns
+        the source device's stored confirmation status; only ``confirmed``
+        permits signing. A firmware-sourced row with no coordinator
+        available fails closed.
+        """
+        source_device_id = str(row.get("input_firmware_device_id", "") or "").strip()
+        if not source_device_id:
+            return True
+        coordinator = self._firmware_confirmation_coordinator
+        if coordinator is None:
+            logger.warning(
+                "[confirmation] no coordinator available; leaving firmware "
+                "evidence for %s pending",
+                source_device_id,
+            )
+            return False
+        try:
+            status = await coordinator.confirm(source_device_id)
+        except Exception:
+            logger.warning(
+                "[confirmation] reconciling %s failed; leaving evidence pending",
+                source_device_id,
+                exc_info=True,
+            )
+            return False
+        return status == _FIRMWARE_CONFIRMED
 
     async def _evidence_health(self) -> dict[str, Any]:
         attestor = self._evidence_attestor

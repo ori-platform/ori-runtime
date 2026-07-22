@@ -60,6 +60,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from ori.security.firmware_telemetry import anchor_epoch_id
+
 logger = logging.getLogger(__name__)
 
 _ATTESTED_TIERS = ("C", "D")
@@ -185,6 +187,37 @@ def _public_key_b64_to_hex(value: Any) -> str:
     if len(raw) != 32:
         raise ValueError("Layer 1 public key must decode to 32 bytes")
     return raw.hex()
+
+
+class _ExecutorBoundChain:
+    """A chain handle the confirmation coordinator can drive off-thread.
+
+    The coordinator is runtime-owned and lives outside the attestor, but the
+    pyo3 chain is unsendable and may be touched only on the attestor's single
+    executor thread. This adapter marshals each call onto that thread. The
+    coordinator invokes these methods from a worker thread (via
+    ``asyncio.to_thread``), so blocking on the executor future here does not
+    stall the event loop and keeps the chain on its owning thread.
+    """
+
+    def __init__(self, attestor: EvidenceAttestor) -> None:
+        self._attestor = attestor
+
+    def register_layer1_device(self, *args: Any) -> Any:
+        chain = self._attestor._chain
+        if chain is None:
+            raise RuntimeError("evidence chain is not available")
+        return self._attestor._executor.submit(
+            chain.register_layer1_device, *args
+        ).result()
+
+    def active_anchor_epoch_id(self, device_id: str) -> Any:
+        chain = self._attestor._chain
+        if chain is None:
+            raise RuntimeError("evidence chain is not available")
+        return self._attestor._executor.submit(
+            chain.active_anchor_epoch_id, device_id
+        ).result()
 
 
 class EvidenceAttestor:
@@ -414,7 +447,16 @@ class EvidenceAttestor:
             return None
 
     async def _sync_layer1_device_registration(self, action_row: dict) -> None:
-        """Ensure the private chain has the source device anchor before atomic append."""
+        """Verify the private chain already holds the confirmed source anchor.
+
+        This is a read-only gate, never a write. Promotion into the evidence
+        chain belongs solely to the runtime confirmation coordinator, which
+        reconciles the two stores before authority is effective. The attestor
+        only confirms that the chain already holds the SAME anchor the
+        runtime approved; it never registers or promotes an anchor itself, so
+        a device the coordinator has not confirmed cannot acquire authority
+        through the signing path.
+        """
         registration = action_row.get("input_firmware_registration")
         if not isinstance(registration, dict):
             raise ValueError("Layer 1 source device registration is missing")
@@ -425,20 +467,6 @@ class EvidenceAttestor:
             raise ValueError("Layer 1 source device registration mismatch")
         if not registration.get("approved") or registration.get("revoked"):
             raise ValueError("Layer 1 source device is not approved")
-
-        # The approval is a register-AND-PROMOTE in the evidence chain, and
-        # promotion there requires attribution. It must be the SAME operator
-        # decision recorded when this device was approved in the runtime, so
-        # it is read from the durable snapshot rather than invented here. A
-        # snapshot without it cannot be mirrored honestly, so refuse.
-        approval_actor = str(registration.get("approval_actor", "") or "").strip()
-        approval_reason = str(registration.get("approval_reason", "") or "").strip()
-        if not approval_actor or not approval_reason:
-            raise ValueError(
-                "Layer 1 source device registration lacks approval provenance "
-                "(approval_actor / approval_reason); cannot attribute the "
-                "evidence-chain promotion"
-            )
 
         public_key_hex = _public_key_b64_to_hex(registration.get("public_key_b64"))
         expected = {
@@ -455,30 +483,46 @@ class EvidenceAttestor:
             self._chain.registered_layer1_device,
             source_device_id,
         )
-        if existing is not None:
-            for key, value in expected.items():
-                if existing.get(key) != value:
-                    raise ValueError(f"Layer 1 registry mismatch for {key}")
-            if not existing.get("approved") or existing.get("revoked"):
-                raise ValueError(
-                    "Layer 1 source device is not approved in evidence chain"
-                )
-            return
+        # A device the chain has never seen has not been confirmed by the
+        # coordinator. Fail closed rather than registering it here.
+        if existing is None:
+            raise ValueError(
+                "Layer 1 source device is not registered in the evidence chain; "
+                "the confirmation coordinator has not confirmed this anchor, so "
+                "its evidence is refused"
+            )
+        for key, value in expected.items():
+            if existing.get(key) != value:
+                raise ValueError(f"Layer 1 registry mismatch for {key}")
+        if not existing.get("approved") or existing.get("revoked"):
+            raise ValueError("Layer 1 source device is not approved in evidence chain")
 
-        await loop.run_in_executor(
-            self._executor,
-            self._chain.register_layer1_device,
-            source_device_id,
-            public_key_hex,
-            expected["alg"],
-            expected["posture"],
-            expected["capability_hash"],
-            expected["hardware_profile"],
-            int(registration.get("provisioned_at_ms", 0) or 0),
-            True,
-            approval_actor,
-            approval_reason,
+        # Evidence-acceptance gate: firmware evidence is accepted only when
+        # the evidence chain holds the SAME anchor_epoch_id the runtime
+        # approved. The check reads the evidence store's active epoch back and
+        # compares it to the one derived from this action's registration
+        # snapshot -- using only the chain and the snapshot, never the runtime
+        # store, so the attestor does not own reconciliation. A mismatch or an
+        # unreachable chain refuses the evidence (fail closed) rather than
+        # signing under an epoch the two stores disagree on.
+        expected_epoch = anchor_epoch_id(
+            device_id=source_device_id,
+            public_key_b64=str(registration.get("public_key_b64", "") or ""),
+            posture=expected["posture"],
+            capability_hash=expected["capability_hash"],
         )
+        chain_epoch = await loop.run_in_executor(
+            self._executor,
+            self._chain.active_anchor_epoch_id,
+            source_device_id,
+        )
+        if chain_epoch != expected_epoch:
+            raise ValueError(
+                "Layer 1 source device epoch is not cross-store confirmed: the "
+                f"evidence chain holds {chain_epoch!r}, the runtime approved "
+                f"{expected_epoch!r}; refusing to sign evidence under a "
+                "disagreed epoch"
+            )
 
     async def chain_head_hash(self) -> str | None:
         if self._chain is None:
@@ -504,6 +548,18 @@ class EvidenceAttestor:
         except Exception:
             logger.warning("[evidence] pending count read failed", exc_info=True)
             return None
+
+    def confirmation_chain(self) -> _ExecutorBoundChain | None:
+        """A chain handle for the runtime's confirmation coordinator.
+
+        Returns ``None`` when the chain is unavailable. The handle marshals
+        push/register and epoch readback onto this attestor's single
+        executor thread, so the coordinator can reconcile the two stores
+        without owning the chain or violating its single-thread rule.
+        """
+        if self._chain is None:
+            return None
+        return _ExecutorBoundChain(self)
 
     def _release_chain(self, holder: list) -> None:
         """Drop the chain held in *holder* on the evidence thread.
