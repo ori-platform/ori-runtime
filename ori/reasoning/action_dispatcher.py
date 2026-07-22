@@ -1592,7 +1592,21 @@ class ActionDispatcher:
         # (see _log_action), so it is already durable. Reuse it here rather
         # than re-querying, so what is attested is exactly what was logged.
         row["input_firmware_registration"] = firmware_registration
+
         try:
+            # Cross-store confirmation gate on the immediate signing path.
+            # Firmware-sourced evidence is signed at emission only once the
+            # source device's active epoch is confirmed in the evidence
+            # store. A confirmation_pending or quarantined epoch -- or any
+            # error reading that status -- leaves the row pending (already
+            # logged as such) for later reconciliation, which runs the
+            # coordinator; it is never signed here under unconfirmed
+            # authority. The lookup lives inside this boundary so a transient
+            # store failure cannot escape and disturb action processing.
+            if not await self._firmware_source_confirmed(
+                store, input_firmware_device_id, firmware_registration
+            ):
+                return
             seq = await self._evidence_attestor.attest_action(row)
             status = "signed" if seq is not None else "failed"
             if hasattr(store, "set_action_attestation"):
@@ -1614,6 +1628,41 @@ class ActionDispatcher:
                     "ActionDispatcher: failed to mark attestation failure for id=%s",
                     action_row_id,
                 )
+
+    async def _firmware_source_confirmed(
+        self, store: Any, device_id: str, registration: dict | None
+    ) -> bool:
+        """Whether a firmware-sourced action's epoch is cross-store confirmed.
+
+        A non-firmware action has no anchor to confirm and always passes.
+        For a firmware-sourced action, only a stored ``confirmed`` status
+        permits immediate signing; anything else (pending, quarantined, a
+        store that cannot answer, or an error reading the status) fails
+        closed and leaves the row for reconciliation. This never raises, so
+        a transient store failure cannot disturb action processing.
+        """
+        source_device_id = str(device_id or "").strip()
+        if not source_device_id:
+            return True
+        if not hasattr(store, "get_firmware_confirmation_status"):
+            return False
+        epoch = ""
+        if isinstance(registration, dict):
+            epoch = str(registration.get("anchor_epoch_id", "") or "")
+        if not epoch:
+            return False
+        try:
+            status = await store.get_firmware_confirmation_status(
+                source_device_id, epoch
+            )
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: confirmation status lookup errored for "
+                "device=%r; leaving firmware evidence pending",
+                source_device_id,
+            )
+            return False
+        return status == "confirmed"
 
     def _resolve_state_store(self, context: SkillContext) -> Any:
         if hasattr(context, "state_store") and context.state_store is not None:

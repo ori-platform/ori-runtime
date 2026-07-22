@@ -150,6 +150,32 @@ def _approve(bench, key=None):
     )
 
 
+def _confirm(bench, device_id="ori-fw-bench0001"):
+    """Stand in for the runtime confirmation coordinator.
+
+    Publishing now requires the evidence store to have confirmed the active
+    epoch; the offline provisioner cannot do that, so tests resolve the
+    obligation directly to reach the publish path.
+    """
+    import asyncio
+
+    from ori.state.store import StateStore
+    from ori.utils.time_utils import now_ms
+
+    async def _run():
+        store = StateStore(db_path=bench["db"])
+        await store.open()
+        try:
+            dev = await store.get_firmware_device(device_id)
+            await store.resolve_firmware_confirmation(
+                device_id, dev["anchor_epoch_id"], status="confirmed", at_ms=now_ms()
+            )
+        finally:
+            await store.close()
+
+    asyncio.run(_run())
+
+
 class TestTransactionControls:
     """Each of these is a control a parallel signing path would skip."""
 
@@ -164,6 +190,7 @@ class TestTransactionControls:
     def test_approved_device_gets_an_approval(self, bench) -> None:
         assert _register(bench) == 0
         assert _approve(bench) == 0
+        _confirm(bench)
         assert _publish(bench) == 0
         approval = json.loads(Path(bench["out"]).read_text())["approval"]
         assert approval["device_id"] == "ori-fw-bench0001"
@@ -199,6 +226,7 @@ class TestTransactionControls:
         bad = json.loads(Path(bench["manifest"]).read_text())
         bad["manifest"]["device_id"] = "ori-fw-someone-else"
         Path(bench["manifest"]).write_text(json.dumps(bad))
+        _confirm(bench)
         assert _publish(bench) == 0
         approval = json.loads(Path(bench["out"]).read_text())["approval"]
         assert approval["device_id"] == "ori-fw-bench0001"

@@ -119,7 +119,24 @@ async def provision(store) -> str:
     assert await gate.approve_device(
         manifest["device_id"], actor="test-operator", reason="test"
     )
+    await _confirm_active(store, manifest["device_id"])
     return manifest["device_id"]
+
+
+async def _confirm_active(store, device_id: str) -> None:
+    """Mark the device's active epoch cross-store confirmed.
+
+    Publishing a command or approval now requires the evidence store to
+    have confirmed the same anchor_epoch_id. Tests that exercise a
+    fully-usable device stand in for the runtime coordinator by resolving
+    the obligation directly.
+    """
+    from ori.utils.time_utils import now_ms
+
+    dev = await store.get_firmware_device(device_id)
+    await store.resolve_firmware_confirmation(
+        device_id, dev["anchor_epoch_id"], status="confirmed", at_ms=now_ms()
+    )
 
 
 class TestSequenceAllocation:
@@ -202,6 +219,7 @@ class TestSequenceAllocation:
         assert await store.approve_firmware_device(
             device_id, actor="test-operator", reason="test"
         )
+        await _confirm_active(store, device_id)
         with pytest.raises(FirmwareCommandError, match="vocabulary"):
             await signer.sign_command(
                 device_id=device_id, action="ota_begin", channel="relay0"
@@ -227,6 +245,13 @@ class TestSequenceAllocation:
         assert await gate.approve_device(
             manifest["device_id"], actor="test-operator", reason="test"
         )
+        # Approved locally but not yet cross-store confirmed: the command
+        # gate refuses until the evidence store confirms the epoch.
+        with pytest.raises(FirmwareCommandError, match="not cross-store confirmed"):
+            await signer.sign_command(
+                device_id=manifest["device_id"], action="relay_open", channel="relay0"
+            )
+        await _confirm_active(store, manifest["device_id"])
         await signer.sign_command(
             device_id=manifest["device_id"], action="relay_open", channel="relay0"
         )

@@ -78,6 +78,18 @@ async def _register_device(store: StateStore, *, approve: bool = True) -> str:
         assert await gate.approve_device(
             manifest["device_id"], actor="test-operator", reason="test"
         )
+        # Publishing now requires the evidence store to have confirmed the
+        # active epoch. Stand in for the runtime coordinator by resolving
+        # the obligation directly.
+        from ori.utils.time_utils import now_ms
+
+        dev = await store.get_firmware_device(manifest["device_id"])
+        await store.resolve_firmware_confirmation(
+            manifest["device_id"],
+            dev["anchor_epoch_id"],
+            status="confirmed",
+            at_ms=now_ms(),
+        )
     return manifest["device_id"]
 
 

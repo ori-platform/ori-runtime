@@ -51,6 +51,18 @@ from ori.security.evidence import (  # noqa: E402
     _artifact_supports_safety_event,
     expected_protocol_version,
 )
+from ori.security.firmware_confirmation import (  # noqa: E402
+    FirmwareConfirmationCoordinator,
+)
+from ori.state.store import StateStore  # noqa: E402
+
+_FW_DEVICE = "ori-fw-artifact-01"
+_FW_PUBLIC_KEY_B64 = base64.b64encode(bytes([0x42]) * 32).decode("ascii")
+_FW_CAPABILITY_HASH = (
+    "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d"
+)
+_FW_APPROVAL_ACTOR = "uid=0:artifact-smoke"
+_FW_APPROVAL_REASON = "ffi smoke provisioning"
 
 
 def _expected_artifact_version() -> str | None:
@@ -79,38 +91,57 @@ def _tier_d_row(row_id: int) -> dict:
     }
 
 
-def _firmware_tier_d_row(row_id: int) -> dict:
+def _firmware_tier_d_row(row_id: int, registration: dict) -> dict:
+    # The registration snapshot is the durable device record the runtime
+    # store holds, exactly as the real dispatcher captures it -- so the
+    # anchor the coordinator confirmed and the anchor the attestor verifies
+    # are the same one.
     row = _tier_d_row(row_id)
     row.update(
         {
             "input_attestation_grade": "attested",
             "input_posture": "sealed_flash",
-            "input_firmware_device_id": "ori-fw-artifact-01",
+            "input_firmware_device_id": _FW_DEVICE,
             "input_firmware_boot_id": 7,
             "input_firmware_seq": 11,
-            "input_firmware_registration": {
-                "device_id": "ori-fw-artifact-01",
-                "public_key_b64": base64.b64encode(bytes([0x42]) * 32).decode("ascii"),
-                "alg": "ed25519",
-                "posture": "sealed_flash",
-                "capability_hash": (
-                    "sha256:"
-                    "13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d"
-                ),
-                "board_profile": "esp32-s3-pzem-v1",
-                "approved": True,
-                "provisioned_at_ms": 1_760_000_000_000,
-                "revoked": False,
-                # The evidence-chain approval is a register-and-promote and
-                # requires the promotion's provenance. The real dispatcher
-                # captures it from the runtime's transition log; the smoke
-                # fixture supplies it directly.
-                "approval_actor": "uid=0:artifact-smoke",
-                "approval_reason": "ffi smoke provisioning",
-            },
+            "input_firmware_registration": registration,
         }
     )
     return row
+
+
+async def _confirm_firmware_anchor(attestor, store) -> dict:
+    """Register, approve, and cross-store confirm the smoke firmware device.
+
+    Mirrors production: the coordinator -- not the attestor -- pushes the
+    anchor into the real chain and confirms the identical epoch. Returns the
+    durable registration snapshot (with approval provenance) the dispatcher
+    would attach to the action row.
+    """
+    await store.upsert_firmware_device_anchor(
+        device_id=_FW_DEVICE,
+        public_key_b64=_FW_PUBLIC_KEY_B64,
+        posture="sealed_flash",
+        capability_hash=_FW_CAPABILITY_HASH,
+        manifest_json="{}",
+        channel_map_json="{}",
+        board_profile="esp32-s3-pzem-v1",
+        provisioned_at_ms=1_760_000_000_000,
+    )
+    assert await store.approve_firmware_device(
+        _FW_DEVICE, actor=_FW_APPROVAL_ACTOR, reason=_FW_APPROVAL_REASON
+    )
+    coordinator = FirmwareConfirmationCoordinator(
+        store=store, chain=attestor.confirmation_chain()
+    )
+    # Confirms the runtime and the real evidence store agree on the identical
+    # anchor_epoch_id -- the cross-store contract, end to end.
+    assert await coordinator.confirm(_FW_DEVICE) == "confirmed"
+
+    registration = dict(await store.get_firmware_device(_FW_DEVICE))
+    registration["approval_actor"] = _FW_APPROVAL_ACTOR
+    registration["approval_reason"] = _FW_APPROVAL_REASON
+    return registration
 
 
 def _chain_row(db_path: str, seq: int) -> dict:
@@ -124,6 +155,33 @@ def _chain_row(db_path: str, seq: int) -> dict:
         ).fetchone()
     assert row is not None, f"chain row seq={seq} missing"
     return dict(row)
+
+
+def _firmware_chain_row(db_path: str, firmware_device_id: str) -> dict:
+    """Locate the signed firmware action event by its payload, not by seq.
+
+    The confirmation coordinator's register-and-promote may itself append
+    chain events, so the firmware action's physical seq is not a fixed
+    offset. Selecting on the payload keeps the assertion robust to how many
+    chain rows the promotion occupies.
+    """
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT event_type, device_id, emitted_at_ms, payload_json "
+            f"FROM {_CHAIN_TABLE} ORDER BY seq"
+        ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, ValueError):
+            continue
+        if payload.get("input_firmware_device_id") == firmware_device_id:
+            return dict(row)
+    layout = [(r["event_type"], r["device_id"]) for r in rows]
+    raise AssertionError(
+        f"no signed firmware event for {firmware_device_id!r}; chain layout={layout}"
+    )
 
 
 def test_artifact_identity_matches_expected_private_version():
@@ -174,13 +232,21 @@ async def test_provisioning_signing_idempotency_and_verification(tmp_path):
         assert late["attestation"] == "reconciled_late"
 
         assert attestor.atomic_freshness_available is True
-        assert await attestor.attest_action(_firmware_tier_d_row(3)) == 3
-        firmware = json.loads(_chain_row(attestor._db_path, 3)["payload_json"])
-        assert firmware["input_attestation_grade"] == "attested"
-        assert firmware["input_posture"] == "sealed_flash"
-        assert firmware["input_firmware_device_id"] == "ori-fw-artifact-01"
-        assert firmware["input_firmware_boot_id"] == 7
-        assert firmware["input_firmware_seq"] == 11
+        # Firmware-source evidence is signed only after the coordinator
+        # confirms the anchor into the real chain; the attestor never
+        # promotes it itself.
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        try:
+            registration = await _confirm_firmware_anchor(attestor, store)
+            pre_count = await attestor.pending_export_count()
+            fw_seq = await attestor.attest_action(_firmware_tier_d_row(3, registration))
+        finally:
+            await store.close()
+        # A genuinely new signed event, not an idempotent no-op: the chain's
+        # pending-export count advances by exactly one.
+        assert fw_seq is not None
+        assert await attestor.pending_export_count() == pre_count + 1
 
         # The whole chain verifies against the provisioned anchor. The pyo3
         # chain is unsendable, so the call must run on the attestor's
@@ -188,6 +254,20 @@ async def test_provisioning_signing_idempotency_and_verification(tmp_path):
         attestor._executor.submit(attestor._chain.verify_chain, anchor).result()
     finally:
         attestor.close()
+
+    # After close, the chain is fully durable and readable from a fresh
+    # connection (the real artifact's atomic freshness append is not visible
+    # cross-connection while the chain handle is still open). Confirm the
+    # firmware action carries the Layer 1 source identity in its signed
+    # payload.
+    fw_row = _firmware_chain_row(attestor._db_path, "ori-fw-artifact-01")
+    assert fw_row["event_type"] == "SAFETY_ACTION_EXECUTED"
+    firmware = json.loads(fw_row["payload_json"])
+    assert firmware["input_attestation_grade"] == "attested"
+    assert firmware["input_posture"] == "sealed_flash"
+    assert firmware["input_firmware_device_id"] == "ori-fw-artifact-01"
+    assert firmware["input_firmware_boot_id"] == 7
+    assert firmware["input_firmware_seq"] == 11
 
 
 @pytest.mark.asyncio

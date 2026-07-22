@@ -199,6 +199,27 @@ class FirmwareCommandService:
             raise FirmwareCommandError(f"device {device_id!r} is revoked")
         if not row.get("approved"):
             raise FirmwareCommandError(f"device {device_id!r} is not approved")
+
+        # The local `approved` flag is only intent. Authority becomes
+        # effective when the evidence store has confirmed the identical
+        # anchor_epoch_id (ori-specs/device-provisioning/v1.md). A command
+        # or approval MUST NOT reach firmware until then, so this gate --
+        # not `approved` -- decides whether the grant may be published. A
+        # store without the confirmation surface (older schema) is treated
+        # as unconfirmed rather than silently bypassing the gate.
+        epoch = str(row.get("anchor_epoch_id", "") or "")
+        status = None
+        if epoch and hasattr(self._store, "get_firmware_confirmation_status"):
+            status = await self._store.get_firmware_confirmation_status(
+                device_id, epoch
+            )
+        if status != "confirmed":
+            raise FirmwareCommandError(
+                f"device {device_id!r} epoch is not cross-store confirmed "
+                f"(status={status or 'unknown'!r}); the evidence store has not "
+                "confirmed the same anchor_epoch_id, so the approval must not "
+                "reach firmware yet"
+            )
         return cast(dict[str, Any], row)
 
 

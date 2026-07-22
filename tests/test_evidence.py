@@ -25,6 +25,7 @@ from ori.network.events import ActionResult, OriEvent, SensorReading
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.runtime import OriRuntime, _build_evidence_attestor
 from ori.security.evidence import EvidenceAttestor, tier_requires_attestation
+from ori.security.firmware_confirmation import FirmwareConfirmationCoordinator
 from ori.state.store import StateStore
 
 _FAKE_ARTIFACT_MODULE = "ori_private_evidence_test_artifact"
@@ -137,6 +138,25 @@ class _FakeEvidenceChain:
 
     def registered_layer1_device(self, device_id: str) -> dict | None:
         return self.layer1_devices.get(device_id)
+
+    def active_anchor_epoch_id(self, device_id: str) -> str | None:
+        # Mirror the evidence store: derive the active anchor's epoch from
+        # the stored, approved, unrevoked device, so the runtime's
+        # evidence-acceptance gate sees agreement when the chain holds the
+        # same anchor.
+        dev = self.layer1_devices.get(device_id)
+        if dev is None or not dev.get("approved") or dev.get("revoked"):
+            return None
+        from ori.security.firmware_telemetry import anchor_epoch_id
+
+        return anchor_epoch_id(
+            device_id=device_id,
+            public_key_b64=base64.b64encode(
+                bytes.fromhex(str(dev["public_key"]))
+            ).decode(),
+            posture=str(dev["posture"]),
+            capability_hash=str(dev["capability_hash"]),
+        )
 
     def chain_head_hash(self) -> str | None:
         return f"head-{self._seq}" if self._seq else None
@@ -513,6 +533,41 @@ class TestDispatcherAttestation:
             evidence_attestor=attestor,
         )
 
+    async def _register_and_confirm(
+        self,
+        store,
+        attestor,
+        device_id,
+        *,
+        public_key_b64,
+        capability_hash,
+        provisioned_at_ms=1,
+    ):
+        """Register, approve, and cross-store confirm a firmware device.
+
+        Firmware-sourced evidence is only signed once its epoch is confirmed
+        in the evidence store, so a dispatcher test that expects signing must
+        first take the device through the coordinator, which pushes the
+        anchor and resolves the obligation.
+        """
+        await store.upsert_firmware_device_anchor(
+            device_id=device_id,
+            public_key_b64=public_key_b64,
+            posture="sealed_flash",
+            capability_hash=capability_hash,
+            manifest_json="{}",
+            channel_map_json="{}",
+            board_profile="esp32-s3-pzem-v1",
+            provisioned_at_ms=provisioned_at_ms,
+        )
+        assert await store.approve_firmware_device(
+            device_id, actor="test-operator", reason="test"
+        )
+        coordinator = FirmwareConfirmationCoordinator(
+            store=store, chain=attestor.confirmation_chain()
+        )
+        assert await coordinator.confirm(device_id) == "confirmed"
+
     async def test_tier_c_action_is_signed_on_dispatch_path(
         self, monkeypatch, tmp_path
     ):
@@ -544,6 +599,13 @@ class TestDispatcherAttestation:
         await store.open()
         attestor = await _started_attestor(monkeypatch, tmp_path)
         try:
+            await self._register_and_confirm(
+                store,
+                attestor,
+                "ori-fw-7c9f2b3a",
+                public_key_b64=base64.b64encode(bytes([0x11] * 32)).decode(),
+                capability_hash="sha256:" + "ab" * 32,
+            )
             dispatcher = self._dispatcher(store, attestor)
             reading = SensorReading(
                 sensor_id="ori-fw-7c9f2b3a:ch0",
@@ -591,21 +653,16 @@ class TestDispatcherAttestation:
         )
         try:
             assert attestor.atomic_freshness_available is True
-            await store.upsert_firmware_device_anchor(
-                device_id="ori-fw-7c9f2b3a",
+            await self._register_and_confirm(
+                store,
+                attestor,
+                "ori-fw-7c9f2b3a",
                 public_key_b64=base64.b64encode(bytes([0x42]) * 32).decode("ascii"),
-                posture="sealed_flash",
                 capability_hash=(
                     "sha256:"
                     "13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d"
                 ),
-                manifest_json="{}",
-                channel_map_json="{}",
-                board_profile="esp32-s3-pzem-v1",
                 provisioned_at_ms=1_760_000_000_000,
-            )
-            assert await store.approve_firmware_device(
-                "ori-fw-7c9f2b3a", actor="test-operator", reason="test"
             )
             dispatcher = self._dispatcher(store, attestor)
             reading = SensorReading(
@@ -637,6 +694,150 @@ class TestDispatcherAttestation:
             assert atomic[4:7] == ("ori-fw-7c9f2b3a", 7, 42)
             payload = atomic[3]
             assert '"input_firmware_device_id": "ori-fw-7c9f2b3a"' in payload
+        finally:
+            attestor.close()
+            await store.close()
+
+    async def test_unconfirmed_firmware_evidence_is_withheld_on_immediate_path(
+        self, monkeypatch, tmp_path
+    ):
+        # The immediate signing path must honour the cross-store gate too.
+        # A device that is registered and approved but not yet confirmed --
+        # or quarantined -- must not have its evidence signed at emission,
+        # even on the non-atomic append path that never reaches the
+        # attestor's own epoch check. The evidence stays a visible gap for
+        # reconciliation to resolve through the coordinator.
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        attestor = await _started_attestor(monkeypatch, tmp_path)
+        try:
+            # Default artifact: no atomic freshness, so signing would take the
+            # generic append path with no epoch check of its own.
+            assert attestor.atomic_freshness_available is False
+            await store.upsert_firmware_device_anchor(
+                device_id="ori-fw-7c9f2b3a",
+                public_key_b64=base64.b64encode(bytes([0x11] * 32)).decode(),
+                posture="sealed_flash",
+                capability_hash="sha256:" + "ab" * 32,
+                manifest_json="{}",
+                channel_map_json="{}",
+                board_profile="esp32-s3-pzem-v1",
+                provisioned_at_ms=1,
+            )
+            await store.approve_firmware_device(
+                "ori-fw-7c9f2b3a", actor="op", reason="commissioning"
+            )
+            dispatcher = self._dispatcher(store, attestor)
+
+            def _reading():
+                return SensorReading(
+                    sensor_id="ori-fw-7c9f2b3a:ch0",
+                    sensor_type="current",
+                    value=21.0,
+                    unit="ampere",
+                    timestamp=1,
+                    quality=1.0,
+                    metadata={
+                        "source": "firmware",
+                        "attestation": "attested",
+                        "posture": "sealed_flash",
+                        "firmware_device_id": "ori-fw-7c9f2b3a",
+                        "boot_id": 7,
+                        "seq": 42,
+                    },
+                )
+
+            # confirmation_pending: withheld.
+            context = SimpleNamespace(
+                state_store=store,
+                event=OriEvent.from_reading(_reading(), "runtime-01"),
+            )
+            await dispatcher._log_action(_result("D", approved=None), context)
+
+            # quarantined: also withheld.
+            dev = await store.get_firmware_device("ori-fw-7c9f2b3a")
+            await store.resolve_firmware_confirmation(
+                "ori-fw-7c9f2b3a",
+                dev["anchor_epoch_id"],
+                status="quarantined",
+                at_ms=1,
+            )
+            context = SimpleNamespace(
+                state_store=store,
+                event=OriEvent.from_reading(_reading(), "runtime-01"),
+            )
+            await dispatcher._log_action(_result("D", approved=None), context)
+
+            summary = await store.get_attestation_summary()
+            assert summary["status_counts"].get("signed", 0) == 0
+            assert attestor._chain.appended == []
+            assert attestor._chain.atomic_appended == []
+        finally:
+            attestor.close()
+            await store.close()
+
+    async def test_confirmation_lookup_failure_leaves_evidence_pending(
+        self, monkeypatch, tmp_path
+    ):
+        # A transient failure reading the confirmation status must never
+        # escape the evidence path or disturb action processing. It fails
+        # closed: the row is left pending (not signed, not failed) for
+        # reconciliation, and nothing is written to the chain.
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        attestor = await _started_attestor(monkeypatch, tmp_path)
+        try:
+            await store.upsert_firmware_device_anchor(
+                device_id="ori-fw-7c9f2b3a",
+                public_key_b64=base64.b64encode(bytes([0x11] * 32)).decode(),
+                posture="sealed_flash",
+                capability_hash="sha256:" + "ab" * 32,
+                manifest_json="{}",
+                channel_map_json="{}",
+                board_profile="esp32-s3-pzem-v1",
+                provisioned_at_ms=1,
+            )
+            await store.approve_firmware_device(
+                "ori-fw-7c9f2b3a", actor="op", reason="commissioning"
+            )
+
+            async def _boom(*args, **kwargs):
+                raise RuntimeError("state store unavailable")
+
+            monkeypatch.setattr(store, "get_firmware_confirmation_status", _boom)
+
+            dispatcher = self._dispatcher(store, attestor)
+            reading = SensorReading(
+                sensor_id="ori-fw-7c9f2b3a:ch0",
+                sensor_type="current",
+                value=21.0,
+                unit="ampere",
+                timestamp=1,
+                quality=1.0,
+                metadata={
+                    "source": "firmware",
+                    "attestation": "attested",
+                    "posture": "sealed_flash",
+                    "firmware_device_id": "ori-fw-7c9f2b3a",
+                    "boot_id": 7,
+                    "seq": 42,
+                },
+            )
+            event = OriEvent.from_reading(reading, "runtime-01")
+            context = SimpleNamespace(state_store=store, event=event)
+            # Does not raise despite the failing lookup.
+            await dispatcher._log_action(_result("D", approved=None), context)
+
+            # The action itself was logged; its evidence is a visible gap,
+            # neither signed nor marked failed.
+            assert (await store.get_action_log(limit=1))[0][
+                "input_firmware_device_id"
+            ] == "ori-fw-7c9f2b3a"
+            summary = await store.get_attestation_summary()
+            assert summary["status_counts"].get("signed", 0) == 0
+            assert summary["status_counts"].get("failed", 0) == 0
+            assert attestor._chain.appended == []
+            assert attestor._chain.atomic_appended == []
         finally:
             attestor.close()
             await store.close()
@@ -725,6 +926,175 @@ class TestReconciliation:
             summary = await store.get_attestation_summary()
             assert summary["status_counts"] == {"failed": 1}
             assert summary["attestation_gap_count"] == 1
+        finally:
+            attestor.close()
+            await store.close()
+
+    _GATE_KEY = base64.b64encode(bytes([0x11] * 32)).decode()
+    _GATE_CAP = "sha256:" + "ab" * 32
+    _GATE_DEVICE = "fw-gate-node"
+
+    async def _firmware_source_row(self, store, *, approve: bool) -> None:
+        """A pending Tier D action sourced from a firmware node, with the
+        device registered (and optionally approved) in the runtime store."""
+        import json as _json
+
+        await store.upsert_firmware_device_anchor(
+            device_id=self._GATE_DEVICE,
+            public_key_b64=self._GATE_KEY,
+            posture="sealed_flash",
+            capability_hash=self._GATE_CAP,
+            manifest_json="{}",
+            channel_map_json="{}",
+            board_profile="esp32-s3-pzem-v1",
+            provisioned_at_ms=1,
+        )
+        if approve:
+            await store.approve_firmware_device(
+                self._GATE_DEVICE, actor="uid=7:carol", reason="commissioning"
+            )
+        snapshot = {
+            "device_id": self._GATE_DEVICE,
+            "public_key_b64": self._GATE_KEY,
+            # Empty alg matches what the store holds and the coordinator
+            # pushes, so the attestor's registry comparison agrees.
+            "alg": "",
+            "posture": "sealed_flash",
+            "capability_hash": self._GATE_CAP,
+            "board_profile": "esp32-s3-pzem-v1",
+            "provisioned_at_ms": 1,
+            "approved": True,
+            "revoked": False,
+            "approval_actor": "uid=7:carol",
+            "approval_reason": "commissioning",
+        }
+        await store.log_action_for_event(
+            _result("D", approved=None),
+            trigger_name="dangerous_overcurrent",
+            input_firmware_device_id=self._GATE_DEVICE,
+            input_firmware_registration=_json.dumps(snapshot, sort_keys=True),
+            attestation_pending=True,
+        )
+
+    async def test_firmware_evidence_is_signed_once_cross_store_confirmed(
+        self, monkeypatch, tmp_path
+    ):
+        # The coordinator reconciles the two stores at the earliest
+        # opportunity (this reconciliation pass): it pushes the anchor,
+        # reads the identical active epoch back, and resolves the obligation
+        # to confirmed. Only then is the firmware evidence signed.
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        attestor = await _started_attestor(monkeypatch, tmp_path)
+        try:
+            await self._firmware_source_row(store, approve=True)
+            runtime = OriRuntime(config_path="ori.yaml")
+            runtime._state_store = store
+            runtime._evidence_attestor = attestor
+            runtime._firmware_confirmation_coordinator = (
+                FirmwareConfirmationCoordinator(
+                    store=store, chain=attestor.confirmation_chain()
+                )
+            )
+
+            await runtime._reconcile_pending_attestations()
+
+            summary = await store.get_attestation_summary()
+            assert summary["status_counts"] == {"reconciled": 1}
+            dev = await store.get_firmware_device(self._GATE_DEVICE)
+            assert (
+                await store.get_firmware_confirmation_status(
+                    self._GATE_DEVICE, dev["anchor_epoch_id"]
+                )
+                == "confirmed"
+            )
+        finally:
+            attestor.close()
+            await store.close()
+
+    async def test_firmware_evidence_withheld_until_cross_store_confirmed(
+        self, monkeypatch, tmp_path
+    ):
+        # The device is not approved in the runtime store, so its epoch is
+        # not cross-store confirmed. The action's registration snapshot
+        # claims approval, but the STORED confirmation status -- not that
+        # local snapshot -- is the authority. The evidence stays pending, a
+        # visible gap, and nothing is written to the chain.
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        attestor = await _started_attestor(monkeypatch, tmp_path)
+        try:
+            await self._firmware_source_row(store, approve=False)
+            runtime = OriRuntime(config_path="ori.yaml")
+            runtime._state_store = store
+            runtime._evidence_attestor = attestor
+            runtime._firmware_confirmation_coordinator = (
+                FirmwareConfirmationCoordinator(
+                    store=store, chain=attestor.confirmation_chain()
+                )
+            )
+
+            await runtime._reconcile_pending_attestations()
+
+            summary = await store.get_attestation_summary()
+            assert summary["status_counts"].get("reconciled", 0) == 0
+            assert attestor._chain.appended == []
+            assert attestor._chain.atomic_appended == []
+        finally:
+            attestor.close()
+            await store.close()
+
+    async def test_startup_drain_confirms_a_plain_approval(self, monkeypatch, tmp_path):
+        # A device approved with no firmware action waiting must still be
+        # confirmed at startup, or it can never publish its approval or
+        # receive commands. The drain runs the coordinator over every
+        # outstanding obligation: push, readback, resolve.
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        attestor = await _started_attestor(monkeypatch, tmp_path)
+        try:
+            await store.upsert_firmware_device_anchor(
+                device_id="fw-drain",
+                public_key_b64=self._GATE_KEY,
+                posture="sealed_flash",
+                capability_hash=self._GATE_CAP,
+                manifest_json="{}",
+                channel_map_json="{}",
+                board_profile="esp32-s3-pzem-v1",
+                provisioned_at_ms=1,
+            )
+            await store.approve_firmware_device(
+                "fw-drain", actor="op", reason="commissioning"
+            )
+            dev = await store.get_firmware_device("fw-drain")
+            active_epoch = dev["anchor_epoch_id"]
+            # Approval alone leaves the grant unconfirmed: no command or
+            # approval publish may proceed yet.
+            assert (
+                await store.get_firmware_confirmation_status("fw-drain", active_epoch)
+                == "confirmation_pending"
+            )
+
+            runtime = OriRuntime(config_path="ori.yaml")
+            runtime._state_store = store
+            runtime._evidence_attestor = attestor
+            runtime._firmware_confirmation_coordinator = (
+                FirmwareConfirmationCoordinator(
+                    store=store, chain=attestor.confirmation_chain()
+                )
+            )
+
+            await runtime._drain_pending_firmware_confirmations()
+
+            # Confirmed through a real push + readback; the evidence store now
+            # holds the anchor, and the command/approval gates (which key off
+            # this status) will permit the device.
+            assert (
+                await store.get_firmware_confirmation_status("fw-drain", active_epoch)
+                == "confirmed"
+            )
+            assert "fw-drain" in attestor._chain.layer1_devices
+            assert await store.list_pending_firmware_confirmations() == []
         finally:
             attestor.close()
             await store.close()
@@ -981,11 +1351,11 @@ class TestEvidenceTrustProperties:
             await store.close()
 
 
-class TestLayer1RegistrationProvenance:
-    """The evidence-chain approval is a register-and-promote, and promotion
-    there requires attribution. It must be the SAME operator decision the
-    runtime recorded, carried in the durable snapshot -- not invented at
-    the boundary."""
+class TestLayer1RegistrationVerification:
+    """The attestor only VERIFIES that the evidence chain already holds the
+    confirmed source anchor. Promotion into the chain belongs solely to the
+    runtime confirmation coordinator, so a device the coordinator has not
+    confirmed cannot acquire authority through the signing path."""
 
     def _registration(self, **overrides) -> dict:
         reg = {
@@ -1011,51 +1381,66 @@ class TestLayer1RegistrationProvenance:
         )
         return attestor
 
-    async def test_forwards_persisted_provenance_to_the_chain(
-        self, monkeypatch, tmp_path
-    ):
-        attestor = await self._attestor(monkeypatch, tmp_path)
-        try:
-            await attestor._sync_layer1_device_registration(
-                {
-                    "input_firmware_device_id": "fw-node-01",
-                    "input_firmware_registration": self._registration(),
-                }
-            )
-            recorded = attestor._chain.layer1_devices["fw-node-01"]
-            assert recorded["approved"] is True
-            # The exact operator decision, not a constant.
-            assert recorded["approval_actor"] == "uid=42:alice"
-            assert recorded["approval_reason"] == "bench bring-up"
-        finally:
-            attestor.close()
+    def _prime_chain(self, attestor, reg: dict) -> None:
+        """Simulate the coordinator having already pushed the anchor."""
+        attestor._chain.register_layer1_device(
+            reg["device_id"],
+            "11" * 32,
+            reg["alg"],
+            reg["posture"],
+            reg["capability_hash"],
+            reg["board_profile"],
+            reg["provisioned_at_ms"],
+            True,
+            reg["approval_actor"],
+            reg["approval_reason"],
+        )
 
-    async def test_snapshot_without_provenance_is_refused(self, monkeypatch, tmp_path):
+    async def test_confirmed_anchor_is_accepted(self, monkeypatch, tmp_path):
         attestor = await self._attestor(monkeypatch, tmp_path)
         try:
             reg = self._registration()
-            del reg["approval_actor"]
-            with pytest.raises(ValueError, match="approval provenance"):
+            self._prime_chain(attestor, reg)
+            # Does not raise: the chain already holds the same, approved anchor.
+            await attestor._sync_layer1_device_registration(
+                {
+                    "input_firmware_device_id": "fw-node-01",
+                    "input_firmware_registration": reg,
+                }
+            )
+        finally:
+            attestor.close()
+
+    async def test_unregistered_device_is_refused(self, monkeypatch, tmp_path):
+        # The coordinator has not confirmed this anchor, so the chain holds
+        # nothing for it. The attestor must NOT register it itself.
+        attestor = await self._attestor(monkeypatch, tmp_path)
+        try:
+            with pytest.raises(ValueError, match="not registered in the evidence"):
                 await attestor._sync_layer1_device_registration(
                     {
                         "input_firmware_device_id": "fw-node-01",
-                        "input_firmware_registration": reg,
+                        "input_firmware_registration": self._registration(),
                     }
                 )
-            # Nothing was mirrored.
+            # Nothing was written to the chain.
             assert "fw-node-01" not in attestor._chain.layer1_devices
         finally:
             attestor.close()
 
-    async def test_blank_provenance_is_refused(self, monkeypatch, tmp_path):
+    async def test_registry_field_mismatch_is_refused(self, monkeypatch, tmp_path):
         attestor = await self._attestor(monkeypatch, tmp_path)
         try:
-            with pytest.raises(ValueError, match="approval provenance"):
+            reg = self._registration()
+            self._prime_chain(attestor, reg)
+            # The action now presents a DIFFERENT capability hash than the
+            # chain holds: a registry disagreement the gate must catch.
+            with pytest.raises(ValueError, match="Layer 1 registry mismatch"):
                 await attestor._sync_layer1_device_registration(
                     {
                         "input_firmware_device_id": "fw-node-01",
                         "input_firmware_registration": self._registration(
-                            approval_actor="   ", approval_reason="x"
+                            capability_hash="sha256:" + "cd" * 32
                         ),
                     }
                 )
@@ -1119,3 +1504,81 @@ class TestReconciliationProvenanceRecovery:
             assert row["input_firmware_registration"] is None
         finally:
             await store.close()
+
+
+class TestEvidenceAcceptanceGate:
+    """Firmware evidence is accepted only when the evidence chain holds the
+    same anchor_epoch_id the runtime approved (ori-runtime#250)."""
+
+    def _registration(self) -> dict:
+        return {
+            "device_id": "fw-gate-01",
+            "public_key_b64": base64.b64encode(bytes([0x11] * 32)).decode(),
+            "alg": "ed25519",
+            "posture": "sealed_flash",
+            "capability_hash": "sha256:" + "ab" * 32,
+            "board_profile": "esp32-s3-pzem-v1",
+            "provisioned_at_ms": 1,
+            "approved": True,
+            "revoked": False,
+            "approval_actor": "uid=7:carol",
+            "approval_reason": "commissioning",
+        }
+
+    async def _attestor(self, monkeypatch, tmp_path):
+        attestor = await _started_attestor(monkeypatch, tmp_path)
+        attestor._chain = _FakeEvidenceChain(
+            str(tmp_path / "c.db"), str(tmp_path / "c.key"), "s"
+        )
+        return attestor
+
+    def _prime_chain(self, attestor, reg: dict) -> None:
+        """Simulate the coordinator having already confirmed the anchor."""
+        attestor._chain.register_layer1_device(
+            reg["device_id"],
+            bytes([0x11] * 32).hex(),
+            reg["alg"],
+            reg["posture"],
+            reg["capability_hash"],
+            reg["board_profile"],
+            reg["provisioned_at_ms"],
+            True,
+            reg["approval_actor"],
+            reg["approval_reason"],
+        )
+
+    async def test_matching_epoch_is_accepted(self, monkeypatch, tmp_path):
+        attestor = await self._attestor(monkeypatch, tmp_path)
+        try:
+            reg = self._registration()
+            self._prime_chain(attestor, reg)
+            await attestor._sync_layer1_device_registration(
+                {
+                    "input_firmware_device_id": "fw-gate-01",
+                    "input_firmware_registration": reg,
+                }
+            )  # does not raise: the chain holds the same active epoch
+        finally:
+            attestor.close()
+
+    async def test_disagreed_epoch_is_refused(self, monkeypatch, tmp_path):
+        attestor = await self._attestor(monkeypatch, tmp_path)
+        try:
+            reg = self._registration()
+            self._prime_chain(attestor, reg)
+            # The registry fields still match, but the evidence store's ACTIVE
+            # anchor is a different epoch (e.g. it holds a superseded or other
+            # anchor as active). The epoch gate must catch this even though
+            # the registry-field comparison passes.
+            attestor._chain.active_anchor_epoch_id = (  # type: ignore[method-assign]
+                lambda device_id: "sha256:" + "ff" * 32
+            )
+            with pytest.raises(ValueError, match="not cross-store confirmed"):
+                await attestor._sync_layer1_device_registration(
+                    {
+                        "input_firmware_device_id": "fw-gate-01",
+                        "input_firmware_registration": reg,
+                    }
+                )
+        finally:
+            attestor.close()
