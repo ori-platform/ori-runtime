@@ -223,6 +223,51 @@ class TestLoadOne:
         assert len(skill.triggers) == 1
         assert skill.triggers[0].name == "over_threshold"
 
+    @pytest.mark.parametrize(
+        "yaml_content, message",
+        [
+            (
+                """
+                name: first-name
+                name: second-name
+                version: 0.1.0
+                author: test
+                signature: bundled
+                triggers: []
+                actions: {}
+                """,
+                "duplicate skill mapping key 'name'",
+            ),
+            (
+                """
+                name: invalid-key
+                version: 0.1.0
+                author: test
+                signature: bundled
+                triggers: []
+                actions:
+                  available:
+                    - name: alert_whatsapp
+                      tier: A
+                  defaults:
+                    1: [alert_whatsapp]
+                """,
+                "skill mapping keys must be strings",
+            ),
+        ],
+    )
+    def test_rejects_ambiguous_or_non_json_yaml_mappings(
+        self,
+        tmp_path,
+        yaml_content,
+        message,
+    ):
+        skill_dir = tmp_path / "invalid-mapping"
+        _write_skill_yaml(skill_dir, yaml_content)
+
+        with pytest.raises(yaml.constructor.ConstructorError, match=message):
+            SkillLoader().load_one(skill_dir)
+
     def test_trigger_action_tier_parsed(self, tmp_path):
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml(action_tier="B"))

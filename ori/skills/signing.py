@@ -5,9 +5,73 @@
 
 import base64
 import json
+import math
 from typing import Any
 
 from ori.skills.sandbox import SkillSecurityError
+
+
+def _decode_canonical_base64(value: str, *, label: str) -> bytes:
+    try:
+        decoded = base64.b64decode(value.encode("ascii"), validate=True)
+    except Exception as exc:
+        raise SkillSecurityError(f"invalid base64 {label}") from exc
+    if base64.b64encode(decoded).decode("ascii") != value:
+        raise SkillSecurityError(f"non-canonical base64 {label}")
+    return decoded
+
+
+def _validate_canonical_json_value(
+    value: Any,
+    *,
+    path: str = "$",
+    active_containers: set[int] | None = None,
+) -> None:
+    """Reject values that cannot be represented deterministically as JSON."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise SkillSecurityError(
+                f"signed payload contains non-finite number at {path}"
+            )
+        return
+
+    if active_containers is None:
+        active_containers = set()
+
+    if isinstance(value, (list, dict)):
+        identity = id(value)
+        if identity in active_containers:
+            raise SkillSecurityError(f"signed payload contains a cycle at {path}")
+        active_containers.add(identity)
+        try:
+            if isinstance(value, list):
+                for index, item in enumerate(value):
+                    _validate_canonical_json_value(
+                        item,
+                        path=f"{path}[{index}]",
+                        active_containers=active_containers,
+                    )
+                return
+
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise SkillSecurityError(
+                        f"signed payload contains non-string object key at {path}"
+                    )
+                _validate_canonical_json_value(
+                    item,
+                    path=f"{path}.{key}",
+                    active_containers=active_containers,
+                )
+            return
+        finally:
+            active_containers.remove(identity)
+
+    raise SkillSecurityError(
+        f"signed payload contains non-JSON value at {path}: {type(value).__name__}"
+    )
 
 
 def canonical_signed_payload(raw_payload: dict[str, Any]) -> bytes:
@@ -16,11 +80,13 @@ def canonical_signed_payload(raw_payload: dict[str, Any]) -> bytes:
     The signature field itself is excluded from the signed payload.
     """
     canonical_obj = {k: v for k, v in raw_payload.items() if k != "signature"}
+    _validate_canonical_json_value(canonical_obj)
     canonical_json = json.dumps(
         canonical_obj,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        allow_nan=False,
     )
     return canonical_json.encode("utf-8")
 
@@ -51,7 +117,7 @@ def verify_signed_payload(
             "invalid signature format. Expected 'ed25519:<base64_signature>'"
         )
     scheme, signature_b64 = signature_field.split(":", 1)
-    if scheme.lower() != "ed25519":
+    if scheme != "ed25519":
         raise SkillSecurityError(
             "unsupported signature scheme. Expected 'ed25519:<base64_signature>'"
         )
@@ -62,18 +128,20 @@ def verify_signed_payload(
     if not trust_anchor_public_key_b64:
         raise SkillSecurityError(f"{context_label} verification trust anchor is empty")
 
-    try:
-        signature_bytes = base64.b64decode(signature_b64.encode("ascii"), validate=True)
-    except Exception as exc:
-        raise SkillSecurityError("invalid base64 signature payload") from exc
-
-    try:
-        public_key_bytes = base64.b64decode(
-            trust_anchor_public_key_b64.encode("ascii"),
-            validate=True,
+    signature_bytes = _decode_canonical_base64(
+        signature_b64,
+        label="signature payload",
+    )
+    if len(signature_bytes) != 64:
+        raise SkillSecurityError("signature payload must decode to exactly 64 bytes")
+    public_key_bytes = _decode_canonical_base64(
+        trust_anchor_public_key_b64,
+        label="trust anchor public key",
+    )
+    if len(public_key_bytes) != 32:
+        raise SkillSecurityError(
+            "trust anchor public key must decode to exactly 32 bytes"
         )
-    except Exception as exc:
-        raise SkillSecurityError("invalid trust anchor public key encoding") from exc
 
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey

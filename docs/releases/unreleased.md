@@ -3,6 +3,19 @@
 Changes merged to `main` since `v2.0.0`, collected here until the next
 release is cut.
 
+## Security Hardening — Community Skill Signatures
+
+- Community `skill.yaml` parsing now rejects duplicate mapping keys and
+  non-string mapping keys instead of allowing ambiguous YAML to reach
+  signature verification.
+- The shared Ed25519 verifier used by community skills, offline Tier C tokens,
+  and signed remote policy payloads rejects cycles, non-JSON values, and
+  non-finite numbers. Signature prefixes, base64 padding, signature length, and
+  public-key length are enforced exactly.
+- The runtime pins and executes the canonical-manifest profile from the shared
+  `ori-specs/signing/v1.md` vector corpus. Detached exact-artifact verification
+  before extraction remains an SDK, CLI, and Skills Hub responsibility.
+
 ## Breaking Changes — Device Provisioning Attribution
 
 Implements the anchor lifecycle in
