@@ -1,0 +1,92 @@
+{
+  "contract": "ori-specs/firmware-mqtt-provisioning/v1.md",
+  "version": 1,
+  "comment": "Hand-authored canonical syntax and signature vectors. Test-only seeds must never be used in production.",
+  "provisioner_test_seed_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+  "provisioner_public_key_hex": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+  "device_test_seed_hex": "3333333333333333333333333333333333333333333333333333333333333333",
+  "device_public_key_hex": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+  "signature_encoding": "ed25519:<standard-base64-64-byte-signature>",
+  "cases": [
+    {
+      "name": "create_csr_request",
+      "signer": "provisioning_authority",
+      "outer_field": "request",
+      "signed_object": "{\"actor\":\"operator-17\",\"anchor_epoch_id\":\"sha256:a620b4b540b39b50fb2c1179c4ce656cdcae16ace5d573fa42b6a1a652e00d18\",\"device_id\":\"ori-fw-7c9f2b3a\",\"kind\":\"create_csr\",\"provision_seq\":41,\"reason\":\"initial-mqtt-enrollment\",\"v\":1}",
+      "signature": "ed25519:tF5EsuK+pDmntI3ISsI0GKoERkdNvhTcMnOJGssOZeGtR5uevnfnu8rpT5QaP83aG+4DeKhH2HorBKwBQMphCw==",
+      "semantic_expectation": "accepted"
+    },
+    {
+      "name": "install_request",
+      "signer": "provisioning_authority",
+      "outer_field": "request",
+      "signed_object": "{\"actor\":\"operator-17\",\"anchor_epoch_id\":\"sha256:a620b4b540b39b50fb2c1179c4ce656cdcae16ace5d573fa42b6a1a652e00d18\",\"broker_ca_pem_b64\":\"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClkyRT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=\",\"broker_uri\":\"mqtts://broker.example:8883\",\"client_cert_pem_b64\":\"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tClkyeHBaVzUwCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K\",\"device_id\":\"ori-fw-7c9f2b3a\",\"kind\":\"install\",\"provision_seq\":42,\"reason\":\"initial-mqtt-enrollment\",\"time_server\":\"time.example\",\"v\":1}",
+      "signature": "ed25519:1tCcJqY88kUhItyvtcWxV9K88yhcCqCkeshS9SKcCwes/w9ZF8myhdQYbs43SfPCUQ6Kqmo2cuVl0o2r2FCrAA==",
+      "semantic_expectation": "invalid_material"
+    },
+    {
+      "name": "revoke_request",
+      "signer": "provisioning_authority",
+      "outer_field": "request",
+      "signed_object": "{\"actor\":\"operator-17\",\"anchor_epoch_id\":\"sha256:a620b4b540b39b50fb2c1179c4ce656cdcae16ace5d573fa42b6a1a652e00d18\",\"device_id\":\"ori-fw-7c9f2b3a\",\"kind\":\"revoke\",\"provision_seq\":43,\"reason\":\"certificate-compromise\",\"v\":1}",
+      "signature": "ed25519:ZgZNwPVgaXauLNoPk3GzWY6G3EXXcHiTAQ+mWmBX6lA11sjYC/1WK3HLIj5xolQKb+mieXeRDW+7+lirASh3BQ==",
+      "semantic_expectation": "accepted"
+    },
+    {
+      "name": "status_request",
+      "signer": "provisioning_authority",
+      "outer_field": "request",
+      "signed_object": "{\"actor\":\"operator-17\",\"anchor_epoch_id\":\"sha256:a620b4b540b39b50fb2c1179c4ce656cdcae16ace5d573fa42b6a1a652e00d18\",\"device_id\":\"ori-fw-7c9f2b3a\",\"kind\":\"status\",\"request_id\":\"inventory-20260723-01\",\"v\":1}",
+      "signature": "ed25519:G0fjs7lLKDL7Sww6v9G0fVc/LqyEaI0CfN4AiQIL7sFAkad2RYG38vWJK+CPfAaxfXDchKG2oidFjez+bfNGAw==",
+      "semantic_expectation": "accepted"
+    },
+    {
+      "name": "csr_response",
+      "signer": "device_layer1",
+      "outer_field": "response",
+      "signed_object": "{\"anchor_epoch_id\":\"sha256:a620b4b540b39b50fb2c1179c4ce656cdcae16ace5d573fa42b6a1a652e00d18\",\"csr_pem_b64\":\"LS0tLS1CRUdJTiBDRVJUSUZJQ0FURSBSRVFVRVNULS0tLS0KZEdWemRBPT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUgUkVRVUVTVC0tLS0tCg==\",\"device_id\":\"ori-fw-7c9f2b3a\",\"kind\":\"csr\",\"provision_seq\":41,\"v\":1}",
+      "signature": "ed25519:L/xqQ1ps/7oSsipRuDrd2zwbRkV+0hAiN1QKftsg0chIpF6yn3Qc0pG/C3+W6iMKQqIaaITYp4E2vpHE0FYSCw==",
+      "semantic_expectation": "signature_only_fixture"
+    },
+    {
+      "name": "status_response",
+      "signer": "device_layer1",
+      "outer_field": "response",
+      "signed_object": "{\"active_anchor_epoch_id\":\"sha256:a620b4b540b39b50fb2c1179c4ce656cdcae16ace5d573fa42b6a1a652e00d18\",\"active_certificate_sha256\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"candidate_anchor_epoch_id\":null,\"candidate_certificate_sha256\":null,\"device_id\":\"ori-fw-7c9f2b3a\",\"kind\":\"status\",\"pending_csr\":false,\"request_id\":\"inventory-20260723-01\",\"revoked\":false,\"v\":1}",
+      "signature": "ed25519:E4Wu9/4+ku3j/666hV2lv6DVP9ZOc1W1I5Gy1rbesEuHc25f9AINFyzEUwJaLtO9g7M8Odh8xFSkD5YOdj/xCA==",
+      "semantic_expectation": "accepted"
+    },
+    {
+      "name": "install_result",
+      "signer": "device_layer1",
+      "outer_field": "result",
+      "signed_object": "{\"anchor_epoch_id\":\"sha256:a620b4b540b39b50fb2c1179c4ce656cdcae16ace5d573fa42b6a1a652e00d18\",\"device_id\":\"ori-fw-7c9f2b3a\",\"kind\":\"install\",\"provision_seq\":42,\"v\":1,\"verdict\":\"accepted\"}",
+      "signature": "ed25519:lHcGTQxqYD0LKPJyD/KVNYvhm7I/QrUqzn1r8eYZjNTe/D3RzPJAFlPzIsFHGv/O6GQKpcvae1NG5q8qXaAaDg==",
+      "semantic_expectation": "accepted"
+    },
+    {
+      "name": "create_csr_wrong_device",
+      "signer": "provisioning_authority",
+      "outer_field": "request",
+      "signed_object": "{\"actor\":\"operator-17\",\"anchor_epoch_id\":\"sha256:a620b4b540b39b50fb2c1179c4ce656cdcae16ace5d573fa42b6a1a652e00d18\",\"device_id\":\"ori-fw-00000000\",\"kind\":\"create_csr\",\"provision_seq\":41,\"reason\":\"initial-mqtt-enrollment\",\"v\":1}",
+      "signature": "ed25519:eAIhD2rmVcyrTn5BaiiSN+FNT8natzAi4W74/i8cNA0NcZwvvSPT9PhjcKPsqAAjyQTGN2cGSGJ680MYI8N6BA==",
+      "semantic_expectation": "wrong_device"
+    },
+    {
+      "name": "create_csr_anchor_epoch_mismatch",
+      "signer": "provisioning_authority",
+      "outer_field": "request",
+      "signed_object": "{\"actor\":\"operator-17\",\"anchor_epoch_id\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"device_id\":\"ori-fw-7c9f2b3a\",\"kind\":\"create_csr\",\"provision_seq\":41,\"reason\":\"initial-mqtt-enrollment\",\"v\":1}",
+      "signature": "ed25519:6mv06xmG+pxHjEy1VQyuOwOjIstec3iMQ6uH/I42tlu/XoS5i7vOOW5231S5Z3403UquYKvChZwKeQJYa8pnAQ==",
+      "semantic_expectation": "anchor_epoch_mismatch"
+    },
+    {
+      "name": "create_csr_replayed_low_seq",
+      "signer": "provisioning_authority",
+      "outer_field": "request",
+      "signed_object": "{\"actor\":\"operator-17\",\"anchor_epoch_id\":\"sha256:a620b4b540b39b50fb2c1179c4ce656cdcae16ace5d573fa42b6a1a652e00d18\",\"device_id\":\"ori-fw-7c9f2b3a\",\"kind\":\"create_csr\",\"provision_seq\":1,\"reason\":\"initial-mqtt-enrollment\",\"v\":1}",
+      "signature": "ed25519:N+HS5p3KK8Lv8qIvKoVvbfyTdpIX2KSUWfefunKSCd+nyBhPtYl8Bj0OPZj1wiat/rAFzr2Qs3e5PeSZO0nmDw==",
+      "semantic_expectation": "replayed"
+    }
+  ]
+}

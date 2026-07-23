@@ -359,6 +359,7 @@ CREATE TABLE IF NOT EXISTS firmware_device_registry (
     last_boot_id      INTEGER NOT NULL DEFAULT 0,
     last_seq          INTEGER NOT NULL DEFAULT 0,
     last_cmd_seq      INTEGER NOT NULL DEFAULT 0,
+    last_provision_seq INTEGER NOT NULL DEFAULT 0,
     revoked           INTEGER NOT NULL DEFAULT 0,
     revoked_at_ms     INTEGER
 );
@@ -462,6 +463,63 @@ CREATE TABLE IF NOT EXISTS firmware_confirmation_outbox (
 
 CREATE INDEX IF NOT EXISTS idx_firmware_confirmation_outbox_status
     ON firmware_confirmation_outbox (status, created_at_ms ASC);
+
+-- Append-only issuer and response audit for
+-- ori-specs/firmware-mqtt-provisioning/v1.md. Request and response facts are
+-- separate rows: a later device result never rewrites the request that was
+-- signed and handed to an untrusted transport.
+CREATE TABLE IF NOT EXISTS firmware_mqtt_provisioning_audit (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id           TEXT    NOT NULL,
+    event_kind          TEXT    NOT NULL
+        CHECK (event_kind IN ('request_signed', 'response_verified')),
+    operation_kind      TEXT    NOT NULL
+        CHECK (operation_kind IN ('create_csr', 'install', 'revoke', 'status')),
+    provision_seq       INTEGER,
+    request_id          TEXT    NOT NULL DEFAULT '',
+    anchor_epoch_id     TEXT    NOT NULL,
+    actor               TEXT    NOT NULL,
+    reason              TEXT    NOT NULL DEFAULT '',
+    request_sha256      TEXT    NOT NULL,
+    verdict             TEXT    NOT NULL DEFAULT '',
+    certificate_sha256  TEXT    NOT NULL DEFAULT '',
+    broker_uri          TEXT    NOT NULL DEFAULT '',
+    payload_sha256      TEXT    NOT NULL,
+    occurred_at_ms      INTEGER NOT NULL,
+    CHECK (length(trim(actor)) > 0),
+    CHECK (
+        (event_kind = 'request_signed' AND verdict = '')
+        OR
+        (event_kind = 'response_verified' AND verdict IN (
+            'accepted', 'malformed', 'wrong_device', 'bad_signature',
+            'anchor_not_approved', 'anchor_epoch_mismatch', 'replayed',
+            'audit_required', 'unsupported_operation', 'invalid_material',
+            'no_pending_key', 'key_certificate_mismatch', 'storage_failure'
+        ))
+    ),
+    CHECK (
+        (operation_kind = 'status' AND provision_seq IS NULL
+         AND request_id <> '' AND reason = '')
+        OR
+        (operation_kind <> 'status' AND provision_seq BETWEEN 1 AND 9007199254740991
+         AND request_id = '' AND length(reason) > 0)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_firmware_mqtt_provisioning_audit_device
+    ON firmware_mqtt_provisioning_audit (device_id, id ASC);
+
+CREATE TRIGGER IF NOT EXISTS firmware_mqtt_provisioning_audit_no_update
+BEFORE UPDATE ON firmware_mqtt_provisioning_audit
+BEGIN
+    SELECT RAISE(ABORT, 'firmware MQTT provisioning audit is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS firmware_mqtt_provisioning_audit_no_delete
+BEFORE DELETE ON firmware_mqtt_provisioning_audit
+BEGIN
+    SELECT RAISE(ABORT, 'firmware MQTT provisioning audit is append-only');
+END;
 
 CREATE TABLE IF NOT EXISTS firmware_fault_events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -632,6 +690,12 @@ class StateStore:
             conn,
             "firmware_device_registry",
             "last_cmd_seq",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        self._add_column_if_missing_on_conn(
+            conn,
+            "firmware_device_registry",
+            "last_provision_seq",
             "INTEGER NOT NULL DEFAULT 0",
         )
         self._add_column_if_missing_on_conn(
@@ -3594,8 +3658,8 @@ class StateStore:
             """
             SELECT device_id, public_key_b64, alg, posture, capability_hash,
                    manifest_json, channel_map_json, board_profile, approved,
-                   provisioned_at_ms, last_boot_id, last_seq, revoked,
-                   revoked_at_ms, anchor_epoch_id, key_epoch_id
+                   provisioned_at_ms, last_boot_id, last_seq, last_provision_seq,
+                   revoked, revoked_at_ms, anchor_epoch_id, key_epoch_id
             FROM firmware_device_registry WHERE device_id = ?
             """,
             (device_id,),
@@ -3615,10 +3679,11 @@ class StateStore:
             "provisioned_at_ms": int(row[9]),
             "last_boot_id": int(row[10]),
             "last_seq": int(row[11]),
-            "revoked": bool(row[12]),
-            "revoked_at_ms": int(row[13]) if row[13] is not None else None,
-            "anchor_epoch_id": row[14],
-            "key_epoch_id": row[15],
+            "last_provision_seq": int(row[12]),
+            "revoked": bool(row[13]),
+            "revoked_at_ms": int(row[14]) if row[14] is not None else None,
+            "anchor_epoch_id": row[15],
+            "key_epoch_id": row[16],
         }
 
     async def approve_firmware_device(
@@ -4148,6 +4213,177 @@ class StateStore:
         ).fetchone()
         self._conn.commit()
         return int(row[0])
+
+    async def allocate_firmware_provision_seq(
+        self,
+        device_id: str,
+        *,
+        expected_anchor_epoch_id: str,
+        allow_revoked: bool,
+    ) -> int:
+        """Allocate the independent firmware transport-provisioning sequence.
+
+        The counter belongs to the stable device identity and is never reset by
+        anchor, command-key, certificate, or revocation transitions.
+        """
+        return await self._run_write(
+            self._allocate_firmware_provision_seq_sync,
+            device_id,
+            expected_anchor_epoch_id,
+            allow_revoked,
+        )
+
+    def _allocate_firmware_provision_seq_sync(
+        self,
+        device_id: str,
+        expected_anchor_epoch_id: str,
+        allow_revoked: bool,
+    ) -> int:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            UPDATE firmware_device_registry
+               SET last_provision_seq = last_provision_seq + 1
+             WHERE device_id = ?
+               AND anchor_epoch_id = ?
+               AND last_provision_seq < 9007199254740991
+               AND (
+                    (? = 1 AND revoked = 1)
+                    OR
+                    (revoked = 0 AND approved = 1 AND EXISTS (
+                        SELECT 1 FROM firmware_confirmation_outbox c
+                         WHERE c.device_id = firmware_device_registry.device_id
+                           AND c.anchor_epoch_id =
+                               firmware_device_registry.anchor_epoch_id
+                           AND c.status = 'confirmed'
+                    ))
+               )
+            """,
+            (device_id, expected_anchor_epoch_id, int(allow_revoked)),
+        )
+        if cur.rowcount != 1:
+            row = self._conn.execute(
+                "SELECT last_provision_seq FROM firmware_device_registry "
+                "WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+            self._conn.rollback()
+            if row is None:
+                raise KeyError(f"unknown firmware device: {device_id!r}")
+            if int(row[0]) < 9007199254740991:
+                raise PermissionError(
+                    "firmware provisioning authority changed before allocation"
+                )
+            raise OverflowError("firmware provision_seq exhausted")
+        row = self._conn.execute(
+            "SELECT last_provision_seq FROM firmware_device_registry "
+            "WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+        self._conn.commit()
+        return int(row[0])
+
+    async def append_firmware_mqtt_provisioning_audit(
+        self,
+        *,
+        device_id: str,
+        event_kind: str,
+        operation_kind: str,
+        provision_seq: int | None,
+        request_id: str,
+        anchor_epoch_id: str,
+        actor: str,
+        reason: str,
+        request_sha256: str,
+        verdict: str,
+        certificate_sha256: str,
+        broker_uri: str,
+        payload_sha256: str,
+        occurred_at_ms: int,
+    ) -> int:
+        """Append one immutable provisioning request or verified response."""
+        return await self._run_write(
+            self._append_firmware_mqtt_provisioning_audit_sync,
+            device_id,
+            event_kind,
+            operation_kind,
+            provision_seq,
+            request_id,
+            anchor_epoch_id,
+            actor,
+            reason,
+            request_sha256,
+            verdict,
+            certificate_sha256,
+            broker_uri,
+            payload_sha256,
+            occurred_at_ms,
+        )
+
+    def _append_firmware_mqtt_provisioning_audit_sync(
+        self,
+        device_id: str,
+        event_kind: str,
+        operation_kind: str,
+        provision_seq: int | None,
+        request_id: str,
+        anchor_epoch_id: str,
+        actor: str,
+        reason: str,
+        request_sha256: str,
+        verdict: str,
+        certificate_sha256: str,
+        broker_uri: str,
+        payload_sha256: str,
+        occurred_at_ms: int,
+    ) -> int:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            INSERT INTO firmware_mqtt_provisioning_audit
+                (device_id, event_kind, operation_kind, provision_seq,
+                 request_id, anchor_epoch_id, actor, reason, request_sha256,
+                 verdict, certificate_sha256, broker_uri, payload_sha256,
+                 occurred_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                device_id,
+                event_kind,
+                operation_kind,
+                provision_seq,
+                request_id,
+                anchor_epoch_id,
+                actor,
+                reason,
+                request_sha256,
+                verdict,
+                certificate_sha256,
+                broker_uri,
+                payload_sha256,
+                occurred_at_ms,
+            ),
+        )
+        self._conn.commit()
+        if cur.lastrowid is None:
+            raise RuntimeError("firmware MQTT provisioning audit insert returned no id")
+        return cur.lastrowid
+
+    async def list_firmware_mqtt_provisioning_audit(self, device_id: str) -> list[dict]:
+        """Return provisioning audit facts in receiver append order."""
+        return await self._run_read(
+            self._list_firmware_mqtt_provisioning_audit_sync, device_id
+        )
+
+    def _list_firmware_mqtt_provisioning_audit_sync(
+        self, conn: sqlite3.Connection, device_id: str
+    ) -> list[dict]:
+        rows = conn.execute(
+            "SELECT * FROM firmware_mqtt_provisioning_audit "
+            "WHERE device_id = ? ORDER BY id ASC",
+            (device_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     async def advance_firmware_freshness(
         self, device_id: str, *, boot_id: int, seq: int
