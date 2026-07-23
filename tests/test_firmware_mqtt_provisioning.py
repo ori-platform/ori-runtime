@@ -21,6 +21,7 @@ from ori.security.firmware_mqtt_provisioning import (
     build_install_request,
     build_revoke_request,
     build_status_request,
+    validate_broker_uri,
     verify_device_message,
 )
 from ori.state.store import StateStore
@@ -212,6 +213,20 @@ def test_install_broker_uri_enforces_the_255_byte_contract_bound() -> None:
             **common,
             broker_uri=uri_256,
         )
+
+
+@pytest.mark.parametrize("port", [1, 65535])
+def test_broker_uri_accepts_valid_tcp_port_bounds(port: int) -> None:
+    assert (
+        validate_broker_uri(f"mqtts://broker.example:{port}")
+        == f"mqtts://broker.example:{port}"
+    )
+
+
+@pytest.mark.parametrize("port", [0, 65536, 99999])
+def test_broker_uri_rejects_invalid_tcp_port_bounds(port: int) -> None:
+    with pytest.raises(FirmwareMqttProvisioningError, match="broker_uri"):
+        validate_broker_uri(f"mqtts://broker.example:{port}")
 
 
 async def _insert_registry_row(store: StateStore, device_id: str) -> None:
