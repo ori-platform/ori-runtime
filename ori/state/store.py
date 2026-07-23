@@ -521,6 +521,87 @@ BEGIN
     SELECT RAISE(ABORT, 'firmware MQTT provisioning audit is append-only');
 END;
 
+-- Durable public correlation records for the authenticated local operator
+-- service. The signed request bytes contain no private material. Keeping them
+-- here lets an operator submit a device response after a runtime restart
+-- without giving the CLI direct database or issuer access.
+CREATE TABLE IF NOT EXISTS firmware_mqtt_operator_requests (
+    correlation_id       TEXT    PRIMARY KEY,
+    parent_correlation_id TEXT   NOT NULL DEFAULT '',
+    operation_kind       TEXT    NOT NULL
+        CHECK (operation_kind IN ('create_csr', 'install', 'revoke', 'status')),
+    message               BLOB    NOT NULL,
+    request               BLOB    NOT NULL,
+    device_id             TEXT    NOT NULL,
+    anchor_epoch_id       TEXT    NOT NULL,
+    provision_seq         INTEGER,
+    request_id            TEXT    NOT NULL DEFAULT '',
+    actor                 TEXT    NOT NULL,
+    reason                TEXT    NOT NULL DEFAULT '',
+    request_sha256        TEXT    NOT NULL,
+    certificate_sha256    TEXT    NOT NULL DEFAULT '',
+    broker_uri            TEXT    NOT NULL DEFAULT '',
+    audit_id              INTEGER NOT NULL,
+    certificate_serial    TEXT    NOT NULL DEFAULT '',
+    not_valid_before      TEXT    NOT NULL DEFAULT '',
+    not_valid_after       TEXT    NOT NULL DEFAULT '',
+    created_at_ms         INTEGER NOT NULL,
+    CHECK (length(correlation_id) = 32),
+    CHECK (length(trim(actor)) > 0),
+    CHECK (
+        (operation_kind = 'status' AND provision_seq IS NULL
+         AND request_id <> '' AND reason = '')
+        OR
+        (operation_kind <> 'status' AND provision_seq BETWEEN 1 AND 9007199254740991
+         AND request_id = '' AND length(reason) > 0)
+    )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_firmware_mqtt_operator_request_child
+    ON firmware_mqtt_operator_requests (parent_correlation_id)
+    WHERE parent_correlation_id <> '';
+
+CREATE INDEX IF NOT EXISTS idx_firmware_mqtt_operator_request_device
+    ON firmware_mqtt_operator_requests (device_id, created_at_ms DESC);
+
+CREATE TRIGGER IF NOT EXISTS firmware_mqtt_operator_request_no_update
+BEFORE UPDATE ON firmware_mqtt_operator_requests
+BEGIN
+    SELECT RAISE(ABORT, 'firmware MQTT operator requests are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS firmware_mqtt_operator_request_no_delete
+BEFORE DELETE ON firmware_mqtt_operator_requests
+BEGIN
+    SELECT RAISE(ABORT, 'firmware MQTT operator requests are retained');
+END;
+
+CREATE TABLE IF NOT EXISTS firmware_mqtt_operator_responses (
+    correlation_id  TEXT    PRIMARY KEY,
+    verdict         TEXT    NOT NULL CHECK (verdict IN (
+        'accepted', 'malformed', 'wrong_device', 'bad_signature',
+        'anchor_not_approved', 'anchor_epoch_mismatch', 'replayed',
+        'audit_required', 'unsupported_operation', 'invalid_material',
+        'no_pending_key', 'key_certificate_mismatch', 'storage_failure'
+    )),
+    payload_sha256  TEXT    NOT NULL,
+    completed_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (correlation_id)
+        REFERENCES firmware_mqtt_operator_requests(correlation_id)
+);
+
+CREATE TRIGGER IF NOT EXISTS firmware_mqtt_operator_response_no_update
+BEFORE UPDATE ON firmware_mqtt_operator_responses
+BEGIN
+    SELECT RAISE(ABORT, 'firmware MQTT operator responses are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS firmware_mqtt_operator_response_no_delete
+BEFORE DELETE ON firmware_mqtt_operator_responses
+BEGIN
+    SELECT RAISE(ABORT, 'firmware MQTT operator responses are retained');
+END;
+
 CREATE TABLE IF NOT EXISTS firmware_fault_events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id         TEXT    NOT NULL,
@@ -4384,6 +4465,266 @@ class StateStore:
             (device_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    async def save_firmware_mqtt_operator_request(
+        self,
+        *,
+        correlation_id: str,
+        parent_correlation_id: str,
+        operation_kind: str,
+        message: bytes,
+        request: bytes,
+        device_id: str,
+        anchor_epoch_id: str,
+        provision_seq: int | None,
+        request_id: str,
+        actor: str,
+        reason: str,
+        request_sha256: str,
+        certificate_sha256: str,
+        broker_uri: str,
+        audit_id: int,
+        certificate_serial: str,
+        not_valid_before: str,
+        not_valid_after: str,
+        created_at_ms: int,
+        completed_parent_correlation_id: str = "",
+        parent_response_verdict: str = "",
+        parent_response_payload_sha256: str = "",
+        parent_completed_at_ms: int = 0,
+    ) -> None:
+        """Persist one immutable, public operator correlation record."""
+        if completed_parent_correlation_id:
+            if completed_parent_correlation_id != parent_correlation_id:
+                raise ValueError(
+                    "completed parent must match the request parent correlation"
+                )
+            if (
+                not parent_response_verdict
+                or not parent_response_payload_sha256
+                or parent_completed_at_ms <= 0
+            ):
+                raise ValueError("completed parent response facts are required")
+        await self._run_write(
+            self._save_firmware_mqtt_operator_request_sync,
+            correlation_id,
+            parent_correlation_id,
+            operation_kind,
+            message,
+            request,
+            device_id,
+            anchor_epoch_id,
+            provision_seq,
+            request_id,
+            actor,
+            reason,
+            request_sha256,
+            certificate_sha256,
+            broker_uri,
+            audit_id,
+            certificate_serial,
+            not_valid_before,
+            not_valid_after,
+            created_at_ms,
+            completed_parent_correlation_id,
+            parent_response_verdict,
+            parent_response_payload_sha256,
+            parent_completed_at_ms,
+        )
+
+    def _save_firmware_mqtt_operator_request_sync(
+        self,
+        correlation_id: str,
+        parent_correlation_id: str,
+        operation_kind: str,
+        message: bytes,
+        request: bytes,
+        device_id: str,
+        anchor_epoch_id: str,
+        provision_seq: int | None,
+        request_id: str,
+        actor: str,
+        reason: str,
+        request_sha256: str,
+        certificate_sha256: str,
+        broker_uri: str,
+        audit_id: int,
+        certificate_serial: str,
+        not_valid_before: str,
+        not_valid_after: str,
+        created_at_ms: int,
+        completed_parent_correlation_id: str,
+        parent_response_verdict: str,
+        parent_response_payload_sha256: str,
+        parent_completed_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        try:
+            self._insert_firmware_mqtt_operator_request_on_conn(
+                self._conn,
+                correlation_id=correlation_id,
+                parent_correlation_id=parent_correlation_id,
+                operation_kind=operation_kind,
+                message=message,
+                request=request,
+                device_id=device_id,
+                anchor_epoch_id=anchor_epoch_id,
+                provision_seq=provision_seq,
+                request_id=request_id,
+                actor=actor,
+                reason=reason,
+                request_sha256=request_sha256,
+                certificate_sha256=certificate_sha256,
+                broker_uri=broker_uri,
+                audit_id=audit_id,
+                certificate_serial=certificate_serial,
+                not_valid_before=not_valid_before,
+                not_valid_after=not_valid_after,
+                created_at_ms=created_at_ms,
+            )
+            if completed_parent_correlation_id:
+                self._conn.execute(
+                    """
+                    INSERT INTO firmware_mqtt_operator_responses
+                        (correlation_id, verdict, payload_sha256, completed_at_ms)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        completed_parent_correlation_id,
+                        parent_response_verdict,
+                        parent_response_payload_sha256,
+                        parent_completed_at_ms,
+                    ),
+                )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def _insert_firmware_mqtt_operator_request_on_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        correlation_id: str,
+        parent_correlation_id: str,
+        operation_kind: str,
+        message: bytes,
+        request: bytes,
+        device_id: str,
+        anchor_epoch_id: str,
+        provision_seq: int | None,
+        request_id: str,
+        actor: str,
+        reason: str,
+        request_sha256: str,
+        certificate_sha256: str,
+        broker_uri: str,
+        audit_id: int,
+        certificate_serial: str,
+        not_valid_before: str,
+        not_valid_after: str,
+        created_at_ms: int,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO firmware_mqtt_operator_requests
+                (correlation_id, parent_correlation_id, operation_kind,
+                 message, request, device_id, anchor_epoch_id, provision_seq,
+                 request_id, actor, reason, request_sha256,
+                 certificate_sha256, broker_uri, audit_id,
+                 certificate_serial, not_valid_before, not_valid_after,
+                 created_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                correlation_id,
+                parent_correlation_id,
+                operation_kind,
+                sqlite3.Binary(message),
+                sqlite3.Binary(request),
+                device_id,
+                anchor_epoch_id,
+                provision_seq,
+                request_id,
+                actor,
+                reason,
+                request_sha256,
+                certificate_sha256,
+                broker_uri,
+                audit_id,
+                certificate_serial,
+                not_valid_before,
+                not_valid_after,
+                created_at_ms,
+            ),
+        )
+
+    async def get_firmware_mqtt_operator_request(
+        self, correlation_id: str
+    ) -> dict | None:
+        """Load a public request and its completion state."""
+        return await self._run_read(
+            self._get_firmware_mqtt_operator_request_sync,
+            correlation_id,
+        )
+
+    def _get_firmware_mqtt_operator_request_sync(
+        self,
+        conn: sqlite3.Connection,
+        correlation_id: str,
+    ) -> dict | None:
+        row = conn.execute(
+            """
+            SELECT r.*, p.verdict AS response_verdict,
+                   p.payload_sha256 AS response_payload_sha256,
+                   p.completed_at_ms
+              FROM firmware_mqtt_operator_requests r
+              LEFT JOIN firmware_mqtt_operator_responses p
+                ON p.correlation_id = r.correlation_id
+             WHERE r.correlation_id = ?
+            """,
+            (correlation_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    async def complete_firmware_mqtt_operator_request(
+        self,
+        *,
+        correlation_id: str,
+        verdict: str,
+        payload_sha256: str,
+        completed_at_ms: int,
+    ) -> None:
+        """Append the one terminal response fact for a correlation."""
+        await self._run_write(
+            self._complete_firmware_mqtt_operator_request_sync,
+            correlation_id,
+            verdict,
+            payload_sha256,
+            completed_at_ms,
+        )
+
+    def _complete_firmware_mqtt_operator_request_sync(
+        self,
+        correlation_id: str,
+        verdict: str,
+        payload_sha256: str,
+        completed_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        try:
+            self._conn.execute(
+                """
+                INSERT INTO firmware_mqtt_operator_responses
+                    (correlation_id, verdict, payload_sha256, completed_at_ms)
+                VALUES (?, ?, ?, ?)
+                """,
+                (correlation_id, verdict, payload_sha256, completed_at_ms),
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
 
     async def advance_firmware_freshness(
         self, device_id: str, *, boot_id: int, seq: int

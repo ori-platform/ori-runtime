@@ -16,10 +16,12 @@ Or via the CLI entry point::
 import asyncio
 import datetime as dt
 import hashlib
+import hmac
 import json
 import logging
 import os
 import signal
+import stat
 from collections.abc import Awaitable, Callable
 from ipaddress import ip_address
 from pathlib import Path
@@ -35,6 +37,10 @@ from ori.actions.sms import SMSAction
 from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import Config, ConfigValidationError
+from ori.firmware_mqtt_operator import (
+    FirmwareMqttOperatorController,
+    FirmwareMqttOperatorServer,
+)
 from ori.gateway.export import GatewayExportResponder, MqttGatewayExportServer
 from ori.gateway.firmware_commands import (
     FirmwareCommandService,
@@ -82,6 +88,9 @@ from ori.security.firmware_confirmation import (
     FirmwareConfirmationCoordinator,
 )
 from ori.security.firmware_ingest import FirmwareTelemetryGate
+from ori.security.firmware_mqtt_certificate import FirmwareMqttCertificateAuthority
+from ori.security.firmware_mqtt_provisioning import FirmwareMqttProvisioningService
+from ori.security.firmware_mqtt_workflow import FirmwareMqttProvisioningWorkflow
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
@@ -208,6 +217,7 @@ class OriRuntime:
         self._last_alert_timestamps_by_channel: dict[str, int] = {}
         self._last_alert_timestamps_by_trigger: dict[str, int] = {}
         self._health_socket_server: RuntimeHealthSocketServer | None = None
+        self._firmware_mqtt_operator_server: FirmwareMqttOperatorServer | None = None
         self._gateway_export_server: MqttGatewayExportServer | None = None
         self._runtime_node_heartbeat_publisher: (
             MqttRuntimeNodeHeartbeatPublisher | None
@@ -220,6 +230,7 @@ class OriRuntime:
             FirmwareConfirmationCoordinator | None
         ) = None
         self._health_socket_path: str = ""
+        self._firmware_mqtt_operator_socket_path: str = ""
         self._device_policy_enabled: bool = False
         self._device_id: str = ""
         self._remote_command_lockout_states: dict[str, dict[str, Any]] = {}
@@ -1019,6 +1030,8 @@ class OriRuntime:
             self._firmware_command_service = service
             logger.info("[runtime] MQTT firmware command egress enabled")
 
+        await self._start_firmware_mqtt_operator_if_enabled(config)
+
         node_heartbeat = _build_runtime_node_heartbeat_publisher(
             config,
             self._build_health_snapshot,
@@ -1120,7 +1133,18 @@ class OriRuntime:
             self._health_socket_server = None
             self._health_socket_path = ""
 
-        # 2f. Stop evidence attestor executor.
+        # 2f. Stop the authenticated firmware MQTT operator service.
+        if self._firmware_mqtt_operator_server is not None:
+            try:
+                await self._firmware_mqtt_operator_server.close()
+            except Exception:
+                logger.exception(
+                    "[shutdown] error closing firmware MQTT operator socket"
+                )
+            self._firmware_mqtt_operator_server = None
+            self._firmware_mqtt_operator_socket_path = ""
+
+        # 2g. Stop evidence attestor executor.
         if self._evidence_attestor is not None:
             try:
                 self._evidence_attestor.close()
@@ -1871,6 +1895,98 @@ class OriRuntime:
         self._health_socket_path = bound_path
         logger.info("[runtime] health socket ready at %s", bound_path)
 
+    async def _start_firmware_mqtt_operator_if_enabled(
+        self,
+        config: Config,
+    ) -> None:
+        cfg = (
+            config.firmware_mqtt_provisioning
+            if isinstance(config.firmware_mqtt_provisioning, dict)
+            else {}
+        )
+        if not bool(cfg.get("enabled", False)):
+            return
+        if self._state_store is None:
+            raise RuntimeError(
+                "firmware MQTT operator service requires the runtime state store"
+            )
+
+        provisioner_key = load_raw_ed25519_seed_from_env(
+            str(cfg["provisioner_key_env"]),
+            label="firmware MQTT provisioner key",
+        )
+        command_cfg = (
+            config.gateway.firmware_commands
+            if isinstance(getattr(config.gateway, "firmware_commands", {}), dict)
+            else {}
+        )
+        if bool(command_cfg.get("enabled", False)):
+            command_provisioner_key = load_raw_ed25519_seed_from_env(
+                str(command_cfg.get("provisioner_key_env", "")),
+                label="firmware command provisioner key",
+            )
+            if not hmac.compare_digest(provisioner_key, command_provisioner_key):
+                raise RuntimeError(
+                    "firmware MQTT and command provisioning-authority keys differ"
+                )
+        (
+            ca_certificate_pem,
+            ca_private_key_pem,
+            broker_ca_certificate_pem,
+        ) = await asyncio.gather(
+            asyncio.to_thread(_read_public_pem_file, str(cfg["client_ca_certfile"])),
+            asyncio.to_thread(
+                _read_private_key_file,
+                str(cfg["client_ca_keyfile"]),
+            ),
+            asyncio.to_thread(_read_public_pem_file, str(cfg["broker_ca_certfile"])),
+        )
+        password_env = str(cfg.get("client_ca_key_password_env", "")).strip()
+        ca_password: bytes | None = None
+        if password_env:
+            password = os.environ.get(password_env)
+            if password is None or not password:
+                raise RuntimeError(
+                    "firmware MQTT client CA key password environment variable is unset"
+                )
+            ca_password = password.encode("utf-8")
+
+        service = FirmwareMqttProvisioningService(
+            store=self._state_store,
+            provisioner_key_bytes=provisioner_key,
+        )
+        certificate_authority = FirmwareMqttCertificateAuthority(
+            ca_certificate_pem=ca_certificate_pem,
+            ca_private_key_pem=ca_private_key_pem,
+            ca_private_key_password=ca_password,
+            validity_days=int(cfg["certificate_validity_days"]),
+        )
+        workflow = FirmwareMqttProvisioningWorkflow(
+            service=service,
+            certificate_authority=certificate_authority,
+            broker_ca_certificate_pem=broker_ca_certificate_pem,
+        )
+        controller = FirmwareMqttOperatorController(
+            workflow=workflow,
+            store=self._state_store,
+            broker_uri=str(cfg["broker_uri"]),
+            time_server=str(cfg["time_server"]),
+        )
+        server = FirmwareMqttOperatorServer(
+            socket_path=str(cfg["socket_path"]),
+            mode=int(cfg["socket_mode"]),
+            allowed_uids={int(uid) for uid in cfg.get("allowed_uids", [])},
+            controller=controller,
+        )
+        try:
+            bound_path = await server.start()
+        except Exception:
+            await server.close()
+            raise
+        self._firmware_mqtt_operator_server = server
+        self._firmware_mqtt_operator_socket_path = bound_path
+        logger.info("[runtime] firmware MQTT operator service ready at %s", bound_path)
+
     def _configure_alert_outbox(self, alert_outbox_cfg: dict[str, Any]) -> None:
         cfg = alert_outbox_cfg if isinstance(alert_outbox_cfg, dict) else {}
         self._alert_outbox_retry_interval_s = (
@@ -2167,6 +2283,12 @@ class OriRuntime:
             "device_id": self._device_id,
             "uptime_s": uptime_s,
             "health_socket_path": self._health_socket_path,
+            "firmware_mqtt_operator": {
+                "available": self._firmware_mqtt_operator_server is not None,
+                "socket_path": self._firmware_mqtt_operator_socket_path,
+                "contract": "ori.runtime.firmware-mqtt-operator",
+                "schema_version": 1,
+            },
             "capability_posture": capability_posture,
             "gateway_broker_posture": self._gateway_broker_posture_health(),
             "state_store_encryption": self._state_store_encryption_health(),
@@ -3895,6 +4017,62 @@ def _build_firmware_command_service(
         logger.exception("[runtime] invalid firmware command egress configuration")
         raise
     return publisher, service
+
+
+def _read_private_key_file(path: str) -> bytes:
+    """Read one root/runtime-owned private-key file without following symlinks."""
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("secure private-key file opening is unsupported")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeError("cannot open firmware MQTT client CA private key") from exc
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise RuntimeError(
+                "firmware MQTT client CA private key must be a regular file"
+            )
+        if file_stat.st_uid not in {0, os.geteuid()}:
+            raise RuntimeError(
+                "firmware MQTT client CA private key has an invalid owner"
+            )
+        if file_stat.st_mode & 0o077:
+            raise RuntimeError(
+                "firmware MQTT client CA private key must have mode 0o600 or stricter"
+            )
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            value = handle.read(64 * 1024 + 1)
+    finally:
+        os.close(fd)
+    if not value or len(value) > 64 * 1024:
+        raise RuntimeError("firmware MQTT client CA private key size is invalid")
+    return value
+
+
+def _read_public_pem_file(path: str) -> bytes:
+    """Read bounded public PEM material without accepting a private key."""
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise RuntimeError("secure certificate file opening is unsupported")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeError("cannot open firmware MQTT public certificate file") from exc
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise RuntimeError(
+                "firmware MQTT public certificate must be a regular file"
+            )
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            value = handle.read(64 * 1024 + 1)
+    finally:
+        os.close(fd)
+    if not value or len(value) > 64 * 1024 or b"PRIVATE KEY" in value.upper():
+        raise RuntimeError("firmware MQTT public certificate material is invalid")
+    return value
 
 
 def _build_runtime_node_heartbeat_publisher(
