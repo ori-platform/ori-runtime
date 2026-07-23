@@ -187,6 +187,33 @@ def test_install_refuses_private_key_material() -> None:
         )
 
 
+def test_install_broker_uri_enforces_the_255_byte_contract_bound() -> None:
+    common = {
+        "actor": "operator-17",
+        "anchor_epoch_id": "sha256:" + "aa" * 32,
+        "broker_ca_pem_b64": base64.b64encode(b"ca").decode(),
+        "client_cert_pem_b64": base64.b64encode(b"certificate").decode(),
+        "device_id": "ori-fw-01",
+        "provision_seq": 1,
+        "reason": "test-enrollment",
+        "time_server": "time.example",
+    }
+    uri_255 = "mqtts://" + ".".join(["a" * 61] * 4)
+    assert len(uri_255.encode()) == 255
+    assert b'"broker_uri":"' + uri_255.encode() + b'"' in build_install_request(
+        **common,
+        broker_uri=uri_255,
+    )
+
+    uri_256 = "mqtts://" + ".".join(["a" * 61, "a" * 61, "a" * 61, "a" * 62])
+    assert len(uri_256.encode()) == 256
+    with pytest.raises(FirmwareMqttProvisioningError, match="broker_uri"):
+        build_install_request(
+            **common,
+            broker_uri=uri_256,
+        )
+
+
 async def _insert_registry_row(store: StateStore, device_id: str) -> None:
     assert store._conn is not None
     store._conn.execute(
