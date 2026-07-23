@@ -15,6 +15,7 @@ import base64
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -28,6 +29,7 @@ from ori.utils.time_utils import now_ms
 
 __all__ = [
     "FirmwareMqttProvisioningError",
+    "FirmwareMqttResponseValidationError",
     "FirmwareMqttProvisioningService",
     "FirmwareMqttProvisioningSigner",
     "SignedProvisioningRequest",
@@ -42,8 +44,7 @@ _FLEET_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 _ANCHOR_EPOCH = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CERTIFICATE_SHA256 = _ANCHOR_EPOCH
 _BROKER_URI = re.compile(
-    r"^mqtts://(?=.{1,247}(?::[0-9]{1,5})?$)"
-    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
+    r"^mqtts://(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
     r"(?::[0-9]{1,5})?$"
 )
@@ -77,6 +78,16 @@ _MUTATION_KINDS = frozenset({"create_csr", "install", "revoke"})
 
 class FirmwareMqttProvisioningError(ValueError):
     """A provisioning message cannot satisfy the v1 contract."""
+
+
+class FirmwareMqttResponseValidationError(FirmwareMqttProvisioningError):
+    """A signed response failed a normative semantic check."""
+
+    def __init__(self, verdict: str, message: str) -> None:
+        if verdict == "accepted" or verdict not in _VERDICTS:
+            raise ValueError(f"invalid rejection verdict: {verdict!r}")
+        super().__init__(message)
+        self.verdict = verdict
 
 
 @dataclass(frozen=True)
@@ -168,6 +179,18 @@ def _canonical_pem_b64(value: str, field: str) -> str:
     return value
 
 
+def _broker_uri(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value.encode("utf-8")) > 255
+        or _BROKER_URI.fullmatch(value) is None
+    ):
+        raise FirmwareMqttProvisioningError(
+            "broker_uri is not an eligible MQTT TLS URI"
+        )
+    return value
+
+
 def build_create_csr_request(
     *,
     actor: str,
@@ -201,10 +224,7 @@ def build_install_request(
     reason: str,
     time_server: str,
 ) -> bytes:
-    if not isinstance(broker_uri, str) or _BROKER_URI.fullmatch(broker_uri) is None:
-        raise FirmwareMqttProvisioningError(
-            "broker_uri is not an eligible MQTT TLS URI"
-        )
+    broker_uri = _broker_uri(broker_uri)
     if not isinstance(time_server, str) or _DNS_HOST.fullmatch(time_server) is None:
         raise FirmwareMqttProvisioningError("time_server must be a DNS host")
     return (
@@ -341,10 +361,7 @@ class FirmwareMqttProvisioningService:
         _reason(reason)
         _canonical_pem_b64(broker_ca_pem_b64, "broker_ca_pem_b64")
         client_cert = _canonical_pem_b64(client_cert_pem_b64, "client_cert_pem_b64")
-        if _BROKER_URI.fullmatch(broker_uri) is None:
-            raise FirmwareMqttProvisioningError(
-                "broker_uri is not an eligible MQTT TLS URI"
-            )
+        broker_uri = _broker_uri(broker_uri)
         if _DNS_HOST.fullmatch(time_server) is None:
             raise FirmwareMqttProvisioningError("time_server must be a DNS host")
         row = await self._eligible_anchor(device_id, allow_revoked=False)
@@ -422,7 +439,11 @@ class FirmwareMqttProvisioningService:
         )
 
     async def verify_response(
-        self, issued: SignedProvisioningRequest, message: bytes
+        self,
+        issued: SignedProvisioningRequest,
+        message: bytes,
+        *,
+        semantic_validator: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """Verify one response against its exact issued request and audit it."""
         allow_revoked = issued.kind in {"revoke", "status"}
@@ -463,7 +484,30 @@ class FirmwareMqttProvisioningService:
                 or value.get("anchor_epoch_id") != issued.anchor_epoch_id
             ):
                 raise FirmwareMqttProvisioningError("mutation result mismatch")
-        verdict = str(value.get("verdict", "accepted"))
+        if semantic_validator is not None:
+            try:
+                semantic_validator(value)
+            except FirmwareMqttResponseValidationError as exc:
+                await self._audit_response(
+                    issued=issued,
+                    message=message,
+                    verdict=exc.verdict,
+                )
+                raise
+        await self._audit_response(
+            issued=issued,
+            message=message,
+            verdict=str(value.get("verdict", "accepted")),
+        )
+        return value
+
+    async def _audit_response(
+        self,
+        *,
+        issued: SignedProvisioningRequest,
+        message: bytes,
+        verdict: str,
+    ) -> None:
         await self._store.append_firmware_mqtt_provisioning_audit(
             device_id=issued.device_id,
             event_kind="response_verified",
@@ -480,7 +524,6 @@ class FirmwareMqttProvisioningService:
             payload_sha256="sha256:" + hashlib.sha256(message).hexdigest(),
             occurred_at_ms=now_ms(),
         )
-        return value
 
     async def _eligible_anchor(
         self, device_id: str, *, allow_revoked: bool
