@@ -48,7 +48,7 @@ _CERTIFICATE_SHA256 = _ANCHOR_EPOCH
 _BROKER_URI = re.compile(
     r"^mqtts://(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-    r"(?::[0-9]{1,5})?$"
+    r"(?::(?P<port>[0-9]{1,5}))?$"
 )
 _DNS_HOST = re.compile(
     r"^(?=.{1,255}$)"
@@ -186,11 +186,13 @@ def _canonical_pem_b64(value: str, field: str) -> str:
 
 
 def validate_broker_uri(value: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value.encode("utf-8")) > 255
-        or _BROKER_URI.fullmatch(value) is None
-    ):
+    match = _BROKER_URI.fullmatch(value) if isinstance(value, str) else None
+    if match is None or len(value.encode("utf-8")) > 255:
+        raise FirmwareMqttProvisioningError(
+            "broker_uri is not an eligible MQTT TLS URI"
+        )
+    port = match.group("port")
+    if port is not None and not 1 <= int(port) <= 65535:
         raise FirmwareMqttProvisioningError(
             "broker_uri is not an eligible MQTT TLS URI"
         )
