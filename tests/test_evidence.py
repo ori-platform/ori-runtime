@@ -1112,6 +1112,7 @@ class TestEvidenceVisibility:
         health = await runtime._evidence_health()
         assert health["enabled"] is False
         assert health["available"] is False
+        assert health["protocol_version"] == ""
         assert health["attestation_gap_count"] == 0
         assert health["action_event_type"] == ""
 
@@ -1137,6 +1138,7 @@ class TestEvidenceVisibility:
             assert health["enabled"] is True
             assert health["available"] is True
             assert health["public_key_hex"] == "ab" * 32
+            assert health["protocol_version"] == "evidence.v1"
             assert health["chain_head_hash"] == "head-1"
             assert health["last_attested_action_id"] == row_id
             assert health["attestation_gap_count"] == 0
@@ -1145,6 +1147,32 @@ class TestEvidenceVisibility:
         finally:
             attestor.close()
             await store.close()
+
+    async def test_evidence_health_does_not_expose_artifact_protocol(
+        self, monkeypatch, tmp_path
+    ):
+        _install_fake_artifact(monkeypatch, protocol_version="private-artifact.v1")
+        monkeypatch.setenv(
+            "ORI_EVIDENCE_ARTIFACT_PROTOCOL_VERSION", "private-artifact.v1"
+        )
+        attestor = EvidenceAttestor(
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "evidence.key"),
+            device_secret="install-secret",
+            device_id="dev-01",
+        )
+        assert await attestor.start() is True
+        try:
+            runtime = OriRuntime(config_path="ori.yaml")
+            runtime._evidence_attestor = attestor
+            runtime._config = SimpleNamespace(evidence=SimpleNamespace(enabled=True))
+
+            health = await runtime._evidence_health()
+
+            assert attestor.protocol_version == "private-artifact.v1"
+            assert health["protocol_version"] == "evidence.v1"
+        finally:
+            attestor.close()
 
     async def test_node_heartbeat_carries_chain_head(self):
         class _FakeClient:

@@ -71,7 +71,10 @@ from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfi
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM
 from ori.runtime_health_socket import RuntimeHealthSocketServer
-from ori.security.evidence import EvidenceAttestor
+from ori.security.evidence import (
+    PUBLIC_EVIDENCE_PROTOCOL_VERSION,
+    EvidenceAttestor,
+)
 from ori.security.firmware_confirmation import (
     CONFIRMED as _FIRMWARE_CONFIRMED,
 )
@@ -2031,7 +2034,11 @@ class OriRuntime:
             "available": bool(attestor is not None and attestor.available),
             "public_key_hex": attestor.public_key_hex if attestor else "",
             "artifact_version": attestor.artifact_version if attestor else "",
-            "protocol_version": attestor.protocol_version if attestor else "",
+            "protocol_version": (
+                PUBLIC_EVIDENCE_PROTOCOL_VERSION
+                if attestor is not None and attestor.available
+                else ""
+            ),
             # Vocabulary the device will emit for new Tier C/D attestations.
             # Only meaningful while signing is available; '' otherwise, so a
             # mixed-fleet rollout can be confirmed per device before the
