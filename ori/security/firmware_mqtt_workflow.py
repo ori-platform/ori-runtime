@@ -170,6 +170,26 @@ class FirmwareMqttProvisioningWorkflow:
             result_message,
         )
 
+    async def verify_response(
+        self,
+        issued_request: SignedProvisioningRequest,
+        response_message: bytes,
+    ) -> dict[str, Any]:
+        """Verify a persisted install, revoke, or status response.
+
+        Operator transports reconstruct public issued-request metadata after a
+        runtime restart. They must still delegate signature, anchor, request,
+        and audit validation to the provisioning service.
+        """
+        if issued_request.kind not in {"install", "revoke", "status"}:
+            raise FirmwareMqttCertificateError(
+                "verify_response requires an install, revoke, or status request"
+            )
+        return await self._service.verify_response(
+            issued_request,
+            response_message,
+        )
+
     async def revoke_request(
         self,
         *,

@@ -31,4 +31,5 @@ fi
   ori/gateway/reasoning.py \
   ori/gateway/export.py \
   ori/gateway/heartbeat.py \
-  ori/gateway/node_heartbeat.py
+  ori/gateway/node_heartbeat.py \
+  ori/firmware_mqtt_operator.py

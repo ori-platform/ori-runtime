@@ -37,6 +37,8 @@ __all__ = [
     "build_install_request",
     "build_revoke_request",
     "build_status_request",
+    "validate_broker_uri",
+    "validate_time_server",
     "verify_device_message",
 ]
 
@@ -78,6 +80,10 @@ _MUTATION_KINDS = frozenset({"create_csr", "install", "revoke"})
 
 class FirmwareMqttProvisioningError(ValueError):
     """A provisioning message cannot satisfy the v1 contract."""
+
+    def __init__(self, message: str, *, code: str = "provisioning_refused") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class FirmwareMqttResponseValidationError(FirmwareMqttProvisioningError):
@@ -179,7 +185,7 @@ def _canonical_pem_b64(value: str, field: str) -> str:
     return value
 
 
-def _broker_uri(value: str) -> str:
+def validate_broker_uri(value: str) -> str:
     if (
         not isinstance(value, str)
         or len(value.encode("utf-8")) > 255
@@ -188,6 +194,12 @@ def _broker_uri(value: str) -> str:
         raise FirmwareMqttProvisioningError(
             "broker_uri is not an eligible MQTT TLS URI"
         )
+    return value
+
+
+def validate_time_server(value: str) -> str:
+    if not isinstance(value, str) or _DNS_HOST.fullmatch(value) is None:
+        raise FirmwareMqttProvisioningError("time_server must be a DNS host")
     return value
 
 
@@ -224,9 +236,8 @@ def build_install_request(
     reason: str,
     time_server: str,
 ) -> bytes:
-    broker_uri = _broker_uri(broker_uri)
-    if not isinstance(time_server, str) or _DNS_HOST.fullmatch(time_server) is None:
-        raise FirmwareMqttProvisioningError("time_server must be a DNS host")
+    broker_uri = validate_broker_uri(broker_uri)
+    time_server = validate_time_server(time_server)
     return (
         '{"actor":"%s","anchor_epoch_id":"%s","broker_ca_pem_b64":"%s",'
         '"broker_uri":"%s","client_cert_pem_b64":"%s","device_id":"%s",'
@@ -361,9 +372,8 @@ class FirmwareMqttProvisioningService:
         _reason(reason)
         _canonical_pem_b64(broker_ca_pem_b64, "broker_ca_pem_b64")
         client_cert = _canonical_pem_b64(client_cert_pem_b64, "client_cert_pem_b64")
-        broker_uri = _broker_uri(broker_uri)
-        if _DNS_HOST.fullmatch(time_server) is None:
-            raise FirmwareMqttProvisioningError("time_server must be a DNS host")
+        broker_uri = validate_broker_uri(broker_uri)
+        time_server = validate_time_server(time_server)
         row = await self._eligible_anchor(device_id, allow_revoked=False)
         provision_seq = await self._allocate_sequence(row, allow_revoked=False)
         request = build_install_request(
@@ -450,7 +460,8 @@ class FirmwareMqttProvisioningService:
         row = await self._eligible_anchor(issued.device_id, allow_revoked=allow_revoked)
         if row["anchor_epoch_id"] != issued.anchor_epoch_id:
             raise FirmwareMqttProvisioningError(
-                "response anchor is no longer the eligible request anchor"
+                "response anchor is no longer the eligible request anchor",
+                code="anchor_changed",
             )
         try:
             public_key = base64.b64decode(
@@ -458,32 +469,53 @@ class FirmwareMqttProvisioningService:
             )
         except (UnicodeEncodeError, ValueError) as exc:
             raise FirmwareMqttProvisioningError(
-                "eligible device public key is invalid"
+                "eligible device public key is invalid",
+                code="invalid_device_key",
             ) from exc
-        value = verify_device_message(message, device_public_key_bytes=public_key)
+        try:
+            value = verify_device_message(message, device_public_key_bytes=public_key)
+        except FirmwareMqttProvisioningError as exc:
+            detail = str(exc)
+            code = "bad_signature" if "signature" in detail else "malformed_response"
+            raise FirmwareMqttProvisioningError(detail, code=code) from exc
         if value.get("device_id") != issued.device_id:
-            raise FirmwareMqttProvisioningError("response device_id mismatch")
+            raise FirmwareMqttProvisioningError(
+                "response device_id mismatch",
+                code="device_response_mismatch",
+            )
         if issued.kind == "status":
             if (
                 value.get("kind") != "status"
                 or value.get("request_id") != issued.request_id
             ):
-                raise FirmwareMqttProvisioningError("status response mismatch")
+                raise FirmwareMqttProvisioningError(
+                    "status response mismatch",
+                    code="device_response_mismatch",
+                )
         elif issued.kind == "create_csr":
             if (
                 value.get("kind") != "csr"
                 or value.get("provision_seq") != issued.provision_seq
             ):
-                raise FirmwareMqttProvisioningError("CSR response mismatch")
+                raise FirmwareMqttProvisioningError(
+                    "CSR response mismatch",
+                    code="device_response_mismatch",
+                )
             if value.get("anchor_epoch_id") != issued.anchor_epoch_id:
-                raise FirmwareMqttProvisioningError("CSR anchor mismatch")
+                raise FirmwareMqttProvisioningError(
+                    "CSR anchor mismatch",
+                    code="anchor_epoch_mismatch",
+                )
         else:
             if (
                 value.get("kind") != issued.kind
                 or value.get("provision_seq") != issued.provision_seq
                 or value.get("anchor_epoch_id") != issued.anchor_epoch_id
             ):
-                raise FirmwareMqttProvisioningError("mutation result mismatch")
+                raise FirmwareMqttProvisioningError(
+                    "mutation result mismatch",
+                    code="device_response_mismatch",
+                )
         if semantic_validator is not None:
             try:
                 semantic_validator(value)
@@ -531,31 +563,41 @@ class FirmwareMqttProvisioningService:
         row = await self._store.get_firmware_device(device_id)
         if row is None:
             raise FirmwareMqttProvisioningError(
-                f"unknown firmware device: {device_id!r}"
+                f"unknown firmware device: {device_id!r}",
+                code="anchor_unknown",
             )
         epoch = str(row.get("anchor_epoch_id", "") or "")
         _epoch(epoch)
         if row.get("revoked"):
             if not allow_revoked:
-                raise FirmwareMqttProvisioningError(f"device {device_id!r} is revoked")
+                raise FirmwareMqttProvisioningError(
+                    f"device {device_id!r} is revoked",
+                    code="device_revoked",
+                )
             if not await self._store.firmware_activation_history_is_provable(device_id):
                 raise FirmwareMqttProvisioningError(
-                    f"device {device_id!r} has no provable retained active anchor"
+                    f"device {device_id!r} has no provable retained active anchor",
+                    code="anchor_history_unprovable",
                 )
             intervals = await self._store.firmware_anchor_activation_intervals(
                 device_id, epoch
             )
             if not intervals:
                 raise FirmwareMqttProvisioningError(
-                    f"device {device_id!r} anchor was never active"
+                    f"device {device_id!r} anchor was never active",
+                    code="anchor_history_unprovable",
                 )
             return cast(dict[str, Any], row)
         if not row.get("approved"):
-            raise FirmwareMqttProvisioningError(f"device {device_id!r} is not approved")
+            raise FirmwareMqttProvisioningError(
+                f"device {device_id!r} is not approved",
+                code="anchor_not_approved",
+            )
         status = await self._store.get_firmware_confirmation_status(device_id, epoch)
         if status != "confirmed":
             raise FirmwareMqttProvisioningError(
-                f"device {device_id!r} epoch is not cross-store confirmed"
+                f"device {device_id!r} epoch is not cross-store confirmed",
+                code="anchor_not_confirmed",
             )
         return cast(dict[str, Any], row)
 
@@ -573,7 +615,13 @@ class FirmwareMqttProvisioningService:
             )
         except PermissionError as exc:
             raise FirmwareMqttProvisioningError(
-                "firmware provisioning authority changed before signing"
+                "firmware provisioning authority changed before signing",
+                code="anchor_changed",
+            ) from exc
+        except OverflowError as exc:
+            raise FirmwareMqttProvisioningError(
+                "firmware provisioning sequence is exhausted",
+                code="sequence_exhausted",
             ) from exc
 
     async def _sign_and_audit(

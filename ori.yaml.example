@@ -338,6 +338,20 @@ health_socket:
   path: /run/ori/health.sock                     # local read-only runtime health RPC
   mode: 0o660                                    # unix socket permission bits
 
+firmware_mqtt_provisioning:
+  enabled: false
+  socket_path: /run/ori/firmware-mqtt-provisioning.sock
+  socket_mode: 0o600                             # never grant world access
+  allowed_uids: []                               # empty means the runtime effective uid only
+  provisioner_key_env: ORI_FW_PROVISIONER_KEY
+  client_ca_certfile: /etc/ori/mqtt-client-ca.crt
+  client_ca_keyfile: /etc/ori/mqtt-client-ca.key # regular, root/runtime-owned, mode 0o600
+  client_ca_key_password_env: ""                 # optional; the password itself never enters YAML
+  broker_ca_certfile: /etc/ori/mqtt-broker-ca.crt
+  broker_uri: mqtts://broker.example.com:8883
+  time_server: time.example.com
+  certificate_validity_days: 90
+
 os_sandbox:
   enabled: true
   require_for_community: false                   # true => reject community hooks if kernel hardening unavailable
