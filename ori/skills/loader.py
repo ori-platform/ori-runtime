@@ -41,6 +41,43 @@ _TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
 _MAX_HISTORY_PLACEHOLDERS = 16
 _BUNDLED_SIGNATURE_SENTINEL = "bundled"
+
+
+class _UniqueStringKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects ambiguous or non-JSON mapping keys."""
+
+
+def _construct_unique_string_mapping(
+    loader: _UniqueStringKeySafeLoader,
+    node: yaml.MappingNode,
+    deep: bool = False,
+) -> dict[str, Any]:
+    loader.flatten_mapping(node)
+    mapping: dict[str, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, str):
+            raise yaml.constructor.ConstructorError(
+                "while constructing a skill mapping",
+                node.start_mark,
+                "skill mapping keys must be strings",
+                key_node.start_mark,
+            )
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a skill mapping",
+                node.start_mark,
+                f"duplicate skill mapping key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueStringKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_string_mapping,
+)
 _HUB_ROOT_PUBLIC_KEY_B64 = "PENDING_REPLACE_AT_HUB_LAUNCH"
 _HUB_TRUST_ANCHOR_ENV = "ORI_HUB_ROOT_PUBLIC_KEY_B64"
 
@@ -295,7 +332,13 @@ class SkillLoader:
         """
         skill_dir = Path(skill_dir)
         yaml_path = skill_dir / "skill.yaml"
-        raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        raw = (
+            yaml.load(
+                yaml_path.read_text(encoding="utf-8"),
+                Loader=_UniqueStringKeySafeLoader,
+            )
+            or {}
+        )
         if not isinstance(raw, dict):
             raise SkillValidationError(
                 f"Skill {skill_dir.name!r}: skill.yaml must be a mapping"

@@ -1,0 +1,50 @@
+{
+  "schema": "ori.skill_signing_vectors.v1",
+  "comment": "Deterministic interoperability vectors only. The disclosed seed must never be used in production.",
+  "private_seed_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "manifest_profile": {
+    "parsed_skill": {
+      "name": "ori-signing-vector",
+      "version": "1.0.0",
+      "author": "ori-test",
+      "sensors_required": [
+        "temperature"
+      ],
+      "triggers": [
+        {
+          "name": "high_temperature",
+          "condition": "value > 30",
+          "action_tier": "A"
+        }
+      ],
+      "actions": {
+        "available": [
+          {
+            "name": "notify",
+            "tier": "A"
+          }
+        ],
+        "defaults": {
+          "high_temperature": [
+            "notify"
+          ]
+        }
+      },
+      "signature": "ed25519:excluded-from-signed-bytes"
+    },
+    "canonical_unsigned_b64": "eyJhY3Rpb25zIjp7ImF2YWlsYWJsZSI6W3sibmFtZSI6Im5vdGlmeSIsInRpZXIiOiJBIn1dLCJkZWZhdWx0cyI6eyJoaWdoX3RlbXBlcmF0dXJlIjpbIm5vdGlmeSJdfX0sImF1dGhvciI6Im9yaS10ZXN0IiwibmFtZSI6Im9yaS1zaWduaW5nLXZlY3RvciIsInNlbnNvcnNfcmVxdWlyZWQiOlsidGVtcGVyYXR1cmUiXSwidHJpZ2dlcnMiOlt7ImFjdGlvbl90aWVyIjoiQSIsImNvbmRpdGlvbiI6InZhbHVlID4gMzAiLCJuYW1lIjoiaGlnaF90ZW1wZXJhdHVyZSJ9XSwidmVyc2lvbiI6IjEuMC4wIn0=",
+    "canonical_unsigned_sha256": "5b6b6854da374999a54aa5ae7413bc9855301c05ef1a59e412f4de21dccb6327",
+    "signature": "ed25519:mbOGxjLsq0V9uC/dDy7zYi9OqZlcx/OXmPMs9euY6DTuydpSAxFQA17RBpzkoep4IFOcoT715yO3HymxC3VUDg=="
+  },
+  "artifact_profile": {
+    "artifact_bytes_b64": "T3JpIHNpZ25pbmcvdjEgZXhhY3QgYXJ0aWZhY3QgYnl0ZXMK",
+    "artifact_sha256": "sha256:1e5e873d8474d17d22d04fa06cbba1a54f3ad2f5b407773cdc71747279b9baf0",
+    "signature": "ed25519:g1VXFGXWvao0cP7d8rrvduiL5RWCluW/ck70q0Mn1PVGtIuilfhOqyaGl71pUwHbDHe5TArja5xWJGITwihiCQ==",
+    "detached_metadata": {
+      "artifact_sha256": "sha256:1e5e873d8474d17d22d04fa06cbba1a54f3ad2f5b407773cdc71747279b9baf0",
+      "schema": "ori.skill_artifact_signature.v1",
+      "signature": "ed25519:g1VXFGXWvao0cP7d8rrvduiL5RWCluW/ck70q0Mn1PVGtIuilfhOqyaGl71pUwHbDHe5TArja5xWJGITwihiCQ=="
+    }
+  }
+}
