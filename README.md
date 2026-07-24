@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-1E6B4A?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-1E6B4A?style=flat-square)](https://python.org)
 [![CI](https://github.com/ori-platform/ori-runtime/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ori-platform/ori-runtime/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v2.0.0-1E6B4A?style=flat-square)](#release-status)
+[![Release](https://img.shields.io/badge/release-v2.1.0-1E6B4A?style=flat-square)](#release-status)
 [![Platform](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%20·%20Linux%20·%20macOS-C8A951?style=flat-square)](#)
 
 </div>
@@ -42,7 +42,7 @@ Built for the world's majority condition — unreliable power, intermittent conn
 - Safety invariants (tier guards, strict skill validation, sandbox boundaries) are CI-enforced on every PR.
 - Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0.
 - Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
-- Release notes: [`docs/releases/v2.0.0.md`](docs/releases/v2.0.0.md)
+- Release notes: [`docs/releases/v2.1.0.md`](docs/releases/v2.1.0.md)
 
 Related public repos in the org:
 
