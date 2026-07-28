@@ -123,9 +123,13 @@ FAULT_VECTORS = json.loads(
 )
 FAULT_CASES = {case["name"]: case for case in FAULT_VECTORS["cases"]}
 
-# The closed vocabulary of ori-specs/firmware-telemetry/v1.md. Additions
-# are additive contract changes and land in all three repos together.
-FAULT_CODE_VOCABULARY = {
+# The codes carried by the shared golden fault vectors. This is not the whole
+# closed vocabulary: `storage_degraded` is defined in
+# ori-specs/firmware-telemetry/v1.md and accepted by the verifier, but no
+# producer emits it yet, so it has no cross-repo vector. The gap is asserted
+# below rather than left to drift silently — a vector lands with the firmware
+# implementation (ori-edge-firmware #62).
+VECTORED_FAULT_CODES = {
     "brownout_relay_fault",
     "command_rejected",
     "ingress_degraded",
@@ -373,9 +377,18 @@ class TestGoldenFaultVectors:
         )
         assert result.grade == "rejected"
 
-    def test_vectors_cover_the_closed_vocabulary(self) -> None:
+    def test_vectors_cover_every_emitted_code(self) -> None:
         covered = {case["input"]["code"] for case in FAULT_CASES.values()}
-        assert covered == FAULT_CODE_VOCABULARY
+        assert covered == VECTORED_FAULT_CODES
+
+    def test_only_storage_degraded_lacks_a_shared_vector(self) -> None:
+        # The verifier's vocabulary and the vector corpus may differ by
+        # exactly the codes no producer emits yet. Anything else means a code
+        # was added to one side and forgotten on the other.
+        from ori.security.firmware_telemetry import FIRMWARE_FAULT_CODES
+
+        assert FIRMWARE_FAULT_CODES - VECTORED_FAULT_CODES == {"storage_degraded"}
+        assert VECTORED_FAULT_CODES - FIRMWARE_FAULT_CODES == set()
 
     def test_fixture_metadata_is_self_consistent(self) -> None:
         # The fault corpus carries its own key metadata; the runtime must
@@ -677,6 +690,30 @@ class TestFailClosed:
             )
             assert result.accepted
             assert result.code == "ingress_degraded"
+            assert result.detail == detail
+
+    def test_storage_degraded_fault_verifies_with_each_detail(self) -> None:
+        # firmware-telemetry/v1: a device that could not make evidence durable
+        # reports it late, from a latch outside the failed store. The verifier
+        # must accept it before any device emits it, or the fault a failing
+        # device finally manages to send would be rejected on arrival.
+        for i, detail in enumerate(["buffer_write_failed", "buffer_mount_failed"]):
+            result = verify_fault_message(
+                signed_fault_message(
+                    seq=130_600 + i,
+                    code="storage_degraded",
+                    subject="evidence_buffer",
+                    detail=detail,
+                ),
+                anchor_device_id=SEALED_DEVICE,
+                anchor_public_key_b64=PUBLIC_KEY_B64,
+                anchor_posture="sealed_flash",
+                accepted_manifest_hash=SEALED_HASH,
+                last_boot_id=0,
+                last_seq=0,
+            )
+            assert result.accepted
+            assert result.code == "storage_degraded"
             assert result.detail == detail
 
     def test_fault_event_rejects_unknown_code(self) -> None:

@@ -162,6 +162,13 @@ FIRMWARE_FAULT_CODES = frozenset(
         "sensor_fault",
         "brownout_relay_fault",
         "ingress_degraded",
+        # firmware-telemetry/v1: reported late, from a latch outside the store
+        # that failed, so its own (boot_id, seq) describe when it was reported
+        # rather than what was lost. Absence proves nothing — a device whose
+        # storage is failing badly enough may never emit it — and sequence
+        # gaps are not a substitute signal, because reservation ceilings make
+        # gaps expected across a reboot.
+        "storage_degraded",
     }
 )
 
