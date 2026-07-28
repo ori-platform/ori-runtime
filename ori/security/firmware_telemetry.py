@@ -46,7 +46,6 @@ import binascii
 import hashlib
 import json
 import math
-import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -194,13 +193,13 @@ COMMAND_REJECTION_VERDICTS = frozenset(
 # its category allows -- no further, and no less:
 #
 #   closed set    exact membership (below)
-#   grammar       brownout_relay_fault: relay_err_<n> (FAULT_DETAIL_GRAMMARS)
 #   context-bound interlock rule name, known only from the pinned manifest
 #   open          sensor_fault: no vocabulary can anticipate a future driver
 #
-# The last two are absent from both tables on purpose: inventing a closed set
-# for them rejects legitimate evidence, which is the failure a well-meaning
-# tightening drifts toward.
+# The remaining codes are absent on purpose. In particular, firmware currently
+# emits brownout details as relay_err_<n>, but merged v1 did not make that
+# grammar a receiver rejection rule. Tightening it here would reject payloads
+# that v1 previously accepted and therefore requires a new major contract.
 CLOSED_FAULT_DETAILS: dict[str, frozenset[str]] = {
     "command_rejected": COMMAND_REJECTION_VERDICTS,
     "ingress_degraded": frozenset(
@@ -214,13 +213,6 @@ CLOSED_FAULT_DETAILS: dict[str, frozenset[str]] = {
         }
     ),
     "storage_degraded": frozenset({"buffer_write_failed", "buffer_mount_failed"}),
-}
-
-# firmware-telemetry/v1: brownout_relay_fault carries the platform relay error
-# number, so its detail has a shape even though it is not an enumeration.
-# ``relay_err_garbage`` is as unrepresentable as an invented closed-set token.
-FAULT_DETAIL_GRAMMARS: dict[str, re.Pattern[str]] = {
-    "brownout_relay_fault": re.compile(r"\Arelay_err_-?[0-9]+\Z"),
 }
 
 # firmware-telemetry/v1: ``subject`` and ``detail`` are fleet-safe tokens
@@ -894,13 +886,6 @@ def verify_fault_message(
                 ERR_INVALID_ENVELOPE,
                 f"unsupported {code} detail {detail!r}",
             )
-        grammar = FAULT_DETAIL_GRAMMARS.get(code)
-        if grammar is not None and not grammar.fullmatch(detail):
-            raise FirmwareVerificationError(
-                ERR_INVALID_ENVELOPE,
-                f"malformed {code} detail {detail!r}",
-            )
-
         canonical = canonical_json_bytes(fault)
         public_key = _decode_public_key(anchor_public_key_b64)
         signature = _decode_wire_signature(str(message.get("signature", "")))

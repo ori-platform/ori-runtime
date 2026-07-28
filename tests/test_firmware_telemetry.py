@@ -729,11 +729,11 @@ class TestFailClosed:
             assert not result.accepted, code
             assert result.error_code == "invalid_envelope"
 
-    def test_open_detail_vocabularies_accept_any_bounded_token(self) -> None:
-        # The interlock codes carry a site-configured rule name, sensor_fault
-        # has no defined vocabulary, and brownout_relay_fault is parameterised
-        # on a platform error number. Validating these would reject evidence
-        # the contract permits — including the max-bounds golden vector.
+    def test_nonclosed_detail_vocabularies_accept_bounded_tokens(self) -> None:
+        # The interlock codes carry a site-configured rule name and
+        # sensor_fault has no defined vocabulary. Firmware currently emits
+        # brownout details as relay_err_<n>, but v1 never made that producer
+        # convention a receiver rejection rule.
         cases = [
             ("interlock_tripped", "relay0", "a_site_rule_the_spec_cannot_know"),
             ("interlock_input_fault", "relay0", "another_site_rule"),
@@ -819,53 +819,26 @@ class TestFailClosed:
             ),
         }
 
-    def test_grammar_validated_details_match_the_contract(self) -> None:
-        from ori.security.firmware_telemetry import FAULT_DETAIL_GRAMMARS
-
-        # Exactly one code carries a grammar rather than an enumeration.
-        assert set(FAULT_DETAIL_GRAMMARS) == {"brownout_relay_fault"}
-        pattern = FAULT_DETAIL_GRAMMARS["brownout_relay_fault"]
-        for good in ("relay_err_0", "relay_err_6", "relay_err_-1", "relay_err_255"):
-            assert pattern.fullmatch(good), good
-        for bad in ("relay_err_", "relay_err_garbage", "relay_err_1x", "relay_6", ""):
-            assert not pattern.fullmatch(bad), bad
-
-    def test_brownout_detail_grammar_is_enforced_on_the_wire(self) -> None:
-        # "Not a closed set" does not mean "accept anything": the detail
-        # carries a platform error number, and one that does not is not
-        # something a conforming producer emits.
-        accepted = verify_fault_message(
-            signed_fault_message(
-                seq=130_900,
-                code="brownout_relay_fault",
-                subject="relay_bank",
-                detail="relay_err_6",
-            ),
-            anchor_device_id=SEALED_DEVICE,
-            anchor_public_key_b64=PUBLIC_KEY_B64,
-            anchor_posture="sealed_flash",
-            accepted_manifest_hash=SEALED_HASH,
-            last_boot_id=0,
-            last_seq=0,
-        )
-        assert accepted.accepted
-
-        rejected = verify_fault_message(
-            signed_fault_message(
-                seq=130_901,
-                code="brownout_relay_fault",
-                subject="relay_bank",
-                detail="relay_err_garbage",
-            ),
-            anchor_device_id=SEALED_DEVICE,
-            anchor_public_key_b64=PUBLIC_KEY_B64,
-            anchor_posture="sealed_flash",
-            accepted_manifest_hash=SEALED_HASH,
-            last_boot_id=0,
-            last_seq=0,
-        )
-        assert not rejected.accepted
-        assert rejected.error_code == "invalid_envelope"
+    def test_v1_brownout_producer_grammar_is_not_a_receiver_rejection(self) -> None:
+        # relay_err_<n> is the current firmware convention. Since merged v1 did
+        # not previously make that grammar normative, hard rejection belongs
+        # to a future major version rather than this additive update.
+        for i, detail in enumerate(("relay_err_6", "legacy_bounded_token")):
+            result = verify_fault_message(
+                signed_fault_message(
+                    seq=130_900 + i,
+                    code="brownout_relay_fault",
+                    subject="relay_bank",
+                    detail=detail,
+                ),
+                anchor_device_id=SEALED_DEVICE,
+                anchor_public_key_b64=PUBLIC_KEY_B64,
+                anchor_posture="sealed_flash",
+                accepted_manifest_hash=SEALED_HASH,
+                last_boot_id=0,
+                last_seq=0,
+            )
+            assert result.accepted, detail
 
     def test_fault_event_rejects_unknown_code(self) -> None:
         result = verify_fault_message(
