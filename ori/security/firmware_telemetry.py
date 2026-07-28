@@ -46,6 +46,7 @@ import binascii
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
@@ -187,6 +188,40 @@ COMMAND_REJECTION_VERDICTS = frozenset(
         "storage_failure",
     }
 )
+
+# firmware-telemetry/v1 constrains ``detail`` to one of four degrees, and "not
+# a closed set" does not mean "anything goes". Each code is validated as far as
+# its category allows -- no further, and no less:
+#
+#   closed set    exact membership (below)
+#   grammar       brownout_relay_fault: relay_err_<n> (FAULT_DETAIL_GRAMMARS)
+#   context-bound interlock rule name, known only from the pinned manifest
+#   open          sensor_fault: no vocabulary can anticipate a future driver
+#
+# The last two are absent from both tables on purpose: inventing a closed set
+# for them rejects legitimate evidence, which is the failure a well-meaning
+# tightening drifts toward.
+CLOSED_FAULT_DETAILS: dict[str, frozenset[str]] = {
+    "command_rejected": COMMAND_REJECTION_VERDICTS,
+    "ingress_degraded": frozenset(
+        {
+            "inbound_overflow",
+            "subscribe_failed",
+            "anchor_persist_failed",
+            "mqtt_provision_epoch_failed",
+            "provisioning_serial_io_failed",
+            "provisioning_serial_overflow",
+        }
+    ),
+    "storage_degraded": frozenset({"buffer_write_failed", "buffer_mount_failed"}),
+}
+
+# firmware-telemetry/v1: brownout_relay_fault carries the platform relay error
+# number, so its detail has a shape even though it is not an enumeration.
+# ``relay_err_garbage`` is as unrepresentable as an invented closed-set token.
+FAULT_DETAIL_GRAMMARS: dict[str, re.Pattern[str]] = {
+    "brownout_relay_fault": re.compile(r"\Arelay_err_-?[0-9]+\Z"),
+}
 
 # firmware-telemetry/v1: ``subject`` and ``detail`` are fleet-safe tokens
 # bounded at 63 characters (the producer's 64-byte buffers include the
@@ -851,10 +886,19 @@ def verify_fault_message(
                     ERR_INVALID_ENVELOPE,
                     f"fault {_name} leaves the fleet-safe token alphabet",
                 )
-        if code == "command_rejected" and detail not in COMMAND_REJECTION_VERDICTS:
+        closed_details = CLOSED_FAULT_DETAILS.get(code)
+        if closed_details is not None and detail not in closed_details:
+            # Empty is rejected here too: a closed-vocabulary code carries the
+            # condition, and a blank one names nothing a consumer can act on.
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE,
-                f"unsupported command rejection verdict {detail!r}",
+                f"unsupported {code} detail {detail!r}",
+            )
+        grammar = FAULT_DETAIL_GRAMMARS.get(code)
+        if grammar is not None and not grammar.fullmatch(detail):
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE,
+                f"malformed {code} detail {detail!r}",
             )
 
         canonical = canonical_json_bytes(fault)
