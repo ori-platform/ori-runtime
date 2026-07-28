@@ -123,16 +123,13 @@ FAULT_VECTORS = json.loads(
 )
 FAULT_CASES = {case["name"]: case for case in FAULT_VECTORS["cases"]}
 
-# The codes carried by the shared golden fault vectors. This is not the whole
-# closed vocabulary: `storage_degraded` is defined in
-# ori-specs/firmware-telemetry/v1.md and accepted by the verifier, but no
-# producer emits it yet, so it has no cross-repo vector. The gap is asserted
-# below rather than left to drift silently — a vector lands with the firmware
-# implementation (ori-edge-firmware #62).
-VECTORED_FAULT_CODES = {
+# The closed vocabulary of ori-specs/firmware-telemetry/v1.md. Additions
+# are additive contract changes and land in all three repos together.
+FAULT_CODE_VOCABULARY = {
     "brownout_relay_fault",
     "command_rejected",
     "ingress_degraded",
+    "storage_degraded",
     "interlock_input_fault",
     "interlock_recovered",
     "interlock_tripped",
@@ -377,18 +374,18 @@ class TestGoldenFaultVectors:
         )
         assert result.grade == "rejected"
 
-    def test_vectors_cover_every_emitted_code(self) -> None:
+    def test_vectors_cover_the_closed_vocabulary(self) -> None:
         covered = {case["input"]["code"] for case in FAULT_CASES.values()}
-        assert covered == VECTORED_FAULT_CODES
+        assert covered == FAULT_CODE_VOCABULARY
 
-    def test_only_storage_degraded_lacks_a_shared_vector(self) -> None:
-        # The verifier's vocabulary and the vector corpus may differ by
-        # exactly the codes no producer emits yet. Anything else means a code
-        # was added to one side and forgotten on the other.
+    def test_verifier_vocabulary_matches_the_vector_corpus(self) -> None:
+        # Every accepted code carries a shared vector and every shared vector
+        # names an accepted code. The exception that stood here while
+        # storage_degraded had no producer is gone: adding a code to one side
+        # and forgetting the other now fails outright.
         from ori.security.firmware_telemetry import FIRMWARE_FAULT_CODES
 
-        assert FIRMWARE_FAULT_CODES - VECTORED_FAULT_CODES == {"storage_degraded"}
-        assert VECTORED_FAULT_CODES - FIRMWARE_FAULT_CODES == set()
+        assert FIRMWARE_FAULT_CODES == FAULT_CODE_VOCABULARY
 
     def test_fixture_metadata_is_self_consistent(self) -> None:
         # The fault corpus carries its own key metadata; the runtime must
