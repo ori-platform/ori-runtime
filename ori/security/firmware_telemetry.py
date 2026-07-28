@@ -188,6 +188,33 @@ COMMAND_REJECTION_VERDICTS = frozenset(
     }
 )
 
+# firmware-telemetry/v1 constrains ``detail`` to one of four degrees, and "not
+# a closed set" does not mean "anything goes". Each code is validated as far as
+# its category allows -- no further, and no less:
+#
+#   closed set    exact membership (below)
+#   context-bound interlock rule name, known only from the pinned manifest
+#   open          sensor_fault: no vocabulary can anticipate a future driver
+#
+# The remaining codes are absent on purpose. In particular, firmware currently
+# emits brownout details as relay_err_<n>, but merged v1 did not make that
+# grammar a receiver rejection rule. Tightening it here would reject payloads
+# that v1 previously accepted and therefore requires a new major contract.
+CLOSED_FAULT_DETAILS: dict[str, frozenset[str]] = {
+    "command_rejected": COMMAND_REJECTION_VERDICTS,
+    "ingress_degraded": frozenset(
+        {
+            "inbound_overflow",
+            "subscribe_failed",
+            "anchor_persist_failed",
+            "mqtt_provision_epoch_failed",
+            "provisioning_serial_io_failed",
+            "provisioning_serial_overflow",
+        }
+    ),
+    "storage_degraded": frozenset({"buffer_write_failed", "buffer_mount_failed"}),
+}
+
 # firmware-telemetry/v1: ``subject`` and ``detail`` are fleet-safe tokens
 # bounded at 63 characters (the producer's 64-byte buffers include the
 # NUL). The receiver enforces the same bound as the producer: accepting a
@@ -851,12 +878,14 @@ def verify_fault_message(
                     ERR_INVALID_ENVELOPE,
                     f"fault {_name} leaves the fleet-safe token alphabet",
                 )
-        if code == "command_rejected" and detail not in COMMAND_REJECTION_VERDICTS:
+        closed_details = CLOSED_FAULT_DETAILS.get(code)
+        if closed_details is not None and detail not in closed_details:
+            # Empty is rejected here too: a closed-vocabulary code carries the
+            # condition, and a blank one names nothing a consumer can act on.
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE,
-                f"unsupported command rejection verdict {detail!r}",
+                f"unsupported {code} detail {detail!r}",
             )
-
         canonical = canonical_json_bytes(fault)
         public_key = _decode_public_key(anchor_public_key_b64)
         signature = _decode_wire_signature(str(message.get("signature", "")))

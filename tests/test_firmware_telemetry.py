@@ -713,6 +713,133 @@ class TestFailClosed:
             assert result.code == "storage_degraded"
             assert result.detail == detail
 
+    def test_closed_detail_vocabularies_reject_invented_tokens(self) -> None:
+        # A valid signature over a token no conforming producer can emit
+        # means the two sides disagree about the contract.
+        for code in ("command_rejected", "ingress_degraded", "storage_degraded"):
+            result = verify_fault_message(
+                signed_fault_message(code=code, subject="inbound", detail="invented"),
+                anchor_device_id=SEALED_DEVICE,
+                anchor_public_key_b64=PUBLIC_KEY_B64,
+                anchor_posture="sealed_flash",
+                accepted_manifest_hash=SEALED_HASH,
+                last_boot_id=0,
+                last_seq=0,
+            )
+            assert not result.accepted, code
+            assert result.error_code == "invalid_envelope"
+
+    def test_nonclosed_detail_vocabularies_accept_bounded_tokens(self) -> None:
+        # The interlock codes carry a site-configured rule name and
+        # sensor_fault has no defined vocabulary. Firmware currently emits
+        # brownout details as relay_err_<n>, but v1 never made that producer
+        # convention a receiver rejection rule.
+        cases = [
+            ("interlock_tripped", "relay0", "a_site_rule_the_spec_cannot_know"),
+            ("interlock_input_fault", "relay0", "another_site_rule"),
+            ("interlock_recovered", "relay0", "yet_another_rule"),
+            ("sensor_fault", "pzem0", "crc"),
+            ("brownout_relay_fault", "relay_bank", "relay_err_17"),
+        ]
+        for i, (code, subject, detail) in enumerate(cases):
+            result = verify_fault_message(
+                signed_fault_message(
+                    seq=130_700 + i, code=code, subject=subject, detail=detail
+                ),
+                anchor_device_id=SEALED_DEVICE,
+                anchor_public_key_b64=PUBLIC_KEY_B64,
+                anchor_posture="sealed_flash",
+                accepted_manifest_hash=SEALED_HASH,
+                last_boot_id=0,
+                last_seq=0,
+            )
+            assert result.accepted, f"{code}/{detail}"
+            assert result.detail == detail
+
+    def test_every_ingress_detail_the_firmware_emits_is_accepted(self) -> None:
+        # These six are what ori-edge-firmware actually emits. Three of them
+        # went undeclared in the contract until the vocabulary was closed;
+        # a consumer enforcing the old three would reject working devices.
+        emitted = [
+            "inbound_overflow",
+            "subscribe_failed",
+            "anchor_persist_failed",
+            "mqtt_provision_epoch_failed",
+            "provisioning_serial_io_failed",
+            "provisioning_serial_overflow",
+        ]
+        for i, detail in enumerate(emitted):
+            result = verify_fault_message(
+                signed_fault_message(
+                    seq=130_800 + i,
+                    code="ingress_degraded",
+                    subject="inbound",
+                    detail=detail,
+                ),
+                anchor_device_id=SEALED_DEVICE,
+                anchor_public_key_b64=PUBLIC_KEY_B64,
+                anchor_posture="sealed_flash",
+                accepted_manifest_hash=SEALED_HASH,
+                last_boot_id=0,
+                last_seq=0,
+            )
+            assert result.accepted, detail
+
+    def test_closed_vocabularies_match_the_contract_exactly(self) -> None:
+        from ori.security.firmware_telemetry import CLOSED_FAULT_DETAILS
+
+        # The whole mapping, transcribed from firmware-telemetry/v1.md rather
+        # than derived from the implementation. Asserting only the keys would
+        # let an invented token be added to an existing set unnoticed, which is
+        # the over-acceptance this enforcement exists to stop.
+        assert CLOSED_FAULT_DETAILS == {
+            "command_rejected": frozenset(
+                {
+                    "malformed",
+                    "wrong_device",
+                    "bad_signature",
+                    "replayed",
+                    "capability_mismatch",
+                    "unknown_action",
+                    "storage_failure",
+                }
+            ),
+            "ingress_degraded": frozenset(
+                {
+                    "inbound_overflow",
+                    "subscribe_failed",
+                    "anchor_persist_failed",
+                    "mqtt_provision_epoch_failed",
+                    "provisioning_serial_io_failed",
+                    "provisioning_serial_overflow",
+                }
+            ),
+            "storage_degraded": frozenset(
+                {"buffer_write_failed", "buffer_mount_failed"}
+            ),
+        }
+
+    def test_v1_brownout_producer_grammar_is_not_a_receiver_rejection(self) -> None:
+        # relay_err_<n> is the current firmware convention. Since merged v1 did
+        # not previously make that grammar normative, hard rejection belongs
+        # to a future major version rather than this additive update.
+        for i, detail in enumerate(("relay_err_6", "legacy_bounded_token")):
+            result = verify_fault_message(
+                signed_fault_message(
+                    seq=130_900 + i,
+                    code="brownout_relay_fault",
+                    subject="relay_bank",
+                    detail=detail,
+                ),
+                anchor_device_id=SEALED_DEVICE,
+                anchor_public_key_b64=PUBLIC_KEY_B64,
+                anchor_posture="sealed_flash",
+                accepted_manifest_hash=SEALED_HASH,
+                last_boot_id=0,
+                last_seq=0,
+            )
+            assert result.accepted, detail
+
     def test_fault_event_rejects_unknown_code(self) -> None:
         result = verify_fault_message(
             signed_fault_message(code="made_up_fault"),
