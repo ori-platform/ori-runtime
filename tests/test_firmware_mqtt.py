@@ -10,11 +10,22 @@ import pytest
 import ori.gateway.firmware_telemetry as firmware_mqtt_module
 from ori.network.event_bus import EventBus
 from ori.network.events import SensorReading
+from ori.security.firmware_liveness import FirmwareLivenessSupervisor
 
 
 class _FakeVerification:
+    """Mirrors the fields of the real ``TelemetryVerification`` that the
+    subscriber reads. Carrying only ``accepted`` was enough while the
+    supervision hook was skippable; it is not a shape the gate ever
+    returns, and a fake that under-describes its subject stops proving
+    anything about the caller.
+    """
+
     def __init__(self, accepted: bool = True) -> None:
         self.accepted = accepted
+        self.device_id = "ori-fw-7c9f2b3a"
+        self.boot_id = 41
+        self.capability_hash = "sha256:" + "a" * 64
 
 
 class _FakeFirmwareGate:
@@ -104,6 +115,7 @@ def _subscriber(*, payloads: list[dict] | None = None, gate=None, store=None, bu
             event_bus=bus or EventBus(),
             state_store=store or _FakeStore(),
             runtime_device_id="runtime-01",
+            liveness_supervisor=FirmwareLivenessSupervisor(),
             client_factory=lambda **_: fake_client,
         ),
         fake_client,
@@ -200,4 +212,5 @@ def test_paho_unavailable_raises():
                 event_bus=EventBus(),
                 state_store=_FakeStore(),
                 runtime_device_id="runtime-01",
+                liveness_supervisor=FirmwareLivenessSupervisor(),
             )

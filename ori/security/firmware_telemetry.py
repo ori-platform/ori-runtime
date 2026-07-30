@@ -540,6 +540,7 @@ class TelemetryVerification:
     boot_id: int = 0
     seq: int = 0
     posture: str = ""
+    capability_hash: str = ""
     device_uptime_ms: int = 0
     is_heartbeat: bool = False
     readings: list[dict[str, Any]] = field(default_factory=list)
@@ -762,6 +763,7 @@ def verify_telemetry_message(
             boot_id=boot_id,
             seq=seq,
             posture=posture,
+            capability_hash=capability_hash,
             device_uptime_ms=uptime,
             is_heartbeat=len(readings) == 0,
             readings=readings,

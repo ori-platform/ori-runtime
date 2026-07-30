@@ -360,6 +360,7 @@ CREATE TABLE IF NOT EXISTS firmware_device_registry (
     last_seq          INTEGER NOT NULL DEFAULT 0,
     last_cmd_seq      INTEGER NOT NULL DEFAULT 0,
     last_provision_seq INTEGER NOT NULL DEFAULT 0,
+    last_runtime_seq  INTEGER NOT NULL DEFAULT 0,
     revoked           INTEGER NOT NULL DEFAULT 0,
     revoked_at_ms     INTEGER
 );
@@ -777,6 +778,12 @@ class StateStore:
             conn,
             "firmware_device_registry",
             "last_provision_seq",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        self._add_column_if_missing_on_conn(
+            conn,
+            "firmware_device_registry",
+            "last_runtime_seq",
             "INTEGER NOT NULL DEFAULT 0",
         )
         self._add_column_if_missing_on_conn(
@@ -4264,6 +4271,65 @@ class StateStore:
         )
         self._conn.commit()
         return "reprovisioned"
+
+    async def allocate_firmware_runtime_seq(self, device_id: str) -> int:
+        """Allocate the next strictly increasing runtime-liveness sequence
+        for a device (firmware-commands/v1 runtime liveness).
+
+        Durability here is load-bearing, and for a different reason than
+        ``cmd_seq``. A device holds the last accepted value for its CURRENT
+        boot, so a runtime that restarted with an in-memory counter would
+        have every subsequent message rejected and could not recover while
+        that device stayed booted — the device would report a healthy
+        runtime unreachable and keep doing so. Recovery would need a device
+        reboot, which is not something a runtime restart may require.
+
+        Raises KeyError for unknown devices.
+        """
+        return await self._run_write(
+            self._allocate_firmware_runtime_seq_sync, device_id
+        )
+
+    def _allocate_firmware_runtime_seq_sync(self, device_id: str) -> int:
+        assert self._conn is not None
+        cur = self._conn.execute(
+            """
+            UPDATE firmware_device_registry
+               SET last_runtime_seq = last_runtime_seq + 1
+             WHERE device_id = ?
+               AND last_runtime_seq < 9007199254740991
+            """,
+            (device_id,),
+        )
+        if cur.rowcount != 1:
+            self._conn.rollback()
+            # The UPDATE misses for two different reasons and they are not
+            # the same failure: an unknown device is a caller error, an
+            # exhausted counter is the end of the sequence space.
+            exists = self._conn.execute(
+                "SELECT 1 FROM firmware_device_registry WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+            if exists is None:
+                raise KeyError(f"unknown firmware device: {device_id!r}")
+            raise ValueError(
+                f"runtime_seq exhausted for {device_id!r}; "
+                "the device cannot accept a higher value in this boot"
+            )
+        row = self._conn.execute(
+            "SELECT last_runtime_seq FROM firmware_device_registry WHERE device_id = ?",
+            (device_id,),
+        ).fetchone()
+        assert row is not None
+        # Commit before returning. _run_write provides locking and thread
+        # dispatch, not a transaction boundary. Without this the allocation
+        # is only in the connection's open transaction: a process restart
+        # rolls it back, the device then rejects every message from the
+        # restarted runtime for the rest of its current boot, and whether
+        # it survives at all depends on some unrelated later write
+        # happening to commit it.
+        self._conn.commit()
+        return int(row[0])
 
     async def allocate_firmware_command_seq(self, device_id: str) -> int:
         """Allocate the next strictly increasing command sequence for a

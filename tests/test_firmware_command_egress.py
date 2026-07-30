@@ -21,6 +21,7 @@ from ori.security.firmware_commands import (
     build_provisioning_approval_bytes,
 )
 from ori.security.firmware_ingest import FirmwareTelemetryGate
+from ori.security.firmware_liveness import FirmwareLivenessSupervisor
 from ori.state.store import StateStore
 
 COMMAND_VECTORS = json.loads(
@@ -296,6 +297,7 @@ async def test_service_publishes_approval_from_registry_anchor(store) -> None:
         publisher=fake,  # type: ignore[arg-type]
         runtime_command_key_bytes=RUNTIME_SEED,
         provisioner_key_bytes=PROVISIONER_SEED,
+        liveness_supervisor=FirmwareLivenessSupervisor(),
     )
 
     message = await service.publish_provisioning_approval(device_id)
@@ -322,6 +324,7 @@ async def test_service_refuses_approval_for_unapproved_or_revoked_device(store) 
         publisher=_FakePublisher(),  # type: ignore[arg-type]
         runtime_command_key_bytes=RUNTIME_SEED,
         provisioner_key_bytes=PROVISIONER_SEED,
+        liveness_supervisor=FirmwareLivenessSupervisor(),
     )
 
     with pytest.raises(FirmwareCommandError, match="not approved"):
@@ -345,6 +348,7 @@ async def test_service_publishes_signed_command_without_retaining(store) -> None
         publisher=fake,  # type: ignore[arg-type]
         runtime_command_key_bytes=RUNTIME_SEED,
         provisioner_key_bytes=PROVISIONER_SEED,
+        liveness_supervisor=FirmwareLivenessSupervisor(),
     )
 
     message = await service.publish_command(
@@ -356,3 +360,68 @@ async def test_service_publishes_signed_command_without_retaining(store) -> None
     assert fake.commands == [(device_id, message)]
     assert b'"cmd_seq":1,' in message
     assert b'"capability_hash":"sha256:' in message
+
+
+async def test_mqtt_publisher_never_retains_runtime_liveness() -> None:
+    """A retained liveness message is the broker asserting, for a runtime
+    that may since have died, that an authority is watching — so a device
+    reconnecting after the runtime dies would suppress its own backstop
+    for a full expiry window. No ACL can forbid retention; this call site
+    is where it is prevented, so it is asserted here.
+    """
+    fake = _FakeClient()
+    publisher = MqttFirmwareCommandPublisher(
+        broker_url="mqtt://localhost",
+        runtime_device_id="runtime-01",
+        client_factory=lambda **_: fake,
+    )
+
+    await publisher.connect()
+    await publisher.publish_runtime_liveness("ori-fw-7c9f2b3a", b"liveness")
+    await publisher.close()
+
+    published = fake.published[0]
+    assert published["topic"] == "ori/fw/ori-fw-7c9f2b3a/runtime"
+    assert published["payload"] == b"liveness"
+    assert published["qos"] == 1
+    assert published["retain"] is False, "liveness must never be retained"
+
+
+async def test_service_refuses_to_publish_liveness_for_an_unsupervised_device(
+    tmp_path,
+) -> None:
+    """The service is the authority-enforcing API. The raw publisher is
+    transport glue beneath it: going through the service is what makes the
+    supervision refusal load-bearing, and a refusal must publish nothing.
+    """
+    from ori.security.firmware_liveness import FirmwareLivenessError
+    from ori.state.store import StateStore
+
+    store = StateStore(db_path=str(tmp_path / "state.db"))
+    await store.open()
+    try:
+        fake = _FakeClient()
+        publisher = MqttFirmwareCommandPublisher(
+            broker_url="mqtt://localhost",
+            runtime_device_id="runtime-01",
+            client_factory=lambda **_: fake,
+        )
+        await publisher.connect()
+        service = FirmwareCommandService(
+            store=store,
+            publisher=publisher,
+            runtime_command_key_bytes=bytes(range(32)),
+            provisioner_key_bytes=bytes(range(32, 64)),
+            liveness_supervisor=FirmwareLivenessSupervisor(),
+        )
+
+        with pytest.raises(FirmwareLivenessError, match="not supervised"):
+            await service.publish_runtime_liveness(
+                device_id="ori-fw-7c9f2b3a",
+                boot_id=41,
+                capability_hash="sha256:" + "a" * 64,
+            )
+        assert fake.published == [], "a refusal must publish nothing"
+        await publisher.close()
+    finally:
+        await store.close()

@@ -8,7 +8,8 @@ This module owns only the transport binding from
 ``ori-specs/firmware-commands/v1.md``:
 
 * retained provisioning approvals on ``ori/fw/<device_id>/provision``;
-* non-retained commands on ``ori/fw/<device_id>/cmd``.
+* non-retained commands on ``ori/fw/<device_id>/cmd``;
+* non-retained runtime liveness on ``ori/fw/<device_id>/runtime``.
 
 Commands are never retained. Provisioning approvals are retained so a rebooted
 device can reload the current runtime command key for its accepted manifest
@@ -28,6 +29,11 @@ from ori.security.firmware_commands import (
     FirmwareCommandError,
     FirmwareCommandSigner,
     build_provisioning_approval_bytes,
+)
+from ori.security.firmware_liveness import (
+    FirmwareLivenessSigner,
+    FirmwareLivenessSupervisor,
+    SupervisedDevice,
 )
 
 mqtt: Any
@@ -112,6 +118,22 @@ class MqttFirmwareCommandPublisher:
             retain=False,
         )
 
+    async def publish_runtime_liveness(self, device_id: str, message: bytes) -> None:
+        """Publish one signed liveness message.
+
+        ``retain=False`` is not a default here, it is the contract. A
+        retained liveness message is the broker asserting, on behalf of a
+        runtime that may since have died, that an authority is watching —
+        so a device reconnecting after this runtime dies would suppress
+        its own backstop for a full expiry window. No ACL can forbid it;
+        this call site is where it is prevented.
+        """
+        await self._publish(
+            _topic(device_id, "runtime"),
+            message,
+            retain=False,
+        )
+
     async def _publish(self, topic: str, message: bytes, *, retain: bool) -> None:
         client = self._client
         if client is None:
@@ -147,10 +169,25 @@ class FirmwareCommandService:
         publisher: MqttFirmwareCommandPublisher,
         runtime_command_key_bytes: bytes,
         provisioner_key_bytes: bytes,
+        liveness_supervisor: FirmwareLivenessSupervisor,
     ) -> None:
         self._store = store
         self._publisher = publisher
         self._signer = FirmwareCommandSigner(store, runtime_command_key_bytes)
+        # Required, and never defaulted. Supervision is established on the
+        # telemetry side; a service holding its own instance would read a
+        # map nothing writes to and refuse every device forever, which
+        # looks exactly like a fleet that is simply quiet. Callers that
+        # only need command egress must still pass one explicitly, so the
+        # choice is visible at the call site instead of inferred here.
+        #
+        # The SAME key the device pins for commands: no new key material,
+        # no second trust root.
+        self._liveness = FirmwareLivenessSigner(
+            store,
+            runtime_command_key_bytes,
+            supervisor=liveness_supervisor,
+        )
         self._runtime_public_key_b64 = base64.b64encode(
             self._signer.public_key_bytes()
         ).decode("ascii")
@@ -189,6 +226,42 @@ class FirmwareCommandService:
             channel=channel,
         )
         await self._publisher.publish_command(device_id, message)
+        return message
+
+    @property
+    def liveness_supervisor(self) -> FirmwareLivenessSupervisor:
+        """Hand this to the telemetry subscriber so accepted telemetry
+        establishes supervision."""
+        return self._liveness.supervisor
+
+    def supervised_devices(self) -> tuple[SupervisedDevice, ...]:
+        """Snapshot for a publish loop. Every value signing needs is here,
+        so a scheduler never queries the registry to decide who to publish
+        for — that would turn an event-driven map into a fleet poll."""
+        return self._liveness.supervisor.supervised_devices()
+
+    async def publish_runtime_liveness(
+        self,
+        *,
+        device_id: str,
+        boot_id: int,
+        capability_hash: str,
+    ) -> bytes:
+        """Sign and publish one liveness message for a supervised device.
+
+        This is the application-facing API, and the publisher's raw
+        ``publish_runtime_liveness`` is transport glue beneath it. Going
+        through here is what makes the supervision refusal load-bearing:
+        the signer declines when this runtime is no longer receiving from
+        the device, and nothing is published. Calling the transport
+        directly bypasses that, so application code must not.
+        """
+        message = await self._liveness.sign_liveness(
+            device_id=device_id,
+            boot_id=boot_id,
+            capability_hash=capability_hash,
+        )
+        await self._publisher.publish_runtime_liveness(device_id, message)
         return message
 
     async def _require_approved_device(self, device_id: str) -> dict[str, Any]:
