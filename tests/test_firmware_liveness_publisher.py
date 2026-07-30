@@ -29,9 +29,7 @@ HASH = "sha256:" + "a" * 64
 
 
 def _device(device_id: str, boot_id: int = 41) -> SupervisedDevice:
-    return SupervisedDevice(
-        device_id=device_id, boot_id=boot_id, capability_hash=HASH
-    )
+    return SupervisedDevice(device_id=device_id, boot_id=boot_id, capability_hash=HASH)
 
 
 class _FakeService:
