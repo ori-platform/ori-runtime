@@ -23,6 +23,11 @@ from pathlib import Path
 
 import pytest
 
+from ori.gateway.firmware_commands import (
+    FirmwareCommandService,
+    MqttFirmwareCommandPublisher,
+)
+from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
 from ori.runtime import (
     _build_firmware_command_service,
     _build_firmware_liveness_stack,
@@ -31,6 +36,7 @@ from ori.runtime import (
 from ori.security.firmware_ingest import FirmwareTelemetryGate
 from ori.security.firmware_liveness import (
     FirmwareLivenessError,
+    FirmwareLivenessSigner,
     FirmwareLivenessSupervisor,
 )
 from ori.state.store import StateStore
@@ -291,13 +297,14 @@ async def test_service_signs_only_after_the_shared_supervisor_is_populated(
 ) -> None:
     """Ties both halves together through the real builders: the service
     refuses, telemetry arrives on the subscriber, the service then signs."""
-    import ori.gateway.firmware_commands as fc
-
     fake = _FakeClient()
     # Patched before the builder runs: the builder owns publisher
     # construction, and the point of this test is that nothing between the
     # two builders is hand-assembled.
-    monkeypatch.setattr(fc, "_default_client_factory", lambda **_: fake)
+    monkeypatch.setattr(
+        "ori.gateway.firmware_commands._default_client_factory",
+        lambda **_: fake,
+    )
 
     shared = FirmwareLivenessSupervisor()
     subscriber = _build_firmware_telemetry_subscriber(
@@ -344,11 +351,6 @@ async def test_service_signs_only_after_the_shared_supervisor_is_populated(
 
 
 def test_command_service_cannot_be_built_without_a_supervisor(store) -> None:
-    from ori.gateway.firmware_commands import (
-        FirmwareCommandService,
-        MqttFirmwareCommandPublisher,
-    )
-
     publisher = MqttFirmwareCommandPublisher(
         broker_url="mqtt://localhost",
         runtime_device_id="runtime-01",
@@ -364,8 +366,6 @@ def test_command_service_cannot_be_built_without_a_supervisor(store) -> None:
 
 
 def test_telemetry_subscriber_cannot_be_built_without_a_supervisor(store) -> None:
-    from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
-
     with pytest.raises(TypeError, match="liveness_supervisor"):
         MqttFirmwareTelemetrySubscriber(
             broker_url="mqtt://localhost",
@@ -379,8 +379,6 @@ def test_telemetry_subscriber_cannot_be_built_without_a_supervisor(store) -> Non
 def test_telemetry_subscriber_rejects_a_wrongly_typed_supervisor(store) -> None:
     """``Any`` accepted anything and failed at the first accepted reading —
     long after the wiring mistake, and only in production."""
-    from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
-
     with pytest.raises(TypeError, match="FirmwareLivenessSupervisor"):
         MqttFirmwareTelemetrySubscriber(
             broker_url="mqtt://localhost",
@@ -396,8 +394,6 @@ def test_signer_cannot_be_built_without_a_supervisor(store) -> None:
     """The third instance of the same defaulting pattern, one layer below
     the two the review named. Left alone it would have re-created the
     private-instance hazard inside any future direct signer caller."""
-    from ori.security.firmware_liveness import FirmwareLivenessSigner
-
     with pytest.raises(TypeError, match="supervisor"):
         FirmwareLivenessSigner(store, bytes(range(32)))
 
