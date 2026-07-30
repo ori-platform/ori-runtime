@@ -349,6 +349,7 @@ async def _publish(
         FirmwareCommandError,
         FirmwareCommandService,
     )
+    from ori.security.firmware_liveness import FirmwareLivenessSupervisor
 
     store = await _open_store(db_path)
 
@@ -380,6 +381,12 @@ async def _publish(
             publisher=publisher,
             runtime_command_key_bytes=runtime_seed,
             provisioner_key_bytes=provisioner_seed,
+            # A private, permanently empty supervisor, on purpose. This
+            # tool signs provisioning approvals offline and receives no
+            # telemetry, so it must never be able to publish liveness —
+            # asserting supervision from a CLI that is about to exit is
+            # precisely the claim a device must not be given.
+            liveness_supervisor=FirmwareLivenessSupervisor(),
         )
         return await service.publish_provisioning_approval(device_id)
     except FirmwareCommandError as exc:

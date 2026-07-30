@@ -88,6 +88,7 @@ from ori.security.firmware_confirmation import (
     FirmwareConfirmationCoordinator,
 )
 from ori.security.firmware_ingest import FirmwareTelemetryGate
+from ori.security.firmware_liveness import FirmwareLivenessSupervisor
 from ori.security.firmware_mqtt_certificate import FirmwareMqttCertificateAuthority
 from ori.security.firmware_mqtt_provisioning import FirmwareMqttProvisioningService
 from ori.security.firmware_mqtt_workflow import FirmwareMqttProvisioningWorkflow
@@ -1001,7 +1002,11 @@ class OriRuntime:
                 )
             )
 
-        firmware_telemetry_subscriber = _build_firmware_telemetry_subscriber(
+        (
+            self._firmware_liveness_supervisor,
+            firmware_telemetry_subscriber,
+            firmware_command_pair,
+        ) = _build_firmware_liveness_stack(
             config,
             event_bus,
             self._state_store,
@@ -1015,10 +1020,6 @@ class OriRuntime:
                 )
             )
 
-        firmware_command_pair = _build_firmware_command_service(
-            config,
-            self._state_store,
-        )
         if firmware_command_pair is not None:
             publisher, service = firmware_command_pair
             try:
@@ -3944,6 +3945,7 @@ def _build_firmware_telemetry_subscriber(
     event_bus: EventBus,
     state_store: StateStore,
     deduplicator: EventDeduplicator | None,
+    liveness_supervisor: FirmwareLivenessSupervisor,
 ) -> MqttFirmwareTelemetrySubscriber | None:
     """Instantiate the signed firmware telemetry subscriber when configured."""
     if not bool(config.gateway.enabled):
@@ -3966,6 +3968,7 @@ def _build_firmware_telemetry_subscriber(
             qos=int(firmware_cfg.get("qos", 1)),
             tls_config=getattr(config.gateway, "tls", {}),
             deduplicator=deduplicator,
+            liveness_supervisor=liveness_supervisor,
         )
     except Exception:
         logger.exception("[runtime] invalid firmware telemetry MQTT configuration")
@@ -3980,6 +3983,7 @@ def _build_firmware_telemetry_subscriber(
 def _build_firmware_command_service(
     config: Config,
     state_store: StateStore,
+    liveness_supervisor: FirmwareLivenessSupervisor,
 ) -> tuple[MqttFirmwareCommandPublisher, FirmwareCommandService] | None:
     """Instantiate firmware command egress when explicitly configured."""
     if not bool(config.gateway.enabled):
@@ -4012,11 +4016,53 @@ def _build_firmware_command_service(
             publisher=publisher,
             runtime_command_key_bytes=runtime_key,
             provisioner_key_bytes=provisioner_key,
+            liveness_supervisor=liveness_supervisor,
         )
     except Exception:
         logger.exception("[runtime] invalid firmware command egress configuration")
         raise
     return publisher, service
+
+
+def _build_firmware_liveness_stack(
+    config: Config,
+    event_bus: EventBus,
+    state_store: StateStore,
+    deduplicator: EventDeduplicator | None,
+) -> tuple[
+    FirmwareLivenessSupervisor,
+    MqttFirmwareTelemetrySubscriber | None,
+    tuple[MqttFirmwareCommandPublisher, FirmwareCommandService] | None,
+]:
+    """Compose both firmware liveness halves around ONE supervisor.
+
+    The telemetry subscriber is the only thing that can establish
+    supervision and the command service is the only thing that can act on
+    it, so they must hold the same object. Two instances leave the service
+    refusing every device forever while the subscriber records into a map
+    nobody reads — production indistinguishable from the feature being
+    absent, with every unit test still green.
+
+    This exists as a function rather than as three statements inside
+    ``start`` because that is what makes the shared instance assertable.
+    An earlier revision wired each half correctly and connected neither,
+    and no test could see it; the same mistake now has no place to happen,
+    since there is exactly one construction site and one name to pass.
+    """
+    supervisor = FirmwareLivenessSupervisor()
+    subscriber = _build_firmware_telemetry_subscriber(
+        config,
+        event_bus,
+        state_store,
+        deduplicator,
+        supervisor,
+    )
+    command_pair = _build_firmware_command_service(
+        config,
+        state_store,
+        supervisor,
+    )
+    return supervisor, subscriber, command_pair
 
 
 def _read_private_key_file(path: str) -> bytes:

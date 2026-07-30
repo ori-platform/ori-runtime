@@ -23,6 +23,7 @@ from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, compute_fingerprint
 from ori.security.firmware_ingest import FirmwareTelemetryGate
+from ori.security.firmware_liveness import FirmwareLivenessSupervisor
 from ori.state.store import StateStore
 
 try:
@@ -54,6 +55,7 @@ class MqttFirmwareTelemetrySubscriber:
         tls_config: dict[str, Any] | None = None,
         deduplicator: EventDeduplicator | None = None,
         client_factory: Callable[..., Any] | None = None,
+        liveness_supervisor: FirmwareLivenessSupervisor,
     ) -> None:
         if not _PAHO_AVAILABLE or mqtt is None:
             raise RuntimeError("paho-mqtt is not installed")
@@ -72,6 +74,17 @@ class MqttFirmwareTelemetrySubscriber:
         self._topic = clean_topic
         self._qos = int(qos)
         self._deduplicator = deduplicator
+        # Required and concretely typed. This subscriber is the ONLY thing
+        # that establishes supervision; accepting ``None`` here made the
+        # whole liveness feature silently inert, and ``Any`` let a wrongly
+        # typed object through to fail at the first accepted reading
+        # rather than at construction.
+        if not isinstance(liveness_supervisor, FirmwareLivenessSupervisor):
+            raise TypeError(
+                "liveness_supervisor must be the FirmwareLivenessSupervisor "
+                "shared with the firmware command service"
+            )
+        self._liveness_supervisor = liveness_supervisor
         self._client_factory = client_factory or _default_client_factory
         self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -165,6 +178,15 @@ class MqttFirmwareTelemetrySubscriber:
         verification, readings = await self._telemetry_gate.ingest(payload)
         if not verification.accepted:
             return
+        # Supervision is established by ACCEPTED, AUTHENTICATED telemetry
+        # and nothing else. Doing this before verification would let an
+        # unauthenticated publisher keep a device's backstop suppressed by
+        # asserting supervision that no runtime is providing.
+        self._liveness_supervisor.note_telemetry(
+            device_id=verification.device_id,
+            boot_id=verification.boot_id,
+            capability_hash=verification.capability_hash,
+        )
         for reading in readings:
             event = OriEvent.from_reading(reading, self._runtime_device_id)
             event.event_type = f"sensor.{reading.sensor_type}"
