@@ -467,17 +467,17 @@ async def test_scheduler_publishes_only_for_telemetry_established_devices(
     await _provision(store)
 
     # Nothing supervised: a tick is a no-op, not an error.
-    assert await scheduler.publish_once() == 0
+    assert (await scheduler.publish_once()).sent == 0
     assert fake.published == []
 
     await subscriber._ingest_telemetry(_telemetry_message("telemetry_single_reading"))
 
-    assert await scheduler.publish_once() == 1
+    assert (await scheduler.publish_once()).sent == 1
     assert fake.published == [(f"ori/fw/{SEALED_DEVICE}/runtime", 1, False)]
 
     # Republishing is what makes the claim continuous; each tick spends a
     # new sequence number rather than repeating a signed message.
-    assert await scheduler.publish_once() == 1
+    assert (await scheduler.publish_once()).sent == 1
     assert len(fake.published) == 2
 
     await publisher.close()
