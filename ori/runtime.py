@@ -2299,8 +2299,9 @@ class OriRuntime:
             remote_command_lockout_senders.append(item)
 
         alert_outbox = await self._build_alert_outbox_health(now)
+        firmware_liveness_health = self._firmware_liveness_health()
 
-        return {
+        snapshot: dict[str, Any] = {
             "device_id": self._device_id,
             "uptime_s": uptime_s,
             "health_socket_path": self._health_socket_path,
@@ -2336,7 +2337,31 @@ class OriRuntime:
                 "senders": remote_command_lockout_senders,
             },
             "evidence": await self._evidence_health(),
+            "firmware_liveness": firmware_liveness_health,
         }
+        if firmware_liveness_health["degraded"]:
+            # A stopped or stalled liveness loop expires every supervised
+            # device's runtime authority while the rest of the runtime looks
+            # healthy. Contributed rather than assigned, so this never
+            # clears a critical condition another subsystem has raised.
+            snapshot["critical"] = True
+            snapshot["status"] = "degraded"
+        return snapshot
+
+    def _firmware_liveness_health(self) -> dict[str, Any]:
+        scheduler = self._firmware_liveness_scheduler
+        if scheduler is None:
+            # Not configured is not degraded: no command egress means this
+            # runtime is not the authority for any device, so there is no
+            # obligation to be failing.
+            return {
+                "enabled": False,
+                "running": False,
+                "degraded": False,
+            }
+        health = dict(scheduler.health())
+        health["enabled"] = True
+        return health
 
     def _gateway_broker_posture_health(self) -> dict[str, Any]:
         if self._config is None:

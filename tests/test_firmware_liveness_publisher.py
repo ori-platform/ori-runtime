@@ -12,14 +12,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import pytest
 
 from ori.gateway.firmware_liveness_publisher import (
+    MAX_LIVENESS_PUBLISH_INTERVAL_S,
     MIN_LIVENESS_PUBLISH_INTERVAL_S,
     FirmwareLivenessScheduler,
 )
 from ori.security.firmware_liveness import (
+    LIVENESS_EXPIRY_WINDOW_S,
     LIVENESS_PUBLISH_INTERVAL_S,
     FirmwareLivenessError,
     SupervisedDevice,
@@ -169,11 +172,64 @@ def test_the_scheduler_refuses_the_transport_publisher() -> None:
 
 
 @pytest.mark.parametrize("bad", [0, 0.5, -15.0, True, "15"])
-def test_an_interval_that_cannot_keep_a_device_alive_is_refused(bad) -> None:
-    """The interval is a safety parameter: at or above the device's expiry
-    window it guarantees expiry, so it is validated rather than trusted."""
+def test_an_interval_below_the_floor_is_refused(bad) -> None:
+    """The floor only stops a misconfiguration becoming a publish storm."""
     with pytest.raises(ValueError):
         FirmwareLivenessScheduler(_FakeService(), interval_s=bad)
+
+
+@pytest.mark.parametrize("bad", [20.1, 30.0, 60.0, 3600.0])
+def test_an_interval_that_cannot_keep_a_device_alive_is_refused(bad) -> None:
+    """The safety-relevant bound, and the one an earlier revision missed.
+
+    The contract requires the device's expiry window to be at least 3x the
+    publication interval, so isolated message loss cannot mark a healthy
+    runtime unreachable. Above the ceiling a single dropped message expires
+    a device — 30s and 60s were accepted before, and 60s means a device
+    expires exactly as its replacement message is due.
+    """
+    with pytest.raises(ValueError, match="at most"):
+        FirmwareLivenessScheduler(_FakeService(), interval_s=bad)
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), float("-inf")])
+def test_a_non_finite_interval_is_refused(bad) -> None:
+    """NaN is the dangerous one: every deadline comparison against it is
+    false, so the loop would run without ever publishing while reporting
+    itself healthy."""
+    with pytest.raises(ValueError, match="finite"):
+        FirmwareLivenessScheduler(_FakeService(), interval_s=bad)
+
+
+def test_the_ceiling_is_derived_from_the_contract_not_chosen() -> None:
+    """If the expiry window is ever ratified to a different value, the
+    ceiling must move with it rather than stay a magic number."""
+    assert MAX_LIVENESS_PUBLISH_INTERVAL_S == LIVENESS_EXPIRY_WINDOW_S / 3.0
+    assert LIVENESS_PUBLISH_INTERVAL_S <= MAX_LIVENESS_PUBLISH_INTERVAL_S
+
+
+@pytest.mark.parametrize("bad", [0, -1.0, float("nan"), float("inf"), True, "5"])
+def test_an_invalid_per_device_timeout_is_refused(bad) -> None:
+    with pytest.raises(ValueError):
+        FirmwareLivenessScheduler(_FakeService(), per_device_timeout_s=bad)
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, 1.5])
+def test_an_invalid_concurrency_bound_is_refused(bad) -> None:
+    with pytest.raises(ValueError):
+        FirmwareLivenessScheduler(_FakeService(), max_concurrent=bad)
+
+
+def test_the_worst_case_device_latency_stays_under_the_expiry_window() -> None:
+    """The bound the scheduler exists to provide: one interval waiting for
+    its tick, plus the longest a single publication may take. A bounded-
+    but-slow tick must still not be able to expire a device."""
+    scheduler = FirmwareLivenessScheduler(_FakeService())
+    assert (
+        scheduler.max_device_publish_latency_s
+        == scheduler.interval_s + scheduler.per_device_timeout_s
+    )
+    assert scheduler.max_device_publish_latency_s < LIVENESS_EXPIRY_WINDOW_S
 
 
 def test_default_interval_matches_the_contract() -> None:
@@ -203,7 +259,9 @@ async def test_shutdown_before_the_first_interval_publishes_nothing() -> None:
     at startup would find an empty map; the first publish waits one
     interval and a fast shutdown must not force one."""
     service = _FakeService([_device("ori-fw-a")])
-    scheduler = FirmwareLivenessScheduler(service, interval_s=30.0)
+    scheduler = FirmwareLivenessScheduler(
+        service, interval_s=MAX_LIVENESS_PUBLISH_INTERVAL_S
+    )
     shutdown = asyncio.Event()
     shutdown.set()
 
@@ -211,24 +269,266 @@ async def test_shutdown_before_the_first_interval_publishes_nothing() -> None:
     assert service.published == []
 
 
-async def test_the_loop_survives_a_snapshot_that_raises(caplog) -> None:
-    """If the loop dies silently every device believes it is supervised
-    until its own window expires, so a failure must be loud."""
+class _BrokenService(_FakeService):
+    def supervised_devices(self):
+        raise RuntimeError("supervisor exploded")
 
-    class _BrokenService(_FakeService):
-        def supervised_devices(self):
-            raise RuntimeError("supervisor exploded")
 
-    # The interval floor is a real safety bound, so this waits out one
-    # genuine tick rather than lowering it for the test's convenience.
+async def test_a_failing_tick_does_not_end_the_loop(caplog) -> None:
+    """An earlier revision logged once and returned forever. Every
+    supervised device then expired while the runtime carried on looking
+    healthy, and the test of the day asserted that as correct.
+
+    The loop must keep trying: a transient store or supervisor failure
+    that resolves itself should resume publishing without an operator.
+    """
     scheduler = FirmwareLivenessScheduler(
         _BrokenService(), interval_s=MIN_LIVENESS_PUBLISH_INTERVAL_S
     )
     shutdown = asyncio.Event()
     with caplog.at_level(logging.ERROR):
         task = asyncio.create_task(scheduler.serve_until(shutdown))
-        await asyncio.wait_for(task, timeout=5.0)
-    assert "stopped unexpectedly" in caplog.text
-    # The task ended rather than spinning: a loop that kept running after
-    # losing its supervisor snapshot would report nothing and do nothing.
-    assert task.done() and not task.cancelled()
+        await asyncio.sleep(MIN_LIVENESS_PUBLISH_INTERVAL_S * 2.5)
+        assert not task.done(), "a failing tick must not end the loop"
+        assert scheduler.health()["consecutive_tick_failures"] >= 2
+        shutdown.set()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    assert "tick failed" in caplog.text
+    assert "devices will expire if this persists" in caplog.text
+
+
+async def test_a_failing_tick_is_reported_as_degraded_health() -> None:
+    """The runtime otherwise looks healthy, so this is the only signal an
+    operator gets that the fleet's authority is lapsing."""
+    clock_value = [1000.0]
+    scheduler = FirmwareLivenessScheduler(
+        _BrokenService(),
+        interval_s=MIN_LIVENESS_PUBLISH_INTERVAL_S,
+        clock=lambda: clock_value[0],
+    )
+    # Never ran: not yet degraded, because it has not yet failed.
+    assert scheduler.health()["degraded"] is False
+
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(scheduler.serve_until(shutdown))
+    await asyncio.sleep(0)
+    assert scheduler.health()["running"] is True
+    shutdown.set()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    # Stopped is degraded: a loop that is not running publishes nothing.
+    health = scheduler.health()
+    assert health["running"] is False
+    assert health["degraded"] is True
+
+
+async def test_a_loop_that_has_not_ticked_within_the_expiry_window_is_degraded() -> (
+    None
+):
+    """Running is not the same as working. A loop whose last successful
+    tick is older than the device expiry window has already let devices
+    lapse, so elapsed time is what decides, not the absence of an error.
+    """
+    now = [1000.0]
+    service = _FakeService([_device("ori-fw-a")])
+    scheduler = FirmwareLivenessScheduler(service, clock=lambda: now[0])
+
+    await scheduler.publish_once()
+    scheduler._last_successful_tick_at = now[0]
+    scheduler._running = True
+
+    now[0] += LIVENESS_EXPIRY_WINDOW_S - 1
+    assert scheduler.health()["degraded"] is False
+
+    now[0] += 2
+    health = scheduler.health()
+    assert health["degraded"] is True
+    assert health["last_successful_tick_age_s"] > LIVENESS_EXPIRY_WINDOW_S
+
+
+async def test_a_recovering_tick_clears_the_failure_count() -> None:
+    """A transient failure must not leave the scheduler permanently
+    degraded once publishing resumes."""
+
+    class _FlakyService(_FakeService):
+        def __init__(self) -> None:
+            super().__init__([_device("ori-fw-a")])
+            self.explode = True
+
+        def supervised_devices(self):
+            if self.explode:
+                raise RuntimeError("transient")
+            return super().supervised_devices()
+
+    service = _FlakyService()
+    scheduler = FirmwareLivenessScheduler(
+        service, interval_s=MIN_LIVENESS_PUBLISH_INTERVAL_S
+    )
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(scheduler.serve_until(shutdown))
+    await asyncio.sleep(MIN_LIVENESS_PUBLISH_INTERVAL_S * 1.5)
+    assert scheduler.health()["consecutive_tick_failures"] >= 1
+
+    service.explode = False
+    await asyncio.sleep(MIN_LIVENESS_PUBLISH_INTERVAL_S * 1.5)
+    shutdown.set()
+    await asyncio.wait_for(task, timeout=2.0)
+
+    assert scheduler.health()["consecutive_tick_failures"] == 0
+    assert service.published, "publishing must resume after recovery"
+
+
+# --- Cadence and concurrency: the timing property the loop exists for ----
+
+
+async def test_a_slow_device_does_not_delay_the_devices_behind_it() -> None:
+    """Serial publication made the tick as long as the sum of its parts, so
+    a few stalled publications pushed later devices past the expiry window.
+    Concurrency is here for that bound, not for throughput.
+    """
+    started: list[str] = []
+    release = asyncio.Event()
+
+    class _StallingService(_FakeService):
+        async def publish_runtime_liveness(
+            self, *, device_id: str, boot_id: int, capability_hash: str
+        ) -> bytes:
+            started.append(device_id)
+            if device_id == "ori-fw-slow":
+                await release.wait()
+            self.published.append((device_id, boot_id, capability_hash))
+            return b"{}"
+
+    service = _StallingService(
+        [_device("ori-fw-slow"), _device("ori-fw-b"), _device("ori-fw-c")]
+    )
+    scheduler = FirmwareLivenessScheduler(service)
+    tick = asyncio.create_task(scheduler.publish_once())
+    await asyncio.sleep(0.05)
+
+    # The fast devices are already published while the slow one is stalled.
+    assert {"ori-fw-b", "ori-fw-c"}.issubset({row[0] for row in service.published})
+    release.set()
+    assert await asyncio.wait_for(tick, timeout=2.0) == 3
+
+
+async def test_concurrency_is_bounded() -> None:
+    """Unbounded fan-out would hand the broker the whole fleet at once."""
+    in_flight = 0
+    peak = 0
+    release = asyncio.Event()
+
+    class _CountingService(_FakeService):
+        async def publish_runtime_liveness(self, **kwargs) -> bytes:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            try:
+                await release.wait()
+            finally:
+                in_flight -= 1
+            return b"{}"
+
+    service = _CountingService([_device(f"ori-fw-{i}") for i in range(20)])
+    scheduler = FirmwareLivenessScheduler(service, max_concurrent=4)
+    tick = asyncio.create_task(scheduler.publish_once())
+    await asyncio.sleep(0.05)
+    assert peak == 4, f"expected at most 4 in flight, saw {peak}"
+    release.set()
+    await asyncio.wait_for(tick, timeout=2.0)
+
+
+async def test_a_stalled_publication_is_abandoned_not_waited_on() -> None:
+    """Without a per-device timeout, one device that never completes holds
+    a concurrency slot forever and its own liveness never resumes."""
+
+    class _HangingService(_FakeService):
+        async def publish_runtime_liveness(self, **kwargs) -> bytes:
+            await asyncio.Event().wait()
+
+    service = _HangingService([_device("ori-fw-a")])
+    scheduler = FirmwareLivenessScheduler(service, per_device_timeout_s=0.05)
+    assert await asyncio.wait_for(scheduler.publish_once(), timeout=2.0) == 0
+
+
+async def test_cadence_holds_when_ticks_are_slow() -> None:
+    """The defect this replaces: sleeping a full interval AFTER each tick
+    made the real cadence `tick duration + interval`, so every slow tick
+    pushed the next further out and devices drifted toward expiry.
+
+    Drives the real loop in real time rather than re-deriving the deadline
+    arithmetic in the test, which would only prove the test can add.
+    """
+    interval = MIN_LIVENESS_PUBLISH_INTERVAL_S  # 1.0s
+    tick_cost = 0.6
+    fired: list[float] = []
+
+    class _SlowService(_FakeService):
+        async def publish_runtime_liveness(self, **kwargs) -> bytes:
+            await asyncio.sleep(tick_cost)
+            return b"{}"
+
+        def supervised_devices(self):
+            fired.append(time.monotonic())
+            return (_device("ori-fw-a"),)
+
+    scheduler = FirmwareLivenessScheduler(_SlowService(), interval_s=interval)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(scheduler.serve_until(shutdown))
+    await asyncio.sleep(interval * 3 + tick_cost + 0.3)
+    shutdown.set()
+    await asyncio.wait_for(task, timeout=3.0)
+
+    assert len(fired) >= 3, f"expected at least 3 ticks, got {len(fired)}"
+    gaps = [b - a for a, b in zip(fired, fired[1:])]
+    # Deadline scheduling: ~1.0s apart. Sleeping after the tick would put
+    # them ~1.6s apart, which is what this must be able to tell apart.
+    for gap in gaps:
+        assert gap < interval + (tick_cost / 2), (
+            f"cadence drifted to {gap:.2f}s; deadlines are not being honoured"
+        )
+
+
+async def test_missed_deadlines_do_not_fire_a_catch_up_burst() -> None:
+    """Only the newest message matters to a device, so replaying missed
+    ticks would spend sequence numbers for nothing.
+
+    The first tick deliberately overruns several intervals. What follows
+    must be a single tick at the next future deadline, not one tick per
+    deadline the overrun stepped over.
+    """
+    interval = MIN_LIVENESS_PUBLISH_INTERVAL_S
+    tick_starts: list[float] = []
+    overran = asyncio.Event()
+
+    class _OverrunningService(_FakeService):
+        def supervised_devices(self):
+            tick_starts.append(time.monotonic())
+            return (_device("ori-fw-a"),)
+
+        async def publish_runtime_liveness(self, **kwargs) -> bytes:
+            if not overran.is_set():
+                overran.set()
+                # Blow through three deadlines inside one tick.
+                await asyncio.sleep(interval * 3.4)
+            return b"{}"
+
+    scheduler = FirmwareLivenessScheduler(
+        _OverrunningService(),
+        interval_s=interval,
+        per_device_timeout_s=interval * 5,
+    )
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(scheduler.serve_until(shutdown))
+    # One interval to the first tick, 3.4 for the overrun, then a little
+    # over one more interval — room for exactly one further tick.
+    await asyncio.sleep(interval * 5.7)
+    shutdown.set()
+    await asyncio.wait_for(task, timeout=3.0)
+
+    assert len(tick_starts) == 2, (
+        f"expected the overrun to be followed by one tick, got {len(tick_starts)}"
+    )
+    # The follow-up lands on a deadline in the future, not immediately.
+    assert tick_starts[1] - tick_starts[0] >= interval * 3.4

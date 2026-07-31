@@ -42,8 +42,10 @@ __all__ = [
     "FirmwareLivenessSupervisor",
     "SupervisedDevice",
     "build_liveness_bytes",
+    "LIVENESS_EXPIRY_WINDOW_S",
     "LIVENESS_PUBLISH_INTERVAL_S",
     "LIVENESS_SUPERVISION_WINDOW_S",
+    "MAX_LIVENESS_PUBLISH_INTERVAL_S",
 ]
 
 _FLEET_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}$")
@@ -57,6 +59,32 @@ _BOOT_ID_MAX = 2**32 - 1
 # rather than racing this runtime to the same deadline.
 LIVENESS_PUBLISH_INTERVAL_S = 15.0
 LIVENESS_SUPERVISION_WINDOW_S = 45.0
+
+# Device-side, and the reason the two above are not free parameters. The
+# device marks the runtime unreachable once this much time has passed
+# since the last accepted liveness. It is a contract constant applied by
+# the device rather than a field on the wire: a TTL a publisher could
+# choose would let a compromised or misconfigured runtime suppress a
+# fleet's backstops indefinitely.
+LIVENESS_EXPIRY_WINDOW_S = 60.0
+
+# The contract requires the expiry window to be at least 3x the
+# publication interval, so isolated message loss cannot mark a healthy
+# runtime unreachable. That makes the ceiling derived, not chosen: raising
+# the interval past it means a single dropped message expires a device.
+MAX_LIVENESS_PUBLISH_INTERVAL_S = LIVENESS_EXPIRY_WINDOW_S / 3.0
+
+# These relationships are the contract, not preferences, so they are
+# checked here rather than trusted to stay true as the values are ratified
+# against hardware measurement.
+assert LIVENESS_SUPERVISION_WINDOW_S < LIVENESS_EXPIRY_WINDOW_S, (
+    "supervision window must be shorter than the device expiry window, so a "
+    "device learns of lost supervision by silence rather than by the runtime "
+    "racing it to the same deadline"
+)
+assert LIVENESS_PUBLISH_INTERVAL_S <= MAX_LIVENESS_PUBLISH_INTERVAL_S, (
+    "expiry window must be at least 3x the publication interval"
+)
 
 
 class FirmwareLivenessError(ValueError):

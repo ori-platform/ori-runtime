@@ -481,3 +481,16 @@ async def test_scheduler_publishes_only_for_telemetry_established_devices(
     assert len(fake.published) == 2
 
     await publisher.close()
+
+
+def test_a_configured_interval_above_the_contract_ceiling_fails_startup(
+    store, command_keys
+) -> None:
+    """Refused at build time, not silently clamped. An operator who asked
+    for a 30s interval has asked for something that expires devices on a
+    single dropped message; clamping would hide that the request was
+    unsafe."""
+    cfg = _command_cfg()
+    cfg.gateway.firmware_commands["liveness_interval_s"] = 30.0
+    with pytest.raises(ValueError, match="at most"):
+        _build_firmware_liveness_stack(cfg, _FakeBus(), store, None)
