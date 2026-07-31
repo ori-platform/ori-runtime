@@ -47,6 +47,7 @@ from ori.gateway.firmware_commands import (
     MqttFirmwareCommandPublisher,
     load_raw_ed25519_seed_from_env,
 )
+from ori.gateway.firmware_liveness_publisher import FirmwareLivenessScheduler
 from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
 from ori.gateway.heartbeat import MqttGatewayHeartbeatSubscriber
 from ori.gateway.node_heartbeat import MqttRuntimeNodeHeartbeatPublisher
@@ -88,7 +89,10 @@ from ori.security.firmware_confirmation import (
     FirmwareConfirmationCoordinator,
 )
 from ori.security.firmware_ingest import FirmwareTelemetryGate
-from ori.security.firmware_liveness import FirmwareLivenessSupervisor
+from ori.security.firmware_liveness import (
+    LIVENESS_PUBLISH_INTERVAL_S,
+    FirmwareLivenessSupervisor,
+)
 from ori.security.firmware_mqtt_certificate import FirmwareMqttCertificateAuthority
 from ori.security.firmware_mqtt_provisioning import FirmwareMqttProvisioningService
 from ori.security.firmware_mqtt_workflow import FirmwareMqttProvisioningWorkflow
@@ -225,6 +229,7 @@ class OriRuntime:
         ) = None
         self._firmware_command_publisher: MqttFirmwareCommandPublisher | None = None
         self._firmware_command_service: FirmwareCommandService | None = None
+        self._firmware_liveness_scheduler: FirmwareLivenessScheduler | None = None
         self._telemetry_exporter: HttpTelemetryExporter | None = None
         self._evidence_attestor: EvidenceAttestor | None = None
         self._firmware_confirmation_coordinator: (
@@ -1006,6 +1011,7 @@ class OriRuntime:
             self._firmware_liveness_supervisor,
             firmware_telemetry_subscriber,
             firmware_command_pair,
+            firmware_liveness_scheduler,
         ) = _build_firmware_liveness_stack(
             config,
             event_bus,
@@ -1030,6 +1036,19 @@ class OriRuntime:
             self._firmware_command_publisher = publisher
             self._firmware_command_service = service
             logger.info("[runtime] MQTT firmware command egress enabled")
+
+            # Started only after connect(): the first tick would otherwise
+            # sign a message, spend a sequence number, and fail to publish
+            # it. Sequence gaps are legal, but burning them on a race is
+            # not a cost to accept when ordering is free.
+            if firmware_liveness_scheduler is not None:
+                self._firmware_liveness_scheduler = firmware_liveness_scheduler
+                self._background_tasks.append(
+                    asyncio.create_task(
+                        firmware_liveness_scheduler.serve_until(self._shutdown_event),
+                        name="firmware-liveness",
+                    )
+                )
 
         await self._start_firmware_mqtt_operator_if_enabled(config)
 
@@ -1124,6 +1143,7 @@ class OriRuntime:
                 logger.exception("[shutdown] error closing firmware command publisher")
             self._firmware_command_publisher = None
             self._firmware_command_service = None
+            self._firmware_liveness_scheduler = None
 
         # 2e. Stop local health socket service.
         if self._health_socket_server is not None:
@@ -2279,8 +2299,9 @@ class OriRuntime:
             remote_command_lockout_senders.append(item)
 
         alert_outbox = await self._build_alert_outbox_health(now)
+        firmware_liveness_health = self._firmware_liveness_health()
 
-        return {
+        snapshot: dict[str, Any] = {
             "device_id": self._device_id,
             "uptime_s": uptime_s,
             "health_socket_path": self._health_socket_path,
@@ -2316,7 +2337,31 @@ class OriRuntime:
                 "senders": remote_command_lockout_senders,
             },
             "evidence": await self._evidence_health(),
+            "firmware_liveness": firmware_liveness_health,
         }
+        if firmware_liveness_health["degraded"]:
+            # A stopped or stalled liveness loop expires every supervised
+            # device's runtime authority while the rest of the runtime looks
+            # healthy. Contributed rather than assigned, so this never
+            # clears a critical condition another subsystem has raised.
+            snapshot["critical"] = True
+            snapshot["status"] = "degraded"
+        return snapshot
+
+    def _firmware_liveness_health(self) -> dict[str, Any]:
+        scheduler = self._firmware_liveness_scheduler
+        if scheduler is None:
+            # Not configured is not degraded: no command egress means this
+            # runtime is not the authority for any device, so there is no
+            # obligation to be failing.
+            return {
+                "enabled": False,
+                "running": False,
+                "degraded": False,
+            }
+        health = dict(scheduler.health())
+        health["enabled"] = True
+        return health
 
     def _gateway_broker_posture_health(self) -> dict[str, Any]:
         if self._config is None:
@@ -4033,6 +4078,7 @@ def _build_firmware_liveness_stack(
     FirmwareLivenessSupervisor,
     MqttFirmwareTelemetrySubscriber | None,
     tuple[MqttFirmwareCommandPublisher, FirmwareCommandService] | None,
+    FirmwareLivenessScheduler | None,
 ]:
     """Compose both firmware liveness halves around ONE supervisor.
 
@@ -4062,7 +4108,30 @@ def _build_firmware_liveness_stack(
         state_store,
         supervisor,
     )
-    return supervisor, subscriber, command_pair
+
+    # The scheduler is composed here rather than in ``start`` for the same
+    # reason as the rest: it must drive the command SERVICE, whose signing
+    # refusal is the supervision obligation, and never the transport
+    # publisher beside it. Building it next to both makes the wrong one
+    # visibly wrong.
+    scheduler = None
+    if command_pair is not None:
+        command_cfg = (
+            config.gateway.firmware_commands
+            if isinstance(getattr(config.gateway, "firmware_commands", {}), dict)
+            else {}
+        )
+        # No separate enable flag. Command egress is what makes this runtime
+        # the authority for these devices, and an authority that never says
+        # it is watching leaves every device permanently orphaned — a
+        # half-state no operator asked for and nothing reports.
+        scheduler = FirmwareLivenessScheduler(
+            command_pair[1],
+            interval_s=float(
+                command_cfg.get("liveness_interval_s", LIVENESS_PUBLISH_INTERVAL_S)
+            ),
+        )
+    return supervisor, subscriber, command_pair, scheduler
 
 
 def _read_private_key_file(path: str) -> bytes:

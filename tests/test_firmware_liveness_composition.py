@@ -35,6 +35,7 @@ from ori.runtime import (
 )
 from ori.security.firmware_ingest import FirmwareTelemetryGate
 from ori.security.firmware_liveness import (
+    LIVENESS_PUBLISH_INTERVAL_S,
     FirmwareLivenessError,
     FirmwareLivenessSigner,
     FirmwareLivenessSupervisor,
@@ -259,7 +260,7 @@ def test_composition_root_gives_both_halves_one_supervisor(store, command_keys) 
     ``start`` ever composes them apart.
     """
     cfg = _command_cfg()
-    supervisor, subscriber, pair = _build_firmware_liveness_stack(
+    supervisor, subscriber, pair, _scheduler = _build_firmware_liveness_stack(
         cfg, _FakeBus(), store, None
     )
     assert subscriber is not None and pair is not None
@@ -403,3 +404,93 @@ def test_signer_cannot_be_built_without_a_supervisor(store) -> None:
             bytes(range(32)),
             supervisor=object(),  # type: ignore[arg-type]
         )
+
+
+# --- The scheduler is composed, and drives the authority-enforcing API ---
+
+
+def test_the_stack_builds_a_scheduler_bound_to_the_command_service(
+    store, command_keys
+) -> None:
+    """Signing without a loop is a capability nothing exercises. This is
+    the assertion that fails if the scheduler is ever built but not
+    returned, or returned but built against the wrong object."""
+    _supervisor, _subscriber, pair, scheduler = _build_firmware_liveness_stack(
+        _command_cfg(), _FakeBus(), store, None
+    )
+    assert pair is not None and scheduler is not None
+    assert scheduler._service is pair[1]
+    assert scheduler.interval_s == LIVENESS_PUBLISH_INTERVAL_S
+
+
+def test_no_command_egress_means_no_scheduler(store) -> None:
+    """Without the command service there is no key and no publisher, so a
+    loop would have nothing to say and no way to say it."""
+    _supervisor, _subscriber, pair, scheduler = _build_firmware_liveness_stack(
+        _Cfg(), _FakeBus(), store, None
+    )
+    assert pair is None
+    assert scheduler is None
+
+
+def test_the_configured_interval_reaches_the_scheduler(store, command_keys) -> None:
+    """The contract calls the interval provisional pending bench
+    measurement, so it has to be tunable without a code change."""
+    cfg = _command_cfg()
+    cfg.gateway.firmware_commands["liveness_interval_s"] = 5.0
+    _supervisor, _subscriber, _pair, scheduler = _build_firmware_liveness_stack(
+        cfg, _FakeBus(), store, None
+    )
+    assert scheduler is not None
+    assert scheduler.interval_s == 5.0
+
+
+@pytest.mark.asyncio
+async def test_scheduler_publishes_only_for_telemetry_established_devices(
+    store, command_keys, monkeypatch
+) -> None:
+    """End to end through the real stack: the loop publishes nothing until
+    accepted telemetry establishes supervision, then publishes for exactly
+    that device, unretained."""
+    fake = _FakeClient()
+    monkeypatch.setattr(
+        "ori.gateway.firmware_commands._default_client_factory",
+        lambda **_: fake,
+    )
+
+    _supervisor, subscriber, pair, scheduler = _build_firmware_liveness_stack(
+        _command_cfg(), _FakeBus(), store, None
+    )
+    assert subscriber is not None and pair is not None and scheduler is not None
+    publisher, _service = pair
+    await publisher.connect()
+    await _provision(store)
+
+    # Nothing supervised: a tick is a no-op, not an error.
+    assert (await scheduler.publish_once()).sent == 0
+    assert fake.published == []
+
+    await subscriber._ingest_telemetry(_telemetry_message("telemetry_single_reading"))
+
+    assert (await scheduler.publish_once()).sent == 1
+    assert fake.published == [(f"ori/fw/{SEALED_DEVICE}/runtime", 1, False)]
+
+    # Republishing is what makes the claim continuous; each tick spends a
+    # new sequence number rather than repeating a signed message.
+    assert (await scheduler.publish_once()).sent == 1
+    assert len(fake.published) == 2
+
+    await publisher.close()
+
+
+def test_a_configured_interval_above_the_contract_ceiling_fails_startup(
+    store, command_keys
+) -> None:
+    """Refused at build time, not silently clamped. An operator who asked
+    for a 30s interval has asked for something that expires devices on a
+    single dropped message; clamping would hide that the request was
+    unsafe."""
+    cfg = _command_cfg()
+    cfg.gateway.firmware_commands["liveness_interval_s"] = 30.0
+    with pytest.raises(ValueError, match="at most"):
+        _build_firmware_liveness_stack(cfg, _FakeBus(), store, None)
