@@ -97,6 +97,18 @@ class TickResult:
         return self.failed > 0 and self.sent == 0
 
 
+def _within_expiry_window(elapsed_s: float) -> bool:
+    """Whether a device is still reachable after ``elapsed_s``.
+
+    The contract says a device treats the runtime as reachable while the
+    elapsed time since its last accepted liveness is UNDER the expiry
+    window. Equality is therefore already expired, not the last moment of
+    reachability. The rule lives here because it was written four times
+    and got the boundary wrong in three of them.
+    """
+    return elapsed_s < LIVENESS_EXPIRY_WINDOW_S
+
+
 def _validate_interval(interval_s: Any) -> float:
     """The interval is a safety parameter, so it is checked rather than
     trusted. Above the ceiling a single dropped message expires a device;
@@ -164,7 +176,7 @@ class FirmwareLivenessScheduler:
         # single batch, can exceed the window this scheduler exists to keep
         # it inside — the class would be claiming a bound it cannot hold at
         # any fleet size.
-        if self._interval_s + self._per_device_timeout_s >= LIVENESS_EXPIRY_WINDOW_S:
+        if not _within_expiry_window(self._interval_s + self._per_device_timeout_s):
             raise ValueError(
                 f"interval {self._interval_s}s plus per-device timeout "
                 f"{self._per_device_timeout_s}s must stay under the device's "
@@ -225,6 +237,14 @@ class FirmwareLivenessScheduler:
         """
         budget = LIVENESS_EXPIRY_WINDOW_S - self._interval_s
         batches = math.floor(budget / self._per_device_timeout_s)
+        # floor() admits the batch whose worst case lands exactly on the
+        # window, which is already expired. Step back to the last batch
+        # count that is strictly inside, using the same arithmetic the
+        # bound itself reports so the two can never disagree.
+        while batches > 0 and not _within_expiry_window(
+            self._interval_s + batches * self._per_device_timeout_s
+        ):
+            batches -= 1
         return max(0, batches) * self._max_concurrent
 
     # -- health ----------------------------------------------------------
@@ -241,7 +261,7 @@ class FirmwareLivenessScheduler:
         now = self._clock()
         last = self._last_successful_tick_at
         age = None if last is None else max(0.0, now - last)
-        stale = age is not None and age > LIVENESS_EXPIRY_WINDOW_S
+        stale = age is not None and not _within_expiry_window(age)
         # A scheduler that has never been started owes nothing yet, so it is
         # not degraded — otherwise every runtime would report degraded for
         # the window between building the stack and starting the loop. Once
@@ -262,7 +282,7 @@ class FirmwareLivenessScheduler:
         expiring = sorted(
             device_id
             for device_id, at in self._last_device_success.items()
-            if (now - at) > LIVENESS_EXPIRY_WINDOW_S
+            if not _within_expiry_window(now - at)
         )
 
         supervised_count = len(self._last_device_success)

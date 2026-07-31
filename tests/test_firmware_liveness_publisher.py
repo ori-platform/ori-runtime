@@ -280,17 +280,51 @@ def test_the_latency_bound_accounts_for_semaphore_batching() -> None:
     assert scheduler.max_device_publish_latency_s(64) > LIVENESS_EXPIRY_WINDOW_S
 
 
-def test_capacity_is_the_fleet_size_the_bound_actually_holds_for() -> None:
+def test_capacity_is_strictly_inside_the_expiry_window() -> None:
     """The scheduler stays correct past this, but stops being bounded — a
     capacity condition an operator must be told, not discover from
-    expiring devices."""
+    expiring devices.
+
+    A device is reachable only while elapsed time is UNDER the window, so a
+    batch whose worst case lands exactly on 60s is already expired. An
+    earlier revision took `floor(budget / timeout)` and advertised 48
+    devices at `15 + 3 x 15 = 60`, and the test of the day ratified it with
+    `<=`. The last strictly-inside batch count is 2, so 32.
+    """
     scheduler = FirmwareLivenessScheduler(
         _FakeService(), interval_s=15.0, per_device_timeout_s=15.0, max_concurrent=16
     )
-    # 60s expiry - 15s interval = 45s budget = 3 batches of 16.
-    assert scheduler.supported_device_capacity == 48
-    assert scheduler.max_device_publish_latency_s(48) <= LIVENESS_EXPIRY_WINDOW_S
-    assert scheduler.max_device_publish_latency_s(49) > LIVENESS_EXPIRY_WINDOW_S
+    assert scheduler.supported_device_capacity == 32
+    assert scheduler.max_device_publish_latency_s(32) < LIVENESS_EXPIRY_WINDOW_S
+    # The batch that lands exactly on the boundary is excluded, not included.
+    assert scheduler.max_device_publish_latency_s(48) == LIVENESS_EXPIRY_WINDOW_S
+    assert scheduler.max_device_publish_latency_s(33) > scheduler.interval_s
+
+
+def test_capacity_never_advertises_a_fleet_it_cannot_bound() -> None:
+    """The property behind the number, checked across configurations so it
+    cannot be satisfied by one hand-computed case."""
+    for interval in (1.0, 5.0, 15.0, 20.0):
+        for timeout in (1.0, 7.0, 15.0, 30.0):
+            if interval + timeout >= LIVENESS_EXPIRY_WINDOW_S:
+                continue  # refused at construction
+            for concurrency in (1, 4, 16):
+                scheduler = FirmwareLivenessScheduler(
+                    _FakeService(),
+                    interval_s=interval,
+                    per_device_timeout_s=timeout,
+                    max_concurrent=concurrency,
+                )
+                capacity = scheduler.supported_device_capacity
+                assert capacity > 0
+                assert (
+                    scheduler.max_device_publish_latency_s(capacity)
+                    < LIVENESS_EXPIRY_WINDOW_S
+                ), f"capacity {capacity} not bounded at {interval}/{timeout}"
+                assert (
+                    scheduler.max_device_publish_latency_s(capacity + 1)
+                    >= LIVENESS_EXPIRY_WINDOW_S
+                ), f"capacity {capacity} is not maximal at {interval}/{timeout}"
 
 
 def test_defaults_are_bounded_for_a_single_batch() -> None:
@@ -707,12 +741,12 @@ def test_a_fleet_beyond_capacity_is_reported() -> None:
     )
     scheduler._started = True
     scheduler._running = True
-    scheduler._last_device_success = {f"d{i}": 0.0 for i in range(49)}
+    scheduler._last_device_success = {f"d{i}": 0.0 for i in range(33)}
     scheduler._clock = lambda: 0.0
 
     health = scheduler.health()
-    assert health["supervised_devices"] == 49
-    assert health["supported_device_capacity"] == 48
+    assert health["supervised_devices"] == 33
+    assert health["supported_device_capacity"] == 32
     assert health["over_capacity"] is True
     assert health["degraded"] is True
 
@@ -736,3 +770,56 @@ async def test_the_startup_log_line_formats(caplog) -> None:
     # makes this test able to fail.
     assert "%" not in line.getMessage()
     assert f"{scheduler.supported_device_capacity} device(s)" in line.getMessage()
+
+
+# --- The expiry boundary is strict ---------------------------------------
+#
+# The contract: a device is reachable while elapsed time since its last
+# accepted liveness is UNDER the expiry window. Equality is already
+# expired, not the last moment of reachability. This was written four
+# times and got the boundary wrong in three of them, so each site is
+# pinned at exactly the window rather than comfortably past it.
+
+
+async def test_a_device_exactly_at_the_window_counts_as_expiring() -> None:
+    now = [1000.0]
+    service = _FakeService(
+        [_device("ori-fw-a")], fail={"ori-fw-a": RuntimeError("broker refused")}
+    )
+    scheduler = FirmwareLivenessScheduler(service, clock=lambda: now[0])
+    await scheduler.publish_once()
+
+    # One tick short of the window: still reachable.
+    now[0] += LIVENESS_EXPIRY_WINDOW_S - 0.001
+    assert scheduler.health()["expiring_device_ids"] == []
+
+    # Exactly on it: expired.
+    now[0] = 1000.0 + LIVENESS_EXPIRY_WINDOW_S
+    health = scheduler.health()
+    assert health["expiring_device_ids"] == ["ori-fw-a"]
+    assert health["degraded"] is True
+
+
+async def test_a_tick_exactly_at_the_window_counts_as_stale() -> None:
+    now = [1000.0]
+    scheduler = FirmwareLivenessScheduler(_FakeService([]), clock=lambda: now[0])
+    scheduler._started = True
+    scheduler._running = True
+    scheduler._last_successful_tick_at = now[0]
+
+    now[0] += LIVENESS_EXPIRY_WINDOW_S - 0.001
+    assert scheduler.health()["degraded"] is False
+
+    now[0] = 1000.0 + LIVENESS_EXPIRY_WINDOW_S
+    assert scheduler.health()["degraded"] is True
+
+
+def test_a_configuration_landing_exactly_on_the_window_is_refused() -> None:
+    """interval + timeout == expiry is not "just inside"; it is the moment
+    the device has already given up."""
+    with pytest.raises(ValueError, match="expiry window"):
+        FirmwareLivenessScheduler(
+            _FakeService(),
+            interval_s=15.0,
+            per_device_timeout_s=LIVENESS_EXPIRY_WINDOW_S - 15.0,
+        )
