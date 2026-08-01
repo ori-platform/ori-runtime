@@ -307,6 +307,34 @@ gateway:
     enabled: false                   # subscribe to signed evidence Layer 1 firmware telemetry
     topic: ori/fw/+/telemetry        # signed telemetry and signed fault events
     qos: 1                           # firmware publishes QoS 1; receiver deduplicates by boot_id/seq
+  firmware_commands:
+    # Signed egress to firmware devices: provisioning approvals, physical
+    # commands, and the runtime liveness signal that tells a device an
+    # authority is alive and watching it.
+    #
+    # Enabling this makes THIS runtime the authority for those devices.
+    # Broker connectivity proves a session, not that a runtime exists; a
+    # live broker with a dead runtime leaves a device connected,
+    # unsupervised, and with its Local Interlock backstop suppressed.
+    enabled: false                   # off by default: egress grants physical command authority
+    # Both env vars carry canonical base64 for an exactly 32-byte Ed25519
+    # seed, not raw bytes and not a PEM. A value that decodes to any other
+    # length, or whose base64 is non-canonical, is refused at startup.
+    runtime_command_key_env: ORI_FW_RUNTIME_COMMAND_KEY
+    # The same provisioning-authority secret used by firmware_mqtt_provisioning
+    # below. One authority, one secret: a second env var holding a second copy
+    # is a second thing to rotate and a second thing to get wrong.
+    provisioner_key_env: ORI_FW_PROVISIONER_KEY
+    qos: 1                           # QoS 1; freshness counters already make redelivery harmless
+    publish_timeout_s: 10.0          # per-publish timeout before the attempt is abandoned
+    # Runtime liveness has NO separate enable flag, deliberately: command
+    # authority and its supervision assertion are one operational posture.
+    # Once firmware switches to signed liveness, a device whose runtime
+    # assertion expires may become orphaned when no gateway is reachable
+    # (orphaned = !runtime_reachable && !gateway_reachable). Firmware today
+    # still derives runtime_reachable from broker connectivity, so this
+    # setting does not yet affect orphan state.
+    liveness_interval_s: 15.0        # 1.0 .. 20.0; must be <= expiry window (60s) / 3
   reasoning:
     enabled: true                    # Tier 3 request/response on ori/{device_id}/reasoning/*
     timeout_ms: 10000                # per-phase timeout: connect/subscribe and response wait

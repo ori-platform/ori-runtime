@@ -2,13 +2,14 @@
 
 ## Versioned Notes
 
+- [`v2.2.0`](v2.2.0.md) — signed runtime liveness for supervised firmware devices
 - [`v2.1.0`](v2.1.0.md) — Layer 1 firmware trust, evidence provenance, and authenticated MQTT provisioning
 - [`v2.0.0`](v2.0.0.md) — hardened runtime: fail-closed production security posture
 - [`v1.0.0`](v1.0.0.md) — first stable runtime release
 
 ## Version
 
-`v2.1.0`
+`v2.2.0`
 
 ## Stable Scope
 
