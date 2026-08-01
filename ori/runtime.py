@@ -4121,10 +4121,16 @@ def _build_firmware_liveness_stack(
             if isinstance(getattr(config.gateway, "firmware_commands", {}), dict)
             else {}
         )
-        # No separate enable flag. Command egress is what makes this runtime
-        # the authority for these devices, and an authority that never says
-        # it is watching leaves every device permanently orphaned — a
-        # half-state no operator asked for and nothing reports.
+        # No separate enable flag: command authority and its supervision
+        # assertion are one operational posture, not two switches. A runtime
+        # that commands a device but never asserts it is watching is the
+        # exact condition this signal exists to make visible.
+        #
+        # It does not by itself orphan anything. A device is orphaned only
+        # when neither the runtime nor a gateway is reachable, and firmware
+        # today still derives runtime_reachable from broker connectivity —
+        # so an expired assertion changes nothing until that switchover
+        # lands (ori-edge-firmware#68).
         scheduler = FirmwareLivenessScheduler(
             command_pair[1],
             interval_s=float(
