@@ -50,7 +50,10 @@ from ori.gateway.firmware_commands import (
 from ori.gateway.firmware_liveness_publisher import FirmwareLivenessScheduler
 from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
 from ori.gateway.heartbeat import MqttGatewayHeartbeatSubscriber
-from ori.gateway.node_heartbeat import MqttRuntimeNodeHeartbeatPublisher
+from ori.gateway.node_heartbeat import (
+    DEGRADATION_REASON_FIRMWARE_LIVENESS,
+    MqttRuntimeNodeHeartbeatPublisher,
+)
 from ori.gateway.reasoning import MqttGatewayReasoner
 from ori.hal.base import AdapterReadError, BaseAdapter
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
@@ -2340,12 +2343,20 @@ class OriRuntime:
             "firmware_liveness": firmware_liveness_health,
         }
         if firmware_liveness_health["degraded"]:
-            # A stopped or stalled liveness loop expires every supervised
-            # device's runtime authority while the rest of the runtime looks
-            # healthy. Contributed rather than assigned, so this never
-            # clears a critical condition another subsystem has raised.
+            # A stopped or stalled liveness loop puts timely publication at
+            # risk for one or more supervised devices while the rest of the
+            # runtime looks healthy. Contributed rather than assigned, so this
+            # never clears a critical condition another subsystem has raised.
             snapshot["critical"] = True
             snapshot["status"] = "degraded"
+
+        # Named reasons for the site view. The rich diagnostics above stay
+        # local: fleet counts reveal deployment topology and per-device
+        # identity is a disclosure this contract does not make. Only closed,
+        # non-sensitive tokens cross the boundary.
+        snapshot["degradation_reasons"] = _degradation_reasons(
+            firmware_liveness_degraded=bool(firmware_liveness_health["degraded"]),
+        )
         return snapshot
 
     def _firmware_liveness_health(self) -> dict[str, Any]:
@@ -4067,6 +4078,24 @@ def _build_firmware_command_service(
         logger.exception("[runtime] invalid firmware command egress configuration")
         raise
     return publisher, service
+
+
+def _degradation_reasons(*, firmware_liveness_degraded: bool) -> list[str]:
+    """Named degradation reasons for the node heartbeat.
+
+    Returns an empty list when nothing is degraded; the heartbeat omits the
+    field entirely in that case. An empty array on the wire is malformed —
+    absent and present-empty are different states, and encoding one as the
+    other is the ambiguity the contract exists to remove.
+
+    The vocabulary is owned by ``ori.gateway.node_heartbeat``, the wire
+    boundary that enforces it, so a token cannot be named here without also
+    being publishable there.
+    """
+    reasons: list[str] = []
+    if firmware_liveness_degraded:
+        reasons.append(DEGRADATION_REASON_FIRMWARE_LIVENESS)
+    return sorted(set(reasons))
 
 
 def _build_firmware_liveness_stack(

@@ -494,3 +494,149 @@ def test_a_configured_interval_above_the_contract_ceiling_fails_startup(
     cfg.gateway.firmware_commands["liveness_interval_s"] = 30.0
     with pytest.raises(ValueError, match="at most"):
         _build_firmware_liveness_stack(cfg, _FakeBus(), store, None)
+
+
+# --- The health snapshot derives the degradation reason ---
+#
+# The publisher tests inject degradation_reasons directly, so none of them
+# would notice if the runtime stopped deriving the token from scheduler
+# health. These cover that seam: the composition, not the transport.
+
+
+class _StubScheduler:
+    """Minimal stand-in exposing only what the health path reads."""
+
+    def __init__(self, *, degraded: bool) -> None:
+        self._degraded = degraded
+
+    def health(self) -> dict[str, object]:
+        return {
+            "running": not self._degraded,
+            "degraded": self._degraded,
+            "supervised_device_count": 3,
+            "expiring_devices": ["ori-fw-secret-01"] if self._degraded else [],
+        }
+
+
+def _runtime_with_scheduler(scheduler):
+    """A real OriRuntime, so _build_health_snapshot() is the code under test.
+
+    Constructing the helper's inputs by hand would prove only that the helper
+    works — it would not notice the runtime ceasing to call it, which is the
+    defect this seam exists to catch.
+    """
+    from ori.runtime import OriRuntime
+
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._device_id = "dev-01"
+    runtime._firmware_liveness_scheduler = scheduler
+    return runtime
+
+
+async def _reasons_from_real_snapshot(scheduler) -> list[str]:
+    runtime = _runtime_with_scheduler(scheduler)
+    snapshot = await runtime._build_health_snapshot()
+    return snapshot["degradation_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_degradation_reasons_named_by_the_real_health_snapshot() -> None:
+    """Through _build_health_snapshot, not the helper.
+
+    Deleting the assignment in _build_health_snapshot must fail here. Every
+    publisher test injects degradation_reasons directly, so none of them
+    would notice the runtime no longer deriving it.
+    """
+    assert await _reasons_from_real_snapshot(_StubScheduler(degraded=True)) == [
+        "firmware_liveness_degraded"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_degradation_reasons_empty_from_the_real_snapshot_when_healthy() -> None:
+    assert await _reasons_from_real_snapshot(_StubScheduler(degraded=False)) == []
+
+
+@pytest.mark.asyncio
+async def test_degradation_reasons_empty_from_the_real_snapshot_without_a_scheduler() -> (
+    None
+):
+    """No command egress means this runtime is not the authority for any
+    device, so there is no obligation it could be failing."""
+    assert await _reasons_from_real_snapshot(None) == []
+
+
+@pytest.mark.asyncio
+async def test_degradation_reasons_accompany_critical_and_degraded_status() -> None:
+    """The named reason and the status must agree: a receiver refuses
+    reasons carried alongside a healthy status."""
+    runtime = _runtime_with_scheduler(_StubScheduler(degraded=True))
+    snapshot = await runtime._build_health_snapshot()
+    assert snapshot["degradation_reasons"] == ["firmware_liveness_degraded"]
+    assert snapshot["critical"] is True
+    assert snapshot["status"] == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_degradation_reasons_keep_rich_diagnostics_local() -> None:
+    """Fleet counts and per-device identity stay in the local health
+    interface; only closed tokens cross the wire boundary."""
+    runtime = _runtime_with_scheduler(_StubScheduler(degraded=True))
+    snapshot = await runtime._build_health_snapshot()
+    assert snapshot["firmware_liveness"]["supervised_device_count"] == 3
+    assert snapshot["degradation_reasons"] == ["firmware_liveness_degraded"]
+
+
+@pytest.mark.asyncio
+async def test_degradation_reasons_reach_the_wire_from_the_real_snapshot() -> None:
+    """Genuinely end to end: the runtime's own snapshot method is the
+    publisher's provider.
+
+    Reconstructing the snapshot by hand would leave the two halves joined
+    only by this test's belief about their shape — the same gap that let
+    the composition seam go untested in the first place. Passing the bound
+    method means a change to either side has to survive the other.
+    """
+    import json
+
+    from ori.gateway.node_heartbeat import MqttRuntimeNodeHeartbeatPublisher
+
+    class _Client:
+        def __init__(self) -> None:
+            self.published: list[tuple[str, bytes, int, bool]] = []
+
+        def publish(self, topic, payload, qos=0, retain=False):
+            self.published.append((topic, payload, qos, retain))
+
+            class _Info:
+                rc = 0
+
+            return _Info()
+
+    for degraded, expect_field in ((True, True), (False, False)):
+        runtime = _runtime_with_scheduler(_StubScheduler(degraded=degraded))
+        client = _Client()
+        publisher = MqttRuntimeNodeHeartbeatPublisher(
+            broker_url="mqtt://localhost",
+            device_id="dev-01",
+            health_snapshot_provider=runtime._build_health_snapshot,
+            interval_seconds=30,
+            authenticator=None,
+            client_factory=lambda **_: client,
+        )
+
+        await publisher._publish_once(client)
+
+        raw = client.published[0][1]
+        payload = json.loads(raw)
+        assert ("degradation_reasons" in payload) is expect_field
+        if expect_field:
+            assert payload["degradation_reasons"] == ["firmware_liveness_degraded"]
+            assert payload["status"] == "degraded"
+
+        # Rich diagnostics stay in the local health interface: a fleet count
+        # reveals deployment topology and a device id is a disclosure this
+        # contract does not make.
+        assert b"ori-fw-secret-01" not in raw
+        assert "supervised_device_count" not in payload
+        assert "firmware_liveness" not in payload

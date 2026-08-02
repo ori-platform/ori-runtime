@@ -31,6 +31,69 @@ except ImportError:  # pragma: no cover - exercised by monkeypatch in tests
 
 logger = logging.getLogger(__name__)
 
+# ── degradation_reasons (gateway-api/v1) ─────────────────────────────
+#
+# The closed v1 vocabulary lives at the wire boundary because that is where
+# the contract is enforced. A gateway refuses an unrecognised token, so
+# emitting one would make a conforming receiver reject the entire heartbeat —
+# the same failure the ratified rollout order (specs, then gateway, then
+# runtime) exists to prevent. Adding a token here before gateways accept it
+# would recreate exactly that.
+DEGRADATION_REASON_FIRMWARE_LIVENESS = "firmware_liveness_degraded"
+
+DEGRADATION_REASONS: frozenset[str] = frozenset(
+    {
+        DEGRADATION_REASON_FIRMWARE_LIVENESS,
+    }
+)
+
+DEGRADATION_REASONS_MAX = 16
+
+
+def _wire_degradation_reasons(raw: Any) -> list[str]:
+    """Validates snapshot reasons at the wire boundary.
+
+    Refuses rather than coerces. An earlier version ran ``str()`` over
+    whatever the snapshot held, deduplicated and published it — which would
+    happily emit a token no gateway can accept, and manufacture a plausible
+    string from an object that was never a reason at all.
+
+    Anything unusable is dropped with a warning and the field is omitted, so
+    a malformed snapshot degrades to "no named reason" rather than to a
+    heartbeat a conforming receiver must reject in full.
+    """
+    if not isinstance(raw, list) or not raw:
+        return []
+
+    accepted: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            logger.warning(
+                "[runtime-heartbeat] dropping non-string degradation reason %r", item
+            )
+            continue
+        if item not in DEGRADATION_REASONS:
+            # Never emitted: a receiver is contractually required to refuse
+            # an unratified token, and refusing it here costs one reason
+            # while emitting it costs the whole heartbeat.
+            logger.warning(
+                "[runtime-heartbeat] dropping unratified degradation reason %r", item
+            )
+            continue
+        accepted.add(item)
+
+    tokens = sorted(accepted)
+    if len(tokens) > DEGRADATION_REASONS_MAX:
+        logger.error(
+            "[runtime-heartbeat] %d degradation reasons exceeds the contract "
+            "maximum of %d; omitting the field",
+            len(tokens),
+            DEGRADATION_REASONS_MAX,
+        )
+        return []
+    return tokens
+
+
 RUNTIME_HEARTBEAT_TOPIC_TEMPLATE = "ori/{device_id}/runtime/heartbeat"
 RUNTIME_HEARTBEAT_MESSAGE_TYPE = "runtime.heartbeat"
 DEFAULT_RUNTIME_HEARTBEAT_INTERVAL_S = 30.0
@@ -160,6 +223,33 @@ class MqttRuntimeNodeHeartbeatPublisher:
             "gateway_seen_ms": 0,
             "active_triggers": [str(item) for item in active_triggers],
         }
+
+        # degradation_reasons names which subsystem is degraded, so a site
+        # view can tell why a node reports degraded rather than only that it
+        # does. Deliberately separate from active_triggers: a trigger is a
+        # physical or automation trigger and a degraded subsystem is neither,
+        # and overloading that field would inflate its count.
+        #
+        # Omitted entirely when empty. An empty array is malformed under
+        # gateway-api/v1 — absent and present-empty are different states, and
+        # a receiver is required to refuse the latter.
+        tokens = _wire_degradation_reasons(snapshot.get("degradation_reasons"))
+        if tokens:
+            # The contract's implication rule runs the other way too: reasons
+            # are only meaningful alongside a degraded status. Anything that
+            # named a reason has already contributed critical/degraded to the
+            # snapshot, so this is a guard against a future caller that
+            # forgets, not an expected branch — the composition tests prove
+            # it is unreachable in normal operation.
+            if status == "degraded":
+                payload["degradation_reasons"] = tokens
+            else:
+                logger.warning(
+                    "[runtime-heartbeat] dropping degradation_reasons %s on a %s "
+                    "heartbeat: reasons require a degraded status",
+                    tokens,
+                    status,
+                )
 
         # Evidence-chain truncation signal: the heartbeat carries the chain
         # head so the site can spot a truncated/reset local chain in near
