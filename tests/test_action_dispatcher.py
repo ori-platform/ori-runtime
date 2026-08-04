@@ -381,10 +381,10 @@ class TestTierD:
         assert call_args.args[0] == "emergency_cutoff"
 
 
-# ─── Tier B — autonomous by default ──────────────────────────────────────────
+# ─── Tier B — dispatches without approval unless requires_approval is set ────
 
 
-class TestTierBAutonomous:
+class TestTierBWithoutApproval:
     async def test_executes_without_approval_by_default(self):
         d = ActionDispatcher()
         ctx = _context(skill_config={})
