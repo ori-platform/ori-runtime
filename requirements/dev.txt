@@ -4,9 +4,9 @@
 #
 #    pip-compile --allow-unsafe --generate-hashes --output-file=requirements/dev.txt requirements/dev.in
 #
-africastalking==2.0.2 \
-    --hash=sha256:a09185a692dbba5a0f894c19f8d03454474fbd24922bc8e5b977f693bf89565e \
-    --hash=sha256:e44240112070dec8527af9f7b0ae30773f1c52933017132bef12922bd396085a
+africastalking==2.0.3 \
+    --hash=sha256:8a010efc3b8d2d9c4054d484931a715f8ade3f2c202babc9dcb21326ca78d28f \
+    --hash=sha256:c7f59a775d677af63adad045182bbeeff9ccfd8afaad6de40ac66a436b111d7f
     # via -r runtime.txt
 aiofiles==25.1.0 \
     --hash=sha256:a8d728f0a29de45dc521f18f07297428d56992a742f0cd2701ba86e44d23d5b2 \

@@ -10,4 +10,4 @@ tzdata>=2025.2
 httpx>=0.28
 cryptography>=48.0.1
 twilio>=9.0
-africastalking>=1.0
+africastalking>=2.0.3
