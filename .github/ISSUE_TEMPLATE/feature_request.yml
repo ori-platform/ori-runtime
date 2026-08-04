@@ -31,7 +31,7 @@ body:
       options:
         - "N/A"
         - "Tier A — Informational (autonomous alerts)"
-        - "Tier B — Soft Physical (autonomous with notification)"
+        - "Tier B — Soft Physical (explicit approval or post-action policy)"
         - "Tier C — Hard Physical (approval required)"
         - "Tier D — Safety-Critical (deterministic, immediate)"
 
