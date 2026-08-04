@@ -15,7 +15,10 @@ updates:
       - dependency-name: "twilio"
         update-types: ["version-update:semver-major"]
     commit-message:
-      prefix: "build(deps)"
+      # Dependabot appends its own scope, so the prefix must not contain one —
+      # "build(deps)" + scope yields "build(deps)(deps-dev):", which is not a
+      # valid Conventional Commit subject.
+      prefix: "build"
       include: scope
 
   - package-ecosystem: github-actions

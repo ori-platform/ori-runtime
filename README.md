@@ -24,7 +24,7 @@ Built for the world's majority condition — unreliable power, intermittent conn
 
 ## Release Status
 
-**Current channel: Stable (`2.0.x`)**
+**Current channel: Stable (`2.2.x`)**
 
 - Runtime core is stable for PoC, demo API, and controlled field deployment,
   with a fail-closed production security posture: staging/production configs
@@ -266,7 +266,7 @@ triggers:
     action_tier: D # → cuts power. no waiting.
 ```
 
-Bundled skills: **pc-system-health** (runs on any laptop), **energy-anomaly-detector**, **retail-occupancy-optimizer**, **solar-performance-monitor**, **battery-lifecycle-observer**, **hvac-refrigerant-monitor**, and **site-safety-ppe**.
+Bundled skills: **pc-system-health** (runs on any laptop), **pc-network-threat-monitor**, **energy-anomaly-detector**, **prosumer-energy-advisor**, **retail-occupancy-optimizer**, **solar-performance-monitor**, **battery-lifecycle-observer**, **hvac-refrigerant-monitor**, and **site-safety-ppe**.
 
 Community skills live at **[ori-platform/ori-skills](https://github.com/ori-platform/ori-skills)**. The runtime enforces strict skill validation and sandboxed hook loading for community-installed skills.
 
@@ -482,7 +482,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 
 | Phase             | Status           | Milestone                                                                 |
 | ----------------- | ---------------- | ------------------------------------------------------------------------- |
-| Runtime core      | ✅ Stable v2.0    | Production posture, typed integration boundary, and evidence Layer 2 hooks |
+| Runtime core      | ✅ Stable v2.2    | Production posture, typed integration boundary, and evidence Layer 2 hooks |
 | Product wedge     | ✅ Shipping       | Ori Energy demo/API integration, private APK path, and Phone Starter flows |
 | Evidence hardware | 🔨 In Progress   | Evidence Layer 1 contract and `ori-edge-firmware` bootstrap                |
 | Safety kernel     | 🗓️ Planned       | Rust-owned Tier D kernel after shadow-mode evidence, not a broad rewrite   |
