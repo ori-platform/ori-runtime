@@ -47,11 +47,10 @@ Built for the world's majority condition — unreliable power, intermittent conn
 Related public repos in the org:
 
 - Runtime: `ori-platform/ori-runtime` (this repo)
-- Skills registry: `ori-platform/ori-skills`
+- Skills registry: `ori-platform/ori-skills-hub`
 - CLI: `ori-platform/ori-cli`
 - Gateway: `ori-platform/ori-gateway`
 - SDK (Python): `ori-platform/ori-sdk-python`
-- Dashboard: `ori-platform/ori-dashboard`
 - Specs/RFCs: `ori-platform/ori-specs`
 
 Private evidence-chain and edge-firmware artifacts integrate through the public
