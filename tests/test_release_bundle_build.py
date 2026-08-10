@@ -239,7 +239,7 @@ def test_offline_signing_cli_produces_verifiable_envelope(tmp_path: Path) -> Non
 
     result = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "scripts/sign-release-bundle.py",
             "--artifact",
             str(artifact),
@@ -318,7 +318,7 @@ def test_local_private_key_signing_cli_refuses_github_actions(tmp_path: Path) ->
 
     result = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "scripts/sign-release-bundle.py",
             "--artifact",
             str(artifact),
@@ -363,7 +363,7 @@ def test_signing_cli_refuses_verify_only_key_for_new_release(tmp_path: Path) -> 
 
     result = subprocess.run(
         [
-            ".venv/bin/python",
+            sys.executable,
             "scripts/sign-release-bundle.py",
             "--artifact",
             str(artifact),
