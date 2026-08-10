@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import os
+import runpy
 import subprocess
 import sys
 import zipfile
@@ -24,6 +25,7 @@ from cryptography.hazmat.primitives.serialization import (
 from ori.security.release_bundles import (
     KEY_REGISTRY_SCHEMA,
     RELEASE_KEY_PURPOSE,
+    ReleaseBundleError,
     ReleaseKey,
     create_signature_envelope,
     extract_verified_bundle,
@@ -274,6 +276,33 @@ def test_offline_signing_cli_produces_verifiable_envelope(tmp_path: Path) -> Non
         },
     )
     assert verified.key_id == KEY_ID
+
+
+def test_private_key_loader_closes_descriptor_when_fstat_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key_path = tmp_path / "release-key.pem"
+    key_path.write_text("not inspected", encoding="utf-8")
+    key_path.chmod(0o600)
+    script = runpy.run_path("scripts/sign-release-bundle.py")
+    load_private_key = script["_load_private_key"]
+    closed: list[int] = []
+    real_close = os.close
+
+    def fail_fstat(_fd: int) -> os.stat_result:
+        raise OSError("simulated descriptor inspection failure")
+
+    def record_close(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(os, "fstat", fail_fstat)
+    monkeypatch.setattr(os, "close", record_close)
+
+    with pytest.raises(ReleaseBundleError, match="cannot inspect private key"):
+        load_private_key(key_path)
+
+    assert len(closed) == 1
 
 
 def test_local_private_key_signing_cli_refuses_github_actions(tmp_path: Path) -> None:

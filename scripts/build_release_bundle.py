@@ -209,7 +209,9 @@ def _wheel_identity(path: Path) -> tuple[str, str]:
     try:
         with zipfile.ZipFile(path) as archive:
             metadata_names = [
-                name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+                name
+                for name in archive.namelist()
+                if name.endswith(".dist-info/METADATA")
             ]
             if len(metadata_names) != 1:
                 raise BundleBuildError(f"wheel {path.name!r} has ambiguous METADATA")
@@ -230,8 +232,12 @@ def _wheel_identity(path: Path) -> tuple[str, str]:
 def _write_deterministic_tar_gz(*, root: Path, destination: Path, mtime: int) -> None:
     paths = [root, *sorted(root.rglob("*"), key=lambda item: item.as_posix())]
     with destination.open("xb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=mtime) as compressed:
-            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        with gzip.GzipFile(
+            filename="", mode="wb", fileobj=raw, mtime=mtime
+        ) as compressed:
+            with tarfile.open(
+                fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT
+            ) as archive:
                 for path in paths:
                     relative = path.relative_to(root.parent).as_posix()
                     info = tarfile.TarInfo(relative)
@@ -290,10 +296,7 @@ def _atomic_write(path: Path, payload: bytes, *, mode: int) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        temporary.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:

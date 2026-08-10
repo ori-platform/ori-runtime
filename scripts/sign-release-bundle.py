@@ -29,18 +29,20 @@ from ori.security.release_bundles import (
 
 
 def _load_private_key(path: Path) -> Ed25519PrivateKey:
-    fd = -1
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        flags = (
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-        )
         fd = os.open(path, flags)
-        file_stat = os.fstat(fd)
     except OSError as exc:
-        raise ReleaseBundleError("signing_failed", "cannot inspect private key") from exc
+        raise ReleaseBundleError(
+            "signing_failed", "cannot inspect private key"
+        ) from exc
     try:
+        try:
+            file_stat = os.fstat(fd)
+        except OSError as exc:
+            raise ReleaseBundleError(
+                "signing_failed", "cannot inspect private key"
+            ) from exc
         if not stat.S_ISREG(file_stat.st_mode):
             raise ReleaseBundleError(
                 "signing_failed", "private key must be a regular file"

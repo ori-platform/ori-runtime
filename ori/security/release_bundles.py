@@ -121,7 +121,9 @@ def load_release_key_registry(path: str | Path) -> dict[str, ReleaseKey]:
     registry: dict[str, ReleaseKey] = {}
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
-            _fail("untrusted_release_key", f"release key entry {index} is not an object")
+            _fail(
+                "untrusted_release_key", f"release key entry {index} is not an object"
+            )
         _require_exact_fields(
             entry,
             _KEY_FIELDS,
@@ -255,10 +257,7 @@ def write_signature_envelope(path: str | Path, envelope: dict[str, Any]) -> None
             os.fsync(handle.fileno())
         os.replace(temporary, destination)
     finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+        temporary.unlink(missing_ok=True)
 
 
 def verify_release_bundle(

@@ -15,7 +15,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-import ori.security.release_bundles as release_bundles
+from ori.security import release_bundles
 from ori.security.release_bundles import (
     KEY_REGISTRY_SCHEMA,
     MANIFEST_SCHEMA,
@@ -44,7 +44,9 @@ def _private_key() -> Ed25519PrivateKey:
     return Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
 
 
-def _release_key(*, purpose: str = RELEASE_KEY_PURPOSE, status: str = "active") -> ReleaseKey:
+def _release_key(
+    *, purpose: str = RELEASE_KEY_PURPOSE, status: str = "active"
+) -> ReleaseKey:
     public = _private_key().public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
     return ReleaseKey(
         key_id=KEY_ID,
@@ -334,9 +336,7 @@ def test_rejects_signature_from_other_profile(tmp_path: Path) -> None:
     envelope = _write_envelope(tmp_path, artifact)
     parsed = json.loads(envelope.read_text())
     unsigned = {key: value for key, value in parsed.items() if key != "signature"}
-    wrong_payload = json.dumps(
-        unsigned, sort_keys=True, separators=(",", ":")
-    ).encode()
+    wrong_payload = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
     parsed["signature"] = "ed25519:" + base64.b64encode(
         _private_key().sign(wrong_payload)
     ).decode("ascii")
