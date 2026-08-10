@@ -17,6 +17,8 @@
 #   ORI_WHEELHOUSE_TARGET=phone-growatt bash scripts/build-wheelhouse.sh
 #   ORI_WHEELHOUSE_TARGET=phone-victron bash scripts/build-wheelhouse.sh
 #   ORI_WHEELHOUSE_TARGET=pi bash scripts/build-wheelhouse.sh
+#   ORI_RELEASE_BUNDLE_VERSION=2.3.0 ORI_WHEELHOUSE_TARGET=generic \
+#     bash scripts/build-wheelhouse.sh  # also build deterministic unsigned bundle
 #
 # Phone wheelhouses use requirements/phone.txt so Android/Termux deployments
 # do not carry gateway MQTT, industrial protocol, Pi GPIO, or PC-control deps.
@@ -308,4 +310,41 @@ if [ "${TARGET}" = "pi" ]; then
 else
   echo "  rsync -av ${OUT}/ phone:~/ori-wheelhouse/"
   echo "  ORI_WHEELHOUSE_DIR=~/ori-wheelhouse bash scripts/install-phone.sh"
+fi
+
+# 5. Optionally assemble the exact unsigned Linux release bundle. Signing is a
+# separate purpose-bound operation performed only by the approved release
+# signing environment; this build path never reads private key material.
+if [ -n "${ORI_RELEASE_BUNDLE_VERSION:-}" ]; then
+  if [ "${TARGET}" != "generic" ] && [ "${TARGET}" != "pi" ]; then
+    echo "ERROR: Linux release bundles require ORI_WHEELHOUSE_TARGET=generic or pi." >&2
+    exit 1
+  fi
+
+  MACHINE_ARCH="$(uname -m)"
+  case "${MACHINE_ARCH}" in
+    x86_64|amd64)
+      RELEASE_ARCH="x86_64"
+      ;;
+    aarch64|arm64)
+      RELEASE_ARCH="aarch64"
+      ;;
+    *)
+      echo "ERROR: unsupported Linux release architecture: ${MACHINE_ARCH}" >&2
+      exit 1
+      ;;
+  esac
+  PYTHON_MINOR="$(${PYTHON} -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+  RELEASE_TARGET="${ORI_RELEASE_BUNDLE_TARGET:-linux-${RELEASE_ARCH}-python${PYTHON_MINOR}}"
+  RELEASE_OUT="${ORI_RELEASE_BUNDLE_OUT:-$(pwd)/dist/releases}"
+
+  echo "Building deterministic unsigned Runtime release bundle..."
+  "${PYTHON}" scripts/build_release_bundle.py \
+    --wheelhouse "${OUT}" \
+    --runtime-version "${ORI_RELEASE_BUNDLE_VERSION}" \
+    --target "${RELEASE_TARGET}" \
+    --config-template ori.linux.yaml.example \
+    --service-template packaging/systemd/ori-runtime.service.in \
+    --output-dir "${RELEASE_OUT}"
+  echo "Unsigned bundle built. Sign only in the approved release signing environment."
 fi

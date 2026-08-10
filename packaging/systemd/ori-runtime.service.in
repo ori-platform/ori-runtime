@@ -1,0 +1,23 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Ori Runtime
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=@ORI_DATA_DIR@
+EnvironmentFile=-@ORI_ENV_FILE@
+ExecStart=@ORI_ROOT@/current/venv/bin/ori-runtime --config @ORI_CONFIG@
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@ORI_DATA_DIR@
+
+[Install]
+WantedBy=default.target
