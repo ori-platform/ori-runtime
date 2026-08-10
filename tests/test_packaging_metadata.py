@@ -199,6 +199,16 @@ def test_termux_phone_smoke_script_keeps_install_and_runtime_startup_opt_in() ->
     assert '"${PYTHON_BIN}" -m pip install --break-system-packages --no-index' in script
 
 
+def test_wheelhouse_release_bundle_path_is_opt_in_and_signing_key_free() -> None:
+    script = Path("scripts/build-wheelhouse.sh").read_text(encoding="utf-8")
+
+    assert "ORI_RELEASE_BUNDLE_VERSION" in script
+    assert "scripts/build_release_bundle.py" in script
+    assert "packaging/systemd/ori-runtime.service.in" in script
+    assert "sign-release-bundle.py" not in script
+    assert "PRIVATE_KEY" not in script
+
+
 def test_eval_extra_is_intentionally_empty() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
