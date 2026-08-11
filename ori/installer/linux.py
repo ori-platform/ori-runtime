@@ -101,18 +101,9 @@ class InstallerConfigInput:
     operator_contact: str = ""
 
     def __post_init__(self) -> None:
-        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", self.device_id):
-            raise LinuxInstallError("config_validation_failed", "device ID is invalid")
+        _validate_device_id(self.device_id)
         for field_name, value in (("name", self.name), ("location", self.location)):
-            if (
-                not value.strip()
-                or len(value) > 128
-                or _has_control_character(value)
-                or "${" in value
-            ):
-                raise LinuxInstallError(
-                    "config_validation_failed", f"device {field_name} is invalid"
-                )
+            _validate_device_text(field_name, value)
         if self.deployment_type not in {"pi", "server"}:
             raise LinuxInstallError(
                 "config_validation_failed", "deployment type is unsupported"
@@ -122,14 +113,159 @@ class InstallerConfigInput:
                 "config_validation_failed",
                 "installer-generated hardened profiles require signed provisioning",
             )
-        if (
-            len(self.operator_contact) > 64
-            or _has_control_character(self.operator_contact)
-            or "${" in self.operator_contact
-        ):
-            raise LinuxInstallError(
-                "config_validation_failed", "operator contact is invalid"
+        _validate_operator_contact(self.operator_contact)
+
+
+@dataclass(frozen=True)
+class InstallerInputOptions:
+    """Operator-supplied values before interactive or unattended collection."""
+
+    unattended: bool = False
+    device_id: str | None = None
+    name: str | None = None
+    location: str | None = None
+    deployment_type: Literal["pi", "server"] = "pi"
+    operator_contact: str | None = None
+
+
+def collect_installer_config(
+    options: InstallerInputOptions,
+    *,
+    prompt: Callable[[str], str] = input,
+    write: Callable[[str], None] = print,
+) -> InstallerConfigInput:
+    """Collect validated config values without ever collecting credentials.
+
+    Unattended mode is deliberately non-interactive and fails when any required
+    identity value is absent. Interactive mode accepts explicitly supplied
+    values and prompts only for missing fields, retrying invalid prompt input a
+    bounded number of times.
+    """
+    if options.unattended:
+        missing = [
+            flag
+            for flag, value in (
+                ("--device-id", options.device_id),
+                ("--name", options.name),
+                ("--location", options.location),
             )
+            if value is None or not value.strip()
+        ]
+        if missing:
+            raise LinuxInstallError(
+                "config_validation_failed",
+                "unattended mode requires " + ", ".join(missing),
+            )
+        return InstallerConfigInput(
+            device_id=_validated_input(options.device_id or "", _validate_device_id),
+            name=_validated_input(
+                options.name or "", lambda value: _validate_device_text("name", value)
+            ),
+            location=_validated_input(
+                options.location or "",
+                lambda value: _validate_device_text("location", value),
+            ),
+            deployment_type=options.deployment_type,
+            operator_contact=_validated_input(
+                options.operator_contact or "", _validate_operator_contact
+            ),
+        )
+
+    device_id = _collect_interactive_value(
+        supplied=options.device_id,
+        label="Device ID: ",
+        validate=_validate_device_id,
+        prompt=prompt,
+        write=write,
+    )
+    name = _collect_interactive_value(
+        supplied=options.name,
+        label="Device name: ",
+        validate=lambda value: _validate_device_text("name", value),
+        prompt=prompt,
+        write=write,
+    )
+    location = _collect_interactive_value(
+        supplied=options.location,
+        label="Device location: ",
+        validate=lambda value: _validate_device_text("location", value),
+        prompt=prompt,
+        write=write,
+    )
+    operator_contact = _collect_interactive_value(
+        supplied=options.operator_contact,
+        label="Operator contact (optional): ",
+        validate=_validate_operator_contact,
+        prompt=prompt,
+        write=write,
+    )
+    return InstallerConfigInput(
+        device_id=device_id,
+        name=name,
+        location=location,
+        deployment_type=options.deployment_type,
+        operator_contact=operator_contact,
+    )
+
+
+def _collect_interactive_value(
+    *,
+    supplied: str | None,
+    label: str,
+    validate: Callable[[str], None],
+    prompt: Callable[[str], str],
+    write: Callable[[str], None],
+) -> str:
+    if supplied is not None:
+        return _validated_input(supplied, validate)
+    for _attempt in range(3):
+        try:
+            value = prompt(label)
+        except (EOFError, KeyboardInterrupt) as exc:
+            raise LinuxInstallError(
+                "config_validation_failed", "interactive input was cancelled"
+            ) from exc
+        try:
+            return _validated_input(value, validate)
+        except LinuxInstallError as exc:
+            write(exc.detail)
+            continue
+    raise LinuxInstallError(
+        "config_validation_failed", "interactive input failed after 3 attempts"
+    )
+
+
+def _validated_input(value: str, validate: Callable[[str], None]) -> str:
+    validate(value)
+    return value.strip()
+
+
+def _validate_device_id(value: str) -> None:
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", value):
+        raise LinuxInstallError(
+            "config_validation_failed",
+            "device ID must be 1-64 lowercase letters, digits, dots, dashes, or "
+            "underscores, starting with a letter or digit",
+        )
+
+
+def _validate_device_text(field_name: str, value: str) -> None:
+    if (
+        not value.strip()
+        or len(value) > 128
+        or _has_control_character(value)
+        or "${" in value
+    ):
+        raise LinuxInstallError(
+            "config_validation_failed", f"device {field_name} is invalid"
+        )
+
+
+def _validate_operator_contact(value: str) -> None:
+    if len(value) > 64 or _has_control_character(value) or "${" in value:
+        raise LinuxInstallError(
+            "config_validation_failed", "operator contact is invalid"
+        )
 
 
 def provision_runtime_config(
