@@ -1660,7 +1660,10 @@ def test_invalid_generated_config_preserves_existing_file(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     ("kwargs", "detail"),
     [
-        ({"device_id": "bad id", "name": "Office", "location": "Lagos"}, "device ID"),
+        (
+            {"device_id": "bad id", "name": "Office", "location": "Lagos"},
+            "device ID must be 1-64 lowercase letters.*starting with a letter or digit",
+        ),
         ({"device_id": "ori-01", "name": "${SECRET}", "location": "Lagos"}, "name"),
         (
             {"device_id": "ori-01", "name": "Office", "location": "Lagos\nroot"},
