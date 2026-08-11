@@ -37,9 +37,9 @@ python scripts/sign-release-bundle.py \
   --artifact dist/releases/ori-runtime-2.3.0-linux-x86_64-python3.12.tar.gz \
   --runtime-version 2.3.0 \
   --target linux-x86_64-python3.12 \
-  --key-id ori-runtime-release-2026-01 \
+  --key-id ori-runtime-release-example \
   --key-registry /trusted/release-keys.json \
-  --private-key-file /signer/ori-runtime-release-2026-01.pem \
+  --private-key-file /signer/ori-runtime-release-example.pem \
   --output dist/releases/ori-runtime-2.3.0-linux-x86_64-python3.12.signature.json
 ```
 

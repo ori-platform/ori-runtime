@@ -209,6 +209,17 @@ def test_wheelhouse_release_bundle_path_is_opt_in_and_signing_key_free() -> None
     assert "PRIVATE_KEY" not in script
 
 
+def test_aws_kms_release_signer_is_separate_from_local_private_key_adapter() -> None:
+    local = Path("scripts/sign-release-bundle.py").read_text(encoding="utf-8")
+    managed = Path("scripts/sign-release-bundle-aws-kms.py").read_text(encoding="utf-8")
+
+    assert "AwsKmsReleaseSigner" in managed
+    assert "--kms-key-arn" in managed
+    assert "--aws-region" in managed
+    assert "private-key-file" not in managed
+    assert "AwsKmsReleaseSigner" not in local
+
+
 def test_eval_extra_is_intentionally_empty() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
