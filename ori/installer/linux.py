@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pwd
 import re
@@ -16,6 +17,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, Sequence
+
+import yaml
 
 from ori.security.release_bundles import ExtractedReleaseBundle
 
@@ -78,6 +81,279 @@ class InstallResult:
     previous_version: str | None
     changed: bool
     rolled_back: bool
+
+
+@dataclass(frozen=True)
+class InstallerConfigInput:
+    device_id: str
+    name: str
+    location: str
+    deployment_type: Literal["pi", "server"] = "pi"
+    deployment_profile: Literal["development"] = "development"
+    operator_contact: str = ""
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", self.device_id):
+            raise LinuxInstallError("config_validation_failed", "device ID is invalid")
+        for field_name, value in (("name", self.name), ("location", self.location)):
+            if (
+                not value.strip()
+                or len(value) > 128
+                or _has_control_character(value)
+                or "${" in value
+            ):
+                raise LinuxInstallError(
+                    "config_validation_failed", f"device {field_name} is invalid"
+                )
+        if self.deployment_type not in {"pi", "server"}:
+            raise LinuxInstallError(
+                "config_validation_failed", "deployment type is unsupported"
+            )
+        if self.deployment_profile != "development":
+            raise LinuxInstallError(
+                "config_validation_failed",
+                "installer-generated hardened profiles require signed provisioning",
+            )
+        if (
+            len(self.operator_contact) > 64
+            or _has_control_character(self.operator_contact)
+            or "${" in self.operator_contact
+        ):
+            raise LinuxInstallError(
+                "config_validation_failed", "operator contact is invalid"
+            )
+
+
+def provision_runtime_config(
+    *,
+    values: InstallerConfigInput,
+    config_path: Path,
+    release_python: Path,
+    health_socket_path: Path,
+    service_profile: SystemdServiceProfile | None = None,
+    runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> None:
+    """Generate, validate, and atomically install a minimal Runtime config."""
+    for path in (config_path, release_python, health_socket_path):
+        if not path.is_absolute() or _has_control_character(str(path)):
+            raise LinuxInstallError(
+                "config_validation_failed", "config paths must be absolute and safe"
+            )
+    if health_socket_path.parent != config_path.parent:
+        raise LinuxInstallError(
+            "config_validation_failed",
+            "health socket must be inside the writable config data directory",
+        )
+    owner: tuple[int, int] | None = None
+    if service_profile is not None:
+        if (
+            service_profile.scope == "system"
+            and service_profile.service_user is not None
+        ):
+            if os.geteuid() != 0:
+                raise LinuxInstallError(
+                    "config_validation_failed",
+                    "system config provisioning requires root",
+                )
+            try:
+                account = pwd.getpwnam(service_profile.service_user)
+            except KeyError as exc:
+                raise LinuxInstallError(
+                    "config_validation_failed", "system service user does not exist"
+                ) from exc
+            owner = (account.pw_uid, account.pw_gid)
+    try:
+        interpreter = release_python.resolve(strict=True)
+    except OSError as exc:
+        raise LinuxInstallError(
+            "config_validation_failed", "release interpreter is unavailable"
+        ) from exc
+    if not interpreter.is_file() or not os.access(interpreter, os.X_OK):
+        raise LinuxInstallError(
+            "config_validation_failed", "release interpreter is unavailable"
+        )
+    try:
+        unsafe_destination = (
+            config_path.is_symlink()
+            or config_path.parent.is_symlink()
+            or config_path.parent.resolve(strict=False) != config_path.parent
+            or (config_path.exists() and not config_path.is_file())
+        )
+    except OSError as exc:
+        raise LinuxInstallError(
+            "config_validation_failed", "config destination could not be inspected"
+        ) from exc
+    if unsafe_destination:
+        raise LinuxInstallError(
+            "config_validation_failed", "config destination is unsafe"
+        )
+    document = {
+        "device": {
+            "id": values.device_id,
+            "name": values.name.strip(),
+            "location": values.location.strip(),
+            "deployment_type": values.deployment_type,
+            "deployment_profile": values.deployment_profile,
+        },
+        "sensors": [],
+        "skills": [],
+        "reasoning": {},
+        "gateway": {"enabled": False},
+        "telemetry_export": {"enabled": False},
+        "device_policy": {"enabled": False},
+        "actions": {
+            "primary_alert_channel": "sms",
+            "operator_contact": values.operator_contact.strip(),
+            "sms": {"enabled": False},
+            "relay": {"enabled": False},
+        },
+        "security": {
+            "config_signature": {"require_signed": False},
+            "skills": {"require_signed": False},
+        },
+        "health_socket": {
+            "enabled": True,
+            "path": str(health_socket_path),
+            "mode": "0o660",
+        },
+    }
+    encoded = yaml.safe_dump(document, sort_keys=False).encode("utf-8")
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        previous: tuple[bytes, int, int, int] | None = None
+        if config_path.is_file():
+            previous_stat = config_path.stat()
+            previous = (
+                config_path.read_bytes(),
+                stat.S_IMODE(previous_stat.st_mode),
+                previous_stat.st_uid,
+                previous_stat.st_gid,
+            )
+    except OSError as exc:
+        raise LinuxInstallError(
+            "config_validation_failed", "config destination could not be prepared"
+        ) from exc
+    temporary = config_path.parent / f".{config_path.name}.{uuid.uuid4().hex}.tmp"
+    descriptor = -1
+    replaced = False
+    command_runner = runner or _run_command
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb", closefd=False) as output:
+            output.write(encoded)
+            output.flush()
+            os.fsync(descriptor)
+        os.fchmod(descriptor, 0o600)
+        if owner is not None:
+            os.fchown(descriptor, *owner)
+        try:
+            result = command_runner(
+                [
+                    str(release_python),
+                    "-m",
+                    "ori.cli_bridge",
+                    "config",
+                    "validate",
+                    "--path",
+                    str(temporary),
+                ]
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise LinuxInstallError(
+                "config_validation_failed", "config validator could not run"
+            ) from exc
+        if result.returncode != 0 or not _valid_config_response(result.stdout):
+            raise LinuxInstallError(
+                "config_validation_failed", "generated config did not validate"
+            )
+        os.replace(temporary, config_path)
+        replaced = True
+        parent_descriptor = os.open(
+            config_path.parent, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY
+        )
+        try:
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(parent_descriptor)
+    except LinuxInstallError:
+        raise
+    except OSError as exc:
+        if replaced:
+            try:
+                _restore_config(config_path, previous)
+            except OSError as rollback_error:
+                raise LinuxInstallError(
+                    "config_validation_failed",
+                    "config write and rollback failed",
+                ) from rollback_error
+        raise LinuxInstallError(
+            "config_validation_failed", "config could not be written"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def _restore_config(path: Path, previous: tuple[bytes, int, int, int] | None) -> None:
+    if previous is None:
+        path.unlink(missing_ok=True)
+    else:
+        temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.rollback"
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                previous[1],
+            )
+            with os.fdopen(descriptor, "wb", closefd=False) as output:
+                output.write(previous[0])
+                output.flush()
+                os.fsync(descriptor)
+            os.fchmod(descriptor, previous[1])
+            os.fchown(descriptor, previous[2], previous[3])
+            os.replace(temporary, path)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary.unlink(missing_ok=True)
+    parent_descriptor = os.open(
+        path.parent, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY
+    )
+    try:
+        os.fsync(parent_descriptor)
+    finally:
+        os.close(parent_descriptor)
+
+
+def _valid_config_response(stdout: str) -> bool:
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return False
+    return bool(
+        isinstance(payload, dict)
+        and payload.get("schema_version") == 1
+        and payload.get("ok") is True
+        and payload.get("command") == "config validate"
+        and isinstance(payload.get("result"), dict)
+        and payload["result"].get("valid") is True
+    )
+
+
+def _has_control_character(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _unsafe_unit_value(value: str) -> bool:
+    return (
+        any(character.isspace() for character in value) or "%" in value or "@" in value
+    )
 
 
 @dataclass(frozen=True)
@@ -423,9 +699,8 @@ def render_systemd_unit(
         value = str(path)
         if (
             not path.is_absolute()
-            or any(character.isspace() for character in value)
-            or "%" in value
-            or "@" in value
+            or path != Path(os.path.normpath(value))
+            or _unsafe_unit_value(value)
         ):
             raise LinuxInstallError(
                 "unsafe_install_root", "systemd paths contain unsafe unit syntax"
@@ -435,6 +710,12 @@ def render_systemd_unit(
                 "service_start_failed", f"service template is missing {marker}"
             )
         rendered = rendered.replace(marker, value)
+
+    if config_path == data_dir or not config_path.is_relative_to(data_dir):
+        raise LinuxInstallError(
+            "unsafe_install_root",
+            "systemd config path must be inside the writable data directory",
+        )
 
     if "@ORI_USER_DIRECTIVE@" not in rendered or "@ORI_WANTED_BY@" not in rendered:
         raise LinuxInstallError(

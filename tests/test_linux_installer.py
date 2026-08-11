@@ -3,13 +3,16 @@
 
 import os
 import subprocess
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from ori.installer.linux import (
+    InstallerConfigInput,
     InstallLayout,
     LinuxInstallError,
     OfflineReleasePreparer,
@@ -17,6 +20,7 @@ from ori.installer.linux import (
     SystemdServiceProfile,
     apply_system_service_permissions,
     install_release,
+    provision_runtime_config,
     render_systemd_unit,
     uninstall_runtime,
 )
@@ -613,7 +617,7 @@ def test_user_systemd_unit_uses_user_target_without_user_directive(
         profile=SystemdServiceProfile.user(),
         root=(tmp_path / "root").resolve(),
         data_dir=(tmp_path / "data").resolve(),
-        config_path=(tmp_path / "config.yaml").resolve(),
+        config_path=(tmp_path / "data" / "config.yaml").resolve(),
         env_file=(tmp_path / "runtime.env").resolve(),
     )
     assert "WantedBy=default.target" in rendered
@@ -629,7 +633,7 @@ def test_system_systemd_unit_uses_unprivileged_user_and_system_target(
         profile=SystemdServiceProfile.system("ori-runtime"),
         root=(tmp_path / "root").resolve(),
         data_dir=(tmp_path / "data").resolve(),
-        config_path=(tmp_path / "config.yaml").resolve(),
+        config_path=(tmp_path / "data" / "config.yaml").resolve(),
         env_file=(tmp_path / "runtime.env").resolve(),
     )
     assert "User=ori-runtime" in rendered
@@ -661,7 +665,7 @@ def test_systemd_renderer_rejects_relative_paths_and_template_drift(
         "profile": SystemdServiceProfile.user(),
         "root": (tmp_path / "root").resolve(),
         "data_dir": (tmp_path / "data").resolve(),
-        "config_path": (tmp_path / "config.yaml").resolve(),
+        "config_path": (tmp_path / "data" / "config.yaml").resolve(),
         "env_file": (tmp_path / "runtime.env").resolve(),
     }
     with pytest.raises(LinuxInstallError, match="unsafe_install_root"):
@@ -679,6 +683,15 @@ def test_systemd_renderer_rejects_relative_paths_and_template_drift(
             _service_template(),
             **{**kwargs, "root": Path("/opt/@ORI_USER_DIRECTIVE@")},
         )
+    for config_path in (
+        (tmp_path / "outside" / "config.yaml").resolve(),
+        (tmp_path / "data-sibling" / "config.yaml").resolve(),
+        kwargs["data_dir"] / ".." / "outside" / "config.yaml",
+    ):
+        with pytest.raises(LinuxInstallError, match="unsafe_install_root"):
+            render_systemd_unit(
+                _service_template(), **{**kwargs, "config_path": config_path}
+            )
     with pytest.raises(LinuxInstallError, match="service_start_failed"):
         render_systemd_unit(
             _service_template().replace("@ORI_CONFIG@", "/fixed"), **kwargs
@@ -899,3 +912,175 @@ def test_permission_failure_removes_new_release_before_activation(
         )
     assert not layout.release("2.3.0").exists()
     assert not layout.current.exists()
+
+
+def test_installer_config_is_validated_by_runtime_bridge_and_written_privately(
+    tmp_path: Path,
+) -> None:
+    config_path = (tmp_path / "data" / "ori.yaml").resolve()
+    socket_path = (tmp_path / "data" / "health.sock").resolve()
+    provision_runtime_config(
+        values=InstallerConfigInput(
+            device_id="ori-lagos-01",
+            name="Lagos Office",
+            location="Lagos, Nigeria",
+            deployment_type="server",
+        ),
+        config_path=config_path,
+        release_python=Path(sys.executable),
+        health_socket_path=socket_path,
+    )
+    loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert loaded["device"] == {
+        "id": "ori-lagos-01",
+        "name": "Lagos Office",
+        "location": "Lagos, Nigeria",
+        "deployment_type": "server",
+        "deployment_profile": "development",
+    }
+    assert loaded["health_socket"]["path"] == str(socket_path)
+    assert loaded["actions"]["sms"]["enabled"] is False
+    assert config_path.stat().st_mode & 0o777 == 0o600
+    assert list(config_path.parent.glob(".ori.yaml.*.tmp")) == []
+
+
+def test_system_config_is_owned_by_service_identity_without_ordering_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = (tmp_path / "data" / "ori.yaml").resolve()
+    ownership: list[tuple[int, int]] = []
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _user: SimpleNamespace(pw_uid=991, pw_gid=992),
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux.os.fchown",
+        lambda _descriptor, uid, gid: ownership.append((uid, gid)),
+    )
+
+    provision_runtime_config(
+        values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+        config_path=config_path,
+        release_python=Path(sys.executable),
+        health_socket_path=config_path.parent / "health.sock",
+        service_profile=SystemdServiceProfile.system("ori"),
+    )
+
+    assert ownership == [(991, 992)]
+    assert config_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_config_health_socket_must_share_writable_data_directory(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(LinuxInstallError, match="writable config data directory"):
+        provision_runtime_config(
+            values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+            config_path=(tmp_path / "data" / "ori.yaml").resolve(),
+            release_python=Path(sys.executable),
+            health_socket_path=(tmp_path / "run" / "health.sock").resolve(),
+        )
+
+
+def test_config_destination_error_uses_stable_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "ori.installer.linux.Path.mkdir",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("denied")),
+    )
+    with pytest.raises(LinuxInstallError) as raised:
+        provision_runtime_config(
+            values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+            config_path=(tmp_path / "data" / "ori.yaml").resolve(),
+            release_python=Path(sys.executable),
+            health_socket_path=(tmp_path / "data" / "health.sock").resolve(),
+        )
+    assert raised.value.code == "config_validation_failed"
+
+
+def test_invalid_generated_config_preserves_existing_file(tmp_path: Path) -> None:
+    config_path = (tmp_path / "data" / "ori.yaml").resolve()
+    config_path.parent.mkdir()
+    config_path.write_text("existing\n", encoding="utf-8")
+
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 2, '{"ok":false}', "secret detail")
+
+    with pytest.raises(LinuxInstallError, match="config_validation_failed"):
+        provision_runtime_config(
+            values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+            config_path=config_path,
+            release_python=Path(sys.executable).resolve(),
+            health_socket_path=(tmp_path / "data" / "health.sock").resolve(),
+            runner=runner,
+        )
+    assert config_path.read_text(encoding="utf-8") == "existing\n"
+    assert list(config_path.parent.glob(".ori.yaml.*.tmp")) == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "detail"),
+    [
+        ({"device_id": "bad id", "name": "Office", "location": "Lagos"}, "device ID"),
+        ({"device_id": "ori-01", "name": "${SECRET}", "location": "Lagos"}, "name"),
+        (
+            {"device_id": "ori-01", "name": "Office", "location": "Lagos\nroot"},
+            "location",
+        ),
+    ],
+)
+def test_installer_config_rejects_unsafe_operator_values(
+    kwargs: dict[str, str], detail: str
+) -> None:
+    with pytest.raises(LinuxInstallError, match=detail):
+        InstallerConfigInput(**kwargs)  # type: ignore[arg-type]
+
+
+def test_config_validator_requires_exact_success_envelope(tmp_path: Path) -> None:
+    for stdout in (
+        "not-json",
+        '{"schema_version":1,"ok":true}',
+        '{"schema_version":2,"ok":true,"command":"config validate","result":{"valid":true}}',
+    ):
+        with pytest.raises(LinuxInstallError, match="config_validation_failed"):
+            provision_runtime_config(
+                values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+                config_path=(tmp_path / "ori.yaml").resolve(),
+                release_python=Path(sys.executable).resolve(),
+                health_socket_path=(tmp_path / "health.sock").resolve(),
+                runner=lambda command, output=stdout: subprocess.CompletedProcess(
+                    command, 0, output, ""
+                ),
+            )
+
+
+def test_config_directory_sync_failure_restores_previous_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = (tmp_path / "data" / "ori.yaml").resolve()
+    config_path.parent.mkdir()
+    config_path.write_text("existing\n", encoding="utf-8")
+    config_path.chmod(0o640)
+    real_fsync = os.fsync
+    calls = 0
+
+    def fsync(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("directory sync failed")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr("ori.installer.linux.os.fsync", fsync)
+    with pytest.raises(LinuxInstallError, match="config_validation_failed"):
+        provision_runtime_config(
+            values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+            config_path=config_path,
+            release_python=Path(sys.executable),
+            health_socket_path=(tmp_path / "data" / "health.sock").resolve(),
+        )
+    assert config_path.read_text(encoding="utf-8") == "existing\n"
+    assert config_path.stat().st_mode & 0o777 == 0o640
+    assert list(config_path.parent.iterdir()) == [config_path]
