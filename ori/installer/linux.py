@@ -214,14 +214,14 @@ def apply_system_service_permissions(
     ]
     plan.extend(
         _owned_tree_plan(
-        layout,
-        layout.releases,
-        uid=0,
-        gid=account.pw_gid,
-        directory_mode=0o750,
-        regular_mode=0o440,
-        executable_mode=0o550,
-        allow_file_symlinks=True,
+            layout,
+            layout.releases,
+            uid=0,
+            gid=account.pw_gid,
+            directory_mode=0o750,
+            regular_mode=0o440,
+            executable_mode=0o550,
+            allow_file_symlinks=True,
         )
     )
     _assert_managed_path(layout, layout.data)
@@ -317,7 +317,8 @@ def _validate_release_symlink(
         except ValueError:
             if require_internal:
                 raise LinuxInstallError(
-                    "unsafe_install_root", "release directory symlink escapes its release"
+                    "unsafe_install_root",
+                    "release directory symlink escapes its release",
                 )
         else:
             expected = target.is_dir() if require_internal else target.is_file()
@@ -381,6 +382,8 @@ def _apply_permission_plan(plan: Sequence[_PermissionChange]) -> None:
                     change.original_mode,
                 )
             except (OSError, NotImplementedError):
+                # Preserve the initiating failure; rollback is best effort after
+                # the permission transaction has already become unrecoverable.
                 pass
         raise LinuxInstallError(
             "service_start_failed", "service filesystem permissions could not be set"
@@ -402,6 +405,8 @@ def _set_owned_mode(change: _PermissionChange, uid: int, gid: int, mode: int) ->
                 os.fchown(descriptor, current.st_uid, current.st_gid)
                 os.fchmod(descriptor, stat.S_IMODE(current.st_mode))
             except (OSError, NotImplementedError):
+                # Preserve the original ownership/mode failure; the caller rolls
+                # back earlier entries and maps it to the stable service error.
                 pass
             raise
     finally:
@@ -665,9 +670,7 @@ def _ensure_private_directory(path: Path) -> None:
         path.chmod(0o700)
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode & 0o020:
-        raise LinuxInstallError(
-            "unsafe_install_root", f"{path.name} is group-writable"
-        )
+        raise LinuxInstallError("unsafe_install_root", f"{path.name} is group-writable")
     if mode & 0o007:
         path.chmod(0o700)
 

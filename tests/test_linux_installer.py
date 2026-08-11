@@ -423,7 +423,9 @@ def test_systemd_renderer_rejects_relative_paths_and_template_drift(
             **{**kwargs, "root": Path("/opt/@ORI_USER_DIRECTIVE@")},
         )
     with pytest.raises(LinuxInstallError, match="service_start_failed"):
-        render_systemd_unit(_service_template().replace("@ORI_CONFIG@", "/fixed"), **kwargs)
+        render_systemd_unit(
+            _service_template().replace("@ORI_CONFIG@", "/fixed"), **kwargs
+        )
     with pytest.raises(LinuxInstallError, match="service_start_failed"):
         render_systemd_unit(_service_template() + "\n@UNKNOWN_MARKER@\n", **kwargs)
 
@@ -446,7 +448,9 @@ def test_system_permissions_keep_code_root_owned_and_data_service_owned(
     executable.chmod(0o700)
     regular.write_bytes(b"runtime")
     state.write_bytes(b"state")
-    inode_paths = {path.stat().st_ino: path for path in [layout.root, *layout.root.rglob("*")]}
+    inode_paths = {
+        path.stat().st_ino: path for path in [layout.root, *layout.root.rglob("*")]
+    }
     ownership: dict[Path, tuple[int, int]] = {}
     monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
     monkeypatch.setattr(
