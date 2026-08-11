@@ -21,6 +21,9 @@ fi
   ori/security/gateway_messages.py \
   ori/security/webhook_signatures.py \
   ori/security/remote_commands.py \
+  ori/security/release_bundles.py \
+  ori/security/aws_kms_release_signer.py \
+  ori/installer/linux.py \
   ori/network/sms_webhook.py \
   ori/actions/sms.py \
   ori/policy/device_policy.py \
