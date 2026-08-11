@@ -7,6 +7,7 @@ After=network.target
 
 [Service]
 Type=simple
+@ORI_USER_DIRECTIVE@
 WorkingDirectory=@ORI_DATA_DIR@
 EnvironmentFile=-@ORI_ENV_FILE@
 ExecStart=@ORI_ROOT@/current/venv/bin/python -m ori.runtime --config @ORI_CONFIG@
@@ -20,4 +21,4 @@ ProtectHome=read-only
 ReadWritePaths=@ORI_DATA_DIR@
 
 [Install]
-WantedBy=default.target
+WantedBy=@ORI_WANTED_BY@
