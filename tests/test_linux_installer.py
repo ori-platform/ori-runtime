@@ -3,13 +3,14 @@
 
 import json
 import os
+import pwd
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ import pytest
 import yaml
 
 from ori.installer.linux import (
+    BootPersistence,
     InstallerConfigInput,
     InstallLayout,
     LinuxInstallError,
@@ -25,12 +27,19 @@ from ori.installer.linux import (
     SystemdServiceManager,
     SystemdServiceProfile,
     apply_system_service_permissions,
+    install_composed_release,
     install_release,
     provision_runtime_config,
     render_systemd_unit,
     uninstall_runtime,
 )
 from ori.security.release_bundles import ExtractedReleaseBundle
+
+
+def _short_socket_temp_dir() -> str:
+    """Use a portable short path that stays within AF_UNIX sun_path limits."""
+    posix_tmp = Path("/tmp")
+    return str(posix_tmp if posix_tmp.is_dir() else Path(tempfile.gettempdir()))
 
 
 def _health_result(
@@ -119,7 +128,9 @@ def test_runtime_health_verifier_runs_real_bridge_against_unix_socket(
     release = _health_release(tmp_path)
     shutil.rmtree(release / "venv")
     (release / "venv").symlink_to(Path(sys.prefix), target_is_directory=True)
-    with tempfile.TemporaryDirectory(prefix="ori-health-") as socket_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="ori-health-", dir=_short_socket_temp_dir()
+    ) as socket_dir:
         socket_path = Path(socket_dir).resolve() / "health.sock"
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(str(socket_path))
@@ -276,6 +287,295 @@ def test_first_install_activates_only_after_prepare_and_validate(
     assert layout.current.resolve() == layout.release("2.3.0")
 
 
+def test_composed_install_orders_assets_health_and_enablement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    events: list[str] = []
+
+    class Preparer:
+        def prepare(self, release: Path) -> None:
+            events.append("prepare")
+            interpreter = release / "venv" / "bin" / "python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"python")
+            interpreter.chmod(0o700)
+
+        def validate(self, _release: Path) -> None:
+            events.append("validate")
+
+    class Manager:
+        def install_unit(self, _rendered: str) -> Callable[[], None]:
+            events.append("unit")
+            return lambda: events.append("unit-rollback")
+
+        def restart(self) -> None:
+            events.append("restart")
+
+        def stop(self) -> None:
+            events.append("stop")
+
+        def enable(self) -> BootPersistence:
+            events.append("enable")
+            return BootPersistence(True, "enabled")
+
+        def boot_persistence(self) -> BootPersistence:
+            return BootPersistence(True, "enabled")
+
+    class Health:
+        def verify(self, _release: Path) -> dict[str, object]:
+            events.append("health")
+            return {"device_id": "ori-01", "critical": False}
+
+    def provision(**_kwargs: object) -> Callable[[], None]:
+        events.append("config")
+        return lambda: events.append("config-rollback")
+
+    monkeypatch.setattr("ori.installer.linux.provision_runtime_config", provision)
+    result = install_composed_release(
+        layout=layout,
+        bundle=ExtractedReleaseBundle(
+            tmp_path, "2.3.0", "linux-x86_64-python3.12", "3.12", 1
+        ),
+        values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+        service_profile=SystemdServiceProfile.user(),
+        service_manager=Manager(),  # type: ignore[arg-type]
+        unit_template=_service_template(),
+        env_file=layout.data / "runtime.env",
+        preparer=Preparer(),  # type: ignore[arg-type]
+        health_verifier=Health(),  # type: ignore[arg-type]
+    )
+
+    assert result.install.changed is True
+    assert result.health["device_id"] == "ori-01"
+    assert events == [
+        "prepare",
+        "validate",
+        "validate",
+        "config",
+        "unit",
+        "restart",
+        "health",
+        "enable",
+    ]
+
+    events.clear()
+    repeated = install_composed_release(
+        layout=layout,
+        bundle=ExtractedReleaseBundle(
+            tmp_path, "2.3.0", "linux-x86_64-python3.12", "3.12", 1
+        ),
+        values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+        service_profile=SystemdServiceProfile.user(),
+        service_manager=Manager(),  # type: ignore[arg-type]
+        unit_template=_service_template(),
+        env_file=layout.data / "runtime.env",
+        preparer=Preparer(),  # type: ignore[arg-type]
+        health_verifier=Health(),  # type: ignore[arg-type]
+    )
+    assert repeated.install.changed is False
+    assert events == ["validate", "config", "unit", "restart", "health", "enable"]
+
+
+@pytest.mark.parametrize("stop_fails", [False, True])
+def test_composed_first_install_failure_attempts_all_rollback_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stop_fails: bool
+) -> None:
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    events: list[str] = []
+
+    class Preparer:
+        def prepare(self, release: Path) -> None:
+            interpreter = release / "venv" / "bin" / "python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"python")
+            interpreter.chmod(0o700)
+
+        def validate(self, _release: Path) -> None:
+            return
+
+    class Manager:
+        def install_unit(self, _rendered: str) -> Callable[[], None]:
+            events.append("unit")
+            return lambda: events.append("unit-rollback")
+
+        def restart(self) -> None:
+            events.append("restart")
+
+        def stop(self) -> None:
+            events.append("stop")
+            if stop_fails:
+                raise LinuxInstallError("service_start_failed", "stop failed")
+
+        def enable(self) -> BootPersistence:
+            raise AssertionError("must not enable unhealthy service")
+
+        def boot_persistence(self) -> BootPersistence:
+            raise AssertionError("must not query failed install")
+
+    class Health:
+        def verify(self, _release: Path) -> dict[str, object]:
+            events.append("health")
+            raise LinuxInstallError("post_install_health_failed", "critical")
+
+    def provision(**_kwargs: object) -> Callable[[], None]:
+        events.append("config")
+        return lambda: events.append("config-rollback")
+
+    monkeypatch.setattr("ori.installer.linux.provision_runtime_config", provision)
+    with pytest.raises(LinuxInstallError) as raised:
+        install_composed_release(
+            layout=layout,
+            bundle=ExtractedReleaseBundle(
+                tmp_path, "2.3.0", "linux-x86_64-python3.12", "3.12", 1
+            ),
+            values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+            service_profile=SystemdServiceProfile.user(),
+            service_manager=Manager(),  # type: ignore[arg-type]
+            unit_template=_service_template(),
+            env_file=layout.data / "runtime.env",
+            preparer=Preparer(),  # type: ignore[arg-type]
+            health_verifier=Health(),  # type: ignore[arg-type]
+        )
+
+    expected_code = "rollback_failed" if stop_fails else "post_install_health_failed"
+    assert raised.value.code == expected_code
+    assert events == [
+        "config",
+        "unit",
+        "restart",
+        "health",
+        "stop",
+        "unit-rollback",
+        "config-rollback",
+    ]
+    assert not layout.current.exists()
+    assert layout.release("2.3.0").exists() is stop_fails
+
+
+def test_composed_reinstall_integrates_config_dac_and_live_health_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory(
+        prefix="ori-composed-", dir=_short_socket_temp_dir()
+    ) as root:
+        layout = InstallLayout.resolve(Path(root) / "ori")
+        socket_path = layout.data / "health.sock"
+        server: socket.socket | None = None
+        server_thread: threading.Thread | None = None
+        server_errors: list[Exception] = []
+
+        class Preparer:
+            def prepare(self, release: Path) -> None:
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "venv",
+                        "--system-site-packages",
+                        str(release / "venv"),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                interpreter = release / "venv" / "bin" / "python"
+                interpreter.unlink()
+                shutil.copy2(Path(sys.executable).resolve(), interpreter)
+                version_dir = f"python{sys.version_info.major}.{sys.version_info.minor}"
+                site_packages = release / "venv" / "lib" / version_dir / "site-packages"
+                active_site_packages = (
+                    Path(sys.prefix) / "lib" / version_dir / "site-packages"
+                )
+                (site_packages / "ori-test-dependencies.pth").write_text(
+                    str(active_site_packages) + "\n", encoding="utf-8"
+                )
+                for alias in (
+                    "python3",
+                    version_dir,
+                ):
+                    alias_path = interpreter.parent / alias
+                    if alias_path.is_symlink():
+                        alias_path.unlink()
+                        alias_path.symlink_to("python")
+
+            def validate(self, release: Path) -> None:
+                assert (release / "venv" / "bin" / "python").is_file()
+
+        class Manager:
+            def install_unit(self, _rendered: str) -> Callable[[], None]:
+                return lambda: None
+
+            def restart(self) -> None:
+                nonlocal server, server_thread
+                if server is not None:
+                    return
+                server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                server.bind(str(socket_path))
+                server.listen(2)
+
+                def serve() -> None:
+                    assert server is not None
+                    try:
+                        for _ in range(2):
+                            connection, _ = server.accept()
+                            with connection:
+                                assert connection.recv(1024).strip() == b"GET_HEALTH"
+                                connection.sendall(
+                                    b'{"schema_version":1,"ok":true,"health":'
+                                    b'{"device_id":"ori-01","critical":false}}\n'
+                                )
+                    except Exception as exc:
+                        server_errors.append(exc)
+
+                server_thread = threading.Thread(target=serve, daemon=True)
+                server_thread.start()
+
+            def stop(self) -> None:
+                return
+
+            def enable(self) -> BootPersistence:
+                return BootPersistence(True, "enabled")
+
+            def boot_persistence(self) -> BootPersistence:
+                return BootPersistence(True, "enabled")
+
+        current_account = pwd.getpwuid(os.getuid())
+        monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+        monkeypatch.setattr(
+            "ori.installer.linux.pwd.getpwnam", lambda _name: current_account
+        )
+        monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+        bundle = ExtractedReleaseBundle(
+            Path(root), "2.3.0", "linux-x86_64-python3.12", "3.12", 1
+        )
+        kwargs = {
+            "layout": layout,
+            "bundle": bundle,
+            "values": InstallerConfigInput("ori-01", "Office", "Lagos"),
+            "service_profile": SystemdServiceProfile.system("ori"),
+            "service_manager": Manager(),
+            "unit_template": _service_template(),
+            "env_file": layout.data / "runtime.env",
+            "preparer": Preparer(),
+        }
+        try:
+            first = install_composed_release(**kwargs)  # type: ignore[arg-type]
+            assert first.install.changed is True
+            assert socket_path.exists()
+            repeated = install_composed_release(**kwargs)  # type: ignore[arg-type]
+            assert repeated.install.changed is False
+            assert (layout.data / "ori.yaml").stat().st_mode & 0o777 == 0o600
+            assert layout.current.resolve() == layout.release("2.3.0")
+        finally:
+            if server is not None:
+                server.close()
+            if server_thread is not None:
+                server_thread.join(timeout=5)
+        assert server_errors == []
+        assert server_thread is not None and not server_thread.is_alive()
+
+
 def test_release_is_revalidated_after_staging_move(tmp_path: Path) -> None:
     layout = InstallLayout.resolve(tmp_path / "ori")
     validated: list[str] = []
@@ -381,6 +681,33 @@ def test_systemd_manager_installs_atomically_without_enabling(tmp_path: Path) ->
     assert unit.read_text(encoding="utf-8").startswith("# Copyright")
     assert unit.stat().st_mode & 0o777 == 0o600
     assert commands == [["systemctl", "--user", "daemon-reload"]]
+
+
+def test_systemd_unit_transaction_can_remove_new_unit(tmp_path: Path) -> None:
+    unit = (tmp_path / "systemd" / "ori-runtime.service").resolve()
+    commands: list[list[str]] = []
+
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=unit,
+        runner=runner,
+        effective_uid=1001,
+    )
+    rollback = manager.install_unit(
+        _rendered_unit(tmp_path, SystemdServiceProfile.user())
+    )
+    rollback()
+
+    assert not unit.exists()
+    assert commands == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "disable", "--now", "ori-runtime.service"],
+        ["systemctl", "--user", "daemon-reload"],
+    ]
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -832,6 +1159,25 @@ def test_offline_preparer_rejects_missing_or_ambiguous_runtime_wheel(
         preparer.prepare(tmp_path / "release")
 
 
+def test_offline_preparer_rejects_installed_runtime_version_mismatch(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "bundle"
+    root.mkdir()
+    bundle = ExtractedReleaseBundle(root, "2.3.0", "linux-x86_64-python3.12", "3.12", 1)
+    release = tmp_path / "release"
+    interpreter = release / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"python")
+    preparer = OfflineReleasePreparer(
+        bundle=bundle,
+        runner=lambda command: subprocess.CompletedProcess(command, 0, "2.4.0\n", ""),
+    )
+
+    with pytest.raises(LinuxInstallError, match="version mismatch"):
+        preparer.validate(release)
+
+
 def test_user_systemd_unit_uses_user_target_without_user_directive(
     tmp_path: Path,
 ) -> None:
@@ -990,6 +1336,47 @@ def test_system_permissions_fail_closed_for_non_root_and_data_symlink(
     assert layout.root.stat().st_mode & 0o777 == 0o755
 
 
+def test_system_permissions_allow_only_configured_runtime_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory(
+        prefix="ori-dac-", dir=_short_socket_temp_dir()
+    ) as root:
+        layout = InstallLayout.resolve(Path(root) / "ori")
+        layout.releases.mkdir(parents=True)
+        layout.data.mkdir()
+        health_path = layout.data / "health.sock"
+        unexpected_path = layout.data / "unexpected.sock"
+        health_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        unexpected_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        health_socket.bind(str(health_path))
+        unexpected_socket.bind(str(unexpected_path))
+        monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+        monkeypatch.setattr(
+            "ori.installer.linux.pwd.getpwnam",
+            lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+        )
+        monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+        try:
+            with pytest.raises(LinuxInstallError, match="special files are forbidden"):
+                apply_system_service_permissions(
+                    layout,
+                    SystemdServiceProfile.system("ori"),
+                    allowed_data_sockets=(health_path,),
+                )
+            unexpected_socket.close()
+            unexpected_path.unlink()
+            apply_system_service_permissions(
+                layout,
+                SystemdServiceProfile.system("ori"),
+                allowed_data_sockets=(health_path,),
+            )
+            assert health_path.exists()
+        finally:
+            health_socket.close()
+            unexpected_socket.close()
+
+
 def test_system_upgrade_preserves_access_and_reapplies_permissions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1003,7 +1390,9 @@ def test_system_upgrade_preserves_access_and_reapplies_permissions(
     observed_modes: list[tuple[int, int]] = []
 
     def apply_permissions(
-        applied_layout: InstallLayout, _profile: SystemdServiceProfile
+        applied_layout: InstallLayout,
+        _profile: SystemdServiceProfile,
+        **_kwargs: object,
     ) -> None:
         observed_modes.append(
             (
@@ -1093,6 +1482,7 @@ def test_system_permissions_reject_escaping_release_symlinks(
     outside_directory = tmp_path / "outside"
     outside_directory.mkdir()
     (release / "lib64").symlink_to(outside_directory, target_is_directory=True)
+    host_euid = os.geteuid()
     monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
     monkeypatch.setattr(
         "ori.installer.linux.pwd.getpwnam",
@@ -1107,8 +1497,12 @@ def test_system_permissions_reject_escaping_release_symlinks(
     external_python = tmp_path / "python"
     external_python.write_bytes(b"python")
     external_python.chmod(0o755)
+    if host_euid == 0:
+        os.chown(external_python, 65534, 65534)
     (release / "python").symlink_to(external_python)
-    with pytest.raises(LinuxInstallError, match="unsafe_install_root"):
+    with pytest.raises(
+        LinuxInstallError, match="external release symlink target is not trusted"
+    ):
         apply_system_service_permissions(layout, SystemdServiceProfile.system("ori"))
 
 
@@ -1118,7 +1512,7 @@ def test_permission_failure_removes_new_release_before_activation(
     layout = InstallLayout.resolve(tmp_path / "ori")
     monkeypatch.setattr(
         "ori.installer.linux.apply_system_service_permissions",
-        lambda *_args: (_ for _ in ()).throw(
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
             LinuxInstallError("unsafe_install_root", "permission failure")
         ),
     )
@@ -1165,6 +1559,26 @@ def test_installer_config_is_validated_by_runtime_bridge_and_written_privately(
     assert loaded["actions"]["sms"]["enabled"] is False
     assert config_path.stat().st_mode & 0o777 == 0o600
     assert list(config_path.parent.glob(".ori.yaml.*.tmp")) == []
+
+
+def test_successful_config_provision_can_restore_previous_content_and_mode(
+    tmp_path: Path,
+) -> None:
+    config_path = (tmp_path / "data" / "ori.yaml").resolve()
+    config_path.parent.mkdir()
+    config_path.write_text("previous\n", encoding="utf-8")
+    config_path.chmod(0o640)
+
+    rollback = provision_runtime_config(
+        values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+        config_path=config_path,
+        release_python=Path(sys.executable),
+        health_socket_path=config_path.parent / "health.sock",
+    )
+    rollback()
+
+    assert config_path.read_text(encoding="utf-8") == "previous\n"
+    assert config_path.stat().st_mode & 0o777 == 0o640
 
 
 def test_system_config_is_owned_by_service_identity_without_ordering_dependency(
