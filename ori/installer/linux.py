@@ -13,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -409,6 +410,151 @@ class _PermissionChange:
 class BootPersistence:
     enabled: bool
     detail: str
+
+
+class RuntimeHealthVerifier:
+    """Bounded health gate using the activated release's own Runtime bridge."""
+
+    def __init__(
+        self,
+        *,
+        socket_path: Path,
+        expected_device_id: str,
+        timeout_seconds: float = 30.0,
+        poll_interval_seconds: float = 0.25,
+        runner: Callable[[Sequence[str], float], subprocess.CompletedProcess[str]]
+        | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
+        try:
+            socket_parent_is_canonical = (
+                socket_path.parent.resolve(strict=False) == socket_path.parent
+            )
+        except OSError as exc:
+            raise LinuxInstallError(
+                "post_install_health_failed",
+                "health socket path could not be inspected",
+            ) from exc
+        if (
+            not socket_path.is_absolute()
+            or _has_control_character(str(socket_path))
+            or not socket_parent_is_canonical
+            or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", expected_device_id)
+            or not 0 < timeout_seconds <= 300
+            or not 0 < poll_interval_seconds <= timeout_seconds
+        ):
+            raise LinuxInstallError(
+                "post_install_health_failed", "health verification settings are invalid"
+            )
+        self._socket_path = socket_path
+        self._expected_device_id = expected_device_id
+        self._timeout_seconds = timeout_seconds
+        self._poll_interval_seconds = poll_interval_seconds
+        self._runner = runner or _run_health_command
+        self._monotonic = monotonic
+        self._sleeper = sleeper
+
+    def verify(self, release: Path) -> dict[str, object]:
+        """Wait for non-critical health and return the validated health snapshot."""
+        release_python = release / "venv" / "bin" / "python"
+        if (
+            not release.is_absolute()
+            or release.is_symlink()
+            or not release_python.exists()
+            or not release_python.is_file()
+            or not os.access(release_python, os.X_OK)
+        ):
+            raise LinuxInstallError(
+                "post_install_health_failed", "activated release interpreter is unsafe"
+            )
+        deadline = self._monotonic() + self._timeout_seconds
+        while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise LinuxInstallError(
+                    "post_install_health_failed",
+                    "runtime health socket did not become ready before the deadline",
+                )
+            bridge_timeout_ms = max(100, min(3000, int(remaining * 1000)))
+            try:
+                result = self._runner(
+                    [
+                        str(release_python),
+                        "-m",
+                        "ori.cli_bridge",
+                        "health",
+                        "snapshot",
+                        "--socket",
+                        str(self._socket_path),
+                        "--timeout-ms",
+                        str(bridge_timeout_ms),
+                    ],
+                    remaining,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise LinuxInstallError(
+                    "post_install_health_failed",
+                    "runtime health bridge exceeded the verification deadline",
+                ) from exc
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise LinuxInstallError(
+                    "post_install_health_failed", "runtime health bridge could not run"
+                ) from exc
+
+            outcome, health = _health_bridge_response(result)
+            if outcome == "healthy" and health is not None:
+                if health.get("device_id") != self._expected_device_id:
+                    raise LinuxInstallError(
+                        "post_install_health_failed",
+                        "runtime health identity does not match configured device",
+                    )
+                return health
+            if outcome != "retry":
+                raise LinuxInstallError(
+                    "post_install_health_failed", "runtime reported unhealthy status"
+                )
+            delay = min(self._poll_interval_seconds, deadline - self._monotonic())
+            if delay > 0:
+                self._sleeper(delay)
+
+
+def _health_bridge_response(
+    result: subprocess.CompletedProcess[str],
+) -> tuple[Literal["healthy", "retry", "failed"], dict[str, object] | None]:
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return "failed", None
+    if not isinstance(payload, dict):
+        return "failed", None
+    if result.returncode != 0:
+        error = payload.get("error")
+        if (
+            payload.get("schema_version") == 1
+            and payload.get("ok") is False
+            and payload.get("command") == "health snapshot"
+            and isinstance(error, dict)
+            and error.get("code")
+            in {"health_socket_unavailable", "health_socket_error"}
+        ):
+            return "retry", None
+        return "failed", None
+    result_payload = payload.get("result")
+    if not (
+        payload.get("schema_version") == 1
+        and payload.get("ok") is True
+        and payload.get("command") == "health snapshot"
+        and isinstance(result_payload, dict)
+        and result_payload.get("schema_version") == 1
+        and result_payload.get("ok") is True
+        and isinstance(result_payload.get("health"), dict)
+    ):
+        return "failed", None
+    health = result_payload["health"]
+    if health.get("critical", False) is not False:
+        return "failed", None
+    return "healthy", health
 
 
 class SystemdServiceManager:
@@ -1253,4 +1399,16 @@ def _version_key(
 def _run_command(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command, capture_output=True, text=True, check=False, timeout=300
+    )
+
+
+def _run_health_command(
+    command: Sequence[str], timeout_seconds: float
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout_seconds,
     )

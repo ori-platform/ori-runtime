@@ -1,9 +1,14 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import os
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +21,7 @@ from ori.installer.linux import (
     InstallLayout,
     LinuxInstallError,
     OfflineReleasePreparer,
+    RuntimeHealthVerifier,
     SystemdServiceManager,
     SystemdServiceProfile,
     apply_system_service_permissions,
@@ -27,6 +33,35 @@ from ori.installer.linux import (
 from ori.security.release_bundles import ExtractedReleaseBundle
 
 
+def _health_result(
+    command: Sequence[str],
+    *,
+    returncode: int = 0,
+    socket_ok: bool = True,
+    critical: bool = False,
+    device_id: str = "ori-01",
+) -> subprocess.CompletedProcess[str]:
+    if returncode == 0:
+        payload = {
+            "schema_version": 1,
+            "ok": True,
+            "command": "health snapshot",
+            "result": {
+                "schema_version": 1,
+                "ok": socket_ok,
+                "health": {"device_id": device_id, "critical": critical},
+            },
+        }
+    else:
+        payload = {
+            "schema_version": 1,
+            "ok": False,
+            "command": "health snapshot",
+            "error": {"code": "health_socket_unavailable", "detail": "not ready"},
+        }
+    return subprocess.CompletedProcess(command, returncode, json.dumps(payload), "")
+
+
 def _prepare(path: Path) -> None:
     (path / "venv").mkdir()
     (path / "venv" / "installed.txt").write_text("ok", encoding="utf-8")
@@ -34,6 +69,194 @@ def _prepare(path: Path) -> None:
 
 def _validate(path: Path) -> None:
     assert (path / "venv" / "installed.txt").read_text(encoding="utf-8") == "ok"
+
+
+def _health_release(tmp_path: Path) -> Path:
+    release = (tmp_path / "releases" / "2.3.0").resolve()
+    interpreter = release / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"python")
+    interpreter.chmod(0o700)
+    return release
+
+
+def test_runtime_health_verifier_uses_activated_release_bridge(tmp_path: Path) -> None:
+    release = _health_release(tmp_path)
+    socket_path = (tmp_path / "data" / "health.sock").resolve()
+    calls: list[tuple[list[str], float]] = []
+
+    def runner(
+        command: Sequence[str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((list(command), timeout))
+        return _health_result(command)
+
+    health = RuntimeHealthVerifier(
+        socket_path=socket_path,
+        expected_device_id="ori-01",
+        timeout_seconds=10,
+        runner=runner,
+    ).verify(release)
+
+    assert health == {"device_id": "ori-01", "critical": False}
+    assert calls[0][0] == [
+        str(release / "venv" / "bin" / "python"),
+        "-m",
+        "ori.cli_bridge",
+        "health",
+        "snapshot",
+        "--socket",
+        str(socket_path),
+        "--timeout-ms",
+        "3000",
+    ]
+    assert 9.9 < calls[0][1] <= 10
+
+
+def test_runtime_health_verifier_runs_real_bridge_against_unix_socket(
+    tmp_path: Path,
+) -> None:
+    release = _health_release(tmp_path)
+    shutil.rmtree(release / "venv")
+    (release / "venv").symlink_to(Path(sys.prefix), target_is_directory=True)
+    with tempfile.TemporaryDirectory(prefix="ori-health-") as socket_dir:
+        socket_path = Path(socket_dir).resolve() / "health.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(socket_path))
+        server.listen(1)
+
+        def serve_once() -> None:
+            connection, _ = server.accept()
+            with connection:
+                assert connection.recv(1024).strip() == b"GET_HEALTH"
+                connection.sendall(
+                    b'{"schema_version":1,"ok":true,"health":'
+                    b'{"device_id":"ori-real","critical":false}}\n'
+                )
+
+        thread = threading.Thread(target=serve_once, daemon=True)
+        thread.start()
+        try:
+            health = RuntimeHealthVerifier(
+                socket_path=socket_path,
+                expected_device_id="ori-real",
+                timeout_seconds=5,
+            ).verify(release)
+        finally:
+            server.close()
+            thread.join(timeout=5)
+
+        assert health == {"device_id": "ori-real", "critical": False}
+        assert not thread.is_alive()
+
+
+def test_runtime_health_verifier_retries_only_transient_socket_failure(
+    tmp_path: Path,
+) -> None:
+    release = _health_release(tmp_path)
+    responses = [1, 0]
+    sleeps: list[float] = []
+
+    def runner(
+        command: Sequence[str], _timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        return _health_result(command, returncode=responses.pop(0))
+
+    health = RuntimeHealthVerifier(
+        socket_path=(tmp_path / "data" / "health.sock").resolve(),
+        expected_device_id="ori-01",
+        runner=runner,
+        sleeper=sleeps.append,
+    ).verify(release)
+
+    assert health["device_id"] == "ori-01"
+    assert sleeps == [0.25]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        subprocess.CompletedProcess([], 0, "not-json", "secret"),
+        subprocess.CompletedProcess([], 0, '{"schema_version":1,"ok":true}', ""),
+        _health_result([], socket_ok=False),
+        _health_result([], critical=True),
+    ],
+)
+def test_runtime_health_verifier_rejects_malformed_or_critical_health(
+    tmp_path: Path, result: subprocess.CompletedProcess[str]
+) -> None:
+    release = _health_release(tmp_path)
+    with pytest.raises(LinuxInstallError) as raised:
+        RuntimeHealthVerifier(
+            socket_path=(tmp_path / "data" / "health.sock").resolve(),
+            expected_device_id="ori-01",
+            runner=lambda _command, _timeout: result,
+        ).verify(release)
+    assert raised.value.code == "post_install_health_failed"
+    assert "secret" not in raised.value.detail
+
+
+def test_runtime_health_verifier_reports_wrong_runtime_identity(tmp_path: Path) -> None:
+    release = _health_release(tmp_path)
+    with pytest.raises(LinuxInstallError) as raised:
+        RuntimeHealthVerifier(
+            socket_path=(tmp_path / "data" / "health.sock").resolve(),
+            expected_device_id="ori-01",
+            runner=lambda command, _timeout: _health_result(
+                command, device_id="wrong-device"
+            ),
+        ).verify(release)
+    assert raised.value.detail == (
+        "runtime health identity does not match configured device"
+    )
+
+
+def test_runtime_health_verifier_reports_subprocess_deadline(tmp_path: Path) -> None:
+    release = _health_release(tmp_path)
+
+    def runner(
+        command: Sequence[str], timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(command, timeout)
+
+    with pytest.raises(LinuxInstallError) as raised:
+        RuntimeHealthVerifier(
+            socket_path=(tmp_path / "data" / "health.sock").resolve(),
+            expected_device_id="ori-01",
+            runner=runner,
+        ).verify(release)
+    assert raised.value.detail == (
+        "runtime health bridge exceeded the verification deadline"
+    )
+
+
+def test_runtime_health_verifier_enforces_overall_deadline(tmp_path: Path) -> None:
+    release = _health_release(tmp_path)
+    now = 0.0
+
+    def monotonic() -> float:
+        return now
+
+    def sleeper(delay: float) -> None:
+        nonlocal now
+        now += delay
+
+    def runner(
+        command: Sequence[str], _timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        return _health_result(command, returncode=1)
+
+    with pytest.raises(LinuxInstallError, match="before the deadline"):
+        RuntimeHealthVerifier(
+            socket_path=(tmp_path / "data" / "health.sock").resolve(),
+            expected_device_id="ori-01",
+            timeout_seconds=0.5,
+            poll_interval_seconds=0.25,
+            runner=runner,
+            monotonic=monotonic,
+            sleeper=sleeper,
+        ).verify(release)
+    assert now == 0.5
 
 
 def test_first_install_activates_only_after_prepare_and_validate(
