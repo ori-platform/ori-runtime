@@ -129,6 +129,279 @@ class _PermissionChange:
     inode: int
 
 
+@dataclass(frozen=True)
+class BootPersistence:
+    enabled: bool
+    detail: str
+
+
+class SystemdServiceManager:
+    """Shell-free systemd lifecycle adapter with explicit unit scope."""
+
+    def __init__(
+        self,
+        *,
+        profile: SystemdServiceProfile,
+        unit_path: Path,
+        runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+        | None = None,
+        effective_uid: int | None = None,
+    ) -> None:
+        self._profile = profile
+        self._unit_path = unit_path
+        self._runner = runner or _run_command
+        self._effective_uid = os.geteuid() if effective_uid is None else effective_uid
+        if (
+            not unit_path.is_absolute()
+            or unit_path.name != "ori-runtime.service"
+            or unit_path.parent.resolve(strict=False) != unit_path.parent
+        ):
+            raise LinuxInstallError(
+                "service_start_failed", "systemd unit path is unsafe"
+            )
+        if profile.scope == "system" and self._effective_uid != 0:
+            raise LinuxInstallError(
+                "service_start_failed", "system unit management requires root"
+            )
+        if profile.scope == "user" and self._effective_uid == 0:
+            raise LinuxInstallError(
+                "service_start_failed", "user unit must not run as root"
+            )
+
+    def install_unit(self, rendered: str) -> None:
+        """Atomically place a rendered unit without enabling or starting it."""
+        if "@ORI_" in rendered or "\x00" in rendered:
+            raise LinuxInstallError(
+                "service_start_failed", "rendered service unit is invalid"
+            )
+        self._validate_unit_profile(rendered)
+        parent = self._unit_path.parent
+        if parent.is_symlink():
+            raise LinuxInstallError(
+                "service_start_failed", "systemd unit directory must not be a symlink"
+            )
+        parent.mkdir(parents=True, exist_ok=True, mode=self._directory_mode())
+        previous: tuple[bytes, int] | None = None
+        installed = False
+        try:
+            if self._unit_path.is_symlink() or (
+                self._unit_path.exists() and not self._unit_path.is_file()
+            ):
+                raise LinuxInstallError(
+                    "service_start_failed", "managed service unit is unsafe"
+                )
+            if self._unit_path.is_file():
+                previous = (
+                    self._unit_path.read_bytes(),
+                    stat.S_IMODE(self._unit_path.stat().st_mode),
+                )
+            installed = True
+            self._atomic_write(rendered.encode("utf-8"), self._unit_mode())
+            self._run([*self._systemctl(), "daemon-reload"], "daemon reload")
+        except (LinuxInstallError, OSError) as exc:
+            if not installed:
+                if isinstance(exc, LinuxInstallError):
+                    raise
+                raise LinuxInstallError(
+                    "service_start_failed", "service unit could not be installed"
+                ) from exc
+            try:
+                if previous is None:
+                    self._unit_path.unlink(missing_ok=True)
+                else:
+                    self._atomic_write(previous[0], previous[1])
+                self._run([*self._systemctl(), "daemon-reload"], "rollback reload")
+            except (LinuxInstallError, OSError) as rollback_error:
+                raise LinuxInstallError(
+                    "service_start_failed",
+                    "service unit installation and rollback failed",
+                ) from rollback_error
+            if isinstance(exc, LinuxInstallError):
+                raise
+            raise LinuxInstallError(
+                "service_start_failed", "service unit could not be installed"
+            ) from exc
+
+    def restart(self) -> None:
+        self._run([*self._systemctl(), "restart", self._unit_path.name], "restart")
+
+    def stop(self) -> None:
+        self._run([*self._systemctl(), "stop", self._unit_path.name], "stop")
+
+    def enable(self) -> BootPersistence:
+        self._run([*self._systemctl(), "enable", self._unit_path.name], "enable")
+        return self.boot_persistence()
+
+    def boot_persistence(self) -> BootPersistence:
+        if self._profile.scope == "system":
+            result = self._run_raw(["systemctl", "is-enabled", self._unit_path.name])
+            state = result.stdout.strip().lower()
+            if state == "enabled" and result.returncode == 0:
+                return BootPersistence(True, "system unit enabled for boot")
+            if state in {
+                "alias",
+                "bad",
+                "disabled",
+                "enabled-runtime",
+                "generated",
+                "indirect",
+                "linked",
+                "linked-runtime",
+                "masked",
+                "masked-runtime",
+                "not-found",
+                "static",
+                "transient",
+            }:
+                return BootPersistence(
+                    False, f"system unit is {state}; boot startup is not persistent"
+                )
+            raise LinuxInstallError(
+                "service_start_failed", "service enablement query was malformed"
+            )
+        result = self._run_raw(
+            [
+                "loginctl",
+                "show-user",
+                str(self._effective_uid),
+                "-p",
+                "Linger",
+                "--value",
+            ]
+        )
+        if result.returncode != 0:
+            raise LinuxInstallError(
+                "service_start_failed", "service linger query failed"
+            )
+        linger_value = result.stdout.strip().lower()
+        if linger_value not in {"yes", "no"}:
+            raise LinuxInstallError(
+                "service_start_failed", "service linger query was malformed"
+            )
+        linger = linger_value == "yes"
+        detail = (
+            "user lingering is enabled"
+            if linger
+            else "user lingering is disabled; boot startup is not persistent"
+        )
+        return BootPersistence(linger, detail)
+
+    def disable_and_remove(self) -> None:
+        if self._unit_path.is_symlink():
+            raise LinuxInstallError(
+                "service_start_failed", "service unit must not be a symlink"
+            )
+        if not self._unit_path.exists() and not self._unit_path.is_symlink():
+            self._run([*self._systemctl(), "daemon-reload"], "daemon reload")
+            return
+        self._run(
+            [*self._systemctl(), "disable", "--now", self._unit_path.name],
+            "disable",
+        )
+        try:
+            self._unit_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise LinuxInstallError(
+                "service_start_failed", "service unit could not be removed"
+            ) from exc
+        self._run([*self._systemctl(), "daemon-reload"], "daemon reload")
+
+    def _atomic_write(self, content: bytes, mode: int) -> None:
+        temporary = self._unit_path.parent / (
+            f".{self._unit_path.name}.{uuid.uuid4().hex}.tmp"
+        )
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                mode,
+            )
+            with os.fdopen(descriptor, "wb", closefd=False) as output:
+                output.write(content)
+                output.flush()
+                os.fsync(descriptor)
+            os.fchmod(descriptor, mode)
+            os.replace(temporary, self._unit_path)
+            parent_descriptor = os.open(
+                self._unit_path.parent,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY,
+            )
+            try:
+                os.fsync(parent_descriptor)
+            finally:
+                os.close(parent_descriptor)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary.unlink(missing_ok=True)
+
+    def _validate_unit_profile(self, rendered: str) -> None:
+        section = ""
+        users: list[str] = []
+        targets: list[str] = []
+        for raw_line in rendered.splitlines():
+            if raw_line.rstrip().endswith("\\"):
+                raise LinuxInstallError(
+                    "service_start_failed", "service unit continuations are forbidden"
+                )
+            line = raw_line.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1]
+                continue
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if section == "Service" and key.strip() == "User":
+                users.append(value.strip())
+            if section == "Install" and key.strip() == "WantedBy":
+                targets.append(value.strip())
+        expected_target = (
+            "default.target" if self._profile.scope == "user" else "multi-user.target"
+        )
+        if targets != [expected_target]:
+            raise LinuxInstallError(
+                "service_start_failed", "service unit target does not match profile"
+            )
+        if self._profile.scope == "user":
+            valid_user = not users
+        else:
+            valid_user = users == [self._profile.service_user]
+        if not valid_user:
+            raise LinuxInstallError(
+                "service_start_failed", "service unit identity does not match profile"
+            )
+
+    def _systemctl(self) -> list[str]:
+        return (
+            ["systemctl", "--user"] if self._profile.scope == "user" else ["systemctl"]
+        )
+
+    def _directory_mode(self) -> int:
+        return 0o700 if self._profile.scope == "user" else 0o755
+
+    def _unit_mode(self) -> int:
+        return 0o600 if self._profile.scope == "user" else 0o644
+
+    def _run(self, command: Sequence[str], operation: str) -> None:
+        result = self._run_raw(command)
+        if result.returncode != 0:
+            raise LinuxInstallError(
+                "service_start_failed", f"service {operation} failed"
+            )
+
+    def _run_raw(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        try:
+            result = self._runner(command)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise LinuxInstallError(
+                "service_start_failed", "service command could not run"
+            ) from exc
+        return result
+
+
 def render_systemd_unit(
     template: str,
     *,

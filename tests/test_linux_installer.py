@@ -13,6 +13,7 @@ from ori.installer.linux import (
     InstallLayout,
     LinuxInstallError,
     OfflineReleasePreparer,
+    SystemdServiceManager,
     SystemdServiceProfile,
     apply_system_service_permissions,
     install_release,
@@ -91,6 +92,262 @@ def test_failed_post_move_validation_removes_unusable_release(tmp_path: Path) ->
     assert not layout.release("2.3.0").exists()
     assert list(layout.releases.iterdir()) == []
     assert not layout.current.exists()
+
+
+def test_systemd_manager_separates_user_and_system_commands(tmp_path: Path) -> None:
+    user_commands: list[Sequence[str]] = []
+    system_commands: list[Sequence[str]] = []
+
+    def user_runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        user_commands.append(command)
+        stdout = "yes\n" if command[0] == "loginctl" else ""
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    def system_runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        system_commands.append(command)
+        stdout = "enabled\n" if "is-enabled" in command else ""
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    user = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=(tmp_path / "user" / "ori-runtime.service").resolve(),
+        runner=user_runner,
+        effective_uid=1001,
+    )
+    system = SystemdServiceManager(
+        profile=SystemdServiceProfile.system("ori"),
+        unit_path=(tmp_path / "system" / "ori-runtime.service").resolve(),
+        runner=system_runner,
+        effective_uid=0,
+    )
+    user.restart()
+    assert user.enable().enabled is True
+    system.restart()
+    assert system.enable().enabled is True
+    assert user_commands == [
+        ["systemctl", "--user", "restart", "ori-runtime.service"],
+        ["systemctl", "--user", "enable", "ori-runtime.service"],
+        ["loginctl", "show-user", "1001", "-p", "Linger", "--value"],
+    ]
+    assert system_commands == [
+        ["systemctl", "restart", "ori-runtime.service"],
+        ["systemctl", "enable", "ori-runtime.service"],
+        ["systemctl", "is-enabled", "ori-runtime.service"],
+    ]
+
+
+def test_systemd_manager_installs_atomically_without_enabling(tmp_path: Path) -> None:
+    commands: list[Sequence[str]] = []
+
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    unit = (tmp_path / "units" / "ori-runtime.service").resolve()
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=unit,
+        runner=runner,
+        effective_uid=1001,
+    )
+    manager.install_unit(_rendered_unit(tmp_path, SystemdServiceProfile.user()))
+    assert unit.read_text(encoding="utf-8").startswith("# Copyright")
+    assert unit.stat().st_mode & 0o777 == 0o600
+    assert commands == [["systemctl", "--user", "daemon-reload"]]
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_systemd_manager_rolls_back_unit_when_daemon_reload_fails(
+    tmp_path: Path, existing: bool
+) -> None:
+    calls = 0
+
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        return subprocess.CompletedProcess(command, 1 if calls == 1 else 0, "", "")
+
+    unit = (tmp_path / "units" / "ori-runtime.service").resolve()
+    unit.parent.mkdir()
+    if existing:
+        unit.write_text("old unit\n", encoding="utf-8")
+        unit.chmod(0o640)
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=unit,
+        runner=runner,
+        effective_uid=1001,
+    )
+    with pytest.raises(LinuxInstallError, match="daemon reload"):
+        manager.install_unit(_rendered_unit(tmp_path, SystemdServiceProfile.user()))
+    if existing:
+        assert unit.read_text(encoding="utf-8") == "old unit\n"
+        assert unit.stat().st_mode & 0o777 == 0o640
+    else:
+        assert not unit.exists()
+    assert calls == 2
+
+
+def test_systemd_manager_removal_is_idempotent_when_unit_is_absent(
+    tmp_path: Path,
+) -> None:
+    commands: list[Sequence[str]] = []
+
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=(tmp_path / "units" / "ori-runtime.service").resolve(),
+        runner=runner,
+        effective_uid=1001,
+    )
+    manager.disable_and_remove()
+    assert commands == [["systemctl", "--user", "daemon-reload"]]
+
+
+def test_systemd_manager_disables_before_removing_unit(tmp_path: Path) -> None:
+    commands: list[Sequence[str]] = []
+    unit = (tmp_path / "units" / "ori-runtime.service").resolve()
+    unit.parent.mkdir()
+    unit.write_text("unit\n", encoding="utf-8")
+
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if len(commands) == 1:
+            assert unit.exists()
+        else:
+            assert not unit.exists()
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=unit,
+        runner=runner,
+        effective_uid=1001,
+    )
+    manager.disable_and_remove()
+    assert commands == [
+        ["systemctl", "--user", "disable", "--now", "ori-runtime.service"],
+        ["systemctl", "--user", "daemon-reload"],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("manager_profile", "rendered_profile"),
+    [
+        (SystemdServiceProfile.system("ori"), SystemdServiceProfile.user()),
+        (SystemdServiceProfile.user(), SystemdServiceProfile.system("ori")),
+    ],
+)
+def test_systemd_manager_rejects_rendered_profile_mismatch(
+    tmp_path: Path,
+    manager_profile: SystemdServiceProfile,
+    rendered_profile: SystemdServiceProfile,
+) -> None:
+    commands: list[Sequence[str]] = []
+    unit = (tmp_path / "units" / "ori-runtime.service").resolve()
+    manager = SystemdServiceManager(
+        profile=manager_profile,
+        unit_path=unit,
+        runner=lambda command: (
+            commands.append(command) or subprocess.CompletedProcess(command, 0, "", "")
+        ),
+        effective_uid=0 if manager_profile.scope == "system" else 1001,
+    )
+    with pytest.raises(LinuxInstallError, match="service_start_failed"):
+        manager.install_unit(_rendered_unit(tmp_path, rendered_profile))
+    assert commands == []
+    assert not unit.exists()
+
+
+def test_systemd_manager_rejects_hidden_continuation_directives(
+    tmp_path: Path,
+) -> None:
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=(tmp_path / "units" / "ori-runtime.service").resolve(),
+        runner=lambda command: subprocess.CompletedProcess(command, 0, "", ""),
+        effective_uid=1001,
+    )
+    rendered = _rendered_unit(tmp_path, SystemdServiceProfile.user()).replace(
+        "Type=simple", "Type=simple\\\nUser=root"
+    )
+    with pytest.raises(LinuxInstallError, match="service_start_failed"):
+        manager.install_unit(rendered)
+
+
+def test_system_boot_persistence_queries_real_enablement(tmp_path: Path) -> None:
+    states = iter([(1, "disabled\n"), (0, "enabled\n")])
+
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        returncode, stdout = next(states)
+        return subprocess.CompletedProcess(command, returncode, stdout, "")
+
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.system("ori"),
+        unit_path=(tmp_path / "units" / "ori-runtime.service").resolve(),
+        runner=runner,
+        effective_uid=0,
+    )
+    assert manager.boot_persistence().enabled is False
+    assert manager.boot_persistence().enabled is True
+
+
+def test_user_boot_persistence_reports_missing_linger(tmp_path: Path) -> None:
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, "no\n", "")
+
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=(tmp_path / "units" / "ori-runtime.service").resolve(),
+        runner=runner,
+        effective_uid=1001,
+    )
+    persistence = manager.boot_persistence()
+    assert persistence.enabled is False
+    assert "not persistent" in persistence.detail
+
+
+def test_user_boot_persistence_rejects_malformed_linger_state(tmp_path: Path) -> None:
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=(tmp_path / "units" / "ori-runtime.service").resolve(),
+        runner=lambda command: subprocess.CompletedProcess(command, 0, "unknown\n", ""),
+        effective_uid=1001,
+    )
+    with pytest.raises(LinuxInstallError, match="service_start_failed"):
+        manager.boot_persistence()
+
+
+def test_systemd_manager_rejects_root_user_scope_and_command_failures(
+    tmp_path: Path,
+) -> None:
+    unit = (tmp_path / "units" / "ori-runtime.service").resolve()
+    with pytest.raises(LinuxInstallError, match="service_start_failed"):
+        SystemdServiceManager(
+            profile=SystemdServiceProfile.user(), unit_path=unit, effective_uid=0
+        )
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.system("ori"),
+        unit_path=unit,
+        effective_uid=0,
+        runner=lambda command: subprocess.CompletedProcess(command, 1, "", "failed"),
+    )
+    with pytest.raises(LinuxInstallError, match="service_start_failed"):
+        manager.restart()
+
+
+def _rendered_unit(tmp_path: Path, profile: SystemdServiceProfile) -> str:
+    return render_systemd_unit(
+        _service_template(),
+        profile=profile,
+        root=(tmp_path / "root").resolve(),
+        data_dir=(tmp_path / "data").resolve(),
+        config_path=(tmp_path / "data" / "ori.yaml").resolve(),
+        env_file=(tmp_path / "data" / "runtime.env").resolve(),
+    )
 
 
 def test_failed_upgrade_restores_healthy_previous_release(tmp_path: Path) -> None:
