@@ -85,6 +85,13 @@ class InstallResult:
 
 
 @dataclass(frozen=True)
+class ComposedInstallResult:
+    install: InstallResult
+    health: dict[str, object]
+    boot_persistence: BootPersistence
+
+
+@dataclass(frozen=True)
 class InstallerConfigInput:
     device_id: str
     name: str
@@ -133,7 +140,7 @@ def provision_runtime_config(
     health_socket_path: Path,
     service_profile: SystemdServiceProfile | None = None,
     runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None = None,
-) -> None:
+) -> Callable[[], None]:
     """Generate, validate, and atomically install a minimal Runtime config."""
     for path in (config_path, release_python, health_socket_path):
         if not path.is_absolute() or _has_control_character(str(path)):
@@ -298,6 +305,22 @@ def provision_runtime_config(
         if descriptor >= 0:
             os.close(descriptor)
         temporary.unlink(missing_ok=True)
+
+    rolled_back = False
+
+    def rollback() -> None:
+        nonlocal rolled_back
+        if rolled_back:
+            return
+        try:
+            _restore_config(config_path, previous)
+        except OSError as exc:
+            raise LinuxInstallError(
+                "config_validation_failed", "config rollback failed"
+            ) from exc
+        rolled_back = True
+
+    return rollback
 
 
 def _restore_config(path: Path, previous: tuple[bytes, int, int, int] | None) -> None:
@@ -590,7 +613,7 @@ class SystemdServiceManager:
                 "service_start_failed", "user unit must not run as root"
             )
 
-    def install_unit(self, rendered: str) -> None:
+    def install_unit(self, rendered: str) -> Callable[[], None]:
         """Atomically place a rendered unit without enabling or starting it."""
         if "@ORI_" in rendered or "\x00" in rendered:
             raise LinuxInstallError(
@@ -643,6 +666,26 @@ class SystemdServiceManager:
             raise LinuxInstallError(
                 "service_start_failed", "service unit could not be installed"
             ) from exc
+
+        rolled_back = False
+
+        def rollback() -> None:
+            nonlocal rolled_back
+            if rolled_back:
+                return
+            if previous is None:
+                self.disable_and_remove()
+            else:
+                try:
+                    self._atomic_write(previous[0], previous[1])
+                    self._run([*self._systemctl(), "daemon-reload"], "rollback reload")
+                except (LinuxInstallError, OSError) as exc:
+                    raise LinuxInstallError(
+                        "service_start_failed", "service unit rollback failed"
+                    ) from exc
+            rolled_back = True
+
+        return rollback
 
     def restart(self) -> None:
         self._run([*self._systemctl(), "restart", self._unit_path.name], "restart")
@@ -887,7 +930,10 @@ def render_systemd_unit(
 
 
 def apply_system_service_permissions(
-    layout: InstallLayout, profile: SystemdServiceProfile
+    layout: InstallLayout,
+    profile: SystemdServiceProfile,
+    *,
+    allowed_data_sockets: Sequence[Path] = (),
 ) -> None:
     """Make verified code readable, and only data writable, by a system service."""
     if profile.scope != "system" or profile.service_user is None:
@@ -904,6 +950,25 @@ def apply_system_service_permissions(
         raise LinuxInstallError(
             "service_start_failed", "system service user does not exist"
         ) from exc
+
+    allowed_sockets: frozenset[Path] = frozenset(allowed_data_sockets)
+    for socket_path in allowed_sockets:
+        try:
+            unsafe_socket = (
+                not socket_path.is_absolute()
+                or _has_control_character(str(socket_path))
+                or socket_path.parent.resolve(strict=False) != socket_path.parent
+                or not socket_path.is_relative_to(layout.data)
+                or socket_path == layout.data
+            )
+        except OSError as exc:
+            raise LinuxInstallError(
+                "unsafe_install_root", "allowed data socket could not be inspected"
+            ) from exc
+        if unsafe_socket:
+            raise LinuxInstallError(
+                "unsafe_install_root", "allowed data socket path is unsafe"
+            )
 
     _assert_managed_path(layout, layout.root)
     root_stat = layout.root.lstat()
@@ -935,6 +1000,7 @@ def apply_system_service_permissions(
             regular_mode=0o600,
             executable_mode=0o700,
             allow_file_symlinks=False,
+            allowed_sockets=allowed_sockets,
         )
     )
     _apply_permission_plan(plan)
@@ -950,6 +1016,7 @@ def _owned_tree_plan(
     regular_mode: int,
     executable_mode: int,
     allow_file_symlinks: bool,
+    allowed_sockets: frozenset[Path] = frozenset(),
 ) -> list[_PermissionChange]:
     if root.is_symlink() or not root.is_dir():
         raise LinuxInstallError(
@@ -985,11 +1052,13 @@ def _owned_tree_plan(
                     )
                 _validate_release_symlink(layout, path, require_internal=False)
                 continue
+            path_stat = path.lstat()
+            if stat.S_ISSOCK(path_stat.st_mode) and path in allowed_sockets:
+                continue
             if not path.is_file():
                 raise LinuxInstallError(
                     "unsafe_install_root", "special files are forbidden"
                 )
-            path_stat = path.lstat()
             existing_mode = path_stat.st_mode
             mode = executable_mode if existing_mode & 0o100 else regular_mode
             plan.append(
@@ -1188,6 +1257,102 @@ class OfflineReleasePreparer:
             )
 
 
+def install_composed_release(
+    *,
+    layout: InstallLayout,
+    bundle: ExtractedReleaseBundle,
+    values: InstallerConfigInput,
+    service_profile: SystemdServiceProfile,
+    service_manager: SystemdServiceManager,
+    unit_template: str,
+    env_file: Path,
+    allow_downgrade: bool = False,
+    preparer: OfflineReleasePreparer | None = None,
+    health_verifier: RuntimeHealthVerifier | None = None,
+) -> ComposedInstallResult:
+    """Compose release, config, unit, health, and enablement as one transaction."""
+    config_path = layout.data / "ori.yaml"
+    socket_path = layout.data / "health.sock"
+    rendered = render_systemd_unit(
+        unit_template,
+        profile=service_profile,
+        root=layout.root,
+        data_dir=layout.data,
+        config_path=config_path,
+        env_file=env_file,
+    )
+    release_preparer = preparer or OfflineReleasePreparer(bundle=bundle)
+    verifier = health_verifier or RuntimeHealthVerifier(
+        socket_path=socket_path,
+        expected_device_id=values.device_id,
+    )
+    rollbacks: list[Callable[[], None]] = []
+    health: dict[str, object] | None = None
+    persistence: BootPersistence | None = None
+
+    def rollback_assets() -> None:
+        first_error: Exception | None = None
+        for rollback in reversed(rollbacks):
+            try:
+                rollback()
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise LinuxInstallError(
+                "rollback_failed", "installer asset rollback failed"
+            ) from first_error
+
+    def prepare_assets(release: Path) -> None:
+        try:
+            rollbacks.append(
+                provision_runtime_config(
+                    values=values,
+                    config_path=config_path,
+                    release_python=release / "venv" / "bin" / "python",
+                    health_socket_path=socket_path,
+                    service_profile=service_profile,
+                )
+            )
+            rollbacks.append(service_manager.install_unit(rendered))
+        except Exception:
+            rollback_assets()
+            raise
+
+    def check_health(release: Path) -> None:
+        nonlocal health
+        health = verifier.verify(release)
+
+    def enable_service() -> None:
+        nonlocal persistence
+        persistence = service_manager.enable()
+        if service_profile.scope == "system" and not persistence.enabled:
+            raise LinuxInstallError(
+                "service_start_failed", "system service is not enabled for boot"
+            )
+
+    install = install_release(
+        layout=layout,
+        version=bundle.runtime_version,
+        prepare=release_preparer.prepare,
+        validate=release_preparer.validate,
+        restart_service=service_manager.restart,
+        stop_service=service_manager.stop,
+        check_health=check_health,
+        allow_downgrade=allow_downgrade,
+        service_profile=service_profile,
+        prepare_activation=prepare_assets,
+        rollback_activation=rollback_assets,
+        commit_activation=enable_service,
+        allowed_data_sockets=(socket_path,),
+    )
+    if health is None or persistence is None:
+        raise LinuxInstallError(
+            "post_install_health_failed", "installer result is incomplete"
+        )
+    return ComposedInstallResult(install, health, persistence)
+
+
 def install_release(
     *,
     layout: InstallLayout,
@@ -1199,6 +1364,10 @@ def install_release(
     check_health: Callable[[Path], None],
     allow_downgrade: bool = False,
     service_profile: SystemdServiceProfile | None = None,
+    prepare_activation: Callable[[Path], None] | None = None,
+    rollback_activation: Callable[[], None] | None = None,
+    commit_activation: Callable[[], None] | None = None,
+    allowed_data_sockets: Sequence[Path] = (),
 ) -> InstallResult:
     """Prepare, activate, and health-gate one already-authenticated release."""
     destination = layout.release(version)
@@ -1207,14 +1376,7 @@ def install_release(
     _ensure_private_directory(layout.data)
     previous = _active_release(layout)
     previous_version = previous.name if previous is not None else None
-
-    if previous == destination and destination.is_dir():
-        validate(destination)
-        if service_profile is not None and service_profile.scope == "system":
-            apply_system_service_permissions(layout, service_profile)
-        return InstallResult(
-            version, previous_version, changed=False, rolled_back=False
-        )
+    same_version = previous == destination and destination.is_dir()
     if previous_version is not None and _version_key(version) < _version_key(
         previous_version
     ):
@@ -1249,37 +1411,67 @@ def install_release(
 
     if service_profile is not None and service_profile.scope == "system":
         try:
-            apply_system_service_permissions(layout, service_profile)
+            apply_system_service_permissions(
+                layout,
+                service_profile,
+                allowed_data_sockets=allowed_data_sockets,
+            )
         except Exception:
             if created and destination.exists():
                 shutil.rmtree(destination)
             raise
-    _set_active(layout, destination)
+    if prepare_activation is not None:
+        try:
+            prepare_activation(destination)
+        except Exception:
+            if created and destination.exists():
+                shutil.rmtree(destination)
+            raise
     try:
+        _set_active(layout, destination)
         restart_service()
         check_health(destination)
+        if commit_activation is not None:
+            commit_activation()
     except Exception as activation_error:
-        try:
-            if previous is None:
-                layout.current.unlink(missing_ok=True)
-                stop_service()
-            else:
-                _set_active(layout, previous)
-                restart_service()
-                check_health(previous)
-        except Exception as rollback_error:
+        rollback_error: Exception | None = None
+
+        def attempt_rollback(operation: Callable[[], None]) -> None:
+            nonlocal rollback_error
+            try:
+                operation()
+            except Exception as exc:
+                if rollback_error is None:
+                    rollback_error = exc
+
+        if previous is None:
+            attempt_rollback(lambda: layout.current.unlink(missing_ok=True))
+            attempt_rollback(stop_service)
+            if rollback_activation is not None:
+                attempt_rollback(rollback_activation)
+        else:
+            attempt_rollback(lambda: _set_active(layout, previous))
+            if rollback_activation is not None:
+                attempt_rollback(rollback_activation)
+            attempt_rollback(restart_service)
+            attempt_rollback(lambda: check_health(previous))
+        if rollback_error is not None:
             raise LinuxInstallError(
                 "rollback_failed",
                 f"activation failed ({activation_error}); rollback failed ({rollback_error})",
             ) from rollback_error
         if created:
             shutil.rmtree(destination)
+        if isinstance(activation_error, LinuxInstallError):
+            raise activation_error
         raise LinuxInstallError(
             "post_install_health_failed",
             f"activation failed and was rolled back: {activation_error}",
         ) from activation_error
 
-    return InstallResult(version, previous_version, changed=True, rolled_back=False)
+    return InstallResult(
+        version, previous_version, changed=not same_version, rolled_back=False
+    )
 
 
 def uninstall_runtime(
