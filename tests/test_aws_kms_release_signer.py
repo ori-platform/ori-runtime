@@ -5,6 +5,7 @@ import base64
 import json
 import subprocess
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -38,7 +39,7 @@ def test_signer_validates_immutable_identity_and_signs_raw_message() -> None:
             output = {"PublicKey": public_der, "SigningAlgorithms": ["ED25519_SHA_512"]}
         else:
             message_arg = command[command.index("--message") + 1]
-            message = open(message_arg.removeprefix("fileb://"), "rb").read()
+            message = Path(message_arg.removeprefix("fileb://")).read_bytes()
             output = {"Signature": base64.b64encode(private.sign(message)).decode()}
         return subprocess.CompletedProcess(command, 0, json.dumps(output), "")
 

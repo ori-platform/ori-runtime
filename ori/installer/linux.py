@@ -129,8 +129,7 @@ class OfflineReleasePreparer:
             [
                 str(python),
                 "-c",
-                "import importlib.metadata as m; import ori.runtime; "
-                "print(m.version('ori-runtime'))",
+                "import importlib.metadata as m; import ori.runtime; print(m.version('ori-runtime'))",
             ],
             expected_stdout=self._bundle.runtime_version,
         )
@@ -199,7 +198,6 @@ def install_release(
         except Exception:
             if created and destination.exists():
                 shutil.rmtree(destination)
-                created = False
             raise
         finally:
             if staging.exists():
