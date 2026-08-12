@@ -474,6 +474,22 @@ jobs:
             --draft=false \
             --latest=false
 
+      # The repository immutability setting needs administration scope, which
+      # GITHUB_TOKEN cannot hold. The published release object carries the
+      # resulting state and is readable with `contents`, so immutability is
+      # proved from the artifact itself rather than from the setting.
+      - name: Require the published release to be immutable
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          state="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.immutable')"
+          if [ "${state}" != "true" ]; then
+            echo "Release ${GITHUB_REF_NAME} reports immutable=${state}." >&2
+            echo "Enable repository immutable releases before releasing; assets are still mutable." >&2
+            exit 1
+          fi
+
   reverify:
     name: Reverify published release
     needs: publish
@@ -571,6 +587,11 @@ jobs:
           if [ "${version}" != "${version%%-*}" ]; then
             echo "Prerelease ${GITHUB_REF_NAME} is never promoted to Latest."
             exit 0
+          fi
+          state="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.immutable')"
+          if [ "${state}" != "true" ]; then
+            echo "Refusing to promote ${GITHUB_REF_NAME}: immutable=${state}." >&2
+            exit 1
           fi
           gh release edit "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
