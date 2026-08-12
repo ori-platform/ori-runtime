@@ -332,6 +332,9 @@ jobs:
     permissions:
       contents: write
       id-token: none
+    outputs:
+      immutability_outcome: ${{ steps.outcome.outputs.immutability_outcome }}
+      cleanup: ${{ steps.outcome.outputs.cleanup }}
 
     steps:
       - name: Harden runner
@@ -478,17 +481,49 @@ jobs:
       # GITHUB_TOKEN cannot hold. The published release object carries the
       # resulting state and is readable with `contents`, so immutability is
       # proved from the artifact itself rather than from the setting.
+      #
+      # A release can only be proved immutable once it is published, so a
+      # mutable release is briefly public. Leaving it there would expose
+      # rewritable bytes at the exact URL the bootstrap trusts, so it is
+      # deleted immediately. The protected tag is deliberately retained: it is
+      # signed and ruleset-protected, and the remedy is a new patch version,
+      # never a reused tag.
       - name: Require the published release to be immutable
+        id: immutability
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           state="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.immutable')"
-          if [ "${state}" != "true" ]; then
-            echo "Release ${GITHUB_REF_NAME} reports immutable=${state}." >&2
-            echo "Enable repository immutable releases before releasing; assets are still mutable." >&2
-            exit 1
+          if [ "${state}" = "true" ]; then
+            echo "Published release is immutable."
+            exit 0
           fi
+          echo "::error::Release ${GITHUB_REF_NAME} reports immutable=${state}; it is publicly mutable." >&2
+          if gh release delete "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --yes; then
+            echo "cleanup=deleted" >> "${GITHUB_OUTPUT}"
+            echo "Deleted the mutable release. The signed tag is retained." >&2
+          else
+            echo "cleanup=failed" >> "${GITHUB_OUTPUT}"
+            echo "::error::CLEANUP FAILED — a mutable public release may still exist." >&2
+          fi
+          exit 1
+
+      - name: Record the publication outcome
+        id: outcome
+        if: always()
+        run: |
+          echo "immutability_outcome=${{ steps.immutability.outcome }}" >> "${GITHUB_OUTPUT}"
+          echo "cleanup=${{ steps.immutability.outputs.cleanup }}" >> "${GITHUB_OUTPUT}"
+
+      - name: Fail when the published release was not immutable
+        if: steps.immutability.outcome == 'failure'
+        run: |
+          echo "Refusing to continue: the published release was not immutable." >&2
+          exit 1
 
   reverify:
     name: Reverify published release
@@ -602,14 +637,20 @@ jobs:
   # failed, so the release is never promoted, and an incident blocks use.
   incident:
     name: Raise release incident
-    needs: reverify
-    # Both conditions are required. The job result alone is also set by a
-    # checkout, setup, or dependency failure, which must never be reported as
-    # the published artifacts failing verification.
+    needs: [publish, reverify]
+    # Covers both ways a published release can be unsafe: it was not immutable,
+    # or it failed public reverification. Each arm requires the specific step
+    # outcome, because a job result alone is also set by a checkout, setup, or
+    # dependency failure that must never be reported as a bad release.
     if: >-
       always()
-      && needs.reverify.result == 'failure'
-      && needs.reverify.outputs.verification_outcome == 'failure'
+      && (
+        needs.publish.outputs.immutability_outcome == 'failure'
+        || (
+          needs.reverify.result == 'failure'
+          && needs.reverify.outputs.verification_outcome == 'failure'
+        )
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -626,12 +667,36 @@ jobs:
       - name: Open a high-priority release incident
         env:
           GH_TOKEN: ${{ github.token }}
+          IMMUTABILITY: ${{ needs.publish.outputs.immutability_outcome }}
+          CLEANUP: ${{ needs.publish.outputs.cleanup }}
         run: |
           set -euo pipefail
-          gh issue create \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "RELEASE INCIDENT: ${GITHUB_REF_NAME} failed public reverification" \
-            --body "$(printf '%s\n' \
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          if [ "${IMMUTABILITY}" = "failure" ]; then
+            title="RELEASE INCIDENT: ${GITHUB_REF_NAME} published without immutability"
+            if [ "${CLEANUP}" = "deleted" ]; then
+              disposition="The mutable release was deleted automatically. The signed tag was retained."
+              urgency="Confirm the release is gone and that repository immutable releases are enabled."
+            else
+              disposition="CLEANUP FAILED: a mutable public release may still exist at the release URL."
+              urgency="Delete the release manually NOW, then enable repository immutable releases."
+            fi
+            body="$(printf '%s\n' \
+              "${GITHUB_REF_NAME} (${GITHUB_SHA}) was published but did not report immutability." \
+              "" \
+              "${disposition}" \
+              "" \
+              "Immediate action: ${urgency}" \
+              "" \
+              "Required actions:" \
+              "- treat ${GITHUB_REF_NAME} as NOT usable; block any latest or bootstrap promotion" \
+              "- do not reuse the tag; publish a corrected patch version instead" \
+              "- preserve the workflow logs as evidence" \
+              "" \
+              "Run: ${run_url}")"
+          else
+            title="RELEASE INCIDENT: ${GITHUB_REF_NAME} failed public reverification"
+            body="$(printf '%s\n' \
               "Public reverification failed for ${GITHUB_REF_NAME} (${GITHUB_SHA})." \
               "" \
               "This release is published and immutable. Do not delete it and do not reuse the tag." \
@@ -641,4 +706,9 @@ jobs:
               "- preserve the release and workflow logs as evidence" \
               "- if the artifacts are invalid, publish a corrected patch version" \
               "" \
-              "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
+              "Run: ${run_url}")"
+          fi
+          gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${title}" \
+            --body "${body}"

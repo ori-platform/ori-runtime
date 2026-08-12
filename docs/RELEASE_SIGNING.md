@@ -98,6 +98,12 @@ A published immutable release is never deleted. Deleting it would destroy the
 distribution object, complicate forensics, and burn the tag name permanently.
 The workflow quarantines instead:
 
+- a release that publishes without immutability is **deleted immediately**,
+  because it would otherwise expose rewritable bytes at the exact URL the
+  bootstrap trusts; the signed tag is retained and the remedy is a new patch
+  version, never a reused tag. A failed deletion is reported as the loudest
+  line of the incident, because a mutable release may still be public;
+- a release that published immutably is never deleted — see below;
 - the run stays failed, so the release is never declared usable;
 - the release is never marked `Latest`: publication explicitly sets
   `--latest=false`, and only a clean public reverification promotes it, so a

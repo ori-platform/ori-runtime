@@ -1094,7 +1094,60 @@ def test_publication_proves_immutability_from_the_release_object(
     body = str(steps[proof]["run"])
     assert "releases/tags/${GITHUB_REF_NAME}" in body
     assert ".immutable" in body
-    assert 'if [ "${state}" != "true" ]' in body
+
+
+def test_a_mutable_release_is_deleted_rather_than_left_public(
+    workflow: dict[str, Any],
+) -> None:
+    steps = {str(step.get("name", "")): step for step in _steps(workflow, "publish")}
+    proof = steps["Require the published release to be immutable"]
+    body = str(proof["run"])
+
+    # Immutability can only be proved after publication, so a mutable release
+    # exists briefly. Leaving it would expose rewritable bytes at the URL the
+    # bootstrap trusts.
+    assert "gh release delete" in body
+    # The tag is signed and ruleset-protected; the remedy is a new version.
+    assert "--cleanup-tag" not in body
+    assert "cleanup=deleted" in body
+    assert "cleanup=failed" in body
+    # The outcome must survive so the incident job can describe what happened.
+    assert proof["continue-on-error"] is True
+    assert proof["id"] == "immutability"
+
+
+def test_publication_fails_when_the_release_was_not_immutable(
+    workflow: dict[str, Any],
+) -> None:
+    steps = {str(step.get("name", "")): step for step in _steps(workflow, "publish")}
+    record = steps["Record the publication outcome"]
+    fail = steps["Fail when the published release was not immutable"]
+
+    assert record["if"] == "always()"
+    assert fail["if"] == "steps.immutability.outcome == 'failure'"
+    assert "exit 1" in str(fail["run"])
+    outputs = workflow["jobs"]["publish"]["outputs"]
+    assert outputs["immutability_outcome"] == (
+        "${{ steps.outcome.outputs.immutability_outcome }}"
+    )
+    assert outputs["cleanup"] == "${{ steps.outcome.outputs.cleanup }}"
+
+
+def test_incident_covers_a_mutable_release_as_well_as_reverification(
+    workflow: dict[str, Any],
+) -> None:
+    incident = workflow["jobs"]["incident"]
+    condition = " ".join(str(incident["if"]).split())
+    body = str(_incident_step(workflow)["run"])
+
+    assert incident["needs"] == ["publish", "reverify"]
+    assert "needs.publish.outputs.immutability_outcome == 'failure'" in condition
+    assert "needs.reverify.outputs.verification_outcome == 'failure'" in condition
+    # A failed cleanup means a mutable release may still be public, so it must
+    # be the loudest thing in the incident.
+    assert "CLEANUP FAILED" in body
+    assert "Delete the release manually NOW" in body
+    assert "do not reuse the tag" in body
 
 
 def test_promotion_reproves_immutability_before_granting_latest(
