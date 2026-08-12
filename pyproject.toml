@@ -119,6 +119,7 @@ ori-config-install = "ori.config_installer:main"
 ori-phone-doctor = "ori.phone_doctor:main"
 ori-inverter-profile-doctor = "ori.inverter_profile_doctor:main"
 ori-firmware-provisioner = "ori.firmware_provisioner:main"
+ori-install-linux = "ori.installer.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/ori-platform/ori-runtime"
@@ -170,7 +171,7 @@ where = ["."]
 include = ["ori*"]
 
 [tool.setuptools.package-data]
-ori = ["py.typed", "hal/inverter_profiles/*.yaml"]
+ori = ["py.typed", "hal/inverter_profiles/*.yaml", "installer/release-keys.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

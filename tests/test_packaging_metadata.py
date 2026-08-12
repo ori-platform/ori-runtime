@@ -75,6 +75,7 @@ def test_inverter_profiles_are_packaged_with_runtime_wheel() -> None:
 
     assert "py.typed" in package_data
     assert "hal/inverter_profiles/*.yaml" in package_data
+    assert "installer/release-keys.json" in package_data
 
 
 def test_inverter_profile_doctor_entrypoint_is_packaged() -> None:
@@ -82,6 +83,13 @@ def test_inverter_profile_doctor_entrypoint_is_packaged() -> None:
     scripts = pyproject["project"]["scripts"]
 
     assert scripts["ori-inverter-profile-doctor"] == "ori.inverter_profile_doctor:main"
+
+
+def test_linux_installer_entrypoint_is_packaged() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    scripts = pyproject["project"]["scripts"]
+
+    assert scripts["ori-install-linux"] == "ori.installer.cli:main"
 
 
 def test_all_bundled_skills_are_packaged_as_data_files() -> None:

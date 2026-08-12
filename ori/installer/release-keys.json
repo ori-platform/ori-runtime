@@ -1,0 +1,11 @@
+{
+  "keys": [
+    {
+      "key_id": "ori-runtime-release-2026-01",
+      "public_key_b64": "aDlW3MqinQM8y96szEqNske2ytKkxbmMDl87CuLbAQ8=",
+      "purpose": "runtime_release_bundle",
+      "status": "active"
+    }
+  ],
+  "schema": "ori.runtime_release_keys.v1"
+}

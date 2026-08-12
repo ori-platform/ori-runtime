@@ -24,6 +24,7 @@ fi
   ori/security/release_bundles.py \
   ori/security/aws_kms_release_signer.py \
   ori/installer/linux.py \
+  ori/installer/cli.py \
   ori/network/sms_webhook.py \
   ori/actions/sms.py \
   ori/policy/device_policy.py \

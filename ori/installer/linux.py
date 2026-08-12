@@ -893,6 +893,16 @@ class SystemdServiceManager:
                 "service_start_failed", "service unit must not be a symlink"
             )
         if not self._unit_path.exists() and not self._unit_path.is_symlink():
+            result = self._run_raw(
+                [*self._systemctl(), "is-active", self._unit_path.name]
+            )
+            state = result.stdout.strip().lower()
+            if state in {"active", "activating", "reloading", "deactivating"}:
+                self._run([*self._systemctl(), "stop", self._unit_path.name], "stop")
+            elif state not in {"failed", "inactive", "unknown"}:
+                raise LinuxInstallError(
+                    "service_start_failed", "service activity query was malformed"
+                )
             self._run([*self._systemctl(), "daemon-reload"], "daemon reload")
             return
         self._run(
