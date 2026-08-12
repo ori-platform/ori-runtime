@@ -1,0 +1,67 @@
+name: Diagnose protection reads
+
+# TEMPORARY DIAGNOSTIC — delete once the result is recorded.
+#
+# The release preflight reads three administration-scoped endpoints. There is
+# no `administration` scope available to `permissions:`, so it is unknown
+# whether the default GITHUB_TOKEN can read them. This answers that question
+# without risking anything:
+#
+#   - manual dispatch only, so no tag is consumed and no release is triggered;
+#   - no checkout and no repository code execution, so no credential is ever
+#     exposed to code from a tag;
+#   - contents: read only, with no environment, no OIDC, and no AWS access;
+#   - reports every endpoint rather than stopping at the first failure.
+#
+# If all three report OK, the release preflight works with GITHUB_TOKEN as
+# written. If any report FAILED, the proof mechanism needs redesign before
+# release.yml can be relied on — do not fix it with a long-lived PAT, which a
+# malicious tag could exfiltrate from a job that runs repository code.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: none
+
+jobs:
+  probe:
+    name: Probe administration-scoped reads
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: none
+
+    steps:
+      - name: Probe endpoints with the default token
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          failed=0
+          for path in \
+            "repos/${GITHUB_REPOSITORY}/immutable-releases" \
+            "repos/${GITHUB_REPOSITORY}/environments/release-signing" \
+            "repos/${GITHUB_REPOSITORY}/rulesets"; do
+            if output="$(gh api "${path}" 2>&1)"; then
+              echo "OK      ${path}"
+              echo "        ${output}" | head -c 300
+              echo
+            else
+              failed=1
+              echo "FAILED  ${path}"
+              echo "        ${output}" | head -c 300
+              echo
+            fi
+          done
+          echo
+          if [ "${failed}" -eq 0 ]; then
+            echo "GITHUB_TOKEN can read every endpoint the release preflight needs."
+          else
+            echo "GITHUB_TOKEN cannot read at least one endpoint." >&2
+            echo "A 404 here usually means insufficient scope, not a missing object." >&2
+            echo "Redesign the proof mechanism; do not add a long-lived PAT." >&2
+          fi
+          exit "${failed}"

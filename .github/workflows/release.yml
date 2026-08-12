@@ -1,0 +1,623 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: read
+  id-token: none
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ORI_RELEASE_KEY_ID: ori-runtime-release-2026-01
+
+jobs:
+  # GitHub silently creates a referenced environment without protection rules
+  # on first use, so `environment:` alone gates nothing. These preconditions
+  # must be verified before any credential is issued or asset produced.
+  preflight:
+    name: Verify release protections
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: none
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Each protection is proved specifically: an environment whose reviewer
+      # may self-approve, or a tag ruleset covering unrelated tags, would pass
+      # a shallower presence check while leaving the release unprotected.
+      - name: Verify release protections
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/check_release_protections.py \
+            --repository "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --commit "${GITHUB_SHA}"
+
+  # ci.yml only runs on branch pushes and pull requests, so a tag can point at
+  # any commit. Signing must never happen without the release gates passing.
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: none
+
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.txt
+          python -m pip install --no-deps -e .
+
+      - name: Guard supply-chain invariants
+        run: |
+          python scripts/check_workflows.py
+          bash scripts/check_rust_supply_chain.sh
+
+      # A tag can point at a commit that never passed branch or pull-request
+      # CI, so the release gate reproduces those checks rather than a subset.
+      - name: Pre-commit (lint + format + hygiene)
+        env:
+          SKIP: no-commit-to-branch
+        run: pre-commit run --show-diff-on-failure --all-files
+
+      - name: Typecheck contract boundaries
+        run: bash scripts/typecheck-boundaries.sh
+
+      - name: Guard Tier Escalation Invariants
+        run: |
+          pytest -q \
+            tests/test_action_dispatcher.py::TestCapabilityTierGuard \
+            tests/test_soundness_verification.py::test_tier_c_dispatch_upgrade \
+            tests/test_soundness_verification.py::test_dispatcher_never_downgrades_tier
+
+      - name: Guard Skill Capability Invariants
+        run: |
+          pytest -q \
+            tests/test_skill_loader.py::TestValidation::test_missing_defaults_mapping_for_trigger_raises \
+            tests/test_skill_loader.py::TestValidation::test_extra_defaults_key_without_trigger_raises
+
+      - name: Run test suite
+        run: pytest tests/ -q -m "not hardware"
+
+      - name: Audit pinned Python dependencies
+        run: |
+          python -m pip_audit -r requirements/runtime.txt
+          python -m pip_audit -r requirements/dev.txt
+
+      - name: Smoke-test the release wheel
+        if: matrix.python-version == '3.12'
+        run: bash scripts/smoke-release-wheel.sh
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: none
+
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: linux-x86_64-python3.11
+            runner: ubuntu-24.04
+            python-version: "3.11"
+          - target: linux-x86_64-python3.12
+            runner: ubuntu-24.04
+            python-version: "3.12"
+          - target: linux-aarch64-python3.11
+            runner: ubuntu-24.04-arm
+            python-version: "3.11"
+          - target: linux-aarch64-python3.12
+            runner: ubuntu-24.04-arm
+            python-version: "3.12"
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No dependency cache: a poisoned cache entry would silently enter a
+      # signed release, and release builds must be reproducible from source.
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Resolve release identity
+        id: identity
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          declared="$(python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          if [ "${version}" != "${declared}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match pyproject version ${declared}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "epoch=$(git log -1 --format=%ct)" >> "${GITHUB_OUTPUT}"
+
+      # build-wheelhouse.sh assembles the hash-locked wheelhouse and the
+      # deterministic unsigned bundle in one pass. SOURCE_DATE_EPOCH is taken
+      # from the tagged commit so the bundle is reproducible from the tag.
+      - name: Build offline wheelhouse and deterministic bundle
+        env:
+          ORI_WHEELHOUSE_OUT: ${{ runner.temp }}/wheelhouse
+          ORI_WHEELHOUSE_TARGET: generic
+          ORI_RELEASE_BUNDLE_VERSION: ${{ steps.identity.outputs.version }}
+          ORI_RELEASE_BUNDLE_TARGET: ${{ matrix.target }}
+          ORI_RELEASE_BUNDLE_OUT: ${{ runner.temp }}/bundle
+          SOURCE_DATE_EPOCH: ${{ steps.identity.outputs.epoch }}
+        run: bash scripts/build-wheelhouse.sh
+
+      - name: Confirm the bundle matches the matrix target
+        run: |
+          set -euo pipefail
+          expected="${{ runner.temp }}/bundle/ori-runtime-${{ steps.identity.outputs.version }}-${{ matrix.target }}.tar.gz"
+          for required in "${expected}" "${expected}.sha256"; do
+            test -f "${required}" || {
+              echo "expected release asset ${required} was not built" >&2
+              exit 1
+            }
+          done
+          (cd "$(dirname "${expected}")" && sha256sum -c "$(basename "${expected}").sha256")
+
+      - name: Upload unsigned bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bundle-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/bundle/ori-runtime-*.tar.gz
+            ${{ runner.temp }}/bundle/ori-runtime-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    name: Sign release bundles
+    needs: build
+    runs-on: ubuntu-24.04
+    # A short ceiling bounds how long this job can hold signing credentials.
+    timeout-minutes: 20
+    # The protected environment is what keeps signing off pull-request and
+    # branch runs: only this tag-triggered job can assume the signer role.
+    environment: release-signing
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install signing dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/runtime.txt
+          python -m pip install --no-deps -e .
+
+      - name: Download unsigned bundles
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/bundles
+
+      # Short-lived OIDC federation only. No long-lived AWS keys exist in
+      # repository or organisation secrets; the role trust policy is what
+      # restricts this to protected tag runs.
+      - name: Assume release signer role
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.ORI_RELEASE_SIGNER_ROLE_ARN }}
+          aws-region: ${{ vars.ORI_RELEASE_KMS_REGION }}
+          role-session-name: ori-release-signing
+          role-duration-seconds: 900
+
+      # Targets are derived from what the build matrix actually produced, so a
+      # matrix change cannot silently leave a bundle unsigned.
+      - name: Sign every built bundle
+        env:
+          VERSION: ${{ github.ref_name }}
+          KMS_KEY_ARN: ${{ vars.ORI_RELEASE_KMS_KEY_ARN }}
+          KMS_REGION: ${{ vars.ORI_RELEASE_KMS_REGION }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          bundles="${{ runner.temp }}/bundles"
+          shopt -s nullglob
+          found=0
+          for artifact in "${bundles}"/ori-runtime-"${version}"-*.tar.gz; do
+            [ -f "${artifact}.sha256" ] || {
+              echo "missing bundle checksum for ${artifact}" >&2
+              exit 1
+            }
+            name="$(basename "${artifact}" .tar.gz)"
+            target="${name#ori-runtime-${version}-}"
+            echo "Signing ${target}"
+            python scripts/sign-release-bundle-aws-kms.py \
+              --artifact "${artifact}" \
+              --runtime-version "${version}" \
+              --target "${target}" \
+              --key-id "${ORI_RELEASE_KEY_ID}" \
+              --key-registry ori/installer/release-keys.json \
+              --kms-key-arn "${KMS_KEY_ARN}" \
+              --aws-region "${KMS_REGION}" \
+              --output "${artifact}.signature.json"
+            found=$((found + 1))
+          done
+          if [ "${found}" -eq 0 ]; then
+            echo "no bundles were available to sign" >&2
+            exit 1
+          fi
+          echo "signed ${found} bundle(s)"
+
+      - name: Upload signature envelopes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signatures
+          path: ${{ runner.temp }}/bundles/*.signature.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish release assets
+    needs: sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: none
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install verification dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/runtime.txt
+          python -m pip install --no-deps -e .
+
+      - name: Download bundles
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/assets
+
+      - name: Download signatures
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: signatures
+          path: ${{ runner.temp }}/assets
+
+      # The bootstrap cannot authenticate itself, so operators need a checksum
+      # published atomically beside it to support the high-assurance path.
+      - name: Stage bootstrap and checksum
+        run: |
+          set -euo pipefail
+          cd "${{ runner.temp }}/assets"
+          cp "${GITHUB_WORKSPACE}/scripts/install-linux.sh" install-linux.sh
+          sha256sum install-linux.sh > install-linux.sh.sha256
+
+      - name: Resolve published targets
+        id: assets
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          cd "${{ runner.temp }}/assets"
+          shopt -s nullglob
+          arguments=""
+          for artifact in ori-runtime-"${version}"-*.tar.gz; do
+            name="$(basename "${artifact}" .tar.gz)"
+            arguments="${arguments} --target ${name#ori-runtime-${version}-}"
+          done
+          if [ -z "${arguments}" ]; then
+            echo "no release bundles were staged for publication" >&2
+            exit 1
+          fi
+          echo "targets=${arguments}" >> "${GITHUB_OUTPUT}"
+          if [ "${version}" != "${version%%-*}" ]; then
+            echo "prerelease=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "prerelease=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # Verify before the bytes become public. Reverification after publication
+      # proves delivery, but it is too late to stop an unverifiable release.
+      - name: Verify staged assets before publication
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python scripts/verify_published_release.py \
+            --version "${VERSION#v}" \
+            --from-staged \
+            --workspace "${{ runner.temp }}/assets" \
+            ${{ steps.assets.outputs.targets }}
+
+      # A ruleset restricts who may move a tag; this proves it did not move
+      # between the build that produced these bytes and their publication.
+      - name: Confirm the signed tag still resolves to the built commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/check_release_protections.py \
+            --repository "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --commit "${GITHUB_SHA}"
+
+      # Draft first, upload the complete set, then publish. A release is only
+      # ever publicly visible once every asset is present and verified, and a
+      # failure leaves a draft rather than a half-published release.
+      - name: Create draft release with the complete asset set
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ steps.assets.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          flags=""
+          if [ "${PRERELEASE}" = "true" ]; then
+            flags="--prerelease"
+          fi
+          # shellcheck disable=SC2086
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Signed Ori Runtime release ${GITHUB_REF_NAME}." \
+            --verify-tag \
+            --draft \
+            ${flags} \
+            "${{ runner.temp }}"/assets/*
+
+      - name: Confirm the draft carries every expected asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          published="$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name' | sort)"
+          expected="$(cd "${{ runner.temp }}/assets" && ls | sort)"
+          if [ "${published}" != "${expected}" ]; then
+            echo "draft asset set does not match the staged set" >&2
+            diff <(echo "${expected}") <(echo "${published}") >&2 || true
+            exit 1
+          fi
+
+      # Undrafting alone can make GitHub designate a stable release as Latest,
+      # which would promote it before public reverification has run. Latest is
+      # granted only after reverification succeeds, and never to a prerelease.
+      - name: Publish the verified draft without promoting it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release edit "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft=false \
+            --latest=false
+
+  reverify:
+    name: Reverify published release
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Read-only by design: this job installs dependencies and parses bytes
+    # fetched from a public origin, so it must never hold a writable token.
+    permissions:
+      contents: read
+      id-token: none
+    # Published so the incident job can distinguish a genuine verification
+    # failure from a setup failure that never reached verification.
+    outputs:
+      verification_outcome: ${{ steps.outcome.outputs.verification_outcome }}
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install verification dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/runtime.txt
+          python -m pip install --no-deps -e .
+
+      # Re-downloads from the public release origin rather than reusing
+      # workflow artifacts, so this exercises exactly what an operator gets.
+      # continue-on-error lets the outcome be recorded before the job fails,
+      # so a verification failure is distinguishable from a setup failure.
+      - name: Reverify published assets
+        id: reverify
+        continue-on-error: true
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ runner.temp }}/reverify"
+          python scripts/verify_published_release.py \
+            --version "${VERSION#v}" \
+            --target linux-x86_64-python3.11 \
+            --target linux-x86_64-python3.12 \
+            --target linux-aarch64-python3.11 \
+            --target linux-aarch64-python3.12 \
+            --workspace "${{ runner.temp }}/reverify"
+
+      # always() so the outcome is recorded even when an earlier step failed;
+      # a step that never ran reports an empty outcome, not a failure.
+      - name: Record the verification outcome
+        id: outcome
+        if: always()
+        run: |
+          echo "verification_outcome=${{ steps.reverify.outcome }}" >> "${GITHUB_OUTPUT}"
+
+      - name: Fail the run when verification failed
+        if: steps.reverify.outcome == 'failure'
+        run: |
+          echo "Public reverification failed for ${GITHUB_REF_NAME}." >&2
+          exit 1
+
+  # Promotion is a separate job so the only token that can write to releases
+  # never touches downloaded artifacts. It needs no checkout and no
+  # dependencies: a clean reverification is its entire input.
+  promote:
+    name: Promote to Latest
+    needs: reverify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: none
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2
+        with:
+          egress-policy: audit
+
+      - name: Promote the reverified release to Latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [ "${version}" != "${version%%-*}" ]; then
+            echo "Prerelease ${GITHUB_REF_NAME} is never promoted to Latest."
+            exit 0
+          fi
+          gh release edit "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --latest=true
+
+  # An immutable release cannot be withdrawn, and deleting it would destroy the
+  # distribution object and burn the tag. Quarantine instead: the run stays
+  # failed, so the release is never promoted, and an incident blocks use.
+  incident:
+    name: Raise release incident
+    needs: reverify
+    # Both conditions are required. The job result alone is also set by a
+    # checkout, setup, or dependency failure, which must never be reported as
+    # the published artifacts failing verification.
+    if: >-
+      always()
+      && needs.reverify.result == 'failure'
+      && needs.reverify.outputs.verification_outcome == 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: none
+      issues: write
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2
+        with:
+          egress-policy: audit
+
+      - name: Open a high-priority release incident
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "RELEASE INCIDENT: ${GITHUB_REF_NAME} failed public reverification" \
+            --body "$(printf '%s\n' \
+              "Public reverification failed for ${GITHUB_REF_NAME} (${GITHUB_SHA})." \
+              "" \
+              "This release is published and immutable. Do not delete it and do not reuse the tag." \
+              "" \
+              "Required actions:" \
+              "- treat ${GITHUB_REF_NAME} as NOT usable; block any latest or bootstrap promotion" \
+              "- preserve the release and workflow logs as evidence" \
+              "- if the artifacts are invalid, publish a corrected patch version" \
+              "" \
+              "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")"
