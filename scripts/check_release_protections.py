@@ -68,6 +68,12 @@ def check_immutable_releases(api: ApiClient, repository: str) -> None:
     ``gh release create --verify-tag`` only confirms a tag exists; it neither
     freezes assets nor protects the tag. Immutability is a separate setting
     exposed by its own endpoint, not a field on the repository response.
+
+    This endpoint requires repository administration scope and returns 403 to
+    the workflow's ``GITHUB_TOKEN``, which cannot be granted that scope. It is
+    therefore opt-in for an operator running this script with their own
+    credentials; the release workflow proves immutability from the published
+    release object instead, which is readable with ``contents``.
     """
     payload = api(f"repos/{repository}/immutable-releases")
     if not isinstance(payload, dict) or payload.get("enabled") is not True:
@@ -261,14 +267,14 @@ def run_checks(
     *,
     tag: str | None = None,
     commit: str | None = None,
+    include_admin_reads: bool = False,
 ) -> list[ProtectionError]:
     """Run every check and collect failures so one run reports all gaps."""
     failures: list[ProtectionError] = []
-    for check in (
-        check_immutable_releases,
-        check_signing_environment,
-        check_tag_ruleset,
-    ):
+    checks = [check_signing_environment, check_tag_ruleset]
+    if include_admin_reads:
+        checks.insert(0, check_immutable_releases)
+    for check in checks:
         try:
             check(api, repository)
         except ProtectionError as exc:
@@ -288,6 +294,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--tag", help="release tag to require a verified signature on")
     parser.add_argument("--commit", help="commit the release tag must resolve to")
+    parser.add_argument(
+        "--with-admin-reads",
+        action="store_true",
+        help=(
+            "also check settings that need repository administration scope. "
+            "GITHUB_TOKEN cannot read these; run it locally with operator "
+            "credentials to evidence the prerequisite."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if bool(args.tag) != bool(args.commit):

@@ -40,13 +40,25 @@ environment *without* protection rules the first time a workflow names it — so
 
 | Precondition | Why |
 | --- | --- |
-| Repository immutable releases enabled | `gh release create --verify-tag` verifies a tag exists; it does not freeze assets. Immutability is a separate repository setting. |
+| Repository immutable releases enabled | `gh release create --verify-tag` verifies a tag exists; it does not freeze assets. Immutability is a separate repository setting. **Operator-verified:** its endpoint requires administration scope and returns 403 to `GITHUB_TOKEN`, which cannot be granted that scope. The workflow instead proves the published release object reports `immutable: true`, and refuses to promote otherwise. |
 | `release-signing` environment exists | Named environments are auto-created unprotected on first use. |
 | Required reviewer with self-review prevented | Otherwise signing is unattended, or one maintainer can approve their own release. Both are asserted from the environment's `required_reviewers` rule. |
 | No administrator bypass | Not exposed as an assertable field; this remains an operator obligation. |
 | Custom deployment policy naming a version-tag pattern | Otherwise any ref reaching the job could assume the signer role. Presence of a policy is not enough: the entries must all be tag-typed and cover `v*`. |
 | Active tag ruleset covering `refs/tags/v*` that restricts deletion and update, with no ref exclusions | Otherwise a published release tag can be moved after signing. A ruleset protecting unrelated tags does not count, blocking deletion alone still allows a force-move, and an exclusion could carve the real release tags back out of a broad include. |
 | AWS OIDC trust policy bound to the environment subject | Restricting on repository alone lets any workflow in the repository assume the signer role. Bind `sub` to `repo:<owner>/<repo>:environment:release-signing`. |
+
+Immutable releases must be confirmed by an operator before a release run,
+because no token available to the workflow can read that setting:
+
+```sh
+gh api repos/ori-platform/ori-runtime/immutable-releases
+# {"enabled":true,"enforced_by_owner":false}
+```
+
+Record that output with the date as release-readiness evidence; it contains no
+secret. The same script performs this check when run locally with operator
+credentials and `--with-admin-reads`, which the workflow never passes.
 
 `scripts/check_release_protections.py` proves each of these before any
 credential is issued, and reports every gap in one run with the remedy.
@@ -86,6 +98,12 @@ A published immutable release is never deleted. Deleting it would destroy the
 distribution object, complicate forensics, and burn the tag name permanently.
 The workflow quarantines instead:
 
+- a release that publishes without immutability is **deleted immediately**,
+  because it would otherwise expose rewritable bytes at the exact URL the
+  bootstrap trusts; the signed tag is retained and the remedy is a new patch
+  version, never a reused tag. A failed deletion is reported as the loudest
+  line of the incident, because a mutable release may still be public;
+- a release that published immutably is never deleted — see below;
 - the run stays failed, so the release is never declared usable;
 - the release is never marked `Latest`: publication explicitly sets
   `--latest=false`, and only a clean public reverification promotes it, so a

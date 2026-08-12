@@ -626,7 +626,41 @@ def test_immutability_is_read_from_its_dedicated_endpoint(
     protections: dict[str, Any],
 ) -> None:
     # The repository response has no immutable_releases field, so a check
-    # against it would fail even once immutability is enabled.
+    # against it would fail even once immutability is enabled. Operator runs
+    # must therefore use the dedicated endpoint, never the repository object.
+    requested: list[str] = []
+
+    def call(path: str) -> Any:
+        requested.append(path)
+        return _api({})(path)
+
+    protections["run_checks"](call, "o/r", include_admin_reads=True)
+    assert "repos/o/r/immutable-releases" in requested
+    assert "repos/o/r" not in requested
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"repos/o/r/immutable-releases": {"enabled": False}},
+        {"repos/o/r/immutable-releases": {}},
+    ],
+)
+def test_disabled_immutability_is_reported_for_operator_runs(
+    protections: dict[str, Any], overrides: dict[str, Any]
+) -> None:
+    failures = protections["run_checks"](
+        _api(overrides), "o/r", include_admin_reads=True
+    )
+    assert any("immutable releases" in failure.detail for failure in failures)
+
+
+def test_immutability_endpoint_is_never_read_by_default(
+    protections: dict[str, Any],
+) -> None:
+    # GITHUB_TOKEN gets 403 on this endpoint and cannot be granted the scope,
+    # so the workflow must never call it. Immutability is proved instead from
+    # the published release object, which `contents` can read.
     requested: list[str] = []
 
     def call(path: str) -> Any:
@@ -634,22 +668,20 @@ def test_immutability_is_read_from_its_dedicated_endpoint(
         return _api({})(path)
 
     protections["run_checks"](call, "o/r")
-    assert "repos/o/r/immutable-releases" in requested
-    assert "repos/o/r" not in requested
+    assert not any("immutable-releases" in path for path in requested)
 
 
-@pytest.mark.parametrize(
-    ("overrides", "expected"),
-    [
-        ({"repos/o/r/immutable-releases": {"enabled": False}}, "immutable releases"),
-        ({"repos/o/r/immutable-releases": {}}, "immutable releases"),
-    ],
-)
-def test_disabled_immutability_blocks_the_release(
-    protections: dict[str, Any], overrides: dict[str, Any], expected: str
+def test_operator_runs_can_still_opt_into_the_admin_read(
+    protections: dict[str, Any],
 ) -> None:
-    failures = protections["run_checks"](_api(overrides), "o/r")
-    assert any(expected in failure.detail for failure in failures)
+    requested: list[str] = []
+
+    def call(path: str) -> Any:
+        requested.append(path)
+        return _api({})(path)
+
+    assert protections["run_checks"](call, "o/r", include_admin_reads=True) == []
+    assert any("immutable-releases" in path for path in requested)
 
 
 def test_self_reviewable_environment_is_rejected(
@@ -773,6 +805,7 @@ def test_every_protection_failure_is_reported_in_one_run(
             }
         ),
         "o/r",
+        include_admin_reads=True,
     )
 
     assert len(failures) == 2
@@ -1045,3 +1078,99 @@ def test_signed_tag_is_enforced_before_building_and_before_publishing(
         assert "check_release_protections.py" in commands
         assert '--tag "${GITHUB_REF_NAME}"' in commands
         assert '--commit "${GITHUB_SHA}"' in commands
+
+
+def test_publication_proves_immutability_from_the_release_object(
+    workflow: dict[str, Any],
+) -> None:
+    steps = _steps(workflow, "publish")
+    names = [str(step.get("name", "")) for step in steps]
+    publish = names.index("Publish the verified draft without promoting it")
+    proof = names.index("Require the published release to be immutable")
+
+    # The repository setting needs administration scope that GITHUB_TOKEN
+    # cannot hold, so the proof reads the release object instead.
+    assert publish < proof
+    body = str(steps[proof]["run"])
+    assert "releases/tags/${GITHUB_REF_NAME}" in body
+    assert ".immutable" in body
+
+
+def test_a_mutable_release_is_deleted_rather_than_left_public(
+    workflow: dict[str, Any],
+) -> None:
+    steps = {str(step.get("name", "")): step for step in _steps(workflow, "publish")}
+    proof = steps["Require the published release to be immutable"]
+    body = str(proof["run"])
+
+    # Immutability can only be proved after publication, so a mutable release
+    # exists briefly. Leaving it would expose rewritable bytes at the URL the
+    # bootstrap trusts.
+    assert "gh release delete" in body
+    # The tag is signed and ruleset-protected; the remedy is a new version.
+    assert "--cleanup-tag" not in body
+    assert "cleanup=deleted" in body
+    assert "cleanup=failed" in body
+    # The outcome must survive so the incident job can describe what happened.
+    assert proof["continue-on-error"] is True
+    assert proof["id"] == "immutability"
+
+
+def test_publication_fails_when_the_release_was_not_immutable(
+    workflow: dict[str, Any],
+) -> None:
+    steps = {str(step.get("name", "")): step for step in _steps(workflow, "publish")}
+    record = steps["Record the publication outcome"]
+    fail = steps["Fail when the published release was not immutable"]
+
+    assert record["if"] == "always()"
+    assert fail["if"] == "steps.immutability.outcome == 'failure'"
+    assert "exit 1" in str(fail["run"])
+    outputs = workflow["jobs"]["publish"]["outputs"]
+    assert outputs["immutability_outcome"] == (
+        "${{ steps.outcome.outputs.immutability_outcome }}"
+    )
+    assert outputs["cleanup"] == "${{ steps.outcome.outputs.cleanup }}"
+
+
+def test_incident_covers_a_mutable_release_as_well_as_reverification(
+    workflow: dict[str, Any],
+) -> None:
+    incident = workflow["jobs"]["incident"]
+    condition = " ".join(str(incident["if"]).split())
+    body = str(_incident_step(workflow)["run"])
+
+    assert incident["needs"] == ["publish", "reverify"]
+    assert "needs.publish.outputs.immutability_outcome == 'failure'" in condition
+    assert "needs.reverify.outputs.verification_outcome == 'failure'" in condition
+    # A failed cleanup means a mutable release may still be public, so it must
+    # be the loudest thing in the incident.
+    assert "CLEANUP FAILED" in body
+    assert "Delete the release manually NOW" in body
+    assert "do not reuse the tag" in body
+
+
+def test_promotion_reproves_immutability_before_granting_latest(
+    workflow: dict[str, Any],
+) -> None:
+    body = "\n".join(str(step.get("run", "")) for step in _steps(workflow, "promote"))
+    index_check = body.index(".immutable")
+    index_promote = body.index("--latest=true")
+
+    assert index_check < index_promote
+    assert "Refusing to promote" in body
+
+
+def test_the_workflow_never_reads_the_administration_scoped_endpoint(
+    workflow: dict[str, Any],
+) -> None:
+    for job in workflow["jobs"]:
+        for step in _steps(workflow, job):
+            run = str(step.get("run", ""))
+            assert "immutable-releases" not in run
+            assert "--with-admin-reads" not in run
+
+
+def test_the_temporary_diagnostic_workflow_is_gone() -> None:
+    # It answered its question: GITHUB_TOKEN gets 403 on /immutable-releases.
+    assert not Path(".github/workflows/diagnose-protection-reads.yml").exists()
