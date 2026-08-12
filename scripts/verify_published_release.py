@@ -158,7 +158,8 @@ def parse_checksum_file(text: str, expected_name: str) -> str:
     lines = [line for line in text.splitlines() if line.strip()]
     if len(lines) != 1:
         raise PublicationError(
-            "artifact_integrity_mismatch", "checksum file must contain exactly one entry"
+            "artifact_integrity_mismatch",
+            "checksum file must contain exactly one entry",
         )
     match = _CHECKSUM_RE.fullmatch(lines[0])
     if match is None or match.group("name") != expected_name:

@@ -93,11 +93,15 @@ def check_signing_environment(api: ApiClient, repository: str) -> None:
         )
 
     rules = environment.get("protection_rules")
-    reviewer_rules = [
-        rule
-        for rule in rules
-        if isinstance(rule, dict) and rule.get("type") == "required_reviewers"
-    ] if isinstance(rules, list) else []
+    reviewer_rules = (
+        [
+            rule
+            for rule in rules
+            if isinstance(rule, dict) and rule.get("type") == "required_reviewers"
+        ]
+        if isinstance(rules, list)
+        else []
+    )
     if not reviewer_rules:
         raise ProtectionError(
             f"{ENVIRONMENT} has no required reviewer",
@@ -124,9 +128,11 @@ def _check_deployment_tag_policy(api: ApiClient, repository: str) -> None:
         f"repos/{repository}/environments/{ENVIRONMENT}/deployment-branch-policies"
     )
     policies = payload.get("branch_policies") if isinstance(payload, dict) else None
-    entries = [entry for entry in policies if isinstance(entry, dict)] if isinstance(
-        policies, list
-    ) else []
+    entries = (
+        [entry for entry in policies if isinstance(entry, dict)]
+        if isinstance(policies, list)
+        else []
+    )
     if not entries:
         raise ProtectionError(
             f"{ENVIRONMENT} has no deployment policy entries",
@@ -226,10 +232,7 @@ def check_signed_tag(
             "retry; if it persists this is a GitHub-side fault",
         )
     verification = tag_object.get("verification")
-    if (
-        not isinstance(verification, dict)
-        or verification.get("verified") is not True
-    ):
+    if not isinstance(verification, dict) or verification.get("verified") is not True:
         reason = (
             verification.get("reason")
             if isinstance(verification, dict)
@@ -261,7 +264,11 @@ def run_checks(
 ) -> list[ProtectionError]:
     """Run every check and collect failures so one run reports all gaps."""
     failures: list[ProtectionError] = []
-    for check in (check_immutable_releases, check_signing_environment, check_tag_ruleset):
+    for check in (
+        check_immutable_releases,
+        check_signing_environment,
+        check_tag_ruleset,
+    ):
         try:
             check(api, repository)
         except ProtectionError as exc:
@@ -285,9 +292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if bool(args.tag) != bool(args.commit):
         parser.error("--tag and --commit must be given together")
-    failures = run_checks(
-        _gh_api, args.repository, tag=args.tag, commit=args.commit
-    )
+    failures = run_checks(_gh_api, args.repository, tag=args.tag, commit=args.commit)
     if failures:
         print("Release protections are not in place:", file=sys.stderr)
         for failure in failures:

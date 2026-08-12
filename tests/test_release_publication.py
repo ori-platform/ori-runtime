@@ -283,9 +283,7 @@ def test_transient_delivery_failures_are_retried_under_a_deadline(
             raise urllib.error.HTTPError(_url, 404, "Not Found", None, None)  # type: ignore[arg-type]
         destination.write_bytes(b"payload")
 
-    monkeypatch.setitem(
-        verifier["download_asset"].__globals__, "_fetch_once", flaky
-    )
+    monkeypatch.setitem(verifier["download_asset"].__globals__, "_fetch_once", flaky)
     verifier["download_asset"](
         "https://github.com/asset",
         tmp_path / "asset",
@@ -460,7 +458,8 @@ def test_signing_covers_whatever_the_build_matrix_produced(
 ) -> None:
     commands = "\n".join(str(step.get("run", "")) for step in _steps(workflow, "sign"))
     targets = [
-        entry["target"] for entry in workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
+        entry["target"]
+        for entry in workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
     ]
 
     # Targets are globbed from the built bundles rather than restated, so the
@@ -926,7 +925,9 @@ def test_tag_ruleset_exclusions_disqualify_the_ruleset(
     # An exclusion can carve the real release tags back out of a broad include.
     overrides = {
         "repos/o/r/rulesets/1": {
-            "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": exclude}},
+            "conditions": {
+                "ref_name": {"include": ["refs/tags/v*"], "exclude": exclude}
+            },
             "rules": [{"type": "deletion"}, {"type": "update"}],
         }
     }
@@ -1040,9 +1041,7 @@ def test_signed_tag_is_enforced_before_building_and_before_publishing(
     workflow: dict[str, Any],
 ) -> None:
     for job in ("preflight", "publish"):
-        commands = "\n".join(
-            str(step.get("run", "")) for step in _steps(workflow, job)
-        )
+        commands = "\n".join(str(step.get("run", "")) for step in _steps(workflow, job))
         assert "check_release_protections.py" in commands
         assert '--tag "${GITHUB_REF_NAME}"' in commands
         assert '--commit "${GITHUB_SHA}"' in commands
