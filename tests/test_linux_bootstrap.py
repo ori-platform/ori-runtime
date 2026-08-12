@@ -38,15 +38,18 @@ def _envelope(
         "target": "linux-x86_64-python3.12",
     }
     unsigned = {key: value for key, value in envelope.items() if key != "signature"}
-    message = bootstrap["SIGNATURE_DOMAIN"] + json.dumps(
-        unsigned,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode()
-    envelope["signature"] = "ed25519:" + base64.b64encode(
-        private.sign(message)
-    ).decode()
+    message = (
+        bootstrap["SIGNATURE_DOMAIN"]
+        + json.dumps(
+            unsigned,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    )
+    envelope["signature"] = (
+        "ed25519:" + base64.b64encode(private.sign(message)).decode()
+    )
     return envelope
 
 
@@ -97,9 +100,7 @@ def test_load_envelope_rejects_duplicate_fields(
     path = tmp_path / "signature.json"
     path.write_text('{"schema":"one","schema":"two"}', encoding="utf-8")
     with pytest.raises(bootstrap["BootstrapError"], match="duplicate fields"):
-        bootstrap["load_envelope"](
-            path, "2.3.0", "linux-x86_64-python3.12"
-        )
+        bootstrap["load_envelope"](path, "2.3.0", "linux-x86_64-python3.12")
 
 
 def test_openssl_verifies_exact_canonical_signature(
@@ -157,7 +158,9 @@ def test_openssl_before_version_three_is_reported_as_crypto_unavailable(
             returncode=0, stdout="OpenSSL 1.1.1w  11 Sep 2023"
         ),
     )
-    with pytest.raises(bootstrap["BootstrapError"], match="OpenSSL 3 or newer") as error:
+    with pytest.raises(
+        bootstrap["BootstrapError"], match="OpenSSL 3 or newer"
+    ) as error:
         bootstrap["verify_signature"](envelope, artifact, tmp_path)
     assert error.value.code == "crypto_unavailable"
 
@@ -166,9 +169,7 @@ def test_download_rejects_non_approved_origin(
     bootstrap: dict[str, Any], tmp_path: Path
 ) -> None:
     with pytest.raises(bootstrap["BootstrapError"], match="approved HTTPS origin"):
-        bootstrap["download"](
-            "http://example.com/release", tmp_path / "release", 100
-        )
+        bootstrap["download"]("http://example.com/release", tmp_path / "release", 100)
 
 
 @pytest.mark.parametrize(
@@ -209,8 +210,16 @@ def test_main_verifies_before_extracting_or_executing(
     bootstrap: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[str] = []
-    monkeypatch.setitem(bootstrap["main"].__globals__, "detected_target", lambda: "linux-x86_64-python3.12")
-    monkeypatch.setitem(bootstrap["main"].__globals__, "download", lambda *_args: calls.append("download"))
+    monkeypatch.setitem(
+        bootstrap["main"].__globals__,
+        "detected_target",
+        lambda: "linux-x86_64-python3.12",
+    )
+    monkeypatch.setitem(
+        bootstrap["main"].__globals__,
+        "download",
+        lambda *_args: calls.append("download"),
+    )
     monkeypatch.setitem(
         bootstrap["main"].__globals__,
         "load_envelope",
@@ -303,11 +312,7 @@ def test_manifest_requires_exact_file_set_and_digest(
         "target": "linux-x86_64-python3.12",
     }
     (root / "BUNDLE-MANIFEST.json").write_text(json.dumps(manifest), encoding="utf-8")
-    bootstrap["verify_manifest"](
-        root, "2.3.0", "linux-x86_64-python3.12"
-    )
+    bootstrap["verify_manifest"](root, "2.3.0", "linux-x86_64-python3.12")
     payload.write_bytes(b"tampered")
     with pytest.raises(bootstrap["BootstrapError"], match="digest mismatch"):
-        bootstrap["verify_manifest"](
-            root, "2.3.0", "linux-x86_64-python3.12"
-        )
+        bootstrap["verify_manifest"](root, "2.3.0", "linux-x86_64-python3.12")
