@@ -749,7 +749,8 @@ def test_systemd_manager_removal_is_idempotent_when_unit_is_absent(
 
     def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         commands.append(command)
-        return subprocess.CompletedProcess(command, 0, "", "")
+        stdout = "inactive\n" if "is-active" in command else ""
+        return subprocess.CompletedProcess(command, 0, stdout, "")
 
     manager = SystemdServiceManager(
         profile=SystemdServiceProfile.user(),
@@ -758,7 +759,34 @@ def test_systemd_manager_removal_is_idempotent_when_unit_is_absent(
         effective_uid=1001,
     )
     manager.disable_and_remove()
-    assert commands == [["systemctl", "--user", "daemon-reload"]]
+    assert commands == [
+        ["systemctl", "--user", "is-active", "ori-runtime.service"],
+        ["systemctl", "--user", "daemon-reload"],
+    ]
+
+
+def test_systemd_manager_stops_loaded_service_when_unit_is_absent(
+    tmp_path: Path,
+) -> None:
+    commands: list[Sequence[str]] = []
+
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        stdout = "active\n" if "is-active" in command else ""
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=(tmp_path / "units" / "ori-runtime.service").resolve(),
+        runner=runner,
+        effective_uid=1001,
+    )
+    manager.disable_and_remove()
+    assert commands == [
+        ["systemctl", "--user", "is-active", "ori-runtime.service"],
+        ["systemctl", "--user", "stop", "ori-runtime.service"],
+        ["systemctl", "--user", "daemon-reload"],
+    ]
 
 
 def test_systemd_manager_disables_before_removing_unit(tmp_path: Path) -> None:
