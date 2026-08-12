@@ -31,6 +31,74 @@ present in this repository or ordinary CI secrets.
 key are accepted for verification. It does not by itself claim that release
 publication is operationally production-ready.
 
+## Release publication preconditions
+
+The release workflow refuses to run until these exist. They are checked in a
+preflight job rather than assumed, because GitHub creates a referenced
+environment *without* protection rules the first time a workflow names it — so
+`environment: release-signing` on its own gates nothing.
+
+| Precondition | Why |
+| --- | --- |
+| Repository immutable releases enabled | `gh release create --verify-tag` verifies a tag exists; it does not freeze assets. Immutability is a separate repository setting. |
+| `release-signing` environment exists | Named environments are auto-created unprotected on first use. |
+| Required reviewer with self-review prevented | Otherwise signing is unattended, or one maintainer can approve their own release. Both are asserted from the environment's `required_reviewers` rule. |
+| No administrator bypass | Not exposed as an assertable field; this remains an operator obligation. |
+| Custom deployment policy naming a version-tag pattern | Otherwise any ref reaching the job could assume the signer role. Presence of a policy is not enough: the entries must all be tag-typed and cover `v*`. |
+| Active tag ruleset covering `refs/tags/v*` that restricts deletion and update, with no ref exclusions | Otherwise a published release tag can be moved after signing. A ruleset protecting unrelated tags does not count, blocking deletion alone still allows a force-move, and an exclusion could carve the real release tags back out of a broad include. |
+| AWS OIDC trust policy bound to the environment subject | Restricting on repository alone lets any workflow in the repository assume the signer role. Bind `sub` to `repo:<owner>/<repo>:environment:release-signing`. |
+
+`scripts/check_release_protections.py` proves each of these before any
+credential is issued, and reports every gap in one run with the remedy.
+
+Publication is draft-first: the workflow reconfirms the tag still points at the
+built commit, creates a draft, uploads the complete asset set, confirms the
+draft carries exactly the staged files, and only then marks it public. A
+failure therefore leaves an unpublished draft rather than a partially published
+release.
+
+## What constitutes release approval
+
+The workflow proves that the signed tag and the workflow event agree on one
+commit. It cannot, on its own, prove that commit was the one a human approved —
+nothing in the repository binds a commit to an out-of-band approval record.
+
+The `release-signing` environment deployment is therefore defined as the
+authoritative approval event:
+
+- the protected deployment names the exact tag and full commit SHA being
+  released, and the reviewer sees both before approving;
+- approving that deployment **is** the release approval, and its timestamp is
+  the approval timestamp;
+- the signed-tag check binds the approved deployment's commit to a verified
+  annotated tag, so approval, tag, and built bytes cannot diverge;
+- any earlier approval recorded in text or YAML is superseded the moment the
+  final release commit changes — a release-preparation merge always produces a
+  new commit, so a pre-merge approval SHA is never the release SHA.
+
+This is why the reviewer must be a person who did not push the tag, and why
+self-review is refused: the deployment approval is the only point at which a
+human asserts "these exact bytes, from this exact commit, may be signed."
+
+## When public reverification fails
+
+A published immutable release is never deleted. Deleting it would destroy the
+distribution object, complicate forensics, and burn the tag name permanently.
+The workflow quarantines instead:
+
+- the run stays failed, so the release is never declared usable;
+- the release is never marked `Latest`: publication explicitly sets
+  `--latest=false`, and only a clean public reverification promotes it, so a
+  failure leaves it published but unpromoted;
+- a high-priority release incident is opened automatically;
+- no `latest` or bootstrap promotion may reference the version;
+- the release and workflow logs are preserved as evidence;
+- if the artifacts are invalid, a corrected patch version is published — the
+  tag is never reused.
+
+This keeps "publicly uploaded" and "declared usable" as separate states, which
+is the distinction the v1 contract draws.
+
 ## Outstanding operational gates
 
 The following remain required before declaring production release publication
