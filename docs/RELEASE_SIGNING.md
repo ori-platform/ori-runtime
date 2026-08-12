@@ -52,3 +52,42 @@ The public key and fingerprint are normatively pinned in
 Until those gates are evidenced, the local installer verification path may be
 tested against signed artifacts, but protected production release publication
 must remain disabled.
+
+## Authenticated Linux bootstrap
+
+[`scripts/install-linux.sh`](../scripts/install-linux.sh) is the standalone
+bootstrap that will be attached to an immutable Runtime release. It requires an
+explicit version until protected release publication can safely generate the
+`latest` convenience flow:
+
+```sh
+curl -fsSL \
+  https://github.com/ori-platform/ori-runtime/releases/download/v2.3.0/install-linux.sh \
+  | bash -s -- --version 2.3.0 -- --scope user
+```
+
+For unattended provisioning, pass `--unattended` and every required identity
+field after the separator. Interactive piped installs reopen `/dev/tty`; if no
+terminal exists, the bootstrap fails instead of selecting defaults.
+
+The host must provide Python 3.11 or 3.12, Bash, and OpenSSL 3 or newer with
+Ed25519 `pkeyutl` support. Missing or older OpenSSL fails explicitly as
+`crypto_unavailable`; it is never reported as a bad release signature.
+
+The bootstrap downloads only from the approved GitHub HTTPS release origin
+and permits redirects only to GitHub-controlled HTTPS asset hosts. It checks
+the requested version and detected Linux/Python target, verifies the exact
+bundle size and digest, and verifies the KMS-backed Ed25519 signature against
+the public key pinned in this repository and the normative contract. Only then
+does it safely extract the bundle, independently verify the manifest and full
+file set, and create a temporary installer environment exclusively from the
+verified, hash-locked wheelhouse. The installed `ori-install-linux` command
+re-verifies the bundle before performing the transactional installation.
+
+The initial `curl | bash` still trusts HTTPS and GitHub release delivery for
+the bootstrap script itself; the embedded key cannot authenticate the file
+that contains it. The high-assurance path is to download the immutable-tag
+script, verify `install-linux.sh.sha256` against an independently obtained
+release record, inspect it, and then run it locally. Release publication must
+ship both files atomically; that protected publication control is not enabled
+by this implementation.
