@@ -213,10 +213,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ori-install-linux",
         description="Install an authenticated Ori Runtime release without live resolution.",
+        allow_abbrev=False,
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    install = commands.add_parser("install", help="verify and install a local bundle")
+    install = commands.add_parser(
+        "install", help="verify and install a local bundle", allow_abbrev=False
+    )
     _add_scope_arguments(install)
     install.add_argument("--bundle", required=True, type=Path)
     install.add_argument("--signature", required=True, type=Path)
@@ -229,7 +232,9 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--deployment-type", choices=("pi", "server"), default="pi")
     install.add_argument("--operator-contact")
 
-    uninstall = commands.add_parser("uninstall", help="remove Runtime and its unit")
+    uninstall = commands.add_parser(
+        "uninstall", help="remove Runtime and its unit", allow_abbrev=False
+    )
     _add_scope_arguments(uninstall)
     uninstall.add_argument("--remove-data", action="store_true")
     return parser

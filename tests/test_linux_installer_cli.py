@@ -41,6 +41,15 @@ def _install_args(tmp_path: Path) -> list[str]:
     ]
 
 
+@pytest.mark.parametrize("option", ["--bund", "--signat", "--expected-vers"])
+def test_installer_rejects_abbreviated_release_identity_options(
+    option: str,
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.build_parser().parse_args(["install", option, "value"])
+    assert error.value.code == 2
+
+
 def test_detected_release_target_normalizes_supported_machine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
