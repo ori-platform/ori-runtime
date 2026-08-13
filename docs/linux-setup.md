@@ -1,6 +1,10 @@
 # Linux Setup Guide
 
-This guide walks you through running Ori on a Linux machine (Ubuntu, Debian, Fedora, or any modern distro). No Raspberry Pi or external hardware is required — Ori's **pc-system-health** skill runs on any laptop using `psutil`.
+This guide walks you through running Ori on a Linux machine (Ubuntu, Debian, Fedora, or any modern distro) **from a source checkout**, for development and evaluation. No Raspberry Pi or external hardware is required — Ori's **pc-system-health** skill runs on any laptop using `psutil`.
+
+> To deploy a signed release onto a device as a managed service, use
+> [`linux-install.md`](linux-install.md) instead. That path verifies a
+> KMS-signed bundle before anything is unpacked; this one does not.
 
 ---
 
