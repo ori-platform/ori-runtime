@@ -119,25 +119,63 @@ is the distinction the v1 contract draws.
 
 ## Outstanding operational gates
 
-The following remain required before declaring production release publication
-ready:
+### Evidenced on 2026-08-12
 
-- replace broad administrator-derived signing access with an explicitly named,
-  least-privilege release signer principal;
-- configure durable CloudTrail logging for KMS events beyond Event History's
-  limited retention;
-- formally assign the emergency-disable owner and backup administrator;
-- independently verify that GitHub and CI hold no long-lived AWS credentials;
-- restrict automated signing to protected immutable releases using short-lived
-  identity federation.
+The following were confirmed against the AWS account and this repository. The
+evidence is non-secret ARNs, policy documents, and ownership assignments, held
+outside this repository.
+
+- **Least-privilege signing principals.** Two named roles replace
+  administrator-derived access, both scoped to the exact key ARN.
+  `ori-runtime-release-signer` is assumable only by a named IAM user with MFA
+  for manual ceremonies and may call `kms:DescribeKey`, `kms:GetPublicKey`, and
+  `kms:Sign`. `ori-runtime-github-release-signer` is assumable only through
+  GitHub OIDC and may call `kms:GetPublicKey` and `kms:Sign`. Signing is
+  additionally conditioned on `kms:SigningAlgorithm = ED25519_SHA_512` and
+  `kms:MessageType = RAW`; those request-context keys apply to `kms:Sign` and
+  not to the inspection calls. Neither role holds `kms:CreateGrant`,
+  `kms:PutKeyPolicy`, `kms:ScheduleKeyDeletion`, `iam:*`, or `s3:*`.
+- **Key-policy enforcement.** Key policy `ori-runtime-release-key-policy-v2`
+  explicitly denies `kms:Sign` to every principal outside those two roles, so
+  the allowlist is enforced at the key rather than only at the roles.
+- **Short-lived federation restricted to protected releases.** The OIDC trust
+  is bound to audience `sts.amazonaws.com` and subject
+  `repo:ori-platform/ori-runtime:environment:release-signing`, so only the
+  protected environment can assume the signing role. Ordinary CI runs with
+  `id-token: none`.
+- **Proof of possession.** A domain-separated challenge was signed through the
+  approved role and verified; a one-byte mutation was rejected.
+- **Ownership.** Emergency-disable owner and backup administrator are assigned,
+  and the release approver is separate from the signing operator.
+
+### Administrator-attested and code-owner accepted on 2026-08-13
+
+Detailed evidence is retained outside the public repository because it contains
+sensitive operational material.
+
+- durable CloudTrail logging of KMS events beyond Event History's limited
+  window, with its retention arrangement;
+- absence of long-lived AWS credentials in GitHub repository and organisation
+  secrets.
+
+### Remaining release-time evidence
+
+These can only be produced by performing the release, and are recorded once it
+completes:
+
+- protected GitHub OIDC signing succeeds through the `release-signing`
+  environment;
+- the v2.3.0 workflow builds, signs, publishes, and reverifies;
+- Python 3.12 distro evidence completes on the supported targets.
 
 The public key and fingerprint are normatively pinned in
 `ori-specs/runtime-release-bundle/v1` by the merged contract amendment in
 `ori-specs#63`.
 
-Until those gates are evidenced, the local installer verification path may be
-tested against signed artifacts, but protected production release publication
-must remain disabled.
+The controls that gate signing are in place, so the protected release path is
+enabled. It remains self-limiting: the workflow refuses to run without the
+repository protections, refuses to sign without a reviewer approving the
+protected deployment, and refuses to promote a release it cannot reverify.
 
 ## Authenticated Linux bootstrap
 

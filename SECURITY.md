@@ -6,8 +6,12 @@ Ori Runtime controls physical systems. Security issues can have real-world conse
 
 | Version | Supported |
 | ------- | --------- |
-| `0.9.x` (beta) | Yes |
-| `<0.9.0` | No |
+| `2.3.x` (stable) | Yes |
+| `<2.3.0` | No |
+
+Production support targets Python 3.12 on `linux-x86_64` and `linux-aarch64`.
+Python 3.11 bundles are signed and verifiable community-compatibility targets
+and are outside the production support commitment.
 
 ## Reporting a Vulnerability
 
