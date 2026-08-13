@@ -62,3 +62,7 @@ MANIFEST
 
 # Rust
 target/
+
+# Local release-control evidence — never committed
+docs/evidence.txt
+docs/ori-runtime-kms-policy-with-github.json
