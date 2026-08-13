@@ -1536,7 +1536,13 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
             "offline_install_failed", "release venv bin directory is unreadable"
         ) from exc
 
+    # These embed the environment root rather than an interpreter and carry no
+    # shebang, so they are rebound first and skipped by the shebang pass.
+    _repair_activation_scripts(staging, destination, bin_dir)
+
     for entry in entries:
+        if entry.name in _ACTIVATION_SCRIPTS:
+            continue
         # Interpreter symlinks carry no shebang and must never be rewritten.
         if entry.is_symlink():
             continue
@@ -1584,7 +1590,6 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
             entry, data.replace(old_bin, new_bin), stat.S_IMODE(info.st_mode)
         )
 
-    _repair_activation_scripts(staging, destination, bin_dir)
     _assert_no_staging_references(bin_dir, staging_reference)
     _fsync_directory(bin_dir)
 
