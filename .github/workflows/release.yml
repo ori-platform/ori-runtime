@@ -178,6 +178,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # build-wheelhouse.sh invokes scripts/build_release_bundle.py, which
+      # imports ori. `python scripts/x.py` puts scripts/ on sys.path[0], not
+      # the repository root, so the package must be importable here.
+      - name: Install build dependencies
+        run: python -m pip install --no-deps -e .
+
       - name: Resolve release identity
         id: identity
         run: |
