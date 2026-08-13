@@ -1996,3 +1996,34 @@ def test_real_packaged_commands_start_from_the_final_release(tmp_path: Path) -> 
         assert ".staging" not in entry.read_bytes().decode("utf-8", "ignore"), (
             entry.name
         )
+
+
+def test_long_path_sh_wrapper_form_is_rebound(tmp_path: Path) -> None:
+    """pip emits a `#!/bin/sh` re-exec wrapper when the shebang would be too long.
+
+    Linux caps shebangs at 127 bytes, so a long install root produces this form
+    and the interpreter lives on line 2. Rewriting only line 1 leaves it stale.
+    """
+
+    def prepare(staging: Path) -> None:
+        _real_venv_prepare(staging)
+        interpreter = staging / "venv" / "bin" / "python"
+        wrapper = staging / "venv" / "bin" / "long-form"
+        wrapper.write_text(
+            f"#!/bin/sh\n'''exec' {interpreter} \"$0\" \"$@\"\n' '''\nexit 0\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    _install(layout, "2.3.1", prepare=prepare)
+
+    release = layout.release("2.3.1")
+    wrapper = release / "venv" / "bin" / "long-form"
+    body = wrapper.read_text(encoding="utf-8")
+
+    assert ".staging" not in body
+    assert str(release / "venv" / "bin" / "python") in body
+    # Not executed here: the stand-in interpreter is a /bin/sh symlink, so the
+    # re-exec would recurse. Real execution of this form is covered by the six
+    # packaged commands in the wheel-installed test.

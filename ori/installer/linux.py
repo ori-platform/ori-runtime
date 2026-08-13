@@ -1526,8 +1526,8 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
         raise LinuxInstallError(
             "offline_install_failed", "release venv bin directory is unsafe"
         )
-    old_prefix = f"#!{staging}/venv/bin/".encode()
-    new_prefix = f"#!{destination}/venv/bin/".encode()
+    old_bin = f"{staging}/venv/bin/".encode()
+    new_bin = f"{destination}/venv/bin/".encode()
     staging_reference = str(staging).encode()
     try:
         entries = sorted(bin_dir.iterdir())
@@ -1560,21 +1560,29 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
         if not first.startswith(b"#!"):
             # Compiled binaries have no shebang; a staging reference in one
             # would mean something unexpected produced it.
-            if staging_reference in first:
+            if staging_reference in data:
                 raise LinuxInstallError(
                     "offline_install_failed",
                     f"{entry.name} references the staging path without a shebang",
                 )
             continue
-        if not first.startswith(old_prefix):
-            if staging_reference in first:
+
+        # pip writes two wrapper forms. Normally the interpreter is the shebang
+        # itself; when that path would exceed the kernel's shebang limit it
+        # emits a `#!/bin/sh` wrapper that re-execs the interpreter on the next
+        # line instead. Linux caps shebangs at 127 bytes, so a long install
+        # root produces the second form.
+        long_form = first.startswith(b"#!/bin/sh") and _LONG_EXEC + old_bin in data
+        if not first.startswith(b"#!" + old_bin) and not long_form:
+            if staging_reference in data:
                 raise LinuxInstallError(
                     "offline_install_failed",
                     f"{entry.name} points at an unexpected staging interpreter",
                 )
             continue
-        repaired = new_prefix + data[len(old_prefix) :]
-        _rewrite_preserving_mode(entry, repaired, stat.S_IMODE(info.st_mode))
+        _rewrite_preserving_mode(
+            entry, data.replace(old_bin, new_bin), stat.S_IMODE(info.st_mode)
+        )
 
     _repair_activation_scripts(staging, destination, bin_dir)
     _assert_no_staging_references(bin_dir, staging_reference)
@@ -1607,6 +1615,7 @@ def _rewrite_preserving_mode(path: Path, content: bytes, mode: int) -> None:
 
 
 _ACTIVATION_SCRIPTS = ("activate", "activate.csh", "activate.fish", "Activate.ps1")
+_LONG_EXEC = b"'''exec' "
 
 
 def _repair_activation_scripts(staging: Path, destination: Path, bin_dir: Path) -> None:
