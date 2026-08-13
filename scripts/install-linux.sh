@@ -4,10 +4,22 @@ if [ -z "${BASH_VERSION:-}" ]; then
   echo "unsupported_target: install-linux.sh must be run with bash; use curl ... | bash -s -- ..." >&2
   exit 2
 fi
-case "$0" in
-  *install-linux.sh) exec python3 "$0" "$@" ;;
-  *) exec python3 - "$@" ;;
-esac
+# Dispatch on execution mode, not on filename. BASH_SOURCE[0] is the script
+# path when a file is executed and unset when bash reads the program from
+# stdin, so it distinguishes the two without consulting $0 — which is merely
+# "bash" for piped runs and would match a readable file of that name sitting
+# in the working directory.
+ori_source="${BASH_SOURCE[0]-}"
+if [ -n "${ori_source}" ] && [ -f "${ori_source}" ] && [ -r "${ori_source}" ]; then
+  exec python3 "${ori_source}" "$@"
+fi
+# No file to run, so the program must arrive on stdin. If stdin is a terminal
+# there is nothing to read, and exiting quietly would look like success.
+if [ -t 0 ]; then
+  echo "unsupported_target: no installer source found; run the downloaded file, or pipe it with 'curl -fsSL ... | bash -s -- ...'" >&2
+  exit 2
+fi
+exec python3 - "$@"
 ":"""
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
@@ -334,12 +346,46 @@ def extract_verified_bundle(artifact: Path, destination: Path, expected_root: st
                     total += member.size
                     if member.size < 0 or total > MAX_EXTRACTED_BYTES:
                         fail("unsafe_bundle_archive", "archive content is outside bounds")
-            archive.extractall(destination, members=members, filter="data")
+            for member in members:
+                _extract_member(archive, member, destination)
     except BootstrapError:
         raise
-    except (OSError, EOFError, tarfile.TarError) as exc:
-        raise BootstrapError("unsafe_bundle_archive", "verified bundle could not be extracted") from exc
+    except (OSError, EOFError, tarfile.TarError, ValueError, TypeError) as exc:
+        raise BootstrapError(
+            "unsafe_bundle_archive", "verified bundle could not be extracted"
+        ) from exc
     return destination / expected_root
+
+
+def _extract_member(
+    archive: tarfile.TarFile, member: tarfile.TarInfo, destination: Path
+) -> None:
+    """Write one validated member explicitly.
+
+    Every member has already been checked for traversal, absolute paths,
+    duplicates, special files, and setuid bits, so extracting them one at a
+    time is equivalent to `filter="data"` and works on every supported
+    interpreter.
+    """
+    target = destination.joinpath(*PurePosixPath(member.name).parts)
+    if member.isdir():
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    source = archive.extractfile(member)
+    if source is None:
+        fail("unsafe_bundle_archive", f"cannot read archive member {member.name!r}")
+    written = 0
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(target, flags, 0o600)
+    with source, os.fdopen(descriptor, "wb") as output:
+        while chunk := source.read(1024 * 1024):
+            written += len(chunk)
+            if written > member.size:
+                fail("unsafe_bundle_archive", "archive member exceeded its declared size")
+            output.write(chunk)
+    if written != member.size:
+        fail("unsafe_bundle_archive", "archive member size did not match its header")
 
 
 def verify_manifest(root: Path, version: str, target: str) -> None:
@@ -521,6 +567,16 @@ def main(argv: list[str] | None = None) -> int:
     except OSError:
         print(
             "unsafe_install_root: secure bootstrap workspace is unavailable",
+            file=sys.stderr,
+        )
+        return 2
+    except Exception as exc:  # noqa: BLE001 - operators must never see a traceback
+        # Truthfully generic: an unexpected fault may come from download,
+        # argument handling, or environment preparation, so it must not be
+        # attributed to the archive. Suppress the traceback, keep exit 2.
+        print(
+            f"bootstrap_failed: installer failed unexpectedly "
+            f"({type(exc).__name__})",
             file=sys.stderr,
         )
         return 2

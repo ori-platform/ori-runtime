@@ -21,12 +21,24 @@ different guarantees.
 | OpenSSL 3 or newer | Ed25519 verification needs `pkeyutl -rawin` |
 | systemd | The runtime is installed as a managed service |
 
-**Production support targets Python 3.12.** Python 3.11 bundles are signed and
-verifiable but sit outside the production support commitment.
+**Production support is expressed as tested platform tuples**, not one global
+interpreter version:
 
-**Raspberry Pi OS Bookworm is the supported Pi baseline.** Bullseye ships
-OpenSSL 1.1.1, which cannot perform the required verification — the installer
-reports `crypto_unavailable` rather than pretending otherwise.
+| Platform | Architecture | Python | Status |
+| --- | --- | --- | --- |
+| Raspberry Pi OS Bookworm | `aarch64` | 3.11 (stock) | Production-supported |
+| Ubuntu 24.04 | `x86_64` | 3.12 (stock) | Production-supported |
+| Other published bundles | `x86_64`, `aarch64` | 3.11, 3.12 | Community compatibility |
+
+Both production tuples use the interpreter their distribution ships, so no
+manual Python installation is required.
+
+**Raspberry Pi OS Bullseye is not supported.** It ships OpenSSL 1.1.1, which
+cannot perform the required verification — the installer reports
+`crypto_unavailable` rather than pretending otherwise.
+
+**Fedora is deferred.** Current releases ship Python 3.13, for which no bundle
+is published, so the bootstrap reports `unsupported_target`.
 
 ---
 
@@ -36,8 +48,8 @@ reports `crypto_unavailable` rather than pretending otherwise.
 
 ```sh
 curl -fsSL \
-  https://github.com/ori-platform/ori-runtime/releases/download/v2.3.0/install-linux.sh \
-  | bash -s -- --version 2.3.0 -- --scope user
+  https://github.com/ori-platform/ori-runtime/releases/download/v2.3.1/install-linux.sh \
+  | bash -s -- --version 2.3.1 -- --scope user
 ```
 
 You will be prompted for a device ID, name, location, and an optional operator
@@ -53,8 +65,8 @@ Every identity value must be supplied; unattended mode never prompts.
 
 ```sh
 curl -fsSL \
-  https://github.com/ori-platform/ori-runtime/releases/download/v2.3.0/install-linux.sh \
-  | bash -s -- --version 2.3.0 -- \
+  https://github.com/ori-platform/ori-runtime/releases/download/v2.3.1/install-linux.sh \
+  | bash -s -- --version 2.3.1 -- \
       --scope system \
       --unattended \
       --device-id energy-monitor-ikeja-01 \
@@ -71,12 +83,12 @@ it. To remove that residual trust, fetch the script and its checksum from the
 immutable tag, verify, inspect, then run it locally:
 
 ```sh
-base=https://github.com/ori-platform/ori-runtime/releases/download/v2.3.0
+base=https://github.com/ori-platform/ori-runtime/releases/download/v2.3.1
 curl -fsSLO "${base}/install-linux.sh"
 curl -fsSLO "${base}/install-linux.sh.sha256"
 sha256sum -c install-linux.sh.sha256
 less install-linux.sh
-bash install-linux.sh --version 2.3.0 -- --scope system --unattended ...
+bash install-linux.sh --version 2.3.1 -- --scope system --unattended ...
 ```
 
 Everything after the bootstrap is already covered by the KMS signature.
@@ -127,7 +139,7 @@ On success the installer prints a JSON summary:
 
 ```json
 {"boot_persistence":true,"changed":true,"device_id":"energy-monitor-ikeja-01",
- "scope":"system","status":"healthy","version":"2.3.0"}
+ "scope":"system","status":"healthy","version":"2.3.1"}
 ```
 
 ---

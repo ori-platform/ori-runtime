@@ -9,9 +9,21 @@ Ori Runtime controls physical systems. Security issues can have real-world conse
 | `2.3.x` (stable) | Yes |
 | `<2.3.0` | No |
 
-Production support targets Python 3.12 on `linux-x86_64` and `linux-aarch64`.
-Python 3.11 bundles are signed and verifiable community-compatibility targets
-and are outside the production support commitment.
+Production support is expressed as tested platform tuples, not as one global
+interpreter version. A primary Raspberry Pi target cannot honestly require a
+non-stock interpreter while claiming a straightforward authenticated bootstrap,
+and Debian Bookworm supplies Python 3.11.
+
+| Platform | Architecture | Python | Status |
+| --- | --- | --- | --- |
+| Raspberry Pi OS Bookworm | `aarch64` | 3.11 (stock) | Production-supported |
+| Ubuntu 24.04 | `x86_64` | 3.12 (stock) | Production-supported |
+| Other published bundles | `x86_64`, `aarch64` | 3.11, 3.12 | Community compatibility |
+
+Fedora is deferred compatibility work: current releases ship Python 3.13, for
+which no bundle is published, and validating one requires full dependency and
+runtime work rather than a hurried artifact. Fedora provides a separate
+`python3.12` package that a future evidenced tuple can build on.
 
 ## Reporting a Vulnerability
 

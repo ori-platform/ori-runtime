@@ -316,3 +316,135 @@ def test_manifest_requires_exact_file_set_and_digest(
     payload.write_bytes(b"tampered")
     with pytest.raises(bootstrap["BootstrapError"], match="digest mismatch"):
         bootstrap["verify_manifest"](root, "2.3.0", "linux-x86_64-python3.12")
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["install-linux.sh", "renamed.sh", "ori-installer"],
+    ids=["original", "renamed", "unrelated-name"],
+)
+def test_a_readable_script_runs_itself_whatever_it_is_called(
+    tmp_path: Path, name: str
+) -> None:
+    """Basename dispatch made a renamed copy exit 0 without installing.
+
+    That is the worst failure mode for an installer: it looks like success.
+    """
+    script = tmp_path / name
+    script.write_text(
+        Path("scripts/install-linux.sh").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    completed = subprocess.run(
+        ["bash", str(script), "--version", "2.3.1"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=tmp_path,
+    )
+
+    assert completed.returncode != 0, "a no-op exit 0 would look like success"
+    assert "Traceback" not in completed.stderr
+
+
+@pytest.mark.parametrize("form", ["absolute", "relative"])
+def test_both_path_forms_execute(tmp_path: Path, form: str) -> None:
+    script = tmp_path / "install-linux.sh"
+    script.write_text(
+        Path("scripts/install-linux.sh").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    target = str(script) if form == "absolute" else "./install-linux.sh"
+    completed = subprocess.run(
+        ["bash", target, "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=tmp_path,
+    )
+
+    assert completed.returncode == 0
+    assert "--version" in completed.stdout
+
+
+def test_piped_invocation_still_reads_stdin(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        ["bash", "-s", "--", "--help"],
+        input=Path("scripts/install-linux.sh").read_text(encoding="utf-8"),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "--version" in completed.stdout
+
+
+def test_non_bash_shell_refuses_clearly(tmp_path: Path) -> None:
+    script = tmp_path / "install-linux.sh"
+    script.write_text(
+        Path("scripts/install-linux.sh").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    completed = subprocess.run(
+        ["sh", str(script), "--version", "2.3.1"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    # On macOS /bin/sh is bash in sh mode, so BASH_VERSION is set and the guard
+    # correctly does not fire; on Debian-family hosts it is dash and it does.
+    sh_is_bash = subprocess.run(
+        ["sh", "-c", "echo ${BASH_VERSION:-}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+
+    assert completed.returncode == 2
+    assert "Traceback" not in completed.stderr
+    if not sh_is_bash:
+        assert "must be run with bash" in completed.stderr
+    else:
+        assert ": " in completed.stderr, "expected a stable code: detail line"
+
+
+def test_no_source_and_no_stdin_never_exits_zero() -> None:
+    """With no file to run and a terminal on stdin there is nothing to read."""
+    preamble = Path("scripts/install-linux.sh").read_text(encoding="utf-8")
+
+    # BASH_SOURCE distinguishes a real file from `bash -s`; $0 does not.
+    assert 'ori_source="${BASH_SOURCE[0]-}"' in preamble
+    assert '[ -n "${ori_source}" ]' in preamble
+    assert "if [ -t 0 ]; then" in preamble
+    assert "exit 2" in preamble
+
+
+def test_piped_run_ignores_a_readable_file_named_bash(tmp_path: Path) -> None:
+    """`$0` is "bash" for piped runs, so a cwd file of that name is a trap.
+
+    Dispatching on `$0` would execute that file instead of the authenticated
+    program arriving on stdin.
+    """
+    decoy = tmp_path / "bash"
+    decoy.write_text("echo DECOY-EXECUTED\nexit 0\n", encoding="utf-8")
+    decoy.chmod(0o755)
+
+    completed = subprocess.run(
+        ["bash", "-s", "--", "--help"],
+        input=Path("scripts/install-linux.sh").read_text(encoding="utf-8"),
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=tmp_path,
+    )
+
+    assert "DECOY-EXECUTED" not in completed.stdout
+    assert completed.returncode == 0
+    assert "--version" in completed.stdout
+
+
+def test_unexpected_faults_are_not_blamed_on_the_archive() -> None:
+    """A generic fault must not claim the verified archive was unsafe."""
+    source = Path("scripts/install-linux.sh").read_text(encoding="utf-8")
+
+    assert "bootstrap_failed: installer failed unexpectedly" in source
+    assert "unsafe_bundle_archive: installer failed unexpectedly" not in source
