@@ -439,15 +439,6 @@ def test_tag_pushes_cannot_reach_signing_without_the_release_gates(
     assert gate in commands
 
 
-@pytest.mark.parametrize("job", ["test", "sign", "publish", "reverify"])
-def test_jobs_running_repository_scripts_install_the_package(
-    workflow: dict[str, Any], job: str
-) -> None:
-    commands = "\n".join(str(step.get("run", "")) for step in _steps(workflow, job))
-
-    assert "pip install --no-deps -e ." in commands
-
-
 @pytest.mark.parametrize("job", ["test", "build", "sign", "publish", "reverify"])
 def test_every_release_job_is_time_bounded(workflow: dict[str, Any], job: str) -> None:
     assert isinstance(workflow["jobs"][job]["timeout-minutes"], int)
@@ -1174,3 +1165,47 @@ def test_the_workflow_never_reads_the_administration_scoped_endpoint(
 def test_the_temporary_diagnostic_workflow_is_gone() -> None:
     # It answered its question: GITHUB_TOKEN gets 403 on /immutable-releases.
     assert not Path(".github/workflows/diagnose-protection-reads.yml").exists()
+
+
+def _scripts_importing_ori() -> set[str]:
+    """Return repository scripts that import the `ori` package directly."""
+    importing = set()
+    for path in Path("scripts").glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"^\s*(from ori[. ]|import ori\b)", text, re.MULTILINE):
+            importing.add(path.as_posix())
+    return importing
+
+
+def _scripts_needing_the_package() -> set[str]:
+    """Expand to scripts that invoke an ori-importing script in turn."""
+    needing = _scripts_importing_ori()
+    for path in Path("scripts").glob("*"):
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if any(script in text for script in _scripts_importing_ori()):
+            needing.add(path.as_posix())
+    return needing
+
+
+def test_every_job_invoking_an_ori_importing_script_installs_the_package(
+    workflow: dict[str, Any],
+) -> None:
+    """Derive the requirement rather than trusting a hand-listed set of jobs.
+
+    `python scripts/x.py` puts `scripts/` on `sys.path[0]`, not the repository
+    root, so a job that runs an ori-importing script without installing the
+    package fails with ModuleNotFoundError. A hardcoded job list previously
+    missed `build`, whose wheelhouse script invokes the bundle builder.
+    """
+    needing = _scripts_needing_the_package()
+    assert needing, "expected to find scripts that import ori"
+
+    for job in workflow["jobs"]:
+        commands = "\n".join(str(step.get("run", "")) for step in _steps(workflow, job))
+        invoked = sorted(script for script in needing if script in commands)
+        if invoked:
+            assert "pip install --no-deps -e ." in commands, (
+                f"job {job!r} runs {invoked} but never installs the package"
+            )
