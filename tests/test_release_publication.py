@@ -1209,3 +1209,42 @@ def test_every_job_invoking_an_ori_importing_script_installs_the_package(
             assert "pip install --no-deps -e ." in commands, (
                 f"job {job!r} runs {invoked} but never installs the package"
             )
+
+
+INSTALL_GUIDE = Path("docs/linux-install.md")
+_CODE_ROW_RE = re.compile(r"^\| `(?P<code>[a-z_]+)` \|", re.MULTILINE)
+
+
+def test_documented_failure_codes_all_exist_in_the_code() -> None:
+    """A failure-code reference that drifts is worse than none at all.
+
+    An operator matching a real error against this table needs every row to be
+    a code the installer can actually raise.
+    """
+    documented = set(_CODE_ROW_RE.findall(INSTALL_GUIDE.read_text(encoding="utf-8")))
+    assert documented, "expected a failure-code table in the install guide"
+
+    sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in [*Path("ori/installer").glob("*.py"), *Path("scripts").glob("*")]
+        if path.is_file()
+    )
+    unknown = sorted(code for code in documented if f'"{code}"' not in sources)
+    assert not unknown, f"documented codes that no code path raises: {unknown}"
+
+
+def test_installer_failure_codes_are_all_documented() -> None:
+    """Every code the installer can surface must be explainable by the guide."""
+    documented = set(_CODE_ROW_RE.findall(INSTALL_GUIDE.read_text(encoding="utf-8")))
+    raised = set()
+    for path in Path("ori/installer").glob("*.py"):
+        raised.update(
+            re.findall(
+                r"LinuxInstallError\(\s*\n?\s*\"([a-z_]+)\"",
+                path.read_text(encoding="utf-8"),
+            )
+        )
+    assert raised, "expected to find raised installer codes"
+
+    undocumented = sorted(raised - documented)
+    assert not undocumented, f"codes the guide does not explain: {undocumented}"

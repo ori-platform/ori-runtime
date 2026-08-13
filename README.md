@@ -310,7 +310,7 @@ The agent does the diagnosis. The operator approves or rejects a specific, fully
 
 Ori's **pc-system-health** skill runs on any laptop using `psutil`. No Raspberry Pi, no sensors, no wiring.
 
-> **Linux users:** See [docs/linux-setup.md](docs/linux-setup.md) for a step-by-step Linux setup guide, including a minimal validated config (`ori.linux.yaml.example`), Linux model paths, and troubleshooting for common Linux-specific issues.
+> **Linux users:** To deploy a signed release as a service, see [docs/linux-install.md](docs/linux-install.md). To run from source for development, see [docs/linux-setup.md](docs/linux-setup.md) for a step-by-step setup guide, including a minimal validated config (`ori.linux.yaml.example`), Linux model paths, and troubleshooting for common Linux-specific issues.
 
 ```bash
 # Clone and install
@@ -337,6 +337,13 @@ for t in skill.triggers:
 ```
 
 ## Install Targets
+
+> **Deploying to a Linux device?** Use the signed release installer — see
+> [docs/linux-install.md](docs/linux-install.md). It verifies a KMS-signed
+> bundle before anything is unpacked, installs the runtime as a managed
+> systemd service, and rolls back automatically if the new release is not
+> healthy. The install shapes below are for development and downstream
+> consumers, not for field deployment.
 
 `ori-runtime` has two intentionally different install shapes:
 
