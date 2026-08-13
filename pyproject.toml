@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ori-runtime"
-version = "2.3.0"
+version = "2.3.1"
 description = "Offline-first agentic IoT runtime — give physical devices the ability to reason"
 readme = "README.md"
 license = "Apache-2.0"
@@ -176,6 +176,10 @@ ori = ["py.typed", "hal/inverter_profiles/*.yaml", "installer/release-keys.json"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "hardware: requires real Raspberry Pi hardware",
+    "slow: builds a real virtual environment from locked dependencies",
+]
 python_files = ["test_*.py"]
 
 [tool.ruff]

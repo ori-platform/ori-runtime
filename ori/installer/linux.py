@@ -1383,6 +1383,15 @@ class OfflineReleasePreparer:
             ],
             expected_stdout=self._bundle.runtime_version,
         )
+        # Execute a console script rather than stat it. A relocated venv leaves
+        # every entry point with a dangling interpreter while the interpreter
+        # symlink itself still works, so importability alone proves nothing.
+        entrypoint = release / "venv" / "bin" / "ori-install-linux"
+        if not entrypoint.is_file():
+            raise LinuxInstallError(
+                "offline_install_failed", "release entrypoint is missing"
+            )
+        self._run([str(entrypoint), "--help"])
 
     def _run(
         self, command: Sequence[str], *, expected_stdout: str | None = None
@@ -1499,6 +1508,180 @@ def install_composed_release(
     return ComposedInstallResult(install, health, persistence)
 
 
+def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
+    """Rebind console-script interpreters after the release is moved into place.
+
+    pip writes an absolute interpreter path into every console script at install
+    time. Building in a staging directory and moving the tree leaves those
+    pointing at a path that no longer exists, so every entry point in
+    ``venv/bin`` becomes unrunnable while the interpreter symlink still works.
+
+    The venv is generated locally from the authenticated, hash-locked
+    wheelhouse; it is not part of the signed artifact. Rebinding it therefore
+    changes nothing that was signed, and the bundle's own manifest still governs
+    the bytes that were verified.
+    """
+    bin_dir = destination / "venv" / "bin"
+    if bin_dir.is_symlink() or not bin_dir.is_dir():
+        raise LinuxInstallError(
+            "offline_install_failed", "release venv bin directory is unsafe"
+        )
+    old_bin = f"{staging}/venv/bin/".encode()
+    new_bin = f"{destination}/venv/bin/".encode()
+    staging_reference = str(staging).encode()
+    try:
+        entries = sorted(bin_dir.iterdir())
+    except OSError as exc:
+        raise LinuxInstallError(
+            "offline_install_failed", "release venv bin directory is unreadable"
+        ) from exc
+
+    # These embed the environment root rather than an interpreter and carry no
+    # shebang, so they are rebound first and skipped by the shebang pass.
+    _repair_activation_scripts(staging, destination, bin_dir)
+
+    for entry in entries:
+        if entry.name in _ACTIVATION_SCRIPTS:
+            continue
+        # Interpreter symlinks carry no shebang and must never be rewritten.
+        if entry.is_symlink():
+            continue
+        try:
+            info = entry.stat()
+            if not stat.S_ISREG(info.st_mode):
+                raise LinuxInstallError(
+                    "offline_install_failed",
+                    f"unexpected special file in release venv bin: {entry.name}",
+                )
+            if not info.st_mode & 0o111:
+                continue
+            data = entry.read_bytes()
+        except OSError as exc:
+            raise LinuxInstallError(
+                "offline_install_failed", f"cannot inspect {entry.name}"
+            ) from exc
+
+        break_at = data.find(b"\n")
+        first = data if break_at == -1 else data[:break_at]
+        if not first.startswith(b"#!"):
+            # Compiled binaries have no shebang; a staging reference in one
+            # would mean something unexpected produced it.
+            if staging_reference in data:
+                raise LinuxInstallError(
+                    "offline_install_failed",
+                    f"{entry.name} references the staging path without a shebang",
+                )
+            continue
+
+        # pip writes two wrapper forms. Normally the interpreter is the shebang
+        # itself; when that path would exceed the kernel's shebang limit it
+        # emits a `#!/bin/sh` wrapper that re-execs the interpreter on the next
+        # line instead. Linux caps shebangs at 127 bytes, so a long install
+        # root produces the second form.
+        long_form = first.startswith(b"#!/bin/sh") and _LONG_EXEC + old_bin in data
+        if not first.startswith(b"#!" + old_bin) and not long_form:
+            if staging_reference in data:
+                raise LinuxInstallError(
+                    "offline_install_failed",
+                    f"{entry.name} points at an unexpected staging interpreter",
+                )
+            continue
+        _rewrite_preserving_mode(
+            entry, data.replace(old_bin, new_bin), stat.S_IMODE(info.st_mode)
+        )
+
+    _assert_no_staging_references(bin_dir, staging_reference)
+    _fsync_directory(bin_dir)
+
+
+def _rewrite_preserving_mode(path: Path, content: bytes, mode: int) -> None:
+    temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            mode,
+        )
+        with os.fdopen(descriptor, "wb", closefd=False) as output:
+            output.write(content)
+            output.flush()
+            os.fsync(descriptor)
+        os.fchmod(descriptor, mode)
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise LinuxInstallError(
+            "offline_install_failed", f"cannot rebind {path.name}"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+_ACTIVATION_SCRIPTS = ("activate", "activate.csh", "activate.fish", "Activate.ps1")
+_LONG_EXEC = b"'''exec' "
+
+
+def _repair_activation_scripts(staging: Path, destination: Path, bin_dir: Path) -> None:
+    """Rebind the generated activation scripts.
+
+    These embed the environment root rather than a shebang, so the shebang pass
+    leaves them pointing at the staging directory. They are only used by an
+    interactive ``source``, but shipping known-stale paths is not acceptable.
+    Only the exact generated names are touched.
+    """
+    old_root = str(staging / "venv").encode()
+    new_root = str(destination / "venv").encode()
+    for name in _ACTIVATION_SCRIPTS:
+        script = bin_dir / name
+        if script.is_symlink() or not script.is_file():
+            continue
+        try:
+            info = script.stat()
+            data = script.read_bytes()
+        except OSError as exc:
+            raise LinuxInstallError(
+                "offline_install_failed", f"cannot inspect {name}"
+            ) from exc
+        if old_root not in data:
+            continue
+        _rewrite_preserving_mode(
+            script, data.replace(old_root, new_root), stat.S_IMODE(info.st_mode)
+        )
+
+
+def _assert_no_staging_references(bin_dir: Path, staging_reference: bytes) -> None:
+    """Fail closed on any surviving staging path, not just in shebangs."""
+    for entry in sorted(bin_dir.iterdir()):
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        try:
+            data = entry.read_bytes()
+        except OSError as exc:
+            raise LinuxInstallError(
+                "offline_install_failed", f"cannot reread {entry.name}"
+            ) from exc
+        if staging_reference in data:
+            raise LinuxInstallError(
+                "offline_install_failed",
+                f"{entry.name} still references the staging directory",
+            )
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY)
+    except OSError as exc:
+        raise LinuxInstallError(
+            "offline_install_failed", "cannot fsync the release venv bin directory"
+        ) from exc
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def install_release(
     *,
     layout: InstallLayout,
@@ -1540,6 +1723,9 @@ def install_release(
             validate(staging)
             os.replace(staging, destination)
             created = True
+            # Rebind before revalidating, so validation exercises the tree that
+            # will actually run — and before DAC hardening makes it read-only.
+            _repair_relocated_shebangs(staging, destination)
             validate(destination)
         except Exception:
             if created and destination.exists():

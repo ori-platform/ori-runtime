@@ -158,15 +158,22 @@ sensitive operational material.
 - absence of long-lived AWS credentials in GitHub repository and organisation
   secrets.
 
+### Evidenced by the v2.3.0 release run on 2026-08-13
+
+- protected GitHub OIDC signing succeeded through the `release-signing`
+  environment, gated on a required reviewer approving the deployment;
+- the workflow built four targets, signed them through the pinned KMS key,
+  published the complete asset set, and reverified it from the public origin;
+- the published release reported immutability and was promoted to `Latest`;
+- the assets were independently reverified afterwards from a separate machine.
+
 ### Remaining release-time evidence
 
-These can only be produced by performing the release, and are recorded once it
-completes:
-
-- protected GitHub OIDC signing succeeds through the `release-signing`
-  environment;
-- the v2.3.0 workflow builds, signs, publishes, and reverifies;
-- Python 3.12 distro evidence completes on the supported targets.
+- installation evidence on both production tuples against the published
+  v2.3.1 release: Raspberry Pi OS Bookworm `aarch64` with stock Python 3.11,
+  and Ubuntu 24.04 `x86_64` with stock Python 3.12. Each must cover install,
+  service start, reboot persistence, upgrade, rollback, refusal of a tampered
+  or unsigned artifact, and absence of live package resolution.
 
 The public key and fingerprint are normatively pinned in
 `ori-specs/runtime-release-bundle/v1` by the merged contract amendment in

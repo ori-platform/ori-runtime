@@ -71,9 +71,34 @@ def _health_result(
     return subprocess.CompletedProcess(command, returncode, json.dumps(payload), "")
 
 
+ENTRY_POINTS = (
+    "ori-install-linux",
+    "ori-runtime",
+    "ori-config-install",
+    "ori-phone-doctor",
+    "ori-firmware-provisioner",
+    "ori-inverter-profile-doctor",
+)
+
+
 def _prepare(path: Path) -> None:
-    (path / "venv").mkdir()
+    """Build a venv shaped like a real one, including staging-bound shebangs.
+
+    pip bakes the absolute interpreter path into console scripts at install
+    time, so a tree built here and moved elsewhere reproduces the relocation
+    the installer has to repair.
+    """
+    bin_dir = path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
     (path / "venv" / "installed.txt").write_text("ok", encoding="utf-8")
+    interpreter = bin_dir / "python"
+    # Symlinked like a real venv interpreter, so the shebang resolves to a
+    # genuine signed binary. The repair must leave symlinks alone.
+    interpreter.symlink_to("/bin/sh")
+    for name in ENTRY_POINTS:
+        script = bin_dir / name
+        script.write_text(f"#!{bin_dir / 'python'}\n# entry point\n", encoding="utf-8")
+        script.chmod(0o755)
 
 
 def _validate(path: Path) -> None:
@@ -1154,7 +1179,8 @@ def test_offline_preparer_uses_only_verified_wheelhouse_and_exact_version(
             venv = Path(command[-1])
             (venv / "bin").mkdir(parents=True)
             (venv / "bin" / "python").write_text("", encoding="utf-8")
-            (venv / "bin" / "ori-runtime").write_text("", encoding="utf-8")
+            for name in ENTRY_POINTS:
+                (venv / "bin" / name).write_text("", encoding="utf-8")
         stdout = "2.3.0\n" if "import importlib.metadata" in command[-1] else ""
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
@@ -1752,3 +1778,252 @@ def test_config_directory_sync_failure_restores_previous_config(
     assert config_path.read_text(encoding="utf-8") == "existing\n"
     assert config_path.stat().st_mode & 0o777 == 0o640
     assert list(config_path.parent.iterdir()) == [config_path]
+
+
+def _real_venv_prepare(path: Path) -> None:
+    """Build a venv whose entry points are genuinely executable shell scripts.
+
+    They must run from the final release directory, so the shebang has to be
+    rebound when the tree moves — exactly what pip-installed console scripts do.
+    """
+    bin_dir = path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    interpreter = bin_dir / "python"
+    # Symlinked like a real venv interpreter, so the shebang resolves to a
+    # genuine signed binary. The repair must leave symlinks alone.
+    interpreter.symlink_to("/bin/sh")
+    for name in ENTRY_POINTS:
+        script = bin_dir / name
+        script.write_text(f"#!{interpreter}\n# console script\n", encoding="utf-8")
+        script.chmod(0o755)
+
+
+def _install(layout: InstallLayout, version: str, **overrides: object) -> object:
+    arguments: dict[str, object] = {
+        "layout": layout,
+        "version": version,
+        "prepare": _real_venv_prepare,
+        "validate": lambda _path: None,
+        "restart_service": lambda: None,
+        "stop_service": lambda: None,
+        "check_health": lambda _path: None,
+    }
+    arguments.update(overrides)
+    return install_release(**arguments)  # type: ignore[arg-type]
+
+
+def test_every_entry_point_executes_from_the_final_release_directory(
+    tmp_path: Path,
+) -> None:
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    _install(layout, "2.3.1")
+
+    bin_dir = layout.release("2.3.1") / "venv" / "bin"
+    for name in ENTRY_POINTS:
+        completed = subprocess.run(
+            [str(bin_dir / name), "--help"], capture_output=True, check=False
+        )
+        assert completed.returncode == 0, (
+            f"{name} did not execute: {completed.stderr.decode()!r}"
+        )
+
+
+def test_no_entry_point_retains_a_staging_shebang(tmp_path: Path) -> None:
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    _install(layout, "2.3.1")
+
+    release = layout.release("2.3.1")
+    expected = f"#!{release / 'venv' / 'bin' / 'python'}"
+    for name in ENTRY_POINTS:
+        first = (
+            (release / "venv" / "bin" / name)
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        assert ".staging" not in first
+        assert first == expected
+
+
+def test_failed_shebang_repair_leaves_no_orphan_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = InstallLayout.resolve(tmp_path / "ori")
+
+    def refuse(_staging: Path, _destination: Path) -> None:
+        raise LinuxInstallError("offline_install_failed", "induced repair failure")
+
+    monkeypatch.setattr("ori.installer.linux._repair_relocated_shebangs", refuse)
+    with pytest.raises(LinuxInstallError, match="induced repair failure"):
+        _install(layout, "2.3.1")
+
+    assert not layout.release("2.3.1").exists()
+    assert list(layout.releases.iterdir()) == []
+    assert not layout.current.exists()
+
+
+def test_repair_is_idempotent_across_reinstalls(tmp_path: Path) -> None:
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    first = _install(layout, "2.3.1")
+    repeated = _install(layout, "2.3.1")
+
+    assert first.changed is True  # type: ignore[attr-defined]
+    assert repeated.changed is False  # type: ignore[attr-defined]
+    entry = layout.release("2.3.1") / "venv" / "bin" / "ori-install-linux"
+    assert subprocess.run([str(entry), "--help"], check=False).returncode == 0
+
+
+def test_a_retained_release_keeps_its_own_interpreter(tmp_path: Path) -> None:
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    _install(layout, "2.3.1")
+    _install(layout, "2.4.0")
+
+    for version in ("2.3.1", "2.4.0"):
+        release = layout.release(version)
+        first = (
+            (release / "venv" / "bin" / "ori-runtime")
+            .read_text(encoding="utf-8")
+            .splitlines()[0]
+        )
+        # Upgrading must not rebind an older release onto the new interpreter.
+        assert first == f"#!{release / 'venv' / 'bin' / 'python'}"
+        assert (
+            subprocess.run(
+                [str(release / "venv" / "bin" / "ori-runtime"), "--help"], check=False
+            ).returncode
+            == 0
+        )
+
+
+def test_unexpected_staging_reference_is_refused(tmp_path: Path) -> None:
+    layout = InstallLayout.resolve(tmp_path / "ori")
+
+    def prepare(path: Path) -> None:
+        _real_venv_prepare(path)
+        rogue = path / "venv" / "bin" / "rogue"
+        rogue.write_text(f"#!{path}/elsewhere/python\n", encoding="utf-8")
+        rogue.chmod(0o755)
+
+    with pytest.raises(LinuxInstallError, match="offline_install_failed"):
+        _install(layout, "2.3.1", prepare=prepare)
+    assert not layout.release("2.3.1").exists()
+
+
+@pytest.mark.slow
+def test_real_packaged_commands_start_from_the_final_release(tmp_path: Path) -> None:
+    """Run the actual packaged CLIs, not synthetic stand-ins.
+
+    The synthetic test proves shebang relocation; this proves the six real
+    commands start with their full locked dependency set from the final path.
+    """
+    wheelhouse = tmp_path / "wheelhouse"
+    build = subprocess.run(
+        [sys.executable, "-m", "pip", "wheel", "--no-deps", ".", "-w", str(wheelhouse)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # Skipping on a setup failure would let the release gate pass without ever
+    # running the six commands — the false green this test exists to prevent.
+    assert build.returncode == 0, f"wheel build failed:\n{build.stderr[-2000:]}"
+    wheels = sorted(wheelhouse.glob("ori_runtime-*.whl"))
+    assert len(wheels) == 1, f"expected exactly one built wheel, found {wheels}"
+    wheel = wheels[0]
+
+    def prepare(staging: Path) -> None:
+        created = subprocess.run(
+            [sys.executable, "-m", "venv", str(staging / "venv")],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert created.returncode == 0, (
+            f"venv creation failed:\n{created.stderr[-2000:]}"
+        )
+        python = staging / "venv" / "bin" / "python"
+        install = subprocess.run(
+            [
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--quiet",
+                "--require-hashes",
+                "-r",
+                "requirements/runtime.txt",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert install.returncode == 0, (
+            f"locked dependency install failed:\n{install.stderr[-2000:]}"
+        )
+        packaged = subprocess.run(
+            [str(python), "-m", "pip", "install", "--quiet", "--no-deps", str(wheel)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert packaged.returncode == 0, (
+            f"wheel install failed:\n{packaged.stderr[-2000:]}"
+        )
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    install_release(
+        layout=layout,
+        version="2.3.1",
+        prepare=prepare,
+        validate=lambda _path: None,
+        restart_service=lambda: None,
+        stop_service=lambda: None,
+        check_health=lambda _path: None,
+    )
+
+    bin_dir = layout.release("2.3.1") / "venv" / "bin"
+    for name in ENTRY_POINTS:
+        completed = subprocess.run(
+            [str(bin_dir / name), "--help"], capture_output=True, text=True, check=False
+        )
+        assert completed.returncode == 0, (
+            f"{name} did not start: {completed.stderr[-300:]!r}"
+        )
+
+    # Nothing under bin/ may still name the staging directory, including the
+    # generated activation scripts.
+    for entry in bin_dir.iterdir():
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        assert ".staging" not in entry.read_bytes().decode("utf-8", "ignore"), (
+            entry.name
+        )
+
+
+def test_long_path_sh_wrapper_form_is_rebound(tmp_path: Path) -> None:
+    """pip emits a `#!/bin/sh` re-exec wrapper when the shebang would be too long.
+
+    Linux caps shebangs at 127 bytes, so a long install root produces this form
+    and the interpreter lives on line 2. Rewriting only line 1 leaves it stale.
+    """
+
+    def prepare(staging: Path) -> None:
+        _real_venv_prepare(staging)
+        interpreter = staging / "venv" / "bin" / "python"
+        wrapper = staging / "venv" / "bin" / "long-form"
+        wrapper.write_text(
+            f"#!/bin/sh\n'''exec' {interpreter} \"$0\" \"$@\"\n' '''\nexit 0\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    _install(layout, "2.3.1", prepare=prepare)
+
+    release = layout.release("2.3.1")
+    wrapper = release / "venv" / "bin" / "long-form"
+    body = wrapper.read_text(encoding="utf-8")
+
+    assert ".staging" not in body
+    assert str(release / "venv" / "bin" / "python") in body
+    # Not executed here: the stand-in interpreter is a /bin/sh symlink, so the
+    # re-exec would recurse. Real execution of this form is covered by the six
+    # packaged commands in the wheel-installed test.
