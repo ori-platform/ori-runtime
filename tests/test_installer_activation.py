@@ -383,7 +383,8 @@ def test_the_reproduced_fail_open_case_is_closed(tmp_path: Path) -> None:
 def test_the_launcher_is_removed_on_uninstall(tmp_path: Path) -> None:
     path = tmp_path / "bin" / "ori"
     activation.install_launcher(path, tmp_path / "ori", "user")
-    assert activation.remove_launcher(path, tmp_path / "ori") is True
+    removed = activation.remove_launcher(path, tmp_path / "ori")
+    assert removed is True
     assert not path.exists()
 
 
@@ -392,12 +393,14 @@ def test_uninstall_leaves_an_operator_owned_command_alone(tmp_path: Path) -> Non
     path.parent.mkdir(parents=True)
     path.write_text("#!/bin/sh\n# the operator's own\n")
     before = path.read_bytes()
-    assert activation.remove_launcher(path, tmp_path / "ori") is False
+    removed = activation.remove_launcher(path, tmp_path / "ori")
+    assert removed is False
     assert path.read_bytes() == before
 
 
 def test_removing_an_absent_launcher_is_not_an_error(tmp_path: Path) -> None:
-    assert activation.remove_launcher(tmp_path / "nothing", tmp_path / "ori") is False
+    removed = activation.remove_launcher(tmp_path / "nothing", tmp_path / "ori")
+    assert removed is False
 
 
 # --- rollback must restore, not merely remove -----------------------------

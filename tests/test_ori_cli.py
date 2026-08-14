@@ -521,15 +521,18 @@ def test_a_file_that_merely_mentions_the_marker_is_untouched(
     with pytest.raises(launcher.LauncherConflictError):
         launcher.install(path, root, "user")
     assert path.read_bytes() == before
-    assert launcher.remove(path, root) is False
+    removed = launcher.remove(path, root)
+    assert removed is False
 
 
 @pytest.mark.parametrize(
     "body",
     [
         "#!/bin/sh\n# ori-launcher-schema: 1\n# ori-launcher-root: /r\n",
-        "#!/bin/sh\n# ori-launcher-schema: one\n# ori-launcher-root: /r\n"
-        "# ori-launcher-scope: user\n",
+        (
+            "#!/bin/sh\n# ori-launcher-schema: one\n# ori-launcher-root: /r\n"
+            "# ori-launcher-scope: user\n"
+        ),
     ],
 )
 def test_incomplete_or_malformed_identity_is_not_ours(
@@ -580,7 +583,8 @@ def test_a_forged_launcher_with_perfect_metadata_is_untouched(tmp_path: Path) ->
     with pytest.raises(launcher.LauncherConflictError):
         launcher.install(path, root, "user")
     assert path.read_bytes() == before
-    assert launcher.remove(path, root) is False
+    removed = launcher.remove(path, root)
+    assert removed is False
 
 
 def test_a_genuine_launcher_with_one_byte_changed_is_untouched(
@@ -875,11 +879,14 @@ def test_uninstall_removes_only_launchers_it_wrote(tmp_path: Path) -> None:
     other_install = tmp_path / "bin" / "ori-other"
     launcher.install(other_install, tmp_path / "elsewhere", "system")
 
-    assert launcher.remove(theirs, root) is False
+    removed_theirs = launcher.remove(theirs, root)
+    assert removed_theirs is False
     assert theirs.exists()
-    assert launcher.remove(other_install, root) is False  # different install root
+    removed_other = launcher.remove(other_install, root)  # different install root
+    assert removed_other is False
     assert other_install.exists()
-    assert launcher.remove(ours, root) is True
+    removed_ours = launcher.remove(ours, root)
+    assert removed_ours is True
     assert not ours.exists()
 
 
