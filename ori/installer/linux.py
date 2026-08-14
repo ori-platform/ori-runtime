@@ -21,6 +21,7 @@ from typing import Callable, Literal, Sequence
 
 import yaml
 
+from ori.installer import identity
 from ori.security.release_bundles import ExtractedReleaseBundle
 
 _VERSION_RE = re.compile(
@@ -126,6 +127,9 @@ class InstallerInputOptions:
     location: str | None = None
     deployment_type: Literal["pi", "server"] = "pi"
     operator_contact: str | None = None
+    # Off by default so an unattended run is reproducible: a random suffix
+    # would give the same automation a different device on every execution.
+    generate_device_id: bool = False
 
 
 def collect_installer_config(
@@ -142,11 +146,24 @@ def collect_installer_config(
     bounded number of times.
     """
     if options.unattended:
+        device_id = options.device_id
+        name = options.name
+        if options.generate_device_id and not (device_id or "").strip():
+            # Opt-in, because the generated suffix is random: automation that
+            # did not ask for this must get the same device on every run.
+            generated = identity.suggest()
+            if generated is None:  # pragma: no cover - suggest always yields one
+                raise LinuxInstallError(
+                    "config_validation_failed",
+                    "no device identity could be derived from this host",
+                )
+            device_id = generated.device_id
+            name = name or generated.name
         missing = [
             flag
             for flag, value in (
-                ("--device-id", options.device_id),
-                ("--name", options.name),
+                ("--device-id", device_id),
+                ("--name", name),
                 ("--location", options.location),
             )
             if value is None or not value.strip()
@@ -157,9 +174,9 @@ def collect_installer_config(
                 "unattended mode requires " + ", ".join(missing),
             )
         return InstallerConfigInput(
-            device_id=_validated_input(options.device_id or "", _validate_device_id),
+            device_id=_validated_input(device_id or "", _validate_device_id),
             name=_validated_input(
-                options.name or "", lambda value: _validate_device_text("name", value)
+                name or "", lambda value: _validate_device_text("name", value)
             ),
             location=_validated_input(
                 options.location or "",
@@ -171,31 +188,46 @@ def collect_installer_config(
             ),
         )
 
+    suggestion = identity.suggest()
     device_id = _collect_interactive_value(
         supplied=options.device_id,
-        label="Device ID: ",
+        label="Device ID",
         validate=_validate_device_id,
         prompt=prompt,
         write=write,
+        hint=identity.DEVICE_ID_HINT,
+        default=suggestion.device_id if suggestion else None,
     )
     name = _collect_interactive_value(
         supplied=options.name,
-        label="Device name: ",
+        label="Device name",
         validate=lambda value: _validate_device_text("name", value),
         prompt=prompt,
         write=write,
+        default=suggestion.name if suggestion else None,
     )
+    # Neither of these can be derived from the host, and a plausible-looking
+    # guess is worse than a blank in a fleet report.
     location = _collect_interactive_value(
         supplied=options.location,
-        label="Device location: ",
+        label="Device location",
         validate=lambda value: _validate_device_text("location", value),
         prompt=prompt,
         write=write,
     )
     operator_contact = _collect_interactive_value(
         supplied=options.operator_contact,
-        label="Operator contact (optional): ",
+        label="Operator contact (optional)",
         validate=_validate_operator_contact,
+        prompt=prompt,
+        write=write,
+        optional=True,
+    )
+    _confirm(
+        device_id=device_id,
+        name=name,
+        location=location,
+        operator_contact=operator_contact,
         prompt=prompt,
         write=write,
     )
@@ -215,24 +247,75 @@ def _collect_interactive_value(
     validate: Callable[[str], None],
     prompt: Callable[[str], str],
     write: Callable[[str], None],
+    hint: str = "",
+    default: str | None = None,
+    optional: bool = False,
 ) -> str:
+    """Ask for one value, showing what is acceptable and what will be used.
+
+    Rejected input is never echoed back: it can contain anything an operator
+    mistyped, including something pasted from a credential manager. Only the
+    rule that was broken is repeated.
+    """
     if supplied is not None:
         return _validated_input(supplied, validate)
+    if hint:
+        write(f"  {hint}")
+    suffix = f" [{default}]" if default else ""
     for _attempt in range(3):
         try:
-            value = prompt(label)
+            value = prompt(f"{label}{suffix}: ")
         except (EOFError, KeyboardInterrupt) as exc:
             raise LinuxInstallError(
                 "config_validation_failed", "interactive input was cancelled"
             ) from exc
+        if not value.strip():
+            if default:
+                return _validated_input(default, validate)
+            if optional:
+                return _validated_input("", validate)
         try:
             return _validated_input(value, validate)
         except LinuxInstallError as exc:
-            write(exc.detail)
+            write(f"  {exc.detail}")
             continue
     raise LinuxInstallError(
         "config_validation_failed", "interactive input failed after 3 attempts"
     )
+
+
+def _confirm(
+    *,
+    device_id: str,
+    name: str,
+    location: str,
+    operator_contact: str,
+    prompt: Callable[[str], str],
+    write: Callable[[str], None],
+) -> None:
+    """Show what will be installed and require the operator to accept it.
+
+    Installation changes the host, so the values are read back before anything
+    is written rather than discovered afterwards in the config.
+    """
+    write("")
+    write("This device will be installed as:")
+    write(f"  Device ID         {device_id}")
+    write(f"  Device name       {name}")
+    write(f"  Device location   {location}")
+    write(f"  Operator contact  {operator_contact or '(none)'}")
+    write("")
+    try:
+        answer = prompt("Proceed with these values? [Y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt) as exc:
+        raise LinuxInstallError(
+            "config_validation_failed", "installation was cancelled"
+        ) from exc
+    if answer and answer not in ("y", "yes"):
+        raise LinuxInstallError(
+            "config_validation_failed",
+            "installation was cancelled before any change was made",
+        )
 
 
 def _validated_input(value: str, validate: Callable[[str], None]) -> str:
@@ -1412,6 +1495,11 @@ class OfflineReleasePreparer:
             )
 
 
+# A post-activation step and the callback it uses to register its own undo,
+# so work done after activation is covered by the same rollback as the rest.
+PostActivation = Callable[[Path, Callable[[Callable[[], None]], None]], None]
+
+
 def install_composed_release(
     *,
     layout: InstallLayout,
@@ -1424,6 +1512,7 @@ def install_composed_release(
     allow_downgrade: bool = False,
     preparer: OfflineReleasePreparer | None = None,
     health_verifier: RuntimeHealthVerifier | None = None,
+    post_activation: PostActivation | None = None,
 ) -> ComposedInstallResult:
     """Compose release, config, unit, health, and enablement as one transaction."""
     config_path = layout.data / "ori.yaml"
@@ -1478,13 +1567,19 @@ def install_composed_release(
         nonlocal health
         health = verifier.verify(release)
 
-    def enable_service() -> None:
+    def enable_service(release: Path) -> None:
         nonlocal persistence
         persistence = service_manager.enable()
         if service_profile.scope == "system" and not persistence.enabled:
             raise LinuxInstallError(
                 "service_start_failed", "system service is not enabled for boot"
             )
+        # Diagnostics run inside the transaction so that an installation which
+        # is not actually usable is rolled back rather than reported healthy.
+        if post_activation is not None:
+            # The hook registers its own undo as it goes, so anything it has
+            # already changed is reverted if a later step fails.
+            post_activation(release, rollbacks.append)
 
     install = install_release(
         layout=layout,
@@ -1695,7 +1790,7 @@ def install_release(
     service_profile: SystemdServiceProfile | None = None,
     prepare_activation: Callable[[Path], None] | None = None,
     rollback_activation: Callable[[], None] | None = None,
-    commit_activation: Callable[[], None] | None = None,
+    commit_activation: Callable[[Path], None] | None = None,
     allowed_data_sockets: Sequence[Path] = (),
 ) -> InstallResult:
     """Prepare, activate, and health-gate one already-authenticated release."""
@@ -1764,7 +1859,7 @@ def install_release(
         restart_service()
         check_health(destination)
         if commit_activation is not None:
-            commit_activation()
+            commit_activation(destination)
     except Exception as activation_error:
         rollback_error: Exception | None = None
 

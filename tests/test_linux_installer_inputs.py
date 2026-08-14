@@ -66,12 +66,15 @@ def test_interactive_collection_prompts_only_for_missing_values() -> None:
     labels: list[str] = []
     result = collect_installer_config(
         InstallerInputOptions(device_id="ori-01", name="Lagos Office"),
-        prompt=_prompter(iter(["Lagos, Nigeria", ""]), labels),
+        prompt=_prompter(iter(["Lagos, Nigeria", "", "y"]), labels),
     )
 
     assert result.location == "Lagos, Nigeria"
     assert result.operator_contact == ""
-    assert labels == ["Device location: ", "Operator contact (optional): "]
+    # Neither location nor contact can be derived from the host, so neither
+    # offers a default; the last prompt reads the collected values back.
+    assert labels[:2] == ["Device location: ", "Operator contact (optional): "]
+    assert "Proceed with these values?" in labels[2]
 
 
 def test_interactive_collection_retries_invalid_values_without_echoing_them() -> None:
@@ -79,17 +82,22 @@ def test_interactive_collection_retries_invalid_values_without_echoing_them() ->
     messages: list[str] = []
     result = collect_installer_config(
         InstallerInputOptions(),
-        prompt=_prompter(iter(["BAD SECRET", "ori-01", "Office", "Lagos", ""]), labels),
+        prompt=_prompter(
+            iter(["BAD SECRET", "ori-01", "Office", "Lagos", "", "y"]), labels
+        ),
         write=messages.append,
     )
 
     assert result.device_id == "ori-01"
-    assert labels[:2] == ["Device ID: ", "Device ID: "]
-    assert messages == [
+    assert labels[0] == labels[1]
+    assert labels[0].startswith("Device ID")
+    shown = "\n".join(messages)
+    assert (
         "device ID must be 1-64 lowercase letters, digits, dots, dashes, or "
         "underscores, starting with a letter or digit"
-    ]
-    assert "BAD SECRET" not in "".join(messages)
+    ) in shown
+    assert "BAD SECRET" not in shown
+    assert "BAD SECRET" not in "\n".join(labels)
 
 
 def test_interactive_collection_is_bounded() -> None:

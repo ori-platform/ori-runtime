@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import json
 import os
 import runpy
+import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -39,9 +42,24 @@ TARGET = f"linux-x86_64-python{sys.version_info.major}.{sys.version_info.minor}"
 KEY_ID = "ori-runtime-release-test"
 
 
+# ZIP stores modification times as DOS timestamps with two-second resolution,
+# and `writestr` stamps entries with the current local time. Two wheels built
+# either side of a two-second boundary therefore differ by two bytes, which
+# would make the determinism assertion below fail intermittently on inputs
+# rather than on the builder it is meant to test.
+_ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
+def _add_zip_entry(archive: zipfile.ZipFile, name: str, data: str) -> None:
+    info = zipfile.ZipInfo(name, date_time=_ZIP_EPOCH)
+    info.external_attr = 0o644 << 16
+    archive.writestr(info, data)
+
+
 def _write_runtime_wheel(path: Path, version: str = VERSION) -> None:
     with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(
+        _add_zip_entry(
+            archive,
             f"ori_runtime-{version}.dist-info/METADATA",
             f"Metadata-Version: 2.1\nName: ori-runtime\nVersion: {version}\n",
         )
@@ -56,7 +74,8 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     )
     _write_runtime_wheel(wheelhouse / f"ori_runtime-{VERSION}-py3-none-any.whl")
     with zipfile.ZipFile(wheelhouse / "PyYAML-6.0.2-py3-none-any.whl", "w") as archive:
-        archive.writestr(
+        _add_zip_entry(
+            archive,
             "pyyaml-6.0.2.dist-info/METADATA",
             "Metadata-Version: 2.1\nName: PyYAML\nVersion: 6.0.2\n",
         )
@@ -109,10 +128,57 @@ def _write_key_registry(
     )
 
 
+def _archive_fingerprint(path: Path) -> dict[str, object]:
+    """Describe an archive precisely enough to explain a determinism failure."""
+    raw = path.read_bytes()
+    with gzip.open(path, "rb") as handle:
+        decompressed = handle.read()
+    with tarfile.open(path, "r:gz") as archive:
+        members = [
+            {
+                "name": member.name,
+                "type": member.type,
+                "size": member.size,
+                "mtime": member.mtime,
+                "mode": oct(member.mode),
+                "uid": member.uid,
+                "gid": member.gid,
+                "uname": member.uname,
+                "gname": member.gname,
+            }
+            for member in archive.getmembers()
+        ]
+        manifest = archive.extractfile("ori-runtime/BUNDLE-MANIFEST.json")
+        manifest_bytes = manifest.read() if manifest is not None else b""
+    return {
+        "gzip_header": raw[:10].hex(),  # includes the embedded mtime and flags
+        "member_order": [m["name"] for m in members],
+        "members": members,
+        "manifest": manifest_bytes,
+        "uncompressed_sha256": hashlib.sha256(decompressed).hexdigest(),
+    }
+
+
+def _explain_difference(first: Path, second: Path) -> str:
+    left, right = _archive_fingerprint(first), _archive_fingerprint(second)
+    differences = [key for key in left if left[key] != right[key]]
+    lines = [f"bundles differ in: {differences or 'compressed bytes only'}"]
+    for member_a, member_b in zip(left["members"], right["members"]):
+        if member_a != member_b:
+            lines.append(f"  first  {member_a}")
+            lines.append(f"  second {member_b}")
+    return "\n".join(lines)
+
+
 def test_build_is_deterministic_and_verifies_end_to_end(tmp_path: Path) -> None:
     first = _build(tmp_path / "first", "dist")
     second = _build(tmp_path / "second", "dist")
-    assert first.read_bytes() == second.read_bytes()
+    if first.read_bytes() != second.read_bytes():
+        kept = tmp_path.parent / "determinism-failure"
+        kept.mkdir(exist_ok=True)
+        shutil.copy2(first, kept / "first.tar.gz")
+        shutil.copy2(second, kept / "second.tar.gz")
+        pytest.fail(f"{_explain_difference(first, second)}\nartifacts kept in {kept}")
 
     private_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
     envelope = create_signature_envelope(

@@ -1455,3 +1455,85 @@ Alternatives considered:
   posture is part of the signed payload but its trustworthiness derives
   from the provisioning anchor; a device must not be able to upgrade its
   own grade by changing a field.
+
+---
+
+## 2026-08-14 — Installer CLI Compatibility Is Scoped, Not Exempt
+
+**Status:** Accepted
+
+v2.4.0 makes `--scope` required for `ori-install-linux install` and
+`uninstall`, and changes that command's default output from JSON to a human
+summary with `--json` as the opt-in. Both are breaking changes to a documented
+command. Strict Semantic Versioning would make this a major release, but
+`v3.0.0` is reserved for the Rust Tier D authority transition (2026-07-10) and
+has been published as reserved in the notes for v2.0.0, v2.1.0 and v2.2.0.
+
+The alternative — preserving the old behaviour behind a compatibility path —
+was rejected. It would mean restoring a `--scope` that silently defaults to
+`user`, and scope decides whether the runtime survives a reboot and whether the
+service can rewrite its own code. Shipping a known privilege-relevant weakness
+to protect a version number is the wrong trade.
+
+So the installer CLI's compatibility promise is narrowed deliberately, and
+written down rather than assumed.
+
+**Stable across v2 minor releases:**
+
+- explicit installer flags and their meanings;
+- `--json` output schemas;
+- exit statuses and stable failure codes;
+- release-bundle and signature contracts;
+- the MQTT gateway/export contracts and the typed `ori.integration` boundary.
+
+**May harden in a v2 minor release:**
+
+- an ambiguous omitted argument may become required;
+- an unsafe implicit default may become an error;
+- default *human* presentation may change, provided machine consumers have an
+  explicit `--json` contract.
+
+**Never permitted without a major release:**
+
+- silently selecting greater privilege;
+- restoring the implicit user scope for compatibility;
+- changing explicit machine-facing behaviour without a major version or a
+  versioned schema.
+
+A release exercising the middle category must state the migration in its notes.
+For v2.4.0 that is: pass `--scope user|system` explicitly, and pass `--json`
+when consuming installer output programmatically.
+
+**v2.4.0 is the one-time transition that establishes this contract, and it is
+not a precedent.** Before it, `ori-install-linux install` had no `--json` flag
+and printed a JSON summary by default, so there was no explicit machine
+contract to preserve — the default output *was* the contract, which is exactly
+the ambiguity being removed. v2.4.0 introduces `--json`, gives it a richer
+document than the old default carried, adds a stable error document for
+failures where nothing parseable was emitted before, and adds one failure code
+(`prerequisite_install_failed`).
+
+From v2.4.0 onward the `--json` document is the stable machine-facing contract
+for that command. Changing it requires a major version or a versioned schema.
+The permission recorded above to change default human presentation exists
+*because* an explicit machine contract now exists; it may not be used again to
+alter what `--json` emits.
+
+Rationale: what operators and automation actually depend on is the meaning of
+the flags they wrote and the exit statuses they branch on. Neither changes
+here — no flag is renamed or removed, none acquires a different meaning, and
+`0`/`1`/`2` continue to mean what they meant.
+
+The machine-readable *schema* and the failure-code set do change, deliberately
+and once, as described above: `--json` is introduced with a richer document
+than the old default output carried, failures gain a stable error document, and
+`prerequisite_install_failed` is added. That transition is the subject of this
+decision, not an exception to it. What is not preserved is an omitted argument
+the installer used to guess at, which was never a contract worth keeping.
+
+Non-goals:
+
+- This does not place the installer CLI outside compatibility altogether.
+  Renaming or removing an explicit flag remains a major-version change.
+- Installed-base size is not a criterion. Whether an interface is breaking is a
+  property of the interface, not of how many people have adopted it.

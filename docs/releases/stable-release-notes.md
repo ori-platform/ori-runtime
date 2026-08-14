@@ -2,7 +2,7 @@
 
 ## Versioned Notes
 
-- [`v2.3.1`](v2.3.1.md) — bootstrap portability and entry-point repair
+- [`v2.4.0`](v2.4.0.md) — operator experience: the `ori` command, explicit scope, self-running diagnostics
 - [`v2.3.0`](v2.3.0.md) — authenticated signed release installation for Linux
 - [`v2.2.0`](v2.2.0.md) — signed runtime liveness for supervised firmware devices
 - [`v2.1.0`](v2.1.0.md) — Layer 1 firmware trust, evidence provenance, and authenticated MQTT provisioning
@@ -11,7 +11,7 @@
 
 ## Version
 
-`v2.3.1`
+`v2.4.0`
 
 ## Stable Scope
 

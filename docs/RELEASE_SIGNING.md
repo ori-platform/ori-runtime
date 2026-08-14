@@ -170,7 +170,7 @@ sensitive operational material.
 ### Remaining release-time evidence
 
 - installation evidence on both production tuples against the published
-  v2.3.1 release: Raspberry Pi OS Bookworm `aarch64` with stock Python 3.11,
+  v2.4.0 release: Raspberry Pi OS Bookworm `aarch64` with stock Python 3.11,
   and Ubuntu 24.04 `x86_64` with stock Python 3.12. Each must cover install,
   service start, reboot persistence, upgrade, rollback, refusal of a tampered
   or unsigned artifact, and absence of live package resolution.
