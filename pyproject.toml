@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ori-runtime"
-version = "2.3.1"
+version = "2.4.0"
 description = "Offline-first agentic IoT runtime — give physical devices the ability to reason"
 readme = "README.md"
 license = "Apache-2.0"
@@ -114,6 +114,7 @@ dev = [
 ]
 
 [project.scripts]
+ori = "ori.cli:main"
 ori-runtime = "ori.runtime:main"
 ori-config-install = "ori.config_installer:main"
 ori-phone-doctor = "ori.phone_doctor:main"

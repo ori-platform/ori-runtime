@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,14 +72,19 @@ def _health_result(
     return subprocess.CompletedProcess(command, returncode, json.dumps(payload), "")
 
 
-ENTRY_POINTS = (
-    "ori-install-linux",
-    "ori-runtime",
-    "ori-config-install",
-    "ori-phone-doctor",
-    "ori-firmware-provisioner",
-    "ori-inverter-profile-doctor",
-)
+def _declared_entry_points() -> tuple[str, ...]:
+    """Read the console scripts from pyproject rather than restating them.
+
+    A hardcoded list silently stops covering any entry point added later, and
+    an unrepaired entry point is exactly the class of defect these tests exist
+    to catch.
+    """
+    root = Path(__file__).resolve().parent.parent
+    with (root / "pyproject.toml").open("rb") as handle:
+        return tuple(sorted(tomllib.load(handle)["project"]["scripts"]))
+
+
+ENTRY_POINTS = _declared_entry_points()
 
 
 def _prepare(path: Path) -> None:

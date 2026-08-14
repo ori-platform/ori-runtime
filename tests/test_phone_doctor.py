@@ -630,6 +630,8 @@ def test_format_text_uses_pretty_ansi_report(tmp_path, monkeypatch):
     config_path = _write_phone_config(tmp_path)
     monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
     monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    # Colour is now suppressed off a terminal, so ask for it explicitly.
+    monkeypatch.setattr(phone_doctor.terminal, "colour_enabled", lambda *a, **k: True)
 
     output = phone_doctor._format_text(phone_doctor.run_phone_doctor(config_path))
 
@@ -638,6 +640,32 @@ def test_format_text_uses_pretty_ansi_report(tmp_path, monkeypatch):
     assert "ANDROID / TERMUX" in output
     assert "ORI CONFIG" in output
     assert "Result: PASS" in output
+
+
+def test_format_text_is_plain_when_not_a_terminal(tmp_path, monkeypatch):
+    """Piping the report into a file or a ticket must not embed escapes."""
+    config_path = _write_phone_config(tmp_path)
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+
+    output = phone_doctor._format_text(phone_doctor.run_phone_doctor(config_path))
+
+    assert "\033[" not in output
+    # The report still carries its meaning without colour.
+    assert "ORI  PHONE DOCTOR" in output
+    assert "Result: PASS" in output
+
+
+def test_format_text_honours_no_color(tmp_path, monkeypatch):
+    config_path = _write_phone_config(tmp_path)
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    output = phone_doctor._format_text(phone_doctor.run_phone_doctor(config_path))
+
+    assert "\033[" not in output
 
 
 def test_pzem_socket_sim_builds_usb_power_response():

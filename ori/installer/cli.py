@@ -13,8 +13,15 @@ import sys
 import tempfile
 from importlib import resources
 from pathlib import Path
-from typing import NoReturn, Sequence
+from typing import Callable, NoReturn, Sequence
 
+from ori.installer import (
+    activation,
+    launcher,
+    paths,
+    prerequisites,
+    scope_prompt,
+)
 from ori.installer.linux import (
     InstallerInputOptions,
     InstallLayout,
@@ -31,6 +38,7 @@ from ori.security.release_bundles import (
     load_release_key_registry,
     verify_release_bundle,
 )
+from ori.utils import terminal
 
 _SERVICE_NAME = "ori-runtime.service"
 
@@ -113,11 +121,23 @@ def _read_service_template(bundle_root: Path) -> str:
 
 
 def _install(args: argparse.Namespace) -> dict[str, object]:
-    profile = _profile(args.scope, args.service_user)
+    prompt, write = operator_channel()
+    scope = scope_prompt.choose_scope(
+        supplied=args.scope,
+        unattended=args.unattended,
+        prompt=prompt,
+        write=write,
+    )
+    # Refused, never escalated: the operator is given the exact command to
+    # repeat rather than having a privilege boundary crossed on their behalf.
+    scope_prompt.require_privilege(scope, sys.argv)
+    profile = _profile(scope, args.service_user)
     layout, unit_path, env_file = _paths(
-        args.scope,
+        scope,
         root=args.root,
     )
+    # On a host this installer cannot serve at all, a package list is the
+    # wrong thing to talk about.
     target = detected_release_target()
     registry_resource = resources.files("ori.installer").joinpath("release-keys.json")
     with resources.as_file(registry_resource) as registry_path:
@@ -129,6 +149,9 @@ def _install(args: argparse.Namespace) -> dict[str, object]:
         expected_version=args.expected_version,
         expected_target=target,
     )
+    # Identity is collected and confirmed first, because confirmation promises
+    # that nothing has been changed yet. Installing packages before the
+    # operator has agreed to proceed would make that promise false.
     values = collect_installer_config(
         InstallerInputOptions(
             unattended=args.unattended,
@@ -137,12 +160,49 @@ def _install(args: argparse.Namespace) -> dict[str, object]:
             location=args.location,
             deployment_type=args.deployment_type,
             operator_contact=args.operator_contact,
-        )
+            generate_device_id=args.generate_device_id,
+        ),
+        prompt=prompt,
+        write=write,
     )
+    # Confirmed. Now the host may be changed — and only now, with the bundle
+    # already proven authentic, so an unsigned or tampered bundle can never
+    # reach a package prompt.
+    prerequisites.ensure(unattended=args.unattended, prompt=prompt, write=write)
+
     service_manager = SystemdServiceManager(
         profile=profile,
         unit_path=unit_path,
     )
+    launcher_path = paths.launcher_path(profile.scope)
+    checks: list[dict[str, object]] = []
+    launcher_state: dict[str, object] = {"installed": False, "conflict": ""}
+
+    def after_activation(
+        release: Path, register_rollback: Callable[[Callable[[], None]], None]
+    ) -> None:
+        # The launcher goes in first and registers its own removal, so a failed
+        # diagnosis does not leave an `ori` command behind pointing at a
+        # release that rollback is about to undo.
+        installed, conflict, undo_launcher = activation.install_launcher(
+            launcher_path, layout.root, profile.scope
+        )
+        launcher_state.update(installed=installed, conflict=conflict)
+        if installed:
+            register_rollback(undo_launcher)
+        # Diagnostics run by absolute path and bound to this exact root: `ori`
+        # may not resolve yet, and a different installation must never be the
+        # one that approves or condemns this tree.
+        checks.extend(
+            activation.run_installed_doctor(
+                release,
+                profile.scope,
+                root=layout.root,
+                expected_device_id=values.device_id,
+            )
+        )
+        activation.assert_usable(checks)
+
     try:
         with tempfile.TemporaryDirectory(prefix="ori-release-") as temporary:
             extracted = extract_verified_bundle(
@@ -157,24 +217,59 @@ def _install(args: argparse.Namespace) -> dict[str, object]:
                 unit_template=_read_service_template(extracted.root),
                 env_file=env_file,
                 allow_downgrade=args.allow_downgrade,
+                post_activation=after_activation,
             )
     except OSError as exc:
         raise ReleaseBundleError(
             "unsafe_bundle_archive", "verified bundle workspace is unavailable"
         ) from exc
+    installed = bool(launcher_state["installed"])
+    outcome = activation.ActivationOutcome(
+        launcher_path=launcher_path,
+        launcher_installed=installed,
+        launcher_conflict=str(launcher_state["conflict"]),
+        path_guidance=(
+            launcher.path_guidance(launcher_path) or "" if installed else ""
+        ),
+        checks=checks,
+    )
     return {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "ok": True,
+        "active_release": str(layout.releases / result.install.version),
+        "diagnostics": checks,
+        "launcher_installed": installed,
+        "launcher_path": str(launcher_path),
+        # Persistence is rendered by the summary itself with its remedy, so
+        # doctor's version of it would be a second copy of the same advice.
+        "warnings": [
+            str(c.get("message", ""))
+            for c in outcome.warnings
+            if c.get("name") != "service.boot_persistence"
+        ],
         "boot_persistence": result.boot_persistence.enabled,
         "changed": result.install.changed,
+        "config_path": str(layout.data / "ori.yaml"),
+        "data_path": str(layout.data),
         "device_id": values.device_id,
         "health": result.health,
-        "next_step": "Run ori doctor for ongoing diagnostics.",
+        "health_socket": str(layout.data / "health.sock"),
+        "install_root": str(layout.root),
+        "next_step": activation.next_step(outcome),
         "scope": profile.scope,
+        "service_user": profile.service_user,
         "status": "healthy",
+        "unit_path": str(unit_path),
         "version": result.install.version,
     }
 
 
 def _uninstall(args: argparse.Namespace) -> dict[str, object]:
+    if args.scope is None:
+        raise LinuxInstallError(
+            "config_validation_failed",
+            "uninstall requires --scope system or --scope user",
+        )
     profile = _profile(args.scope, args.service_user)
     layout, unit_path, _env_file = _paths(
         args.scope,
@@ -196,15 +291,38 @@ def _uninstall(args: argparse.Namespace) -> dict[str, object]:
         stop_service=require_disabled_service,
         remove_data=args.remove_data,
     )
+    # Left behind, the launcher would resolve to a release that no longer
+    # exists. Only launchers this installer wrote for this root are removed.
+    launcher_path = paths.launcher_path(profile.scope)
+    launcher_removed = activation.remove_launcher(launcher_path, layout.root)
     return {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "ok": True,
         "data_removed": args.remove_data,
+        "launcher_path": str(launcher_path),
+        "launcher_removed": launcher_removed,
         "scope": profile.scope,
         "status": "uninstalled",
     }
 
 
+def _add_output_arguments(parser: argparse.ArgumentParser) -> None:
+    """Machine output is requested explicitly, never inferred.
+
+    An orchestrating `ori install` always passes --json so the handoff has a
+    stable parseable contract regardless of what an interactive run prints.
+    """
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit one JSON document on stdout; prompts and progress go to stderr",
+    )
+
+
 def _add_scope_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--scope", choices=("user", "system"), default="user")
+    # No default: scope decides whether the runtime survives a reboot and
+    # whether it can rewrite its own code, so it is never chosen silently.
+    parser.add_argument("--scope", choices=("user", "system"), default=None)
     parser.add_argument("--root", type=Path)
     parser.add_argument("--service-user")
 
@@ -221,12 +339,22 @@ def build_parser() -> argparse.ArgumentParser:
         "install", help="verify and install a local bundle", allow_abbrev=False
     )
     _add_scope_arguments(install)
+    _add_output_arguments(install)
     install.add_argument("--bundle", required=True, type=Path)
     install.add_argument("--signature", required=True, type=Path)
     install.add_argument("--expected-version")
     install.add_argument("--allow-downgrade", action="store_true")
     install.add_argument("--unattended", action="store_true")
     install.add_argument("--device-id")
+    install.add_argument(
+        "--generate-device-id",
+        action="store_true",
+        help=(
+            "derive a device ID from this host when --device-id is omitted; "
+            "adds a random suffix on stock-image hostnames, so an unattended "
+            "run is only reproducible when this is off"
+        ),
+    )
     install.add_argument("--name")
     install.add_argument("--location")
     install.add_argument("--deployment-type", choices=("pi", "server"), default="pi")
@@ -236,12 +364,132 @@ def build_parser() -> argparse.ArgumentParser:
         "uninstall", help="remove Runtime and its unit", allow_abbrev=False
     )
     _add_scope_arguments(uninstall)
+    _add_output_arguments(uninstall)
     uninstall.add_argument("--remove-data", action="store_true")
     return parser
 
 
-def _exit_error(error: ReleaseBundleError | LinuxInstallError) -> NoReturn:
+def operator_channel() -> tuple[Callable[[str], str], Callable[[str], None]]:
+    """Return (prompt, write) that never write to stdout.
+
+    ``input()`` writes its prompt to stdout. When stdout is being captured as
+    the machine-readable result — which is exactly what an orchestrating
+    ``ori install`` does — that prompt vanishes, and the operator is left
+    watching a silent process that is in fact waiting for them.
+
+    Prompts and progress therefore go to stderr in both modes, leaving stdout
+    for the result alone. Stdin is untouched, so the bootstrap's reopened
+    ``/dev/tty`` still supplies the answers during a piped install.
+    """
+
+    def prompt(message: str) -> str:
+        sys.stderr.write(message)
+        sys.stderr.flush()
+        line = sys.stdin.readline()
+        if not line:
+            raise EOFError  # same contract as input() at end of input
+        return line.rstrip("\n")
+
+    def write(message: str) -> None:
+        print(message, file=sys.stderr)
+
+    return prompt, write
+
+
+def render_install_summary(result: dict[str, object]) -> str:
+    """A human summary of what was installed and where."""
+    out = sys.stdout
+    persistent = bool(result.get("boot_persistence"))
+    lines = [
+        "",
+        terminal.heading("Ori Runtime installed", stream=out),
+        "",
+        f"  version   {result.get('version', '')}",
+        f"  scope     {result.get('scope', '')}",
+        f"  device    {result.get('device_id', '')}",
+    ]
+    for label, key in (
+        ("root", "install_root"),
+        ("release", "active_release"),
+        ("config", "config_path"),
+        ("data", "data_path"),
+        ("socket", "health_socket"),
+        ("unit", "unit_path"),
+    ):
+        value = result.get(key)
+        if value:
+            lines.append(f"  {label.ljust(9)} {terminal.path(str(value), stream=out)}")
+    service_user = result.get("service_user")
+    if service_user:
+        lines.append(f"  runs as   {service_user}")
+
+    lines.append("")
+    if persistent:
+        lines.append(
+            terminal.success(
+                "  Starts during boot without anyone logging in.", stream=out
+            )
+        )
+    else:
+        lines.append(
+            terminal.warning(
+                "  WARNING: this service is not persistent. It stops after your "
+                "last\n  session ends and does not start at boot unless lingering "
+                "is enabled.",
+                stream=out,
+            )
+        )
+        lines.append(
+            terminal.warning(
+                "  Enable it with: sudo loginctl enable-linger $USER", stream=out
+            )
+        )
+    # Martins' original report was an installation that ended by naming a
+    # command that did not exist. Computing honest guidance and then not
+    # printing it in the default output would reproduce exactly that.
+    step = str(result.get("next_step", "")).strip()
+    if step:
+        lines.append("")
+        lines.extend(f"  {line}" for line in step.splitlines())
+
+    warnings = result.get("warnings")
+    if isinstance(warnings, list):
+        for warning in warnings:
+            lines.append(terminal.warning(f"  {warning}", stream=out))
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+# One schema number covers both outcomes: a consumer reads schema_version and
+# branches on ok, rather than guessing which shape it received.
+RESULT_SCHEMA_VERSION = 1
+ERROR_SCHEMA_VERSION = RESULT_SCHEMA_VERSION
+
+
+def _exit_error(
+    error: ReleaseBundleError | LinuxInstallError, *, json_mode: bool = False
+) -> NoReturn:
+    """Report a stable failure, in the form the caller asked for.
+
+    A JSON run must produce a JSON document whether it succeeded or not.
+    Failing to plain text leaves an orchestrator with nothing to parse, so a
+    precise installer error such as ``unsupported_target`` degrades into a
+    generic "installation failed" by the time an operator sees it.
+    """
     print(f"{error.code}: {error.detail}", file=sys.stderr)
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "schema_version": ERROR_SCHEMA_VERSION,
+                    "ok": False,
+                    "error": {"code": error.code, "detail": error.detail},
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
     raise SystemExit(2)
 
 
@@ -250,8 +498,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         result = _install(args) if args.command == "install" else _uninstall(args)
     except (ReleaseBundleError, LinuxInstallError) as exc:
-        _exit_error(exc)
-    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        _exit_error(exc, json_mode=bool(getattr(args, "json", False)))
+    if getattr(args, "json", False) or args.command != "install":
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    else:
+        print(render_install_summary(result))
     return os.EX_OK
 
 

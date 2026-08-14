@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ori.config import Config, ConfigValidationError
+from ori.utils import terminal
 from ori.utils.bool_utils import is_truthy
 
 _DIRECT_SERIAL_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
@@ -36,6 +37,13 @@ BLUE = "\033[94m"
 
 
 def c(text: str, *codes: str) -> str:
+    """Colour when the destination can render it, plain text otherwise.
+
+    Without this, piping the report into a file or a support ticket embeds
+    escape sequences, and ``NO_COLOR`` is ignored.
+    """
+    if not terminal.colour_enabled():
+        return str(text)
     return "".join(codes) + str(text) + RESET
 
 
