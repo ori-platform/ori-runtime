@@ -42,19 +42,101 @@ is published, so the bootstrap reports `unsupported_target`.
 
 ---
 
+## Missing OS prerequisites
+
+If something the installation needs is absent, the installer tells you what and
+why, shows the exact command, and asks. The default answer is **No**:
+
+```text
+Some OS packages this installation needs are missing:
+  python3-venv             python3-venv  — building the offline runtime
+
+On Raspberry Pi OS Bookworm, this would run exactly:
+    apt-get install --no-install-recommends --yes python3-venv
+apt may install required OS dependencies and update package-manager state.
+No Python packages are downloaded from package indexes.
+
+Install these packages now? [y/N]:
+```
+
+Declining leaves the host exactly as it was and stops the install with
+`prerequisite_install_failed` and the command to run yourself. So do lacking
+administrator privileges, running on a distribution the installer does not know
+how to prepare, and cancelling the prompt. "No" means "do not change my
+system" — never "continue without something the installation needs".
+
+Package names come from a fixed allowlist and are placed into a fixed argument
+array; nothing is passed through a shell, and operating-system components such
+as `systemd`, `python3` and `bash` are never candidates. Automatic help is
+available on Raspberry Pi OS and Debian Bookworm, and on Ubuntu 24.04.
+
+**Unattended runs never prompt and never modify the host.** They fail with the
+same code and the same command, so automation stays reproducible.
+
+This check runs only after the release bundle has been authenticated. An
+unsigned or tampered bundle can never reach a package prompt.
+
+---
+
 ## Install
 
 ### Interactive
 
 ```sh
 curl -fsSL \
-  https://github.com/ori-platform/ori-runtime/releases/download/v2.3.1/install-linux.sh \
-  | bash -s -- --version 2.3.1 -- --scope user
+  https://github.com/ori-platform/ori-runtime/releases/download/v2.4.0/install-linux.sh \
+  | bash -s -- --version 2.4.0
 ```
 
-You will be prompted for a device ID, name, location, and an optional operator
-contact. Piped installs reopen `/dev/tty` for those prompts; if no terminal is
-available the install fails rather than silently choosing defaults.
+You are asked, in order: the installation scope, a device ID, a device name, a
+location, and an optional operator contact. Then the values are read back and
+you confirm before anything is written to the host.
+
+Piped installs reopen `/dev/tty` for those prompts; if no terminal is available
+the install fails rather than silently choosing defaults. Prompts and progress
+go to stderr, so `--json` output stays parseable even during an interactive run.
+
+Scope is asked first, and there is no silent default:
+
+```text
+Installation scope:
+
+  1. System — recommended for deployed devices
+     Starts during boot without login.
+     Runs as dedicated unprivileged user ori-runtime.
+     Requires administrator privileges.
+
+  2. User — intended for workstation evaluation
+     Runs as your login user.
+     Stops after your last session unless lingering is enabled.
+     Does not start at boot without lingering.
+
+Choose [1]:
+```
+
+Pressing Enter accepts the shown default, but you must submit the prompt —
+a non-interactive run never inherits it. Choosing system scope without root
+ends the install with the exact command to repeat; the installer will not call
+`sudo` for you.
+
+Device ID and name are suggested from this host's name, with the rules and
+examples shown:
+
+```text
+  1-64 characters: lowercase letters, digits, dots, dashes, underscores.
+  Examples: pi-ikeja-01, hvac.roof.3, meter_02
+Device ID [pi-ikeja-01]:
+```
+
+Enter accepts the suggestion. A stock-image hostname — `raspberrypi`,
+`localhost`, `ubuntu` — gets a short random suffix, because otherwise every
+device flashed from that image would share an identity.
+
+Location and operator contact are never suggested. The installer cannot know
+them, and a plausible-looking location in a fleet report is worse than a blank
+one. Operator contact may be left empty.
+
+Rejected input is never echoed back.
 
 Use `bash`, not `sh`. Under `dash` — which is `/bin/sh` on Debian and Ubuntu —
 the script exits with a message telling you to re-run it with Bash.
@@ -65,8 +147,8 @@ Every identity value must be supplied; unattended mode never prompts.
 
 ```sh
 curl -fsSL \
-  https://github.com/ori-platform/ori-runtime/releases/download/v2.3.1/install-linux.sh \
-  | bash -s -- --version 2.3.1 -- \
+  https://github.com/ori-platform/ori-runtime/releases/download/v2.4.0/install-linux.sh \
+  | bash -s -- --version 2.4.0 -- \
       --scope system \
       --unattended \
       --device-id energy-monitor-ikeja-01 \
@@ -83,12 +165,12 @@ it. To remove that residual trust, fetch the script and its checksum from the
 immutable tag, verify, inspect, then run it locally:
 
 ```sh
-base=https://github.com/ori-platform/ori-runtime/releases/download/v2.3.1
+base=https://github.com/ori-platform/ori-runtime/releases/download/v2.4.0
 curl -fsSLO "${base}/install-linux.sh"
 curl -fsSLO "${base}/install-linux.sh.sha256"
 sha256sum -c install-linux.sh.sha256
 less install-linux.sh
-bash install-linux.sh --version 2.3.1 -- --scope system --unattended ...
+bash install-linux.sh --version 2.4.0 -- --scope system --unattended ...
 ```
 
 Everything after the bootstrap is already covered by the KMS signature.
@@ -133,14 +215,161 @@ or a trial where you do not want a root-owned install.
 
 If any step fails, the previous release is restored along with its config and
 unit, and the service is restarted against them. A first install that fails
-leaves nothing behind.
+leaves no Ori installation behind.
 
-On success the installer prints a JSON summary:
+One thing is not undone: OS packages you approved earlier in the run. They are
+installed by your system's package manager on your explicit instruction, and
+removing them automatically could break unrelated software that now depends on
+them. If an installation fails after that point, those packages remain, and the
+failure message says so.
+
+On success the installer prints a human summary naming the installation and
+what happens to it after a reboot:
+
+```text
+Ori Runtime installed
+
+  version   2.4.0
+  scope     system
+  device    energy-monitor-ikeja-01
+  root      /opt/ori
+  release   /opt/ori/releases/2.4.0
+  config    /opt/ori/data/ori.yaml
+  data      /opt/ori/data
+  socket    /opt/ori/data/health.sock
+  unit      /etc/systemd/system/ori-runtime.service
+  runs as   ori-runtime
+
+  Starts during boot without anyone logging in.
+```
+
+Colour is suppressed when output is not a terminal, when `NO_COLOR` is set, or
+when `TERM=dumb`.
+
+Pass `--json` when a program consumes the result. Stdout then carries exactly
+one JSON document — on failure as well as success — while prompts and progress
+go to stderr:
 
 ```json
-{"boot_persistence":true,"changed":true,"device_id":"energy-monitor-ikeja-01",
- "scope":"system","status":"healthy","version":"2.3.1"}
+{"active_release":"/opt/ori/releases/2.4.0",
+ "boot_persistence":true,
+ "changed":true,
+ "config_path":"/opt/ori/data/ori.yaml",
+ "data_path":"/opt/ori/data",
+ "device_id":"energy-monitor-ikeja-01",
+ "diagnostics":[{"name":"install.identity","status":"PASS","mandatory":false,
+                 "message":"Ori 2.4.0 installed in system scope at /opt/ori"}],
+ "health":{"device_id":"energy-monitor-ikeja-01","critical":false},
+ "health_socket":"/opt/ori/data/health.sock",
+ "install_root":"/opt/ori",
+ "launcher_installed":true,
+ "launcher_path":"/usr/local/bin/ori",
+ "next_step":"Run `ori doctor` at any time to check this installation.",
+ "scope":"system",
+ "service_user":"ori-runtime",
+ "status":"healthy",
+ "unit_path":"/etc/systemd/system/ori-runtime.service",
+ "version":"2.4.0",
+ "warnings":[]}
 ```
+
+Every key above is always present on a successful install. `diagnostics`
+carries the full doctor report and `health` the runtime snapshot; both are
+abridged here for readability.
+
+A failed `--json` run emits a stable error document instead:
+
+```json
+{"error":{"code":"unsupported_target","detail":"installer requires Linux"},
+ "ok":false,"schema_version":1}
+```
+
+---
+
+## The `ori` command
+
+The installer writes a launcher so one command works regardless of which
+release is active:
+
+| Scope | Launcher |
+| --- | --- |
+| `user` | `~/.local/bin/ori` |
+| `system` | `/usr/local/bin/ori` |
+
+It resolves the active release when it runs, so upgrades and rollbacks take
+effect without rewriting it. Available commands:
+
+```sh
+ori doctor              # diagnose this installation
+ori status              # where it lives and whether it is running
+ori config validate     # check the installed config
+ori install             # verify and install a release bundle
+ori uninstall --scope   # stop the service and remove the installation
+ori --version
+```
+
+Every command has `--help` covering examples, scope behaviour, exit-status
+meaning, and `--json` where relevant. Exit statuses are consistent: **0**
+succeeded, **1** ran and reported a failure, **2** could not run at all — no
+installation found, an ambiguous scope, or a refusal on safety grounds.
+
+If the launcher directory is not on your `PATH`, the installer says so and
+gives you the exact line rather than claiming the command is ready:
+
+```text
+/home/pi/.local/bin is not on your PATH, so the `ori` command will not be
+found yet.
+Add it for this shell:
+    export PATH="/home/pi/.local/bin:$PATH"
+To make it permanent, add that line to ~/.profile (or ~/.bashrc, or ~/.zshrc
+for zsh).
+```
+
+A user-scope launcher refuses to run as root before reaching any release code,
+because a user installation is writable by its owner and running it under
+`sudo` would execute unprivileged code with full privilege. Re-run it as the
+account that owns the installation.
+
+The installer replaces or removes only launchers it wrote. A file you put at
+that path yourself is left alone, and the install reports the conflict rather
+than failing.
+
+---
+
+## Automatic diagnostics
+
+After the service is enabled, the installer runs the installed `ori doctor` by
+its absolute path — never through `PATH`, which could resolve a different
+release — bound to the installation it just activated. It checks:
+
+- the config parses and validates through the runtime's own loader;
+- the runtime answers on its health socket and reports the expected device;
+- the service is active, and whether it is enabled;
+- boot persistence, and where it comes from;
+- the service account can read its config, execute its interpreter and write
+  its data — and **cannot** modify the verified release;
+- host prerequisites;
+- optional capabilities: sensors, relay, messaging, gateway, local SLM.
+
+Each result is `PASS`, `WARN` or `FAIL`. A **mandatory** failure — invalid or
+unreadable config, wrong runtime identity, an inactive service, unsafe
+permissions — fails the installation and rolls it back to the previous release.
+
+Warnings do not roll anything back. A user service that will not survive a
+reboot is a real warning worth acting on, but it is a working installation.
+Deliberately disabled integrations are informational, not faults.
+
+Run it yourself at any time:
+
+```sh
+ori doctor                    # the only installation present
+ori doctor --scope system     # when both user and system exist
+ori doctor --json             # one JSON document on stdout
+```
+
+Scope is never inferred from whether you used `sudo`. If both a user and a
+system installation exist, `ori doctor` refuses to guess and asks for
+`--scope`.
 
 ---
 
@@ -149,9 +378,16 @@ On success the installer prints a JSON summary:
 System installs are enabled for boot and the installer fails if that cannot be
 confirmed.
 
-User installs depend on lingering, which is off by default — without it the
-service stops when you log out. The installer reports this honestly rather than
-implying persistence you do not have. If `boot_persistence` is `false`:
+User installs depend on lingering, which is off by default. Without it the
+service stops after your **last session ends**, and does not start at boot.
+Closing a terminal is not the same thing: a desktop session, or another SSH
+connection, keeps the service alive — which is why a user install can appear to
+survive logging out and then be gone after a reboot.
+
+Persistence for a user install needs **both** lingering enabled and the unit
+enabled; `ori doctor` reports the two states separately and names which one is
+missing. The installer reports this rather than implying persistence you do not
+have. If `boot_persistence` is `false`:
 
 ```sh
 sudo loginctl enable-linger "$USER"
@@ -193,8 +429,14 @@ fails — which means the device may be running neither release — the code is
 sudo ori-install-linux uninstall --scope system
 ```
 
-This stops and removes the service and deletes the installed releases. **Your
-data is kept** — config, database, and logs under the data directory survive.
+This stops and removes the service, deletes the installed releases, and removes
+the `ori` launcher. **Your data is kept** — config, database, and logs under
+the data directory survive.
+
+Only a launcher this installer wrote for this installation is removed. A file
+you placed at that path, or one belonging to a different Ori installation, is
+left alone. `--scope` is required so the wrong installation cannot be removed
+by accident.
 
 To remove data as well:
 
@@ -262,6 +504,7 @@ stable and defined by `ori-specs/runtime-release-bundle/v1`.
 | `downgrade_forbidden` | Older than what is installed; pass `--allow-downgrade` if intended |
 | `unsafe_install_root` | The install root or a path within it is unsafe |
 | `offline_install_failed` | The offline environment could not be built from the wheelhouse |
+| `prerequisite_install_failed` | A required OS prerequisite is missing and was not installed |
 | `config_validation_failed` | Generated config was rejected, or an identity value was invalid |
 | `service_start_failed` | The systemd unit or service identity could not be set up |
 | `post_install_health_failed` | The new release did not become healthy; it was rolled back |
