@@ -1,0 +1,59 @@
+=== EVIDENCE RUN ===
+  commit          02c062565b2feb66754ede3f2261fccc5cc2c437
+  archive sha256  7734f6d33bb2061dd68d7a13df2fe2029a8ccd56d5322b754e69aa7f27e16349
+  target          linux-aarch64-python3.11
+  image           ori-pi-bookworm
+  image id        sha256:e3171c84d148b92df83e47aefa4b0ec3646424853f9d9130b62c948856fa47e8
+  image digests   ori-pi-bookworm@sha256:e3171c84d148b92df83e47aefa4b0ec3646424853f9d9130b62c948856fa47e8
+  harness sha256  cbf981e04aa7166271f3048d789864c74605ce2462aaa5c042be3433d81fd14d
+  driver sha256   8c443bd92adad9b571379b72ab62b04931e6c62674ceb789a9ac871be689181a
+  reproduce with  git archive --format=tar 02c062565b2feb66754ede3f2261fccc5cc2c437 | sha256sum
+=== PROVENANCE ===
+  source archive digest 7734f6d33bb2061dd68d7a13df2fe2029a8ccd56d5322b754e69aa7f27e16349 PASS
+  externally supplied commit 02c062565b2feb66754ede3f2261fccc5cc2c437 PASS
+  architecture aarch64 matches the tuple               PASS
+  python 3.11.2 matches the tuple                      PASS
+  distribution debian:12 (Debian GNU/Linux 12 (bookworm)) PASS
+  harness revision 7, target linux-aarch64-python3.11
+=== TRUST ANCHOR SUBSTITUTION (before build) ===
+  ephemeral key sha256:1b0d962d64c4db53993a5a3fb3eeea6245c5c53ec55d308ae0ed60ece28e0850
+=== BUILD ===
+  first bundle build                                   PASS
+  second bundle build                                  PASS
+  build is deterministic (two builds, identical sha256) PASS
+  artifact sha256 14adef17ed93bd31772be6062202e4e9d9ec7150387abc9ebf405442e3820f19
+  signature envelope produced                          PASS
+=== DISPATCH (unmodified bootstrap) ===
+  dispatch: original name exits 2                      PASS
+  dispatch: original name stable code                  PASS
+  dispatch: renamed copy exits 2                       PASS
+  dispatch: renamed copy stable code                   PASS
+  dispatch: absolute path exits 2                      PASS
+  dispatch: absolute path stable code                  PASS
+  dispatch: relative path exits 2                      PASS
+  dispatch: relative path stable code                  PASS
+  dispatch: piped exits 2                              PASS
+  dispatch: piped stable code                          PASS
+  dispatch: piped without arguments exits 2            PASS
+  dispatch: piped without arguments shows usage        PASS
+=== TAMPER REJECTION ===
+  artifact was actually modified                       PASS
+  tampered artifact rejected (exit 2)                  PASS
+  tampered artifact code                               PASS
+  malformed envelope rejected (exit 2)                 PASS
+  malformed envelope code                              PASS
+  incorrect signature rejected (exit 2)                PASS
+  incorrect signature code                             PASS
+=== INSTALL (user scope, unprivileged) ===
+  install and all downstream service claims            BLOCKED (no systemd session bus)
+      installer reported: service_start_failed: service unit installation and rollback failed
+  console script execution                             BLOCKED (requires a surviving installed release)
+  stale staging paths                                  BLOCKED (requires a surviving installed release)
+  activation script rebinding                          BLOCKED (requires a surviving installed release)
+  same-version reinstall                               BLOCKED (requires a surviving installed release)
+  uninstall and launcher removal                       BLOCKED (requires a surviving installed release)
+  failed install rolls back cleanly (no active release) PASS
+=== RESULT ===
+  partial coverage: some claims BLOCKED by the environment
+=== HARNESS EXIT: 3 ===
+  partial coverage: claims BLOCKED by the environment
