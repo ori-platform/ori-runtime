@@ -395,7 +395,13 @@ def test_only_the_protected_signing_job_can_federate_to_aws(
     sign = workflow["jobs"]["sign"]
 
     assert sign["permissions"]["id-token"] == "write"
-    assert sign["environment"] == "release-signing"
+    # The environment may be a bare name or a mapping carrying a url; what must
+    # never change is the name, which the protection rules, the
+    # environment-scoped signer variables and the AWS OIDC subject all key off.
+    environment = sign["environment"]
+    name = environment if isinstance(environment, str) else environment["name"]
+    assert name == "release-signing"
+    assert "${{" not in name
     assert sign["permissions"]["contents"] == "read"
     federation = [
         step

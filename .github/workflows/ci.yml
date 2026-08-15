@@ -39,15 +39,15 @@ jobs:
       - name: Show pip version
         run: python -m pip --version
 
-      - name: Guard supply-chain invariants
-        run: |
-          python scripts/check_workflows.py
-          bash scripts/check_rust_supply_chain.sh
-
       - name: Install hash-locked dependencies
         run: |
           python -m pip install --require-hashes -r requirements/dev.txt
           python -m pip install --no-deps -e .
+
+      - name: Guard supply-chain invariants
+        run: |
+          python scripts/check_workflows.py
+          bash scripts/check_rust_supply_chain.sh
 
       - name: Type check runtime contract boundaries
         run: bash scripts/typecheck-boundaries.sh

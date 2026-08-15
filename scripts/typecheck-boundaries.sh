@@ -27,6 +27,7 @@ fi
   ori/installer/cli.py \
   scripts/verify_published_release.py \
   scripts/check_release_protections.py \
+  scripts/check_workflows.py \
   scripts/sign-release-bundle-aws-kms.py \
   ori/network/sms_webhook.py \
   ori/actions/sms.py \

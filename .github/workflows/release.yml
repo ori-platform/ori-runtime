@@ -1,5 +1,11 @@
 name: Release
 
+# The signing environment must stay literally `release-signing` — its
+# protection rules, environment-scoped signer variables, and the AWS OIDC
+# subject binding all key off that exact name. Version visibility therefore
+# lives in the run name and job name, never in the environment.
+run-name: Release ${{ github.ref_name }}
+
 on:
   push:
     tags:
@@ -233,14 +239,18 @@ jobs:
           retention-days: 7
 
   sign:
-    name: Sign release bundles
+    name: Sign release bundles (${{ github.ref_name }})
     needs: build
     runs-on: ubuntu-24.04
     # A short ceiling bounds how long this job can hold signing credentials.
     timeout-minutes: 20
     # The protected environment is what keeps signing off pull-request and
     # branch runs: only this tag-triggered job can assume the signer role.
-    environment: release-signing
+    environment:
+      name: release-signing
+      # Before publication this link 404s; it resolves once the draft is
+      # published in the job that follows.
+      url: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}
     permissions:
       contents: read
       id-token: write
