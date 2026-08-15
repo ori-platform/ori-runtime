@@ -380,9 +380,14 @@ firmware_mqtt_provisioning:
   time_server: time.example.com
   certificate_validity_days: 90
 
+# Community hook execution is disabled in this release. A skill that does not
+# ship with the runtime and carries hooks.py is refused entirely; there is no
+# in-process fallback, and these settings no longer decide whether untrusted
+# hook code runs. They are retained for the isolated-worker contract being
+# specified in ori-specs. See DECISIONS.md (2026-08-15).
 os_sandbox:
   enabled: true
-  require_for_community: false                   # true => reject community hooks if kernel hardening unavailable
+  require_for_community: false                   # no longer a hook-execution control
   exec_timeout_ms: 2000
   max_output_bytes: 65536
 
@@ -401,8 +406,12 @@ security:
     require_signed: false
     trust_anchor_env: ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64
   skills:
-    # Production deployments may require Ed25519 signatures for local/non-core
-    # skills. First-party repo-bundled skills may still use signature: bundled.
+    # Skills that do not ship with the runtime always require a verified
+    # ed25519 signature — this setting does not exempt them. For packaged
+    # first-party skills it only requires the signature field to carry a
+    # recognised declaration prefix ('bundled' or 'ed25519:'); the value is not
+    # decoded or verified, and their authenticity comes from the signed release
+    # artifact. See DECISIONS.md (2026-08-15).
     require_signed: false
   remote_commands:
     enabled: false                               # state-changing SMS/WhatsApp/cloud commands require HMAC

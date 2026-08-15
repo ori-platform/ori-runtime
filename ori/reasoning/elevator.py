@@ -38,7 +38,11 @@ from ori.reasoning.escalation_policy import (
     attach_gateway_escalation_context,
     evaluate_gateway_escalation,
 )
-from ori.reasoning.rule_engine import RuleEngine, RuleEngineSafetyError
+from ori.reasoning.rule_engine import (
+    RESERVED_CONTEXT_NAMES,
+    RuleEngine,
+    RuleEngineSafetyError,
+)
 from ori.utils.time_utils import now_ms
 
 if TYPE_CHECKING:
@@ -71,6 +75,28 @@ class SkillContext:
 class _ParsedHistoryCall:
     method: str
     args: tuple[Any, ...]
+
+
+def _without_reserved_names(values: Any, skill: Any) -> dict[str, Any]:
+    """Drop names that belong to the sensor reading before they reach the rules.
+
+    The rule engine overwrites these names anyway. They are removed here too so
+    that neither layer is the only thing standing between skill-supplied values
+    and a condition, and so the drop is reported against the skill that caused
+    it rather than as an anonymous context collision.
+    """
+    if not isinstance(values, dict):
+        return {}
+    reserved = RESERVED_CONTEXT_NAMES.intersection(values)
+    if not reserved:
+        return dict(values)
+    logger.warning(
+        "IntelligenceElevator: dropping reserved name(s) %s supplied by skill %r — "
+        "conditions read these from the sensor reading",
+        sorted(reserved),
+        getattr(skill, "name", "unknown"),
+    )
+    return {k: v for k, v in values.items() if k not in RESERVED_CONTEXT_NAMES}
 
 
 def _hour_now(event: OriEvent | None = None) -> int:
@@ -460,7 +486,7 @@ class IntelligenceElevator:
         rules = getattr(skill, "triggers", [])
         ctx: dict[str, Any] = {}
         if hasattr(skill, "config") and isinstance(skill.config, dict):
-            ctx.update(skill.config)
+            ctx.update(_without_reserved_names(skill.config, skill))
 
         hook_ctx = None
         if hasattr(skill, "hooks") and hasattr(skill.hooks, "pre_trigger_eval"):
@@ -476,7 +502,7 @@ class IntelligenceElevator:
                 maybe = skill.hooks.pre_trigger_eval(hook_ctx)
                 if asyncio.iscoroutine(maybe):
                     await maybe
-                ctx.update(hook_ctx.derived)
+                ctx.update(_without_reserved_names(hook_ctx.derived, skill))
             except Exception:
                 logger.exception(
                     "IntelligenceElevator: pre_trigger_eval hook failed for %r",
@@ -1365,7 +1391,23 @@ class IntelligenceElevator:
                 isinstance(getattr(event, "context", None), dict)
                 and event.context.get("__rejection_cap_tier_a")
             )
-            if rule_res.matched and rule_res.action_tier in {"A", "B", "C", "D"}:
+
+            def _clamp_tier_to_trigger(source: str) -> None:
+                """Restore the trigger's tier after anything could have changed it.
+
+                ``ReasoningResult`` is a mutable dataclass handed to every
+                extension point, so each one can rewrite ``action_tier``. The
+                clamp is therefore reapplied after each boundary rather than
+                once: authority comes from the trigger the operator wrote, and
+                nothing downstream of it inherits the right to lower it.
+                """
+                if not rule_res.matched or rule_res.action_tier not in {
+                    "A",
+                    "B",
+                    "C",
+                    "D",
+                }:
+                    return
                 allow_rejection_downgrade = (
                     rejection_capped
                     and result.action_tier == "A"
@@ -1377,12 +1419,15 @@ class IntelligenceElevator:
                 ):
                     logger.warning(
                         "IntelligenceElevator: clamping action tier from %s to %s "
-                        "for trigger=%r",
+                        "for trigger=%r (after %s)",
                         result.action_tier,
                         rule_res.action_tier,
                         rule_res.rule_name,
+                        source,
                     )
                     result.action_tier = rule_res.action_tier
+
+            _clamp_tier_to_trigger("reasoning")
 
             if hasattr(skill, "hooks") and hasattr(skill.hooks, "post_reasoning"):
                 from ori.skills.hooks_api import HookContext
@@ -1404,6 +1449,13 @@ class IntelligenceElevator:
                         "IntelligenceElevator: post_reasoning hook failed for %r",
                         getattr(skill, "name", "unknown"),
                     )
+
+                # The hook received the result object itself and may have
+                # rewritten its tier — including downward, out of the approval
+                # workflow. Reapplied unconditionally, including when the hook
+                # raised, since a hook that failed part-way could have changed
+                # the tier before failing.
+                _clamp_tier_to_trigger("post_reasoning hook")
 
             # Expose composed operator text to dispatch executors so channel
             # formatting can happen without re-running skill hooks.

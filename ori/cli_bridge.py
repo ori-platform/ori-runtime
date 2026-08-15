@@ -90,6 +90,7 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
             result = _skills_result(
                 skills_dir,
                 require_signed=_flag_present(args, "--require-signed"),
+                listing=True,
             )
         elif command == "skills-validate":
             skills_dir = _required_option(args, "--skills-dir", command)
@@ -383,7 +384,22 @@ def _phone_runtime_mobile_posture(config: Config) -> dict[str, Any]:
     }
 
 
-def _skills_result(skills_dir: str, *, require_signed: bool) -> dict[str, Any]:
+def _skills_result(
+    skills_dir: str, *, require_signed: bool, listing: bool = False
+) -> dict[str, Any]:
+    """Report on the skills under *skills_dir*. Executes nothing either way.
+
+    ``listing`` selects between the two questions an operator can ask:
+
+    - Validation (default) answers "would the runtime activate this?", so a
+      skill the runtime refuses is an error here too. Anything else would
+      approve skills that then fail to load, at exactly the moment someone is
+      deciding whether installing one is safe.
+    - Listing answers "what is installed?". A skill the runtime will not
+      activate still has a name and a version, and the operator reading the
+      list is usually trying to find out why — so it is reported with
+      ``activation`` describing the refusal rather than reduced to an error.
+    """
     root = Path(skills_dir)
     if not root.exists():
         raise BridgeError(
@@ -401,7 +417,13 @@ def _skills_result(skills_dir: str, *, require_signed: bool) -> dict[str, Any]:
     errors: list[dict[str, str]] = []
     for skill_dir in _iter_skill_dirs(root):
         try:
-            skills.append(_summarize_skill(loader.load_one(skill_dir), skill_dir))
+            # Neither path calls load_one: inspecting a skill must not run it.
+            if listing:
+                summary = _summarize_skill(loader.inspect_one(skill_dir), skill_dir)
+                summary["activation"] = _activation_status(loader, skill_dir)
+            else:
+                summary = _summarize_skill(loader.validate_one(skill_dir), skill_dir)
+            skills.append(summary)
         except (
             SkillValidationError,
             SkillSecurityError,
@@ -416,14 +438,39 @@ def _skills_result(skills_dir: str, *, require_signed: bool) -> dict[str, Any]:
                 }
             )
 
+    # `valid` is conjunctive. Consumers read it as "these skills are usable",
+    # and a skill the runtime refuses to activate is not usable — reporting
+    # `valid: true` beside a per-skill `activation.ok: false` would put the
+    # safe-looking answer in the field automation actually branches on, and the
+    # disqualifying detail in one it does not. `activatable` is published
+    # separately so a consumer can tell the two failure modes apart without
+    # walking the list.
+    unactivatable = [
+        skill for skill in skills if not skill.get("activation", {"ok": True})["ok"]
+    ]
     return {
-        "valid": not errors,
+        "valid": not errors and not unactivatable,
+        # Also conjunctive. A skill that failed to parse or validate is not
+        # activatable either — it never got far enough to have an activation
+        # verdict, and reporting `activatable: true` beside `valid: false`
+        # would describe a malformed skill as runnable.
+        "activatable": not errors and not unactivatable,
         "skills_dir": str(root),
         "skill_count": len(skills),
         "error_count": len(errors),
+        "unactivatable_count": len(unactivatable),
         "skills": skills,
         "errors": errors,
     }
+
+
+def _activation_status(loader: SkillLoader, skill_dir: Path) -> dict[str, Any]:
+    """Whether the runtime would activate this skill, and why not if it would not."""
+    try:
+        loader._assert_hooks_activatable(skill_dir)
+    except SkillSecurityError as exc:
+        return {"ok": False, "code": "hooks_not_activatable", "detail": str(exc)}
+    return {"ok": True}
 
 
 def _iter_skill_dirs(root: Path) -> list[Path]:

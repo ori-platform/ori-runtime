@@ -377,9 +377,145 @@ def test_cli_bridge_skills_validate_reports_invalid_skill(tmp_path, capsys):
     payload = _read_stdout_json(capsys)
     assert rc == 0
     assert payload["result"]["valid"] is False
+    # A skill that never parsed is not activatable either. Reporting it as
+    # activatable would describe a malformed skill as runnable.
+    assert payload["result"]["activatable"] is False
     assert payload["result"]["skill_count"] == 0
     assert payload["result"]["errors"][0]["code"] == "skill_validation_error"
     assert "action_tier" in payload["result"]["errors"][0]["detail"]
+
+
+_ACTIVATABLE_SKILL = """
+name: community-skill
+version: 0.1.0
+author: test
+signature: bundled
+sensors_required:
+  - type: usb_power
+triggers:
+  - name: warm
+    condition: value > 1
+    action_tier: A
+actions:
+  available:
+    - name: log_to_dashboard
+      tier: A
+  defaults:
+    warm: [log_to_dashboard]
+"""
+
+
+def _write_community_skill_with_hooks(tmp_path: Path) -> Path:
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "community-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "skill.yaml").write_text(
+        textwrap.dedent(_ACTIVATABLE_SKILL), encoding="utf-8"
+    )
+    (skill_dir / "hooks.py").write_text("MARKER = 1\n", encoding="utf-8")
+    return skills_dir
+
+
+def test_cli_bridge_skills_list_does_not_report_valid_for_unactivatable_skill(
+    tmp_path, capsys, monkeypatch
+):
+    """`valid` must not be true for a skill the runtime refuses to activate.
+
+    The aggregate is what automation branches on. Reporting `valid: true` while
+    burying `activation.ok: false` inside the per-skill entry would put the
+    safe-looking answer in the field consumers read and the disqualifying
+    detail in one they do not.
+    """
+    monkeypatch.setattr(
+        "ori.skills.loader.SkillLoader._verify_community_signature",
+        lambda self, raw, skill_dir: None,
+    )
+    skills_dir = _write_community_skill_with_hooks(tmp_path)
+
+    rc = cli_bridge.main(["skills", "list", "--skills-dir", str(skills_dir)])
+
+    payload = _read_stdout_json(capsys)
+    result = payload["result"]
+    assert rc == 0
+    # Listing still describes the skill — that is what listing is for.
+    assert result["skill_count"] == 1
+    assert result["skills"][0]["name"] == "community-skill"
+    assert result["skills"][0]["activation"]["ok"] is False
+    assert result["skills"][0]["activation"]["code"] == "hooks_not_activatable"
+    # But it is not reported as usable.
+    assert result["valid"] is False
+    assert result["activatable"] is False
+    assert result["unactivatable_count"] == 1
+
+
+def test_cli_bridge_skills_validate_rejects_unactivatable_skill(
+    tmp_path, capsys, monkeypatch
+):
+    """Validation fails for anything the runtime would refuse to activate."""
+    monkeypatch.setattr(
+        "ori.skills.loader.SkillLoader._verify_community_signature",
+        lambda self, raw, skill_dir: None,
+    )
+    skills_dir = _write_community_skill_with_hooks(tmp_path)
+
+    rc = cli_bridge.main(["skills", "validate", "--skills-dir", str(skills_dir)])
+
+    payload = _read_stdout_json(capsys)
+    result = payload["result"]
+    assert rc == 0
+    assert result["valid"] is False
+    assert result["activatable"] is False
+    assert result["skill_count"] == 0
+    assert result["errors"][0]["code"] == "skill_security_error"
+    assert "not first-party" in result["errors"][0]["detail"]
+
+
+def test_cli_bridge_skills_commands_report_valid_for_an_activatable_skill(
+    tmp_path, capsys, monkeypatch
+):
+    """The aggregate is not simply always false — a clean skill still passes."""
+    monkeypatch.setattr(
+        "ori.skills.loader.SkillLoader._verify_community_signature",
+        lambda self, raw, skill_dir: None,
+    )
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "community-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "skill.yaml").write_text(
+        textwrap.dedent(_ACTIVATABLE_SKILL), encoding="utf-8"
+    )
+
+    for command in ("list", "validate"):
+        rc = cli_bridge.main(["skills", command, "--skills-dir", str(skills_dir)])
+        result = _read_stdout_json(capsys)["result"]
+        assert rc == 0, command
+        assert result["valid"] is True, command
+        assert result["activatable"] is True, command
+        assert result["skill_count"] == 1, command
+
+
+def test_cli_bridge_skills_commands_never_execute_hooks(tmp_path, capsys, monkeypatch):
+    """Neither command runs hook code, for any skill it reports on."""
+    monkeypatch.setattr(
+        "ori.skills.loader.SkillLoader._verify_community_signature",
+        lambda self, raw, skill_dir: None,
+    )
+    sentinel = tmp_path / "executed.marker"
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "community-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "skill.yaml").write_text(
+        textwrap.dedent(_ACTIVATABLE_SKILL), encoding="utf-8"
+    )
+    (skill_dir / "hooks.py").write_text(
+        f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
+
+    for command in ("list", "validate"):
+        cli_bridge.main(["skills", command, "--skills-dir", str(skills_dir)])
+        _read_stdout_json(capsys)
+        assert not sentinel.exists(), f"skills {command} executed hooks.py"
 
 
 def test_cli_bridge_unknown_command_returns_json_error(capsys):

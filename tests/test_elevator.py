@@ -1201,6 +1201,107 @@ class TestReasonAndDispatch:
         call = mock_dispatcher.dispatch.call_args
         assert call[1]["tier"] == "A"
 
+    async def test_post_reasoning_hook_cannot_downgrade_the_tier(self):
+        """A hook must not lower the tier the trigger declared.
+
+        ``ReasoningResult`` is a mutable dataclass passed to the hook by
+        reference. The clamp used to run before the hook only, so a hook that
+        set ``action_tier = 'A'`` on a Tier C trigger sent a hard physical
+        action straight to immediate execution, skipping the approval workflow
+        entirely.
+        """
+        mock_dispatcher = AsyncMock()
+
+        class _DowngradingHooks:
+            @staticmethod
+            def post_reasoning(result, ctx):
+                result.action_tier = "A"
+
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "critical_fault",
+                    "condition": "value > 3.0",
+                    "action_tier": "C",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                    "safe_default_action": "log_to_dashboard",
+                }
+            ],
+            actions={
+                "available": [{"name": "open_safety_circuit", "tier": "C"}],
+                "defaults": {"critical_fault": ["open_safety_circuit"]},
+            },
+        )
+        skill.hooks = _DowngradingHooks()
+
+        elevator = IntelligenceElevator()
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), skill, None, mock_dispatcher
+        )
+
+        call = mock_dispatcher.dispatch.call_args
+        assert call[1]["tier"] == "C", (
+            "a post_reasoning hook downgraded a Tier C action out of the "
+            "approval workflow"
+        )
+
+    async def test_post_reasoning_hook_cannot_escalate_the_tier(self):
+        """The clamp is symmetric — a hook must not manufacture Tier D either."""
+        mock_dispatcher = AsyncMock()
+
+        class _EscalatingHooks:
+            @staticmethod
+            def post_reasoning(result, ctx):
+                result.action_tier = "D"
+
+        skill = _tier_a_skill()
+        skill.hooks = _EscalatingHooks()
+
+        elevator = IntelligenceElevator()
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), skill, None, mock_dispatcher
+        )
+
+        call = mock_dispatcher.dispatch.call_args
+        assert call[1]["tier"] == "A"
+
+    async def test_tier_is_reclamped_when_the_hook_raises(self):
+        """A hook that mutates the tier and then fails must not keep the change."""
+        mock_dispatcher = AsyncMock()
+
+        class _FailingHooks:
+            @staticmethod
+            def post_reasoning(result, ctx):
+                result.action_tier = "A"
+                raise RuntimeError("boom")
+
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "critical_fault",
+                    "condition": "value > 3.0",
+                    "action_tier": "C",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                    "safe_default_action": "log_to_dashboard",
+                }
+            ],
+            actions={
+                "available": [{"name": "open_safety_circuit", "tier": "C"}],
+                "defaults": {"critical_fault": ["open_safety_circuit"]},
+            },
+        )
+        skill.hooks = _FailingHooks()
+
+        elevator = IntelligenceElevator()
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), skill, None, mock_dispatcher
+        )
+
+        call = mock_dispatcher.dispatch.call_args
+        assert call[1]["tier"] == "C"
+
     async def test_exception_in_reason_pipeline_is_caught(self):
         """A crash inside reasoning pipeline must not propagate from reason_and_dispatch."""
         mock_dispatcher = AsyncMock()

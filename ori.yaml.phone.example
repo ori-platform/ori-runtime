@@ -78,6 +78,12 @@ security:
     require_signed: false
     trust_anchor_env: ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64
   skills:
+    # Skills that do not ship with the runtime always require a verified
+    # ed25519 signature — this setting does not exempt them. For packaged
+    # first-party skills it only requires the signature field to carry a
+    # recognised declaration prefix ('bundled' or 'ed25519:'); the value is not
+    # decoded or verified, and their authenticity comes from the signed release
+    # artifact. See DECISIONS.md (2026-08-15).
     require_signed: false
 
 actions:

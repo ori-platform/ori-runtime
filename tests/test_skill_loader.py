@@ -35,6 +35,24 @@ except Exception:  # pragma: no cover - environment without cryptography support
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 
+def _first_party_loader(**kwargs) -> SkillLoader:
+    """A loader that treats scratch skill directories as packaged skills.
+
+    Most tests here exercise parsing, validation and handler registration, and
+    write their fixtures to ``tmp_path``. Provenance is not what they are
+    testing, but it is now decided positively: only skills shipped inside the
+    package are first-party, and everything else must carry a verified
+    signature. Rather than sign every fixture, these tests state plainly that
+    the scratch directory stands in for the packaged one.
+
+    Tests that *are* about provenance or signatures construct ``SkillLoader``
+    directly and must keep doing so.
+    """
+    loader = SkillLoader(**kwargs)
+    loader._is_core_bundled_skill = lambda skill_dir: True  # type: ignore[method-assign]
+    return loader
+
+
 def _write_skill_yaml(skill_dir: Path, content: str) -> None:
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "skill.yaml").write_text(textwrap.dedent(content))
@@ -216,7 +234,7 @@ class TestLoadOne:
     def test_loads_valid_skill(self, tmp_path):
         skill_dir = tmp_path / "my-skill"
         _write_skill_yaml(skill_dir, _minimal_yaml())
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.name == "test-skill"
         assert skill.version == "0.1.0"
@@ -266,12 +284,12 @@ class TestLoadOne:
         _write_skill_yaml(skill_dir, yaml_content)
 
         with pytest.raises(yaml.constructor.ConstructorError, match=message):
-            SkillLoader().load_one(skill_dir)
+            _first_party_loader().load_one(skill_dir)
 
     def test_trigger_action_tier_parsed(self, tmp_path):
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml(action_tier="B"))
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.triggers[0].action_tier == "B"
 
@@ -302,7 +320,7 @@ class TestLoadOne:
                 over_threshold: [switch_power_source, alert_whatsapp]
             """,
         )
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.triggers[0].reasoning_policy == "post_action"
 
@@ -331,7 +349,7 @@ class TestLoadOne:
                 over_threshold: [switch_power_source]
             """,
         )
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.triggers[0].requires_approval is True
 
@@ -360,42 +378,42 @@ class TestLoadOne:
                 over_threshold: [alert_whatsapp]
             """,
         )
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(SkillValidationError, match="use escalate_to: gateway"):
             loader.load_one(skill_dir)
 
     def test_tier_d_forces_bypass_llm_true(self, tmp_path):
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml(action_tier="D"))
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.triggers[0].bypass_llm is True
 
     def test_tier_d_bypass_llm_already_true_is_fine(self, tmp_path):
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml(action_tier="D", bypass_llm=True))
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.triggers[0].bypass_llm is True
 
     def test_sensors_required_parsed(self, tmp_path):
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml())
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.sensors_required == [{"type": "current_clamp", "protocol": "i2c"}]
 
     def test_actions_defaults_parsed(self, tmp_path):
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml())
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.actions["defaults"]["over_threshold"] == ["alert_whatsapp"]
 
     def test_hooks_none_when_no_hooks_file(self, tmp_path):
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml())
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.hooks is None
 
@@ -403,7 +421,7 @@ class TestLoadOne:
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml())
         (skill_dir / "hooks.py").write_text("LOADED = True\n")
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.hooks is not None
         assert skill.hooks.LOADED is True
@@ -412,14 +430,14 @@ class TestLoadOne:
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml())
         (skill_dir / "hooks.py").write_text("def bad(:\n")
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)  # must not raise
         assert skill.hooks is None
 
     def test_raises_file_not_found_when_no_yaml(self, tmp_path):
         skill_dir = tmp_path / "empty"
         skill_dir.mkdir()
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(FileNotFoundError):
             loader.load_one(skill_dir)
 
@@ -444,8 +462,8 @@ class TestLoadOne:
             "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
             public_key_b64,
         )
-        loader = SkillLoader()
-        with patch.object(loader, "_is_bundled_skill", return_value=False):
+        loader = _first_party_loader()
+        with patch.object(loader, "_is_core_bundled_skill", return_value=False):
             skill = loader.load_one(skill_dir)
         assert skill.name == raw["name"]
 
@@ -471,8 +489,8 @@ class TestLoadOne:
             "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
             public_key_b64,
         )
-        loader = SkillLoader()
-        with patch.object(loader, "_is_bundled_skill", return_value=False):
+        loader = _first_party_loader()
+        with patch.object(loader, "_is_core_bundled_skill", return_value=False):
             with pytest.raises(
                 SkillSecurityError,
                 match="signature verification failed",
@@ -487,8 +505,8 @@ class TestLoadOne:
             "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
             "dGVzdA==",
         )
-        loader = SkillLoader()
-        with patch.object(loader, "_is_bundled_skill", return_value=False):
+        loader = _first_party_loader()
+        with patch.object(loader, "_is_core_bundled_skill", return_value=False):
             with pytest.raises(
                 SkillSecurityError,
                 match="missing required 'signature' field",
@@ -504,8 +522,8 @@ class TestLoadOne:
             "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
             "dGVzdA==",
         )
-        loader = SkillLoader()
-        with patch.object(loader, "_is_bundled_skill", return_value=False):
+        loader = _first_party_loader()
+        with patch.object(loader, "_is_core_bundled_skill", return_value=False):
             with pytest.raises(
                 SkillSecurityError,
                 match="unsupported signature scheme",
@@ -523,11 +541,11 @@ class TestLoadOne:
             "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
             "dGVzdA==",
         )
-        loader = SkillLoader()
-        with patch.object(loader, "_is_bundled_skill", return_value=False):
+        loader = _first_party_loader()
+        with patch.object(loader, "_is_core_bundled_skill", return_value=False):
             with pytest.raises(
                 SkillSecurityError,
-                match="community skill uses bundled signature sentinel",
+                match="bundled signature sentinel but does not ship with the runtime",
             ):
                 loader.load_one(skill_dir)
 
@@ -556,8 +574,8 @@ class TestLoadOne:
         )
         monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", public_key_b64)
 
-        loader = SkillLoader()
-        with patch.object(loader, "_is_bundled_skill", return_value=False):
+        loader = _first_party_loader()
+        with patch.object(loader, "_is_core_bundled_skill", return_value=False):
             skill = loader.load_one(skill_dir)
         assert skill.name == raw["name"]
 
@@ -590,15 +608,15 @@ class TestLoadOne:
         loader = SkillLoader(
             community_trust_anchor_public_key_b64=signing_public_key_b64
         )
-        with patch.object(loader, "_is_bundled_skill", return_value=False):
+        with patch.object(loader, "_is_core_bundled_skill", return_value=False):
             skill = loader.load_one(skill_dir)
         assert skill.name == raw["name"]
 
     def test_bundled_unsigned_skill_still_loads(self, tmp_path):
         skill_dir = tmp_path / "bundled-unsigned"
         _write_skill_yaml(skill_dir, _minimal_yaml(name="bundled-unsigned"))
-        loader = SkillLoader()
-        with patch.object(loader, "_is_bundled_skill", return_value=True):
+        loader = _first_party_loader()
+        with patch.object(loader, "_is_core_bundled_skill", return_value=True):
             skill = loader.load_one(skill_dir)
         assert skill.name == "bundled-unsigned"
 
@@ -607,20 +625,33 @@ class TestLoadOne:
         _write_skill_yaml(skill_dir, _minimal_yaml(name="core-bundled"))
         loader = SkillLoader(require_signed=True)
         with (
-            patch.object(loader, "_is_bundled_skill", return_value=True),
             patch.object(loader, "_is_core_bundled_skill", return_value=True),
         ):
             skill = loader.load_one(skill_dir)
         assert skill.name == "core-bundled"
 
-    def test_require_signed_rejects_non_core_bundled_sentinel(self, tmp_path):
+    @pytest.mark.parametrize("require_signed", [True, False])
+    def test_non_core_sentinel_rejected_regardless_of_require_signed(
+        self, tmp_path, require_signed
+    ):
+        """An unsigned local skill is refused whether or not signing is required.
+
+        ``require_signed: false`` used to exempt any skill outside
+        ``~/.ori/skills`` from verification entirely — which included the
+        operator-managed skills directory beside ori.yaml. Verification no
+        longer depends on that setting for skills that do not ship with the
+        runtime; the setting governs how strict first-party packaging is, not
+        whether untrusted content is checked at all.
+        """
         skill_dir = tmp_path / "local-unsigned"
         _write_skill_yaml(skill_dir, _minimal_yaml(name="local-unsigned"))
-        loader = SkillLoader(require_signed=True)
+        loader = SkillLoader(require_signed=require_signed)
         with (
-            patch.object(loader, "_is_bundled_skill", return_value=True),
             patch.object(loader, "_is_core_bundled_skill", return_value=False),
-            pytest.raises(SkillSecurityError, match="security.skills.require_signed"),
+            pytest.raises(
+                SkillSecurityError,
+                match="does not ship with the runtime",
+            ),
         ):
             loader.load_one(skill_dir)
 
@@ -630,8 +661,8 @@ class TestLoadOne:
             "signature: bundled", "signature: pending"
         )
         _write_skill_yaml(skill_dir, raw)
-        loader = SkillLoader()
-        with patch.object(loader, "_is_bundled_skill", return_value=True):
+        loader = _first_party_loader()
+        with patch.object(loader, "_is_core_bundled_skill", return_value=True):
             with pytest.raises(
                 SkillValidationError,
                 match="bundled skill signature must be either",
@@ -668,7 +699,7 @@ class TestValidation:
         """
         skill_dir = tmp_path / "too-many-history-placeholders"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(
             SkillValidationError,
             match="contains 17 history placeholders; maximum allowed is 16",
@@ -700,7 +731,7 @@ class TestValidation:
         """
         skill_dir = tmp_path / "max-history-placeholders"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.name == "max-history-placeholders"
 
@@ -718,7 +749,7 @@ class TestValidation:
         """
         skill_dir = tmp_path / "bad"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(
             SkillValidationError, match="missing required field 'action_tier'"
         ):
@@ -738,14 +769,14 @@ class TestValidation:
         """
         skill_dir = tmp_path / "bad"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(SkillValidationError, match="invalid action_tier"):
             loader.load_one(skill_dir)
 
     def test_bypass_llm_without_tier_d_raises(self, tmp_path):
         skill_dir = tmp_path / "bad"
         _write_skill_yaml(skill_dir, _minimal_yaml(action_tier="A", bypass_llm=True))
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(
             SkillValidationError, match="bypass_llm is reserved for Tier D"
         ):
@@ -775,7 +806,7 @@ class TestValidation:
                 over_threshold: [alert_whatsapp]
             """,
         )
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(SkillValidationError, match="post_action is reserved"):
             loader.load_one(skill_dir)
 
@@ -803,7 +834,7 @@ class TestValidation:
                 over_threshold: [alert_whatsapp]
             """,
         )
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(SkillValidationError, match="invalid reasoning_policy"):
             loader.load_one(skill_dir)
 
@@ -830,7 +861,7 @@ class TestValidation:
                 over_threshold: [switch_power_source]
             """,
         )
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(
             SkillValidationError,
             match="declares neither requires_approval=true nor reasoning_policy=post_action",
@@ -861,7 +892,7 @@ class TestValidation:
                 over_threshold: [switch_power_source]
             """,
         )
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(
             SkillValidationError,
             match="no Tier A default action for post-action operator notification",
@@ -883,7 +914,7 @@ class TestValidation:
         """
         skill_dir = tmp_path / "c"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(SkillValidationError, match="safe_default_action"):
             loader.load_one(skill_dir)
 
@@ -892,7 +923,7 @@ class TestValidation:
         _write_skill_yaml(
             skill_dir, _minimal_yaml(action_tier="C", safe_default="log_to_dashboard")
         )
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         assert skill.triggers[0].action_tier == "C"
         assert skill.triggers[0].safe_default_action == "log_to_dashboard"
@@ -914,7 +945,7 @@ class TestValidation:
         """
         skill_dir = tmp_path / "bad-meta"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(SkillValidationError, match="missing required field 'name'"):
             loader.load_one(skill_dir)
 
@@ -938,7 +969,7 @@ class TestValidation:
         """
         skill_dir = tmp_path / "bad-trigger"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(SkillValidationError, match="missing/empty name"):
             loader.load_one(skill_dir)
 
@@ -962,7 +993,7 @@ class TestValidation:
         """
         skill_dir = tmp_path / "bad-trigger-space"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(SkillValidationError, match="invalid name format"):
             loader.load_one(skill_dir)
 
@@ -992,7 +1023,7 @@ class TestValidation:
         """
         skill_dir = tmp_path / "dup-trigger"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(SkillValidationError, match="duplicate trigger name"):
             loader.load_one(skill_dir)
 
@@ -1006,7 +1037,7 @@ class TestValidation:
         """
         skill_dir = tmp_path / "bad-meta"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(
             SkillValidationError, match="triggers must be a non-empty list"
         ):
@@ -1031,7 +1062,7 @@ class TestValidation:
         """
         skill_dir = tmp_path / "bad-defaults"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(
             SkillValidationError, match="missing actions.defaults mapping"
         ):
@@ -1058,7 +1089,7 @@ class TestValidation:
         """
         skill_dir = tmp_path / "bad-defaults"
         _write_skill_yaml(skill_dir, yaml_content)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         with pytest.raises(SkillValidationError, match="unknown trigger"):
             loader.load_one(skill_dir)
 
@@ -1070,7 +1101,7 @@ class TestLoadAll:
     def test_loads_multiple_skills(self, tmp_path):
         _write_skill_yaml(tmp_path / "skill-a", _minimal_yaml(name="skill-a"))
         _write_skill_yaml(tmp_path / "skill-b", _minimal_yaml(name="skill-b"))
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skills = loader.load_all(str(tmp_path))
         assert len(skills) == 2
         names = {s.name for s in skills}
@@ -1079,7 +1110,7 @@ class TestLoadAll:
     def test_skips_directories_without_skill_yaml(self, tmp_path):
         _write_skill_yaml(tmp_path / "good-skill", _minimal_yaml())
         (tmp_path / "no-yaml-here").mkdir()
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skills = loader.load_all(str(tmp_path))
         assert len(skills) == 1
 
@@ -1095,26 +1126,26 @@ class TestLoadAll:
                 condition: "x > 1"
         """
         _write_skill_yaml(tmp_path / "bad-skill", bad_yaml)
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skills = loader.load_all(str(tmp_path))
         assert len(skills) == 1
         assert skills[0].name == "test-skill"
 
     def test_returns_empty_for_nonexistent_dir(self, tmp_path):
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skills = loader.load_all(str(tmp_path / "does-not-exist"))
         assert skills == []
 
     def test_returns_empty_when_no_skills_present(self, tmp_path):
         (tmp_path / "readme.txt").write_text("nothing here")
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skills = loader.load_all(str(tmp_path))
         assert skills == []
 
     def test_template_directory_is_skipped(self, tmp_path):
         _write_skill_yaml(tmp_path / "template", _minimal_yaml(name="template"))
         _write_skill_yaml(tmp_path / "real-skill", _minimal_yaml(name="real-skill"))
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skills = loader.load_all(str(tmp_path))
         names = {s.name for s in skills}
         assert "real-skill" in names
@@ -1126,7 +1157,7 @@ class TestLoadAll:
             tmp_path / "bad-community-skill",
             _minimal_yaml(name="bad-community-skill"),
         )
-        loader = SkillLoader()
+        loader = _first_party_loader()
         original_load_one = loader.load_one
 
         def _fake_load_one(path):
@@ -1148,7 +1179,7 @@ class TestRegister:
     async def test_handler_subscribed_for_each_sensor_type(self, tmp_path):
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml())
-        loader = SkillLoader()
+        loader = _first_party_loader()
         skill = loader.load_one(skill_dir)
         bus = EventBus()
         loader.register(skill, bus)
@@ -1162,7 +1193,7 @@ class TestRegister:
         mock_elevator = MagicMock()
         mock_elevator.reason_and_dispatch = AsyncMock(return_value=None)
 
-        loader = SkillLoader(elevator=mock_elevator)
+        loader = _first_party_loader(elevator=mock_elevator)
         skill = loader.load_one(skill_dir)
         bus = EventBus()
         loader.register(skill, bus)
@@ -1194,7 +1225,7 @@ class TestRegister:
         mock_elevator = MagicMock()
         mock_elevator.reason_and_dispatch = AsyncMock(return_value=None)
 
-        loader = SkillLoader(elevator=mock_elevator)
+        loader = _first_party_loader(elevator=mock_elevator)
         skill = loader.load_one(skill_dir)
         bus = EventBus()
         loader.register(skill, bus)
@@ -1220,7 +1251,7 @@ class TestRegister:
     async def test_handler_no_elevator_does_not_raise(self, tmp_path):
         skill_dir = tmp_path / "s"
         _write_skill_yaml(skill_dir, _minimal_yaml())
-        loader = SkillLoader(elevator=None)
+        loader = _first_party_loader(elevator=None)
         skill = loader.load_one(skill_dir)
         bus = EventBus()
         loader.register(skill, bus)
@@ -1241,7 +1272,7 @@ class TestRegister:
         mock_elevator = MagicMock()
         mock_elevator.reason_and_dispatch = slow_reason
 
-        loader = SkillLoader(elevator=mock_elevator)
+        loader = _first_party_loader(elevator=mock_elevator)
         skill = loader.load_one(skill_dir)
         bus = EventBus()
         loader.register(skill, bus)
@@ -1269,7 +1300,7 @@ class TestIntegration:
         mock_elevator = MagicMock()
         mock_elevator.reason_and_dispatch = AsyncMock(return_value=None)
 
-        loader = SkillLoader(elevator=mock_elevator)
+        loader = _first_party_loader(elevator=mock_elevator)
         skills = loader.load_all(str(skills_root))
         assert any(s.name == "pc-system-health" for s in skills)
 

@@ -36,7 +36,32 @@ def _event(value: float = 10.0) -> OriEvent:
     return OriEvent.from_reading(reading, "dev-01")
 
 
-def test_load_community_hooks_falls_back_to_python_sandbox(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "support",
+    [
+        OSSandboxSupport(True, "ok"),
+        OSSandboxSupport(False, "kernel_not_linux"),
+    ],
+    ids=["landlock_available", "landlock_unavailable"],
+)
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("require_for_community", [True, False])
+def test_community_hooks_never_execute_in_this_release(
+    monkeypatch, tmp_path, support, enabled, require_for_community
+):
+    """No configuration or host capability produces a hook runner.
+
+    Two behaviours are pinned here. The first is that an unsupported OS sandbox
+    no longer degrades to the in-process loader — it used to, unless the
+    operator had opted into requiring isolation, which made the permissive
+    default the dangerous one.
+
+    The second is the case this matters most for: a host where Landlock *is*
+    available. Returning a working runner there would leave community hook
+    execution enabled on precisely the modern Linux systems Ori targets, under
+    a runner that predates the isolation contract still being specified. The
+    refusal is unconditional so the shipped posture matches the documented one.
+    """
     hooks = _write_hooks(
         tmp_path / "community-skill" / "hooks.py",
         """
@@ -46,35 +71,39 @@ def test_load_community_hooks_falls_back_to_python_sandbox(monkeypatch, tmp_path
     )
     monkeypatch.setattr(
         "ori.skills.os_sandbox.probe_os_sandbox_support",
-        lambda: OSSandboxSupport(False, "kernel_not_linux"),
+        lambda: support,
     )
-    module = load_community_hooks(
-        hooks_path=hooks,
-        state_store=None,
-        skill_name="community-skill",
-        os_sandbox_config={"enabled": True, "require_for_community": False},
-    )
-    assert module is not None
-    assert callable(getattr(module, "pre_trigger_eval", None))
-
-
-def test_load_community_hooks_strict_mode_rejects_when_unsupported(
-    monkeypatch, tmp_path
-):
-    hooks = _write_hooks(
-        tmp_path / "community-skill" / "hooks.py",
-        "def pre_trigger_eval(context):\n    pass\n",
-    )
-    monkeypatch.setattr(
-        "ori.skills.os_sandbox.probe_os_sandbox_support",
-        lambda: OSSandboxSupport(False, "kernel_not_linux"),
-    )
-    with pytest.raises(SkillSecurityError, match="os sandbox required"):
+    with pytest.raises(SkillSecurityError, match="disabled in this release"):
         load_community_hooks(
             hooks_path=hooks,
             state_store=None,
             skill_name="community-skill",
-            os_sandbox_config={"enabled": True, "require_for_community": True},
+            os_sandbox_config={
+                "enabled": enabled,
+                "require_for_community": require_for_community,
+            },
+        )
+
+
+def test_supported_host_is_not_probed_into_an_execution_path(monkeypatch, tmp_path):
+    """The refusal does not depend on the probe answering unfavourably."""
+    hooks = _write_hooks(
+        tmp_path / "community-skill" / "hooks.py",
+        "def pre_trigger_eval(context):\n    pass\n",
+    )
+
+    def _must_not_matter():  # pragma: no cover - result is irrelevant
+        raise AssertionError("probe result must not gate the refusal")
+
+    monkeypatch.setattr(
+        "ori.skills.os_sandbox.probe_os_sandbox_support", _must_not_matter
+    )
+    with pytest.raises(SkillSecurityError, match="disabled in this release"):
+        load_community_hooks(
+            hooks_path=hooks,
+            state_store=None,
+            skill_name="community-skill",
+            os_sandbox_config={"enabled": True, "require_for_community": False},
         )
 
 

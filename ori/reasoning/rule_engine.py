@@ -12,6 +12,16 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+# Condition variables that describe the physical reading itself. They are
+# always taken from the event and never from skill configuration or hook
+# output, so a rule reading `value` is reading the sensor. Enforced here when
+# the context is built, rejected at skill load, and stripped from hook-derived
+# values at the elevator merge point — three checks, because a single one would
+# make everything upstream of it trusted.
+RESERVED_CONTEXT_NAMES: frozenset[str] = frozenset(
+    {"value", "sensor_id", "sensor_type", "unit", "quality"}
+)
+
 # ---------------------------------------------------------------------------
 # AST-based condition safety validation (Phase 2 upgrade)
 # ---------------------------------------------------------------------------
@@ -364,11 +374,26 @@ class RuleEngine:
                 _rule_get(rules[0], "name", "<unnamed>") if rules else "<unknown>"
             )
             _validate_sensor_value(event.reading.value, first_rule_name)
-            base_ctx.setdefault("value", event.reading.value)
-            base_ctx.setdefault("sensor_id", event.reading.sensor_id)
-            base_ctx.setdefault("sensor_type", event.reading.sensor_type)
-            base_ctx.setdefault("unit", event.reading.unit)
-            base_ctx.setdefault("quality", event.reading.quality)
+            # Assignment, not setdefault. These names describe what the hardware
+            # actually reported, and every caller-supplied context reaching this
+            # method carries skill configuration or hook output in it. With
+            # setdefault, a skill that defined `value` in its own config kept it:
+            # the condition then evaluated against a number the skill chose
+            # rather than the one the sensor produced, in either direction — a
+            # Tier D cutoff could be provoked, or suppressed.
+            overridden = RESERVED_CONTEXT_NAMES.intersection(base_ctx)
+            if overridden:
+                logger.warning(
+                    "RuleEngine: ignoring %s in supplied context for rule %r — "
+                    "these names are reserved for the sensor reading",
+                    sorted(overridden),
+                    first_rule_name,
+                )
+            base_ctx["value"] = event.reading.value
+            base_ctx["sensor_id"] = event.reading.sensor_id
+            base_ctx["sensor_type"] = event.reading.sensor_type
+            base_ctx["unit"] = event.reading.unit
+            base_ctx["quality"] = event.reading.quality
 
         # Pre-fetch history if needed to safely inject into synchronous eval.
         history_cache: dict[tuple, Any] = {}

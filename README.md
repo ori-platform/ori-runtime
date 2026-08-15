@@ -39,7 +39,7 @@ Built for the world's majority condition — unreliable power, intermittent conn
   runtime verifies and trust-grades them, and the private evidence artifact
   verifies the shared golden bytes/signatures without owning firmware
   canonicalization.
-- Safety invariants (tier guards, strict skill validation, sandbox boundaries) are CI-enforced on every PR.
+- Safety invariants (tier guards, the runtime action registry, strict skill validation, skill provenance) are CI-enforced on every PR.
 - Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0.
 - Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
 - Release notes: [`docs/releases/v2.4.0.md`](docs/releases/v2.4.0.md)
@@ -223,7 +223,9 @@ Ori is designed for [physical actuation trust](PRINCIPLES.md). The safety archit
 
 - **Tier D rules fire before any LLM** — deterministic, microsecond-latency cutoffs that cannot be disabled or overridden
 - **AST whitelist validation** — skill condition expressions are parsed into abstract syntax trees and only safe constructs are permitted (comparisons, arithmetic, `history.method()` calls). No string-pattern blacklist that can be bypassed
-- **Sandboxed skill hooks** — community skills cannot import arbitrary modules. The sandbox enforces an explicit allowlist at import time
+- **Runtime-owned action floors** — the minimum tier an action may be dispatched at comes from the runtime's own action registry, not from the skill file. A skill may raise an action's tier, never lower it, and only non-actuating actions may be a Tier C safe default
+- **Tier D is granted by provenance, not claimed** — Tier D is the one tier that removes the operator, so it is accepted only from skills shipped with the runtime. A signature proves who wrote a skill, not that it holds autonomous safety authority
+- **Community hooks do not execute** — the in-process hook sandbox was removed rather than hardened, because it could be escaped and half of it was inert on Python 3.12. There is no in-process fallback; isolated execution is being specified before it is built. First-party skills packaged with the runtime are unaffected
 - **Hardware circuit breakers** — failing sensor buses are auto-isolated using a three-state (CLOSED → OPEN → HALF_OPEN) circuit breaker so one bad sensor doesn't crash the runtime
 - **Approval workflows for hard physical actions** — Tier C actions always require operator approval via WhatsApp/SMS. No config flag to skip it
 - **Alert transport failover** — approval requests use the configured primary channel first, then fail over to the secondary channel if delivery fails
@@ -267,7 +269,7 @@ triggers:
 
 Bundled skills: **pc-system-health** (runs on any laptop), **pc-network-threat-monitor**, **energy-anomaly-detector**, **prosumer-energy-advisor**, **retail-occupancy-optimizer**, **solar-performance-monitor**, **battery-lifecycle-observer**, **hvac-refrigerant-monitor**, and **site-safety-ppe**.
 
-Community skills live at **[ori-platform/ori-skills](https://github.com/ori-platform/ori-skills)**. The runtime enforces strict skill validation and sandboxed hook loading for community-installed skills.
+Community skills live at **[ori-platform/ori-skills](https://github.com/ori-platform/ori-skills)**. The runtime enforces strict skill validation and verified Ed25519 signatures for skills that do not ship with it. Community `hooks.py` execution is disabled pending the isolated-worker contract, so community skills are YAML-only in this release.
 
 ---
 

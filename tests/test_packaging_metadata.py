@@ -2,8 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import re
+import shutil
+import sysconfig
 import tomllib
 from pathlib import Path
+from unittest.mock import patch
+
+import ori.skills.loader as loader_module
+from ori.integration.rule_evaluation import bundled_skill_path
+from ori.skills.loader import SkillLoader, first_party_skill_roots
 
 _DEP_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+")
 
@@ -112,6 +119,54 @@ def test_all_bundled_skills_are_packaged_as_data_files() -> None:
         files = set(data_files[f"share/ori-runtime/skills/{skill_name}"])
         assert f"skills/{skill_name}/skill.yaml" in files
         assert f"skills/{skill_name}/hooks.py" in files
+
+
+def test_installed_layout_skills_are_first_party_and_loadable(tmp_path) -> None:
+    """A packaged skill must load from the installed layout, not just resolve.
+
+    ``bundled_skill_path()`` and the loader's provenance check were computed
+    separately: the loader recognised only the source checkout, so a skill
+    installed from a wheel under ``<data>/share/ori-runtime/skills`` resolved
+    fine and was then rejected as unsigned community content. Proving the file
+    is present is not enough — the loader has to accept it.
+
+    The installed layout is simulated by pointing ``sysconfig.get_path("data")``
+    at a scratch tree, so this runs in a source checkout without needing a
+    built wheel.
+    """
+    data_root = tmp_path / "usr-local"
+    installed_skills = data_root / "share" / "ori-runtime" / "skills"
+    source = Path("skills") / "energy-anomaly-detector"
+    shutil.copytree(source, installed_skills / "energy-anomaly-detector")
+
+    real_get_path = sysconfig.get_path
+
+    def _fake_get_path(name: str, *args, **kwargs) -> str:
+        if name == "data":
+            return str(data_root)
+        return real_get_path(name, *args, **kwargs)
+
+    with (
+        patch.object(sysconfig, "get_path", _fake_get_path),
+        # Hide the source checkout so only the installed layout can satisfy it.
+        patch.object(
+            loader_module,
+            "__file__",
+            str(tmp_path / "site-packages" / "ori" / "skills" / "loader.py"),
+        ),
+    ):
+        roots = first_party_skill_roots()
+        assert installed_skills.resolve() in roots, roots
+
+        resolved = bundled_skill_path("energy-anomaly-detector")
+        assert resolved == installed_skills / "energy-anomaly-detector"
+
+        skill_loader = SkillLoader()
+        assert skill_loader._is_core_bundled_skill(resolved) is True
+
+        skill = skill_loader.load_one(resolved)
+        assert skill.name == "energy-anomaly-detector"
+        assert skill.hooks is not None, "packaged hooks must still load"
 
 
 def test_phone_requirements_input_excludes_gateway_pi_and_pc_deps() -> None:

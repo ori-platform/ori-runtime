@@ -205,7 +205,7 @@ async def test_executor_returning_false_marks_action_not_executed():
     async def _failing_executor(action, ctx):
         return False
 
-    dispatcher.register_executor("failing_action", _failing_executor)
+    dispatcher.register_executor("alert_sms", _failing_executor)
     ctx = SkillContext(
         skill=Skill(name="test", version="0.1.0", author="test", actions={}),
         event=_event(),
@@ -213,7 +213,7 @@ async def test_executor_returning_false_marks_action_not_executed():
     )
 
     result = await dispatcher.dispatch(
-        action="failing_action",
+        action="alert_sms",
         tier="A",
         context=ctx,
         result=ReasoningResult(

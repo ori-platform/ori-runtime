@@ -1,118 +1,53 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-import sys
-import types
-from pathlib import Path
-from typing import Optional
+"""Skill security errors, and the retired in-process hook loader.
 
-_ALLOWED_IMPORTS: frozenset = frozenset(
-    {
-        "math",
-        "statistics",
-        "datetime",
-        "time",
-        "collections",
-        "itertools",
-        "functools",
-        "json",
-        "re",
-        "string",
-        "ori.network.events",
-    }
-)
+This module used to offer ``load_hooks_restricted()``, which executed community
+``hooks.py`` inside the runtime interpreter with a filtered ``builtins`` mapping
+and a ``sys.meta_path`` import finder. It was described as a sandbox. It was not
+one, for two independent reasons:
 
-_BLOCKED_BUILTINS: frozenset = frozenset(
-    {
-        "open",
-        "exec",
-        "eval",
-        "__import__",
-        "compile",
-        "breakpoint",
-    }
-)
+1. **The namespace was never closed.** The restricted mapping was built by
+   copying ``builtins`` and removing a short denylist, so ``object``, ``type``,
+   ``getattr`` and ``__build_class__`` remained. Ordinary attribute traversal
+   from any surviving object reached the full interpreter, and the modules the
+   allowlist permitted kept references to their own globals.
+
+2. **Half of it was inert on modern Python.** The import finder implemented only
+   ``find_module``, a protocol removed in Python 3.12. On Python 3.12 — which is
+   what Ubuntu 24.04 ships, one of Ori's supported deployment targets — the
+   finder was silently ignored by the import system. It failed open, with no
+   error, for the entire time it was installed.
+
+A boundary that can be walked around is worse than no boundary, because the
+configuration around it is written as though the protection exists. The function
+therefore refuses rather than executing anything, and community hooks are
+blocked at the loader as well: refusing in one place would make that place
+load-bearing.
+
+Executing community hooks outside the runtime interpreter is being specified
+before it is implemented. Until that contract lands, there is no supported path
+for running third-party hook code in this process.
+"""
+
+from typing import NoReturn
 
 
 class SkillSecurityError(Exception):
     """Raised when a hooks file violates security constraints."""
 
 
-class RestrictedImportFinder:
-    """sys.meta_path finder that blocks any module not in _ALLOWED_IMPORTS."""
+def load_hooks_restricted(hooks_path: str) -> NoReturn:
+    """Refuse to execute *hooks_path* in the runtime interpreter.
 
-    def find_module(self, fullname: str, path=None):
-        # Support submodule checks: 'ori.network.events' is allowed,
-        # but 'ori' alone or 'ori.network' alone are intermediate packages
-        # that must be permitted to resolve the full dotted name.
-        if fullname in _ALLOWED_IMPORTS:
-            return None  # allow normal import machinery to handle it
-
-        # Allow intermediate packages of explicitly allowed dotted modules
-        for allowed in _ALLOWED_IMPORTS:
-            if allowed.startswith(fullname + "."):
-                return None  # intermediate package, allow
-
-        # Block everything else
-        raise ImportError(
-            f"Import of '{fullname}' is not allowed in skill hooks. "
-            f"Allowed modules: {sorted(_ALLOWED_IMPORTS)}"
-        )
-
-
-def load_hooks_restricted(hooks_path: str) -> Optional[types.ModuleType]:
-    """Load a skill hooks.py file inside a restricted import sandbox.
-
-    Returns None if the file does not exist.
-    Raises SkillSecurityError if the hooks file attempts a disallowed import.
+    Raises:
+        SkillSecurityError: Always. There is no in-process execution path for
+            community hook code.
     """
-    path = Path(hooks_path)
-    if not path.exists():
-        return None
-
-    finder = RestrictedImportFinder()
-    sys.meta_path.insert(0, finder)
-    try:
-        source = path.read_text(encoding="utf-8")
-
-        module = types.ModuleType(path.stem)
-        module.__file__ = str(path)
-
-        # Build a restricted builtins dict.
-        # Most _BLOCKED_BUILTINS are stripped outright.
-        # __import__ is special: removing it entirely also breaks normal
-        # `import` statements (the import statement calls __import__
-        # internally).  Instead we replace it with a wrapper that enforces
-        # the same allowlist as RestrictedImportFinder so that direct
-        # __import__('os') calls are also rejected.
-        import builtins as _builtins_module
-
-        _original_import = _builtins_module.__import__
-
-        def _restricted_import(name, *args, **kwargs):
-            # Allow if the exact name or any prefix of an allowed dotted name
-            allowed = name in _ALLOWED_IMPORTS or any(
-                a.startswith(name + ".") for a in _ALLOWED_IMPORTS
-            )
-            if not allowed:
-                raise ImportError(f"Import of '{name}' is not allowed in skill hooks.")
-            return _original_import(name, *args, **kwargs)
-
-        safe_builtins = vars(_builtins_module).copy()
-        for blocked in _BLOCKED_BUILTINS:
-            safe_builtins.pop(blocked, None)
-        # Restore a restricted __import__ so that `import X` statements work
-        # for allowed modules while direct __import__('bad') calls are blocked.
-        safe_builtins["__import__"] = _restricted_import
-
-        module.__builtins__ = safe_builtins
-
-        try:
-            exec(compile(source, str(path), "exec"), module.__dict__)  # noqa: S102
-        except ImportError as exc:
-            raise SkillSecurityError(str(exc)) from exc
-
-        return module
-    finally:
-        if finder in sys.meta_path:
-            sys.meta_path.remove(finder)
+    raise SkillSecurityError(
+        f"in-process execution of community hooks is disabled: {hooks_path}. "
+        "The restricted-import loader was not a security boundary and has been "
+        "removed rather than repaired. Community hook execution is blocked "
+        "pending the isolated-worker contract."
+    )

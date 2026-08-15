@@ -138,6 +138,46 @@ Tier D  SAFETY-CRITICAL      Always autonomous. Highest priority. Overrides all.
         bypass_llm: true is set automatically for all Tier D triggers.
 ```
 
+**The runtime owns the floor, and owns Tier D outright.** `skill.yaml` is
+untrusted input — it is the thing this framework constrains. Be precise about
+which half of the tier decision the runtime holds:
+
+- **Minimum tier — runtime-owned.** `ori/reasoning/action_registry.py` records,
+  for every action the runtime can execute, its minimum tier, whether it
+  actuates physically, and whether it may serve as a Tier C safe default. A
+  skill declaration may raise an action's tier and never lower it.
+- **Maximum tier — runtime-owned only at Tier D, and only by provenance.** A
+  skill still chooses any tier at or above the floor. Tier D is the exception,
+  because it is the one tier that removes the operator: it fires immediately,
+  before any LLM, and cannot be overridden. A signature proves who wrote a
+  skill, not that the runtime granted it that authority, so **Tier D triggers
+  are accepted only from skills that ship with the runtime** (`Skill.first_party`,
+  set by the loader and never read from YAML). Escalation into Tier D from a
+  skill's `actions.available` list is capped at Tier C for the same reason.
+
+A general capability grant — binding skill identity, trigger, action and
+permitted maximum tier — is the contract that would replace the provenance rule.
+It is specs work, not a runtime patch.
+
+The floor is enforced
+at skill load, at dispatch, and again in `_execute_immediately`; the trigger
+tier clamp is reapplied after every extension boundary; the sensor reading names
+(`value`, `sensor_id`, `sensor_type`, `unit`, `quality`) are reserved at load,
+stripped where hook output merges, and assigned unconditionally in the rule
+engine. Each layer must fail closed on its own — a check that holds only
+because an earlier check held is not a boundary. `register_executor()` refuses
+an action that has no registry entry, so adding an executor without a capability
+raises rather than leaving a physical action ungoverned; add the entry in the
+same change.
+
+**Skill provenance is positive.** A skill is first-party because it ships inside
+the package (`_is_core_bundled_skill`), never because its path failed to match
+some other directory. Everything else is community content and must carry a
+verified signature. Community hook execution is currently blocked: the
+in-process sandbox was removed rather than repaired, there is no fallback, and a
+non-first-party skill carrying `hooks.py` is refused entirely. Isolated
+execution is being specified in `ori-specs` before implementation.
+
 **The complete decision tree:**
 
 ```text
@@ -609,7 +649,7 @@ skills:
 security:
   enforce_production_posture: false # staging/production profiles cannot opt out
   skills:
-    require_signed: false # true => local/non-core skills must use ed25519 signatures
+    require_signed: false # non-packaged skills always require ed25519; this also binds packaged ones
 
 database:
   path: ori_state.db # production should place this under an encrypted mount
@@ -822,6 +862,13 @@ that must be de-energised on failure.
   unless a legacy/test deployment explicitly disables scoped reply enforcement.
 - **No LLM for Tier D.** Safety-critical actions fire from the rule engine.
   `bypass_llm: true` is set automatically for any trigger with `action_tier: D`.
+- **No trusting a skill's own tier declaration.** Every action with an executor
+  must have an `action_registry.py` entry. A skill may raise a tier, never lower
+  one, and a safe default must be non-actuating.
+- **No in-process execution of community hooks.** There is no fallback loader
+  and no config flag that re-enables one. Do not reintroduce a filtered-builtins
+  or import-hook "sandbox" — that approach was removed because it fails open.
+- **No unknown tiers treated as Tier A.** An unrecognised tier is refused.
 - **No microservices at device layer.** Modular monolith only.
 - **No ORM.** Direct sqlite3 with parameterised queries.
 - **No global state.** All state passes explicitly.

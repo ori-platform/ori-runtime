@@ -16,6 +16,22 @@ from ori.integration.rule_evaluation import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _scratch_skills_are_packaged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let skills written under ``tmp_path`` load as first-party.
+
+    These tests supply ``skills_root`` to exercise rule evaluation against
+    purpose-built skills. Provenance is decided positively — only skills
+    shipped inside the package are first-party, everything else needs a
+    verified signature — so the substitution is stated here rather than
+    depending on unsigned skills loading by default.
+    """
+    monkeypatch.setattr(
+        "ori.skills.loader.SkillLoader._is_core_bundled_skill",
+        lambda self, skill_dir: True,
+    )
+
+
 def _request(
     value: float,
     *,

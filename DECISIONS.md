@@ -1057,7 +1057,10 @@ Rules enforced at config load:
 
 - `security.skills.require_signed` must be true. First-party repo-bundled
   skills may still use `signature: bundled`; local/non-core skills require
-  verified Ed25519 signatures.
+  verified Ed25519 signatures. (Superseded in part by 2026-08-15 below: skills
+  that do not ship with the runtime now verify regardless of this setting, and
+  "first-party" means packaged with the runtime rather than merely outside
+  `~/.ori/skills`.)
 - Non-loopback gateway brokers require TLS (`mqtts://` or
   `gateway.tls.enabled: true`).
 - Non-loopback gateway brokers require gateway HMAC envelopes
@@ -1537,3 +1540,251 @@ Non-goals:
   Renaming or removing an explicit flag remains a major-version change.
 - Installed-base size is not a criterion. Whether an interface is breaking is a
   property of the interface, not of how many people have adopted it.
+
+## 2026-08-15 — Action Authority Belongs To The Runtime, Not The Skill
+
+**Status:** Accepted
+
+The Action Tier Framework decides whether an action fires autonomously or waits
+for an operator. Until now, the tier it applied came from the skill's own
+`skill.yaml` — the file the framework exists to constrain, delivered from a Hub
+the runtime does not control. A skill could declare a relay action as Tier A and
+reach immediate execution without the Tier C approval workflow, and it could
+name that same relay action as its Tier C `safe_default_action`, so refusing the
+proposal performed it.
+
+The runtime now owns an action capability registry
+(`ori/reasoning/action_registry.py`) recording, for every action it can
+execute: the minimum tier it may be dispatched at, whether it actuates
+physically, and whether it may serve as a safe default. A skill declaration may
+raise an action's tier and never lower it.
+
+**The registry owns the floor, not the ceiling.** Within that floor a skill
+still chooses its own tier, and that is intended — most of the framework's value
+is skills declaring how much authority their own actions need. Tier D is the
+exception, because it is the only tier that removes the operator rather than
+adding one: it fires immediately, before any LLM, and cannot be overridden.
+Provenance, not signature, decides it. A correctly signed community skill could
+otherwise declare an always-true Tier D trigger on a relay action and obtain
+autonomous physical actuation with every other check passing — a signature
+proves who supplied a skill, not that the runtime granted it that authority.
+
+Tier D triggers are therefore accepted only from skills that ship with the
+runtime, enforced at load and again at dispatch through `Skill.first_party`,
+which the loader sets from the packaged skill roots and never reads from YAML.
+Escalation into Tier D from a skill's `actions.available` list is capped at
+Tier C for the same reason. Packaged first-party Tier D skills are unaffected.
+
+This is containment, not the final model. The general answer is a runtime-owned
+capability grant binding skill identity, trigger, action and permitted maximum
+tier, so a community skill can hold Tier D when the runtime has explicitly
+granted it. That is contract work and belongs in `ori-specs`; the provenance
+rule holds the boundary until it exists.
+
+Absence of the attribute is absence of the grant. An earlier revision of this
+decision defaulted a missing `first_party` to trusted, reasoning that objects
+without it come from test doubles and that capping a genuine Tier D dispatch
+would mean declining to trip a safety relay. That reasoning was wrong twice
+over: it let test convenience choose the production default, and it made every
+skill-like object that merely lacked the field carry autonomous safety
+authority. The concern it was protecting against is real but belongs elsewhere —
+a runtime-owned emergency path, if one is ever needed, should be a distinct API
+rather than a hole in this check.
+
+All three checks therefore require an explicit `first_party is True`: the
+loader refuses Tier D triggers from non-packaged skills, `dispatch()` lowers an
+unproven Tier D to Tier C, and `_execute_immediately()` refuses it outright. The
+last refuses rather than lowering because by that point there is no approval
+workflow left to fall into. No one of them is authoritative on its own; each
+must hold with the others removed.
+
+The same applies in the other direction, which matters more. A skill's action
+list could previously escalate an action to Tier D, and Tier D does not mean
+"more authority" — it means the approval workflow is skipped and the action
+fires immediately. A skill with a Tier A trigger that declared `trip_relay` as
+Tier D had the relay energised with no operator involvement, arriving at the
+same outcome the understated-tier case was caught attempting. Escalation from a
+skill's action list is now capped at Tier C. Tier D comes from the trigger,
+evaluated by the rule engine, and nowhere else.
+
+The registry governs actions that have a registered executor. An action name
+with no executor cannot actuate anything, so it is left unconstrained;
+registering an executor is a first-party code change, which means an action
+becomes capable of actuation and becomes governed in the same commit. Keeping
+the two in step is a review obligation.
+
+Enforcement is duplicated on purpose. The floor is checked when the skill loads,
+again when dispatch begins, and again in `_execute_immediately` — the one method
+every path converges on. The same applies to the trigger tier clamp, which is
+now reapplied after each extension boundary rather than once before them, and to
+the sensor-reading names, which are reserved at skill load, stripped where hook
+output is merged, and assigned unconditionally in the rule engine. A boundary
+that holds only because an earlier boundary also held is not a boundary; each
+must fail closed on its own.
+
+Rationale: upstream review and scanning cannot decide this. The Skills Hub can
+detect known-malicious content, but a tier declaration is a semantic claim about
+physical authority — there is no signature or scan result that makes
+`tier: A` on a contactor safe. The runtime is the last layer before a relay
+moves, so it must hold the authority itself.
+
+Non-goals:
+
+- This does not make skill-supplied tiers meaningless. A skill may still raise
+  an action above its floor, and most actions have a floor of Tier A.
+- This does not govern prompt content. A signed skill can still steer reasoning
+  text; once authority is enforced independently, that is bounded reasoning
+  manipulation rather than physical authority.
+
+## 2026-08-15 — The In-Process Skill Sandbox Is Removed, Not Repaired
+
+**Status:** Accepted
+
+`ori/skills/sandbox.py` executed community `hooks.py` inside the runtime
+interpreter behind a filtered `builtins` mapping and a `sys.meta_path` import
+finder, and was described throughout the codebase as a sandbox. It was not one:
+
+1. The namespace was built by copying `builtins` and removing a short denylist,
+   leaving `object`, `type`, `getattr` and `__build_class__` in place. Ordinary
+   attribute traversal reached the full interpreter.
+2. The import finder implemented only `find_module`, a protocol removed in
+   Python 3.12. On Ubuntu 24.04 — a supported deployment target — the finder was
+   silently ignored by the import system. It failed open, with no error, for as
+   long as it was installed.
+
+It is removed rather than hardened. A boundary that can be walked around is
+worse than no boundary, because the configuration around it is written as
+though the protection exists: `os_sandbox.enabled: false` and an unsupported
+Landlock host both degraded to this loader, so the platforms with the weakest
+isolation were the ones that ran untrusted code in-process.
+
+Community hook execution is therefore blocked in this release, uniformly.
+`load_community_hooks()` refuses unconditionally rather than returning the
+OS-isolated runner on hosts that happen to support seccomp/Landlock: that
+runner predates the isolation contract it is meant to satisfy — scrubbed
+environment, narrow filesystem visibility, resource and process limits, bounded
+IPC, artifact manifests binding the executed bytes — and offering it only where
+kernel hardening exists would enable community hook execution on precisely the
+modern Linux hosts Ori targets, under a design not yet reviewed against that
+contract. A posture that holds everywhere except the platforms that matter most
+is not the posture the release notes describe.
+
+A non-first-party skill carrying `hooks.py` is refused entirely rather than
+loaded with its hooks silently absent — its triggers were written against
+derived values the runtime will not produce, and quietly activating a different
+skill from the one the author wrote is not a safe degradation.
+
+Provenance is now established positively. A skill is first-party because it
+ships inside the package, not because its path failed to match
+`~/.ori/skills`. The previous predicate classified the operator-managed skills
+directory beside `ori.yaml`, temporary directories and removable media as
+first-party.
+
+Executing community hooks outside the runtime interpreter — isolated worker,
+artifact manifests binding executable bytes, scrubbed environment, resource and
+IPC limits, signer identity and anti-rollback — is being specified in
+`ori-specs` before it is implemented. Hub activation stays blocked until that
+contract lands.
+
+Two admission properties are enforced now because they precede trust: the
+manifest must be a regular file and is read under a 1 MiB cap. Both decisions
+come from a single descriptor opened with `O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC`
+and inspected with `fstat()`. An earlier version did `lstat()`, validated, then
+opened the path separately — check-then-use, where the path can be swapped
+between the two calls, so the file inspected need not be the file read. Flags
+and `fstat` carry the guarantee instead of a prior check.
+
+**Structural limits are enforced during parsing, not deferred.** A byte bound
+does not bound the structure a document expands into: aliases let one node be
+referenced repeatedly so the constructed graph grows far beyond the source
+size, and deep nesting exhausts the composer's recursion.
+
+An earlier draft of this decision deferred these limits on the grounds that
+community activation was blocked. That was wrong on the facts. Only community
+skills carrying `hooks.py` are refused; **signed YAML-only community skills are
+a supported case**, and an unsigned manifest still reaches the composer before
+its signature is rejected, because the manifest must be constructed to be
+canonicalised and checked. Parsing therefore always runs on content the runtime
+has not yet decided to trust, and the deferral left startup exposed to a
+pathological or hostile manifest.
+
+`_UniqueStringKeySafeLoader` now rejects aliases outright and enforces depth,
+node-count and collection-size budgets at compose time. Aliases are refused
+rather than budgeted: defining expansion semantics that stay safe under
+adversarial input is harder than doing without them, no bundled skill uses an
+anchor, and a manifest is a declaration rather than a program. Merge keys
+(`<<:`) are aliases and are refused with them.
+
+**Workload budgets are runtime safety boundaries, not an authoring contract.**
+An earlier draft of this decision called the remaining trigger, sensor, action
+and prompt limits an authoring concern. That was wrong: registration creates one
+EventBus handler per trigger × required sensor type, and each schedules a
+reasoning task on the event loop that Tier D safety processing shares, so an
+accepted manifest determines how much work the runtime commits to. A signed
+skill declaring 60 triggers and 30 sensors passes every syntax and per-factor
+limit and asks for 1,800 subscriptions.
+
+Per-skill caps therefore bound triggers, sensors, the subscription product,
+declared actions, prompts and config entries; a cumulative budget bounds
+subscriptions and skill count across a whole load, because per-file caps are a
+courtesy when sixty legal files add up to an illegal total. Both are enforced at
+load and again in `register()`, which is public and does not require `load_all()`.
+
+Four properties of these budgets are easy to get wrong and were, in the first
+implementation:
+
+- **The subscription budget counts active handlers, not handlers ever created.**
+  A counter that only rose made every reload permanent consumption, so a
+  long-running runtime exhausted it through ordinary operation and then failed
+  to register replacements *after* removing the previous graph. Unregistration
+  returns capacity, and the runtime routes unsubscription through the loader
+  rather than the bus so the accounting cannot drift.
+- **Reload validates the whole plan before mutating anything.** Registration is
+  what enforces the budget, so discovering mid-way that the new set does not fit
+  would leave the old handlers gone and only some replacements installed —
+  possibly without Tier D coverage.
+- **The skill-count cap bounds candidates, not successes.** Counting successes
+  made it meaningless against the case it exists for: rejected manifests were
+  free, so unlimited invalid ones could each be driven through file admission,
+  parsing and validation. Discovery also streams with `os.scandir` under an
+  entry ceiling rather than materialising an untrusted directory first.
+- **Cost accounting and registration share one definition.** They computed
+  distinct sensor types separately and disagreed: cost counted unique types
+  while registration created a handler per list entry, so a skill declaring the
+  same sensor twenty times was charged once and registered twenty handlers.
+
+`actions.defaults` is bounded by list length and total references, not merely by
+key count. The elevator iterates each trigger's list and dispatches every entry,
+so a thousand repeated `alert_sms` entries is a thousand messages and a thousand
+sequential dispatches — inside every other limit. Repeating an action name
+within one list is refused outright.
+
+Skill identity is bounded for the same reason it is authority-adjacent: names
+appear in the action records and operator messages used to attribute a physical
+action. Duplicates within a load are refused, community skills may not adopt
+packaged names, and identity fields are length-bounded.
+
+"Free of control characters" means more than ASCII C0. Unicode format characters
+(category `Cf`) include the bidirectional overrides — U+202E and friends — which
+reverse how following text *renders* without changing what is stored, so a name
+carrying one appears in a log or terminal as something other than what was
+recorded. Format characters, line and paragraph separators and surrogates are
+refused alongside C0/DEL. Identity fields must also be strings: a numeric
+`version: 1.0` previously skipped every check and was then coerced with `str()`
+downstream, so the validation silently did not apply to a value that still
+reached the logs.
+
+The impersonation guard keys on packaged *directory* names, so an invariant test
+asserts every packaged directory name equals its manifest `name` — otherwise a
+divergent packaged name would be unprotected.
+
+What remains for the specs arc is the declared *authoring* contract — the
+documented limit values skill authors design against, and their versioning —
+rather than any runtime exposure.
+
+Non-goals:
+
+- This does not remove `ori/skills/os_sandbox.py`. The OS-isolated runner
+  remains for the specs arc to build on.
+- This does not weaken first-party hooks. Packaged skills still import
+  normally; they are reviewed and released with the runtime.

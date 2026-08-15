@@ -28,6 +28,12 @@ from typing import Any
 from ori.actions.logger import LoggerAction
 from ori.network.events import ActionResult, ActionTier, ReasoningResult
 from ori.policy.device_policy import DevicePolicy
+from ori.reasoning.action_registry import (
+    capability,
+    enforce_minimum_tier,
+    is_safe_default_eligible,
+    is_valid_tier,
+)
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
 from ori.security.evidence import tier_requires_attestation
@@ -187,6 +193,24 @@ def _tier_rank(tier: str) -> int:
     return _TIER_RANK.get(str(tier).upper(), 0)
 
 
+class UngovernedActionError(RuntimeError):
+    """Raised when an executor is registered for an action with no capability."""
+
+
+def _holds_tier_d_authority(context: Any) -> bool:
+    """Whether *context* carries proven first-party provenance.
+
+    Tier D fires immediately with no approval and cannot be overridden, so it
+    is granted rather than assumed. Only an explicit ``first_party is True`` on
+    the skill counts: a missing attribute means the object did not come from
+    ``SkillLoader`` and therefore never had its provenance established.
+    """
+    skill = getattr(context, "skill", None)
+    if skill is None:
+        return False
+    return getattr(skill, "first_party", False) is True
+
+
 class ActionDispatcher:
     """Routes reasoning results to execution paths based on action tier.
 
@@ -260,10 +284,30 @@ class ActionDispatcher:
 
             async def execute(action: str, context: SkillContext) -> None
 
+        Registration is refused for an action with no entry in
+        :data:`~ori.reasoning.action_registry.ACTION_REGISTRY`. Registering an
+        executor is what makes an action capable of doing something, so it is
+        also the moment the action must become governed. Leaving the two in
+        step as a review convention would put a human where a check belongs:
+        an ungoverned action has no tier floor and is treated as eligible to be
+        a Tier C safe default, so a forgotten registry entry silently produces
+        exactly the authority gap this registry exists to close.
+
         Args:
             action_name: The action identifier (e.g. ``'alert_whatsapp'``).
             executor: Async callable invoked when the action fires.
+
+        Raises:
+            UngovernedActionError: If *action_name* has no registry entry.
         """
+        if capability(action_name) is None:
+            raise UngovernedActionError(
+                f"cannot register an executor for {action_name!r}: it has no "
+                "entry in ori/reasoning/action_registry.py. Add one declaring "
+                "its minimum tier, whether it actuates physically, and whether "
+                "it may be a safe default — an executable action must be "
+                "governed before it can run."
+            )
         self._executors[action_name] = executor
 
     def update_policy(self, policy: DevicePolicy | None) -> None:
@@ -347,6 +391,26 @@ class ActionDispatcher:
         self._inflight_tier_d_tasks.add(task)
         task.add_done_callback(self._inflight_tier_d_tasks.discard)
 
+    def _vet_safe_default(self, safe_default_action: str) -> str:
+        """Return a safe default that is actually safe.
+
+        The safe default executes with no approval when a Tier C proposal is
+        refused or times out. An actuating action in that slot inverts the
+        approval workflow: saying NO would perform the physical action. Any
+        ineligible name is replaced with the informational default rather than
+        refused outright, so a Tier C rejection still records an outcome.
+        """
+        if is_safe_default_eligible(safe_default_action):
+            return safe_default_action
+        logger.error(
+            "ActionDispatcher: %r is not eligible as a safe default — it can "
+            "actuate, and a safe default runs without approval. Falling back "
+            "to %r.",
+            safe_default_action,
+            _DEFAULT_SAFE_DEFAULT_ACTION,
+        )
+        return _DEFAULT_SAFE_DEFAULT_ACTION
+
     async def dispatch(
         self,
         action: str,
@@ -388,6 +452,57 @@ class ActionDispatcher:
         Returns:
             :class:`~ori.network.events.ActionResult` describing what happened.
         """
+        # Normalise before any tier comparison. Case is not authority: a
+        # lowercase 'd' must route to the safety-critical path, not fall
+        # through the tier branches to be treated as something weaker.
+        tier = str(tier).upper()
+
+        # Refused before anything else looks at the tier. Both the skill
+        # declaration guardrail and the registry floor rank an unrecognised
+        # tier as 0, so either one would happily "raise" it to a real tier and
+        # carry on — turning an unparseable value into an executable one. An
+        # unknown tier is not a weak tier; it is an absence of authority.
+        if not is_valid_tier(tier):
+            logger.error(
+                "ActionDispatcher: refusing action %r — unknown action tier %r. "
+                "Valid tiers are A, B, C, D.",
+                action,
+                tier,
+            )
+            refusal = ActionResult(
+                action_name=action,
+                tier=str(tier),
+                executed=False,
+                approved=None,
+                action_taken="refused_unknown_tier",
+                timestamp=now_ms(),
+                operator_response=None,
+            )
+            await self._log_action(refusal, context)
+            return refusal
+
+        # Tier D from a skill the runtime did not ship. The loader refuses these
+        # at load, so reaching here means a Skill object was built some other
+        # way; the tier is lowered into the approval workflow rather than
+        # executed autonomously.
+        #
+        # Absence of the attribute is treated as absence of the grant. An
+        # earlier version defaulted this to True so test doubles kept Tier D,
+        # which made every skill-like object without the field trusted — test
+        # convenience is not a reason to pick the permissive production default.
+        # `Skill.first_party` already defaults to False and the loader sets it
+        # explicitly for packaged skills, so anything that cannot prove
+        # provenance simply does not have it.
+        if tier == ActionTier.SAFETY_CRITICAL and not _holds_tier_d_authority(context):
+            logger.error(
+                "ActionDispatcher: lowering Tier D to Tier C for action %r — "
+                "skill %r has no first-party provenance and cannot hold "
+                "autonomous safety-critical authority",
+                action,
+                getattr(getattr(context, "skill", None), "name", "unknown"),
+            )
+            tier = ActionTier.HARD_PHYSICAL
+
         # Double-check against skill action capability tiers.
         # This is an escalation-only guardrail: it may raise a tier, never lower it.
         if context and hasattr(context, "skill") and hasattr(context.skill, "actions"):
@@ -399,6 +514,18 @@ class ActionDispatcher:
                             break
                         incoming_rank = _tier_rank(tier)
                         defined_rank = _tier_rank(defined_tier)
+                        if defined_tier == ActionTier.SAFETY_CRITICAL:
+                            # Escalation into Tier D is not a safety measure —
+                            # Tier D removes the approval workflow and fires
+                            # immediately. Allowing the skill's action list to
+                            # reach it turned "declare the relay as Tier D" into
+                            # a way past the same approval the Tier A path was
+                            # caught trying to skip. Tier D comes from the
+                            # trigger, evaluated by the rule engine, and nowhere
+                            # else. Capped at Tier C: still an escalation, still
+                            # more operator authority, but inside the workflow.
+                            defined_tier = ActionTier.HARD_PHYSICAL
+                            defined_rank = _tier_rank(defined_tier)
                         if defined_rank > incoming_rank:
                             logger.debug(
                                 "ActionDispatcher: escalating action %r from Tier %s to Tier %s "
@@ -417,6 +544,28 @@ class ActionDispatcher:
                                 defined_tier,
                             )
                         break
+
+        # The skill's own declaration has now been consulted. It is untrusted:
+        # it arrives in the file this dispatcher exists to constrain. The
+        # runtime-owned registry is applied afterwards so it always wins, and
+        # it can only raise a tier — a skill declaring a relay action as Tier A
+        # reaches the approval workflow anyway.
+        registry_tier = enforce_minimum_tier(action, tier)
+        if registry_tier != tier:
+            logger.warning(
+                "ActionDispatcher: raising action %r from Tier %s to Tier %s — "
+                "the runtime action registry sets a minimum tier for this action, "
+                "and the skill declaration does not override it",
+                action,
+                tier,
+                registry_tier,
+            )
+            tier = registry_tier
+
+        # A safe default runs without approval by definition — it is what
+        # happens when the operator says NO or says nothing. Anything that can
+        # actuate is therefore disqualified from the role.
+        safe_default_action = self._vet_safe_default(safe_default_action)
 
         # Log autonomous Tier D dispatch to override_log before execution —
         # a safety-critical action firing without operator approval is itself
@@ -640,6 +789,62 @@ class ActionDispatcher:
             :class:`~ori.network.events.ActionResult` with ``executed=True``
             on success and ``executed=False`` if the executor raised.
         """
+        # Tier D provenance, enforced independently of dispatch. This method is
+        # the one that actually invokes executors, and it is reachable directly,
+        # so it must not rely on dispatch having checked. Refusal rather than
+        # downgrade: by this point there is no approval workflow left to fall
+        # into, and executing a safety-critical actuation on behalf of a skill
+        # that cannot prove the grant is the outcome being prevented. A
+        # runtime-owned emergency path, if one is ever needed, belongs in a
+        # distinct API rather than as a hole in this one.
+        if tier == ActionTier.SAFETY_CRITICAL and not _holds_tier_d_authority(context):
+            logger.critical(
+                "ActionDispatcher: refusing Tier D execution of %r — no "
+                "first-party provenance on skill %r. No physical safety action "
+                "was taken.",
+                action,
+                getattr(getattr(context, "skill", None), "name", "unknown"),
+            )
+            refusal = ActionResult(
+                action_name=action,
+                tier=tier,
+                executed=False,
+                approved=None,
+                action_taken="refused_tier_d_without_provenance",
+                timestamp=now_ms(),
+                operator_response=None,
+            )
+            await self._log_action(refusal, context)
+            return refusal
+
+        # Final gate before an executor runs. Dispatch already applied the
+        # registry, but this is the only method that actually invokes physical
+        # executors and every path converges here — approval, safe default,
+        # Tier D, and direct callers. It refuses rather than raising the tier:
+        # by this point the approval workflow has been passed or skipped, so
+        # escalating would execute the action with the authority still missing.
+        floor = enforce_minimum_tier(action, tier)
+        if floor != tier:
+            logger.error(
+                "ActionDispatcher: refusing to execute %r at Tier %s — the "
+                "runtime action registry requires at least Tier %s and the "
+                "approval path for that tier was not taken",
+                action,
+                tier,
+                floor,
+            )
+            refusal = ActionResult(
+                action_name=action,
+                tier=tier,
+                executed=False,
+                approved=None,
+                action_taken="refused_below_minimum_tier",
+                timestamp=now_ms(),
+                operator_response=None,
+            )
+            await self._log_action(refusal, context)
+            return refusal
+
         executed = True
         try:
             executor = self._executors.get(action)
@@ -736,6 +941,11 @@ class ActionDispatcher:
             :class:`~ori.network.events.ActionResult` with ``approved`` set to
             ``True`` / ``False`` based on the operator response.
         """
+        # Vetted again here rather than trusted from the caller. This is the
+        # method that actually runs the fallback without approval, so it
+        # enforces the rule itself instead of assuming dispatch already did.
+        safe_default_action = self._vet_safe_default(safe_default_action)
+
         approval_started_at = now_ms()
         proposal_id = _generate_proposal_id()
         if self._log_approval_workflow:
@@ -1662,7 +1872,7 @@ class ActionDispatcher:
                 source_device_id,
             )
             return False
-        return status == "confirmed"
+        return bool(status == "confirmed")
 
     def _resolve_state_store(self, context: SkillContext) -> Any:
         if hasattr(context, "state_store") and context.state_store is not None:

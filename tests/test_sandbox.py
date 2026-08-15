@@ -1,172 +1,234 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-import os
-import sys
+"""The in-process hook loader is retired, and provenance is positive.
+
+These tests previously asserted that the restricted-import loader blocked
+`import os` and cleaned up its `sys.meta_path` finder. Both properties were
+real; neither made the loader a security boundary, and on Python 3.12 the
+finder was not consulted at all. The tests now assert the replacement
+properties: nothing executes community hook code in this interpreter, and a
+skill is trusted only because it ships with the runtime.
+"""
+
 import textwrap
+from pathlib import Path
 
 import pytest
 
 from ori.skills.loader import SkillLoader
-from ori.skills.sandbox import (
-    RestrictedImportFinder,
-    SkillSecurityError,
-    load_hooks_restricted,
-)
+from ori.skills.os_sandbox import load_community_hooks
+from ori.skills.sandbox import SkillSecurityError, load_hooks_restricted
+
+_MINIMAL_SKILL = """\
+name: probe-skill
+version: 1.0.0
+author: tester
+signature: bundled
+sensors_required:
+  - type: temperature
+triggers:
+  - name: warm
+    condition: "value > 30"
+    action_tier: A
+actions:
+  available:
+    - name: log_to_dashboard
+      tier: A
+  defaults:
+    warm: [log_to_dashboard]
+"""
 
 
-def _write_hooks(tmp_path, source: str) -> str:
+def _write_skill(skill_dir: Path, *, hooks: str | None = None) -> Path:
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "skill.yaml").write_text(_MINIMAL_SKILL, encoding="utf-8")
+    if hooks is not None:
+        (skill_dir / "hooks.py").write_text(textwrap.dedent(hooks), encoding="utf-8")
+    return skill_dir
+
+
+def test_in_process_loader_refuses_every_path(tmp_path):
+    """It refuses regardless of content — there is no allowed hook source."""
     hooks_file = tmp_path / "hooks.py"
-    hooks_file.write_text(textwrap.dedent(source), encoding="utf-8")
-    return str(hooks_file)
+    hooks_file.write_text("import math\nresult = math.sqrt(16)\n", encoding="utf-8")
+    with pytest.raises(SkillSecurityError, match="in-process execution"):
+        load_hooks_restricted(str(hooks_file))
 
 
-def test_allowed_import_math_loads(tmp_path):
-    path = _write_hooks(
-        tmp_path,
-        """\
-        import math
-        result = math.sqrt(16)
-    """,
-    )
-    module = load_hooks_restricted(path)
-    assert module is not None
-    assert module.result == 4.0
+def test_in_process_loader_refuses_before_reading_the_file(tmp_path):
+    """A path that does not exist must still refuse, not return None.
 
-
-def test_blocked_import_os_raises(tmp_path):
-    path = _write_hooks(
-        tmp_path,
-        """\
-        import os
-    """,
-    )
-    with pytest.raises(SkillSecurityError):
-        load_hooks_restricted(path)
-
-
-def test_blocked_import_subprocess_raises(tmp_path):
-    path = _write_hooks(
-        tmp_path,
-        """\
-        import subprocess
-    """,
-    )
-    with pytest.raises(SkillSecurityError):
-        load_hooks_restricted(path)
-
-
-def test_blocked_builtin_open_raises(tmp_path):
-    path = _write_hooks(
-        tmp_path,
-        """\
-        data = open("/etc/passwd", "r")
-    """,
-    )
-    with pytest.raises((NameError, SkillSecurityError)):
-        load_hooks_restricted(path)
-
-
-def test_nonexistent_path_returns_none():
-    result = load_hooks_restricted("/nonexistent/path/hooks.py")
-    assert result is None
-
-
-def test_meta_path_not_polluted_after_success(tmp_path):
-    """RestrictedImportFinder must be removed even on successful load."""
-    before = list(sys.meta_path)
-    path = _write_hooks(tmp_path, "import math\n")
-    load_hooks_restricted(path)
-    after = list(sys.meta_path)
-    assert not any(isinstance(f, RestrictedImportFinder) for f in after)
-    assert len(before) == len(after)
-
-
-def test_meta_path_not_polluted_after_failure(tmp_path):
-    """RestrictedImportFinder must be removed even when loading fails."""
-    path = _write_hooks(tmp_path, "import os\n")
-    with pytest.raises(SkillSecurityError):
-        load_hooks_restricted(path)
-    assert not any(isinstance(f, RestrictedImportFinder) for f in sys.meta_path)
-
-
-def test_meta_path_not_polluted_after_runtime_error(tmp_path):
-    """RestrictedImportFinder must be removed when exec raises a non-import error.
-
-    This covers the case where the module passes the import check but then
-    crashes mid-execution (e.g. a ValueError, ZeroDivisionError, etc.).
-    The finder must still be cleaned up even though the failure is not an
-    ImportError caught by the SkillSecurityError path.
+    The old loader returned None for a missing file. Anything that treats
+    "no hooks" and "hooks refused" as the same outcome would let a caller
+    silently continue past the refusal.
     """
-    path = _write_hooks(
-        tmp_path,
-        """\
-        import math          # allowed — clears the import gate
-        x = 1 / 0            # raises ZeroDivisionError during exec
-    """,
-    )
-    with pytest.raises(ZeroDivisionError):
-        load_hooks_restricted(path)
-    assert not any(isinstance(f, RestrictedImportFinder) for f in sys.meta_path)
+    with pytest.raises(SkillSecurityError):
+        load_hooks_restricted(str(tmp_path / "absent.py"))
 
 
-def test_meta_path_not_polluted_after_nonexistent():
-    """No finder should be installed when the file does not exist."""
-    before_count = len(sys.meta_path)
-    load_hooks_restricted("/no/such/file.py")
-    assert len(sys.meta_path) == before_count
-    assert not any(isinstance(f, RestrictedImportFinder) for f in sys.meta_path)
+def test_community_hooks_never_fall_back_in_process(tmp_path):
+    """With the OS sandbox disabled there is no fallback, only refusal."""
+    hooks_file = _write_skill(tmp_path / "community", hooks="x = 1\n") / "hooks.py"
+    with pytest.raises(SkillSecurityError, match="no in-process fallback"):
+        load_community_hooks(
+            hooks_path=hooks_file,
+            state_store=None,
+            skill_name="community",
+            os_sandbox_config={"enabled": False},
+        )
 
 
-def test_is_bundled_skill_symlink_resolves_correctly(tmp_path):
-    """_is_bundled_skill returns False when the home path itself is a symlink.
+def test_community_hooks_refuse_on_a_fully_supported_host(tmp_path, monkeypatch):
+    """Even where kernel isolation is available, no runner is produced.
 
-    On macOS (and some Linux setups) os.path.expanduser("~") returns a path
-    like /Users/alice that is itself a symlink to /private/var/...  Without
-    .resolve() on both sides, relative_to() sees mismatched prefixes and
-    wrongly classifies a legitimate community skill as bundled.
-
-    Setup
-    -----
-    real_home/           ← the actual directory on disk
-      .ori/skills/
-        my-community-skill/   ← real skill directory
-
-    symlinked_home  →  real_home   ← simulates the macOS /Users/alice symlink
-
-    expanduser("~") is patched to return symlinked_home (the unresolved path).
-    skill_dir is the REAL path (real_home / .ori / skills / my-community-skill).
-
-    Without resolve(): relative_to() compares real_home prefix against
-      symlinked_home prefix → ValueError → wrongly returns True (bundled).
-    With resolve():    both sides canonicalise to real_home → succeeds →
-      correctly returns False (community skill).
+    Exhaustive configuration coverage lives in ``test_os_sandbox.py``; this
+    pins the case that would otherwise be the quiet exception — a supported
+    Linux host, isolation enabled, which is the normal production shape.
     """
-    # The real filesystem home directory (no symlinks involved here)
-    real_home = tmp_path / "real_home"
-    skill_dir = real_home / ".ori" / "skills" / "my-community-skill"
-    skill_dir.mkdir(parents=True)
+    import ori.skills.os_sandbox as os_sandbox
 
-    # A symlink that points to real_home — simulates the macOS /Users/alice → /private/...
-    symlinked_home = tmp_path / "symlinked_home"
-    symlinked_home.symlink_to(real_home)
+    class _Supported:
+        supported = True
+        reason = "ok"
 
+    monkeypatch.setattr(os_sandbox, "probe_os_sandbox_support", lambda: _Supported())
+    hooks_file = _write_skill(tmp_path / "community", hooks="x = 1\n") / "hooks.py"
+    with pytest.raises(SkillSecurityError, match="disabled in this release"):
+        load_community_hooks(
+            hooks_path=hooks_file,
+            state_store=None,
+            skill_name="community",
+            os_sandbox_config={"enabled": True, "require_for_community": False},
+        )
+
+
+def _loader_without_signature_check() -> SkillLoader:
+    """A loader with signature verification stubbed out.
+
+    The hook boundary is tested on its own so that it is proven to hold by
+    itself. In a real load the signature layer refuses first — which
+    ``test_community_skill_is_refused_by_signature_layer_alone`` covers — but a
+    boundary that only works because something upstream also works is not a
+    boundary.
+    """
     loader = SkillLoader()
+    loader._verify_community_signature = lambda raw, skill_dir: None  # type: ignore[method-assign]
+    return loader
 
-    # Patch expanduser to return the SYMLINKED path (unresolved), as macOS does
-    original_expanduser = os.path.expanduser
 
-    def patched_expanduser(path):
-        return str(symlinked_home) if path == "~" else original_expanduser(path)
+def test_community_skill_is_refused_by_signature_layer_alone(tmp_path):
+    """Signature verification refuses non-first-party skills on its own."""
+    skill_dir = _write_skill(tmp_path / "community")
+    with pytest.raises(SkillSecurityError, match="bundled signature sentinel"):
+        SkillLoader().load_one(skill_dir)
 
-    os.path.expanduser = patched_expanduser
-    try:
-        # skill_dir uses the real (resolved) path — this is the mismatch case
-        result = loader._is_bundled_skill(skill_dir)
-    finally:
-        os.path.expanduser = original_expanduser
 
-    assert result is False, (
-        "A skill under ~/.ori/skills/ must be identified as a community skill "
-        "(False) even when the home path returned by expanduser is a symlink."
+def test_non_core_skill_with_hooks_is_refused_entirely(tmp_path):
+    """A community skill carrying hooks.py does not load at all.
+
+    Loading it without its hooks would activate a skill whose conditions
+    reference derived values that will never be produced.
+    """
+    skill_dir = _write_skill(tmp_path / "community", hooks="MARKER = 1\n")
+    with pytest.raises(SkillSecurityError, match="not first-party"):
+        _loader_without_signature_check().load_one(skill_dir)
+
+
+def test_non_core_skill_hooks_are_not_executed_on_refusal(tmp_path):
+    """The refusal happens before the file is executed, not after."""
+    sentinel = tmp_path / "executed.marker"
+    skill_dir = _write_skill(
+        tmp_path / "community",
+        hooks=f"""\
+        from pathlib import Path
+        Path({str(sentinel)!r}).write_text("executed")
+        """,
     )
+    with pytest.raises(SkillSecurityError):
+        _loader_without_signature_check().load_one(skill_dir)
+    assert not sentinel.exists(), "community hooks.py was executed despite refusal"
+
+
+def test_community_skill_without_hooks_still_reaches_the_hook_boundary(tmp_path):
+    """A YAML-only community skill is not blocked by the hook rule itself."""
+    skill_dir = _write_skill(tmp_path / "community")
+    skill = _loader_without_signature_check().load_one(skill_dir)
+    assert skill.hooks is None
+
+
+def test_provenance_is_not_decided_by_path_negation(tmp_path):
+    """A skill outside ~/.ori/skills is community, not bundled.
+
+    The previous predicate treated everything not under ~/.ori/skills as
+    first-party — including the operator-managed directory beside ori.yaml,
+    temporary paths and removable media.
+    """
+    loader = SkillLoader()
+    assert loader._is_core_bundled_skill(tmp_path / "anywhere") is False
+    assert loader._is_core_bundled_skill(Path("/opt/ori/data/skills/x")) is False
+
+
+def test_packaged_skills_are_recognised_as_first_party():
+    """The positive case still holds: shipped skills are first-party."""
+    loader = SkillLoader()
+    packaged = Path(__file__).resolve().parents[1] / "skills" / "pc-system-health"
+    assert loader._is_core_bundled_skill(packaged) is True
+
+
+def test_validate_one_does_not_execute_hooks(tmp_path):
+    """Inspecting a skill must never run it — even a first-party one.
+
+    Provenance is injected rather than obtained by writing into the packaged
+    ``skills/`` tree: a test that creates files inside the source checkout
+    leaves them behind if it is interrupted or run in parallel.
+    """
+    sentinel = tmp_path / "executed.marker"
+    skill_dir = _write_skill(
+        tmp_path / "packaged-probe",
+        hooks=f"""\
+        from pathlib import Path
+        Path({str(sentinel)!r}).write_text("executed")
+        """,
+    )
+    loader = SkillLoader()
+    loader._is_core_bundled_skill = lambda candidate: True  # type: ignore[method-assign]
+
+    skill = loader.validate_one(skill_dir)
+
+    assert skill.name == "probe-skill"
+    assert skill.hooks is None
+    assert not sentinel.exists(), "validate_one executed hooks.py"
+
+
+def test_validate_matches_activation_for_community_hooks(tmp_path):
+    """Validation must reach the same verdict the runtime will.
+
+    Validation previously skipped the hook policy entirely, so it approved
+    skills the runtime then refused to activate — the disagreement showing up
+    at precisely the moment someone was deciding whether a skill was safe.
+    """
+    skill_dir = _write_skill(tmp_path / "community", hooks="MARKER = 1\n")
+    loader = _loader_without_signature_check()
+
+    with pytest.raises(SkillSecurityError, match="not first-party"):
+        loader.validate_one(skill_dir)
+    with pytest.raises(SkillSecurityError, match="not first-party"):
+        loader.load_one(skill_dir)
+
+
+def test_inspect_one_reports_metadata_without_the_activation_policy(tmp_path):
+    """Listing still describes a skill the runtime will not activate."""
+    sentinel = tmp_path / "executed.marker"
+    skill_dir = _write_skill(
+        tmp_path / "community",
+        hooks=f"""\
+        from pathlib import Path
+        Path({str(sentinel)!r}).write_text("executed")
+        """,
+    )
+    skill = _loader_without_signature_check().inspect_one(skill_dir)
+
+    assert skill.name == "probe-skill"
+    assert skill.hooks is None
+    assert not sentinel.exists(), "inspect_one executed hooks.py"
