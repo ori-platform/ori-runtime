@@ -9,7 +9,6 @@ are mocked.  No real hardware, credentials, or network calls are made.
 
 import asyncio
 import base64
-import contextlib
 import json
 import logging
 import os
@@ -1203,9 +1202,7 @@ class TestSkillReload:
                 )
         finally:
             await runtime.stop()
-            start_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await start_task
+            await start_task
 
     async def test_reload_skills_registers_new_handlers(
         self, minimal_config: Path, monkeypatch

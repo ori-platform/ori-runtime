@@ -86,13 +86,14 @@ def test_community_hooks_refuse_on_a_fully_supported_host(tmp_path, monkeypatch)
     pins the case that would otherwise be the quiet exception — a supported
     Linux host, isolation enabled, which is the normal production shape.
     """
-    import ori.skills.os_sandbox as os_sandbox
 
     class _Supported:
         supported = True
         reason = "ok"
 
-    monkeypatch.setattr(os_sandbox, "probe_os_sandbox_support", lambda: _Supported())
+    monkeypatch.setattr(
+        "ori.skills.os_sandbox.probe_os_sandbox_support", lambda: _Supported()
+    )
     hooks_file = _write_skill(tmp_path / "community", hooks="x = 1\n") / "hooks.py"
     with pytest.raises(SkillSecurityError, match="disabled in this release"):
         load_community_hooks(
