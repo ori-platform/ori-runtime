@@ -43,9 +43,18 @@
 - [ ] I opened an issue and got maintainer approval before writing this skill
 - [ ] `action_tier` is declared on every trigger
 - [ ] `bypass_llm: true` is only paired with `action_tier: D`
-- [ ] Tier C triggers declare `safe_default_action`
-- [ ] `hooks.py` is clean and minimal (bundled skills bypass the sandbox — they are implicitly trusted)
+- [ ] Tier C triggers declare `safe_default_action`, and it is a non-actuating action
+- [ ] Every action is declared at or above its minimum tier in `ori/reasoning/action_registry.py`
+- [ ] Any new executable action has a matching registry entry (registration is refused without one)
+- [ ] The skill is within the workload budgets — triggers, sensors, the trigger × sensor product, and default actions per trigger
+- [ ] `hooks.py` is clean and minimal
 - [ ] No `subprocess` calls in hooks
+
+> **Packaged skills run with the runtime's own authority.** Their `hooks.py` is
+> imported directly into the runtime interpreter, and only packaged skills may
+> declare `action_tier: D`. There is no sandbox standing between a bundled hook
+> and the process — the previous in-process one was removed in v2.4.0 because it
+> could be escaped. Review bundled hooks as runtime code, not as skill content.
 
 ## Related issue
 
