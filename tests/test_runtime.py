@@ -1202,7 +1202,7 @@ class TestSkillReload:
                 )
         finally:
             await runtime.stop()
-            await start_task
+            await asyncio.wait_for(start_task, timeout=10)
 
     async def test_reload_skills_registers_new_handlers(
         self, minimal_config: Path, monkeypatch

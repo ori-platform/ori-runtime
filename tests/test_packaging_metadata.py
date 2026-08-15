@@ -8,8 +8,8 @@ import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
-import ori.skills.loader as loader_module
 from ori.integration.rule_evaluation import bundled_skill_path
+from ori.skills.loader import SkillLoader, first_party_skill_roots
 
 _DEP_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+")
 
@@ -148,19 +148,18 @@ def test_installed_layout_skills_are_first_party_and_loadable(tmp_path) -> None:
     with (
         patch.object(sysconfig, "get_path", _fake_get_path),
         # Hide the source checkout so only the installed layout can satisfy it.
-        patch.object(
-            loader_module,
-            "__file__",
+        patch(
+            "ori.skills.loader.__file__",
             str(tmp_path / "site-packages" / "ori" / "skills" / "loader.py"),
         ),
     ):
-        roots = loader_module.first_party_skill_roots()
+        roots = first_party_skill_roots()
         assert installed_skills.resolve() in roots, roots
 
         resolved = bundled_skill_path("energy-anomaly-detector")
         assert resolved == installed_skills / "energy-anomaly-detector"
 
-        skill_loader = loader_module.SkillLoader()
+        skill_loader = SkillLoader()
         assert skill_loader._is_core_bundled_skill(resolved) is True
 
         skill = skill_loader.load_one(resolved)
