@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -26,10 +27,17 @@ def dispatcher():
 
 @pytest.fixture
 def context():
-    ctx = MagicMock(spec=SkillContext)
-    ctx.event = MagicMock(spec=OriEvent)
-    ctx.event.device_id = "test-device"
-    return ctx
+    event = MagicMock(spec=OriEvent)
+    event.device_id = "test-device"
+    # A real SkillContext rather than a mock of one: Tier D authority is
+    # granted by provenance, and `first_party` has to be genuinely True — a
+    # MagicMock attribute does not satisfy the explicit `is True` check, which
+    # is the point of checking identity rather than truthiness.
+    return SkillContext(
+        skill=SimpleNamespace(name="packaged-safety-skill", first_party=True),
+        event=event,
+        state_store=None,
+    )
 
 
 @pytest.fixture

@@ -534,6 +534,21 @@ def _patch_external(monkeypatch):
     monkeypatch.setattr("ori.actions.sms.SMSAction.send", AsyncMock(return_value=True))
 
 
+def _treat_scratch_skills_as_packaged(monkeypatch):
+    """Let skills written to a scratch directory load as first-party.
+
+    Skills are trusted because they ship inside the package; anything else
+    must carry a verified signature. Tests that exercise runtime wiring write
+    their skills to ``tmp_path``, so they say explicitly that the scratch
+    directory stands in for the packaged one rather than relying on unsigned
+    content loading by default.
+    """
+    monkeypatch.setattr(
+        "ori.skills.loader.SkillLoader._is_core_bundled_skill",
+        lambda self, skill_dir: True,
+    )
+
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 
@@ -1056,6 +1071,7 @@ class TestStartupLogs:
     async def test_startup_logs_skill_tiers(self, minimal_config, monkeypatch, caplog):
         """After start(), caplog must contain '[skill]' with trigger + tier."""
         _patch_external(monkeypatch)
+        _treat_scratch_skills_as_packaged(monkeypatch)
         runtime = OriRuntime(config_path=str(minimal_config))
 
         async def _stop():
@@ -1095,10 +1111,104 @@ class TestStartupLogs:
 
 
 class TestSkillReload:
+    async def test_repeated_reloads_do_not_exhaust_the_subscription_budget(
+        self, minimal_config: Path, monkeypatch
+    ):
+        """Drive the real reload path far past the former exhaustion point.
+
+        The subscription budget counts active handlers. When the counter only
+        rose, a runtime replacing the same handlers exhausted it after
+        ``budget / cost`` reloads and then failed to register replacements —
+        after the previous graph had already been removed. That is the worst
+        possible moment to fail, because a partial graph can be missing Tier D
+        coverage while the runtime still looks healthy.
+
+        The skill here costs 64 handlers per reload (8 triggers × 8 sensor
+        types), so the monotonic counter failed on cycle 16 of the 1,024
+        budget. This runs 60 cycles and checks, every cycle, that the handler
+        count is stable, that the loader's accounting matches the live bus,
+        that the Tier D trigger is still registered, and that no partial graph
+        appears.
+        """
+        _patch_external(monkeypatch)
+        _treat_scratch_skills_as_packaged(monkeypatch)
+
+        sensor_types = ["cpu_percent" if i == 0 else f"sensor_{i}" for i in range(8)]
+        sensors_block = "".join(f"  - type: {t}\n" for t in sensor_types)
+        # One Tier D trigger, so safety coverage is observable across reloads.
+        triggers_block = (
+            '  - name: dangerous\n    condition: "value > 999"\n'
+            "    action_tier: D\n    bypass_llm: true\n    cooldown_seconds: 0\n"
+        )
+        triggers_block += "".join(
+            f'  - name: t{i}\n    condition: "value > {90 + i}"\n'
+            "    action_tier: A\n    cooldown_seconds: 0\n"
+            for i in range(7)
+        )
+        defaults_block = "    dangerous: [alert_whatsapp]\n" + "".join(
+            f"    t{i}: [alert_whatsapp]\n" for i in range(7)
+        )
+        skills_root = Path(minimal_config).parent / "skills"
+        heavy = skills_root / "test-skill"
+        (heavy / "skill.yaml").write_text(
+            "name: test-skill\nversion: 0.1.0\nauthor: test\n"
+            f"sensors_required:\n{sensors_block}"
+            f"triggers:\n{triggers_block}"
+            "actions:\n  available:\n    - name: alert_whatsapp\n      tier: A\n"
+            f"  defaults:\n{defaults_block}",
+            encoding="utf-8",
+        )
+
+        runtime = OriRuntime(config_path=str(minimal_config))
+        start_task = asyncio.create_task(runtime.start())
+        try:
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if runtime._event_bus is not None and (
+                    runtime._event_bus.subscriber_count("cpu_percent") >= 1
+                ):
+                    break
+                await asyncio.sleep(0.05)
+
+            assert runtime._event_bus is not None
+            loader = runtime._skill_loader
+            expected = len(runtime._skill_subscriptions)
+            assert expected == 64, f"expected 8 x 8 handlers, got {expected}"
+
+            def _tier_d_registered() -> bool:
+                return any(
+                    trigger.action_tier == "D"
+                    for skill in runtime._loaded_skills
+                    for trigger in skill.triggers
+                )
+
+            assert _tier_d_registered(), "Tier D trigger missing before reloads"
+
+            for cycle in range(60):
+                assert await runtime.reload_skills() is True, (
+                    f"reload failed on cycle {cycle} — the budget leaked"
+                )
+                live = len(runtime._skill_subscriptions)
+                assert live == expected, (
+                    f"cycle {cycle}: handler count drifted to {live}"
+                )
+                assert loader.active_subscriptions == live, (
+                    f"cycle {cycle}: loader accounts {loader.active_subscriptions} "
+                    f"handlers but {live} are live"
+                )
+                assert _tier_d_registered(), f"cycle {cycle}: Tier D coverage lost"
+                assert runtime._event_bus.subscriber_count("cpu_percent") == 8, (
+                    f"cycle {cycle}: partial graph on the bus"
+                )
+        finally:
+            await runtime.stop()
+            await asyncio.wait_for(start_task, timeout=10)
+
     async def test_reload_skills_registers_new_handlers(
         self, minimal_config: Path, monkeypatch
     ):
         _patch_external(monkeypatch)
+        _treat_scratch_skills_as_packaged(monkeypatch)
         runtime = OriRuntime(config_path=str(minimal_config))
 
         start_task = asyncio.create_task(runtime.start())
@@ -1150,6 +1260,7 @@ class TestSkillReload:
         self, minimal_config: Path, monkeypatch
     ):
         _patch_external(monkeypatch)
+        _treat_scratch_skills_as_packaged(monkeypatch)
         runtime = OriRuntime(config_path=str(minimal_config))
 
         start_task = asyncio.create_task(runtime.start())

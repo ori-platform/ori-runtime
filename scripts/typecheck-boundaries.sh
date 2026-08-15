@@ -15,6 +15,8 @@ fi
 "${MYPY[@]}" \
   ori/network/events.py \
   ori/reasoning/rule_engine.py \
+  ori/reasoning/action_registry.py \
+  ori/reasoning/action_dispatcher.py \
   ori/skills/hooks_api.py \
   ori/skills/loader.py \
   ori/integration/rule_evaluation.py \

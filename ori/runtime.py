@@ -136,7 +136,12 @@ from ori.security.webhook_signatures import (
     WebhookSignatureConfig,
     WebhookSignatureVerifier,
 )
-from ori.skills.loader import SkillLoader
+from ori.skills.loader import (
+    MAX_TOTAL_SUBSCRIPTIONS as SKILL_SUBSCRIPTION_BUDGET,
+)
+from ori.skills.loader import (
+    SkillLoader,
+)
 from ori.skills.signing import verify_signed_payload
 from ori.state.store import StateStore
 from ori.telemetry.http_export import HttpTelemetryExporter
@@ -294,10 +299,36 @@ class OriRuntime:
                 )
                 return False
 
+            # Check the whole plan before removing anything. Registration is
+            # what enforces the subscription budget, so discovering mid-way
+            # that the new set does not fit would leave the runtime with the
+            # old handlers already gone and only some replacements installed —
+            # including, potentially, missing Tier D coverage.
+            planned = self._skill_loader.planned_subscription_cost(loaded)
+            if planned > SKILL_SUBSCRIPTION_BUDGET:
+                logger.error(
+                    "[runtime] skill reload rejected — %d handlers exceeds the "
+                    "budget of %d; keeping the existing handler graph",
+                    planned,
+                    SKILL_SUBSCRIPTION_BUDGET,
+                )
+                return False
+
             self._unregister_skill_handlers()
-            for skill in loaded:
-                subscriptions = self._skill_loader.register(skill, self._event_bus)
-                self._skill_subscriptions.extend(subscriptions)
+            try:
+                for skill in loaded:
+                    subscriptions = self._skill_loader.register(skill, self._event_bus)
+                    self._skill_subscriptions.extend(subscriptions)
+            except Exception:
+                # The old graph is already gone. Report at CRITICAL rather than
+                # letting a partially registered runtime look healthy.
+                logger.critical(
+                    "[runtime] skill registration failed mid-reload — the "
+                    "handler graph is incomplete and safety triggers may be "
+                    "missing. Restart the runtime.",
+                    exc_info=True,
+                )
+                raise
 
             self._loaded_skills = loaded
             for skill in loaded:
@@ -2474,11 +2505,16 @@ class OriRuntime:
         }
 
     def _unregister_skill_handlers(self) -> None:
-        if self._event_bus is None:
-            self._skill_subscriptions.clear()
-            return
-        for sensor_type, handler in self._skill_subscriptions:
-            self._event_bus.unsubscribe(sensor_type, handler)
+        # Routed through the loader so the subscription budget is credited
+        # back. Unsubscribing directly from the bus removes the handlers but
+        # leaves the loader believing they are still registered, which made a
+        # long-running runtime exhaust its budget through ordinary reloads.
+        loader = getattr(self, "_skill_loader", None)
+        if loader is not None:
+            loader.unregister(self._skill_subscriptions, self._event_bus)
+        elif self._event_bus is not None:
+            for sensor_type, handler in self._skill_subscriptions:
+                self._event_bus.unsubscribe(sensor_type, handler)
         self._skill_subscriptions.clear()
 
     # ── Background tasks ──────────────────────────────────────────────────────

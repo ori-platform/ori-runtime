@@ -49,7 +49,17 @@ def _skill_dir() -> Path:
 
 
 def _load_skill(path: Path | None = None):
-    return SkillLoader().load_one(path or _skill_dir())
+    """Load the packaged skill, or a scratch copy of it.
+
+    A copy placed outside the packaged roots is, correctly, a community skill
+    wearing a packaged name — which the loader now refuses. Tests that mutate a
+    copy to exercise a validation rule state that the copy stands in for the
+    packaged original, rather than having the identity check answer first.
+    """
+    loader = SkillLoader()
+    if path is not None:
+        loader._is_core_bundled_skill = lambda skill_dir: True  # type: ignore[method-assign]
+    return loader.load_one(path or _skill_dir())
 
 
 def _ts_utc(year: int, month: int, day: int, hour: int, minute: int = 0) -> int:

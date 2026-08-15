@@ -48,10 +48,16 @@ def _event() -> OriEvent:
 
 @dataclass
 class FakeSkill:
+    # These tests exercise dispatcher mechanics for skills the loader has
+    # already accepted, so the double stands in for a packaged skill and
+    # declares the provenance explicitly. Tier D authority is *not* a default
+    # in production: `Skill.first_party` defaults to False, and the untrusted
+    # case is covered in test_skill_authority_boundary.py.
     name: str = "test-skill"
     config: dict = field(default_factory=dict)
     triggers: list = field(default_factory=list)
     actions: dict = field(default_factory=dict)
+    first_party: bool = True
 
 
 def _context(
@@ -1120,9 +1126,9 @@ class TestFailedAction:
             raise RuntimeError("GPIO failure")
 
         d = ActionDispatcher()
-        d.register_executor("open_safety_circuit", boom)
+        d.register_executor("alert_whatsapp", boom)
         result = await d.dispatch(
-            "open_safety_circuit", ActionTier.INFORMATIONAL, _context(), _result()
+            "alert_whatsapp", ActionTier.INFORMATIONAL, _context(), _result()
         )
         assert result.executed is False
 
@@ -1407,11 +1413,34 @@ class TestCapabilityTierGuard:
 
 
 class TestUnknownTier:
-    async def test_unknown_tier_falls_back_to_execute_immediately(self):
+    async def test_unknown_tier_is_refused_not_executed(self):
+        """An unrecognised tier is refused rather than treated as Tier A.
+
+        The previous behaviour executed it immediately with no approval, which
+        made any path that could produce an unexpected tier value — a malformed
+        declaration, a mutated ``ReasoningResult`` — a route to autonomous
+        execution.
+        """
         d = ActionDispatcher()
-        result = await d.dispatch("some_action", "X", _context(), _result())
-        assert result.executed is True
-        assert result.approved is None
+        ran = False
+
+        async def _exec(action, ctx):
+            nonlocal ran
+            ran = True
+
+        d.register_executor("alert_sms", _exec)
+
+        result = await d.dispatch("alert_sms", "X", _context(), _result())
+
+        assert result.executed is False
+        assert result.action_taken == "refused_unknown_tier"
+        assert ran is False, "executor ran for an unknown tier"
+
+    async def test_lowercase_tier_routes_to_the_real_tier(self):
+        """Case is not authority: 'd' must reach the Tier D path."""
+        d = ActionDispatcher()
+        result = await d.dispatch("emergency_cutoff", "d", _context(), _result())
+        assert result.tier == ActionTier.SAFETY_CRITICAL
 
 
 # ─── Cancellation Shielding & Logging ─────────────────────────────────────────

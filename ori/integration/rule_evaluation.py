@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import sysconfig
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,7 +21,12 @@ from typing import Literal, cast
 from ori.network.events import OriEvent, SensorReading
 from ori.reasoning.rule_engine import RuleEngine, RuleResult
 from ori.skills.hooks_api import HookContext
-from ori.skills.loader import Skill, SkillLoader, Trigger
+from ori.skills.loader import (
+    Skill,
+    SkillLoader,
+    Trigger,
+    first_party_skill_roots,
+)
 
 ActionTier = Literal["A", "B", "C", "D"]
 
@@ -30,7 +34,6 @@ _THRESHOLD_VAR_RE = re.compile(r"\bvalue\s*(?:>=|>|<=|<)\s*([A-Za-z_][A-Za-z0-9_
 _THRESHOLD_LITERAL_RE = re.compile(
     r"\bvalue\s*(?:>=|>|<=|<)\s*(-?(?:\d+(?:\.\d*)?|\.\d+))\b"
 )
-_DEFAULT_SKILLS_DATA_DIR = Path("share") / "ori-runtime" / "skills"
 # Process-local sessions intentionally preserve cooldown state for default
 # demo/API evaluations. Tests that assert cooldown behavior should construct an
 # explicit RuleEvaluationSession to avoid cross-test coupling.
@@ -124,18 +127,19 @@ def _session_key(skill_name: str, skills_root: str | None) -> tuple[str, str | N
 
 
 def bundled_skill_path(skill_name: str) -> Path:
-    """Return the path for a bundled skill in source checkouts or installed wheels."""
+    """Return the path for a bundled skill in source checkouts or installed wheels.
+
+    The candidate roots come from :func:`first_party_skill_roots` so that a path
+    resolved here is, by construction, a path the loader also treats as
+    first-party. Resolving them separately let the two disagree, and a skill
+    this function found was then refused as unsigned community content.
+    """
     clean_name = _validate_skill_name(skill_name)
 
-    source_candidate = Path(__file__).resolve().parents[2] / "skills" / clean_name
-    if (source_candidate / "skill.yaml").is_file():
-        return source_candidate
-
-    installed_candidate = (
-        Path(sysconfig.get_path("data")) / _DEFAULT_SKILLS_DATA_DIR / clean_name
-    )
-    if (installed_candidate / "skill.yaml").is_file():
-        return installed_candidate
+    for root in first_party_skill_roots():
+        candidate = root / clean_name
+        if (candidate / "skill.yaml").is_file():
+            return candidate
 
     raise FileNotFoundError(f"bundled skill {clean_name!r} was not found")
 

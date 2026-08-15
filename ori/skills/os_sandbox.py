@@ -212,28 +212,39 @@ def load_community_hooks(
     skill_name: str,
     os_sandbox_config: dict[str, Any] | None,
 ) -> Any:
-    cfg = _normalize_os_sandbox_config(os_sandbox_config)
-    if not cfg["enabled"]:
-        return load_hooks_restricted(str(hooks_path))
+    """Refuse to run community hooks. There is no execution path in this release.
 
-    support = probe_os_sandbox_support()
-    if not support.supported:
-        logger.warning(
-            "SkillLoader: OS sandbox unavailable for %s (%s); using python sandbox fallback",
-            hooks_path.parent.name,
-            support.reason,
-        )
-        if cfg["require_for_community"]:
-            raise SkillSecurityError(
-                f"os sandbox required for community skill but unavailable: {support.reason}"
-            )
-        return load_hooks_restricted(str(hooks_path))
+    This used to select between the OS-isolated runner and an in-process
+    fallback. The fallback is gone, and the runner is not offered either: the
+    isolation contract it should satisfy — scrubbed environment, narrow
+    filesystem visibility, resource and process limits, bounded IPC, artifact
+    manifests binding the hook bytes that get executed — is being specified
+    before it is built, and the current runner predates all of it.
 
-    return OSSandboxHookRunner(
-        hooks_path=hooks_path,
-        state_store=state_store,
-        skill_name=skill_name,
-        os_sandbox_config=cfg,
+    Returning a working runner on hosts that happen to have Landlock would make
+    community hook execution available on exactly the modern Linux systems that
+    matter most, under a design that has not been reviewed against the contract
+    it is meant to meet. Refusing everywhere keeps the posture the release notes
+    describe: community hook execution is off, uniformly, until that arc lands.
+
+    :class:`OSSandboxHookRunner` is retained, unreferenced by this factory, as
+    the starting point for that work.
+
+    Raises:
+        SkillSecurityError: Always.
+    """
+    # Config is still normalised so a malformed block is reported as such
+    # rather than being masked by the refusal below.
+    _normalize_os_sandbox_config(os_sandbox_config)
+    del state_store, skill_name  # nothing is loaded, so nothing is wired up
+
+    raise SkillSecurityError(
+        f"community hooks for {hooks_path.parent.name!r} cannot run: community "
+        "hook execution is disabled in this release. There is no in-process "
+        "fallback, and the OS-isolated runner is withheld pending the "
+        "isolated-worker contract being specified in ori-specs. "
+        "os_sandbox.enabled and os_sandbox.require_for_community do not "
+        "re-enable it."
     )
 
 
