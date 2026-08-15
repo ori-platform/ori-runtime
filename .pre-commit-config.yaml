@@ -49,8 +49,16 @@ repos:
 
       - id: supply-chain-guard
         name: Supply-chain guard
-        language: python
-        entry: python scripts/check_workflows.py
+        # `system`, like the boundary typecheck below. Declaring PyYAML as a
+        # hook dependency would make pre-commit resolve it live and unhashed;
+        # the launcher instead selects an interpreter whose dependencies were
+        # installed from the repository's hash-locked requirements.
+        language: system
+        # A launcher, not `python` directly: `system` runs whatever the PATH
+        # resolves to, which locally is often not the virtualenv holding the
+        # hash-installed dependencies. The launcher selects .venv/bin/python
+        # when present and plain `python` in CI, and never installs anything.
+        entry: bash scripts/run-workflow-guard.sh
         pass_filenames: false
 
       - id: runtime-boundary-typecheck
