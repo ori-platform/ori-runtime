@@ -22,7 +22,7 @@ from typing import Callable, Literal, Sequence
 import yaml
 
 from ori.installer import identity
-from ori.security.release_bundles import ExtractedReleaseBundle
+from ori.security.release_bundles import ExtractedReleaseBundle, distribution_version
 
 _VERSION_RE = re.compile(
     r"^(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)"
@@ -1458,13 +1458,18 @@ class OfflineReleasePreparer:
             raise LinuxInstallError(
                 "offline_install_failed", "release interpreter is missing"
             )
+        # `importlib.metadata` reports the PEP 440 spelling and the bundle
+        # declares the SemVer one, so a candidate reads back as `2.4.0rc3`
+        # against a bundle identified as `2.4.0-rc.3`. Both name the same build;
+        # comparing them directly would fail every pre-release install on the
+        # device, after signature verification had already passed.
         self._run(
             [
                 str(python),
                 "-c",
                 "import importlib.metadata as m; import ori.runtime; print(m.version('ori-runtime'))",
             ],
-            expected_stdout=self._bundle.runtime_version,
+            expected_stdout=distribution_version(self._bundle.runtime_version),
         )
         # Execute a console script rather than stat it. A relocated venv leaves
         # every entry point with a dangling interpreter while the interpreter

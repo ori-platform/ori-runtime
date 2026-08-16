@@ -63,6 +63,19 @@ jobs:
             --tag "${GITHUB_REF_NAME}" \
             --commit "${GITHUB_SHA}"
 
+      # Only after the protections above have passed, and only then, is code
+      # from the tagged commit executed in this job.
+      - name: Install build dependencies
+        run: python -m pip install --no-deps -e .
+
+      # The trigger is a glob and admits any `v*.*.*-*` tag, so this is where a
+      # tag that cannot produce a coherent release is refused — before a bundle
+      # exists and before any signing credential is issued. Deferring it to the
+      # build job is how v2.4.0-rc.1 and v2.4.0-rc.2 were spent: both passed
+      # this job, then failed at a point where the tag was already immutable.
+      - name: Verify the tag and the packaged version name one build
+        run: python scripts/check_release_identity.py --tag "${GITHUB_REF_NAME}"
+
   # ci.yml only runs on branch pushes and pull requests, so a tag can point at
   # any commit. Signing must never happen without the release gates passing.
   test:
@@ -194,21 +207,12 @@ jobs:
         id: identity
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          # A pre-release tag carries the version it is a candidate for, plus a
-          # suffix: v2.4.0-rc.1 is a candidate for 2.4.0. Comparing the whole
-          # tag would reject it, even though the workflow trigger accepts
-          # pre-release tags — so the two disagreed and a candidate could be
-          # tagged but never built. Only the release portion is compared; the
-          # full version, suffix included, still names the bundle so a candidate
-          # is never mistaken for the final artifact.
-          base="${version%%-*}"
-          declared="$(python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
-          if [ "${base}" != "${declared}" ]; then
-            echo "tag ${GITHUB_REF_NAME} does not match pyproject version ${declared}" >&2
-            exit 1
-          fi
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          # Preflight has already refused a tag that names no coherent release.
+          # This repeats the check rather than trusting it: the version the
+          # bundle is built with must come from the same authority that admitted
+          # the tag, not from a second reading of the ref in shell.
+          python scripts/check_release_identity.py \
+            --tag "${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
           echo "epoch=$(git log -1 --format=%ct)" >> "${GITHUB_OUTPUT}"
 
       # build-wheelhouse.sh assembles the hash-locked wheelhouse and the

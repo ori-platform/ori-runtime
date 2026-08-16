@@ -243,6 +243,70 @@ def test_rejects_runtime_wheel_version_mismatch(tmp_path: Path) -> None:
         )
 
 
+def test_builds_a_candidate_whose_wheel_carries_the_pep440_spelling(
+    tmp_path: Path,
+) -> None:
+    """A candidate bundle is `2.4.0-rc.3` and its wheel is `2.4.0rc3`.
+
+    The two are the same build under the two version vocabularies the pipeline
+    carries. Comparing them as strings rejected the wheel the build had just
+    produced, which is what failed v2.4.0-rc.2 after its tag was immutable.
+    """
+    wheelhouse, config, service = _inputs(tmp_path)
+    next(wheelhouse.glob("ori_runtime*.whl")).unlink()
+    _write_runtime_wheel(
+        wheelhouse / "ori_runtime-2.4.0rc3-py3-none-any.whl", "2.4.0rc3"
+    )
+
+    artifact = build_release_bundle(
+        wheelhouse=wheelhouse,
+        runtime_version="2.4.0-rc.3",
+        target=TARGET,
+        config_template=config,
+        service_template=service,
+        output_dir=tmp_path / "dist",
+    )
+
+    assert artifact.name == f"ori-runtime-2.4.0-rc.3-{TARGET}.tar.gz"
+
+
+def test_rejects_a_candidate_bundle_carrying_the_final_wheel(tmp_path: Path) -> None:
+    """`2.4.0` is not the wheel for a `2.4.0-rc.3` bundle.
+
+    Loosening the comparison to the release portion would admit this, and the
+    installer would then refuse the bundle on the device — after signature
+    verification had already passed.
+    """
+    wheelhouse, config, service = _inputs(tmp_path)
+    next(wheelhouse.glob("ori_runtime*.whl")).unlink()
+    _write_runtime_wheel(wheelhouse / "ori_runtime-2.4.0-py3-none-any.whl", "2.4.0")
+
+    with pytest.raises(BundleBuildError, match="does not match"):
+        build_release_bundle(
+            wheelhouse=wheelhouse,
+            runtime_version="2.4.0-rc.3",
+            target=TARGET,
+            config_template=config,
+            service_template=service,
+            output_dir=tmp_path / "dist",
+        )
+
+
+def test_rejects_a_non_canonical_release_identity(tmp_path: Path) -> None:
+    """`2.4.0-rc3` and `2.4.0-rc.3` must not both name one candidate."""
+    wheelhouse, config, service = _inputs(tmp_path)
+
+    with pytest.raises(BundleBuildError, match="runtime_version is malformed"):
+        build_release_bundle(
+            wheelhouse=wheelhouse,
+            runtime_version="2.4.0-rc3",
+            target=TARGET,
+            config_template=config,
+            service_template=service,
+            output_dir=tmp_path / "dist",
+        )
+
+
 def test_rejects_wheelhouse_missing_locked_dependency_wheel(tmp_path: Path) -> None:
     wheelhouse, config, service = _inputs(tmp_path)
     (wheelhouse / "PyYAML-6.0.2-py3-none-any.whl").unlink()

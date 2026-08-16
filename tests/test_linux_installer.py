@@ -1219,6 +1219,62 @@ def test_offline_preparer_rejects_missing_or_ambiguous_runtime_wheel(
         preparer.prepare(tmp_path / "release")
 
 
+def test_offline_preparer_accepts_a_candidate_reporting_its_pep440_version(
+    tmp_path: Path,
+) -> None:
+    """A `2.4.0-rc.3` bundle installs a wheel that reports `2.4.0rc3`.
+
+    The bundle carries the SemVer identity and `importlib.metadata` reports the
+    PEP 440 one. Comparing them as strings fails every candidate install on the
+    device, after the signature has already been verified — which is the point
+    at which the operator has no fallback.
+    """
+    root = tmp_path / "bundle"
+    root.mkdir()
+    bundle = ExtractedReleaseBundle(
+        root, "2.4.0-rc.3", "linux-x86_64-python3.12", "3.12", 1
+    )
+    release = tmp_path / "release"
+    interpreter = release / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"python")
+    for name in ENTRY_POINTS:
+        (interpreter.parent / name).write_text("", encoding="utf-8")
+    preparer = OfflineReleasePreparer(
+        bundle=bundle,
+        runner=lambda command: subprocess.CompletedProcess(
+            command, 0, "2.4.0rc3\n", ""
+        ),
+    )
+
+    preparer.validate(release)
+
+
+def test_offline_preparer_rejects_a_candidate_reporting_the_final_version(
+    tmp_path: Path,
+) -> None:
+    """`2.4.0` is not what a `2.4.0-rc.3` bundle installs.
+
+    Reconciling the two spellings must not blur the two builds together.
+    """
+    root = tmp_path / "bundle"
+    root.mkdir()
+    bundle = ExtractedReleaseBundle(
+        root, "2.4.0-rc.3", "linux-x86_64-python3.12", "3.12", 1
+    )
+    release = tmp_path / "release"
+    interpreter = release / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"python")
+    preparer = OfflineReleasePreparer(
+        bundle=bundle,
+        runner=lambda command: subprocess.CompletedProcess(command, 0, "2.4.0\n", ""),
+    )
+
+    with pytest.raises(LinuxInstallError, match="version mismatch"):
+        preparer.validate(release)
+
+
 def test_offline_preparer_rejects_installed_runtime_version_mismatch(
     tmp_path: Path,
 ) -> None:

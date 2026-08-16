@@ -39,8 +39,15 @@ _MANIFEST_FIELDS = {"files", "python", "runtime_version", "schema", "target"}
 _KEY_REGISTRY_FIELDS = {"keys", "schema"}
 _KEY_FIELDS = {"key_id", "public_key_b64", "purpose", "status"}
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+# One canonical release identity, and exactly one spelling of it. The release
+# pipeline carries two version vocabularies — SemVer for the git tag, the
+# signature envelope and the artifact name; PEP 440 for the wheel, its metadata
+# and `importlib.metadata` — and they diverge only for pre-releases, which is
+# why every final release hid the disagreement. Admitting more than one SemVer
+# spelling would put that ambiguity back inside the signed identity itself:
+# `2.4.0-rc2` and `2.4.0-rc.2` are one candidate under two artifact names.
 _VERSION_RE = re.compile(
-    r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$"
+    r"^(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}(?:-rc\.[1-9][0-9]*)?$"
 )
 _TARGET_RE = re.compile(r"^linux-(?:x86_64|aarch64)-python3\.(?:11|12)$")
 _KEY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
@@ -86,6 +93,25 @@ class ExtractedReleaseBundle:
     target: str
     python: str
     file_count: int
+
+
+def distribution_version(runtime_version: str) -> str:
+    """Return the PEP 440 distribution version for a canonical release identity.
+
+    A candidate tagged ``v2.4.0-rc.3`` is built from a package declaring
+    ``2.4.0rc3``, so its wheel, its wheel metadata and the version the installer
+    reads back from ``importlib.metadata`` all use the PEP 440 spelling, while
+    the tag, the signature envelope, the bundle manifest and the artifact name
+    use the SemVer one. Both name the same build.
+
+    Every comparison that crosses between the two vocabularies resolves here.
+    Normalising separately at each site is how a candidate ends up validated
+    under one spelling and installed under another — the build rejecting a
+    wheel it built, or an installer rejecting the bundle it just verified.
+    """
+    if not _VERSION_RE.fullmatch(runtime_version):
+        _fail("invalid_signature_envelope", "runtime_version is malformed")
+    return runtime_version.replace("-rc.", "rc")
 
 
 def release_artifact_name(runtime_version: str, target: str) -> str:
