@@ -195,8 +195,16 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
+          # A pre-release tag carries the version it is a candidate for, plus a
+          # suffix: v2.4.0-rc.1 is a candidate for 2.4.0. Comparing the whole
+          # tag would reject it, even though the workflow trigger accepts
+          # pre-release tags — so the two disagreed and a candidate could be
+          # tagged but never built. Only the release portion is compared; the
+          # full version, suffix included, still names the bundle so a candidate
+          # is never mistaken for the final artifact.
+          base="${version%%-*}"
           declared="$(python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
-          if [ "${version}" != "${declared}" ]; then
+          if [ "${base}" != "${declared}" ]; then
             echo "tag ${GITHUB_REF_NAME} does not match pyproject version ${declared}" >&2
             exit 1
           fi
