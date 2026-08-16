@@ -1109,9 +1109,23 @@ def _parse_gateway(data: Any) -> GatewayConfig:
 
     broker_posture = _parse_gateway_broker_posture(data.get("broker_posture"))
 
+    enabled = bool(data.get("enabled", False))
+    broker_url = str(data.get("broker_url", ""))
+    if enabled:
+        # An enabled gateway with an unusable endpoint is invalid configuration,
+        # not a runtime availability problem. Validated with the same parser the
+        # transport uses, so a config that loads is one the transport can act on;
+        # whether a broker actually answers stays advisory in `ori doctor`.
+        from ori.gateway.mqtt_security import parse_gateway_broker_endpoint
+
+        try:
+            parse_gateway_broker_endpoint(broker_url)
+        except ValueError as exc:
+            raise ConfigValidationError(str(exc)) from exc
+
     return GatewayConfig(
-        enabled=bool(data.get("enabled", False)),
-        broker_url=str(data.get("broker_url", "")),
+        enabled=enabled,
+        broker_url=broker_url,
         reasoning=reasoning,
         node_heartbeat=node_heartbeat,
         firmware_telemetry=firmware_telemetry,

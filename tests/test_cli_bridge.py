@@ -7,6 +7,7 @@ import json
 import textwrap
 from pathlib import Path
 
+import pytest
 import yaml
 
 from ori import cli_bridge
@@ -535,3 +536,143 @@ def test_cli_bridge_public_group_requires_supported_subcommand(capsys):
     assert payload["ok"] is False
     assert payload["error"]["code"] == "unknown_command"
     assert "expected one of: show, validate" in payload["error"]["detail"]
+
+
+# ─── Gateway posture in `config show` ─────────────────────────────────────────
+
+
+_GATEWAY_CONFIG_BASE = """\
+device:
+  id: gw-device-01
+  name: Gateway Device
+  location: Lagos
+sensors:
+  - id: cpu
+    type: cpu_percent
+    protocol: psutil
+    poll_interval_ms: 1000
+skills: []
+reasoning:
+  default_tier: rule
+gateway:
+"""
+
+
+def _config_with_gateway(tmp_path: Path, gateway: str) -> Path:
+    """Write a config whose ``gateway:`` block is *gateway*.
+
+    Composed rather than interpolated into a ``textwrap.dedent`` block: dedent
+    runs after substitution, so an injected block's own indentation becomes the
+    common prefix and silently mangles the surrounding YAML.
+    """
+    cfg = tmp_path / "ori.yaml"
+    cfg.write_text(_GATEWAY_CONFIG_BASE + gateway + "\n", encoding="utf-8")
+    return cfg
+
+
+def _gateway_from_show(capsys, cfg: Path) -> dict:
+    rc = cli_bridge.main(["config", "show", "--path", str(cfg)])
+    payload = _read_stdout_json(capsys)
+    assert rc == 0
+    return payload["result"]["config"]["gateway"]
+
+
+def test_config_show_reports_disabled_gateway(tmp_path, capsys):
+    cfg = _config_with_gateway(tmp_path, "  enabled: false\n  broker_url: ''")
+    gateway = _gateway_from_show(capsys, cfg)
+
+    assert gateway["enabled"] is False
+    assert gateway["broker_configured"] is False
+
+
+@pytest.mark.parametrize(
+    ("broker_url", "host", "port", "scheme"),
+    [
+        ("mqtt://localhost", "localhost", 1883, "mqtt"),
+        ("localhost", "localhost", 1883, "mqtt"),
+        ("mqtts://localhost", "localhost", 8883, "mqtts"),
+        ("mqtt://127.0.0.1:1884", "127.0.0.1", 1884, "mqtt"),
+    ],
+    ids=["default_port", "bare_host", "mqtts_default_port", "explicit_port"],
+)
+def test_config_show_normalises_broker_url_like_the_runtime(
+    tmp_path, capsys, broker_url, host, port, scheme
+):
+    """Diagnostics must agree with the transport about defaults and bare hosts.
+
+    A raw `urlparse()` reported no port for `mqtt://localhost` and no host for a
+    bare `localhost`, so doctor warned about a broker the runtime would have
+    reached. Both now use `parse_gateway_broker_endpoint`.
+    """
+    cfg = _config_with_gateway(tmp_path, f"  enabled: true\n  broker_url: {broker_url}")
+    gateway = _gateway_from_show(capsys, cfg)
+
+    assert gateway["broker_host"] == host
+    assert gateway["broker_port"] == port
+    assert gateway["broker_scheme"] == scheme
+    assert "broker_error" not in gateway
+
+
+@pytest.mark.parametrize(
+    ("broker_url", "expected"),
+    [
+        ("mqtt://localhost:notaport", "invalid port"),
+        ("mqtt://", "must include a broker host"),
+        ("http://localhost", "must use mqtt://"),
+        ("''", "is required when gateway.enabled is true"),
+    ],
+    ids=["bad_port", "no_host", "bad_scheme", "empty"],
+)
+def test_enabled_gateway_with_unusable_broker_url_fails_validation(
+    tmp_path, capsys, broker_url, expected
+):
+    """An unusable endpoint is invalid configuration, not broker unavailability.
+
+    An earlier revision returned success with a `broker_error` field, which made
+    a config the transport cannot act on look merely degraded. It now fails
+    validation, so doctor's mandatory `config.valid` check catches it.
+    """
+    cfg = _config_with_gateway(tmp_path, f"  enabled: true\n  broker_url: {broker_url}")
+
+    rc = cli_bridge.main(["config", "show", "--path", str(cfg)])
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 2
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "config_validation_error"
+    assert expected in payload["error"]["detail"]
+
+
+def test_disabled_gateway_tolerates_an_unusable_broker_url(tmp_path, capsys):
+    """A disabled gateway never connects, so its stale URL is not an error."""
+    cfg = _config_with_gateway(
+        tmp_path, "  enabled: false\n  broker_url: mqtt://localhost:notaport"
+    )
+    gateway = _gateway_from_show(capsys, cfg)
+
+    assert gateway["enabled"] is False
+    assert "invalid port" in gateway["broker_error"]
+
+
+def test_config_show_names_the_secret_variable_but_never_its_value(
+    tmp_path, capsys, monkeypatch
+):
+    """The variable name is useful; the value is not this command's to emit.
+
+    Presence is not reported at all — the service reads the secret from its own
+    environment file, which this process does not inherit.
+    """
+    monkeypatch.setenv("GATEWAY_SHARED_SECRET", "super-secret-value")
+    cfg = _config_with_gateway(
+        tmp_path,
+        "  enabled: true\n  broker_url: mqtt://127.0.0.1:1883\n"
+        "  auth:\n    enabled: true\n    shared_secret_env: GATEWAY_SHARED_SECRET",
+    )
+    rc = cli_bridge.main(["config", "show", "--path", str(cfg)])
+    raw = capsys.readouterr().out
+    gateway = json.loads(raw)["result"]["config"]["gateway"]
+
+    assert rc == 0
+    assert gateway["shared_secret_env"] == "GATEWAY_SHARED_SECRET"
+    assert "shared_secret_env_set" not in gateway
+    assert "super-secret-value" not in raw

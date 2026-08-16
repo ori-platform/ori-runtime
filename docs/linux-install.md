@@ -78,6 +78,29 @@ unsigned or tampered bundle can never reach a package prompt.
 
 ---
 
+### If you enable the gateway
+
+The installer does not enable the gateway, and a default installation needs no
+broker. If you later install a config with `gateway.enabled: true` — the site
+coordinator role — that config asserts an MQTT broker exists on the device.
+
+The installer will not install one. A broker is shared system infrastructure,
+the same reason `openssl` and `ca-certificates` are reported rather than
+installed. Provide it with your distribution's package manager and harden it as
+described in [MQTT_SECURITY.md](MQTT_SECURITY.md).
+
+`ori doctor` warns when no broker answers at the configured address. That is
+advisory: a broker may start after the runtime, and Tier D safety actions fire
+from the rule path regardless of broker availability.
+
+Doctor also reports which environment variable the gateway reads its shared
+secret from, but not whether the secret arrived — the service environment is not
+one `ori doctor` inherits. A missing secret prevents runtime startup, which is
+where it becomes visible.
+
+An enabled gateway with an unusable `broker_url` — bad scheme, no host, invalid
+port — fails config validation rather than being reported later.
+
 ## Install
 
 ### Interactive
