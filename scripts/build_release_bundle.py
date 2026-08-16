@@ -23,6 +23,7 @@ from pathlib import Path
 from ori.security.release_bundles import (
     MANIFEST_SCHEMA,
     ReleaseBundleError,
+    distribution_version,
     release_artifact_name,
 )
 
@@ -135,6 +136,12 @@ def _validate_wheelhouse(wheelhouse: Path, runtime_version: str) -> None:
     if "sha256:" not in requirements.read_text(encoding="utf-8"):
         raise BundleBuildError("wheelhouse requirements.txt is not hash-locked")
 
+    # The bundle declares a SemVer identity and carries a PEP 440 wheel, so the
+    # candidate's two spellings are reconciled through the release-identity
+    # authority. Comparing them as strings rejects `2.4.0rc3` against a bundle
+    # built for `2.4.0-rc.3` — the wheel this build just produced.
+    expected_wheel_version = distribution_version(runtime_version)
+
     wheel_identities: set[tuple[str, str]] = set()
     runtime_wheels: list[Path] = []
     for wheel in wheelhouse.glob("*.whl"):
@@ -143,7 +150,7 @@ def _validate_wheelhouse(wheelhouse: Path, runtime_version: str) -> None:
         wheel_identities.add((normalized_name, version))
         if normalized_name == "ori-runtime":
             runtime_wheels.append(wheel)
-            if version != runtime_version:
+            if version != expected_wheel_version:
                 raise BundleBuildError(
                     "runtime wheel version does not match requested release version"
                 )
