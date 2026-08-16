@@ -388,7 +388,6 @@ curl -L https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen
 #   local_model: qwen2.5-0.5b-instruct-q4_k_m
 #   model_path: /Users/<you>/models       # macOS
 #   # model_path: /home/<you>/models     # Linux
-#   offline_fallback: local_slm
 
 # 5) Optional dev convenience: auto-load .env before config parse
 export ORI_AUTOLOAD_DOTENV=true
