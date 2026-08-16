@@ -75,7 +75,24 @@ These fields are **required** by the runtime. Missing any of them will cause a `
 | `reasoning.default_tier`     | No       | string | Defaults to `rule` (`rule \| local`) |
 | `reasoning.local_model`      | No       | string | GGUF model filename (only needed for `local` tier)       |
 | `reasoning.model_path`       | No       | string | Directory containing GGUF models                         |
-| `reasoning.offline_fallback` | No       | string | Defaults to `rule`                                       |
+
+### Reasoning tier selection and availability
+
+The Intelligence Elevator evaluates the rule engine first and selects the
+cheapest reasoning tier capable of handling the event. Tier D returns
+immediately from the rule path and never depends on an LLM. The local SLM
+provides offline reasoning; deterministic escalation signals reach the gateway
+when local reasoning is insufficient.
+
+Availability cannot remove or weaken a matched rule's action decision. Ordinary
+gateway escalation falls back to the local SLM when the gateway is unavailable.
+A trigger that explicitly declares `escalate_to: gateway` establishes a minimum
+reasoning tier: if the gateway is unavailable, the runtime returns a
+gateway-unavailable stub rather than substituting local reasoning. In either
+case, the matched rule's action tier and proposed action remain authoritative.
+If local inference is unavailable, only explanatory reasoning is lost.
+Low-battery operation may cap reasoning to the rule path. These behaviours are
+structural and cannot be disabled through configuration.
 
 Optional but recommended:
 
@@ -106,7 +123,6 @@ reasoning:
   default_tier: local
   local_model: qwen2.5-0.5b-instruct-q4_k_m
   model_path: /home/$USER/models/
-  offline_fallback: rule
 ```
 
 > **macOS users:** use `/Users/$USER/models/` instead of `/home/$USER/models/`.

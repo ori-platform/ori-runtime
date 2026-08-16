@@ -664,7 +664,6 @@ reasoning:
   default_tier: local
   local_model: qwen2.5-0.5b-instruct-q4_k_m
   model_path: /home/pi/models/
-  offline_fallback: rule
 
 gateway:
   enabled: false

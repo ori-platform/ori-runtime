@@ -527,6 +527,7 @@ class TestReason:
                     "name": "needs_gateway",
                     "condition": "value > 3.0",
                     "action_tier": "C",
+                    "action": "open_safety_circuit",
                     "escalate_to": "gateway",
                     "bypass_llm": False,
                     "cooldown_seconds": 0,
@@ -546,6 +547,7 @@ class TestReason:
         assert result.tier == "gateway"
         assert result.model == "stub"
         assert result.action_tier == "C"
+        assert result.proposed_action == "open_safety_circuit"
         assert "gateway unavailable" in result.text
         ctx = event.context[GATEWAY_ESCALATION_CONTEXT_KEY]
         assert ctx["selected"] is True
@@ -567,6 +569,7 @@ class TestReason:
                     "name": "needs_gateway",
                     "condition": "value > 3.0",
                     "action_tier": "C",
+                    "action": "open_safety_circuit",
                     "escalate_to": "gateway",
                     "bypass_llm": False,
                     "cooldown_seconds": 0,
@@ -587,6 +590,7 @@ class TestReason:
         assert result.tier == "gateway"
         assert result.model == "stub"
         assert result.action_tier == "C"
+        assert result.proposed_action == "open_safety_circuit"
         assert "gateway unavailable" in result.text
 
     async def test_causal_memory_hit_short_circuits_local_llm(self):
@@ -988,6 +992,119 @@ class TestReason:
         result = await elevator.reason(_event(), skill, None)
 
         assert result.model == "stub"
+
+    async def test_matched_rule_survives_missing_local_llm(self):
+        """A matched rule's decision is authoritative when no LLM exists.
+
+        The rule engine is the floor of the elevator: reasoning availability
+        may cost the explanatory text, never the action. Nothing pinned this
+        before — the existing stub tests use a skill with no triggers, so the
+        carry-through never executed.
+        """
+        elevator = IntelligenceElevator(
+            local_llm=None, config=type("obj", (object,), {})()
+        )
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "anomalous_draw",
+                    "condition": "value > 3.0",
+                    "action_tier": "C",
+                    "action": "open_safety_circuit",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                }
+            ],
+            actions={
+                "available": [{"name": "open_safety_circuit", "tier": "C"}],
+                "defaults": {"anomalous_draw": ["open_safety_circuit"]},
+            },
+        )
+
+        result = await elevator.reason(_event(value=5.0), skill, None)
+
+        assert result.model == "stub"
+        assert result.action_tier == "C"
+        assert result.proposed_action == "open_safety_circuit"
+
+    async def test_matched_rule_survives_local_inference_failure(self):
+        """An exception inside inference must not weaken the rule decision."""
+        local_llm = AsyncMock()
+        local_llm.reason.side_effect = RuntimeError("model crashed")
+        elevator = IntelligenceElevator(
+            local_llm=local_llm, config=type("obj", (object,), {})()
+        )
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "anomalous_draw",
+                    "condition": "value > 3.0",
+                    "action_tier": "B",
+                    "action": "switch_power_source",
+                    "requires_approval": True,
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                }
+            ],
+            actions={
+                "available": [{"name": "switch_power_source", "tier": "B"}],
+                "defaults": {"anomalous_draw": ["switch_power_source"]},
+            },
+        )
+
+        result = await elevator.reason(_event(value=5.0), skill, None)
+
+        local_llm.reason.assert_awaited_once()
+        assert result.model == "stub"
+        assert result.action_tier == "B"
+        assert result.proposed_action == "switch_power_source"
+
+    async def test_ordinary_gateway_failure_falls_back_to_local_slm(self):
+        """Gateway reached by escalation signals settles to the local SLM.
+
+        Distinct from an explicit `escalate_to: gateway` floor, which declares
+        a *minimum* tier and therefore must not substitute local reasoning.
+
+        Escalation is driven through the real selection path — a sensor with no
+        24h average and no history raises `no_baseline_available` — rather than
+        by patching tier selection. Patching would keep this test green even if
+        tier selection or escalation-context handling stopped routing ordinary
+        escalation correctly, which is precisely what it exists to prove.
+        """
+        local_llm = AsyncMock()
+        local_llm.reason.return_value = ReasoningResult(
+            text="local answered",
+            tier="local_slm",
+            model="qwen.gguf",
+            tokens_used=1,
+            latency_ms=1,
+        )
+        gateway = AsyncMock()
+        gateway.reason.side_effect = RuntimeError("mqtt unavailable")
+        elevator = IntelligenceElevator(
+            local_llm=local_llm,
+            gateway_reasoner=gateway,
+            config=type("obj", (object,), {})(),
+        )
+        elevator.update_capability_posture(_fresh_gateway_posture())
+        event = _event(value=5.0)
+        store = _mock_state_store(avg=None, history=[])
+
+        result = await elevator.reason(event, _tier_a_skill(), store)
+
+        gateway.reason.assert_awaited()
+        local_llm.reason.assert_awaited_once()
+
+        ctx = event.context[GATEWAY_ESCALATION_CONTEXT_KEY]
+        codes = {signal["code"] for signal in ctx["signals"]}
+        assert "no_baseline_available" in codes
+        assert "trigger_declares_gateway" not in codes, (
+            "this must exercise ordinary escalation, not a declared floor"
+        )
+
+        assert result.tier == "local_slm"
+        assert result.model == "qwen.gguf"
+        assert result.text == "local answered"
 
     async def test_returns_reasoning_result_instance(self):
         elevator = IntelligenceElevator()
