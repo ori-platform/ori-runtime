@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import pwd
+import socket
 import subprocess
 from pathlib import Path
 from typing import Sequence
@@ -608,3 +609,145 @@ def test_json_report_is_a_single_document(
     payload = json.loads(capsys.readouterr().out)
     assert payload["identity"]["scope"] == "user"
     assert payload["checks"] == []
+
+
+# ─── Gateway broker ───────────────────────────────────────────────────────────
+
+
+def _gateway_runner(posture: dict, tmp_path: Path):
+    """A runner returning the bridge's config-show payload for *posture*."""
+
+    def run(command):
+        payload = {"result": {"config": {"gateway": posture}}}
+        return subprocess.CompletedProcess(
+            command, 0, stdout=json.dumps(payload), stderr=""
+        )
+
+    return run
+
+
+def _with_config(root: Path) -> None:
+    (root / "data").mkdir(parents=True, exist_ok=True)
+    (root / "data" / "ori.yaml").write_text("device: {}\n", encoding="utf-8")
+
+
+def test_gateway_check_is_silent_when_gateway_is_disabled(tmp_path):
+    """Most deployments never enable the gateway; they should see nothing."""
+    _with_config(tmp_path)
+    checks = doctor.check_gateway(
+        _identity(tmp_path), _gateway_runner({"enabled": False}, tmp_path)
+    )
+    assert checks == []
+
+
+def test_gateway_check_warns_when_no_broker_answers(tmp_path):
+    """An enabled gateway with no broker is invisible until something fails.
+
+    Advisory, not mandatory: a broker may start after the runtime, and gateway
+    reasoning is discretionary — Tier D fires from the rule path regardless.
+    """
+    _with_config(tmp_path)
+    posture = {
+        "enabled": True,
+        "broker_host": "127.0.0.1",
+        "broker_port": 1,  # nothing listens here
+        "broker_is_loopback": True,
+        "auth_enabled": False,
+    }
+    checks = doctor.check_gateway(
+        _identity(tmp_path), _gateway_runner(posture, tmp_path)
+    )
+
+    broker = next(c for c in checks if c.name == "gateway.broker")
+    assert broker.status == doctor.WARN
+    assert broker.mandatory is False
+    assert "no broker answers" in broker.message
+
+
+def test_gateway_check_passes_when_a_listener_answers(tmp_path):
+    """Probe a real listener so the pass path is not asserted by construction."""
+    _with_config(tmp_path)
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        posture = {
+            "enabled": True,
+            "broker_host": "127.0.0.1",
+            "broker_port": port,
+            "broker_is_loopback": True,
+            "auth_enabled": False,
+        }
+        checks = doctor.check_gateway(
+            _identity(tmp_path), _gateway_runner(posture, tmp_path)
+        )
+
+    broker = next(c for c in checks if c.name == "gateway.broker")
+    assert broker.status == doctor.PASS
+
+
+def test_gateway_check_reports_the_secret_variable_without_claiming_presence(
+    tmp_path,
+):
+    """Naming the variable helps; claiming to know whether it is set does not.
+
+    The service reads its secret from its own environment file, which `ori
+    doctor` does not inherit. An earlier revision warned from `os.environ` and
+    so reported a false "not set" against correctly configured, running
+    deployments.
+    """
+    _with_config(tmp_path)
+    posture = {
+        "enabled": True,
+        "broker_host": "127.0.0.1",
+        "broker_port": 1,
+        "auth_enabled": True,
+        "shared_secret_env": "GATEWAY_SHARED_SECRET",
+    }
+    checks = doctor.check_gateway(
+        _identity(tmp_path), _gateway_runner(posture, tmp_path)
+    )
+
+    secret = next(c for c in checks if c.name == "gateway.shared_secret_reference")
+    assert secret.status == doctor.PASS
+    assert "GATEWAY_SHARED_SECRET" in secret.message
+    assert "delivery is enforced when the runtime starts" in secret.message
+    assert all(c.status != doctor.FAIL for c in checks)
+
+
+def test_gateway_check_reports_both_conditions_independently(tmp_path):
+    """A broker problem must not suppress the other diagnostic."""
+    _with_config(tmp_path)
+    posture = {
+        "enabled": True,
+        "broker_host": "",
+        "broker_port": None,
+        "auth_enabled": True,
+        "shared_secret_env": "GATEWAY_SHARED_SECRET",
+    }
+    checks = doctor.check_gateway(
+        _identity(tmp_path), _gateway_runner(posture, tmp_path)
+    )
+
+    assert [c.name for c in checks] == [
+        "gateway.broker",
+        "gateway.shared_secret_reference",
+    ]
+    assert checks[0].status == doctor.WARN
+
+
+def test_gateway_check_surfaces_an_unusable_broker_url(tmp_path):
+    _with_config(tmp_path)
+    posture = {
+        "enabled": True,
+        "broker_host": "",
+        "broker_port": None,
+        "broker_error": "gateway.broker_url has an invalid port",
+        "auth_enabled": False,
+    }
+    checks = doctor.check_gateway(
+        _identity(tmp_path), _gateway_runner(posture, tmp_path)
+    )
+
+    assert checks[0].status == doctor.WARN
+    assert "unusable" in checks[0].message

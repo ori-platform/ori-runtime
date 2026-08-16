@@ -9,6 +9,48 @@ Ori uses MQTT as the LAN transport between the runtime and the site gateway for:
 This document covers deployment hardening for the broker layer. It complements,
 but does not replace, runtime-gateway HMAC envelopes.
 
+## Where the broker runs
+
+The runtime and the gateway normally run on the **same device**. The gateway is
+the site coordinator for every Ori deployment at that site; `ori-cloud` is the
+fleet coordinator across sites. So a site has one coordinator device, and the
+broker runs there.
+
+That produces two client positions with different requirements:
+
+| | Broker reached over | Requirements |
+|---|---|---|
+| Coordinator device | loopback (`mqtt://127.0.0.1:1883`) | HMAC auth **and** payload encryption |
+| Other devices at the site | site LAN | the above, **plus** TLS and a declared `broker_posture` |
+
+Production posture requires `gateway.auth.enabled` and
+`gateway.encryption.enabled` for **every** enabled broker, loopback included.
+Co-location removes the network attacker, not the local-process one — any
+process on the device can reach a loopback listener, so payload protections
+still carry the weight. TLS and declared broker posture relax on loopback
+because there is no wire to intercept.
+
+**The broker is operator-managed infrastructure.** The runtime does not install,
+start, or supervise one, and the installer will not: an MQTT broker is a shared
+system component, and installing those is not the installer's authority to take.
+A config declaring `gateway.enabled: true` asserts that a broker exists.
+`ori doctor` reports whether one actually answers, as a warning rather than a
+failure — a broker may legitimately start after the runtime, and gateway
+reasoning is discretionary, since Tier D fires from the rule path regardless.
+
+**The shared secret is supplied by the environment, never by the config.**
+`gateway.auth.shared_secret_env` names a variable; the value belongs in the
+service environment. A config that enables auth without that variable present
+fails at runtime startup, so config generation and secret delivery have to land
+together.
+
+`ori doctor` reports the *configured variable name* and nothing more. It cannot
+establish whether the secret was delivered: a system service reads its
+environment from `/etc/ori/runtime.env` and a user service from
+`~/.config/ori/runtime.env`, neither of which `ori doctor` inherits, so any
+claim about presence would describe the caller rather than the service. Delivery
+is enforced where it is observable — at runtime startup.
+
 ## Security Model
 
 Use layered controls:

@@ -13,6 +13,53 @@ from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
+class GatewayBrokerEndpoint:
+    """Where a gateway broker lives, with nothing constructed.
+
+    Split out of :class:`GatewayBrokerConfig` so diagnostics can ask the same
+    question the transport asks without building a TLS context. Reporting and
+    connecting previously parsed `broker_url` separately and disagreed:
+    `mqtt://localhost` has no explicit port, so a raw `urlparse()` reported no
+    port at all while the transport used 1883, and a bare `localhost` looked
+    like it had no host.
+    """
+
+    host: str
+    port: int
+    scheme: str
+    username: str = ""
+    password: str = ""
+
+
+def parse_gateway_broker_endpoint(broker_url: str) -> GatewayBrokerEndpoint:
+    """Normalise `gateway.broker_url` into host, port and scheme.
+
+    Accepts a bare host, applies the scheme's default port, and raises
+    ``ValueError`` for anything it cannot resolve — including a non-numeric
+    port, which :func:`urlparse` only rejects when the port is read.
+    """
+    raw = str(broker_url or "").strip()
+    if not raw:
+        raise ValueError("gateway.broker_url is required when gateway.enabled is true")
+    parsed = urlparse(raw if "://" in raw else f"mqtt://{raw}")
+    if parsed.scheme not in {"mqtt", "tcp", "mqtts"}:
+        raise ValueError("gateway.broker_url must use mqtt://, tcp://, or mqtts://")
+    if not parsed.hostname:
+        raise ValueError("gateway.broker_url must include a broker host")
+    try:
+        port = parsed.port
+    except ValueError as exc:  # non-numeric or out-of-range port
+        raise ValueError(f"gateway.broker_url has an invalid port: {exc}") from exc
+    return GatewayBrokerEndpoint(
+        host=parsed.hostname,
+        port=port or (8883 if parsed.scheme == "mqtts" else 1883),
+        scheme=parsed.scheme,
+        username=parsed.username or "",
+        password=parsed.password or "",
+    )
+
+
+@dataclass(frozen=True)
 class GatewayBrokerConfig:
     host: str
     port: int
@@ -28,23 +75,14 @@ def parse_gateway_broker_url(
     tls_config: Mapping[str, Any] | None = None,
 ) -> GatewayBrokerConfig:
     """Parse `gateway.broker_url` and optional TLS config."""
-    raw = str(broker_url or "").strip()
-    if not raw:
-        raise ValueError("gateway.broker_url is required when gateway.enabled is true")
-    parsed = urlparse(raw if "://" in raw else f"mqtt://{raw}")
-    if parsed.scheme not in {"mqtt", "tcp", "mqtts"}:
-        raise ValueError("gateway.broker_url must use mqtt://, tcp://, or mqtts://")
-    if not parsed.hostname:
-        raise ValueError("gateway.broker_url must include a broker host")
-
-    tls_context = build_gateway_tls_context(parsed.scheme, tls_config)
-    default_port = 8883 if parsed.scheme == "mqtts" else 1883
+    endpoint = parse_gateway_broker_endpoint(broker_url)
+    tls_context = build_gateway_tls_context(endpoint.scheme, tls_config)
     return GatewayBrokerConfig(
-        host=parsed.hostname,
-        port=parsed.port or default_port,
-        username=parsed.username or "",
-        password=parsed.password or "",
-        scheme=parsed.scheme,
+        host=endpoint.host,
+        port=endpoint.port,
+        username=endpoint.username,
+        password=endpoint.password,
+        scheme=endpoint.scheme,
         tls_context=tls_context,
     )
 

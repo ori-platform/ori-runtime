@@ -19,6 +19,7 @@ import json
 import os
 import pwd
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -851,6 +852,140 @@ def check_prerequisites() -> list[DoctorCheck]:
     return checks
 
 
+def check_gateway(
+    identity: InstallIdentity, runner: CommandRunner
+) -> list[DoctorCheck]:
+    """Report whether an enabled gateway has a broker to reach.
+
+    The runtime and the gateway normally run on the same device — the gateway
+    is the site coordinator, and its broker is usually on loopback. Config
+    validation accepts ``gateway.enabled: true`` without one, so nothing else
+    tells an operator that the broker is missing until an export request or a
+    Tier 3 reasoning call quietly fails.
+
+    Advisory rather than mandatory, deliberately. A broker may legitimately
+    start after the runtime, so failing an installation on it would create a
+    startup race; and gateway reasoning is discretionary — Tier D fires from
+    the rule path and is unaffected by broker availability.
+
+    Secret presence is deliberately **not** reported. The service reads its
+    shared secret from its own environment file, which this process does not
+    inherit, so any answer here would describe the caller rather than the
+    service. A missing secret fails runtime startup, where it is visible and
+    accurate.
+    """
+    posture = _gateway_posture_from_config(identity, runner)
+    if posture is None or not posture.get("enabled"):
+        return []
+
+    checks: list[DoctorCheck] = []
+    broker_error = str(posture.get("broker_error") or "")
+    host = str(posture.get("broker_host") or "")
+    port = posture.get("broker_port")
+
+    if broker_error:
+        checks.append(
+            DoctorCheck(
+                name="gateway.broker",
+                status=WARN,
+                message=f"Gateway is enabled but broker_url is unusable: {broker_error}",
+                remedy="Set gateway.broker_url, e.g. mqtt://127.0.0.1:1883.",
+            )
+        )
+    elif not host or not isinstance(port, int):
+        checks.append(
+            DoctorCheck(
+                name="gateway.broker",
+                status=WARN,
+                message="Gateway is enabled but no broker_url is configured.",
+                remedy="Set gateway.broker_url, e.g. mqtt://127.0.0.1:1883.",
+            )
+        )
+    else:
+        reachable = _tcp_reachable(host, port)
+        checks.append(
+            DoctorCheck(
+                name="gateway.broker",
+                status=PASS if reachable else WARN,
+                message=(
+                    f"Gateway broker reachable at {host}:{port}."
+                    if reachable
+                    else f"Gateway is enabled but no broker answers at {host}:{port}."
+                ),
+                remedy=(
+                    "Install and start an MQTT broker on this device, then harden "
+                    "it as described in docs/MQTT_SECURITY.md."
+                ),
+                details={
+                    "host": host,
+                    "port": port,
+                    "loopback": posture.get("broker_is_loopback"),
+                },
+            )
+        )
+
+    # The verified property is the *binding*, not the secret. Naming this
+    # `gateway.shared_secret` would read as "the secret is fine", which this
+    # cannot establish — the service reads it from an environment file this
+    # process does not inherit.
+    secret_env = str(posture.get("shared_secret_env") or "")
+    if posture.get("auth_enabled") and secret_env:
+        checks.append(
+            DoctorCheck(
+                name="gateway.shared_secret_reference",
+                status=PASS,
+                message=(
+                    f"Gateway auth is configured to read its secret from "
+                    f"{secret_env}; delivery is enforced when the runtime starts."
+                ),
+                details={"shared_secret_env": secret_env},
+            )
+        )
+    return checks
+
+
+def _gateway_posture_from_config(
+    identity: InstallIdentity, runner: CommandRunner
+) -> dict[str, Any] | None:
+    """Read the gateway posture the bridge reports for the installed config."""
+    if not identity.config_path.is_file():
+        return None
+    result = _run(
+        [
+            str(interpreter_path(identity)),
+            "-m",
+            "ori.cli_bridge",
+            "config",
+            "show",
+            "--path",
+            str(identity.config_path),
+        ],
+        runner,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    config = payload.get("result", {}).get("config", {})
+    gateway = config.get("gateway") if isinstance(config, dict) else None
+    return gateway if isinstance(gateway, dict) else None
+
+
+def _tcp_reachable(host: str, port: int, timeout: float = 1.0) -> bool:
+    """Whether something accepts a TCP connection at *host*:*port*.
+
+    A connect probe only. It proves a listener exists, not that it speaks MQTT
+    or will accept these credentials — those fail later and visibly.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def run_doctor(
     identity: InstallIdentity,
     expected_device_id: str,
@@ -864,6 +999,7 @@ def run_doctor(
     checks.extend(check_paths(identity))
     checks.extend(check_prerequisites())
     checks.extend(check_config(identity, active))
+    checks.extend(check_gateway(identity, active))
     checks.extend(check_service(identity, active))
     checks.extend(check_runtime(identity, expected_device_id, active))
     checks.extend(check_permissions(identity))

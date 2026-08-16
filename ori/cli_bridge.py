@@ -21,10 +21,12 @@ from urllib.parse import urlparse
 import yaml
 
 from ori.config import Config, ConfigValidationError, SensorConfig
+from ori.gateway.mqtt_security import parse_gateway_broker_endpoint
 from ori.network.events import SensorReading
 from ori.skills.loader import Skill, SkillLoader, SkillValidationError
 from ori.skills.sandbox import SkillSecurityError
 from ori.state.store import StateStore
+from ori.utils.bool_utils import is_truthy
 
 _SCHEMA_VERSION = 1
 _DEFAULT_HEALTH_TIMEOUT_MS = 3000
@@ -275,6 +277,7 @@ def _summarize_config(config: Config) -> dict[str, Any]:
             for skill in config.skills
         ],
         "config_signature": _config_signature_posture(config),
+        "gateway": _gateway_posture(config),
         "telemetry_export": _telemetry_export_posture(config),
         "device_policy": _device_policy_posture(config),
         "phone_runtime_mobile": _phone_runtime_mobile_posture(config),
@@ -317,6 +320,65 @@ def _config_signature_posture(config: Config) -> dict[str, Any]:
         "signed_at_ms": signature.get("signed_at_ms"),
         "trust_anchor_env": _optional_str(signature.get("trust_anchor_env")),
     }
+
+
+def _gateway_posture(config: Config) -> dict[str, Any]:
+    """Describe the gateway broker a deployment expects to reach.
+
+    The runtime and the gateway normally run on the same device, so an enabled
+    gateway asserts that a broker exists — usually on loopback. Nothing else
+    reports whether one is actually there, and a config declaring
+    ``gateway.enabled: true`` validates happily with no broker running.
+
+    Normalisation comes from :func:`parse_gateway_broker_endpoint`, the same
+    parser the transport uses, so diagnostics cannot disagree with the runtime
+    about default ports or a bare host. A `broker_url` that cannot be parsed is
+    reported as a structured error rather than raising out of the command.
+
+    Only the *name* of the shared-secret variable is reported. Whether the
+    secret is present cannot be answered here: the service receives it from its
+    own environment file, which this process does not inherit, so any answer
+    would describe the caller rather than the service.
+    """
+    broker_url = str(config.gateway.broker_url or "").strip()
+    posture: dict[str, Any] = {
+        "enabled": bool(config.gateway.enabled),
+        "broker_configured": bool(broker_url),
+        "auth_enabled": is_truthy(config.gateway.auth.get("enabled", False)),
+        "encryption_enabled": is_truthy(
+            config.gateway.encryption.get("enabled", False)
+        ),
+        "tls_enabled": is_truthy(config.gateway.tls.get("enabled", False)),
+        "shared_secret_env": str(
+            config.gateway.auth.get("shared_secret_env", "") or ""
+        ).strip(),
+    }
+
+    if not broker_url:
+        posture.update(
+            broker_scheme="", broker_host="", broker_port=None, broker_is_loopback=False
+        )
+        return posture
+
+    try:
+        endpoint = parse_gateway_broker_endpoint(broker_url)
+    except ValueError as exc:
+        posture.update(
+            broker_scheme="",
+            broker_host="",
+            broker_port=None,
+            broker_is_loopback=False,
+            broker_error=str(exc),
+        )
+        return posture
+
+    posture.update(
+        broker_scheme=endpoint.scheme,
+        broker_host=endpoint.host,
+        broker_port=endpoint.port,
+        broker_is_loopback=endpoint.host in _LOOPBACK_HOSTS,
+    )
+    return posture
 
 
 def _telemetry_export_posture(config: Config) -> dict[str, Any]:

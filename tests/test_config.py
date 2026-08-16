@@ -1271,7 +1271,32 @@ class TestLoadExample:
             """,
         )
 
-        with pytest.raises(ConfigValidationError, match="include a hostname"):
+        # Now rejected by endpoint parsing rather than by the posture check, so
+        # a hostless broker fails for any enabled gateway rather than only under
+        # production posture. The message comes from the shared parser.
+        with pytest.raises(ConfigValidationError, match="include a broker host"):
+            Config.load(yaml_path)
+
+    def test_enabled_gateway_rejects_hostless_broker_in_any_profile(self, tmp_path):
+        """The endpoint must be usable before posture is considered."""
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: development
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://
+            """,
+        )
+
+        with pytest.raises(ConfigValidationError, match="include a broker host"):
             Config.load(yaml_path)
 
     def test_production_posture_rejects_plain_non_loopback_gateway(self, tmp_path):
