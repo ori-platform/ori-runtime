@@ -26,6 +26,9 @@ from ori.security.firmware_ingest import FirmwareTelemetryGate
 from ori.security.firmware_liveness import FirmwareLivenessSupervisor
 from ori.state.store import StateStore
 
+# Annotated Any so the fallback assignment needs no ignore, which would be
+# reported unused in whichever environment does not match it.
+mqtt: Any
 try:
     import paho.mqtt.client as mqtt
 

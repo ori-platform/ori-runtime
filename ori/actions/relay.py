@@ -50,8 +50,30 @@ Usage
 
 import asyncio
 import logging
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
+
+
+class _RelayDevice(Protocol):
+    """The gpiozero ``OutputDevice`` surface this module actually uses.
+
+    gpiozero ships no stubs, but that is a reason to describe the three members
+    touched here — not to type the handle as ``Any``. This is the boundary that
+    energises a physical relay: an invalid call or a missed ``None`` check is
+    exactly what should fail type checking rather than at a Tier D dispatch.
+    """
+
+    @property
+    def value(self) -> float:
+        """Current pin value; non-zero while the relay is energised."""
+
+    def on(self) -> None:
+        """Energise the pin."""
+
+    def off(self) -> None:
+        """De-energise the pin."""
+
 
 # Valid BCM GPIO pin numbers on Raspberry Pi 4 (pins 0–1 are reserved for
 # I2C ID EEPROM; 28–53 are not exposed on the 40-pin header).
@@ -72,7 +94,8 @@ class RelayAction:
     def __init__(self) -> None:
         self._pin: int | None = None
         self._active_high: bool = True
-        self._device = None  # gpiozero OutputDevice, or None in sim mode
+        # The gpiozero OutputDevice, or None in simulation mode.
+        self._device: _RelayDevice | None = None
         self._simulated: bool = False
         self._connected: bool = False
         self._sim_state: bool = False  # logical active state used in simulation
@@ -108,7 +131,9 @@ class RelayAction:
         self._active_high = active_high
 
         try:
-            from gpiozero import OutputDevice  # type: ignore[import-untyped]
+            from gpiozero import (  # pyright: ignore[reportMissingImports]
+                OutputDevice,
+            )
 
             # initial_value=False → relay starts de-energised
             self._device = OutputDevice(
@@ -173,7 +198,7 @@ class RelayAction:
                 return True
 
             # Real GPIO
-            self._device.on()
+            self._require_device().on()
             logger.info(
                 "RelayAction.trigger: GPIO pin %d activated (duration=%s)",
                 self._pin,
@@ -181,7 +206,7 @@ class RelayAction:
             )
             if duration_seconds is not None:
                 await asyncio.sleep(duration_seconds)
-                self._device.off()
+                self._require_device().off()
                 logger.info(
                     "RelayAction.trigger: GPIO pin %d released after %.2fs",
                     self._pin,
@@ -219,7 +244,7 @@ class RelayAction:
                 )
                 return True
 
-            self._device.off()
+            self._require_device().off()
             logger.info("RelayAction.release: GPIO pin %d deactivated", self._pin)
             return True
 
@@ -232,6 +257,23 @@ class RelayAction:
             # directly — always route through ActionDispatcher.
             logger.exception("RelayAction.release: error on GPIO pin %d", self._pin)
             return False
+
+    def _require_device(self) -> _RelayDevice:
+        """Return the GPIO handle, or fail loudly.
+
+        Unreachable by construction: ``connect()`` sets a device unless it fell
+        back to simulation, and every caller checks ``_simulated`` first. It
+        raises rather than returning None so a broken invariant surfaces as a
+        failed action instead of a silently skipped one — ``trigger()`` and
+        ``release()`` catch it and return ``False``, which is what they already
+        did when this state produced an ``AttributeError``.
+        """
+        device = self._device
+        if device is None:
+            raise RuntimeError(
+                "RelayAction: GPIO device is unavailable outside simulation mode"
+            )
+        return device
 
     # ── State ─────────────────────────────────────────────────────────────────
 
@@ -247,4 +289,4 @@ class RelayAction:
             return False
         if self._simulated:
             return self._sim_state
-        return bool(self._device.value)
+        return bool(self._require_device().value)

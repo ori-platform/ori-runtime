@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 from ori.reasoning.capability_posture import CapabilityPosture
 
@@ -218,14 +218,19 @@ class AlertFailoverSender:
         from_number: str,
         timeout_seconds: int,
     ) -> str | None:
+        # cast rather than coerce: the listener is caller-supplied and untyped,
+        # and this is a typing correction, not a behaviour change.
         try:
-            return await listener(
-                from_number=from_number,
-                timeout_seconds=timeout_seconds,
+            return cast(
+                "str | None",
+                await listener(
+                    from_number=from_number,
+                    timeout_seconds=timeout_seconds,
+                ),
             )
         except TypeError:
             try:
-                return await listener(from_number, timeout_seconds)
+                return cast("str | None", await listener(from_number, timeout_seconds))
             except Exception:
                 logger.exception(
                     "AlertFailoverSender: %s listener failed",
