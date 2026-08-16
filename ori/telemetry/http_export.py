@@ -17,8 +17,11 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+# Annotated Any so the fallback assignment below needs no ignore: an ignore
+# here would be reported unused in whichever environment does not match it.
+_httpx: Any
 try:
-    import httpx as _httpx  # type: ignore[import-untyped]
+    import httpx as _httpx
 
     _HTTPX_AVAILABLE = True
 except ImportError:
@@ -197,7 +200,9 @@ def _serialize_event(event: OriEvent) -> dict[str, Any]:
 def _serialize_reading(reading: SensorReading) -> dict[str, Any]:
     data = asdict(reading)
     data.pop("raw", None)
-    return _json_safe(data)
+    # _json_safe is Any-in/Any-out by design; a dict in yields a dict out.
+    safe: dict[str, Any] = _json_safe(data)
+    return safe
 
 
 def _json_safe(value: Any) -> Any:

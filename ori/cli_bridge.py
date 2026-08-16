@@ -79,6 +79,8 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
 
     command = ""
     public_command = ""
+    # Most commands return a mapping; the state reads return a list of rows.
+    result: dict[str, Any] | list[dict[str, Any]]
     try:
         command, public_command, args = _parse_command(argv)
 

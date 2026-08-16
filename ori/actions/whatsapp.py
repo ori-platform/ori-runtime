@@ -156,7 +156,7 @@ class TwilioProvider:
             return False
 
         try:
-            from twilio.rest import Client  # type: ignore[import-untyped]
+            from twilio.rest import Client
 
             client = Client(self._sid, self._token)
             # Twilio's Python SDK is synchronous — run in executor to avoid
@@ -203,7 +203,7 @@ class TwilioProvider:
         try:
             import datetime
 
-            from twilio.rest import Client  # type: ignore[import-untyped]
+            from twilio.rest import Client
 
             # Convert ms timestamp to a datetime for the Twilio filter
             since_dt = datetime.datetime.fromtimestamp(

@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 try:
-    import aiocoap as _aiocoap  # type: ignore[import-untyped]
+    import aiocoap as _aiocoap  # pyright: ignore[reportMissingImports]
 
     _AIOCOAP_AVAILABLE = True
 except ImportError:

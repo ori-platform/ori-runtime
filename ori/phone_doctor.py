@@ -380,7 +380,7 @@ def _sensor_check(config: Config) -> DoctorCheck:
         device_path = str(sensor.metadata.get("device_path", "") or "").strip()
         auto_detect = is_truthy(sensor.metadata.get("auto_detect_device_path", False))
 
-        detail = {
+        detail: dict[str, Any] = {
             "id": sensor.id,
             "type": sensor.type,
             "protocol": sensor.protocol,

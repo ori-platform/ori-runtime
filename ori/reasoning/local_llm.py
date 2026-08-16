@@ -12,7 +12,7 @@ from ori.utils.time_utils import now_ms
 logger = logging.getLogger(__name__)
 
 try:
-    from llama_cpp import Llama  # type: ignore[import-untyped]
+    from llama_cpp import Llama  # pyright: ignore[reportMissingImports]
 
     _LLAMA_AVAILABLE = True
 except ImportError:
@@ -151,7 +151,8 @@ class LocalLLM:
         )
 
     def _infer(self, prompt: str, max_tokens: int) -> dict:
-        return self._llm(  # type: ignore[operator]
+        # _llm is populated by load(); _infer is unreachable before that.
+        return self._llm(  # type: ignore[operator, misc, no-any-return]
             prompt,
             max_tokens=max_tokens,
             temperature=0.0,

@@ -706,12 +706,12 @@ class OriRuntime:
         if relay_action is not None:
 
             async def _exec_trip_relay(*_: Any) -> None:
-                await relay_action.trigger(duration_seconds=None)  # type: ignore[union-attr]
+                await relay_action.trigger(duration_seconds=None)
                 if status_indicator is not None:
                     status_indicator.set_relay_energized(True)
 
             async def _exec_release_relay(*_: Any) -> None:
-                await relay_action.release()  # type: ignore[union-attr]
+                await relay_action.release()
                 if status_indicator is not None:
                     status_indicator.set_relay_energized(False)
 
@@ -3763,7 +3763,7 @@ def _maybe_autoload_dotenv(config_path: str) -> None:
         return
 
     try:
-        from dotenv import load_dotenv  # type: ignore[import-not-found]
+        from dotenv import load_dotenv
     except ImportError:
         logger.warning(
             "[runtime] ORI_AUTOLOAD_DOTENV is enabled but python-dotenv is not installed"

@@ -1911,9 +1911,8 @@ def _validate_production_security_posture(
                 "production posture requires "
                 "security.remote_commands.allowed_senders when remote commands are enabled"
             )
-        lockout = (
-            remote.get("lockout") if isinstance(remote.get("lockout"), dict) else {}
-        )
+        lockout_raw = remote.get("lockout")
+        lockout: dict[str, Any] = lockout_raw if isinstance(lockout_raw, dict) else {}
         if not is_truthy(lockout.get("enforcement_enabled", False)):
             raise ConfigValidationError(
                 "production posture requires "

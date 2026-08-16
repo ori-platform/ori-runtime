@@ -52,6 +52,14 @@ jobs:
       - name: Type check runtime contract boundaries
         run: bash scripts/typecheck-boundaries.sh
 
+      # Whole-package mypy runs here rather than in pre-commit because this job
+      # installs requirements/dev.txt with --require-hashes. Several optional
+      # dependencies change which `type: ignore` comments are needed, so the
+      # result is only reproducible in a pinned environment; a developer's local
+      # set is not one. That is a reason to scope the check, not to skip it.
+      - name: Type check the whole package
+        run: python -m mypy ori/
+
       - name: Pre-commit (lint + format + hygiene)
         env:
           SKIP: no-commit-to-branch
