@@ -21,7 +21,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ori.config import GatewayConfig, TelemetryExportConfig
+from ori.config import (
+    Config,
+    ConfigValidationError,
+    GatewayConfig,
+    TelemetryExportConfig,
+)
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
@@ -45,6 +50,7 @@ from ori.runtime import (
     _resolve_local_model_file,
     _resolve_setup_notification_channels,
     _setup_success_message,
+    _validate_required_runtime_capabilities,
     _warn_sms_webhook_security_posture,
 )
 from ori.security.gateway_messages import (
@@ -62,6 +68,37 @@ except Exception:  # pragma: no cover - environment without cryptography support
     Ed25519PrivateKey = None
     Encoding = None
     PublicFormat = None
+
+
+def _capability_config(
+    *,
+    profile: str = "production",
+    deployment_type: str = "pi",
+    enforce: bool = False,
+    relay: dict[str, Any] | None = None,
+    coap: dict[str, Any] | None = None,
+    sensors: list[Any] | None = None,
+    default_tier: str = "rule",
+    local_model: str = "",
+    model_path: str = "",
+    status_signaling: dict[str, Any] | None = None,
+) -> Any:
+    return SimpleNamespace(
+        device=SimpleNamespace(
+            deployment_profile=profile,
+            deployment_type=deployment_type,
+        ),
+        security={"enforce_production_posture": enforce},
+        actions=SimpleNamespace(relay=relay or {}, coap=coap or {}),
+        sensors=sensors or [],
+        reasoning=SimpleNamespace(
+            default_tier=default_tier,
+            local_model=local_model,
+            model_path=model_path,
+        ),
+        hal=SimpleNamespace(status_signaling=status_signaling or {}),
+    )
+
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -552,6 +589,155 @@ def _treat_scratch_skills_as_packaged(monkeypatch):
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 
+class TestRequiredRuntimeCapabilities:
+    def test_development_keeps_optional_degradation(self, monkeypatch, tmp_path):
+        config = _capability_config(
+            profile="development",
+            relay={"gpio_pin": 26},
+            coap={"enabled": True},
+            sensors=[SimpleNamespace(protocol="coap")],
+            default_tier="local",
+        )
+        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: False)
+        monkeypatch.setattr("ori.runtime.coap_backend_available", lambda: False)
+        monkeypatch.setattr("ori.runtime.local_llm_backend_available", lambda: False)
+
+        _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
+    @pytest.mark.parametrize("profile", ["staging", "production"])
+    def test_hardened_gpio_relay_requires_gpiozero(
+        self, profile, monkeypatch, tmp_path
+    ):
+        config = _capability_config(
+            profile=profile,
+            relay={"enabled": False, "gpio_pin": 26},
+        )
+        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: False)
+
+        with pytest.raises(ConfigValidationError, match="gpiozero.*relay control"):
+            _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
+    def test_hardened_status_signaling_requires_gpiozero(self, monkeypatch, tmp_path):
+        config = _capability_config(status_signaling={"enabled": True})
+        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: False)
+
+        with pytest.raises(ConfigValidationError, match="gpiozero.*status signaling"):
+            _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
+    def test_hardened_unwired_relay_without_gpio_pin_needs_no_gpiozero(
+        self, monkeypatch, tmp_path
+    ):
+        config = _capability_config(relay={"enabled": False})
+        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: False)
+
+        _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
+    @pytest.mark.parametrize(
+        "coap,sensors",
+        [
+            ({"enabled": True}, []),
+            ({"enabled": False}, [SimpleNamespace(protocol="coap")]),
+        ],
+    )
+    def test_hardened_coap_requires_aiocoap(self, coap, sensors, monkeypatch, tmp_path):
+        config = _capability_config(coap=coap, sensors=sensors)
+        monkeypatch.setattr("ori.runtime.coap_backend_available", lambda: False)
+
+        with pytest.raises(ConfigValidationError, match="aiocoap.*CoAP"):
+            _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
+    def test_hardened_local_reasoning_requires_backend(self, monkeypatch, tmp_path):
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"model")
+        config = _capability_config(
+            default_tier="local",
+            local_model=str(model),
+        )
+        monkeypatch.setattr("ori.runtime.local_llm_backend_available", lambda: False)
+
+        with pytest.raises(ConfigValidationError, match="llama-cpp-python"):
+            _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
+    def test_hardened_local_reasoning_requires_model(self, monkeypatch, tmp_path):
+        config = _capability_config(default_tier="local")
+        monkeypatch.setattr("ori.runtime.local_llm_backend_available", lambda: True)
+
+        with pytest.raises(ConfigValidationError, match="GGUF model"):
+            _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
+    @pytest.mark.parametrize(
+        ("local_model", "model_path"),
+        [
+            ("", ""),
+            ("leftover-template-model", ""),
+            ("", "/leftover/template/models"),
+            ("leftover-template-model", "/leftover/template/models"),
+        ],
+    )
+    def test_hardened_rule_only_does_not_require_llama(
+        self, local_model, model_path, monkeypatch, tmp_path
+    ):
+        config = _capability_config(
+            default_tier="rule",
+            local_model=local_model,
+            model_path=model_path,
+        )
+        monkeypatch.setattr("ori.runtime.local_llm_backend_available", lambda: False)
+
+        _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
+    def test_explicit_enforcement_hardens_development(self, monkeypatch, tmp_path):
+        config = _capability_config(
+            profile="development",
+            enforce=True,
+            coap={"enabled": True},
+        )
+        monkeypatch.setattr("ori.runtime.coap_backend_available", lambda: False)
+
+        with pytest.raises(ConfigValidationError, match="aiocoap"):
+            _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
+    async def test_startup_refuses_before_state_store_open(self, monkeypatch):
+        config = _capability_config(coap={"enabled": True})
+        runtime = OriRuntime(config_path="/unused/ori.yaml")
+        opened = AsyncMock(side_effect=AssertionError("state store must not open"))
+        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+        monkeypatch.setattr("ori.runtime.coap_backend_available", lambda: False)
+        monkeypatch.setattr("ori.runtime.StateStore.open", opened)
+
+        with pytest.raises(ConfigValidationError, match="aiocoap"):
+            await runtime.start()
+
+        opened.assert_not_awaited()
+
+    async def test_hardened_relay_initialization_failure_aborts_startup(
+        self, minimal_config, monkeypatch
+    ):
+        _patch_external(monkeypatch)
+        config = Config.load(str(minimal_config))
+        config.device.deployment_profile = "production"
+        config.reasoning.default_tier = "rule"
+        config.reasoning.local_model = ""
+        config.reasoning.model_path = ""
+        config.actions.relay = {"enabled": True, "gpio_pin": 26}
+        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: True)
+        connect = AsyncMock(side_effect=RuntimeError("GPIO chip unavailable"))
+        monkeypatch.setattr("ori.runtime.RelayAction.connect", connect)
+        runtime = OriRuntime(config_path=str(minimal_config))
+
+        try:
+            with pytest.raises(
+                ConfigValidationError,
+                match="requires configured GPIO relay control to initialise",
+            ):
+                await runtime.start()
+        finally:
+            await runtime.stop()
+
+        connect.assert_awaited_once_with(gpio_pin=26, allow_simulation=False)
+
+
 class TestLocalSLMWiring:
     def test_resolve_local_model_from_directory_and_basename(self, tmp_path: Path):
         model_dir = tmp_path / "models"
@@ -638,7 +824,9 @@ class TestLocalSLMWiring:
 
         from ori.reasoning.elevator import IntelligenceElevator as _RealElevator
 
-        monkeypatch.setattr("ori.runtime._build_local_llm", lambda *_: sentinel)
+        monkeypatch.setattr(
+            "ori.runtime._build_local_llm", lambda *_, **_kwargs: sentinel
+        )
 
         def _elevator_factory(
             local_llm=None, gateway_reasoner=None, config=None, **_kw
@@ -1063,7 +1251,7 @@ class TestLifecycle:
 
         await close_gas_valve("close_gas_valve", SimpleNamespace())
 
-        connect.assert_awaited_once_with(gpio_pin=26)
+        connect.assert_awaited_once_with(gpio_pin=26, allow_simulation=True)
         trigger.assert_awaited_once_with(duration_seconds=None)
 
 

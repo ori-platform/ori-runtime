@@ -23,6 +23,11 @@ except ImportError:
 _ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "DELETE"})
 
 
+def coap_backend_available() -> bool:
+    """Return whether the configured CoAP implementation can execute requests."""
+    return bool(_AIOCOAP_AVAILABLE and _aiocoap is not None)
+
+
 def _as_bool(value: object, default: bool = False) -> bool:
     if value is None:
         return default
@@ -51,7 +56,7 @@ class CoAPAction:
             str(host).strip().lower() for host in allowed_hosts if str(host).strip()
         }
 
-        if self._enabled and not _AIOCOAP_AVAILABLE:
+        if self._enabled and not coap_backend_available():
             logger.warning(
                 "CoAPAction: aiocoap is not installed — CoAP command delivery disabled."
             )
@@ -66,7 +71,7 @@ class CoAPAction:
             logger.debug("CoAPAction: disabled, skipping command=%r", command_name)
             return False
 
-        if not _AIOCOAP_AVAILABLE or _aiocoap is None:
+        if not coap_backend_available():
             logger.warning(
                 "CoAPAction: aiocoap missing — cannot execute command=%r",
                 command_name,

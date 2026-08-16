@@ -19,6 +19,8 @@ device:
   deployment_type: pi                # pi | phone | edge_node | server
   deployment_profile: development    # development | staging | production
                                      # staging/production enforce hardened posture
+                                     # and refuse configured GPIO, CoAP, or local-SLM
+                                     # capabilities when their host backend is absent
   rated_capacity_amps: 10.0          # used for Tier D threshold calculations
                                      # set this to the actual rated amperage
                                      # of your main circuit
@@ -507,7 +509,9 @@ actions:
 
   relay:
     enabled: false                   # CHANGE TO true ONLY WHEN RELAY IS WIRED
-    gpio_pin: 26                     # BCM pin number connected to relay IN
+                                     # enabled gates Tier B/C; a gpio_pin also
+                                     # declares the always-available Tier D path
+    # gpio_pin: 26                   # uncomment only when relay IN is wired
     active_high: true
 
   # CoAP command transport (optional; constrained-device actuation path)

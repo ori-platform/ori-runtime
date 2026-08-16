@@ -29,14 +29,14 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ori.actions.alert_failover import AlertFailoverSender
-from ori.actions.coap import CoAPAction
+from ori.actions.coap import CoAPAction, coap_backend_available
 from ori.actions.logger import LoggerAction
 from ori.actions.process_manager import ProcessManagerAction
-from ori.actions.relay import RelayAction
+from ori.actions.relay import RelayAction, gpio_backend_importable
 from ori.actions.sms import SMSAction
 from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
-from ori.config import Config, ConfigValidationError
+from ori.config import Config, ConfigValidationError, requires_production_posture
 from ori.firmware_mqtt_operator import (
     FirmwareMqttOperatorController,
     FirmwareMqttOperatorServer,
@@ -79,7 +79,7 @@ from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
 from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfig
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
-from ori.reasoning.local_llm import LocalLLM
+from ori.reasoning.local_llm import LocalLLM, local_llm_backend_available
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.security.evidence import (
     PUBLIC_EVIDENCE_PROTOCOL_VERSION,
@@ -371,6 +371,7 @@ class OriRuntime:
         # ── Step A: Load and validate config ─────────────────────────────────
         try:
             config = Config.load(self._config_path)
+            _validate_required_runtime_capabilities(config, self._config_path)
         except ConfigValidationError:
             logger.exception("[runtime] config validation failed — aborting")
             raise
@@ -493,13 +494,27 @@ class OriRuntime:
             relay_action = RelayAction()
             gpio_pin: int = config.actions.relay["gpio_pin"]
             try:
-                await relay_action.connect(gpio_pin=gpio_pin)
+                await relay_action.connect(
+                    gpio_pin=gpio_pin,
+                    allow_simulation=not requires_production_posture(
+                        device=config.device,
+                        security=config.security,
+                    ),
+                )
                 logger.info("[runtime] relay connected on GPIO pin %d", gpio_pin)
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "[runtime] relay connect failed on pin %d",
                     gpio_pin,
                 )
+                if requires_production_posture(
+                    device=config.device,
+                    security=config.security,
+                ):
+                    raise ConfigValidationError(
+                        "production posture requires configured GPIO relay control "
+                        f"to initialise successfully on pin {gpio_pin}: {exc}"
+                    ) from exc
                 relay_action = None
 
         # operator_contact is a first-class config field, not assembled from sub-dicts
@@ -745,7 +760,17 @@ class OriRuntime:
             )
             self._capability_posture_tracker = posture_tracker
 
-        local_llm = _build_local_llm(config.reasoning, self._config_path)
+        local_llm = _build_local_llm(
+            config.reasoning,
+            self._config_path,
+            required=bool(
+                requires_production_posture(
+                    device=config.device,
+                    security=config.security,
+                )
+                and _local_llm_requested(config.reasoning)
+            ),
+        )
         gateway_reasoner = _build_gateway_reasoner(config)
         elevator = IntelligenceElevator(
             local_llm=local_llm,
@@ -3791,6 +3816,87 @@ def _maybe_autoload_dotenv(config_path: str) -> None:
         )
 
 
+def _local_llm_requested(reasoning_cfg: Any) -> bool:
+    """Return whether configuration asks this runtime to provide local inference."""
+    return (
+        str(getattr(reasoning_cfg, "default_tier", "") or "").strip().lower() == "local"
+    )
+
+
+def _validate_required_runtime_capabilities(
+    config: Config,
+    config_path: str,
+) -> None:
+    """Fail before host mutation when hardened configuration cannot be served.
+
+    Development deliberately retains simulation and graceful degradation for
+    laptops and CI. Staging, production, and explicit posture enforcement must
+    never report a healthy runtime while a requested physical/protocol/reasoning
+    backend is absent.
+    """
+    if not requires_production_posture(
+        device=config.device,
+        security=config.security,
+    ):
+        return
+
+    missing: list[str] = []
+    status_cfg = (
+        config.hal.status_signaling
+        if isinstance(config.hal.status_signaling, dict)
+        else {}
+    )
+    relay_requested = bool(
+        config.device.deployment_type != "phone" and "gpio_pin" in config.actions.relay
+    )
+    status_signaling_requested = is_truthy(status_cfg.get("enabled", False))
+    if (
+        relay_requested or status_signaling_requested
+    ) and not gpio_backend_importable():
+        requested_by = (
+            "relay control and status signaling"
+            if relay_requested and status_signaling_requested
+            else "relay control"
+            if relay_requested
+            else "status signaling"
+        )
+        missing.append(f"gpiozero is unavailable but {requested_by} is configured")
+
+    coap_requested = is_truthy(config.actions.coap.get("enabled", False)) or any(
+        sensor.protocol == "coap" for sensor in config.sensors
+    )
+    if coap_requested and not coap_backend_available():
+        missing.append(
+            "aiocoap is unavailable but a CoAP action or sensor is configured"
+        )
+
+    if _local_llm_requested(config.reasoning):
+        if not local_llm_backend_available():
+            missing.append(
+                "llama-cpp-python is unavailable but local reasoning is configured"
+            )
+        if (
+            _resolve_local_model_file(
+                str(config.reasoning.local_model or ""),
+                str(config.reasoning.model_path or ""),
+                config_path,
+            )
+            is None
+        ):
+            missing.append(
+                "a readable GGUF model file could not be resolved for local reasoning"
+            )
+
+    if missing:
+        raise ConfigValidationError(
+            "production posture requires every configured host capability to be "
+            "available; "
+            + "; ".join(missing)
+            + ". Install the required signed runtime target/dependencies or disable "
+            "the capability explicitly before startup."
+        )
+
+
 def _resolve_local_model_file(
     local_model: str,
     model_path: str,
@@ -3843,7 +3949,12 @@ def _resolve_local_model_file(
     return None
 
 
-def _build_local_llm(reasoning_cfg: Any, config_path: str) -> LocalLLM | None:
+def _build_local_llm(
+    reasoning_cfg: Any,
+    config_path: str,
+    *,
+    required: bool = False,
+) -> LocalLLM | None:
     """Instantiate LocalLLM from config when a valid local model is available."""
     local_model = str(getattr(reasoning_cfg, "local_model", "") or "")
     model_path = str(getattr(reasoning_cfg, "model_path", "") or "")
@@ -3851,6 +3962,11 @@ def _build_local_llm(reasoning_cfg: Any, config_path: str) -> LocalLLM | None:
 
     model_file = _resolve_local_model_file(local_model, model_path, config_path)
     if model_file is None:
+        if required:
+            raise ConfigValidationError(
+                "production posture requires a readable GGUF model file when "
+                "local reasoning is configured"
+            )
         logger.warning(
             "[runtime] local SLM disabled — could not resolve a model file from "
             "reasoning.local_model=%r and reasoning.model_path=%r",
@@ -3861,6 +3977,11 @@ def _build_local_llm(reasoning_cfg: Any, config_path: str) -> LocalLLM | None:
 
     local_llm = LocalLLM(model_path=model_file, context_window=context_window)
     if not local_llm.is_available:
+        if required:
+            raise ConfigValidationError(
+                "production posture requires llama-cpp-python and an accessible "
+                f"local model file; local reasoning is unavailable for {model_file}"
+            )
         logger.warning(
             "[runtime] local SLM unavailable for model=%s. Ensure llama-cpp-python "
             "is installed and model file is accessible.",

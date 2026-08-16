@@ -1864,6 +1864,21 @@ def _parse_security(data: Any) -> dict:
     return out
 
 
+def requires_production_posture(
+    *, device: DeviceConfig, security: dict[str, Any]
+) -> bool:
+    """Return whether runtime startup must enforce hardened host capabilities.
+
+    Staging and production profiles cannot opt out. Development deployments may
+    deliberately opt in so operators can exercise the same fail-closed posture
+    before promotion.
+    """
+    return bool(
+        device.deployment_profile in {"staging", "production"}
+        or security.get("enforce_production_posture") is True
+    )
+
+
 def _validate_production_security_posture(
     *,
     device: DeviceConfig,
@@ -1881,10 +1896,7 @@ def _validate_production_security_posture(
     ``device.deployment_profile: staging|production``. An explicit false
     ``security.enforce_production_posture`` does not override those profiles.
     """
-    enforce = bool(
-        device.deployment_profile in {"staging", "production"}
-        or security.get("enforce_production_posture") is True
-    )
+    enforce = requires_production_posture(device=device, security=security)
     if not enforce:
         return
 

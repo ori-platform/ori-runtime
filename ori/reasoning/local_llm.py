@@ -19,6 +19,11 @@ except ImportError:
     _LLAMA_AVAILABLE = False
 
 
+def local_llm_backend_available() -> bool:
+    """Return whether llama-cpp-python is importable in this interpreter."""
+    return bool(_LLAMA_AVAILABLE)
+
+
 class ModelNotAvailableError(Exception):
     """Raised when the model file is missing or llama-cpp-python is not installed."""
 
@@ -63,7 +68,7 @@ class LocalLLM:
     @property
     def is_available(self) -> bool:
         """``True`` if llama-cpp-python is installed and the model file exists."""
-        if not _LLAMA_AVAILABLE:
+        if not local_llm_backend_available():
             return False
         return os.path.isfile(self._model_path)
 
@@ -88,7 +93,7 @@ class LocalLLM:
             :exc:`ModelNotAvailableError`: llama-cpp-python is not installed or
                 the model file does not exist.
         """
-        if not _LLAMA_AVAILABLE:
+        if not local_llm_backend_available():
             raise ModelNotAvailableError(
                 "LocalLLM: llama-cpp-python is not installed. "
                 "Run: pip install llama-cpp-python"
