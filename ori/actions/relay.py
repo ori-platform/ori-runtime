@@ -29,11 +29,11 @@ Used for Tier B (soft physical) and Tier D (safety-critical) actions.
 
 Platform guard
 --------------
-``gpiozero`` is only available on Raspberry Pi.  On non-Pi platforms
-(developer laptops, CI) the import is caught and the action enters
-*simulation mode*: all calls succeed and are logged at DEBUG level
-without touching any hardware.  This allows the full action pipeline
-to be exercised in tests without a Pi.
+``gpiozero`` is only available on Raspberry Pi. On non-Pi platforms
+(developer laptops, CI), callers must explicitly opt into *simulation mode*:
+all calls then succeed and are logged at DEBUG level without touching any
+hardware. The runtime opts in only for development posture; relay connection is
+fail-closed by default and in hardened posture.
 
 Usage
 -----
@@ -80,6 +80,22 @@ class _RelayDevice(Protocol):
 _VALID_BCM_PINS: frozenset[int] = frozenset(range(2, 28))
 
 
+def gpio_backend_importable() -> bool:
+    """Return whether gpiozero exposes the required output classes.
+
+    This proves dependency availability only. Real pin-factory initialization in
+    :meth:`RelayAction.connect` is the hardware check and may still fail closed.
+    """
+    try:
+        from gpiozero import (  # pyright: ignore[reportMissingImports]
+            DigitalOutputDevice,
+            OutputDevice,
+        )
+    except ImportError:
+        return False
+    return DigitalOutputDevice is not None and OutputDevice is not None
+
+
 class RelayAction:
     """Controls a single relay output pin via gpiozero.
 
@@ -102,7 +118,13 @@ class RelayAction:
 
     # ── Connection ────────────────────────────────────────────────────────────
 
-    async def connect(self, gpio_pin: int, active_high: bool = True) -> None:
+    async def connect(
+        self,
+        gpio_pin: int,
+        active_high: bool = True,
+        *,
+        allow_simulation: bool = False,
+    ) -> None:
         """Initialise *gpio_pin* as a relay output.
 
         The gpiozero constructor is fast (microseconds) and does not need
@@ -113,11 +135,14 @@ class RelayAction:
             active_high: ``True`` if the relay activates on a HIGH signal
                 (default).  Set ``False`` for opto-isolated relay boards
                 that trigger on LOW — verify the relay datasheet.
+            allow_simulation: Permit a no-op relay when gpiozero is unavailable.
+                This is fail-closed by default; runtime startup opts in only for
+                development posture.
 
         Note:
-            On non-Pi platforms gpiozero is unavailable and a warning is
-            logged.  All subsequent calls run in simulation mode — no
-            hardware is touched.
+            When gpiozero is unavailable, simulation occurs only if
+            ``allow_simulation`` is explicitly true. Otherwise connection
+            raises and no hardware capability is reported.
         """
         if gpio_pin not in _VALID_BCM_PINS:
             raise ValueError(
@@ -147,7 +172,15 @@ class RelayAction:
                 gpio_pin,
                 active_high,
             )
-        except ImportError:
+        except ImportError as exc:
+            if not allow_simulation:
+                self._device = None
+                self._simulated = False
+                self._connected = False
+                raise RuntimeError(
+                    "RelayAction: gpiozero is required when relay control is "
+                    "configured in staging or production posture."
+                ) from exc
             self._device = None
             self._simulated = True
             logger.warning(

@@ -807,7 +807,7 @@ CREATE TABLE IF NOT EXISTS action_log (
 
 ## Platform and Hardware Notes
 
-**HAL adapters degrade gracefully on non-Pi hardware.**
+**Configured GPIO, CoAP, and local inference degrade only in development posture.**
 
 On non-Pi platforms (developer laptops, CI, cloud servers), hardware
 libraries like `gpiozero`, `smbus2`, and `RPi.bme280` are unavailable.
@@ -818,12 +818,27 @@ enters simulation mode when the library is missing:
 - `read()` returns simulated or cached values
 - No hardware is touched
 
-This is intentional. It allows the full reasoning pipeline, EventBus,
+This is intentional for `device.deployment_profile: development`. It allows
+the full reasoning pipeline, EventBus,
 StateStore, and action dispatcher to be exercised in tests and on
 developer machines without a Pi. The 5 skipped tests in the suite
 require a real Pi with `gpiozero` installed.
 
-**On non-Pi hardware, I2C and serial adapters run in simulation mode.**
+Staging, production, and development deployments with
+`security.enforce_production_posture: true` fail before opening the state store
+when a configured GPIO relay/status signal lacks `gpiozero`, a configured CoAP
+action/sensor lacks `aiocoap`, or configured local reasoning lacks
+`llama-cpp-python` or a readable GGUF model. A hardened runtime must not report
+healthy while a requested physical, protocol, or reasoning capability is
+simulated or unavailable.
+
+For relay configuration, `actions.relay.enabled` gates Tier B/C use only. A
+present `gpio_pin` declares the Tier D physical path and therefore requires real
+GPIO even when `enabled: false`; omit the pin entirely when no relay is wired.
+Local inference is requested by `reasoning.default_tier: local`; dormant model
+path values under `default_tier: rule` do not activate that capability.
+
+**I2C and serial simulation remain separate adapter behavior.**
 If `protocol: i2c` or `protocol: serial` appears in ori.yaml on a
 machine without the Pi hardware libraries, `_make_adapter()` returns
 the adapter successfully, `connect()` logs a WARNING and sets

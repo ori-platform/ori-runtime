@@ -30,7 +30,7 @@ def skip_if_no_pi():
 async def relay() -> RelayAction:
     """A RelayAction already connected in simulation mode."""
     r = RelayAction()
-    await r.connect(gpio_pin=26)
+    await r.connect(gpio_pin=26, allow_simulation=True)
     return r
 
 
@@ -41,7 +41,7 @@ async def relay() -> RelayAction:
 async def test_connect_sets_connected():
     r = RelayAction()
     assert not r._connected
-    await r.connect(gpio_pin=26)
+    await r.connect(gpio_pin=26, allow_simulation=True)
     assert r._connected
 
 
@@ -50,15 +50,28 @@ async def test_connect_enters_simulation_mode_without_gpiozero(monkeypatch):
     """Remove gpiozero from sys.modules to force simulation mode."""
     monkeypatch.setitem(sys.modules, "gpiozero", None)
     r = RelayAction()
-    await r.connect(gpio_pin=26)
+    await r.connect(gpio_pin=26, allow_simulation=True)
     assert r._simulated is True
     assert r._device is None
 
 
 @pytest.mark.asyncio
+async def test_connect_is_fail_closed_by_default(monkeypatch):
+    monkeypatch.setitem(sys.modules, "gpiozero", None)
+    relay = RelayAction()
+
+    with pytest.raises(RuntimeError, match="gpiozero is required"):
+        await relay.connect(gpio_pin=26)
+
+    assert relay._connected is False
+    assert relay._simulated is False
+    assert relay._device is None
+
+
+@pytest.mark.asyncio
 async def test_connect_stores_pin_and_active_high():
     r = RelayAction()
-    await r.connect(gpio_pin=17, active_high=False)
+    await r.connect(gpio_pin=17, active_high=False, allow_simulation=True)
     assert r._pin == 17
     assert r._active_high is False
 

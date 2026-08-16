@@ -751,7 +751,7 @@ class TestLoadExample:
         cfg = Config.load(EXAMPLE_YAML)
         relay = cfg.actions.relay
         assert relay["enabled"] is False
-        assert relay["gpio_pin"] == 26
+        assert "gpio_pin" not in relay
 
     def test_raw_preserved(self):
         cfg = Config.load(EXAMPLE_YAML)
