@@ -4,6 +4,27 @@ if [ -z "${BASH_VERSION:-}" ]; then
   echo "unsupported_target: install-linux.sh must be run with bash; use curl ... | bash -s -- ..." >&2
   exit 2
 fi
+# Find an interpreter this installer can actually use. Bundles are published
+# for 3.11 and 3.12 only, and `python3` is whatever the distribution chose: on
+# Pop!_OS it is 3.10 while a perfectly good python3.12 sits alongside it. Using
+# `python3` alone reports the host as unsupported when it is not.
+#
+# Each candidate is asked its own version rather than trusted for its name. A
+# `python3.12` on PATH may be a wrapper, a shim, or a broken symlink, and the
+# name proves nothing about what running it produces.
+ori_python=""
+for ori_candidate in python3.12 python3.11 python3; do
+  command -v "${ori_candidate}" >/dev/null 2>&1 || continue
+  if "${ori_candidate}" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] in ((3, 11), (3, 12)) else 1)' >/dev/null 2>&1; then
+    ori_python="${ori_candidate}"
+    break
+  fi
+done
+if [ -z "${ori_python}" ]; then
+  echo "unsupported_target: no supported Python found on PATH. Ori requires Python 3.11 or 3.12; install one (for example 'sudo apt install python3.12') and run this again." >&2
+  exit 2
+fi
+
 # Dispatch on execution mode, not on filename. BASH_SOURCE[0] is the script
 # path when a file is executed and unset when bash reads the program from
 # stdin, so it distinguishes the two without consulting $0 — which is merely
@@ -11,7 +32,7 @@ fi
 # in the working directory.
 ori_source="${BASH_SOURCE[0]-}"
 if [ -n "${ori_source}" ] && [ -f "${ori_source}" ] && [ -r "${ori_source}" ]; then
-  exec python3 "${ori_source}" "$@"
+  exec "${ori_python}" "${ori_source}" "$@"
 fi
 # No file to run, so the program must arrive on stdin. If stdin is a terminal
 # there is nothing to read, and exiting quietly would look like success.
@@ -19,7 +40,7 @@ if [ -t 0 ]; then
   echo "unsupported_target: no installer source found; run the downloaded file, or pipe it with 'curl -fsSL ... | bash -s -- ...'" >&2
   exit 2
 fi
-exec python3 - "$@"
+exec "${ori_python}" - "$@"
 ":"""
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0

@@ -145,12 +145,12 @@ def _run_installer(
     # and silently dropped here would be a flag that appears to work.
     for option, flag in (
         ("--scope", "scope"),
+        ("--service-user", "service_user"),
         ("--device-id", "device_id"),
         ("--name", "name"),
         ("--location", "location"),
         ("--deployment-type", "deployment_type"),
         ("--operator-contact", "operator_contact"),
-        ("--service-user", "service_user"),
         ("--root", "root"),
     ):
         value = getattr(args, flag, None)

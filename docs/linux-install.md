@@ -33,6 +33,12 @@ interpreter version:
 Both production tuples use the interpreter their distribution ships, so no
 manual Python installation is required.
 
+Where the distribution's `python3` is some other version, the installer looks
+for a supported one rather than refusing the host: it tries `python3.12`,
+`python3.11`, then `python3`, and uses the first that reports 3.11 or 3.12. A
+workstation whose default is 3.10 installs normally as long as one of those is
+present. If none is, the installer says so and names what to install.
+
 **Raspberry Pi OS Bullseye is not supported.** It ships OpenSSL 1.1.1, which
 cannot perform the required verification — the installer reports
 `crypto_unavailable` rather than pretending otherwise.
@@ -113,7 +119,9 @@ curl -fsSL \
 
 You are asked, in order: the installation scope, a device ID, a device name, a
 location, and an optional operator contact. Then the values are read back and
-you confirm before anything is written to the host.
+you confirm. Nothing durable has been written to the host at that point — the
+bundle has been verified, but packages, the service account, the install root
+and the environment all follow your confirmation.
 
 Piped installs reopen `/dev/tty` for those prompts; if no terminal is available
 the install fails rather than silently choosing defaults. Prompts and progress
@@ -134,6 +142,7 @@ Installation scope:
      Stops after your last session unless lingering is enabled.
      Does not start at boot without lingering.
 
+Type 1 or 2. Press Enter to accept 1 (system).
 Choose [1]:
 ```
 
@@ -211,11 +220,44 @@ Everything after the bootstrap is already covered by the KMS signature.
 | Requires root | No — and refuses to run as root | Yes |
 | Starts at boot | Only if lingering is enabled | Yes |
 
-System scope defaults to the service user `ori-runtime`; override with
-`--service-user`. That account must already exist. Under system scope the
-installed code stays root-owned and read-only to the service: the runtime can
-read its config and create its health socket, but cannot modify the code it
-executes.
+System scope runs the runtime as **`ori-runtime`**, an unprivileged account with
+no home directory and no login shell. The name is fixed and is not
+configurable — like `postgres` or `docker`, it is the same on every host, so the
+unit file, the permission checks, the documentation and any support answer all
+refer to the same identity.
+
+The installer creates the account if it does not exist. That happens after the
+bundle signature is verified and after you confirm the device values — an
+unsigned bundle must not be able to leave an account behind — and before any
+package is installed or the environment is built. You are asked first;
+declining stops the installation and prints the command, since a system service
+whose account is missing cannot start. Under `--unattended` it is created
+without asking, because automation that selected system scope has already
+chosen a system install.
+
+An account that already exists is used exactly as found — its group, home, and
+shell are never modified, since they may have been set deliberately. Uninstall
+leaves the account in place: files outside the install root may belong to it,
+and a freed uid can be reused by a later account.
+
+If you prefer to create it yourself beforehand:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin ori-runtime
+```
+
+Under system scope the installed code stays root-owned and read-only to the
+service: the runtime can read its config and create its health socket, but
+cannot modify the code it executes. `ori doctor` proves this with a mandatory
+`permissions.code` check.
+
+**User scope cannot offer that property, and does not pretend to.** The release
+and the runtime share one Unix owner, so the account running the code can
+always restore write access to it — read-only permission bits would describe
+the current state, not a boundary. `ori doctor` therefore reports
+`permissions.code` as a warning under user scope. The installation is complete
+and usable; what it lacks is privilege separation, which only system scope
+provides.
 
 Choose **system** for devices in the field. Choose **user** for a workstation
 or a trial where you do not want a root-owned install.

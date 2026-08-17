@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import textwrap
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -280,23 +281,187 @@ def test_workspace_failure_maps_to_stable_archive_error(
     )
 
 
-def test_user_scope_rejects_service_user_before_verification(
+def test_a_different_service_account_name_is_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """One name, everywhere — it is not a per-host choice.
+
+    A configurable account would have to be carried by the unit file, the
+    permission checks and the documentation, any of which could then disagree
+    with the others about who the runtime is.
+    """
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
     monkeypatch.setattr(
         cli,
         "load_release_key_registry",
         lambda _path: pytest.fail("verification must not begin"),
     )
-    args = [*_install_args(tmp_path), "--service-user", "ori-runtime"]
+    args = [*_system_install_args(tmp_path), "--service-user", "somebody-else"]
 
     with pytest.raises(SystemExit) as error:
         cli.main(args)
 
     assert error.value.code == 2
-    assert "--service-user is valid only for system scope" in capsys.readouterr().err
+    message = capsys.readouterr().err
+    assert "always ori-runtime" in message
+    assert "cannot be renamed" in message
+
+
+def test_the_canonical_service_account_name_is_still_accepted() -> None:
+    """A script that already passes the documented default keeps working.
+
+    The flag shipped in v2.3.0, and what the installer's compatibility promise
+    protects is the meaning of a flag an operator already wrote. Omitting it and
+    passing the canonical name resolve to the same profile.
+    """
+    explicit = cli._profile("system", "ori-runtime")
+    omitted = cli._profile("system", None)
+
+    assert explicit == omitted
+    assert explicit.service_user == "ori-runtime"
+
+
+def test_a_service_user_on_user_scope_is_refused() -> None:
+    """User units have no `User=`, so naming an account there means something
+    the installation cannot honour — silently ignoring it would produce a user
+    install the operator believes runs as somebody else."""
+    with pytest.raises(LinuxInstallError, match="only for system scope"):
+        cli._profile("user", "ori-runtime")
+
+
+def test_a_renamed_service_account_is_refused_at_the_profile() -> None:
+    with pytest.raises(LinuxInstallError, match="cannot be renamed"):
+        cli._profile("system", "somebody-else")
+
+
+@pytest.mark.skipif(
+    Path("/etc").resolve() != Path("/etc"),
+    reason="system scope resolves /etc, which is not canonical on this host",
+)
+def test_the_account_is_created_after_verification_and_before_the_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Creating an account is a durable host change, so it waits its turn.
+
+    An unsigned or tampered bundle must not be able to leave an account behind,
+    and confirmation promises that nothing has been changed yet — so creation
+    follows verification and the operator's agreement. It precedes the packages,
+    the bundle being opened and the environment being built, so a host that
+    cannot provide the account is not discovered after minutes of work, and a
+    declined account has not already cost an OS package install.
+    """
+    calls: list[str] = []
+    accounts = {"exists": False}
+
+    def getpwnam(name: str) -> object:
+        if accounts["exists"]:
+            return SimpleNamespace(pw_name=name, pw_uid=4242, pw_gid=4242)
+        raise KeyError(name)
+
+    def useradd(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        calls.append("account")
+        accounts["exists"] = True
+        return subprocess.CompletedProcess(list(command), 0, "", "")
+
+    def verify(**_kwargs: object) -> object:
+        calls.append("verify")
+        return SimpleNamespace(runtime_version="2.4.0-rc.4")
+
+    original_collect = cli.collect_installer_config
+
+    def collect(options: object, **channel: object) -> object:
+        calls.append("collect")
+        return original_collect(options, **channel)  # type: ignore[arg-type]
+
+    def extract(_verified: object, *, destination: Path) -> object:
+        calls.append("extract")
+        raise LinuxInstallError("offline_install_failed", "stop before building")
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        cli, "detected_release_target", lambda: "linux-x86_64-python3.12"
+    )
+    monkeypatch.setattr(cli, "load_release_key_registry", lambda _p: {"k": object()})
+    monkeypatch.setattr(cli, "verify_release_bundle", verify)
+    monkeypatch.setattr(cli, "collect_installer_config", collect)
+    monkeypatch.setattr(cli, "extract_verified_bundle", extract)
+    monkeypatch.setattr("ori.installer.linux.pwd.getpwnam", getpwnam)
+    monkeypatch.setattr(
+        "ori.installer.linux._trusted_useradd", lambda: "/usr/sbin/useradd"
+    )
+    monkeypatch.setattr("ori.installer.linux._run_account_command", useradd)
+    monkeypatch.setattr(
+        cli.prerequisites,
+        "ensure",
+        lambda **_kwargs: calls.append("prerequisites") or [],
+    )
+
+    with pytest.raises(SystemExit):
+        cli.main(_system_install_args(tmp_path))
+
+    # The account precedes the packages: it is the change an operator is most
+    # likely to decline, and declining it ends the run. Asking afterwards would
+    # mean packages had been installed for an installation that never finished.
+    assert calls == ["verify", "collect", "account", "prerequisites", "extract"]
+
+
+@pytest.mark.skipif(
+    Path("/etc").resolve() != Path("/etc"),
+    reason="system scope resolves /etc, which is not canonical on this host",
+)
+def test_an_unsigned_bundle_leaves_no_account_behind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected bundle must not mutate the host.
+
+    System scope, because that is the only scope with an account to create: a
+    user-scope run would pass this trivially without ever reaching the code
+    under test.
+    """
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda name: (_ for _ in ()).throw(KeyError(name)),
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux._run_account_command",
+        lambda _c: pytest.fail("an unverified bundle must not create an account"),
+    )
+    monkeypatch.setattr(
+        cli,
+        "verify_release_bundle",
+        lambda **_k: (_ for _ in ()).throw(
+            ReleaseBundleError("untrusted_release_key", "not signed by a known key")
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        cli.main(_system_install_args(tmp_path))
+
+
+def _system_install_args(tmp_path: Path) -> list[str]:
+    return [
+        "install",
+        "--bundle",
+        str(tmp_path / "bundle.tar.gz"),
+        "--signature",
+        str(tmp_path / "bundle.tar.gz.sig"),
+        "--root",
+        str(tmp_path / "ori"),
+        "--scope",
+        "system",
+        "--unattended",
+        "--device-id",
+        "ori-01",
+        "--name",
+        "Office",
+        "--location",
+        "Lagos",
+    ]
 
 
 def test_uninstall_disables_unit_before_removing_release(

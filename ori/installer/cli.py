@@ -23,12 +23,14 @@ from ori.installer import (
     scope_prompt,
 )
 from ori.installer.linux import (
+    SERVICE_USER,
     InstallerInputOptions,
     InstallLayout,
     LinuxInstallError,
     SystemdServiceManager,
     SystemdServiceProfile,
     collect_installer_config,
+    ensure_service_account,
     install_composed_release,
     uninstall_runtime,
 )
@@ -62,14 +64,28 @@ def detected_release_target() -> str:
     return f"linux-{normalized_architecture}-python{python_version}"
 
 
-def _profile(scope: str, service_user: str | None) -> SystemdServiceProfile:
+def _profile(scope: str, service_user: str | None = None) -> SystemdServiceProfile:
+    """Resolve the service profile, accepting only the canonical account name.
+
+    `--service-user` shipped in v2.3.0 and is kept rather than removed, because
+    an explicit flag an operator already wrote is what the installer's
+    compatibility promise protects. What it no longer does is name a different
+    account: the runtime's system identity is fixed, so the flag now accepts the
+    one value it always defaulted to and refuses the rest with a reason.
+    """
     if scope == "user":
         if service_user is not None:
             raise LinuxInstallError(
                 "service_start_failed", "--service-user is valid only for system scope"
             )
         return SystemdServiceProfile.user()
-    return SystemdServiceProfile.system(service_user or "ori-runtime")
+    if service_user is not None and service_user != SERVICE_USER:
+        raise LinuxInstallError(
+            "service_start_failed",
+            f"the system service account is always {SERVICE_USER} and cannot be "
+            f"renamed; drop --service-user, or pass --service-user {SERVICE_USER}",
+        )
+    return SystemdServiceProfile.system()
 
 
 def _paths(
@@ -168,6 +184,16 @@ def _install(args: argparse.Namespace) -> dict[str, object]:
     # Confirmed. Now the host may be changed — and only now, with the bundle
     # already proven authentic, so an unsigned or tampered bundle can never
     # reach a package prompt.
+    #
+    # The account goes first among those changes. It is the one an operator is
+    # most likely to decline, and declining it ends the installation: asking
+    # afterwards would mean OS packages had already been installed for a run
+    # that was never going to finish. Deliberately not part of
+    # `prerequisites.ensure`, which offers packages — an account is a different
+    # kind of change and asks for itself.
+    ensure_service_account(
+        profile, unattended=args.unattended, prompt=prompt, write=write
+    )
     prerequisites.ensure(unattended=args.unattended, prompt=prompt, write=write)
 
     service_manager = SystemdServiceManager(
@@ -323,8 +349,8 @@ def _add_scope_arguments(parser: argparse.ArgumentParser) -> None:
     # No default: scope decides whether the runtime survives a reboot and
     # whether it can rewrite its own code, so it is never chosen silently.
     parser.add_argument("--scope", choices=("user", "system"), default=None)
-    parser.add_argument("--root", type=Path)
     parser.add_argument("--service-user")
+    parser.add_argument("--root", type=Path)
 
 
 def build_parser() -> argparse.ArgumentParser:
