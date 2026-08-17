@@ -102,6 +102,23 @@ def test_prompt_states_both_consequences(tty: None) -> None:
     assert "ori-runtime" in shown
 
 
+def test_prompt_says_how_to_answer_and_what_enter_does(tty: None) -> None:
+    """`Choose [1]: ` alone reads as a value already filled in.
+
+    An operator on hardware took the bracketed 1 for a pre-selection and sat
+    waiting at a prompt that was waiting for them. The default is real — Enter
+    accepts system — but the operator has to be told that it is theirs to send.
+    """
+    written: list[str] = []
+    scope_prompt.choose_scope(
+        supplied=None, unattended=False, prompt=_Prompt("1"), write=written.append
+    )
+    shown = "\n".join(written)
+
+    assert "Type 1 or 2" in shown
+    assert "Press Enter to accept 1 (system)" in shown
+
+
 def test_invalid_answer_reprompts_then_gives_up(tty: None) -> None:
     prompt = _Prompt("maybe", "3", "yes")
     with pytest.raises(LinuxInstallError) as excinfo:

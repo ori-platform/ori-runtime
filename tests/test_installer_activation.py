@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import subprocess
 from pathlib import Path
 
@@ -737,3 +738,133 @@ def test_a_real_doctor_run_satisfies_the_activation_boundary(
     activation._assert_complete(report)
     activation._assert_status_agrees(0, report)
     activation.assert_usable(report)
+
+
+# --- the real doctor, judged by the real gate ------------------------------
+#
+# Everything above stubs doctor's output to test how activation handles it.
+# That is why v2.4.0-rc.3 shipped a user-scope install that could never
+# succeed: the real doctor and the real gate had never been run against each
+# other. These tests join them, with no synthetic check dictionaries between.
+
+
+def _install_release_for_real(root: Path, diagnose_as: str) -> tuple[Path, object]:
+    """Let the installer create the release, then describe what it produced.
+
+    The tree is not assembled by hand here. `install_release` creates the
+    install root, stages the release, moves it into place and sets `current`,
+    so the modes under diagnosis are the ones the installer really leaves — the
+    seam that shipped a user-scope install nobody could complete.
+    """
+    from ori import doctor
+    from ori.installer.linux import (
+        InstallLayout,
+        SystemdServiceProfile,
+        install_release,
+    )
+
+    def prepare(staging: Path) -> None:
+        binaries = staging / "venv" / "bin"
+        binaries.mkdir(parents=True)
+        interpreter = binaries / "python"
+        interpreter.write_text("#!/bin/sh\n", encoding="utf-8")
+        interpreter.chmod(0o755)
+        (staging / "ori").mkdir()
+        (staging / "ori" / "runtime.py").write_text("# code\n", encoding="utf-8")
+
+    layout = InstallLayout.resolve(root)
+    version = "2.4.0-rc.4"
+    install_release(
+        layout=layout,
+        version=version,
+        prepare=prepare,
+        validate=lambda _path: None,
+        restart_service=lambda: None,
+        stop_service=lambda: None,
+        check_health=lambda _path: None,
+        # Always installed under user scope: applying system permissions needs
+        # root, which this suite does not have and must not require. What the
+        # installer produces here — the modes, the staging move, `current` — is
+        # the same tree either way; only the identity diagnosing it differs.
+        service_profile=SystemdServiceProfile.user(),
+    )
+    release = layout.release(version)
+    (layout.data / "ori.yaml").write_text("device: {}\n", encoding="utf-8")
+
+    identity = doctor.InstallIdentity(
+        scope=diagnose_as,
+        version=version,
+        install_root=layout.root,
+        active_release=release,
+        config_path=layout.data / "ori.yaml",
+        data_path=layout.data,
+        health_socket=layout.data / "health.sock",
+        unit_path=layout.root / "ori-runtime.service",
+        service_user=(
+            pwd.getpwuid(os.getuid()).pw_name if diagnose_as == "system" else None
+        ),
+    )
+    return release, identity
+
+
+def _as_reported(checks: list[object]) -> list[dict[str, object]]:
+    """Render real DoctorCheck objects the way doctor's JSON report does."""
+    return [
+        {
+            "name": c.name,
+            "status": c.status,
+            "message": c.message,
+            "mandatory": c.mandatory,
+        }
+        for c in checks
+    ]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="mode-based denial is invisible to root")
+def test_a_real_user_scope_install_passes_the_real_gate(tmp_path: Path) -> None:
+    """A user-scope installation must complete, carrying the advisory.
+
+    This is the case that failed on hardware in v2.4.0-rc.3: the release is
+    owned by the account that runs it, and the mandatory code-immutability
+    check rejected the install for a property user scope cannot provide.
+    """
+    from ori import doctor
+
+    root = tmp_path / "ori"
+    root.mkdir()
+    _release, identity = _install_release_for_real(root, "user")
+
+    reported = _as_reported(doctor.check_permissions(identity))
+    code = next(c for c in reported if c["name"] == "permissions.code")
+
+    assert code["status"] == "WARN"
+    assert code["mandatory"] is False
+    assert activation.blocking(reported) == []
+    # The gate the installer actually calls inside its transaction.
+    activation.assert_usable(reported)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="mode-based denial is invisible to root")
+def test_a_real_system_scope_install_is_blocked_when_code_is_writable(
+    tmp_path: Path,
+) -> None:
+    """The scope that can enforce immutability must still enforce it.
+
+    The tree is one the installer really produced; the identity diagnosing it
+    is a system one whose service account owns that tree. That is precisely the
+    condition the check exists to catch, and it must survive the scope split.
+    """
+    from ori import doctor
+
+    root = tmp_path / "ori"
+    root.mkdir()
+    _release, identity = _install_release_for_real(root, "system")
+
+    reported = _as_reported(doctor.check_permissions(identity))
+    code = next(c for c in reported if c["name"] == "permissions.code")
+
+    assert code["status"] == "FAIL"
+    assert code["mandatory"] is True
+    assert activation.blocking(reported) != []
+    with pytest.raises(LinuxInstallError, match="post_install_health_failed"):
+        activation.assert_usable(reported)

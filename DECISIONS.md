@@ -1788,3 +1788,48 @@ Non-goals:
   remains for the specs arc to build on.
 - This does not weaken first-party hooks. Packaged skills still import
   normally; they are reviewed and released with the runtime.
+
+## 2026-08-17 — The System Service Account Is A Constant, Not A Setting
+
+**Status:** Accepted
+
+The runtime's system service account is always `ori-runtime`. The installer
+creates it when absent, and `--service-user` accepts that one name.
+
+A configurable account name has to be carried by the unit file, the permission
+checks, the diagnostics, the documentation and every support answer. Each of
+those is a place the value can disagree with the others, and the failure that
+follows — a unit whose `User=` names an account the permission check never
+examined — appears at service start, not at install. `postgres` and `docker` are
+not per-host choices for the same reason: a fixed identity is what lets every
+one of those refer to the same thing without passing a variable between them.
+
+The installer now creates the account rather than requiring it to exist. This
+is consistent with what a distribution package does in its postinst, and with
+`prerequisites.ensure`, which already changes the host with consent. The earlier
+position — that creating an account was not something the installer does on an
+operator's behalf — was asserted, never decided, and it made an operator
+hand-perform the step the installer is best placed to get right. Consent is
+asked interactively and assumed under `--unattended`, which has already chosen a
+system install. Declining stops the installation; it never means proceeding
+without the account, which would produce a service that cannot start.
+
+An existing account is adopted exactly as found — no group, home, or shell is
+modified, because those may have been set deliberately. Uninstall leaves it in
+place: files outside the install root may belong to it, and a freed uid can be
+reused by a later account.
+
+**`--service-user` is narrowed, not removed.** It shipped in v2.3.0, and the
+compatibility contract recorded on 2026-08-14 holds that explicit installer
+flags and their meanings are stable across v2 minor releases. Removing it would
+break that promise, and would answer a script that passes it with an
+unrecognised-argument error rather than an explanation. It therefore remains,
+accepts `ori-runtime`, and refuses any other value with a stable
+`service_start_failed` naming the reason. An invocation that omitted the flag or
+passed the documented default is unaffected; the only invocation that changes is
+one naming a different account, which is the capability being withdrawn.
+
+This narrowing is within the middle category of that contract — an unsafe
+implicit default becoming an error — because the account the runtime runs as is
+privilege-relevant, and a name that only the unit file knew about was never
+verified against the identity the permission checks examined.

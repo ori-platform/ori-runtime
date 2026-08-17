@@ -35,6 +35,8 @@ _PROMPT = """
      Runs as your login user.
      Stops after your last session unless lingering is enabled.
      Does not start at boot without lingering.
+
+Type 1 or 2. Press Enter to accept 1 (system).
 """
 
 _CHOICES = {"1": "system", "2": "user", "system": "system", "user": "user"}

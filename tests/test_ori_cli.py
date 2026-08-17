@@ -1134,6 +1134,8 @@ def test_every_exposed_option_is_forwarded(tmp_path: Path) -> None:
         ("--location", "Lagos"),
         ("--deployment-type", "server"),
         ("--operator-contact", "ops@example.com"),
+        # Still exposed and still forwarded; dropping it here would let the two
+        # sides drift apart unnoticed.
         ("--service-user", "ori-runtime"),
         ("--root", "/opt/ori"),
     ):

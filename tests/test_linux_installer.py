@@ -6,6 +6,7 @@ import os
 import pwd
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -14,10 +15,12 @@ import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 import yaml
 
+from ori.installer import linux as installer_linux
 from ori.installer.linux import (
     BootPersistence,
     InstallerConfigInput,
@@ -28,6 +31,7 @@ from ori.installer.linux import (
     SystemdServiceManager,
     SystemdServiceProfile,
     apply_system_service_permissions,
+    ensure_service_account,
     install_composed_release,
     install_release,
     provision_runtime_config,
@@ -584,7 +588,7 @@ def test_composed_reinstall_integrates_config_dac_and_live_health_socket(
             "layout": layout,
             "bundle": bundle,
             "values": InstallerConfigInput("ori-01", "Office", "Lagos"),
-            "service_profile": SystemdServiceProfile.system("ori"),
+            "service_profile": SystemdServiceProfile.system(),
             "service_manager": Manager(),
             "unit_template": _service_template(),
             "env_file": layout.data / "runtime.env",
@@ -648,7 +652,11 @@ def test_failed_post_move_validation_removes_unusable_release(tmp_path: Path) ->
         )
 
     assert not layout.release("2.3.0").exists()
-    assert list(layout.releases.iterdir()) == []
+    # This invocation created the install root, and the failure left it empty,
+    # so nothing of it remains — an operator whose first install failed has no
+    # directory tree suggesting Ori is installed.
+    assert not layout.releases.exists()
+    assert not layout.root.exists()
     assert not layout.current.exists()
 
 
@@ -673,7 +681,7 @@ def test_systemd_manager_separates_user_and_system_commands(tmp_path: Path) -> N
         effective_uid=1001,
     )
     system = SystemdServiceManager(
-        profile=SystemdServiceProfile.system("ori"),
+        profile=SystemdServiceProfile.system(),
         unit_path=(tmp_path / "system" / "ori-runtime.service").resolve(),
         runner=system_runner,
         effective_uid=0,
@@ -850,8 +858,8 @@ def test_systemd_manager_disables_before_removing_unit(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("manager_profile", "rendered_profile"),
     [
-        (SystemdServiceProfile.system("ori"), SystemdServiceProfile.user()),
-        (SystemdServiceProfile.user(), SystemdServiceProfile.system("ori")),
+        (SystemdServiceProfile.system(), SystemdServiceProfile.user()),
+        (SystemdServiceProfile.user(), SystemdServiceProfile.system()),
     ],
 )
 def test_systemd_manager_rejects_rendered_profile_mismatch(
@@ -899,7 +907,7 @@ def test_system_boot_persistence_queries_real_enablement(tmp_path: Path) -> None
         return subprocess.CompletedProcess(command, returncode, stdout, "")
 
     manager = SystemdServiceManager(
-        profile=SystemdServiceProfile.system("ori"),
+        profile=SystemdServiceProfile.system(),
         unit_path=(tmp_path / "units" / "ori-runtime.service").resolve(),
         runner=runner,
         effective_uid=0,
@@ -943,7 +951,7 @@ def test_systemd_manager_rejects_root_user_scope_and_command_failures(
             profile=SystemdServiceProfile.user(), unit_path=unit, effective_uid=0
         )
     manager = SystemdServiceManager(
-        profile=SystemdServiceProfile.system("ori"),
+        profile=SystemdServiceProfile.system(),
         unit_path=unit,
         effective_uid=0,
         runner=lambda command: subprocess.CompletedProcess(command, 1, "", "failed"),
@@ -1315,7 +1323,7 @@ def test_system_systemd_unit_uses_unprivileged_user_and_system_target(
 ) -> None:
     rendered = render_systemd_unit(
         _service_template(),
-        profile=SystemdServiceProfile.system("ori-runtime"),
+        profile=SystemdServiceProfile.system(),
         root=(tmp_path / "root").resolve(),
         data_dir=(tmp_path / "data").resolve(),
         config_path=(tmp_path / "data" / "config.yaml").resolve(),
@@ -1326,10 +1334,19 @@ def test_system_systemd_unit_uses_unprivileged_user_and_system_target(
     assert "@ORI_" not in rendered
 
 
-@pytest.mark.parametrize("service_user", ["root", "0", "Bad User", "ori;root"])
-def test_system_systemd_profile_rejects_unsafe_identity(service_user: str) -> None:
+@pytest.mark.parametrize(
+    "service_user", ["root", "0", "Bad User", "ori;root", "ori", "postgres"]
+)
+def test_system_systemd_profile_refuses_any_other_identity(service_user: str) -> None:
+    """The account name is a constant, so no other value may reach a unit file.
+
+    A configurable name would have to be carried by the unit file, the
+    permission checks, the documentation and every support answer, and each
+    could disagree. `root` and `ori;root` are refused for the obvious reasons;
+    `ori` and `postgres` are refused for the same one as any other name.
+    """
     with pytest.raises(LinuxInstallError, match="service_start_failed"):
-        SystemdServiceProfile.system(service_user)
+        SystemdServiceProfile(scope="system", service_user=service_user)
 
 
 @pytest.mark.parametrize(
@@ -1419,7 +1436,7 @@ def test_system_permissions_keep_code_root_owned_and_data_service_owned(
         ),
     )
 
-    apply_system_service_permissions(layout, SystemdServiceProfile.system("ori"))
+    apply_system_service_permissions(layout, SystemdServiceProfile.system())
 
     assert ownership[layout.root] == (0, 1002)
     assert ownership[regular] == (0, 1002)
@@ -1438,7 +1455,7 @@ def test_system_permissions_fail_closed_for_non_root_and_data_symlink(
     layout.data.mkdir()
     monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 501)
     with pytest.raises(LinuxInstallError, match="service_start_failed"):
-        apply_system_service_permissions(layout, SystemdServiceProfile.system("ori"))
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
 
     monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
     monkeypatch.setattr(
@@ -1448,7 +1465,7 @@ def test_system_permissions_fail_closed_for_non_root_and_data_symlink(
     monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
     (layout.data / "escape").symlink_to(tmp_path / "outside")
     with pytest.raises(LinuxInstallError, match="unsafe_install_root"):
-        apply_system_service_permissions(layout, SystemdServiceProfile.system("ori"))
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
     assert layout.root.stat().st_mode & 0o777 == 0o755
 
 
@@ -1477,14 +1494,14 @@ def test_system_permissions_allow_only_configured_runtime_socket(
             with pytest.raises(LinuxInstallError, match="special files are forbidden"):
                 apply_system_service_permissions(
                     layout,
-                    SystemdServiceProfile.system("ori"),
+                    SystemdServiceProfile.system(),
                     allowed_data_sockets=(health_path,),
                 )
             unexpected_socket.close()
             unexpected_path.unlink()
             apply_system_service_permissions(
                 layout,
-                SystemdServiceProfile.system("ori"),
+                SystemdServiceProfile.system(),
                 allowed_data_sockets=(health_path,),
             )
             assert health_path.exists()
@@ -1528,7 +1545,7 @@ def test_system_upgrade_preserves_access_and_reapplies_permissions(
         restart_service=lambda: None,
         stop_service=lambda: None,
         check_health=lambda _path: None,
-        service_profile=SystemdServiceProfile.system("ori"),
+        service_profile=SystemdServiceProfile.system(),
     )
     assert observed_modes == [(0o750, 0o750)]
 
@@ -1555,7 +1572,7 @@ def test_permission_failure_is_stable_and_restores_current_owner(
         lambda *_args: (_ for _ in ()).throw(NotImplementedError("old glibc")),
     )
     with pytest.raises(LinuxInstallError, match="service_start_failed"):
-        apply_system_service_permissions(layout, SystemdServiceProfile.system("ori"))
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
     assert ownership_calls == [(0, 1002), (original.st_uid, original.st_gid)]
 
 
@@ -1581,7 +1598,7 @@ def test_system_permissions_accept_internal_venv_directory_symlink(
     )
     monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
 
-    apply_system_service_permissions(layout, SystemdServiceProfile.system("ori"))
+    apply_system_service_permissions(layout, SystemdServiceProfile.system())
 
     assert (release / "lib64").resolve() == library
     assert (binary / "python").resolve() == interpreter
@@ -1607,7 +1624,7 @@ def test_system_permissions_reject_escaping_release_symlinks(
     monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
 
     with pytest.raises(LinuxInstallError, match="unsafe_install_root"):
-        apply_system_service_permissions(layout, SystemdServiceProfile.system("ori"))
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
 
     (release / "lib64").unlink()
     external_python = tmp_path / "python"
@@ -1619,7 +1636,7 @@ def test_system_permissions_reject_escaping_release_symlinks(
     with pytest.raises(
         LinuxInstallError, match="external release symlink target is not trusted"
     ):
-        apply_system_service_permissions(layout, SystemdServiceProfile.system("ori"))
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
 
 
 def test_permission_failure_removes_new_release_before_activation(
@@ -1641,7 +1658,7 @@ def test_permission_failure_removes_new_release_before_activation(
             restart_service=lambda: None,
             stop_service=lambda: None,
             check_health=lambda _path: None,
-            service_profile=SystemdServiceProfile.system("ori"),
+            service_profile=SystemdServiceProfile.system(),
         )
     assert not layout.release("2.3.0").exists()
     assert not layout.current.exists()
@@ -1717,7 +1734,7 @@ def test_system_config_is_owned_by_service_identity_without_ordering_dependency(
         config_path=config_path,
         release_python=Path(sys.executable),
         health_socket_path=config_path.parent / "health.sock",
-        service_profile=SystemdServiceProfile.system("ori"),
+        service_profile=SystemdServiceProfile.system(),
     )
 
     assert ownership == [(991, 992)]
@@ -1919,7 +1936,8 @@ def test_failed_shebang_repair_leaves_no_orphan_release(
         _install(layout, "2.3.1")
 
     assert not layout.release("2.3.1").exists()
-    assert list(layout.releases.iterdir()) == []
+    assert not layout.releases.exists()
+    assert not layout.root.exists()
     assert not layout.current.exists()
 
 
@@ -2089,3 +2107,536 @@ def test_long_path_sh_wrapper_form_is_rebound(tmp_path: Path) -> None:
     # Not executed here: the stand-in interpreter is a /bin/sh symlink, so the
     # re-exec would recurse. Real execution of this form is covered by the six
     # packaged commands in the wheel-installed test.
+
+
+# --- the system service account -------------------------------------------
+
+
+def _absent_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda name: (_ for _ in ()).throw(KeyError(name)),
+    )
+
+
+def test_account_creation_requires_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    _absent_account(monkeypatch)
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+
+    with pytest.raises(LinuxInstallError, match="requires root") as error:
+        ensure_service_account(SystemdServiceProfile.system(), unattended=True)
+
+    # The operator gets the command, not just the diagnosis.
+    assert "useradd" in error.value.detail
+    assert "--scope user" in error.value.detail
+
+
+def test_account_creation_without_useradd_names_the_manual_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _absent_account(monkeypatch)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr("ori.installer.linux._trusted_useradd", lambda: None)
+
+    with pytest.raises(LinuxInstallError, match="useradd is not available") as error:
+        ensure_service_account(SystemdServiceProfile.system(), unattended=True)
+
+    assert "sudo useradd --system --no-create-home" in error.value.detail
+
+
+def test_declining_account_creation_stops_the_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "No" means do not change my system — never "continue without it".
+
+    Proceeding would produce a unit whose User= does not exist, which fails at
+    service start rather than here, where the remedy is still in front of you.
+    """
+    _absent_account(monkeypatch)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux._trusted_useradd", lambda: "/usr/sbin/useradd"
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux._run_account_command",
+        lambda _c: pytest.fail("must not create an account after a refusal"),
+    )
+
+    with pytest.raises(LinuxInstallError, match="is required for a system") as error:
+        ensure_service_account(
+            SystemdServiceProfile.system(),
+            unattended=False,
+            prompt=lambda _p: "n",
+            write=lambda _s: None,
+        )
+
+    assert "sudo useradd" in error.value.detail
+
+
+def test_account_creation_is_confirmed_against_the_account_not_the_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A zero exit is the tool's opinion; the account is the fact.
+
+    Believing the exit code defers the failure to service start, by which point
+    the installation looks complete.
+    """
+    _absent_account(monkeypatch)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux._trusted_useradd", lambda: "/usr/sbin/useradd"
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux._run_account_command",
+        lambda command: subprocess.CompletedProcess(list(command), 0, "", ""),
+    )
+
+    with pytest.raises(LinuxInstallError, match="could not create"):
+        ensure_service_account(SystemdServiceProfile.system(), unattended=True)
+
+
+def test_user_scope_never_touches_system_accounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "ori.installer.linux._run_account_command",
+        lambda _c: pytest.fail("user scope must not create an account"),
+    )
+
+    assert (
+        ensure_service_account(SystemdServiceProfile.user(), unattended=True) is False
+    )
+
+
+def test_an_existing_account_is_adopted_without_being_touched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adopting an identity is not licence to reshape it.
+
+    Every precondition for creating one is satisfied here — root, useradd
+    present, unattended — so the only thing standing between this call and a
+    `useradd` invocation is the account already existing.
+    """
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda name: SimpleNamespace(pw_name=name, pw_uid=4242, pw_gid=4242),
+    )
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux._trusted_useradd", lambda: "/usr/sbin/useradd"
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux._run_account_command",
+        lambda _c: pytest.fail("an existing account must not be modified"),
+    )
+
+    created = ensure_service_account(
+        SystemdServiceProfile.system(),
+        unattended=True,
+        write=lambda _s: None,
+    )
+
+    assert created is False
+
+
+def test_cleanup_removes_every_empty_directory_it_created(tmp_path: Path) -> None:
+    """One surviving directory must not strand its empty siblings.
+
+    A failure that leaves an operator's config in `data/` should still take the
+    empty `releases/` with it; the root then stays because it genuinely still
+    holds something.
+    """
+    root = tmp_path / "ori"
+    releases, data = root / "releases", root / "data"
+    for directory in (root, releases, data):
+        directory.mkdir()
+    (data / "ori.yaml").write_text("device: {}\n", encoding="utf-8")
+
+    installer_linux._remove_created_scaffolding([root, releases, data])
+
+    assert not releases.exists()
+    assert data.exists(), "operator data must never be removed by cleanup"
+    assert root.exists(), "a root still holding data must stay"
+
+
+def test_an_existing_account_with_uid_zero_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An `ori-runtime` that resolves to root defeats the point of system scope.
+
+    Doctor rejects uid 0, but only once the unit is installed and started — by
+    which time the service has already run as root. Name resolution alone is
+    not evidence that an account is unprivileged.
+    """
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda name: SimpleNamespace(pw_name=name, pw_uid=0, pw_gid=0),
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux._run_account_command",
+        lambda _c: pytest.fail("nothing may be built on a root-owned identity"),
+    )
+
+    with pytest.raises(LinuxInstallError, match="uid 0") as error:
+        ensure_service_account(SystemdServiceProfile.system(), unattended=True)
+
+    assert "--scope user" in error.value.detail
+
+
+def test_a_created_account_is_verified_to_be_unprivileged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check after creation must prove the same property as the one before.
+
+    A host tool that hands back uid 0 satisfies "the name now resolves" while
+    producing exactly the account system scope exists to avoid.
+    """
+    state = {"created": False}
+
+    def getpwnam(name: str) -> object:
+        if not state["created"]:
+            raise KeyError(name)
+        return SimpleNamespace(pw_name=name, pw_uid=0, pw_gid=0)
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr("ori.installer.linux.pwd.getpwnam", getpwnam)
+    monkeypatch.setattr(
+        "ori.installer.linux._trusted_useradd", lambda: "/usr/sbin/useradd"
+    )
+
+    def useradd(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        state["created"] = True
+        return subprocess.CompletedProcess(list(command), 0, "", "")
+
+    monkeypatch.setattr("ori.installer.linux._run_account_command", useradd)
+
+    with pytest.raises(LinuxInstallError, match="uid 0"):
+        ensure_service_account(
+            SystemdServiceProfile.system(), unattended=True, write=lambda _s: None
+        )
+
+
+def test_useradd_is_never_taken_from_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This runs as root, so `PATH` must not decide what is executed.
+
+    A writable directory ahead of the system ones on root's `PATH` would
+    otherwise choose the binary, and the installer would run it with full
+    privilege.
+    """
+    attacker = tmp_path / "bin"
+    attacker.mkdir()
+    planted = attacker / "useradd"
+    planted.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    planted.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{attacker}:/usr/sbin:/sbin")
+
+    resolved = installer_linux._trusted_useradd()
+
+    assert resolved != str(planted)
+    assert resolved is None or resolved in installer_linux._USERADD_LOCATIONS
+
+
+@pytest.mark.parametrize(
+    ("uid", "mode", "trusted", "why"),
+    [
+        (0, 0o755, True, "root-owned and writable only by root"),
+        (0, 0o775, False, "group-writable, so not only root could have put it there"),
+        (0, 0o757, False, "world-writable"),
+        (1000, 0o755, False, "owned by somebody other than root"),
+        (1000, 0o700, False, "unwritable by others, but still not root's"),
+    ],
+)
+def test_a_useradd_is_trusted_only_when_root_alone_could_have_placed_it(
+    monkeypatch: pytest.MonkeyPatch, uid: int, mode: int, trusted: bool, why: str
+) -> None:
+    """Each condition is isolated, so one guard cannot cover for the other.
+
+    A root-owned but group-writable binary and a well-permissioned one owned by
+    somebody else are both substitutions; a test that only supplies files
+    failing on both counts passes whichever guard is removed.
+    """
+    candidate = "/usr/sbin/useradd"
+    monkeypatch.setattr(
+        installer_linux, "_USERADD_LOCATIONS", (candidate,), raising=True
+    )
+    monkeypatch.setattr(
+        installer_linux.os,
+        "stat",
+        lambda path, **_kwargs: SimpleNamespace(
+            st_mode=stat.S_IFREG | mode, st_uid=uid
+        ),
+    )
+    monkeypatch.setattr(installer_linux.os, "access", lambda *_a, **_k: True)
+
+    resolved = installer_linux._trusted_useradd()
+
+    assert (resolved == candidate) is trusted, why
+
+
+_ROOT_DIR = (stat.S_IFDIR | 0o755, 0)
+_SAFE_BINARY = (stat.S_IFREG | 0o755, 0)
+
+
+def _fake_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+    entries: dict[str, tuple[int, int]],
+    *,
+    realpath: dict[str, str] | None = None,
+) -> None:
+    """Install a synthetic tree so each ancestor's mode can be stated exactly.
+
+    Real directories cannot be used: the cases that matter are root-owned ones,
+    and creating those needs root, which the suite must not require.
+    """
+
+    def lookup(path: object, **_kwargs: object) -> SimpleNamespace:
+        key = str(path)
+        if key not in entries:
+            raise FileNotFoundError(key)
+        mode, uid = entries[key]
+        return SimpleNamespace(st_mode=mode, st_uid=uid)
+
+    monkeypatch.setattr(installer_linux.os, "lstat", lookup)
+    monkeypatch.setattr(installer_linux.os, "stat", lookup)
+    monkeypatch.setattr(installer_linux.os, "access", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        installer_linux.os.path,
+        "realpath",
+        lambda path: (realpath or {}).get(str(path), str(path)),
+    )
+    monkeypatch.setattr(
+        installer_linux, "_USERADD_LOCATIONS", ("/usr/sbin/useradd",), raising=True
+    )
+
+
+def test_a_useradd_under_root_controlled_directories_is_trusted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The safe case, so the unsafe ones below are not passing by accident."""
+    _fake_filesystem(
+        monkeypatch,
+        {
+            "/": _ROOT_DIR,
+            "/usr": _ROOT_DIR,
+            "/usr/sbin": _ROOT_DIR,
+            "/usr/sbin/useradd": _SAFE_BINARY,
+        },
+    )
+
+    assert installer_linux._trusted_useradd() == "/usr/sbin/useradd"
+
+
+@pytest.mark.parametrize(
+    ("parent", "why"),
+    [
+        ((stat.S_IFDIR | 0o775, 0), "group-writable parent"),
+        ((stat.S_IFDIR | 0o777, 0), "world-writable parent"),
+        ((stat.S_IFDIR | 0o755, 1000), "parent owned by another account"),
+    ],
+)
+def test_a_useradd_beneath_an_unsafe_parent_is_not_trusted(
+    monkeypatch: pytest.MonkeyPatch, parent: tuple[int, int], why: str
+) -> None:
+    """Replacing a file needs write on its directory, not on the file.
+
+    The executable here is impeccable — regular, root-owned, 0755. Judging it
+    alone would call an account that can rename it out from under the installer
+    trustworthy.
+    """
+    _fake_filesystem(
+        monkeypatch,
+        {
+            "/": _ROOT_DIR,
+            "/usr": _ROOT_DIR,
+            "/usr/sbin": parent,
+            "/usr/sbin/useradd": _SAFE_BINARY,
+        },
+    )
+
+    assert installer_linux._trusted_useradd() is None, why
+
+
+def test_an_unsafe_grandparent_is_caught_as_well(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control has to hold the whole way down, not just at the last step."""
+    _fake_filesystem(
+        monkeypatch,
+        {
+            "/": _ROOT_DIR,
+            "/usr": (stat.S_IFDIR | 0o777, 0),
+            "/usr/sbin": _ROOT_DIR,
+            "/usr/sbin/useradd": _SAFE_BINARY,
+        },
+    )
+
+    assert installer_linux._trusted_useradd() is None
+
+
+def test_a_root_owned_symlink_component_does_not_disqualify_a_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`/sbin` is a link into `/usr/sbin` on any usr-merged distribution.
+
+    Linux reports every symlink as 0777, so testing a link component for
+    group-writability refuses the ordinary layout of the hosts this installer
+    targets. What protects the link is the directory holding it, which the walk
+    has already checked.
+    """
+    _fake_filesystem(
+        monkeypatch,
+        {
+            "/": _ROOT_DIR,
+            "/sbin": (stat.S_IFLNK | 0o777, 0),
+            "/sbin/useradd": _SAFE_BINARY,
+            "/usr": _ROOT_DIR,
+            "/usr/sbin": _ROOT_DIR,
+            "/usr/sbin/useradd": _SAFE_BINARY,
+        },
+    )
+    monkeypatch.setattr(
+        installer_linux, "_USERADD_LOCATIONS", ("/sbin/useradd",), raising=True
+    )
+
+    assert installer_linux._trusted_useradd() == "/sbin/useradd"
+
+
+def test_a_symlink_component_owned_by_another_account_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ownership still counts, even where the mode bits do not."""
+    _fake_filesystem(
+        monkeypatch,
+        {
+            "/": _ROOT_DIR,
+            "/sbin": (stat.S_IFLNK | 0o777, 1000),
+            "/sbin/useradd": _SAFE_BINARY,
+        },
+    )
+    monkeypatch.setattr(
+        installer_linux, "_USERADD_LOCATIONS", ("/sbin/useradd",), raising=True
+    )
+
+    assert installer_linux._trusted_useradd() is None
+
+
+def test_a_symlink_landing_under_an_unsafe_directory_is_not_trusted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A safe name may still resolve somewhere anyone can rewrite.
+
+    Every component of the written path is root-controlled here; the target's
+    directory is not, so where it lands has to be checked too.
+    """
+    _fake_filesystem(
+        monkeypatch,
+        {
+            "/": _ROOT_DIR,
+            "/usr": _ROOT_DIR,
+            "/usr/sbin": _ROOT_DIR,
+            "/usr/sbin/useradd": (stat.S_IFLNK | 0o777, 0),
+            "/opt": (stat.S_IFDIR | 0o777, 0),
+            "/opt/useradd": _SAFE_BINARY,
+        },
+        realpath={"/usr/sbin/useradd": "/opt/useradd"},
+    )
+
+    assert installer_linux._trusted_useradd() is None
+
+
+def test_a_useradd_that_is_not_a_regular_file_is_not_trusted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A directory or device in that position is not a binary to execute."""
+    monkeypatch.setattr(
+        installer_linux, "_USERADD_LOCATIONS", ("/usr/sbin/useradd",), raising=True
+    )
+    monkeypatch.setattr(
+        installer_linux.os,
+        "stat",
+        lambda path, **_kwargs: SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0),
+    )
+    monkeypatch.setattr(installer_linux.os, "access", lambda *_a, **_k: True)
+
+    assert installer_linux._trusted_useradd() is None
+
+
+def test_a_hung_useradd_reports_a_stable_code_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`TimeoutExpired` is a SubprocessError, not an OSError.
+
+    Left uncaught it travels past `main`, which maps only the installer's own
+    error types, and reaches the operator as a traceback carrying no remedy.
+    """
+    _absent_account(monkeypatch)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        installer_linux, "_trusted_useradd", lambda: "/usr/sbin/useradd"
+    )
+
+    def hangs(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(list(command), 30)
+
+    with pytest.raises(LinuxInstallError) as error:
+        ensure_service_account(
+            SystemdServiceProfile.system(), unattended=True, runner=hangs
+        )
+
+    assert error.value.code == "service_start_failed"
+    assert "timed out" in error.value.detail
+    assert "sudo useradd" in error.value.detail
+
+
+def test_a_partially_created_scaffolding_is_still_cleaned_up(
+    tmp_path: Path,
+) -> None:
+    """Cleanup must know about directories made before the failing one.
+
+    A pre-existing root with an unsafe `data` creates `releases/` and then
+    raises. Recording the created directories only after the last one would
+    leave that `releases/` behind with nothing aware it had been made.
+    """
+    root = tmp_path / "ori"
+    root.mkdir(mode=0o700)
+    (tmp_path / "elsewhere").mkdir()
+    (root / "data").symlink_to(tmp_path / "elsewhere")
+    layout = InstallLayout.resolve(root)
+
+    with pytest.raises(LinuxInstallError, match="symlink"):
+        install_release(
+            layout=layout,
+            version="2.4.0-rc.4",
+            prepare=lambda _p: None,
+            validate=lambda _p: None,
+            restart_service=lambda: None,
+            stop_service=lambda: None,
+            check_health=lambda _p: None,
+        )
+
+    assert not (root / "releases").exists()
+    assert root.exists(), "a root this run did not create must never be removed"
+
+
+def test_uninstall_leaves_the_service_account_in_place(tmp_path: Path) -> None:
+    """Files outside the install root may belong to it, and uids get reused.
+
+    Asserted by running the uninstall rather than by reading it: a check that
+    the source does not contain "userdel" passes just as happily when the
+    removal moves behind a helper with another name.
+    """
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    (layout.releases / "2.4.0-rc.4").mkdir()
+    layout.data.mkdir(parents=True, exist_ok=True)
+    account_commands: list[Sequence[str]] = []
+
+    with mock.patch.object(
+        installer_linux, "_run_account_command", side_effect=account_commands.append
+    ):
+        uninstall_runtime(layout=layout, stop_service=lambda: None)
+
+    assert account_commands == []
+    assert not layout.releases.exists()

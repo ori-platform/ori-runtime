@@ -599,6 +599,15 @@ def _unsafe_unit_value(value: str) -> bool:
     )
 
 
+# The system service runs as one account, under one name, everywhere. `postgres`
+# and `docker` are not per-host choices, and neither is this: a fixed name is
+# what lets documentation, unit files, permission checks, support answers and an
+# operator's own muscle memory all refer to the same thing. A configurable name
+# buys nothing an operator wants and costs a variable that every one of those
+# has to carry.
+SERVICE_USER = "ori-runtime"
+
+
 @dataclass(frozen=True)
 class SystemdServiceProfile:
     """Explicit systemd scope and unprivileged runtime identity."""
@@ -617,13 +626,13 @@ class SystemdServiceProfile:
             raise LinuxInstallError(
                 "service_start_failed", "service profile is inconsistent"
             )
-        if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", self.service_user):
+        # Not a format check: the name is a constant, so anything else reaching
+        # here is a caller inventing an identity the rest of the system does not
+        # know about.
+        if self.service_user != SERVICE_USER:
             raise LinuxInstallError(
-                "service_start_failed", "system service user is invalid"
-            )
-        if self.service_user == "root":
-            raise LinuxInstallError(
-                "service_start_failed", "Runtime service user must be unprivileged"
+                "service_start_failed",
+                f"the system service account is always {SERVICE_USER}",
             )
 
     @classmethod
@@ -631,8 +640,8 @@ class SystemdServiceProfile:
         return cls(scope="user", service_user=None)
 
     @classmethod
-    def system(cls, service_user: str) -> SystemdServiceProfile:
-        return cls(scope="system", service_user=service_user)
+    def system(cls) -> SystemdServiceProfile:
+        return cls(scope="system", service_user=SERVICE_USER)
 
 
 @dataclass(frozen=True)
@@ -1156,6 +1165,268 @@ def render_systemd_unit(
             "service_start_failed", "service template has unresolved markers"
         )
     return rendered
+
+
+def ensure_service_account(
+    profile: SystemdServiceProfile,
+    *,
+    unattended: bool = False,
+    prompt: Callable[[str], str] = input,
+    write: Callable[[str], None] = print,
+    runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> bool:
+    """Resolve the system service account, creating it when it is absent.
+
+    Returns whether this call created it.
+
+    A distribution package creates the account its service runs as; requiring an
+    operator to run `useradd` by hand asks them to perform the one step the
+    installer is best placed to get right, and to get it wrong in ways nobody
+    sees until the service starts. So this creates it — with a fixed name, a
+    fixed shape, and no login.
+
+    An account that already exists is used exactly as found. It may have been
+    given a home, a group, or an ACL deliberately, and adopting an existing
+    identity is not licence to reshape it.
+    """
+    if profile.scope != "system" or profile.service_user is None:
+        return False
+    if _account_is_usable(profile.service_user):
+        return False
+
+    manual = (
+        f"sudo useradd --system --no-create-home --shell {_nologin_shell()} "
+        f"{profile.service_user}"
+    )
+    if os.geteuid() != 0:
+        raise LinuxInstallError(
+            "service_start_failed",
+            f"creating the {profile.service_user} account requires root. "
+            f"Re-run with sudo, create it manually ({manual}), or install with "
+            "--scope user for a workstation or trial.",
+        )
+
+    useradd = _trusted_useradd()
+    if useradd is None:
+        raise LinuxInstallError(
+            "service_start_failed",
+            f"the {profile.service_user} account does not exist and useradd is "
+            f"not available to create it. Create it manually: {manual}",
+        )
+
+    if not unattended and not _confirmed_account_creation(
+        profile.service_user, prompt=prompt, write=write
+    ):
+        raise LinuxInstallError(
+            "service_start_failed",
+            f"the {profile.service_user} account is required for a system "
+            f"install. Create it manually ({manual}), or install with "
+            "--scope user for a workstation or trial.",
+        )
+
+    command = [
+        useradd,
+        "--system",
+        "--no-create-home",
+        "--shell",
+        _nologin_shell(),
+        profile.service_user,
+    ]
+    run = runner or _run_account_command
+    try:
+        result = run(command)
+    except subprocess.TimeoutExpired as exc:
+        # `TimeoutExpired` is a SubprocessError, not an OSError, so it would
+        # otherwise travel past this handler and past `main`, which maps only
+        # the installer's own error types. A useradd waiting on a lock the
+        # installer cannot see would reach the operator as a traceback with no
+        # remedy in it.
+        raise LinuxInstallError(
+            "service_start_failed",
+            f"creating the {profile.service_user} account timed out after "
+            f"{_ACCOUNT_COMMAND_TIMEOUT_SECONDS:g}s. Another process may hold "
+            f"the account database lock. Create it manually: {manual}",
+        ) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LinuxInstallError(
+            "service_start_failed",
+            f"could not create the {profile.service_user} account: {exc}. "
+            f"Create it manually: {manual}",
+        ) from exc
+    # A zero exit is the tool's opinion; the account is the fact. Proceeding on
+    # the former would defer the failure to the point where the service starts.
+    if result.returncode != 0 or not _account_is_usable(profile.service_user):
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        raise LinuxInstallError(
+            "service_start_failed",
+            f"could not create the {profile.service_user} account"
+            + (f" ({detail[-1]})" if detail else "")
+            + f". Create it manually: {manual}",
+        )
+    write(f"Created system service account {profile.service_user}.")
+    return True
+
+
+def _account_is_usable(name: str) -> bool:
+    """Whether *name* resolves to an account the runtime may run as.
+
+    Resolving is not enough. An account carrying uid 0 — whether aliased there
+    deliberately or created by a host tool that reuses the id — would run the
+    service as root, which is the single thing system scope exists to prevent.
+    Doctor rejects uid 0, but it runs after the unit has been installed and
+    started, so a name-only check hands the service root first and objects
+    afterwards.
+    """
+    try:
+        account = pwd.getpwnam(name)
+    except KeyError:
+        return False
+    if account.pw_uid == 0:
+        raise LinuxInstallError(
+            "service_start_failed",
+            f"the {name} account exists but has uid 0. The runtime must not run "
+            "as root under system scope. Remove or rename that account, or "
+            "install with --scope user for a workstation or trial.",
+        )
+    return True
+
+
+def _nologin_shell() -> str:
+    """The shell that denies login, wherever this distribution keeps it."""
+    for candidate in ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false"):
+        if Path(candidate).exists():
+            return candidate
+    return "/bin/false"
+
+
+def _confirmed_account_creation(
+    name: str,
+    *,
+    prompt: Callable[[str], str],
+    write: Callable[[str], None],
+) -> bool:
+    """Ask before adding an account to the host, as package installs do.
+
+    Declining is a complete answer: the installation stops and the operator is
+    given the command. It never means "continue without the account", which
+    would produce a service that cannot start.
+    """
+    write(
+        f"\nA system install runs the runtime as {name}, an unprivileged "
+        f"account with no home directory and no login shell.\n"
+        f"That account does not exist yet and will be created.\n"
+        f"It is left in place if you later uninstall, because files elsewhere "
+        f"may belong to it.\n"
+    )
+    for _attempt in range(3):
+        try:
+            answer = prompt(f"Create the {name} account? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if answer in {"", "y", "yes"}:
+            return True
+        if answer in {"n", "no"}:
+            return False
+        write("  Answer y or n.")
+    return False
+
+
+# Fixed, in preference order. `PATH` is not consulted: this runs as root, and a
+# `PATH` carrying a writable directory ahead of the system ones would choose
+# what the installer executes with full privilege. An operator whose useradd
+# lives somewhere else can create the account by hand — the message says how.
+_USERADD_LOCATIONS: tuple[str, ...] = (
+    "/usr/sbin/useradd",
+    "/sbin/useradd",
+    "/usr/local/sbin/useradd",
+)
+
+
+def _trusted_useradd() -> str | None:
+    """Return a useradd only root could have placed there, or None.
+
+    Three things have to hold, and the inode is only one of them. A perfectly
+    owned, perfectly permissioned binary is still substitutable if any
+    directory on the way to it can be written by somebody else: replacing a
+    file needs write permission on its parent, not on the file. So every
+    component from the root down is checked, on the literal path and on the
+    path after symlinks are resolved, before the executable itself is judged.
+    """
+    for candidate in _USERADD_LOCATIONS:
+        try:
+            resolved = os.path.realpath(candidate)
+        except OSError:
+            continue
+        # The name as written, so a writable directory cannot redirect it, and
+        # the name after resolution, so a symlink cannot land somewhere its own
+        # parents are open. Neither implies the other.
+        if not _only_root_can_change(Path(candidate)):
+            continue
+        if resolved != candidate and not _only_root_can_change(Path(resolved)):
+            continue
+        try:
+            info = os.stat(resolved)
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        if info.st_uid != 0:
+            continue
+        # Writable by anyone but its owner is writable by somebody who is not
+        # root, which is the whole of the concern.
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            continue
+        if not os.access(resolved, os.X_OK):
+            continue
+        return resolved
+    return None
+
+
+def _only_root_can_change(path: Path) -> bool:
+    """Whether every directory leading to *path* is under root's control alone.
+
+    Walked from the filesystem root downwards. A single group- or
+    world-writable ancestor, or one owned by another account, is enough for an
+    unprivileged user to swap what the final name refers to by renaming or
+    unlinking within it — which is why the executable's own mode is not the
+    question being asked here.
+    """
+    for directory in reversed(path.parents):
+        try:
+            info = os.lstat(directory)
+        except OSError:
+            return False
+        if info.st_uid != 0:
+            return False
+        if stat.S_ISLNK(info.st_mode):
+            # A root-owned symlink inside a root-controlled directory is safe:
+            # repointing it needs write on the directory holding it, which the
+            # step before this one has already established. Its own mode is not
+            # evidence either way — Linux reports every symlink as 0777, so
+            # testing it for group-writability rejects `/sbin` on any system
+            # where `/sbin` is the usual link into `/usr/sbin`. Where it lands
+            # is checked separately.
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            return False
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return False
+    return True
+
+
+_ACCOUNT_COMMAND_TIMEOUT_SECONDS = 30.0
+
+
+def _run_account_command(
+    command: Sequence[str],
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(command),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_ACCOUNT_COMMAND_TIMEOUT_SECONDS,
+    )
 
 
 def apply_system_service_permissions(
@@ -1800,9 +2071,59 @@ def install_release(
 ) -> InstallResult:
     """Prepare, activate, and health-gate one already-authenticated release."""
     destination = layout.release(version)
-    _ensure_private_directory(layout.root)
-    _ensure_private_directory(layout.releases)
-    _ensure_private_directory(layout.data)
+    # Built inside the try, one directory at a time. A comprehension binds its
+    # result only after the last element, so a root that exists while `data` is
+    # a symlink would create `releases/`, raise, and leave it behind with no
+    # record that this run had made it.
+    scaffolding: list[Path] = []
+    try:
+        for directory in (layout.root, layout.releases, layout.data):
+            # Ordered outermost first, so cleanup can unwind it in reverse.
+            if _ensure_private_directory(directory):
+                scaffolding.append(directory)
+        return _install_release(
+            layout=layout,
+            version=version,
+            destination=destination,
+            prepare=prepare,
+            validate=validate,
+            restart_service=restart_service,
+            stop_service=stop_service,
+            check_health=check_health,
+            allow_downgrade=allow_downgrade,
+            service_profile=service_profile,
+            prepare_activation=prepare_activation,
+            rollback_activation=rollback_activation,
+            commit_activation=commit_activation,
+            allowed_data_sockets=allowed_data_sockets,
+        )
+    except Exception:
+        # A failed install leaves the host as it found it, as far as it still
+        # can. `_install_release` already removes the release tree it created;
+        # this takes the empty scaffolding with it, so a first install that
+        # fails does not leave an install root behind suggesting Ori is there.
+        _remove_created_scaffolding(scaffolding)
+        raise
+
+
+def _install_release(
+    *,
+    layout: InstallLayout,
+    version: str,
+    destination: Path,
+    prepare: Callable[[Path], None],
+    validate: Callable[[Path], None],
+    restart_service: Callable[[], None],
+    stop_service: Callable[[], None],
+    check_health: Callable[[Path], None],
+    allow_downgrade: bool,
+    service_profile: SystemdServiceProfile | None,
+    prepare_activation: Callable[[Path], None] | None,
+    rollback_activation: Callable[[], None] | None,
+    commit_activation: Callable[[Path], None] | None,
+    allowed_data_sockets: Sequence[Path],
+) -> InstallResult:
+    """Install into an install root whose directories already exist."""
     previous = _active_release(layout)
     previous_version = previous.name if previous is not None else None
     same_version = previous == destination and destination.is_dir()
@@ -1979,7 +2300,7 @@ def _assert_managed_path(layout: InstallLayout, path: Path) -> None:
         ) from exc
 
 
-def _ensure_private_directory(path: Path) -> None:
+def _ensure_private_directory(path: Path) -> bool:
     if path.is_symlink():
         raise LinuxInstallError(
             "unsafe_install_root", f"{path.name} must not be a symlink"
@@ -1997,6 +2318,32 @@ def _ensure_private_directory(path: Path) -> None:
         raise LinuxInstallError("unsafe_install_root", f"{path.name} is group-writable")
     if mode & 0o007:
         path.chmod(0o700)
+    return created
+
+
+def _remove_created_scaffolding(directories: Sequence[Path]) -> None:
+    """Undo the empty directory tree this invocation brought into being.
+
+    Only directories this run created are considered, and only while they are
+    still empty, so a pre-existing install root — or one still holding an
+    operator's data or an earlier release — is never removed by a failure. They
+    are unwound in reverse, because the parent cannot go until the child has.
+
+    Best-effort by construction: this runs while an installation failure is
+    already propagating, and a directory that cannot be removed is untidy, not
+    unsafe. Raising here would replace the operator's real diagnosis with a
+    cleanup error.
+    """
+    for directory in reversed(list(directories)):
+        try:
+            directory.rmdir()
+        except OSError:
+            # Not empty, not present, or not permitted — all fine to leave, and
+            # none of them says anything about the next one. Stopping here would
+            # strand an empty `releases/` simply because `data/` held a config
+            # the operator should keep. A parent still holding a survivor fails
+            # on its own attempt, which is the correct reason to leave it.
+            continue
 
 
 def _version_key(

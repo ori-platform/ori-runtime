@@ -274,7 +274,7 @@ def _add_install(commands: argparse._SubParsersAction[argparse.ArgumentParser]) 
     )
     parser.add_argument(
         "--service-user",
-        help="account the system service runs as (system scope; must exist)",
+        help="retained for compatibility; the system account is always ori-runtime",
     )
     parser.add_argument(
         "--root", help="install under this root instead of the default for the scope"

@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import runpy
+import shutil
 import subprocess
 import tarfile
 from pathlib import Path
@@ -448,3 +449,89 @@ def test_unexpected_faults_are_not_blamed_on_the_archive() -> None:
 
     assert "bootstrap_failed: installer failed unexpectedly" in source
     assert "unsafe_bundle_archive: installer failed unexpectedly" not in source
+
+
+# --- interpreter discovery -------------------------------------------------
+
+
+def _selected_interpreter(tmp_path: Path, entries: dict[str, str | None]) -> str:
+    """Run the real preamble and report which interpreter it chose."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir(exist_ok=True)
+    for name, version in entries.items():
+        script = binaries / name
+        if version is None:
+            script.write_text("#!/bin/sh\nexit 127\n", encoding="utf-8")
+        else:
+            # Reports the requested version to the probe, and its own name when
+            # finally exec'd with the installer program.
+            script.write_text(
+                "#!/bin/sh\n"
+                'case "$*" in\n'
+                f"  *version_info*) exit {0 if version in ('3.11', '3.12') else 1} ;;\n"
+                f'  *) echo "{name}" ;;\n'
+                "esac\n",
+                encoding="utf-8",
+            )
+        script.chmod(0o755)
+
+    # bash by absolute path: PATH is reserved for the interpreters under test,
+    # so a real python3 on the system PATH cannot be the one selected.
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required to execute the bootstrap preamble")
+    result = subprocess.run(
+        [bash, "-c", _preamble(), "installer"],
+        capture_output=True,
+        text=True,
+        env={"PATH": str(binaries)},
+        cwd=tmp_path,
+    )
+    return result.stdout.strip() or f"ERROR:{result.stderr.strip()}"
+
+
+def _preamble() -> str:
+    """The bash half of the polyglot, up to where it hands off to Python."""
+    source = Path("scripts/install-linux.sh").read_text(encoding="utf-8")
+    # The bash section ends at the closing polyglot marker; everything after it
+    # is the Python program, which bash never parses.
+    return source.split('":"""', 1)[0].replace('""":"', "", 1)
+
+
+def test_a_supported_interpreter_is_preferred_over_the_default_python3(
+    tmp_path: Path,
+) -> None:
+    """`python3` being 3.10 must not condemn a host that also has 3.12.
+
+    This is what Pop!_OS looks like: python3 is 3.10, python3.12 is installed
+    alongside it, and every published bundle targets 3.11 or 3.12.
+    """
+    chosen = _selected_interpreter(tmp_path, {"python3": "3.10", "python3.12": "3.12"})
+
+    assert chosen == "python3.12"
+
+
+def test_the_stock_interpreter_is_used_when_it_is_supported(tmp_path: Path) -> None:
+    """Raspberry Pi OS Bookworm ships 3.11 as python3 and has no python3.12."""
+    chosen = _selected_interpreter(tmp_path, {"python3": "3.11"})
+
+    assert chosen == "python3"
+
+
+def test_a_named_interpreter_that_cannot_run_is_skipped(tmp_path: Path) -> None:
+    """Existing on PATH is not evidence: a shim or dangling symlink proves nothing."""
+    chosen = _selected_interpreter(
+        tmp_path, {"python3.12": None, "python3.11": "3.11", "python3": "3.10"}
+    )
+
+    assert chosen == "python3.11"
+
+
+def test_a_host_with_no_supported_interpreter_is_told_what_to_install(
+    tmp_path: Path,
+) -> None:
+    chosen = _selected_interpreter(tmp_path, {"python3": "3.10"})
+
+    assert chosen.startswith("ERROR:")
+    assert "unsupported_target" in chosen
+    assert "3.11 or 3.12" in chosen

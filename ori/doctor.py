@@ -771,7 +771,35 @@ def _code_integrity(identity: InstallIdentity, service: ServiceIdentity) -> Doct
     If supplementary groups could not be enumerated, an unseen group might
     carry write access to the release, and the check fails rather than
     presenting an unverified claim as a pass.
+
+    The property is only reachable under privilege separation. System scope has
+    it: the code is root-owned and the service runs as an unprivileged account
+    that can neither write it nor change its mode. User scope cannot, because
+    the release and the runtime share one Unix owner — an owner may always
+    ``chmod`` its own tree, so a compromised runtime can restore write access to
+    the code it is about to execute. Mode bits there describe the current state,
+    not a boundary, and reporting them as immutability would be a false
+    assurance. User scope is reported honestly as a warning instead.
     """
+    if identity.scope == "user":
+        return _user_scope_code_advisory(identity, service)
+    if identity.scope != "system":
+        # An unrecognised scope is not a third deployment model to be given the
+        # benefit of the doubt. `!= "system"` would have handed one the user
+        # scope's advisory and turned a mandatory check into a passing warning.
+        return DoctorCheck(
+            name="permissions.code",
+            status=FAIL,
+            message=(
+                f"Installation scope {identity.scope!r} is unrecognised, so "
+                "whether the service can rewrite its own code cannot be "
+                "established."
+            ),
+            mandatory=True,
+            remedy="Reinstall with --scope system or --scope user.",
+            details={"scope": identity.scope},
+        )
+
     remedy = (
         f"Make the release read-only to the service: "
         f"chown -R root:root {identity.active_release} && "
@@ -818,6 +846,34 @@ def _code_integrity(identity: InstallIdentity, service: ServiceIdentity) -> Doct
         mandatory=True,
         remedy=remedy,
         details={"offending_path": violation.split(" ", 1)[0]},
+    )
+
+
+def _user_scope_code_advisory(
+    identity: InstallIdentity, service: ServiceIdentity
+) -> DoctorCheck:
+    """State plainly that user scope cannot offer code immutability.
+
+    This is a property of the deployment model, not a defect in the install, so
+    it is never blocking: a user-scope installation that reports this warning is
+    a complete and usable installation. Sealing the tree read-only would silence
+    the warning without creating the boundary — the owner can restore write at
+    any time — which is why no such sealing is attempted.
+    """
+    return DoctorCheck(
+        name="permissions.code",
+        status=WARN,
+        message=(
+            f"User-scope code is owned by the runtime account ({service.name}) "
+            "and cannot be made immutable from that account. Use system scope "
+            "for a production deployment with root-owned verified code."
+        ),
+        mandatory=False,
+        remedy=(
+            "Reinstall with --scope system to run the runtime as a dedicated "
+            "unprivileged account that cannot modify the verified release."
+        ),
+        details={"release": str(identity.active_release), "scope": identity.scope},
     )
 
 
