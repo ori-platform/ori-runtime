@@ -191,8 +191,15 @@ fi
 
 # 2. Build the ori-runtime wheel itself
 echo "Building ${PACKAGE_NAME} wheel..."
+# --no-build-isolation: pyproject declares `setuptools>=68` and `wheel`, and
+# without this pip builds in a fresh environment it populates from PyPI at
+# build time. The wheel that gets signed would then be produced by tooling
+# outside the hash lock, which is the one place it matters most. The caller is
+# responsible for having the pinned build backend installed; every caller
+# installs requirements/dev.txt, which pins it.
 "${PYTHON}" -m pip wheel \
   --no-deps \
+  --no-build-isolation \
   --wheel-dir "${OUT}" \
   .
 

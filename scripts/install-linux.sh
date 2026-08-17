@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# This file is a bash/Python polyglot: bash runs the preamble below, selects an
+# interpreter, and `exec`s it before reaching any Python. `bash -n` parses the
+# whole file at once and therefore reports a syntax error on the first
+# Python-only construct — that is expected, and is not a defect to repair by
+# restructuring this preamble. What must hold is that bash never falls through
+# into the Python: every path here ends in `exec` or `exit`, which
+# `test_the_preamble_always_hands_off_before_python_begins` pins. Both dispatch
+# modes are exercised by `test_shell_polyglot_help_runs_without_importing_runtime`.
 """:"
 if [ -z "${BASH_VERSION:-}" ]; then
   echo "unsupported_target: install-linux.sh must be run with bash; use curl ... | bash -s -- ..." >&2

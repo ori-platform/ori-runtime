@@ -10,6 +10,7 @@ it finds, so every command can state the scope and paths it is acting on.
 
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 
 import yaml
@@ -51,6 +52,34 @@ class UnmanagedReleaseError(Exception):
     """``current`` does not point at a release this installer manages."""
 
 
+class IndeterminateScopeError(Exception):
+    """An install root could not be inspected, so scope cannot be settled."""
+
+
+class _Presence(Enum):
+    """What inspecting an install root established.
+
+    `INACCESSIBLE` is deliberately not folded into `ABSENT`. A root that cannot
+    be read is not a root that is not there, and treating the two alike would
+    let a permission problem silently choose a scope — or, as shipped, let the
+    exception escape as a traceback out of a diagnostic command.
+    """
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    INACCESSIBLE = "inaccessible"
+
+
+def _presence(root: Path) -> _Presence:
+    """Whether an installation is active at *root*, as far as we may look."""
+    try:
+        return _Presence.PRESENT if (root / "current").exists() else _Presence.ABSENT
+    except OSError:
+        # A system root left behind by an install this account cannot read is
+        # ordinary — `/opt/ori` is 0700 to root — and must not end the command.
+        return _Presence.INACCESSIBLE
+
+
 def detect_scope(root: Path | None = None) -> str:
     """Return the scope of the one managed installation present.
 
@@ -61,17 +90,32 @@ def detect_scope(root: Path | None = None) -> str:
     """
     if root is not None:
         return "system" if root == SYSTEM_ROOT else "user"
-    user_present = (user_root() / "current").exists()
-    system_present = (SYSTEM_ROOT / "current").exists()
-    if user_present and system_present:
+    user = _presence(user_root())
+    system = _presence(SYSTEM_ROOT)
+
+    if user is _Presence.PRESENT and system is _Presence.PRESENT:
         raise AmbiguousScopeError(
             f"installations exist at both {user_root()} and {SYSTEM_ROOT}; "
             "pass --scope user or --scope system"
         )
-    if user_present:
+    # One installation is definitely here and the other cannot be read. The
+    # unreadable one cannot be the one this account is running, so naming the
+    # readable one is the only answer that is both usable and true — and every
+    # report states the scope it settled on.
+    if user is _Presence.PRESENT:
         return "user"
-    if system_present:
+    if system is _Presence.PRESENT:
         return "system"
+    if _Presence.INACCESSIBLE in (user, system):
+        unreadable = " and ".join(
+            str(candidate)
+            for candidate, presence in ((user_root(), user), (SYSTEM_ROOT, system))
+            if presence is _Presence.INACCESSIBLE
+        )
+        raise IndeterminateScopeError(
+            f"could not inspect {unreadable}, and no other installation was "
+            "found; pass --scope user or --scope system explicitly"
+        )
     raise FileNotFoundError(f"no installation at {user_root()} or {SYSTEM_ROOT}")
 
 

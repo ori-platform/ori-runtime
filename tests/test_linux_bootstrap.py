@@ -535,3 +535,32 @@ def test_a_host_with_no_supported_interpreter_is_told_what_to_install(
     assert chosen.startswith("ERROR:")
     assert "unsupported_target" in chosen
     assert "3.11 or 3.12" in chosen
+
+
+def test_the_preamble_always_hands_off_before_python_begins() -> None:
+    """Bash must never fall through into the Python half.
+
+    This file is a polyglot: bash parses incrementally and `exec`s an
+    interpreter before reaching Python-only syntax, which is why `bash -n` —
+    a whole-file parse — reports an error on it and cannot be used to validate
+    it. The property that actually matters is that the shell preamble has no
+    exit that reaches the Python: if it fell through, bash would try to run
+    a set literal and a class body as commands.
+    """
+    source = Path("scripts/install-linux.sh").read_text(encoding="utf-8")
+    terminator = '":"""'
+
+    assert source.count(terminator) == 1, "the polyglot terminator is not unique"
+    preamble = source[: source.index(terminator)]
+    handoff = [
+        line.strip()
+        for line in preamble.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert handoff[-1].startswith("exec "), (
+        f"the preamble ends with {handoff[-1]!r}; without a final exec, bash "
+        "continues into the Python and parses it as shell"
+    )
+    # Every other way out is an explicit failure, so no path reaches Python.
+    for statement in ("exit 2", "exec "):
+        assert statement in preamble, f"the preamble never uses {statement!r}"

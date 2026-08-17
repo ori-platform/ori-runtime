@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
 # trust-substituted pre-publication functional evidence harness.
 #
 # Every claim below is an assertion. A claim that cannot be proven fails the
@@ -15,13 +17,17 @@
 # enforcement, published asset completeness, or publication reverification.
 set -euo pipefail
 
-HARNESS_REVISION="7"
-TARGET="${1:?usage: harness-linux-functional.sh <target> <commit> <archive> <sha256> <distro>}"
+HARNESS_REVISION="8"
+TARGET="${1:?usage: harness-linux-functional.sh <target> <commit> <archive> <sha256> <distro> <release-version>}"
 EXPECTED_COMMIT="${2:?expected source commit required}"
 ARCHIVE="${3:?source archive required (git archive --format=tar)}"
 ARCHIVE_SHA256="${4:?expected archive sha256 required}"
 EXPECTED_DISTRO="${5:?expected distro required, e.g. debian:12}"
-VERSION="${ORI_EVIDENCE_VERSION:-2.3.1}"
+# The release identity under test, in the SemVer form the signed artifact uses
+# (2.4.0, or 2.4.0-rc.5). There is no default: a stale one proves the wrong
+# release while looking like a pass, and this harness is meant to serve every
+# release rather than be copied for each one.
+RELEASE_VERSION="${6:?release version required, e.g. 2.4.0-rc.5}"
 WORK=/work
 BLOCKED=0
 
@@ -105,9 +111,12 @@ actual_python="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.v
             "tuple says $tuple_python, interpreter is $actual_python"
 pass "python $(python3 -V 2>&1 | cut -d' ' -f2) matches the tuple"
 
-# Read in a subshell: /etc/os-release defines VERSION, which would otherwise
-# clobber this harness's VERSION and be built into the bundle as the runtime
-# version. (It did exactly that on the first revision 5 run.)
+# Read in a subshell. /etc/os-release defines VERSION, which this harness once
+# used for the release identity — the distro's version was built into a bundle
+# as the runtime version on the first revision 5 run. The variable is now
+# RELEASE_VERSION, so the collision cannot recur; the subshell stays because
+# sourcing a file into the current shell to read two fields is still a way to
+# inherit whatever else it sets.
 # shellcheck source=/dev/null
 actual_distro="$(. /etc/os-release && echo "${ID:-unknown}:${VERSION_ID:-unknown}")"
 # shellcheck source=/dev/null
@@ -118,12 +127,49 @@ pretty_name="$(. /etc/os-release && echo "${PRETTY_NAME:-unknown}")"
 pass "distribution $actual_distro ($pretty_name)"
 
 printf '  harness revision %s, target %s\n' "$HARNESS_REVISION" "$TARGET"
+printf '  release version %s\n' "$RELEASE_VERSION"
 
 apt-get update -qq >/dev/null 2>&1
 apt-get install -y -qq python3-pip python3-venv >/dev/null 2>&1
 mkdir -p "$WORK" && tar -C "$WORK" -xf "$ARCHIVE"
 cd "$WORK"
 python3 -m pip install --quiet --break-system-packages cryptography pyyaml >/dev/null 2>&1
+
+# --- the version under test must be the version this source declares -------
+# A harness that serves every release can be pointed at the wrong one, and the
+# artifact it produced would then carry a name the source never claimed. A tag
+# and a packaged version disagreeing is what spent two release candidates, so
+# it is proven here through the runtime's own conversion rather than a second
+# one written into this script.
+echo "=== RELEASE IDENTITY ==="
+set +e
+identity_check="$(PYTHONPATH="$WORK" python3 - "$RELEASE_VERSION" 2>&1 <<'PYIDENT'
+import pathlib
+import sys
+import tomllib
+
+from ori.security.release_bundles import ReleaseBundleError, distribution_version
+
+requested = sys.argv[1]
+declared = tomllib.loads(
+    pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+)["project"]["version"]
+try:
+    expected = distribution_version(requested)
+except ReleaseBundleError as exc:
+    sys.exit(f"{requested} is not a canonical release identity: {exc.detail}")
+if expected != declared:
+    sys.exit(
+        f"{requested} needs pyproject version {expected!r}, found {declared!r}"
+    )
+print(f"{requested} matches the packaged version {declared}")
+PYIDENT
+)"
+identity_status=$?
+set -e
+[ "$identity_status" -eq 0 ] \
+    || fail "release version matches the source under test" "$identity_check"
+pass "release identity: $identity_check"
 
 # --- substitute BOTH trust anchors, before building -----------------------
 echo "=== TRUST ANCHOR SUBSTITUTION (before build) ==="
@@ -157,13 +203,19 @@ bootstrap.write_text(text)
 print(f"  ephemeral key sha256:{digest}")
 PY
 chmod 600 /tmp/dev-key.pem
+# The hash-locked set before the wheel is built. `build-wheelhouse.sh` builds
+# the runtime wheel with `--no-build-isolation`, so whatever setuptools is
+# present is the one that produces the artifact: without this the distribution's
+# own setuptools would build a bundle this run then presents as evidence.
+python3 -m pip install --quiet --break-system-packages --require-hashes \
+    -r requirements/dev.txt >/dev/null 2>&1
 python3 -m pip install --quiet --break-system-packages --no-deps -e . >/dev/null 2>&1
 
 # --- determinism: build twice, compare bytes ------------------------------
 echo "=== BUILD ==="
 build_once() {
     ORI_WHEELHOUSE_OUT="$1/wh" ORI_WHEELHOUSE_TARGET=generic \
-    ORI_RELEASE_BUNDLE_VERSION="$VERSION" ORI_RELEASE_BUNDLE_TARGET="$TARGET" \
+    ORI_RELEASE_BUNDLE_VERSION="$RELEASE_VERSION" ORI_RELEASE_BUNDLE_TARGET="$TARGET" \
     ORI_RELEASE_BUNDLE_OUT="$1/bundle" SOURCE_DATE_EPOCH=1700000000 \
         bash scripts/build-wheelhouse.sh >"$1/build.log" 2>&1 \
         || { tail -5 "$1/build.log" >&2; return 1; }
@@ -174,8 +226,8 @@ pass "first bundle build"
 build_once /tmp/b2 || fail "second bundle build" "see build log"
 pass "second bundle build"
 
-ARTIFACT="/tmp/b1/bundle/ori-runtime-$VERSION-$TARGET.tar.gz"
-SECOND="/tmp/b2/bundle/ori-runtime-$VERSION-$TARGET.tar.gz"
+ARTIFACT="/tmp/b1/bundle/ori-runtime-$RELEASE_VERSION-$TARGET.tar.gz"
+SECOND="/tmp/b2/bundle/ori-runtime-$RELEASE_VERSION-$TARGET.tar.gz"
 h1="$(sha256sum "$ARTIFACT" | cut -d' ' -f1)"
 h2="$(sha256sum "$SECOND" | cut -d' ' -f1)"
 [ "$h1" = "$h2" ] || fail "build is deterministic" "sha256 differs: $h1 vs $h2"
@@ -193,7 +245,7 @@ pathlib.Path("/tmp/reg.json").write_text(json.dumps({
               "purpose": RELEASE_KEY_PURPOSE, "status": "active"}]}))
 PY
 python3 scripts/sign-release-bundle.py --artifact "$ARTIFACT" \
-    --runtime-version "$VERSION" --target "$TARGET" \
+    --runtime-version "$RELEASE_VERSION" --target "$TARGET" \
     --key-id ori-runtime-release-2026-01 --key-registry /tmp/reg.json \
     --private-key-file /tmp/dev-key.pem --output "$ARTIFACT.signature.json" \
     >/dev/null 2>&1 || fail "sign final artifact" "signing failed"
@@ -220,17 +272,17 @@ cp scripts/install-linux.sh /tmp/renamed-installer.sh
 chmod +x /tmp/orig.sh /tmp/renamed-installer.sh
 
 DISPATCH_CODE="artifact_integrity_mismatch"
-assert_exit "dispatch: original name exits 2" 2 /tmp/orig.sh --version "$VERSION"
+assert_exit "dispatch: original name exits 2" 2 /tmp/orig.sh --version "$RELEASE_VERSION"
 assert_contains "dispatch: original name stable code" "$DISPATCH_CODE" "$LAST_OUTPUT"
-assert_exit "dispatch: renamed copy exits 2" 2 /tmp/renamed-installer.sh --version "$VERSION"
+assert_exit "dispatch: renamed copy exits 2" 2 /tmp/renamed-installer.sh --version "$RELEASE_VERSION"
 assert_contains "dispatch: renamed copy stable code" "$DISPATCH_CODE" "$LAST_OUTPUT"
-assert_exit "dispatch: absolute path exits 2" 2 bash /tmp/orig.sh --version "$VERSION"
+assert_exit "dispatch: absolute path exits 2" 2 bash /tmp/orig.sh --version "$RELEASE_VERSION"
 assert_contains "dispatch: absolute path stable code" "$DISPATCH_CODE" "$LAST_OUTPUT"
 assert_exit "dispatch: relative path exits 2" 2 \
-    bash -c "cd /tmp && ./orig.sh --version $VERSION"
+    bash -c "cd /tmp && ./orig.sh --version $RELEASE_VERSION"
 assert_contains "dispatch: relative path stable code" "$DISPATCH_CODE" "$LAST_OUTPUT"
 assert_exit "dispatch: piped exits 2" 2 \
-    bash -c "cat /tmp/orig.sh | bash -s -- --version $VERSION"
+    bash -c "cat /tmp/orig.sh | bash -s -- --version $RELEASE_VERSION"
 assert_contains "dispatch: piped stable code" "$DISPATCH_CODE" "$LAST_OUTPUT"
 assert_exit "dispatch: piped without arguments exits 2" 2 \
     bash -c "cat /tmp/orig.sh | bash"
@@ -252,7 +304,7 @@ after_tamper="$(sha256sum "$ARTIFACT" | cut -d' ' -f1)"
     || fail "artifact was actually modified" "sha256 unchanged: $after_tamper"
 pass "artifact was actually modified"
 assert_exit "tampered artifact rejected (exit 2)" 2 \
-    bash /tmp/boot.py --version "$VERSION" -- "${INSTALL_ARGS[@]}"
+    bash /tmp/boot.py --version "$RELEASE_VERSION" -- "${INSTALL_ARGS[@]}"
 assert_contains "tampered artifact code" "artifact_integrity_mismatch" "$LAST_OUTPUT"
 cp /tmp/pristine.tar.gz "$ARTIFACT"
 
@@ -265,7 +317,7 @@ d["signature"] = "A" * len(d["signature"])
 p.write_text(json.dumps(d))
 PY
 assert_exit "malformed envelope rejected (exit 2)" 2 \
-    bash /tmp/boot.py --version "$VERSION" -- "${INSTALL_ARGS[@]}"
+    bash /tmp/boot.py --version "$RELEASE_VERSION" -- "${INSTALL_ARGS[@]}"
 assert_contains "malformed envelope code" "invalid_signature_envelope" "$LAST_OUTPUT"
 cp /tmp/pristine.sig "$ARTIFACT.signature.json"
 
@@ -280,7 +332,7 @@ d["signature"] = "ed25519:" + base64.b64encode(bytes(raw)).decode()
 p.write_text(json.dumps(d))
 PY
 assert_exit "incorrect signature rejected (exit 2)" 2 \
-    bash /tmp/boot.py --version "$VERSION" -- "${INSTALL_ARGS[@]}"
+    bash /tmp/boot.py --version "$RELEASE_VERSION" -- "${INSTALL_ARGS[@]}"
 assert_contains "incorrect signature code" "signature_verification_failed" "$LAST_OUTPUT"
 cp /tmp/pristine.sig "$ARTIFACT.signature.json"
 
@@ -291,7 +343,7 @@ chmod -R a+rX /tmp/b1/bundle /tmp/boot.py
 HOME_DIR=/home/oriop
 
 set +e
-su oriop -c "bash /tmp/boot.py --version $VERSION -- ${INSTALL_ARGS[*]}" \
+su oriop -c "bash /tmp/boot.py --version $RELEASE_VERSION -- ${INSTALL_ARGS[*]}" \
     >/tmp/install.log 2>&1
 install_status=$?
 set -e
@@ -318,7 +370,7 @@ if [ "$install_status" -eq 0 ] && [ -d "$HOME_DIR/.local/ori/current" ]; then
     grep -q "VIRTUAL_ENV=" "$BIN/activate" || fail "activation script rebound" "no VIRTUAL_ENV"
     pass "activation script rebound"
 
-    su oriop -c "bash /tmp/boot.py --version $VERSION -- ${INSTALL_ARGS[*]}" \
+    su oriop -c "bash /tmp/boot.py --version $RELEASE_VERSION -- ${INSTALL_ARGS[*]}" \
         >/tmp/reinstall.log 2>&1 || fail "same-version reinstall" "non-zero exit"
     pass "same-version reinstall"
 

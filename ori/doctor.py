@@ -121,12 +121,12 @@ def assert_execution_allowed(identity: InstallIdentity) -> None:
     # alongside a root that points into a user's home. What actually makes
     # execution safe is that no unprivileged account can alter the interpreter
     # or anything leading to it, so that is what gets verified.
-    untrusted = _first_untrusted_component(interpreter_path(identity))
-    if untrusted is not None:
+    failure = _interpreter_trust_failure(interpreter_path(identity))
+    if failure is not None:
         raise UnsafeExecutionError(
-            f"refusing to execute as root: {untrusted} is not owned by root or "
-            "is writable by another account, so its contents are not trusted "
-            "with privilege. Inspect this installation as the user who owns it."
+            f"refusing to execute as root: {failure}, so its contents are not "
+            "trusted with privilege. Inspect this installation as the user who "
+            "owns it."
         )
 
 
@@ -135,23 +135,21 @@ def interpreter_path(identity: InstallIdentity) -> Path:
     return identity.active_release / "venv" / "bin" / "python"
 
 
-def _first_untrusted_component(path: Path) -> Path | None:
-    """Return the first component root should not trust, walking downwards.
+def _interpreter_trust_failure(path: Path) -> str | None:
+    """Describe why root must not execute *path*, or None if it may.
 
-    A missing component ends the walk successfully: if every existing ancestor
-    is root-owned and unwritable by others, no unprivileged account can create
-    what is missing, so nothing there can be planted.
+    The interpreter is normally a symlink chain ending outside the
+    installation — `python` to `python3` to the packaged binary — so the
+    question is whether root alone controls every step of it, not whether it
+    stays within the release. A symlink's own mode answers nothing: Linux
+    reports every one as 0777, and reading that as write permission refuses
+    every virtual environment ever built.
     """
-    for candidate in [*reversed(path.parents), path]:
-        try:
-            info = candidate.lstat()
-        except FileNotFoundError:
-            return None
-        except OSError:
-            return candidate
-        if info.st_uid != 0 or info.st_mode & 0o022:
-            return candidate
-    return None
+    from ori.installer.trusted_paths import (  # local import: installer is optional
+        trust_failure,
+    )
+
+    return trust_failure(path, require_executable=True)
 
 
 def _run(
@@ -1146,6 +1144,7 @@ def run(
     """
     from ori.installer.paths import (  # local import: optional dep
         AmbiguousScopeError,
+        IndeterminateScopeError,
         UnmanagedReleaseError,
         resolve_identity,
     )
@@ -1155,11 +1154,25 @@ def run(
     except AmbiguousScopeError as exc:
         print(f"ambiguous installation: {exc}", file=sys.stderr)
         return 2
+    except IndeterminateScopeError as exc:
+        print(f"indeterminate installation: {exc}", file=sys.stderr)
+        return 2
     except UnmanagedReleaseError as exc:
         print(f"unusable installation: {exc}", file=sys.stderr)
         return 2
     except FileNotFoundError as exc:
         print(f"no Ori installation found: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        # A backstop, not the mechanism. Doctor is the command an operator runs
+        # when something is already wrong; ending in a traceback makes it one
+        # more thing that is wrong.
+        print(
+            f"could not inspect the installation ({exc.filename or exc}): "
+            f"{exc.strerror or exc}. Pass --scope user or --scope system "
+            "explicitly.",
+            file=sys.stderr,
+        )
         return 2
 
     try:
