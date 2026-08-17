@@ -191,6 +191,13 @@ target-version = "py311"
 select = ["E", "F", "I", "N", "W"]
 ignore = ["E501"]
 
+# `tests/` imports a few helpers from `scripts/`, which is not a package and so
+# is not on the analyzer's path by default. Two test modules already did this
+# and reported an unresolved import in the editor; declaring the path once
+# fixes both rather than scattering per-file suppressions.
+[tool.pyright]
+extraPaths = ["scripts"]
+
 [tool.mypy]
 python_version = "3.11"
 check_untyped_defs = true

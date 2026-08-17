@@ -211,8 +211,15 @@ jobs:
       # build-wheelhouse.sh invokes scripts/build_release_bundle.py, which
       # imports ori. `python scripts/x.py` puts scripts/ on sys.path[0], not
       # the repository root, so the package must be importable here.
+      #
+      # The hash-locked set first, because the runtime wheel is built with
+      # `--no-build-isolation`: the build backend that produces the artifact we
+      # sign has to be the pinned one, not whichever setuptools the runner
+      # image happens to ship or pip would fetch at build time.
       - name: Install build dependencies
-        run: python -m pip install --no-deps -e .
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.txt
+          python -m pip install --no-deps -e .
 
       - name: Resolve release identity
         id: identity

@@ -34,10 +34,14 @@ repos:
             import pathlib
             import sys
 
-            roots = {"ori", "tests", "skills", "scripts"}
+            # Shell carries the same licence as Python and was never checked,
+            # so four scripts drifted without it. `docs/releases/evidence`
+            # holds executable harnesses, not prose, and belongs here too.
+            roots = {"ori", "tests", "skills", "scripts", "docs"}
             missing = [
                 str(f)
-                for f in pathlib.Path(".").rglob("*.py")
+                for pattern in ("*.py", "*.sh")
+                for f in pathlib.Path(".").rglob(pattern)
                 if f.parts and f.parts[0] in roots
                 and "SPDX-License-Identifier: Apache-2.0" not in f.read_text()
             ]

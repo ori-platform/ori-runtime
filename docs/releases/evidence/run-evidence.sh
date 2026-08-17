@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
 # Host-side driver for the trust-substituted functional evidence harness.
 #
 # Takes ONE commit and derives everything else from it: the archive, its
@@ -9,14 +11,17 @@
 # A reviewer reproduces the recorded digest with:
 #     git archive --format=tar <commit> | sha256sum
 #
-# Usage: run-evidence.sh <commit> <target> <image> <distro>
+# Usage: run-evidence.sh <commit> <target> <image> <distro> <release-version>
 # Exit:  0 all claims proven · 1 a claim failed · 3 partial (BLOCKED claims)
 set -euo pipefail
 
-COMMIT="${1:?usage: run-evidence.sh <commit> <target> <image> <distro>}"
+COMMIT="${1:?usage: run-evidence.sh <commit> <target> <image> <distro> <release-version>}"
 TARGET="${2:?target tuple required, e.g. linux-aarch64-python3.11}"
 IMAGE="${3:?container image required}"
 DISTRO="${4:?expected distro required, e.g. debian:12}"
+# In the SemVer form the signed artifact uses. The harness proves it agrees
+# with the packaged version in the commit above, so the two cannot drift.
+RELEASE_VERSION="${5:?release version required, e.g. 2.4.0-rc.5}"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 HARNESS="$REPO_ROOT/docs/releases/evidence/harness-linux-functional.sh"
@@ -61,6 +66,7 @@ cat <<SUMMARY
 === EVIDENCE RUN ===
   commit          $FULL_COMMIT
   archive sha256  $DIGEST
+  release         $RELEASE_VERSION
   target          $TARGET
   image           $IMAGE
   image id        $IMAGE_ID
@@ -79,7 +85,7 @@ docker run --rm \
     -v "$REPO_ROOT/docs/releases/evidence":/evidence:ro \
     "$IMAGE_ID" \
     bash /evidence/harness-linux-functional.sh \
-        "$TARGET" "$FULL_COMMIT" /src.tar "$DIGEST" "$DISTRO"
+        "$TARGET" "$FULL_COMMIT" /src.tar "$DIGEST" "$DISTRO" "$RELEASE_VERSION"
 STATUS=$?
 set -e
 

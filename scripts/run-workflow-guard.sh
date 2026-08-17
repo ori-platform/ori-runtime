@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
 # Launch the supply-chain guard with an interpreter that has the repository's
 # hash-installed dependencies.
 #
