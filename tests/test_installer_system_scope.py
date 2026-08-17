@@ -66,6 +66,11 @@ _STAND_IN_ACCOUNT = "daemon"
 
 _COUNTER = itertools.count()
 
+# `/opt` first, because that is where a real installation goes and the test is
+# most faithful there. The rest are ordinary root-owned system directories to
+# fall back on when a host leaves `/opt` open.
+_ROOT_CONTROLLED_PARENTS = ("/opt", "/var/lib", "/usr/local/lib", "/")
+
 # Candidates for the interpreter the installed environment is built from,
 # preferred order. `sys.executable` is deliberately not first: under
 # `actions/setup-python` it lives in the runner's tool cache, which is writable
@@ -109,15 +114,30 @@ def service_account(monkeypatch: pytest.MonkeyPatch) -> pwd.struct_passwd:
 
 @pytest.fixture
 def system_root() -> Iterator[Path]:
-    """An install root beneath a root-controlled directory, as `/opt/ori` is.
+    """An install root beneath a directory only root can change, as `/opt/ori` is.
 
     `tmp_path` cannot serve: pytest puts it under `/tmp`, which is mode 1777,
     and a world-writable ancestor is correctly untrusted. A failure there would
     say nothing about the installer.
+
+    `/opt` is where a real installation lives and is tried first, but it is not
+    root-exclusive everywhere — a CI runner image may leave it writable by the
+    build account, and the installer then refuses every path beneath it, which
+    is the correct answer for that host rather than a defect. So the parent is
+    established by asking, not assumed. Failing beats skipping if none can be
+    found: a host with no root-controlled directory cannot carry a system
+    installation at all, and silence would hide exactly that.
     """
-    parent = Path("/opt")
-    if not parent.is_dir():
-        pytest.skip("/opt is unavailable on this host")
+    for candidate in _ROOT_CONTROLLED_PARENTS:
+        parent = Path(candidate)
+        if parent.is_dir() and trust_failure(parent) is None:
+            break
+    else:
+        tried = ", ".join(
+            f"{c} ({trust_failure(Path(c)) or 'absent'})"
+            for c in _ROOT_CONTROLLED_PARENTS
+        )
+        pytest.fail(f"no root-controlled parent directory on this host: {tried}")
     root = parent / f"ori-systemscope-{os.getpid()}-{next(_COUNTER)}"
     try:
         yield root
