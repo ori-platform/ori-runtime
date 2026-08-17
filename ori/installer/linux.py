@@ -1158,6 +1158,31 @@ def render_systemd_unit(
     return rendered
 
 
+def require_service_account(profile: SystemdServiceProfile) -> None:
+    """Fail before the install touches anything when the account is missing.
+
+    The account is a precondition of system scope, not a step of it. Resolving
+    it costs a name lookup, and the installation that needs it takes minutes:
+    it builds a virtual environment from 44 wheels, having first prompted the
+    operator for device identity. Discovering the absence afterwards spends all
+    of that, rolls it back, and asks the operator to answer the same questions
+    again — so this is called immediately after the scope is known and before
+    anything is prompted, created, or built.
+    """
+    if profile.scope != "system" or profile.service_user is None:
+        return
+    try:
+        pwd.getpwnam(profile.service_user)
+    except KeyError as exc:
+        raise LinuxInstallError(
+            "service_start_failed",
+            f"system service user does not exist: {profile.service_user}. "
+            f"Create the unprivileged account first: sudo useradd --system "
+            f"--no-create-home --shell /usr/sbin/nologin {profile.service_user} "
+            f"— or install with --scope user for a workstation or trial.",
+        ) from exc
+
+
 def apply_system_service_permissions(
     layout: InstallLayout,
     profile: SystemdServiceProfile,
@@ -1800,9 +1825,56 @@ def install_release(
 ) -> InstallResult:
     """Prepare, activate, and health-gate one already-authenticated release."""
     destination = layout.release(version)
-    _ensure_private_directory(layout.root)
-    _ensure_private_directory(layout.releases)
-    _ensure_private_directory(layout.data)
+    # Ordered outermost first, so cleanup can unwind it in reverse.
+    scaffolding = [
+        directory
+        for directory in (layout.root, layout.releases, layout.data)
+        if _ensure_private_directory(directory)
+    ]
+    try:
+        return _install_release(
+            layout=layout,
+            version=version,
+            destination=destination,
+            prepare=prepare,
+            validate=validate,
+            restart_service=restart_service,
+            stop_service=stop_service,
+            check_health=check_health,
+            allow_downgrade=allow_downgrade,
+            service_profile=service_profile,
+            prepare_activation=prepare_activation,
+            rollback_activation=rollback_activation,
+            commit_activation=commit_activation,
+            allowed_data_sockets=allowed_data_sockets,
+        )
+    except Exception:
+        # A failed install leaves the host as it found it, as far as it still
+        # can. `_install_release` already removes the release tree it created;
+        # this takes the empty scaffolding with it, so a first install that
+        # fails does not leave an install root behind suggesting Ori is there.
+        _remove_created_scaffolding(scaffolding)
+        raise
+
+
+def _install_release(
+    *,
+    layout: InstallLayout,
+    version: str,
+    destination: Path,
+    prepare: Callable[[Path], None],
+    validate: Callable[[Path], None],
+    restart_service: Callable[[], None],
+    stop_service: Callable[[], None],
+    check_health: Callable[[Path], None],
+    allow_downgrade: bool,
+    service_profile: SystemdServiceProfile | None,
+    prepare_activation: Callable[[Path], None] | None,
+    rollback_activation: Callable[[], None] | None,
+    commit_activation: Callable[[Path], None] | None,
+    allowed_data_sockets: Sequence[Path],
+) -> InstallResult:
+    """Install into an install root whose directories already exist."""
     previous = _active_release(layout)
     previous_version = previous.name if previous is not None else None
     same_version = previous == destination and destination.is_dir()
@@ -1979,7 +2051,7 @@ def _assert_managed_path(layout: InstallLayout, path: Path) -> None:
         ) from exc
 
 
-def _ensure_private_directory(path: Path) -> None:
+def _ensure_private_directory(path: Path) -> bool:
     if path.is_symlink():
         raise LinuxInstallError(
             "unsafe_install_root", f"{path.name} must not be a symlink"
@@ -1997,6 +2069,28 @@ def _ensure_private_directory(path: Path) -> None:
         raise LinuxInstallError("unsafe_install_root", f"{path.name} is group-writable")
     if mode & 0o007:
         path.chmod(0o700)
+    return created
+
+
+def _remove_created_scaffolding(directories: Sequence[Path]) -> None:
+    """Undo the empty directory tree this invocation brought into being.
+
+    Only directories this run created are considered, and only while they are
+    still empty, so a pre-existing install root — or one still holding an
+    operator's data or an earlier release — is never removed by a failure. They
+    are unwound in reverse, because the parent cannot go until the child has.
+
+    Best-effort by construction: this runs while an installation failure is
+    already propagating, and a directory that cannot be removed is untidy, not
+    unsafe. Raising here would replace the operator's real diagnosis with a
+    cleanup error.
+    """
+    for directory in reversed(list(directories)):
+        try:
+            directory.rmdir()
+        except OSError:
+            # Not empty, not present, or not permitted — all fine to leave.
+            break
 
 
 def _version_key(

@@ -737,3 +737,104 @@ def test_a_real_doctor_run_satisfies_the_activation_boundary(
     activation._assert_complete(report)
     activation._assert_status_agrees(0, report)
     activation.assert_usable(report)
+
+
+# --- the real doctor, judged by the real gate ------------------------------
+#
+# Everything above stubs doctor's output to test how activation handles it.
+# That is why v2.4.0-rc.3 shipped a user-scope install that could never
+# succeed: the real doctor and the real gate had never been run against each
+# other. These tests join them, with no synthetic check dictionaries between.
+
+
+def _installed_layout(root: Path, scope: str) -> tuple[Path, object]:
+    """Build the directory shape the installer produces, at its real modes."""
+    from ori import doctor
+
+    release = root / "releases" / "2.4.0-rc.4"
+    (release / "venv" / "bin").mkdir(parents=True)
+    (release / "venv" / "bin" / "python").write_text("#!/bin/sh\n")
+    (release / "venv" / "bin" / "python").chmod(0o755)
+    (release / "ori").mkdir()
+    (release / "ori" / "runtime.py").write_text("# code\n")
+    data = root / "data"
+    data.mkdir()
+    (data / "ori.yaml").write_text("device: {}\n")
+    # _ensure_private_directory's mode, which is what an install really leaves.
+    for directory in (root, root / "releases", release, data):
+        directory.chmod(0o700)
+
+    identity = doctor.InstallIdentity(
+        scope=scope,
+        version="2.4.0-rc.4",
+        install_root=root,
+        active_release=release,
+        config_path=data / "ori.yaml",
+        data_path=data,
+        health_socket=data / "health.sock",
+        unit_path=root / "ori-runtime.service",
+        service_user=(
+            __import__("pwd").getpwuid(os.getuid()).pw_name
+            if scope == "system"
+            else None
+        ),
+    )
+    return release, identity
+
+
+def _as_reported(checks: list[object]) -> list[dict[str, object]]:
+    """Render real DoctorCheck objects the way doctor's JSON report does."""
+    return [
+        {
+            "name": c.name,
+            "status": c.status,
+            "message": c.message,
+            "mandatory": c.mandatory,
+        }
+        for c in checks
+    ]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="mode-based denial is invisible to root")
+def test_a_real_user_scope_install_passes_the_real_gate(tmp_path: Path) -> None:
+    """A user-scope installation must complete, carrying the advisory.
+
+    This is the case that failed on hardware in v2.4.0-rc.3: the release is
+    owned by the account that runs it, and the mandatory code-immutability
+    check rejected the install for a property user scope cannot provide.
+    """
+    from ori import doctor
+
+    root = tmp_path / "ori"
+    root.mkdir()
+    _release, identity = _installed_layout(root, "user")
+
+    reported = _as_reported(doctor.check_permissions(identity))
+    code = next(c for c in reported if c["name"] == "permissions.code")
+
+    assert code["status"] == "WARN"
+    assert code["mandatory"] is False
+    assert activation.blocking(reported) == []
+    # The gate the installer actually calls inside its transaction.
+    activation.assert_usable(reported)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="mode-based denial is invisible to root")
+def test_a_real_system_scope_install_is_blocked_when_code_is_writable(
+    tmp_path: Path,
+) -> None:
+    """The scope that can enforce immutability must still enforce it."""
+    from ori import doctor
+
+    root = tmp_path / "ori"
+    root.mkdir()
+    _release, identity = _installed_layout(root, "system")
+
+    reported = _as_reported(doctor.check_permissions(identity))
+    code = next(c for c in reported if c["name"] == "permissions.code")
+
+    assert code["status"] == "FAIL"
+    assert code["mandatory"] is True
+    assert activation.blocking(reported) != []
+    with pytest.raises(LinuxInstallError, match="post_install_health_failed"):
+        activation.assert_usable(reported)

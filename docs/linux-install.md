@@ -33,6 +33,12 @@ interpreter version:
 Both production tuples use the interpreter their distribution ships, so no
 manual Python installation is required.
 
+Where the distribution's `python3` is some other version, the installer looks
+for a supported one rather than refusing the host: it tries `python3.12`,
+`python3.11`, then `python3`, and uses the first that reports 3.11 or 3.12. A
+workstation whose default is 3.10 installs normally as long as one of those is
+present. If none is, the installer says so and names what to install.
+
 **Raspberry Pi OS Bullseye is not supported.** It ships OpenSSL 1.1.1, which
 cannot perform the required verification — the installer reports
 `crypto_unavailable` rather than pretending otherwise.
@@ -212,10 +218,29 @@ Everything after the bootstrap is already covered by the KMS signature.
 | Starts at boot | Only if lingering is enabled | Yes |
 
 System scope defaults to the service user `ori-runtime`; override with
-`--service-user`. That account must already exist. Under system scope the
-installed code stays root-owned and read-only to the service: the runtime can
-read its config and create its health socket, but cannot modify the code it
-executes.
+`--service-user`. **That account must already exist** — the installer does not
+create system accounts on your behalf. Create it first:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin ori-runtime
+```
+
+The installer checks for it immediately after you choose the scope, before it
+asks anything or writes anything, so a missing account costs you a message
+rather than an install.
+
+Under system scope the installed code stays root-owned and read-only to the
+service: the runtime can read its config and create its health socket, but
+cannot modify the code it executes. `ori doctor` proves this with a mandatory
+`permissions.code` check.
+
+**User scope cannot offer that property, and does not pretend to.** The release
+and the runtime share one Unix owner, so the account running the code can
+always restore write access to it — read-only permission bits would describe
+the current state, not a boundary. `ori doctor` therefore reports
+`permissions.code` as a warning under user scope. The installation is complete
+and usable; what it lacks is privilege separation, which only system scope
+provides.
 
 Choose **system** for devices in the field. Choose **user** for a workstation
 or a trial where you do not want a root-owned install.

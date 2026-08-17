@@ -30,6 +30,7 @@ from ori.installer.linux import (
     SystemdServiceProfile,
     collect_installer_config,
     install_composed_release,
+    require_service_account,
     uninstall_runtime,
 )
 from ori.security.release_bundles import (
@@ -132,6 +133,12 @@ def _install(args: argparse.Namespace) -> dict[str, object]:
     # repeat rather than having a privilege boundary crossed on their behalf.
     scope_prompt.require_privilege(scope, sys.argv)
     profile = _profile(scope, args.service_user)
+    # A precondition of the scope just chosen, resolved before the operator is
+    # asked anything and before the host is touched. Deliberately not part of
+    # `prerequisites.ensure`: that abstraction offers to install OS packages,
+    # and creating a service account is not something this installer does on an
+    # operator's behalf.
+    require_service_account(profile)
     layout, unit_path, env_file = _paths(
         scope,
         root=args.root,

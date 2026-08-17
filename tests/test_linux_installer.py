@@ -648,7 +648,11 @@ def test_failed_post_move_validation_removes_unusable_release(tmp_path: Path) ->
         )
 
     assert not layout.release("2.3.0").exists()
-    assert list(layout.releases.iterdir()) == []
+    # This invocation created the install root, and the failure left it empty,
+    # so nothing of it remains — an operator whose first install failed has no
+    # directory tree suggesting Ori is installed.
+    assert not layout.releases.exists()
+    assert not layout.root.exists()
     assert not layout.current.exists()
 
 
@@ -1919,7 +1923,8 @@ def test_failed_shebang_repair_leaves_no_orphan_release(
         _install(layout, "2.3.1")
 
     assert not layout.release("2.3.1").exists()
-    assert list(layout.releases.iterdir()) == []
+    assert not layout.releases.exists()
+    assert not layout.root.exists()
     assert not layout.current.exists()
 
 

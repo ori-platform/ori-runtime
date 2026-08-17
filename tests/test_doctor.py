@@ -242,6 +242,24 @@ def test_inactive_service_is_a_blocking_failure(tmp_path: Path) -> None:
 
 
 def _checks(root: Path) -> dict[str, doctor.DoctorCheck]:
+    """Permission checks under system scope, where code immutability is claimed.
+
+    The service account is this test's own user, so the release tree is owned by
+    the very account the runtime would run as. That is the adversarial shape the
+    check exists to catch: under system scope a release the service can write is
+    a finding, whoever that service happens to be.
+    """
+    return {
+        c.name: c
+        for c in doctor.check_permissions(
+            _identity(
+                root, scope="system", service_user=pwd.getpwuid(os.getuid()).pw_name
+            )
+        )
+    }
+
+
+def _user_scope_checks(root: Path) -> dict[str, doctor.DoctorCheck]:
     return {c.name: c for c in doctor.check_permissions(_identity(root, scope="user"))}
 
 
@@ -329,6 +347,69 @@ def test_a_sealed_release_passes(tmp_path: Path, not_root: None) -> None:
         assert _checks(tmp_path)["permissions.code"].status == terminal.PASS
     finally:
         _unseal(tmp_path)
+
+
+# --- user scope cannot claim code immutability ----------------------------
+
+
+def test_user_scope_reports_an_advisory_rather_than_a_failure(
+    tmp_path: Path, not_root: None
+) -> None:
+    """A user-scope install is complete; it just cannot offer immutability.
+
+    The release and the runtime share one Unix owner, so the account that runs
+    the code can always restore write access to it. Failing here would reject a
+    working workstation install for a property its deployment model never had.
+    """
+    _layout(tmp_path)
+    (_release(tmp_path) / "ori").mkdir()
+    (_release(tmp_path) / "ori" / "runtime.py").write_text("# code\n")
+
+    code = _user_scope_checks(tmp_path)["permissions.code"]
+
+    assert code.status == terminal.WARN
+    assert code.mandatory is False
+    assert "cannot be made immutable" in code.message
+    assert "system scope" in code.message
+
+
+def test_user_scope_advisory_is_not_silenced_by_read_only_modes(
+    tmp_path: Path, not_root: None
+) -> None:
+    """Sealing the tree must not buy a passing claim.
+
+    Mode bits describe the current state, not a boundary: the owner may chmod
+    them back at any moment, so a compromised runtime can restore write access
+    to the code it is about to execute. Reporting PASS because the bits look
+    right at this instant would be a false assurance — which is exactly why the
+    installer does not seal user-scope trees to make this check quiet.
+    """
+    _layout(tmp_path)
+    (_release(tmp_path) / "ori").mkdir()
+    (_release(tmp_path) / "ori" / "runtime.py").write_text("# code\n")
+    _sealed(tmp_path)
+    try:
+        code = _user_scope_checks(tmp_path)["permissions.code"]
+
+        assert code.status == terminal.WARN
+        assert code.mandatory is False
+    finally:
+        _unseal(tmp_path)
+
+
+def test_system_scope_still_fails_on_a_release_the_service_can_write(
+    tmp_path: Path, not_root: None
+) -> None:
+    """The scope split must not weaken the scope that can enforce it."""
+    _layout(tmp_path)
+    (_release(tmp_path) / "ori").mkdir()
+    (_release(tmp_path) / "ori" / "runtime.py").write_text("# code\n")
+
+    code = _checks(tmp_path)["permissions.code"]
+
+    assert code.status == terminal.FAIL
+    assert code.mandatory is True
+    assert "not immutable" in code.message
 
 
 def test_an_uninspectable_directory_fails_closed(

@@ -299,6 +299,62 @@ def test_user_scope_rejects_service_user_before_verification(
     assert "--service-user is valid only for system scope" in capsys.readouterr().err
 
 
+def test_missing_service_account_is_refused_before_anything_is_touched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The account is a precondition, so it is checked while nothing is spent.
+
+    In v2.4.0-rc.3 this was discovered after the operator had answered every
+    identity prompt and the installer had built a virtual environment from 44
+    wheels — minutes of work, then rolled back, then asked again. Verification,
+    prompting, and the filesystem must all still be untouched when it fails.
+    """
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        cli,
+        "load_release_key_registry",
+        lambda _path: pytest.fail("verification must not begin"),
+    )
+    monkeypatch.setattr("ori.installer.linux.pwd.getpwnam", _no_such_account)
+    root = tmp_path / "ori"
+    args = [
+        "install",
+        "--bundle",
+        str(tmp_path / "bundle.tar.gz"),
+        "--signature",
+        str(tmp_path / "bundle.tar.gz.sig"),
+        "--root",
+        str(root),
+        "--scope",
+        "system",
+        "--unattended",
+        "--device-id",
+        "ori-01",
+        "--name",
+        "Office",
+        "--location",
+        "Lagos",
+    ]
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(args)
+
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "system service user does not exist" in message
+    # The remedy an operator needs, not just the diagnosis.
+    assert "useradd" in message
+    assert "--scope user" in message
+    assert not root.exists()
+
+
+def _no_such_account(name: str) -> None:
+    """Stand in for a host where the service account was never created."""
+    raise KeyError(name)
+
+
 def test_uninstall_disables_unit_before_removing_release(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
