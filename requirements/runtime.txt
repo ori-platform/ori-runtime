@@ -1034,9 +1034,9 @@ sortedcontainers==2.4.0 \
     --hash=sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88 \
     --hash=sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0
     # via asyncua
-twilio==9.10.9 \
-    --hash=sha256:1c50bfb394b5dbc044bacab24b2e3b550bee0c08da51c4a1fa4816293303e66c \
-    --hash=sha256:eb74fc026c85a89372836414f57e262119efaa160b9419cf4d05b59056b8e89d
+twilio==9.11.0 \
+    --hash=sha256:226a02b813851c21c8b2a2ce7bcb063b61edd76b31a11e0546a47e9ce4b7cc7c \
+    --hash=sha256:3de712da429d73955fa36210c2884cae077076985368094aec0d6743fb03dc2f
     # via -r runtime.in
 typing-extensions==4.15.0 \
     --hash=sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466 \

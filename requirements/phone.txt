@@ -956,9 +956,9 @@ schema==0.7.8 \
     --hash=sha256:00bd977fadc7d9521bf289850cd8a8aa5f4948f575476b8daaa5c1b57af2dce1 \
     --hash=sha256:e86cc08edd6fe6e2522648f4e47e3a31920a76e82cce8937535422e310862ab5
     # via africastalking
-twilio==9.10.9 \
-    --hash=sha256:1c50bfb394b5dbc044bacab24b2e3b550bee0c08da51c4a1fa4816293303e66c \
-    --hash=sha256:eb74fc026c85a89372836414f57e262119efaa160b9419cf4d05b59056b8e89d
+twilio==9.11.0 \
+    --hash=sha256:226a02b813851c21c8b2a2ce7bcb063b61edd76b31a11e0546a47e9ce4b7cc7c \
+    --hash=sha256:3de712da429d73955fa36210c2884cae077076985368094aec0d6743fb03dc2f
     # via -r phone.in
 typing-extensions==4.15.0 \
     --hash=sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466 \
