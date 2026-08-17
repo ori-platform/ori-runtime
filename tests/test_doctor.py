@@ -9,13 +9,16 @@ import json
 import os
 import pwd
 import socket
+import stat
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Sequence
 
 import pytest
 
 from ori import doctor
+from ori.installer import trusted_paths
 from ori.utils import terminal
 
 
@@ -82,14 +85,30 @@ def test_run_doctor_refuses_before_spawning_anything(
     assert runner.calls == []
 
 
+# Which component of a temporary tree is untrusted first is the platform's
+# choice, not the installer's: pytest builds under `/tmp` on Linux, which is
+# mode 1777, and under a user-owned `/var/folders/...` on macOS. Both are
+# genuine refusals, so the assertion is that root declined and said which
+# component and why — not which of the two reasons this host happened to reach.
+_TRUST_REASONS = ("is not owned by root", "is writable by another account")
+
+
+def _refusal_is_explained(message: str) -> bool:
+    return "refusing to execute as root" in message and any(
+        reason in message for reason in _TRUST_REASONS
+    )
+
+
 def test_a_system_label_on_a_user_owned_root_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`--scope system --root /home/alice/...` must not launder a user install."""
     monkeypatch.setattr(os, "geteuid", lambda: 0)
+
     with pytest.raises(doctor.UnsafeExecutionError) as excinfo:
         doctor.assert_execution_allowed(_identity(tmp_path, scope="system"))
-    assert "not owned by root" in str(excinfo.value)
+
+    assert _refusal_is_explained(str(excinfo.value)), excinfo.value
 
 
 def test_run_doctor_refuses_a_laundered_root_before_spawning_anything(
@@ -120,34 +139,53 @@ def test_an_explicit_root_is_still_refused_execution_as_root(
 
 def test_a_root_owned_chain_is_trusted() -> None:
     """The real system layout: root-owned, not writable by group or other."""
-    assert doctor._first_untrusted_component(Path("/usr/bin/env")) is None
+    assert doctor._interpreter_trust_failure(Path("/usr/bin/env")) is None
 
 
-def test_a_user_owned_component_is_named(tmp_path: Path, not_root: None) -> None:
-    """The temp tree is user-owned somewhere above tmp_path; that must be caught."""
-    untrusted = doctor._first_untrusted_component(tmp_path / "x" / "y")
-    assert untrusted is not None
-    assert untrusted == tmp_path or untrusted in tmp_path.parents
+def test_an_untrusted_component_is_named(tmp_path: Path, not_root: None) -> None:
+    """A temporary tree is untrusted somewhere above; that must be caught.
+
+    The component named is whichever fails first — user-owned on one platform,
+    world-writable on another — and either answer identifies a path root cannot
+    rely on.
+    """
+    failure = doctor._interpreter_trust_failure(tmp_path / "x" / "y")
+
+    assert failure is not None
+    assert any(reason in failure for reason in _TRUST_REASONS), failure
 
 
 def test_a_group_writable_component_is_untrusted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Root ownership alone is not enough if another account can write it."""
+    monkeypatch.setattr(
+        trusted_paths.os,
+        "lstat",
+        lambda path: SimpleNamespace(st_uid=0, st_mode=stat.S_IFDIR | 0o775),
+    )
 
-    class _Stat:
-        st_uid = 0
-        st_mode = 0o40775  # root-owned, group-writable
+    failure = doctor._interpreter_trust_failure(tmp_path)
 
-    monkeypatch.setattr(Path, "lstat", lambda self: _Stat())
-    assert doctor._first_untrusted_component(tmp_path) is not None
+    assert failure is not None
+    assert "is writable by another account" in failure
 
 
 def test_a_missing_component_below_a_trusted_chain_is_accepted() -> None:
-    """Nothing unprivileged can create it, so there is nothing to plant."""
-    assert (
-        doctor._first_untrusted_component(Path("/usr/absent/venv/bin/python")) is None
-    )
+    """Nothing unprivileged can create it, so there is nothing to plant.
+
+    The execution guard asks only whether anything untrusted lies on the path;
+    whether the interpreter exists is the caller's concern.
+    """
+    assert trusted_paths.trust_failure("/usr/absent/venv/bin/python") is None
+
+
+def test_an_interpreter_that_does_not_exist_is_refused() -> None:
+    """Executing it is the question here, and a missing file cannot be run."""
+    failure = doctor._interpreter_trust_failure(Path("/usr/absent/venv/bin/python"))
+
+    assert failure is not None
+    assert "does not exist" in failure
 
 
 def test_user_scope_as_its_owner_is_allowed(

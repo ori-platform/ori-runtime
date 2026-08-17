@@ -348,6 +348,7 @@ def _resolve(args: argparse.Namespace) -> tuple[Any, str] | int:
     """Resolve the installation, turning every lookup failure into an exit code."""
     from ori.installer.paths import (
         AmbiguousScopeError,
+        IndeterminateScopeError,
         UnmanagedReleaseError,
         resolve_identity,
     )
@@ -357,11 +358,26 @@ def _resolve(args: argparse.Namespace) -> tuple[Any, str] | int:
     except AmbiguousScopeError as exc:
         print(f"ori: {exc}", file=sys.stderr)
         return EXIT_UNUSABLE
+    except IndeterminateScopeError as exc:
+        print(f"ori: {exc}", file=sys.stderr)
+        return EXIT_UNUSABLE
     except UnmanagedReleaseError as exc:
         print(f"ori: unusable installation: {exc}", file=sys.stderr)
         return EXIT_UNUSABLE
     except FileNotFoundError as exc:
         print(f"ori: no installation found: {exc}", file=sys.stderr)
+        return EXIT_UNUSABLE
+    except OSError as exc:
+        # A backstop, not the mechanism: detection classifies what it cannot
+        # read. Anything that still reaches here is an inspection failure this
+        # code did not anticipate, and a diagnostic command must report it
+        # rather than end in a traceback.
+        print(
+            f"ori: could not inspect the installation ({exc.filename or exc}): "
+            f"{exc.strerror or exc}. Pass --scope user or --scope system "
+            "explicitly.",
+            file=sys.stderr,
+        )
         return EXIT_UNUSABLE
 
 

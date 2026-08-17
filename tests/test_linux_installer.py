@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from ori.installer import linux as installer_linux
+from ori.installer import trusted_paths
 from ori.installer.linux import (
     BootPersistence,
     InstallerConfigInput,
@@ -2358,17 +2359,15 @@ def test_a_useradd_is_trusted_only_when_root_alone_could_have_placed_it(
     failing on both counts passes whichever guard is removed.
     """
     candidate = "/usr/sbin/useradd"
-    monkeypatch.setattr(
-        installer_linux, "_USERADD_LOCATIONS", (candidate,), raising=True
+    _fake_filesystem(
+        monkeypatch,
+        {
+            "/": _ROOT_DIR,
+            "/usr": _ROOT_DIR,
+            "/usr/sbin": _ROOT_DIR,
+            candidate: (stat.S_IFREG | mode, uid),
+        },
     )
-    monkeypatch.setattr(
-        installer_linux.os,
-        "stat",
-        lambda path, **_kwargs: SimpleNamespace(
-            st_mode=stat.S_IFREG | mode, st_uid=uid
-        ),
-    )
-    monkeypatch.setattr(installer_linux.os, "access", lambda *_a, **_k: True)
 
     resolved = installer_linux._trusted_useradd()
 
@@ -2383,9 +2382,9 @@ def _fake_filesystem(
     monkeypatch: pytest.MonkeyPatch,
     entries: dict[str, tuple[int, int]],
     *,
-    realpath: dict[str, str] | None = None,
+    links: dict[str, str] | None = None,
 ) -> None:
-    """Install a synthetic tree so each ancestor's mode can be stated exactly.
+    """Install a synthetic tree so each component's mode can be stated exactly.
 
     Real directories cannot be used: the cases that matter are root-owned ones,
     and creating those needs root, which the suite must not require.
@@ -2396,16 +2395,16 @@ def _fake_filesystem(
         if key not in entries:
             raise FileNotFoundError(key)
         mode, uid = entries[key]
-        return SimpleNamespace(st_mode=mode, st_uid=uid)
+        return SimpleNamespace(st_mode=mode, st_uid=uid, st_dev=1, st_ino=hash(key))
 
-    monkeypatch.setattr(installer_linux.os, "lstat", lookup)
-    monkeypatch.setattr(installer_linux.os, "stat", lookup)
-    monkeypatch.setattr(installer_linux.os, "access", lambda *_a, **_k: True)
-    monkeypatch.setattr(
-        installer_linux.os.path,
-        "realpath",
-        lambda path: (realpath or {}).get(str(path), str(path)),
-    )
+    def readlink(path: object) -> str:
+        key = str(path)
+        if (links or {}).get(key) is None:
+            raise OSError(22, "Invalid argument", key)
+        return (links or {})[key]
+
+    monkeypatch.setattr(trusted_paths.os, "lstat", lookup)
+    monkeypatch.setattr(trusted_paths.os, "readlink", readlink)
     monkeypatch.setattr(
         installer_linux, "_USERADD_LOCATIONS", ("/usr/sbin/useradd",), raising=True
     )
@@ -2478,29 +2477,20 @@ def test_an_unsafe_grandparent_is_caught_as_well(
 def test_a_root_owned_symlink_component_does_not_disqualify_a_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`/sbin` is a link into `/usr/sbin` on any usr-merged distribution.
-
-    Linux reports every symlink as 0777, so testing a link component for
-    group-writability refuses the ordinary layout of the hosts this installer
-    targets. What protects the link is the directory holding it, which the walk
-    has already checked.
-    """
+    """A link's own mode grants nothing; Linux reports every one as 0777."""
     _fake_filesystem(
         monkeypatch,
         {
             "/": _ROOT_DIR,
-            "/sbin": (stat.S_IFLNK | 0o777, 0),
-            "/sbin/useradd": _SAFE_BINARY,
             "/usr": _ROOT_DIR,
             "/usr/sbin": _ROOT_DIR,
-            "/usr/sbin/useradd": _SAFE_BINARY,
+            "/usr/sbin/useradd": (stat.S_IFLNK | 0o777, 0),
+            "/usr/sbin/useradd.real": _SAFE_BINARY,
         },
-    )
-    monkeypatch.setattr(
-        installer_linux, "_USERADD_LOCATIONS", ("/sbin/useradd",), raising=True
+        links={"/usr/sbin/useradd": "/usr/sbin/useradd.real"},
     )
 
-    assert installer_linux._trusted_useradd() == "/sbin/useradd"
+    assert installer_linux._trusted_useradd() == "/usr/sbin/useradd"
 
 
 def test_a_symlink_component_owned_by_another_account_is_refused(
@@ -2511,12 +2501,12 @@ def test_a_symlink_component_owned_by_another_account_is_refused(
         monkeypatch,
         {
             "/": _ROOT_DIR,
-            "/sbin": (stat.S_IFLNK | 0o777, 1000),
-            "/sbin/useradd": _SAFE_BINARY,
+            "/usr": _ROOT_DIR,
+            "/usr/sbin": _ROOT_DIR,
+            "/usr/sbin/useradd": (stat.S_IFLNK | 0o777, 1000),
+            "/usr/sbin/useradd.real": _SAFE_BINARY,
         },
-    )
-    monkeypatch.setattr(
-        installer_linux, "_USERADD_LOCATIONS", ("/sbin/useradd",), raising=True
+        links={"/usr/sbin/useradd": "/usr/sbin/useradd.real"},
     )
 
     assert installer_linux._trusted_useradd() is None
@@ -2525,11 +2515,7 @@ def test_a_symlink_component_owned_by_another_account_is_refused(
 def test_a_symlink_landing_under_an_unsafe_directory_is_not_trusted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A safe name may still resolve somewhere anyone can rewrite.
-
-    Every component of the written path is root-controlled here; the target's
-    directory is not, so where it lands has to be checked too.
-    """
+    """A safe name may still resolve somewhere anyone can rewrite."""
     _fake_filesystem(
         monkeypatch,
         {
@@ -2540,7 +2526,7 @@ def test_a_symlink_landing_under_an_unsafe_directory_is_not_trusted(
             "/opt": (stat.S_IFDIR | 0o777, 0),
             "/opt/useradd": _SAFE_BINARY,
         },
-        realpath={"/usr/sbin/useradd": "/opt/useradd"},
+        links={"/usr/sbin/useradd": "/opt/useradd"},
     )
 
     assert installer_linux._trusted_useradd() is None
@@ -2550,15 +2536,31 @@ def test_a_useradd_that_is_not_a_regular_file_is_not_trusted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A directory or device in that position is not a binary to execute."""
-    monkeypatch.setattr(
-        installer_linux, "_USERADD_LOCATIONS", ("/usr/sbin/useradd",), raising=True
+    _fake_filesystem(
+        monkeypatch,
+        {
+            "/": _ROOT_DIR,
+            "/usr": _ROOT_DIR,
+            "/usr/sbin": _ROOT_DIR,
+            "/usr/sbin/useradd": (stat.S_IFDIR | 0o755, 0),
+        },
     )
-    monkeypatch.setattr(
-        installer_linux.os,
-        "stat",
-        lambda path, **_kwargs: SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0),
+
+    assert installer_linux._trusted_useradd() is None
+
+
+def test_a_useradd_that_is_not_executable_is_not_trusted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_filesystem(
+        monkeypatch,
+        {
+            "/": _ROOT_DIR,
+            "/usr": _ROOT_DIR,
+            "/usr/sbin": _ROOT_DIR,
+            "/usr/sbin/useradd": (stat.S_IFREG | 0o644, 0),
+        },
     )
-    monkeypatch.setattr(installer_linux.os, "access", lambda *_a, **_k: True)
 
     assert installer_linux._trusted_useradd() is None
 

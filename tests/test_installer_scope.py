@@ -235,6 +235,156 @@ def test_no_installation_is_reported_as_such(
         paths.detect_scope()
 
 
+# --- an install root that cannot be read is not an install root that is absent
+
+
+def _unreadable(monkeypatch: pytest.MonkeyPatch, *roots: Path) -> None:
+    """Make `(root / "current").exists()` raise, as an unreadable 0700 root does.
+
+    Simulated rather than chmod'd, so the case is exercised as the user who
+    cannot read it even when the suite runs as root — which can read anything,
+    and would quietly turn this into no test at all.
+    """
+    blocked = {str(root) for root in roots}
+    original = Path.exists
+
+    def guarded(self: Path, **kwargs: object) -> bool:
+        if str(self.parent) in blocked:
+            raise PermissionError(13, "Permission denied", str(self))
+        return original(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "exists", guarded)
+
+
+def test_a_present_installation_wins_over_an_unreadable_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unreadable root cannot be the one this account is running.
+
+    This is the shape a workstation ends up in after a system install fails and
+    rolls back: `/opt/ori` remains, unreadable, while the user installation is
+    the real one. Refusing to answer here would make the installer's own
+    next-step advice — run `ori doctor` — fail.
+    """
+    user_root = tmp_path / "home" / ".local" / "ori"
+    system_root = tmp_path / "opt" / "ori"
+    _make_install(user_root)
+    system_root.mkdir(parents=True)
+    monkeypatch.setattr(paths, "user_root", lambda: user_root)
+    monkeypatch.setattr(paths, "SYSTEM_ROOT", system_root)
+    _unreadable(monkeypatch, system_root)
+
+    assert paths.detect_scope() == "user"
+
+
+def test_a_present_system_installation_wins_over_an_unreadable_user_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_root = tmp_path / "home" / ".local" / "ori"
+    system_root = tmp_path / "opt" / "ori"
+    user_root.mkdir(parents=True)
+    _make_install(system_root)
+    monkeypatch.setattr(paths, "user_root", lambda: user_root)
+    monkeypatch.setattr(paths, "SYSTEM_ROOT", system_root)
+    _unreadable(monkeypatch, user_root)
+
+    assert paths.detect_scope() == "system"
+
+
+@pytest.mark.parametrize("unreadable", ["both", "system_only", "user_only"], ids=str)
+def test_nothing_readable_asks_for_an_explicit_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unreadable: str
+) -> None:
+    """Inaccessible must not collapse into absent.
+
+    With nothing else found, the honest answer is that scope could not be
+    established — not a guess, and not a traceback.
+    """
+    user_root = tmp_path / "home" / ".local" / "ori"
+    system_root = tmp_path / "opt" / "ori"
+    user_root.mkdir(parents=True)
+    system_root.mkdir(parents=True)
+    monkeypatch.setattr(paths, "user_root", lambda: user_root)
+    monkeypatch.setattr(paths, "SYSTEM_ROOT", system_root)
+    blocked = {
+        "both": (user_root, system_root),
+        "system_only": (system_root,),
+        "user_only": (user_root,),
+    }[unreadable]
+    _unreadable(monkeypatch, *blocked)
+
+    with pytest.raises(paths.IndeterminateScopeError) as excinfo:
+        paths.detect_scope()
+
+    assert "--scope" in str(excinfo.value)
+
+
+def test_an_explicit_scope_never_inspects_the_other_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Naming the scope must not depend on a root the caller did not name."""
+    inspected: list[str] = []
+    original = Path.exists
+
+    def recording(self: Path, **kwargs: object) -> bool:
+        inspected.append(str(self))
+        return original(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(paths, "user_root", lambda: tmp_path / "user")
+    monkeypatch.setattr(paths, "SYSTEM_ROOT", tmp_path / "system")
+    monkeypatch.setattr(Path, "exists", recording)
+
+    assert paths.detect_scope(root=tmp_path / "user") == "user"
+    assert paths.detect_scope(root=tmp_path / "system") == "system"
+    assert inspected == []
+
+
+@pytest.mark.parametrize("command", ["doctor", "status"])
+def test_a_diagnostic_command_never_ends_in_a_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    """Doctor is what an operator runs when something is already wrong.
+
+    A backstop independent of detection: whatever inspection failure reaches
+    here, it becomes an exit code and a sentence naming the path, never a
+    traceback out of the tool meant to explain the problem.
+    """
+    from ori import cli
+
+    def explode(**_kwargs: object) -> tuple[object, str]:
+        raise PermissionError(13, "Permission denied", "/opt/ori/current")
+
+    monkeypatch.setattr("ori.installer.paths.resolve_identity", explode)
+
+    exit_code = cli.main([command])
+
+    assert exit_code == 2
+    message = capsys.readouterr().err
+    assert "Traceback" not in message
+    assert "/opt/ori/current" in message
+    assert "--scope" in message
+
+
+def test_doctor_run_reports_an_inspection_failure_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from ori import doctor
+
+    def explode(**_kwargs: object) -> tuple[object, str]:
+        raise PermissionError(13, "Permission denied", "/opt/ori/current")
+
+    monkeypatch.setattr("ori.installer.paths.resolve_identity", explode)
+
+    assert doctor.run() == 2
+    message = capsys.readouterr().err
+    assert "Traceback" not in message
+    assert "/opt/ori/current" in message
+    assert "--scope" in message
+
+
 def test_resolve_identity_describes_the_active_release(tmp_path: Path) -> None:
     release = _make_install(tmp_path, version="2.3.1")
     identity, _ = paths.resolve_identity(scope="user", root=tmp_path)

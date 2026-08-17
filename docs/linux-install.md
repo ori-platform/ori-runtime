@@ -39,6 +39,15 @@ for a supported one rather than refusing the host: it tries `python3.12`,
 workstation whose default is 3.10 installs normally as long as one of those is
 present. If none is, the installer says so and names what to install.
 
+**System scope additionally requires that interpreter to be one only root can
+change.** The release's environment is built from it and links back to it, so a
+Python installed under pyenv, a home directory, or any other prefix an
+unprivileged account can write would produce a release whose executing code
+that account could replace. The installer checks this before it changes
+anything and stops with the package-manager command if it fails; a distribution
+Python (`sudo apt install python3.12`) satisfies it. User scope is unaffected —
+it never claims code the runtime cannot rewrite.
+
 **Raspberry Pi OS Bullseye is not supported.** It ships OpenSSL 1.1.1, which
 cannot perform the required verification — the installer reports
 `crypto_unavailable` rather than pretending otherwise.
@@ -436,6 +445,19 @@ Scope is never inferred from whether you used `sudo`. If both a user and a
 system installation exist, `ori doctor` refuses to guess and asks for
 `--scope`.
 
+An install root that cannot be read is not treated as one that is absent. A
+system installation leaves `/opt/ori` owned by root with the service account's
+group and mode 0750 — traversable by the runtime, not by an ordinary operator
+account — so inspecting it without privilege gives a permission error rather
+than an answer — including
+after a system install has rolled back and left the directory behind. When one
+installation is definitely present and the other cannot be read, the readable
+one is selected and named in the report; the unreadable one cannot be the
+installation this account is running. When nothing can be established either
+way, the command says so and asks for `--scope`, and reports the path it could
+not inspect. No diagnostic command ends in a traceback because of a filesystem
+permission.
+
 ---
 
 ## Boot persistence
@@ -557,7 +579,7 @@ stable and defined by `ori-specs/runtime-release-bundle/v1`.
 
 | Code | Meaning |
 | --- | --- |
-| `unsupported_target` | Not Linux, or an unsupported architecture or Python version |
+| `unsupported_target` | Not Linux, or an unsupported architecture or Python version, or — for `--scope system` — a supported Python whose installation path is not root-controlled |
 | `crypto_unavailable` | OpenSSL is missing or older than 3 — not a bad signature |
 | `untrusted_release_key` | The bundle names a key that is not the pinned release key |
 | `invalid_signature_envelope` | The detached signature is malformed |

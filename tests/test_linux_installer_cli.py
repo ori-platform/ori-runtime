@@ -281,6 +281,107 @@ def test_workspace_failure_maps_to_stable_archive_error(
     )
 
 
+@pytest.mark.skipif(
+    Path("/etc").resolve() != Path("/etc"),
+    reason="system scope resolves /etc, which is not canonical on this host",
+)
+def test_a_user_controlled_interpreter_is_refused_before_any_host_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A pyenv or home-directory Python cannot carry a system installation.
+
+    The release environment is built from it and links back to it, so its code
+    would be replaceable by whoever controls that prefix. Diagnostics would
+    catch it — after the bundle is unpacked, the environment built, the account
+    created and the unit started, and the whole thing then rolled back. It is
+    knowable in microseconds, so nothing may be spent before it is asked.
+    """
+    prefix = tmp_path / "pyenv" / "versions" / "3.12.3" / "bin"
+    prefix.mkdir(parents=True)
+    interpreter = prefix / "python3.12"
+    interpreter.write_text("#!/bin/sh\n", encoding="utf-8")
+    interpreter.chmod(0o755)
+
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(sys, "_base_executable", str(interpreter), raising=False)
+    monkeypatch.setattr(
+        cli,
+        "load_release_key_registry",
+        lambda _path: pytest.fail("verification must not begin"),
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux._run_account_command",
+        lambda _c: pytest.fail("no account may be created"),
+    )
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(_system_install_args(tmp_path))
+
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "only root can change" in message
+    assert "apt install" in message
+    assert "--scope user" in message
+    assert not (tmp_path / "ori").exists()
+
+
+def test_a_root_controlled_interpreter_is_accepted_for_system_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check must not refuse the ordinary case it exists to protect.
+
+    Under a user-scope profile this returns before inspecting anything, so a
+    user-scope call would keep passing even if every system interpreter were
+    refused. The profile is therefore system, and the path the primitive was
+    handed is recorded — accepting without looking is the failure this guards.
+    """
+    from ori.installer import linux as installer_linux
+    from ori.installer.linux import (
+        SystemdServiceProfile,
+        require_trusted_base_interpreter,
+    )
+
+    inspected: list[str] = []
+    real = installer_linux.trust_failure
+
+    def recording(path: object, **kwargs: object) -> object:
+        inspected.append(str(path))
+        return real(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(installer_linux, "trust_failure", recording)
+    # Root-owned, unwritable by others, and beneath root-controlled directories
+    # on every supported host.
+    monkeypatch.setattr(sys, "_base_executable", "/usr/bin/env", raising=False)
+
+    require_trusted_base_interpreter(SystemdServiceProfile.system())
+
+    assert inspected == ["/usr/bin/env"]
+
+
+def test_the_interpreter_refusal_uses_a_documented_failure_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Automation branches on the code, not on the sentence."""
+    from ori.installer.linux import (
+        LinuxInstallError,
+        SystemdServiceProfile,
+        require_trusted_base_interpreter,
+    )
+
+    interpreter = tmp_path / "bin" / "python3.12"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("#!/bin/sh\n", encoding="utf-8")
+    interpreter.chmod(0o755)
+    monkeypatch.setattr(sys, "_base_executable", str(interpreter), raising=False)
+
+    with pytest.raises(LinuxInstallError) as error:
+        require_trusted_base_interpreter(SystemdServiceProfile.system())
+
+    assert error.value.code == "unsupported_target"
+
+
 def test_a_different_service_account_name_is_refused(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

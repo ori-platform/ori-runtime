@@ -144,6 +144,17 @@ jobs:
       - name: Run test suite
         run: pytest tests/ -q -m "not hardware"
 
+      # System scope is only meaningful as root: the execution guard returns
+      # immediately for any other account, so an unprivileged run of these
+      # would pass without exercising anything. They assert `geteuid() == 0`
+      # rather than skipping, so a missing privileged invocation fails here
+      # instead of quietly reporting green.
+      - name: System-scope installer checks (root, real venv)
+        run: |
+          sudo -H env ORI_REQUIRE_ROOT_TESTS=1 \
+            "$(which python)" -m pytest \
+            tests/test_installer_system_scope.py -q
+
       - name: Audit pinned Python dependencies
         run: |
           python -m pip_audit -r requirements/runtime.txt

@@ -22,6 +22,7 @@ from typing import Callable, Literal, Sequence
 import yaml
 
 from ori.installer import identity
+from ori.installer.trusted_paths import trust_failure
 from ori.security.release_bundles import ExtractedReleaseBundle, distribution_version
 
 _VERSION_RE = re.compile(
@@ -1167,6 +1168,41 @@ def render_systemd_unit(
     return rendered
 
 
+def require_trusted_base_interpreter(profile: SystemdServiceProfile) -> None:
+    """Refuse a system install built on an interpreter root does not control.
+
+    The release's virtual environment is created from whichever interpreter the
+    bootstrap selected, and `bin/python` in that environment links back to it.
+    So an interpreter under a user-writable prefix — pyenv, a home directory,
+    `/usr/local` owned by an admin account — produces a release whose executing
+    code an unprivileged account can replace. Diagnostics catch that, but only
+    after the bundle has been unpacked, the environment built, the service
+    account created and the unit started, and the whole installation then rolls
+    back for a condition that was knowable in microseconds.
+
+    Read-only, so it runs before anything is prompted, created, or built. User
+    scope is unaffected: it never claims code the runtime cannot rewrite.
+    """
+    if profile.scope != "system":
+        return
+    # In a virtual environment `sys.executable` is the environment's own stub;
+    # `_base_executable` is the interpreter a new environment would actually be
+    # built from, which is the one whose provenance matters here.
+    base = getattr(sys, "_base_executable", None) or sys.executable
+    failure = trust_failure(base, require_executable=True)
+    if failure is None:
+        return
+    raise LinuxInstallError(
+        "unsupported_target",
+        f"a system install needs an interpreter only root can change, but "
+        f"{failure}. The release environment is built from it, so its "
+        f"code would be replaceable by whoever controls that path. Install "
+        f"Python from the distribution — for example 'sudo apt install "
+        f"python3.12' — and run this again with that interpreter, or install "
+        f"with --scope user for a workstation or trial.",
+    )
+
+
 def ensure_service_account(
     profile: SystemdServiceProfile,
     *,
@@ -1345,73 +1381,15 @@ _USERADD_LOCATIONS: tuple[str, ...] = (
 def _trusted_useradd() -> str | None:
     """Return a useradd only root could have placed there, or None.
 
-    Three things have to hold, and the inode is only one of them. A perfectly
-    owned, perfectly permissioned binary is still substitutable if any
-    directory on the way to it can be written by somebody else: replacing a
-    file needs write permission on its parent, not on the file. So every
-    component from the root down is checked, on the literal path and on the
-    path after symlinks are resolved, before the executable itself is judged.
+    `PATH` is never consulted: this runs as root, and a `PATH` carrying a
+    writable directory ahead of the system ones would choose what the installer
+    executes with full privilege. Each fixed location is then judged by the same
+    path-trust primitive the rest of the installer uses.
     """
     for candidate in _USERADD_LOCATIONS:
-        try:
-            resolved = os.path.realpath(candidate)
-        except OSError:
-            continue
-        # The name as written, so a writable directory cannot redirect it, and
-        # the name after resolution, so a symlink cannot land somewhere its own
-        # parents are open. Neither implies the other.
-        if not _only_root_can_change(Path(candidate)):
-            continue
-        if resolved != candidate and not _only_root_can_change(Path(resolved)):
-            continue
-        try:
-            info = os.stat(resolved)
-        except OSError:
-            continue
-        if not stat.S_ISREG(info.st_mode):
-            continue
-        if info.st_uid != 0:
-            continue
-        # Writable by anyone but its owner is writable by somebody who is not
-        # root, which is the whole of the concern.
-        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-            continue
-        if not os.access(resolved, os.X_OK):
-            continue
-        return resolved
+        if trust_failure(candidate, require_executable=True) is None:
+            return candidate
     return None
-
-
-def _only_root_can_change(path: Path) -> bool:
-    """Whether every directory leading to *path* is under root's control alone.
-
-    Walked from the filesystem root downwards. A single group- or
-    world-writable ancestor, or one owned by another account, is enough for an
-    unprivileged user to swap what the final name refers to by renaming or
-    unlinking within it — which is why the executable's own mode is not the
-    question being asked here.
-    """
-    for directory in reversed(path.parents):
-        try:
-            info = os.lstat(directory)
-        except OSError:
-            return False
-        if info.st_uid != 0:
-            return False
-        if stat.S_ISLNK(info.st_mode):
-            # A root-owned symlink inside a root-controlled directory is safe:
-            # repointing it needs write on the directory holding it, which the
-            # step before this one has already established. Its own mode is not
-            # evidence either way — Linux reports every symlink as 0777, so
-            # testing it for group-writability rejects `/sbin` on any system
-            # where `/sbin` is the usual link into `/usr/sbin`. Where it lands
-            # is checked separately.
-            continue
-        if not stat.S_ISDIR(info.st_mode):
-            return False
-        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-            return False
-    return True
 
 
 _ACCOUNT_COMMAND_TIMEOUT_SECONDS = 30.0
@@ -1601,21 +1579,16 @@ def _validate_release_symlink(
         raise LinuxInstallError(
             "unsafe_install_root", "release directory symlink escapes its release"
         )
-    try:
-        target_stat = path.resolve(strict=True).stat()
-    except (OSError, RuntimeError) as exc:
+    # An external target's own mode is not the whole question: replacing a file
+    # needs write permission on the directory holding it, so everything leading
+    # to it is verified as well, through the same primitive the root-execution
+    # guard uses. The two boundaries answering differently is how a release can
+    # admit a link that diagnostics then refuse.
+    failure = trust_failure(path, require_executable=True)
+    if failure is not None:
         raise LinuxInstallError(
-            "unsafe_install_root", "release file symlink target is unavailable"
-        ) from exc
-    target_mode = stat.S_IMODE(target_stat.st_mode)
-    if (
-        not stat.S_ISREG(target_stat.st_mode)
-        or target_stat.st_uid != 0
-        or target_mode & 0o022
-        or not target_mode & 0o111
-    ):
-        raise LinuxInstallError(
-            "unsafe_install_root", "external release symlink target is not trusted"
+            "unsafe_install_root",
+            f"external release symlink target is not trusted: {failure}",
         )
 
 

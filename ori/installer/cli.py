@@ -32,6 +32,7 @@ from ori.installer.linux import (
     collect_installer_config,
     ensure_service_account,
     install_composed_release,
+    require_trusted_base_interpreter,
     uninstall_runtime,
 )
 from ori.security.release_bundles import (
@@ -148,6 +149,11 @@ def _install(args: argparse.Namespace) -> dict[str, object]:
     # repeat rather than having a privilege boundary crossed on their behalf.
     scope_prompt.require_privilege(scope, sys.argv)
     profile = _profile(scope, args.service_user)
+    # Read-only, so it costs nothing and can be answered before the operator is
+    # asked anything: a system install whose interpreter is not root-controlled
+    # cannot succeed, and finding that out after building an environment is the
+    # expensive way to learn it.
+    require_trusted_base_interpreter(profile)
     layout, unit_path, env_file = _paths(
         scope,
         root=args.root,
