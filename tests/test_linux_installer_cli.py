@@ -481,7 +481,19 @@ def test_the_account_is_created_after_verification_and_before_the_build(
         calls.append("extract")
         raise LinuxInstallError("offline_install_failed", "stop before building")
 
+    original_trust = cli.require_trusted_base_interpreter
+
+    def interpreter_trust(profile: object) -> None:
+        calls.append("interpreter")
+        original_trust(profile)  # type: ignore[arg-type]
+
     monkeypatch.setattr(os, "geteuid", lambda: 0)
+    # A root-owned interpreter, so the real check runs and passes. Left to the
+    # ambient one this reads whatever the host happens to provide: a CI runner
+    # builds on a tool cache that is writable by design, which aborts the run
+    # before `verify` and empties the very ordering under test.
+    monkeypatch.setattr(sys, "_base_executable", "/usr/bin/env", raising=False)
+    monkeypatch.setattr(cli, "require_trusted_base_interpreter", interpreter_trust)
     monkeypatch.setattr(
         cli, "detected_release_target", lambda: "linux-x86_64-python3.12"
     )
@@ -506,7 +518,17 @@ def test_the_account_is_created_after_verification_and_before_the_build(
     # The account precedes the packages: it is the change an operator is most
     # likely to decline, and declining it ends the run. Asking afterwards would
     # mean packages had been installed for an installation that never finished.
-    assert calls == ["verify", "collect", "account", "prerequisites", "extract"]
+    # The interpreter check is first because it is read-only and costs nothing,
+    # so a host that cannot carry the installation is turned away before the
+    # operator is asked anything.
+    assert calls == [
+        "interpreter",
+        "verify",
+        "collect",
+        "account",
+        "prerequisites",
+        "extract",
+    ]
 
 
 @pytest.mark.skipif(
