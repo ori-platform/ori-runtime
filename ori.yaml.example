@@ -570,11 +570,13 @@ evidence:
   db_path: ori_evidence.db           # chain database (separate from ori_state.db)
   key_path: ori_evidence.key         # sealed Ed25519 device key; created at first start (provisioning)
   device_secret_env: ORI_EVIDENCE_DEVICE_SECRET # env var name; MUST be a random install secret, not just the device serial
-  # First start logs the device verification anchor (public key hex).
-  # Register that anchor OFF-DEVICE at provisioning — signed evidence
-  # without a registered anchor has weak provenance. Signed evidence
-  # cannot be backfilled: actions taken while signing is unavailable
-  # are recorded as attestation gaps, never fabricated later.
+  # First start provisions the sealed device key and logs this device's own
+  # verification anchor (public key hex). Nothing is asked of you here.
+  #
+  # Signed evidence cannot be backfilled: actions taken while signing is
+  # unavailable are recorded as attestation gaps, never fabricated later.
+  # Safety never waits for evidence — a Tier C/D action fires whether or not
+  # it can be signed, and the gap stays visible until it is repaired.
 
 logging:
   level: INFO                        # DEBUG | INFO | WARNING | ERROR

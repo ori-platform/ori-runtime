@@ -190,6 +190,51 @@ def _public_key_b64_to_hex(value: Any) -> str:
     return raw.hex()
 
 
+# Failure categories an operator may see. A closed set, mapped from builtin
+# exception types only.
+#
+# Ordered most specific first: `isinstance` against a subclass must not be
+# claimed by a broader base that appears earlier.
+_PUBLIC_FAILURE_CATEGORIES: tuple[tuple[type[BaseException], str], ...] = (
+    (ModuleNotFoundError, "module_unavailable"),
+    (ImportError, "module_unavailable"),
+    (PermissionError, "permission_denied"),
+    (FileNotFoundError, "not_found"),
+    (TimeoutError, "timeout"),
+    (MemoryError, "resource_exhausted"),
+    (OSError, "io_error"),
+    (ValueError, "invalid_value"),
+    (TypeError, "invalid_type"),
+    (AttributeError, "interface_mismatch"),
+)
+_UNCATEGORISED_FAILURE = "internal_error"
+
+
+def safe_failure_reason(exc: BaseException) -> str:
+    """A category from a closed set. No text derived from *exc*, ever.
+
+    Every failure on this path carries an exception raised by, or naming, the
+    private component. Neither its message nor its traceback can be shown to an
+    operator, and relocating them to DEBUG does not help — `logging.level:
+    DEBUG` is a documented operator choice, so a level an operator can select
+    is not a private channel.
+
+    The exception's *class name* is not safe either, which is the subtler
+    version of the same mistake: a private component is free to raise
+    `AcmeChainConnectionError`, or a class whose name carries a deployment
+    identity, and `type(exc).__name__` would print it. So nothing here reads
+    text off the exception. The category comes from an `isinstance` test
+    against builtin types, and anything unrecognised is `internal_error`.
+
+    What survives is the distinction worth having: a missing module reads
+    differently from a permission failure or a refused call.
+    """
+    for exception_type, category in _PUBLIC_FAILURE_CATEGORIES:
+        if isinstance(exc, exception_type):
+            return category
+    return _UNCATEGORISED_FAILURE
+
+
 class _ExecutorBoundChain:
     """A chain handle the confirmation coordinator can drive off-thread.
 
@@ -254,7 +299,7 @@ class EvidenceAttestor:
 
     @property
     def public_key_hex(self) -> str:
-        """Device verification anchor (register off-device at provisioning)."""
+        """This device's own verification anchor, as hex."""
         return self._public_key_hex
 
     @property
@@ -282,7 +327,9 @@ class EvidenceAttestor:
 
         First start on a device is key provisioning: the Ed25519 device key
         is generated and sealed at ``key_path``, and the public anchor is
-        logged so the provisioning flow can register it off-device.
+        logged as this device's own identity. Operator-facing output describes
+        only what this runtime holds — see the disclosure rules in
+        ``ori-specs/evidence-exchange/v1.md``.
         """
         loop = asyncio.get_running_loop()
         # The chain lives in this single-slot holder, never in a bare
@@ -295,12 +342,13 @@ class EvidenceAttestor:
             self._public_key_hex = await loop.run_in_executor(
                 self._executor, holder[0].public_key_hex
             )
-        except Exception:
+        except Exception as exc:
             self._chain = None
             logger.warning(
-                "[evidence] private evidence chain unavailable; Tier C/D actions will be "
-                "recorded as attestation gaps until signing is restored.",
-                exc_info=True,
+                "[evidence] evidence signing is unavailable (%s); Tier C/D "
+                "actions continue and are recorded as attestation gaps until "
+                "signing is restored.",
+                safe_failure_reason(exc),
             )
             self._release_chain(holder)
             return False
@@ -310,11 +358,10 @@ class EvidenceAttestor:
             hasattr(holder[0], name) for name in required
         ):
             logger.warning(
-                "[evidence] loaded evidence artifact (version=%r, protocol=%r) "
-                "does not provide protocol %s with idempotent appends; evidence "
-                "signing stays unavailable — check the pinned artifact.",
-                self._artifact_version,
-                self._protocol_version,
+                "[evidence] evidence signing is unavailable: this runtime "
+                "requires protocol %s with idempotent appends and the local "
+                "store does not provide it. Tier C/D actions continue and are "
+                "recorded as attestation gaps.",
                 protocol_version,
             )
             self._release_chain(holder)
@@ -331,11 +378,16 @@ class EvidenceAttestor:
             and hasattr(holder[0], "registered_layer1_device")
         )
         self._chain = holder.pop()
-        logger.warning(
-            "[evidence] chain open db=%s artifact=%s — REGISTER this device "
-            "verification anchor off-device at provisioning: %s",
+        # Describes what this runtime did, and nothing about who else holds a
+        # copy. The previous message instructed the operator to register the
+        # anchor off-device, which both told them an external store exists and
+        # gave them a role in the evidence path — the one party whose conduct
+        # the evidence constrains. It also logged the private artifact's
+        # version, and did all of it at WARNING on every healthy start.
+        logger.info(
+            "[evidence] evidence store open at %s; this device's verification "
+            "anchor is %s",
             self._db_path,
-            self._artifact_version,
             self._public_key_hex,
         )
         return True
@@ -443,7 +495,6 @@ class EvidenceAttestor:
                 "[evidence] failed to sign action_log id=%s tier=%s",
                 action_row.get("id"),
                 action_row.get("tier"),
-                exc_info=True,
             )
             return None
 
@@ -535,7 +586,7 @@ class EvidenceAttestor:
             )
             return str(head) if head else None
         except Exception:
-            logger.warning("[evidence] chain head read failed", exc_info=True)
+            logger.warning("[evidence] chain head read failed")
             return None
 
     async def pending_export_count(self) -> int | None:
@@ -547,7 +598,7 @@ class EvidenceAttestor:
                 await loop.run_in_executor(self._executor, self._chain.pending_count)
             )
         except Exception:
-            logger.warning("[evidence] pending count read failed", exc_info=True)
+            logger.warning("[evidence] pending count read failed")
             return None
 
     def confirmation_chain(self) -> _ExecutorBoundChain | None:
@@ -578,10 +629,7 @@ class EvidenceAttestor:
         try:
             self._executor.submit(holder.clear).result(timeout=5)
         except Exception:
-            logger.warning(
-                "[evidence] chain release on evidence thread failed",
-                exc_info=True,
-            )
+            logger.warning("[evidence] chain release on evidence thread failed")
 
     def close(self) -> None:
         holder = [self._chain]

@@ -180,6 +180,7 @@ testpaths = ["tests"]
 markers = [
     "hardware: requires real Raspberry Pi hardware",
     "slow: builds a real virtual environment from locked dependencies",
+    "disclosure_release: evidence-disclosure checks needing real release inputs",
 ]
 python_files = ["test_*.py"]
 

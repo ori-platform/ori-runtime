@@ -112,7 +112,7 @@ class FirmwareConfirmationReconciler:
             try:
                 confirmed, seen = await self.reconcile_once()
             except Exception:
-                logger.exception("[confirmation] reconciliation cycle failed")
+                logger.warning("[confirmation] reconciliation cycle failed")
                 delay = min(delay * 2, self._max_interval_s)
                 continue
             if seen and not confirmed:
@@ -159,7 +159,7 @@ class FirmwareConfirmationReconciler:
                 limit=_PENDING_WINDOW
             )
         except Exception:
-            logger.exception("[confirmation] failed to list pending confirmations")
+            logger.warning("[confirmation] failed to list pending confirmations")
             return []
         if len(pending) >= _PENDING_WINDOW:
             # The query is oldest-first and bounded, so obligations beyond the
@@ -186,8 +186,6 @@ class FirmwareConfirmationReconciler:
             try:
                 status = await self._coordinator.confirm(device_id)
             except Exception:
-                logger.warning(
-                    "[confirmation] reconciling %s failed", device_id, exc_info=True
-                )
+                logger.warning("[confirmation] reconciling %s failed", device_id)
                 return False
         return bool(status == "confirmed")

@@ -246,6 +246,71 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ steps.identity.outputs.epoch }}
         run: bash scripts/build-wheelhouse.sh
 
+      # The wheelhouse is everything this repository puts on a device: the
+      # built ori-runtime wheel plus every pinned dependency. Auditing it here
+      # inspects the deliverable rather than the source tree, and covers the
+      # metadata and compiled members no source-level check reads.
+      #
+      # It does not audit the private evidence artifact. That component is
+      # never fetched by build-wheelhouse.sh and reaches a device through a
+      # separate provisioning path, so it is absent from every wheelhouse this
+      # job builds. Describing this step as auditing it would make a check
+      # that passes over an empty target sound decisive. What it does catch is
+      # a name crossing into what we ship — including the case where a future
+      # change vendors that artifact in here.
+      #
+      # ORI_REQUIRE_WHEELHOUSE_AUDIT=1 turns every skip in that test into a
+      # failure, including a missing denylist: a job that inspects binaries
+      # without knowing what to look for has inspected nothing.
+      - name: Audit the wheelhouse for evidence-store disclosure
+        env:
+          ORI_WHEELHOUSE_OUT: ${{ runner.temp }}/wheelhouse
+          ORI_REQUIRE_WHEELHOUSE_AUDIT: "1"
+          # Composed from the secrets that already configure the artifact,
+          # rather than a separate hand-maintained list. Deriving them here
+          # keeps the core denylist aligned with the artifact actually
+          # configured, and removes one thing to remember to update.
+          #
+          # It is not exhaustive, and should not be described as though it
+          # were: module, class and owner/repository do not cover native
+          # symbol aliases, internal hostnames, package names, or build paths
+          # baked into a compiled object. ORI_DISCLOSURE_DENYLIST_EXTRA exists
+          # for exactly those, and is where a distinctive stem belongs — the
+          # derived terms are full identifiers, so a symbol carrying only the
+          # stem would not match one.
+          ARTIFACT_MODULE: ${{ secrets.ORI_EVIDENCE_ARTIFACT_MODULE }}
+          ARTIFACT_CLASS: ${{ secrets.ORI_EVIDENCE_ARTIFACT_CLASS }}
+          ARTIFACT_REPOSITORY: ${{ secrets.ORI_EVIDENCE_ARTIFACT_REPOSITORY }}
+          DENYLIST_EXTRA: ${{ secrets.ORI_DISCLOSURE_DENYLIST_EXTRA }}
+        run: |
+          set -euo pipefail
+          # Terms are assembled without being echoed. Runner log masking covers
+          # the secret values, but the audit's own failure output is sanitised
+          # independently: it reports a location and a category, never a match.
+          terms=""
+          for value in "${ARTIFACT_MODULE}" "${ARTIFACT_CLASS}" \
+                       "${ARTIFACT_REPOSITORY}" "${DENYLIST_EXTRA}"; do
+            [ -n "${value}" ] || continue
+            # A dotted module or an owner/name repository yields useful terms
+            # only once split; the bare string would miss a symbol carrying
+            # just the leaf.
+            for part in $(printf '%s' "${value}" | tr './,' ' '); do
+              [ ${#part} -ge 4 ] || continue
+              terms="${terms}${terms:+,}${part}"
+            done
+          done
+          if [ -z "${terms}" ]; then
+            echo "no artifact identifiers are configured; the audit cannot" >&2
+            echo "know what to look for and must not report success" >&2
+            exit 1
+          fi
+          # Selected by marker, not by name. An earlier revision matched
+          # "wheelhouse or supplied", which silently omitted the document
+          # audit — a check that reads the denylist but happens not to carry
+          # either word in its name.
+          ORI_DISCLOSURE_DENYLIST="${terms}" python -m pytest \
+            tests/test_evidence_disclosure.py -m disclosure_release -q
+
       - name: Confirm the bundle matches the matrix target
         run: |
           set -euo pipefail

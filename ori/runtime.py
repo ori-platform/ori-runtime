@@ -2139,7 +2139,7 @@ class OriRuntime:
         try:
             rows = await self._state_store.get_actions_needing_attestation()
         except Exception:
-            logger.exception("[evidence] reconciliation scan failed")
+            logger.warning("[evidence] reconciliation scan failed")
             return
         if not rows:
             return
@@ -2165,7 +2165,7 @@ class OriRuntime:
                     int(row["id"]), status=status, attestation_seq=seq
                 )
             except Exception:
-                logger.exception(
+                logger.warning(
                     "[evidence] failed to record reconciliation for action id=%s",
                     row.get("id"),
                 )
@@ -2251,7 +2251,6 @@ class OriRuntime:
             logger.warning(
                 "[confirmation] reconciling %s failed; leaving evidence pending",
                 source_device_id,
-                exc_info=True,
             )
             return False
         return status == _FIRMWARE_CONFIRMED
@@ -2266,8 +2265,17 @@ class OriRuntime:
         health: dict[str, Any] = {
             "enabled": enabled,
             "available": bool(attestor is not None and attestor.available),
+            # This device's own anchor, which is its own property to report.
             "public_key_hex": attestor.public_key_hex if attestor else "",
-            "artifact_version": attestor.artifact_version if attestor else "",
+            # `artifact_version` is deliberately absent: ori-specs
+            # runtime-health/v2 removes it. The private component's version is
+            # implementation metadata an operator has no part in, and
+            # `available` with `protocol_version` already answer whether this
+            # device can sign and against which public contract.
+            #
+            # It was briefly removed during the disclosure audit and restored,
+            # because v1 still required it and a published contract is not a
+            # runtime's to change unilaterally. v2 is what licenses this.
             "protocol_version": (
                 PUBLIC_EVIDENCE_PROTOCOL_VERSION
                 if attestor is not None and attestor.available
@@ -2302,7 +2310,7 @@ class OriRuntime:
                 health["attestation_gap_count"] = summary["attestation_gap_count"]
                 health["status_counts"] = summary["status_counts"]
             except Exception:
-                logger.exception("[evidence] attestation summary read failed")
+                logger.warning("[evidence] attestation summary read failed")
         return health
 
     async def _build_health_snapshot(self) -> dict[str, Any]:

@@ -441,7 +441,7 @@ CREATE INDEX IF NOT EXISTS idx_firmware_anchor_transitions_device
 
 -- Cross-store epoch confirmation, per ori-specs/device-provisioning/v1.md.
 -- An approval promotes an anchor locally, but MUST NOT reach firmware until
--- the evidence store (Verity) has confirmed the identical anchor_epoch_id.
+-- the evidence store has confirmed the identical anchor_epoch_id.
 -- This table is the durable outbox that records that obligation: a grant is
 -- confirmation_pending until the evidence store agrees (confirmed) or is found to
 -- disagree (quarantined). It lives with the provisioning lifecycle; the
@@ -3650,8 +3650,8 @@ class StateStore:
         instant.
 
         ``at_ms`` MUST be a time this receiver assigned — its record of
-        when evidence arrived, or a position derived from the Verity
-        chain. It must never be a device-reported timestamp: a device
+        when evidence arrived, or a position derived from the evidence
+        store's chain. It must never be a device-reported timestamp: a device
         choosing its own would place its evidence inside an interval when
         its anchor was active, which is the question being decided.
 
