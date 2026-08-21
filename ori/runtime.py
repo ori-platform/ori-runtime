@@ -2267,12 +2267,15 @@ class OriRuntime:
             "available": bool(attestor is not None and attestor.available),
             # This device's own anchor, which is its own property to report.
             "public_key_hex": attestor.public_key_hex if attestor else "",
-            # Required by ori-specs runtime-health/v1. Removing it is arguably
-            # right — a private component's version is weak implementation
-            # metadata — but that is a contract change, not a runtime decision
-            # to take unilaterally. Tracked separately; the field stays until
-            # the contract says otherwise.
-            "artifact_version": attestor.artifact_version if attestor else "",
+            # `artifact_version` is deliberately absent: ori-specs
+            # runtime-health/v2 removes it. The private component's version is
+            # implementation metadata an operator has no part in, and
+            # `available` with `protocol_version` already answer whether this
+            # device can sign and against which public contract.
+            #
+            # It was briefly removed during the disclosure audit and restored,
+            # because v1 still required it and a published contract is not a
+            # runtime's to change unilaterally. v2 is what licenses this.
             "protocol_version": (
                 PUBLIC_EVIDENCE_PROTOCOL_VERSION
                 if attestor is not None and attestor.available

@@ -405,7 +405,6 @@ EVIDENCE_HEALTH_KEYS = {
     "enabled",
     "available",
     "public_key_hex",
-    "artifact_version",
     "protocol_version",
     "action_event_type",
     "chain_head_hash",
@@ -424,13 +423,13 @@ EVIDENCE_HEARTBEAT_KEYS = {
 
 
 @pytest.mark.asyncio
-async def test_health_evidence_block_matches_ori_specs_runtime_health_v1():
+async def test_health_evidence_block_matches_ori_specs_runtime_health_v2():
     """The field set is a published contract, not a local choice.
 
-    `artifact_version` is arguably implementation metadata that should not be
-    exposed, but `ori-specs/runtime-health/v1` requires it. Removing it is a
-    contract change, not a runtime decision, so it stays until the contract
-    says otherwise.
+    `artifact_version` is absent because `ori-specs/runtime-health/v2` removes
+    it. It was briefly removed during this audit and restored while v1 still
+    required it — the disclosure argument did not license changing a published
+    structured response ahead of the contract defining it.
     """
     from ori.runtime import OriRuntime
 
