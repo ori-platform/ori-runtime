@@ -49,6 +49,12 @@ jobs:
           python scripts/check_workflows.py
           bash scripts/check_rust_supply_chain.sh
 
+      # Vendored contract vectors are hermetic, which is why the suite works
+      # offline — and also how they could go stale invisibly. This notices.
+      - name: Check vendored evidence vectors against ori-specs
+        if: matrix.python-version == '3.12'
+        run: bash scripts/refresh-evidence-vectors.sh
+
       - name: Type check runtime contract boundaries
         run: bash scripts/typecheck-boundaries.sh
 

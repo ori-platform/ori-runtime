@@ -1,0 +1,33 @@
+{
+  "artifact": "event_id",
+  "schema_version": "ori.evidence.v2",
+  "note": "Deterministic idempotency key for a runtime action attestation. A retry after a crash reproduces it, so a row cannot be double-attested.",
+  "root_namespace": "RFC 4122 URL namespace",
+  "root_namespace_uuid": "6ba7b811-9dad-11d1-80b4-00c04fd430c8",
+  "namespace_name_uri": "https://oriplatform.dev/specs/evidence/v2/event-id",
+  "namespace_name_utf8_hex": "68747470733a2f2f6f7269706c6174666f726d2e6465762f73706563732f65766964656e63652f76322f6576656e742d6964",
+  "namespace_derivation": "EVENT_ID_NAMESPACE = UUIDv5(root_namespace_uuid, namespace_name_uri)",
+  "event_id_namespace": "3f3d6f03-be9c-50ac-b655-db9540cb5c45",
+  "per_event_name_format": "{device_id}:action_log:{action_log_id}",
+  "per_event_derivation": "event_id = UUIDv5(event_id_namespace, per_event_name)",
+  "cases": [
+    {
+      "device_id": "energy-monitor-ikeja-01",
+      "action_log_id": 1,
+      "uuid5_name": "energy-monitor-ikeja-01:action_log:1",
+      "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19"
+    },
+    {
+      "device_id": "energy-monitor-ikeja-01",
+      "action_log_id": 42,
+      "uuid5_name": "energy-monitor-ikeja-01:action_log:42",
+      "event_id": "24596e99-e3d9-52ce-aaab-b49747dcd770"
+    },
+    {
+      "device_id": "energy-monitor-ikeja-01",
+      "action_log_id": 1000,
+      "uuid5_name": "energy-monitor-ikeja-01:action_log:1000",
+      "event_id": "32dfde03-e23e-55a0-be7c-63c5582cb4a3"
+    }
+  ]
+}

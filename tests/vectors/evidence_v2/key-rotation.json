@@ -1,0 +1,49 @@
+{
+  "artifact": "key_rotation",
+  "schema_version": "ori.evidence.v2",
+  "warning": "Seeds below are published test values and must never sign anything real.",
+  "note": "Dual-signed: the chain row is signed by the outgoing key, and the payload carries a possession proof under the incoming key, so a verifier can walk anchor to current.",
+  "proof_context": "ori.evidence.rotation.v2",
+  "proof_input": "utf8(proof_context) || 0x00 || new_public_key_raw_32",
+  "proof_input_hex": "6f72692e65766964656e63652e726f746174696f6e2e76320022fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6",
+  "old_seed_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+  "old_public_key_hex": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+  "new_seed_hex": "4343434343434343434343434343434343434343434343434343434343434343",
+  "new_public_key_hex": "22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6",
+  "row": {
+    "envelope": {
+      "device_id": "energy-monitor-ikeja-01",
+      "emitted_at_ms": 1751501000000,
+      "event_id": "cdaf24dc-d58d-5458-b77b-31a8604003c8",
+      "event_type": "KEY_ROTATION",
+      "payload": {
+        "kind": "key_rotation",
+        "old_public_key": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+        "new_public_key": "22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6",
+        "rotation_sig": "ed25519:a7iwRFpAUHfQ3bsJGGTSlWZfzKxZXkQK4cbyu7qIScbvAhVwlcJWkoDXF549p9FohveJwrFduLp7suDYasmUCA=="
+      },
+      "prev_event_hash": "94217d7b81c1a8a65dbd12e528bf2be3d37dcbde1f3509deb12d4c91336edcee",
+      "schema_version": "ori.evidence.v2",
+      "sequence_num": 3
+    },
+    "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751501000000,\"event_id\":\"cdaf24dc-d58d-5458-b77b-31a8604003c8\",\"event_type\":\"KEY_ROTATION\",\"payload\":{\"kind\":\"key_rotation\",\"new_public_key\":\"22fc297792f0b6ffc0bfcfdb7edb0c0aa14e025a365ec0e342e86e3829cb74b6\",\"old_public_key\":\"2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12\",\"rotation_sig\":\"ed25519:a7iwRFpAUHfQ3bsJGGTSlWZfzKxZXkQK4cbyu7qIScbvAhVwlcJWkoDXF549p9FohveJwrFduLp7suDYasmUCA==\"},\"prev_event_hash\":\"94217d7b81c1a8a65dbd12e528bf2be3d37dcbde1f3509deb12d4c91336edcee\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":3}",
+    "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530313030303030302c226576656e745f6964223a2263646166323464632d643538642d353435382d623737622d333161383630343030336338222c226576656e745f74797065223a224b45595f524f544154494f4e222c227061796c6f6164223a7b226b696e64223a226b65795f726f746174696f6e222c226e65775f7075626c69635f6b6579223a2232326663323937373932663062366666633062666366646237656462306330616131346530323561333635656330653334326538366533383239636237346236222c226f6c645f7075626c69635f6b6579223a2232313532663864313962373931643234343533323432653135663265616236636237636666613762366135656433303039373936306530363938383164623132222c22726f746174696f6e5f736967223a22656432353531393a6137697752467041554866513362734a474754536c575a667a4b785a586b514b346362797537714953636276416856776c634a576b6f4458463534397039466f6876654a77724664754c70377375445961736d5543413d3d227d2c22707265765f6576656e745f68617368223a2239343231376437623831633161386136356462643132653532386266326265336433376463626465316633353039646562313264346339313333366564636565222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a337d",
+    "event_hash": "2007049095594f537682094ebc816f79aa3dac944aa1a8112c1595402cd793b8",
+    "signature": "ed25519:D4xqss6d+uve6af9eZesoIwGBaE+ieo1uFfnenPHr99/BoExm+Svkv0tWOkxqrTKgH+Syc1QdZZC9zCiVNeUDA=="
+  },
+  "rejection_cases": [
+    {
+      "name": "old_public_key is not the active key",
+      "expected": "reject"
+    },
+    {
+      "name": "possession proof made under the v1 context",
+      "expected": "reject",
+      "note": "verity.rotation.v1 must not verify under v2."
+    },
+    {
+      "name": "possession proof does not verify under new_public_key",
+      "expected": "reject"
+    }
+  ]
+}
