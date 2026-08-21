@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Literal, Sequence
 
@@ -131,6 +131,10 @@ class InstallerInputOptions:
     # Off by default so an unattended run is reproducible: a random suffix
     # would give the same automation a different device on every execution.
     generate_device_id: bool = False
+    # The identity already on disk, when this run is upgrading rather than
+    # installing. Present means the device has an identity the installer must
+    # keep; absent means nothing is installed and the host may supply one.
+    installed: identity.InstalledIdentity | None = None
 
 
 def collect_installer_config(
@@ -146,6 +150,42 @@ def collect_installer_config(
     values and prompts only for missing fields, retrying invalid prompt input a
     bounded number of times.
     """
+    installed = options.installed
+    if installed is not None:
+        # `device.id` is not a display name. Evidence idempotency keys derive
+        # from it, the signing anchor is registered against it, MQTT topics
+        # and client identifiers embed it, broker ACLs are assigned by it, and
+        # stored rows are indexed by it. An install or an upgrade may not
+        # change it, and no flag makes that safe: rewriting it while the state
+        # database survives would silently break the uniqueness that already
+        # signed evidence depends on. Adopting a new identity is a migration
+        # ceremony, not an installer option.
+        supplied = (options.device_id or "").strip()
+        if supplied and supplied != installed.device_id:
+            raise LinuxInstallError(
+                "config_validation_failed",
+                f"this installation is device {installed.device_id!r} and "
+                f"--device-id was given as {supplied!r}. An install cannot "
+                "change an established identity: evidence idempotency keys, "
+                "the signing anchor, MQTT topics, broker ACLs and stored rows "
+                "all derive from it. Omit --device-id to keep it.",
+            )
+        if options.generate_device_id:
+            raise LinuxInstallError(
+                "config_validation_failed",
+                f"this installation is device {installed.device_id!r}, so "
+                "--generate-device-id contradicts it. That flag derives a new "
+                "identity from the host and applies only to an empty root.",
+            )
+        options = replace(options, device_id=installed.device_id)
+        # Name and location are already recorded too. An upgrade that demanded
+        # them again would fail an unattended run that has no reason to carry
+        # them, and re-prompt an interactive one for answers already on disk.
+        if not (options.name or "").strip() and installed.name:
+            options = replace(options, name=installed.name)
+        if not (options.location or "").strip() and installed.location:
+            options = replace(options, location=installed.location)
+
     if options.unattended:
         device_id = options.device_id
         name = options.name
@@ -189,7 +229,10 @@ def collect_installer_config(
             ),
         )
 
-    suggestion = identity.suggest()
+    # A host-derived suggestion answers "what should this device be called",
+    # which is only an open question on an empty root. On an upgrade the
+    # answer is already on disk and is not the operator's to revise here.
+    suggestion = identity.suggest() if installed is None else None
     device_id = _collect_interactive_value(
         supplied=options.device_id,
         label="Device ID",
@@ -197,7 +240,11 @@ def collect_installer_config(
         prompt=prompt,
         write=write,
         hint=identity.DEVICE_ID_HINT,
-        default=suggestion.device_id if suggestion else None,
+        default=(
+            installed.device_id
+            if installed is not None
+            else (suggestion.device_id if suggestion else None)
+        ),
     )
     name = _collect_interactive_value(
         supplied=options.name,
@@ -205,7 +252,11 @@ def collect_installer_config(
         validate=lambda value: _validate_device_text("name", value),
         prompt=prompt,
         write=write,
-        default=suggestion.name if suggestion else None,
+        default=(
+            installed.name or None
+            if installed is not None
+            else (suggestion.name if suggestion else None)
+        ),
     )
     # Neither of these can be derived from the host, and a plausible-looking
     # guess is worse than a blank in a fleet report.
@@ -215,6 +266,7 @@ def collect_installer_config(
         validate=lambda value: _validate_device_text("location", value),
         prompt=prompt,
         write=write,
+        default=installed.location or None if installed is not None else None,
     )
     operator_contact = _collect_interactive_value(
         supplied=options.operator_contact,

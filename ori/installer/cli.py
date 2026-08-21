@@ -17,6 +17,7 @@ from typing import Callable, NoReturn, Sequence
 
 from ori.installer import (
     activation,
+    identity,
     launcher,
     paths,
     prerequisites,
@@ -174,10 +175,19 @@ def _install(args: argparse.Namespace) -> dict[str, object]:
     # Identity is collected and confirmed first, because confirmation promises
     # that nothing has been changed yet. Installing packages before the
     # operator has agreed to proceed would make that promise false.
+    # An upgrade runs this same code against an existing root, so the identity
+    # question is only open when nothing is installed. Read it before asking:
+    # a device's identity keys its MQTT topics, the client ids its broker ACLs
+    # are written against, and every stored row indexed by it.
+    try:
+        installed_identity = identity.read_installed(layout)
+    except identity.InstalledConfigUnreadableError as exc:
+        raise LinuxInstallError("config_validation_failed", str(exc)) from exc
     values = collect_installer_config(
         InstallerInputOptions(
             unattended=args.unattended,
             device_id=args.device_id,
+            installed=installed_identity,
             name=args.name,
             location=args.location,
             deployment_type=args.deployment_type,
