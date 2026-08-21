@@ -1,0 +1,215 @@
+{
+  "artifact": "canonical_form",
+  "schema_version": "ori.evidence.v2",
+  "canonicalisation": "json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False, allow_nan=False).encode('utf-8')",
+  "note": "Sorting is recursive at every nesting level and must be applied explicitly, never inherited from insertion order.",
+  "number_rule": "Platform D-011 agreement zone, identical to firmware-telemetry/v1. Integers |n| <= 2^53-1. Non-integer numbers finite and either exactly zero or magnitude in [1e-4, 1e16), emitted as shortest round-trip decimal in fixed notation with a mandatory fractional part. Exponent notation never appears.",
+  "integer_max": 9007199254740991,
+  "float_zone": {
+    "min_magnitude": 0.0001,
+    "max_magnitude_exclusive": 1e+16
+  },
+  "accept_cases": [
+    {
+      "name": "recursive key ordering",
+      "value": {
+        "b": {
+          "z": 1,
+          "a": 2
+        },
+        "a": 3
+      },
+      "canonical_utf8": "{\"a\":3,\"b\":{\"a\":2,\"z\":1}}",
+      "canonical_hex": "7b2261223a332c2262223a7b2261223a322c227a223a317d7d"
+    },
+    {
+      "name": "unicode is not escaped",
+      "value": {
+        "site": "Ikeja",
+        "note": "caf\u00e9 \u2014 na\u00efve"
+      },
+      "canonical_utf8": "{\"note\":\"caf\u00e9 \u2014 na\u00efve\",\"site\":\"Ikeja\"}",
+      "canonical_hex": "7b226e6f7465223a22636166c3a920e28094206e61c3af7665222c2273697465223a22496b656a61227d"
+    },
+    {
+      "name": "RFC 8259 escapes are used where required",
+      "value": {
+        "s": "line\nquote\"back\\slash\ttab"
+      },
+      "canonical_utf8": "{\"s\":\"line\\nquote\\\"back\\\\slash\\ttab\"}",
+      "canonical_hex": "7b2273223a226c696e655c6e71756f74655c226261636b5c5c736c6173685c74746162227d"
+    },
+    {
+      "name": "no whitespace between tokens",
+      "value": {
+        "a": [
+          1,
+          2,
+          {
+            "c": 3,
+            "b": 4
+          }
+        ]
+      },
+      "canonical_utf8": "{\"a\":[1,2,{\"b\":4,\"c\":3}]}",
+      "canonical_hex": "7b2261223a5b312c322c7b2262223a342c2263223a337d5d7d"
+    },
+    {
+      "name": "nested empty containers",
+      "value": {
+        "b": {},
+        "a": []
+      },
+      "canonical_utf8": "{\"a\":[],\"b\":{}}",
+      "canonical_hex": "7b2261223a5b5d2c2262223a7b7d7d"
+    },
+    {
+      "name": "array order is preserved",
+      "value": {
+        "a": [
+          3,
+          1,
+          2
+        ]
+      },
+      "canonical_utf8": "{\"a\":[3,1,2]}",
+      "canonical_hex": "7b2261223a5b332c312c325d7d"
+    },
+    {
+      "name": "integer at the JSON-safe maximum",
+      "value": {
+        "n": 9007199254740991
+      },
+      "canonical_utf8": "{\"n\":9007199254740991}",
+      "canonical_hex": "7b226e223a393030373139393235343734303939317d"
+    },
+    {
+      "name": "integer at the negative bound",
+      "value": {
+        "n": -9007199254740991
+      },
+      "canonical_utf8": "{\"n\":-9007199254740991}",
+      "canonical_hex": "7b226e223a2d393030373139393235343734303939317d"
+    },
+    {
+      "name": "float inside the agreement zone",
+      "value": {
+        "amps": 8.25
+      },
+      "canonical_utf8": "{\"amps\":8.25}",
+      "canonical_hex": "7b22616d7073223a382e32357d"
+    },
+    {
+      "name": "float at the lower bound of the zone",
+      "value": {
+        "n": 0.0001
+      },
+      "canonical_utf8": "{\"n\":0.0001}",
+      "canonical_hex": "7b226e223a302e303030317d"
+    },
+    {
+      "name": "float just inside the upper bound",
+      "value": {
+        "n": 9999999999999998.0
+      },
+      "canonical_utf8": "{\"n\":9999999999999998.0}",
+      "canonical_hex": "7b226e223a393939393939393939393939393939382e307d"
+    },
+    {
+      "name": "integral float keeps its fractional part",
+      "value": {
+        "n": 3.0
+      },
+      "canonical_utf8": "{\"n\":3.0}",
+      "canonical_hex": "7b226e223a332e307d"
+    },
+    {
+      "name": "negative zero is preserved",
+      "value": {
+        "n": -0.0
+      },
+      "canonical_utf8": "{\"n\":-0.0}",
+      "canonical_hex": "7b226e223a2d302e307d"
+    },
+    {
+      "name": "positive zero",
+      "value": {
+        "n": 0.0
+      },
+      "canonical_utf8": "{\"n\":0.0}",
+      "canonical_hex": "7b226e223a302e307d"
+    }
+  ],
+  "reject_cases": [
+    {
+      "name": "NaN",
+      "why": "non-finite numbers are forbidden",
+      "input_json": "{\"n\":NaN}",
+      "violates": "non_finite",
+      "input_kind": "json_text"
+    },
+    {
+      "name": "Infinity",
+      "why": "non-finite numbers are forbidden",
+      "input_json": "{\"n\":Infinity}",
+      "violates": "non_finite",
+      "input_kind": "json_text"
+    },
+    {
+      "name": "-Infinity",
+      "why": "non-finite numbers are forbidden",
+      "input_json": "{\"n\":-Infinity}",
+      "violates": "non_finite",
+      "input_kind": "json_text"
+    },
+    {
+      "name": "float below the agreement zone (1e-5)",
+      "why": "serializers disagree: 0.00001 vs 1e-05",
+      "input_json": "{\"n\":1e-05}",
+      "violates": "number_zone",
+      "input_kind": "json_text"
+    },
+    {
+      "name": "float at or above 1e16",
+      "why": "serializers disagree in exponent notation",
+      "input_json": "{\"n\":1e16}",
+      "violates": "number_zone",
+      "input_kind": "json_text"
+    },
+    {
+      "name": "integer above 2^53-1",
+      "why": "outside the JSON-safe integer range",
+      "input_json": "{\"n\":9007199254740992}",
+      "violates": "integer_range",
+      "input_kind": "json_text"
+    },
+    {
+      "name": "duplicate object keys",
+      "why": "the canonical form of an object with repeated keys is undefined",
+      "input_json": "{\"a\":1,\"a\":2}",
+      "violates": "duplicate_key",
+      "input_kind": "json_text"
+    },
+    {
+      "name": "non-string object key",
+      "why": "JSON object keys are strings; sorting a mixed set is undefined",
+      "violates": "non_string_key",
+      "note": "JSON text cannot represent this: `{1:2}` is malformed rather than an object with a non-string key, and would be refused as unparseable without the key's type ever being examined. input_pairs describes the native object to build \u2014 key 1, value 2 \u2014 which is the input a producer must refuse when its in-memory object has a non-string key. Languages whose objects cannot hold one may record this case as structurally unreachable, but must not skip it silently.",
+      "input_kind": "native_pairs",
+      "input_pairs": [
+        [
+          1,
+          2
+        ]
+      ]
+    }
+  ],
+  "reject_input_note": "Each refusal carries an executable input. input_kind is json_text for inputs expressible as JSON, and native_pairs where it is not. The text cases are deliberately not always valid JSON: NaN and Infinity are extensions some parsers accept, and a duplicate key does not survive an ordinary parse because most parsers silently keep the last occurrence. A verifier must parse with duplicate detection and constant rejection rather than calling a default loader and inspecting the result. Every case must produce exactly its declared violation; an implementation that cannot construct one must say so rather than exempt it.",
+  "violation_kinds": {
+    "non_finite": "NaN, Infinity or -Infinity",
+    "number_zone": "finite but outside [1e-4, 1e16) and not exactly zero",
+    "integer_range": "integer magnitude above 2^53-1",
+    "duplicate_key": "an object carrying the same key twice",
+    "non_string_key": "an object key that is not a string"
+  }
+}

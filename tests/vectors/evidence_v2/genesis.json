@@ -1,0 +1,9 @@
+{
+  "artifact": "genesis",
+  "schema_version": "ori.evidence.v2",
+  "note": "prev_event_hash of a chain's first row. Protocol constant; never configurable.",
+  "derivation": "lowercase_hex(SHA-256(utf8(preimage)))",
+  "preimage": "ori.evidence.genesis.v2",
+  "preimage_utf8_hex": "6f72692e65766964656e63652e67656e657369732e7632",
+  "genesis_prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
+}
