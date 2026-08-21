@@ -257,10 +257,40 @@ jobs:
         env:
           ORI_WHEELHOUSE_OUT: ${{ runner.temp }}/wheelhouse
           ORI_REQUIRE_WHEELHOUSE_AUDIT: "1"
-          ORI_DISCLOSURE_DENYLIST: ${{ secrets.ORI_DISCLOSURE_DENYLIST }}
+          # Composed from the secrets that already configure the artifact,
+          # rather than a separate hand-maintained list. Those values *are*
+          # the identifiers to deny, so deriving them here means the audit
+          # cannot drift from the artifact actually in use, and there is no
+          # second thing to remember to update. An optional
+          # ORI_DISCLOSURE_DENYLIST_EXTRA appends anything these do not cover.
+          ARTIFACT_MODULE: ${{ secrets.ORI_EVIDENCE_ARTIFACT_MODULE }}
+          ARTIFACT_CLASS: ${{ secrets.ORI_EVIDENCE_ARTIFACT_CLASS }}
+          ARTIFACT_REPOSITORY: ${{ secrets.ORI_EVIDENCE_ARTIFACT_REPOSITORY }}
+          DENYLIST_EXTRA: ${{ secrets.ORI_DISCLOSURE_DENYLIST_EXTRA }}
         run: |
-          python -m pytest tests/test_evidence_disclosure.py \
-            -k "wheelhouse or supplied" -q
+          set -euo pipefail
+          # Terms are assembled without being echoed. Runner log masking covers
+          # the secret values, but the audit's own failure output is sanitised
+          # independently: it reports a location and a category, never a match.
+          terms=""
+          for value in "${ARTIFACT_MODULE}" "${ARTIFACT_CLASS}" \
+                       "${ARTIFACT_REPOSITORY}" "${DENYLIST_EXTRA}"; do
+            [ -n "${value}" ] || continue
+            # A dotted module or an owner/name repository yields useful terms
+            # only once split; the bare string would miss a symbol carrying
+            # just the leaf.
+            for part in $(printf '%s' "${value}" | tr './,' ' '); do
+              [ ${#part} -ge 4 ] || continue
+              terms="${terms}${terms:+,}${part}"
+            done
+          done
+          if [ -z "${terms}" ]; then
+            echo "no artifact identifiers are configured; the audit cannot" >&2
+            echo "know what to look for and must not report success" >&2
+            exit 1
+          fi
+          ORI_DISCLOSURE_DENYLIST="${terms}" python -m pytest \
+            tests/test_evidence_disclosure.py -k "wheelhouse or supplied" -q
 
       - name: Confirm the bundle matches the matrix target
         run: |
