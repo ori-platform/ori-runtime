@@ -112,17 +112,33 @@ class EvidenceDeviceKey:
 
     @staticmethod
     def _fsync_directory(directory: Path) -> None:
+        """Make the rename durable, and fail loudly when it cannot be.
+
+        An earlier version swallowed both the open and the fsync. That left the
+        original risk in place — a power cut losing the rename and stranding a
+        chain whose signing key no longer exists — while reporting provisioning
+        as successful, which is worse than not trying: the comment claimed a
+        guarantee the code did not provide.
+
+        Failing here is recoverable. The sealed key is already written and
+        renamed, so a restart finds it; what is not established is that the
+        rename survives a power loss, and a caller told provisioning succeeded
+        would never know to check.
+        """
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         try:
-            descriptor = os.open(directory, os.O_RDONLY)
-        except OSError:
-            # Some platforms refuse to open a directory for reading. The
-            # rename is still durable on any filesystem this runtime supports;
-            # this is belt to that braces, and must not fail provisioning.
-            return
+            descriptor = os.open(directory, flags)
+        except OSError as exc:
+            raise DeviceKeyError(
+                f"could not open {directory} to make the evidence key durable"
+            ) from exc
         try:
             os.fsync(descriptor)
-        except OSError:
-            pass
+        except OSError as exc:
+            raise DeviceKeyError(
+                f"could not flush {directory}; the evidence key rename is not "
+                "known to have reached disk"
+            ) from exc
         finally:
             os.close(descriptor)
 

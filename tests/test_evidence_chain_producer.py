@@ -468,24 +468,113 @@ def test_a_chain_requires_a_device_identity(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_verification_reports_a_corrupt_row_without_abandoning_the_walk(chain):
-    """Raising would leave every later row unexamined because one is corrupt."""
-    _append(chain, 1)
-    _append(chain, 2)
-    connection = sqlite3.connect(chain._db_path)
-    connection.execute("PRAGMA writable_schema=ON")
-    connection.execute(
-        "UPDATE sqlite_master SET sql = replace(sql, 'evidence_chain_no_signed_update',"
-        " 'disabled_trigger') WHERE name = 'evidence_chain_no_signed_update'"
-    )
+def _forge(chain, tmp_path, name: str, mutations: list[tuple[int, str, object]]):
+    """A copy of the chain with the immutability trigger dropped and rows edited.
+
+    Tampering has to happen outside the producer, because the producer refuses
+    it — which is the point of the trigger. Verification must still describe
+    what it finds in a database someone else has altered.
+    """
+    forged = tmp_path / name
+    source = sqlite3.connect(chain._db_path)
+    source.execute("VACUUM INTO ?", (str(forged),))
+    source.close()
+
+    connection = sqlite3.connect(forged)
+    connection.execute("DROP TRIGGER IF EXISTS evidence_chain_no_signed_update")
+    for seq, column, value in mutations:
+        connection.execute(
+            f"UPDATE evidence_chain SET {column} = ? WHERE seq = ?", (value, seq)
+        )
+    connection.commit()
     connection.close()
 
-    direct = sqlite3.connect(chain._db_path)
-    direct.execute("PRAGMA writable_schema=OFF")
-    direct.close()
+    key = EvidenceDeviceKey.load_or_create(tmp_path / f"{name}.key", "secret")
+    return EvidenceChain(forged, key, DEVICE)
 
-    problems = chain.verify_chain()
-    assert isinstance(problems, list)
+
+def test_verification_reports_a_corrupt_row_without_abandoning_the_walk(
+    chain, tmp_path
+):
+    """An unparseable row must not hide the defects in every row after it.
+
+    Row 1 is made unparseable and row 2 is given a different, distinct defect.
+    Both must be reported: raising on the first would end the walk, and the
+    second finding is the evidence that it continued.
+    """
+    _append(chain, 1)
+    _append(chain, 2)
+    forged = _forge(
+        chain,
+        tmp_path,
+        "walk.db",
+        [(1, "canonical_json", "{not json at all"), (2, "event_hash", "0" * 64)],
+    )
+    try:
+        problems = forged.verify_chain()
+    finally:
+        forged.close()
+
+    assert any("seq 1" in p and "not parseable" in p for p in problems), problems
+    assert any("seq 2" in p and "event_hash" in p for p in problems), problems
+
+    # The rules that read the envelope must not run on a row whose bytes will
+    # not parse. Corrupting `canonical_json` legitimately breaks the hash and
+    # the signature too, so those findings are expected; what must not appear
+    # is a dozen derived complaints about fields that could never be read,
+    # which bury the one finding that explains the row.
+    first_row = [p for p in problems if p.startswith("seq 1:")]
+    derived = [p for p in first_row if "envelope" in p or "schema_version" in p]
+    assert not derived, f"envelope rules ran on an unparseable row: {derived}"
+    assert len(first_row) <= 3, f"corrupt row produced a cascade: {first_row}"
+
+
+def test_verification_reports_a_non_object_envelope(chain, tmp_path):
+    _append(chain, 1)
+    forged = _forge(chain, tmp_path, "notobject.db", [(1, "canonical_json", "[1,2,3]")])
+    try:
+        problems = forged.verify_chain()
+    finally:
+        forged.close()
+    assert any("not a JSON object" in p for p in problems), problems
+
+
+def test_verification_reports_an_unparseable_payload_column(chain, tmp_path):
+    """The payload column is stored separately and can rot on its own."""
+    _append(chain, 1)
+    forged = _forge(chain, tmp_path, "payload.db", [(1, "payload_json", "{broken")])
+    try:
+        problems = forged.verify_chain()
+    finally:
+        forged.close()
+    assert any("payload_json is not parseable" in p for p in problems), problems
+
+
+def test_verification_flags_an_envelope_missing_a_field(chain, tmp_path):
+    """The counterpart to the undefined-field case; the code handles both."""
+    _append(chain, 1)
+    row = chain.find_by_event_id(attestation_event_id(DEVICE, 1))
+    envelope = json.loads(row["canonical_json"])
+    envelope.pop("sequence_num")
+    forged = _forge(
+        chain,
+        tmp_path,
+        "missing.db",
+        [
+            (
+                1,
+                "canonical_json",
+                json.dumps(envelope, sort_keys=True, separators=(",", ":")),
+            )
+        ],
+    )
+    try:
+        problems = forged.verify_chain()
+    finally:
+        forged.close()
+    assert any("missing fields" in p and "sequence_num" in p for p in problems), (
+        problems
+    )
 
 
 def test_verification_flags_an_envelope_with_an_undefined_field(chain, tmp_path):
@@ -494,25 +583,20 @@ def test_verification_flags_an_envelope_with_an_undefined_field(chain, tmp_path)
     row = chain.find_by_event_id(attestation_event_id(DEVICE, 1))
     envelope = json.loads(row["canonical_json"])
     envelope["unexpected"] = True
-
-    forged = tmp_path / "forged.db"
-    source = sqlite3.connect(chain._db_path)
-    source.execute("VACUUM INTO ?", (str(forged),))
-    source.close()
-
-    connection = sqlite3.connect(forged)
-    connection.execute("DROP TRIGGER IF EXISTS evidence_chain_no_signed_update")
-    connection.execute(
-        "UPDATE evidence_chain SET canonical_json = ? WHERE seq = 1",
-        (json.dumps(envelope, sort_keys=True, separators=(",", ":")),),
+    forged = _forge(
+        chain,
+        tmp_path,
+        "undefined.db",
+        [
+            (
+                1,
+                "canonical_json",
+                json.dumps(envelope, sort_keys=True, separators=(",", ":")),
+            )
+        ],
     )
-    connection.commit()
-    connection.close()
-
-    key = EvidenceDeviceKey.load_or_create(tmp_path.parent / "device.key", "secret")
-    reopened = EvidenceChain(forged, key, DEVICE)
     try:
-        problems = reopened.verify_chain()
-        assert any("undefined fields" in problem for problem in problems), problems
+        problems = forged.verify_chain()
     finally:
-        reopened.close()
+        forged.close()
+    assert any("undefined fields" in p for p in problems), problems
