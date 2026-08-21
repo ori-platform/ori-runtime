@@ -83,6 +83,7 @@ class EvidenceDeviceKey:
             )
         path = Path(key_path)
         if path.exists():
+            cls._assert_key_file_is_protected(path)
             return cls(cls._unseal(path.read_bytes(), device_secret))
 
         private = Ed25519PrivateKey.generate()
@@ -99,10 +100,53 @@ class EvidenceDeviceKey:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, path)
+            # fsync the directory as well as the file. Without this the rename
+            # itself can be lost to a power cut while the chain that key signs
+            # survives, stranding a chain whose signing key no longer exists —
+            # every row in it unverifiable and unextendable.
+            cls._fsync_directory(path.parent)
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
         return cls(private)
+
+    @staticmethod
+    def _fsync_directory(directory: Path) -> None:
+        try:
+            descriptor = os.open(directory, os.O_RDONLY)
+        except OSError:
+            # Some platforms refuse to open a directory for reading. The
+            # rename is still durable on any filesystem this runtime supports;
+            # this is belt to that braces, and must not fail provisioning.
+            return
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            pass
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _assert_key_file_is_protected(path: Path) -> None:
+        """A key readable by other accounts is not sealed in any useful sense.
+
+        The seal defends against someone holding the file without the secret.
+        It does not defend against a local account that can read both, so a
+        permissive key file is refused rather than used — quietly widening
+        access is how a device ends up signing evidence with a key several
+        accounts can copy.
+        """
+        info = path.stat()
+        if info.st_mode & 0o077:
+            raise DeviceKeyError(
+                f"the evidence key at {path} is readable or writable by other "
+                f"accounts (mode {info.st_mode & 0o777:04o}); it must be 0600"
+            )
+        if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
+            raise DeviceKeyError(
+                f"the evidence key at {path} is owned by another account; the "
+                "runtime must own the key it signs with"
+            )
 
     @staticmethod
     def _seal(seed: bytes, device_secret: str) -> bytes:

@@ -87,7 +87,8 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS evidence_chain_no_signed_update
 BEFORE UPDATE ON evidence_chain
-WHEN OLD.event_id        IS NOT NEW.event_id
+WHEN OLD.seq             IS NOT NEW.seq
+  OR OLD.event_id        IS NOT NEW.event_id
   OR OLD.event_type      IS NOT NEW.event_type
   OR OLD.device_id       IS NOT NEW.device_id
   OR OLD.emitted_at_ms   IS NOT NEW.emitted_at_ms
@@ -101,6 +102,22 @@ BEGIN
     SELECT RAISE(ABORT, 'signed evidence columns are immutable');
 END;
 """
+
+# The eight fields evidence/v2 defines. A row carrying more or fewer is
+# reported rather than tolerated: an unknown field would be covered by the
+# signature while meaning nothing to a verifier.
+ENVELOPE_FIELDS = frozenset(
+    {
+        "device_id",
+        "emitted_at_ms",
+        "event_id",
+        "event_type",
+        "payload",
+        "prev_event_hash",
+        "schema_version",
+        "sequence_num",
+    }
+)
 
 SIGNED_COLUMNS = (
     "seq",
@@ -135,9 +152,14 @@ def attestation_event_id(device_id: str, action_log_id: int) -> str:
 class EvidenceChain:
     """Append-only, hash-chained, device-signed rows."""
 
-    def __init__(self, db_path: str | Path, device_key: EvidenceDeviceKey) -> None:
+    def __init__(
+        self, db_path: str | Path, device_key: EvidenceDeviceKey, device_id: str
+    ) -> None:
+        if not device_id:
+            raise EvidenceChainError("a chain must be bound to a device identity")
         self._db_path = str(db_path)
         self._key = device_key
+        self._device_id = str(device_id)
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(self._db_path, isolation_level=None)
         self._connection.row_factory = sqlite3.Row
@@ -148,6 +170,31 @@ class EvidenceChain:
         self._connection.execute("PRAGMA synchronous=FULL")
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._connection.executescript(_SCHEMA)
+        self._assert_single_device()
+
+    def _assert_single_device(self) -> None:
+        """One key, one device, one chain.
+
+        A key that can sign rows for several device identities makes
+        same-device attribution something the producer hopes callers preserve
+        rather than something it enforces, and a verifier resolving a row's
+        signature "to a key registered for that same device identity" would be
+        checking a property the producer never guaranteed. Reopening a chain
+        under a different identity is refused for the same reason.
+        """
+        rows = self._connection.execute(
+            "SELECT DISTINCT device_id FROM evidence_chain"
+        ).fetchall()
+        foreign = sorted({str(row["device_id"]) for row in rows} - {self._device_id})
+        if foreign:
+            raise EvidenceChainError(
+                f"this chain holds rows for {len(foreign)} other device "
+                f"identities; it is bound to {self._device_id!r}"
+            )
+
+    @property
+    def device_id(self) -> str:
+        return self._device_id
 
     @property
     def public_key_hex(self) -> str:
@@ -166,16 +213,53 @@ class EvidenceChain:
         return int(row["seq"]), str(row["event_hash"])
 
     def find_by_event_id(self, event_id: str) -> sqlite3.Row | None:
-        return self._connection.execute(
+        row: sqlite3.Row | None = self._connection.execute(
             "SELECT * FROM evidence_chain WHERE event_id = ?", (event_id,)
         ).fetchone()
+        return row
+
+    @staticmethod
+    def _reconcile_replay(
+        existing: sqlite3.Row, intent: tuple[str, str, int, bytes]
+    ) -> sqlite3.Row:
+        """Return the existing row only when the replay means the same thing.
+
+        Idempotency is "same identity, same intended content". Returning the
+        stored row for a request that differs would report success for
+        evidence that was never recorded — the caller believes its event is
+        attested, and something else is. A deterministic identity colliding
+        with different content is a defect upstream, and it has to surface.
+        """
+        event_type, device_id, emitted_at_ms, payload_bytes = intent
+        stored = (
+            str(existing["event_type"]),
+            str(existing["device_id"]),
+            int(existing["emitted_at_ms"]),
+            str(existing["payload_json"]).encode("utf-8"),
+        )
+        if stored == (event_type, device_id, emitted_at_ms, payload_bytes):
+            return existing
+        differing = [
+            name
+            for name, was, now in zip(
+                ("event_type", "device_id", "emitted_at_ms", "payload"),
+                stored,
+                intent,
+                strict=True,
+            )
+            if was != now
+        ]
+        raise EvidenceChainError(
+            f"event_id {existing['event_id']} is already attested with different "
+            f"content ({', '.join(differing)}); the same identity must mean the "
+            "same event"
+        )
 
     def append(
         self,
         *,
         event_id: str,
         event_type: str,
-        device_id: str,
         emitted_at_ms: int,
         payload: dict[str, Any],
         created_at_ms: int,
@@ -193,9 +277,13 @@ class EvidenceChain:
         if event_type not in EVENT_TYPES:
             raise EvidenceChainError(f"{event_type!r} is not an evidence event type")
 
+        device_id = self._device_id
+        payload_bytes = canonical_json(payload)
+        intent = (event_type, device_id, int(emitted_at_ms), payload_bytes)
+
         existing = self.find_by_event_id(event_id)
         if existing is not None:
-            return existing
+            return self._reconcile_replay(existing, intent)
 
         try:
             self._connection.execute("BEGIN IMMEDIATE")
@@ -207,7 +295,7 @@ class EvidenceChain:
             existing = self.find_by_event_id(event_id)
             if existing is not None:
                 self._connection.execute("ROLLBACK")
-                return existing
+                return self._reconcile_replay(existing, intent)
 
             previous_seq, previous_hash = self.head()
             sequence_num = previous_seq + 1
@@ -239,7 +327,7 @@ class EvidenceChain:
                     event_type,
                     device_id,
                     int(emitted_at_ms),
-                    canonical_json(payload).decode("utf-8"),
+                    payload_bytes.decode("utf-8"),
                     signed_bytes.decode("utf-8"),
                     event_hash,
                     previous_hash,
@@ -290,7 +378,30 @@ class EvidenceChain:
                 problems.append(
                     f"seq {seq}: signature does not verify under the device key"
                 )
-            envelope = json.loads(signed_bytes)
+            try:
+                envelope = json.loads(signed_bytes)
+            except ValueError:
+                # A row whose stored bytes will not parse cannot be evaluated
+                # against the remaining rules, and raising would abandon the
+                # walk — leaving every later row unexamined because one is
+                # corrupt. Report it and carry on.
+                problems.append(f"seq {seq}: canonical_json is not parseable JSON")
+                expected_seq = seq + 1
+                expected_prev = str(row["event_hash"])
+                continue
+            if not isinstance(envelope, dict):
+                problems.append(f"seq {seq}: canonical_json is not a JSON object")
+                expected_seq = seq + 1
+                expected_prev = str(row["event_hash"])
+                continue
+            undefined = sorted(set(envelope) - ENVELOPE_FIELDS)
+            absent = sorted(ENVELOPE_FIELDS - set(envelope))
+            if undefined:
+                problems.append(
+                    f"seq {seq}: envelope carries undefined fields {undefined}"
+                )
+            if absent:
+                problems.append(f"seq {seq}: envelope is missing fields {absent}")
             if envelope.get("schema_version") != SCHEMA_VERSION:
                 problems.append(f"seq {seq}: schema_version is not {SCHEMA_VERSION}")
             for field, column in (
@@ -305,10 +416,15 @@ class EvidenceChain:
                     problems.append(
                         f"seq {seq}: column {column} disagrees with the envelope"
                     )
-            if json.loads(str(row["payload_json"])) != envelope.get("payload"):
-                problems.append(
-                    f"seq {seq}: payload_json disagrees with the envelope payload"
-                )
+            try:
+                stored_payload = json.loads(str(row["payload_json"]))
+            except ValueError:
+                problems.append(f"seq {seq}: payload_json is not parseable JSON")
+            else:
+                if stored_payload != envelope.get("payload"):
+                    problems.append(
+                        f"seq {seq}: payload_json disagrees with the envelope payload"
+                    )
             expected_seq = seq + 1
             expected_prev = str(row["event_hash"])
         return problems

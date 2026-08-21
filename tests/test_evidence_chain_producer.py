@@ -28,6 +28,7 @@ from ori.security.evidence_canonical import (
 from ori.security.evidence_chain import (
     GENESIS_PREV_EVENT_HASH,
     SCHEMA_VERSION,
+    SIGNED_COLUMNS,
     EvidenceChain,
     EvidenceChainError,
     attestation_event_id,
@@ -45,7 +46,7 @@ def load(name: str) -> dict:
 @pytest.fixture
 def chain(tmp_path):
     key = EvidenceDeviceKey.load_or_create(tmp_path / "device.key", "install-secret")
-    produced = EvidenceChain(tmp_path / "chain.db", key)
+    produced = EvidenceChain(tmp_path / "chain.db", key, DEVICE)
     yield produced
     produced.close()
 
@@ -54,7 +55,6 @@ def _append(produced, action_log_id: int, *, emitted: int = 1751500800000):
     return produced.append(
         event_id=attestation_event_id(DEVICE, action_log_id),
         event_type="SAFETY_ACTION_EXECUTED",
-        device_id=DEVICE,
         emitted_at_ms=emitted,
         payload={
             "kind": "runtime_action",
@@ -214,7 +214,6 @@ def test_unknown_event_types_are_refused(chain):
         chain.append(
             event_id="e1",
             event_type="NOT_A_PROTOCOL_EVENT",
-            device_id=DEVICE,
             emitted_at_ms=1,
             payload={},
             created_at_ms=1,
@@ -227,7 +226,6 @@ def test_an_unrepresentable_payload_is_refused_before_it_is_signed(chain):
         chain.append(
             event_id="e2",
             event_type="UPTIME_HEARTBEAT",
-            device_id=DEVICE,
             emitted_at_ms=1,
             payload={"drift": float("inf")},
             created_at_ms=1,
@@ -240,15 +238,43 @@ def test_an_unrepresentable_payload_is_refused_before_it_is_signed(chain):
 # --------------------------------------------------------------------------
 
 
-def test_signed_columns_cannot_be_updated(chain):
+# One value per signed column that differs from what the producer writes.
+# Parametrised deliberately: an earlier version mutated only `payload_json`,
+# and the trigger was missing `seq` entirely — a column could be rewritten
+# while the test reported immutability enforced.
+COLUMN_MUTATIONS = {
+    "seq": 9,
+    "event_id": "a-different-identity",
+    "event_type": "UPTIME_HEARTBEAT",
+    "device_id": "some-other-device",
+    "emitted_at_ms": 1,
+    "payload_json": "{}",
+    "canonical_json": "{}",
+    "event_hash": "0" * 64,
+    "prev_event_hash": "0" * 64,
+    "signature": "ed25519:AA==",
+    "created_at_ms": 1,
+}
+
+
+def test_every_signed_column_is_covered_by_a_mutation():
+    """The table above must not drift behind the contract's column list."""
+    assert set(COLUMN_MUTATIONS) == set(SIGNED_COLUMNS)
+
+
+@pytest.mark.parametrize("column", sorted(COLUMN_MUTATIONS))
+def test_signed_columns_cannot_be_updated(chain, column):
     """Enforced by trigger, not by application code remembering not to."""
     _append(chain, 1)
     connection = sqlite3.connect(chain._db_path)
-    with pytest.raises(sqlite3.IntegrityError):
-        connection.execute(
-            "UPDATE evidence_chain SET payload_json = '{}' WHERE seq = 1"
-        )
-    connection.close()
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                f"UPDATE evidence_chain SET {column} = ? WHERE seq = 1",
+                (COLUMN_MUTATIONS[column],),
+            )
+    finally:
+        connection.close()
 
 
 def test_rows_cannot_be_deleted(chain):
@@ -344,3 +370,149 @@ def test_signatures_are_base64_under_the_wire_prefix(chain):
     row = _append(chain, 1)
     assert row["signature"].startswith("ed25519:")
     assert len(base64.b64decode(row["signature"].split("ed25519:")[1])) == 64
+
+
+# --------------------------------------------------------------------------
+# Idempotency means same identity AND same content
+# --------------------------------------------------------------------------
+
+
+def test_a_replay_with_different_content_is_a_conflict(chain):
+    """Returning the stored row would report success for evidence never recorded.
+
+    The caller believes its event is attested. Something else is. A
+    deterministic identity colliding with different content is a defect
+    upstream, and it has to surface rather than be absorbed.
+    """
+    event_id = attestation_event_id(DEVICE, 1)
+    _append(chain, 1)
+    with pytest.raises(EvidenceChainError, match="different content"):
+        chain.append(
+            event_id=event_id,
+            event_type="SAFETY_ACTION_EXECUTED",
+            emitted_at_ms=1751500800000,
+            payload={
+                "kind": "runtime_action",
+                "attestation": "at_emission",
+                "action_log_id": 999,
+            },
+            created_at_ms=1751500800040,
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("event_type", "UPTIME_HEARTBEAT"),
+        ("emitted_at_ms", 1751599999999),
+    ],
+)
+def test_each_component_of_intent_is_compared(chain, field, value):
+    event_id = attestation_event_id(DEVICE, 1)
+    _append(chain, 1)
+    request = {
+        "event_id": event_id,
+        "event_type": "SAFETY_ACTION_EXECUTED",
+        "emitted_at_ms": 1751500800000,
+        "payload": {
+            "kind": "runtime_action",
+            "attestation": "at_emission",
+            "action_log_id": 1,
+        },
+        "created_at_ms": 1751500800040,
+    }
+    request[field] = value
+    with pytest.raises(EvidenceChainError, match="different content"):
+        chain.append(**request)
+
+
+def test_an_identical_replay_still_succeeds(chain):
+    """The conflict check must not break the property it guards."""
+    first = _append(chain, 1)
+    again = _append(chain, 1)
+    assert again["seq"] == first["seq"]
+    assert chain.head()[0] == 1
+
+
+# --------------------------------------------------------------------------
+# One key, one device, one chain
+# --------------------------------------------------------------------------
+
+
+def test_the_chain_signs_only_for_its_bound_device(chain):
+    """append() cannot be handed another identity, because it does not take one."""
+    row = _append(chain, 1)
+    assert row["device_id"] == DEVICE
+    assert json.loads(row["canonical_json"])["device_id"] == DEVICE
+
+
+def test_reopening_under_another_identity_is_refused(tmp_path):
+    """A key that signs for several devices makes attribution unenforceable."""
+    key = EvidenceDeviceKey.load_or_create(tmp_path / "device.key", "secret")
+    first = EvidenceChain(tmp_path / "chain.db", key, DEVICE)
+    _append(first, 1)
+    first.close()
+
+    with pytest.raises(EvidenceChainError, match="other device identities"):
+        EvidenceChain(tmp_path / "chain.db", key, "a-different-device")
+
+
+def test_a_chain_requires_a_device_identity(tmp_path):
+    key = EvidenceDeviceKey.load_or_create(tmp_path / "device.key", "secret")
+    with pytest.raises(EvidenceChainError):
+        EvidenceChain(tmp_path / "chain.db", key, "")
+
+
+# --------------------------------------------------------------------------
+# verify_chain reports rather than raises
+# --------------------------------------------------------------------------
+
+
+def test_verification_reports_a_corrupt_row_without_abandoning_the_walk(chain):
+    """Raising would leave every later row unexamined because one is corrupt."""
+    _append(chain, 1)
+    _append(chain, 2)
+    connection = sqlite3.connect(chain._db_path)
+    connection.execute("PRAGMA writable_schema=ON")
+    connection.execute(
+        "UPDATE sqlite_master SET sql = replace(sql, 'evidence_chain_no_signed_update',"
+        " 'disabled_trigger') WHERE name = 'evidence_chain_no_signed_update'"
+    )
+    connection.close()
+
+    direct = sqlite3.connect(chain._db_path)
+    direct.execute("PRAGMA writable_schema=OFF")
+    direct.close()
+
+    problems = chain.verify_chain()
+    assert isinstance(problems, list)
+
+
+def test_verification_flags_an_envelope_with_an_undefined_field(chain, tmp_path):
+    """Rule 13, which the first version of verify_chain did not implement."""
+    _append(chain, 1)
+    row = chain.find_by_event_id(attestation_event_id(DEVICE, 1))
+    envelope = json.loads(row["canonical_json"])
+    envelope["unexpected"] = True
+
+    forged = tmp_path / "forged.db"
+    source = sqlite3.connect(chain._db_path)
+    source.execute("VACUUM INTO ?", (str(forged),))
+    source.close()
+
+    connection = sqlite3.connect(forged)
+    connection.execute("DROP TRIGGER IF EXISTS evidence_chain_no_signed_update")
+    connection.execute(
+        "UPDATE evidence_chain SET canonical_json = ? WHERE seq = 1",
+        (json.dumps(envelope, sort_keys=True, separators=(",", ":")),),
+    )
+    connection.commit()
+    connection.close()
+
+    key = EvidenceDeviceKey.load_or_create(tmp_path.parent / "device.key", "secret")
+    reopened = EvidenceChain(forged, key, DEVICE)
+    try:
+        problems = reopened.verify_chain()
+        assert any("undefined fields" in problem for problem in problems), problems
+    finally:
+        reopened.close()
