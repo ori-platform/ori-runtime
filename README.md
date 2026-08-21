@@ -24,7 +24,7 @@ Built for the world's majority condition — unreliable power, intermittent conn
 
 ## Release Status
 
-**Current channel: Stable (`2.3.x`)**
+**Current channel: Stable (`2.4.x`)**
 
 - Runtime core is stable for PoC, demo API, and controlled field deployment,
   with a fail-closed production security posture: staging/production configs
@@ -40,8 +40,12 @@ Built for the world's majority condition — unreliable power, intermittent conn
   verifies the shared golden bytes/signatures without owning firmware
   canonicalization.
 - Safety invariants (tier guards, the runtime action registry, strict skill validation, skill provenance) are CI-enforced on every PR.
-- Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0.
+- Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0. The runtime health payload is also read by companion repos and is versioned separately: `2.4.x` serves `ori-specs/runtime-health/v1`, and the next release serves `v2`, which removes the evidence artifact version.
 - Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
+- Upgrading from `2.3.x` and scripting the Linux installer? `2.4.0` makes
+  `--scope` explicit, prints a human summary unless `--json` is passed, and
+  drops `--service-user`. See
+  [Migration](docs/releases/v2.4.0.md#migration).
 - Release notes: [`docs/releases/v2.4.0.md`](docs/releases/v2.4.0.md)
 
 Related public repos in the org:
@@ -231,9 +235,11 @@ Ori is designed for [physical actuation trust](PRINCIPLES.md). The safety archit
 - **Alert transport failover** — approval requests use the configured primary channel first, then fail over to the secondary channel if delivery fails
 - **Evidence chain for high-authority actions** — when configured, a private
   evidence artifact signs Tier C/D dispatch records and exposes chain head, gap
-  count, artifact version, and selected action-event vocabulary in health. This
-  is runtime action evidence; device-origin telemetry attestation is the
-  firmware/Layer 1 contract.
+  count, and selected action-event vocabulary in health. The artifact's own
+  version is deliberately absent: it is implementation metadata of a component
+  the operator has no part in, and `available` with `protocol_version` already
+  answer whether this device can sign. This is runtime action evidence;
+  device-origin telemetry attestation is the firmware/Layer 1 contract.
 
 For constrained deployments, a common pattern is MQTT for continuous telemetry plus CoAP for low-overhead command delivery.
 
@@ -489,7 +495,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 
 | Phase             | Status           | Milestone                                                                 |
 | ----------------- | ---------------- | ------------------------------------------------------------------------- |
-| Runtime core      | ✅ Stable v2.2    | Production posture, typed integration boundary, and evidence Layer 2 hooks |
+| Runtime core      | ✅ Stable v2.4    | Production posture, typed integration boundary, and evidence Layer 2 hooks |
 | Product wedge     | ✅ Shipping       | Ori Energy demo/API integration, private APK path, and Phone Starter flows |
 | Evidence hardware | 🔨 In Progress   | Evidence Layer 1 contract and `ori-edge-firmware` bootstrap                |
 | Safety kernel     | 🗓️ Planned       | Rust-owned Tier D kernel after shadow-mode evidence, not a broad rewrite   |
