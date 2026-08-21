@@ -37,6 +37,7 @@ import logging
 import os
 import pathlib
 import re
+import subprocess
 import zipfile
 
 import pytest
@@ -543,11 +544,24 @@ def _opaque(location: str, category: str = PRIVATE_IDENTIFIER) -> str:
     Every denylist-backed assertion runs in a public release workflow, so a
     failure that quotes the term, the matching passage, a distribution name or
     a binary string publishes exactly what the check exists to keep private —
-    into a log that outlives the run. Locations are indices for the same
-    reason: a filename can itself be the disclosure.
+    into a log that outlives the run.
+
+    What counts as a safe *location* differs by what is being audited, and the
+    distinction is whether the location is already public:
+
+    * A wheel, an installed distribution, or an archive member is identified by
+      index. Those names are not otherwise published, and a distribution named
+      after the private component would be the disclosure itself.
+    * A tracked document is identified by its path. This repository is public,
+      so the path is readable by anyone already, and withholding it buys
+      nothing while making the failure harder to act on. That includes a
+      committed filename carrying a private identifier: it is public the moment
+      it is committed, and the audit's job is to fail loudly so it is renamed.
+
+    Either way the matched value never appears.
 
     A maintainer holding the denylist reproduces the detail locally in one
-    command. Nobody reading the public log learns anything.
+    command. Nobody reading the public log learns anything they could not.
     """
     return f"{location}: {category}"
 
@@ -897,25 +911,209 @@ def test_installed_distributions_disclose_nothing_supplied():
 # --------------------------------------------------------------------------
 
 
-OPERATOR_DOCS = (
-    "ori.yaml.example",
-    "ori.linux.yaml.example",
-    "ori.yaml.phone.example",
-    "docs/linux-install.md",
-    "docs/linux-setup.md",
-    "docs/android-phone-install.md",
-    "docs/releases/evidence/systemd-host-runbook.md",
+# Classification is explicit and total. Every markdown file in the repository
+# lands in exactly one bucket below, and an unclassified file fails
+# `test_every_markdown_file_is_classified` — so a new operator document cannot
+# arrive unaudited, which is how this class of disclosure returns.
+#
+# Two audits run over documents, and they have different reach:
+#
+#   * The *name* audit applies the supplied denylist to every markdown file in
+#     the repository without exception. A real private name is a disclosure
+#     wherever it appears, and nothing is exempt from that.
+#   * The *pattern* audit applies the instruction and shape patterns. These
+#     match English, so they need a scope. A document that uses "register",
+#     "anchor" or "evidence" in an unrelated technical sense produces noise
+#     rather than findings, and is exempted with its reason recorded.
+
+# Documents whose entire subject sits inside the evidence and anchor boundary.
+# Every paragraph is audited, not only the ones a keyword selects — the point
+# of the whole-document mode is that no selector stands between the document
+# and the invariant.
+WHOLE_DOCUMENT_AUDITS = ("docs/FIRMWARE_MQTT_OPERATOR_SERVICE.md",)
+
+# Documents where the evidence boundary is one topic among many, so passages
+# are selected. The value is the minimum number of passages the selector must
+# find: a document expected to discuss the boundary that suddenly yields none
+# has a broken selector, and an aggregate count across all documents cannot
+# show that — one document going silent hides behind the others.
+PASSAGE_AUDITS = {
+    "ori.yaml.example": 1,
+    "ori.linux.yaml.example": 0,
+    "ori.yaml.phone.example": 0,
+    "README.md": 1,
+    "docs/linux-install.md": 0,
+    "docs/linux-setup.md": 0,
+    "docs/android-phone-install.md": 1,
+    "docs/releases/evidence/systemd-host-runbook.md": 1,
+    "docs/RELEASE_SIGNING.md": 1,
+    "docs/releases/v2.4.0.md": 1,
+    # No evidence passages today. Listed rather than exempted so that the day
+    # one of them gains a passage, it is audited without anyone remembering.
+    "docs/MQTT_SECURITY.md": 0,
+    "docs/SMS_WEBHOOK_SECURITY.md": 0,
+    "docs/android-runtime-mobile.md": 0,
+    "docs/alpha-release-notes.md": 0,
+    "docs/beta-release-notes.md": 0,
+}
+
+# Exempt from the *pattern* audit only, each with the reason. Still fully
+# covered by the name audit below.
+#
+# Every path is written out. An earlier revision exempted whole directories by
+# prefix — `docs/releases/`, `docs/review/`, `packaging/`, `mobile/` — which
+# quietly contradicted the guarantee this classification exists to give: a new
+# operator runbook dropped into `docs/releases/` would have been exempted the
+# moment it was created, by a rule written before anyone had seen it. An
+# enumerated list cannot do that. Adding a document is now a decision someone
+# has to make in this file.
+HISTORICAL_RELEASE_NOTE = (
+    "Historical release note. It records what shipped and is not edited "
+    "afterwards; the current release is passage-audited above."
 )
+CONTRIBUTOR_DOC = "Contributor documentation; not read to operate a device."
+
+PATTERN_AUDIT_EXEMPT = {
+    "docs/phone-termux-path.md": (
+        "Modbus vocabulary: 'register map', 'raw register sample', and field "
+        "'evidence' meaning inverter profile data. The instruction patterns "
+        "have no purchase on that sense of the words."
+    ),
+    "docs/releases/evidence/v2.3.1-pre-publication.md": (
+        "Release-signing evidence, not evidence-chain evidence. Its KMS "
+        "custody and artifact URLs are the deliberately public provenance of "
+        "a signed release."
+    ),
+    "docs/CAPABILITY_MATRIX.md": (
+        "Capability reference for contributors. It describes the evidence "
+        "capability in implementation terms on purpose."
+    ),
+    "docs/INVERTER_CONTROL_LADDER.md": (
+        "Inverter control reference written in Modbus register vocabulary."
+    ),
+    "docs/RELEASE_BUNDLE_SIGNING.md": (
+        "Release bundle signing custody, which is deliberately public and "
+        "unrelated to the evidence chain."
+    ),
+    "SECURITY.md": (
+        "Vulnerability reporting policy; the reporting contact is the point "
+        "of the document."
+    ),
+    ".github/PULL_REQUEST_TEMPLATE.md": "Pull-request template for contributors.",
+    "AGENTS.md": CONTRIBUTOR_DOC,
+    "CLAUDE.md": CONTRIBUTOR_DOC,
+    "CONTRIBUTING.md": CONTRIBUTOR_DOC,
+    "DECISIONS.md": CONTRIBUTOR_DOC,
+    "PRINCIPLES.md": CONTRIBUTOR_DOC,
+    "docs/review/local-pr-review.md": CONTRIBUTOR_DOC,
+    "requirements/README.md": CONTRIBUTOR_DOC,
+    "docs/releases/alpha-release-notes.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/beta-release-notes.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/stable-release-notes.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/unreleased.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/v0.1.0-alpha.2.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/v0.1.0-alpha.3.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/v0.1.0-alpha.4.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/v0.9.0-beta.1.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/v0.9.0-beta.2.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/v1.0.0.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/v2.0.0.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/v2.1.0.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/v2.2.0.md": HISTORICAL_RELEASE_NOTE,
+    "docs/releases/v2.3.0.md": HISTORICAL_RELEASE_NOTE,
+}
 
 
-def test_operator_documents_exist_to_be_audited():
-    """A document list that silently matches nothing audits nothing."""
-    present = [name for name in OPERATOR_DOCS if (REPO_ROOT / name).exists()]
-    assert len(present) >= 4, f"expected operator documents are missing: {present}"
+def _is_pattern_exempt(rel_path: str) -> str | None:
+    """The recorded reason this path is exempt, or None. Exact paths only."""
+    return PATTERN_AUDIT_EXEMPT.get(rel_path)
+
+
+def _all_markdown() -> list[str]:
+    """Every markdown file the repository tracks, repo-relative.
+
+    Tracked files rather than a filesystem walk: `rglob` also finds the
+    vendored licence files under `.venv`, which are not this repository's
+    documentation and would drown the classification in noise.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "*.md"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return sorted(line for line in result.stdout.splitlines() if line.strip())
+
+
+@pytest.mark.disclosure_release
+# What is worth hiding from a public CI log, and what is not.
+#
+# The matched *value* is worth hiding: a hostname, an IP, a credential, or a
+# supplied private term is not otherwise public, and a failure that quotes it
+# publishes exactly what the check exists to protect, into a log that outlives
+# the run.
+#
+# A tracked document *path* is not worth hiding. This repository is public, so
+# `docs/linux-install.md` is already readable by anyone, and withholding it
+# from a CI log buys nothing while making a failure materially harder to act
+# on. An earlier revision reported paths as indices anyway. That was theatre,
+# and theatre in a security check is worse than nothing, because it reads as
+# protection to the next person and discourages them from asking what is
+# actually protected.
+#
+# The one case that looks like a counter-example is a filename that itself
+# carries a private identifier. Such a file is committed to a public
+# repository, so the name is public the moment it exists; the audit's job is to
+# fail loudly so it gets renamed, not to avoid saying it. `_all_markdown` names
+# are therefore checked against the denylist directly, and reported as a
+# location like any other.
+
+
+@pytest.mark.disclosure_release
+def test_every_audited_document_exists():
+    """A listed document that has been renamed away must fail, not skip.
+
+    An audit entry pointing at a missing path is worse than no entry: the
+    parametrised case skips, the aggregate stays green, and the document is
+    silently unaudited.
+    """
+    listed = list(WHOLE_DOCUMENT_AUDITS) + list(PASSAGE_AUDITS)
+    missing = [name for name in listed if not (REPO_ROOT / name).exists()]
+    assert not missing, f"audited documents are missing from the checkout: {missing}"
+
+
+@pytest.mark.disclosure_release
+def test_every_markdown_file_is_classified():
+    """No markdown file may be neither audited nor explicitly exempted."""
+    audited = set(WHOLE_DOCUMENT_AUDITS) | set(PASSAGE_AUDITS)
+    unclassified = [
+        name
+        for name in _all_markdown()
+        if name not in audited and _is_pattern_exempt(name) is None
+    ]
+    assert not unclassified, (
+        "markdown files are neither audited nor exempted; classify them in "
+        f"PASSAGE_AUDITS, WHOLE_DOCUMENT_AUDITS or PATTERN_AUDIT_EXEMPT: "
+        f"{unclassified}"
+    )
+
+
+@pytest.mark.disclosure_release
+def test_every_exemption_records_a_reason():
+    """An exemption without a reason is an unreviewed hole."""
+    thin = [key for key, reason in PATTERN_AUDIT_EXEMPT.items() if len(reason) < 20]
+    assert not thin, f"exemptions need a recorded reason: {thin}"
 
 
 EVIDENCE_TOPIC = re.compile(
-    r"evidence|attestation|verification anchor|chain head", re.IGNORECASE
+    # Bare `anchor` is included deliberately. Restricting it to "verification
+    # anchor" left a paragraph that says only "anchor" unselected, so a
+    # disclosure written there was never handed to the patterns at all — the
+    # patterns catch it, the selector never showed it to them. Config-signing
+    # trust anchors match too and pass, which is the correct outcome: a
+    # legitimate passage being audited costs nothing.
+    r"evidence|attestation|anchor|chain head",
+    re.IGNORECASE,
 )
 
 
@@ -924,8 +1122,7 @@ def _evidence_passages(path: pathlib.Path) -> list[str]:
 
     A configuration example is not prose: its `evidence:` block is the passage,
     and treating the whole file as paragraphs matched a Modbus register table
-    and a gateway broker URL — both legitimate, neither about evidence. Bare
-    `chain` and `anchor` are dropped from the selector for the same reason.
+    and a gateway broker URL — both legitimate, neither about evidence.
     """
     text = path.read_text(errors="ignore")
     if path.suffix in {".example", ".yaml", ".yml"} or path.name.endswith(".example"):
@@ -934,8 +1131,60 @@ def _evidence_passages(path: pathlib.Path) -> list[str]:
     return [para for para in re.split(r"\n\s*\n", text) if EVIDENCE_TOPIC.search(para)]
 
 
+def _audit_passage(passage: str, passage_index: int) -> list[str]:
+    """Apply the full invariant to one passage, reporting where and what kind.
+
+    An earlier revision put `flat[:120]` into every finding so a maintainer
+    could see what matched. That is the same mistake the denylist half was
+    written to avoid, one category across: the shape patterns match hostnames,
+    URLs, IP addresses and credential assignments, so a document carrying a
+    private endpoint would have had the audit print that endpoint into a public
+    Actions log — the check publishing the thing it exists to keep private.
+
+    The regex is withheld for the same reason. `credential value` names the
+    category without reproducing the pattern that would let a reader
+    reconstruct the shape of what was found.
+
+    A maintainer reproduces the detail locally in one command; the public log
+    learns only that passage N of document M matched a category.
+    """
+    flat = " ".join(passage.split())
+    location = f"passage #{passage_index + 1}"
+    failures = []
+    for pattern in INSTRUCTION_PATTERNS:
+        if re.search(pattern, flat, re.IGNORECASE):
+            failures.append(_opaque(location, "operator instruction"))
+            break
+    for label, pattern in SHAPE_PATTERNS.items():
+        if re.search(pattern, flat, re.IGNORECASE):
+            failures.append(_opaque(location, label))
+    for term in _supplied_denylist():
+        if term in flat.lower():
+            failures.append(_opaque(location))
+            break
+    return failures
+
+
 @pytest.mark.disclosure_release
-@pytest.mark.parametrize("name", OPERATOR_DOCS)
+@pytest.mark.parametrize("name", WHOLE_DOCUMENT_AUDITS)
+def test_whole_documents_hold_the_invariant(name):
+    """Every paragraph, with no selector in between."""
+    path = REPO_ROOT / name
+    paragraphs = re.split(r"\n\s*\n", path.read_text(errors="ignore"))
+    assert len(paragraphs) >= 5, f"{name} has too little content to be this document"
+
+    failures = []
+    for index, paragraph in enumerate(paragraphs):
+        failures.extend(_audit_passage(paragraph, index))
+    assert not failures, (
+        f"{name} discloses on the evidence path. Passages are identified by "
+        "position and category, never by the matching text — this audit runs "
+        f"in a public workflow: {failures}"
+    )
+
+
+@pytest.mark.disclosure_release
+@pytest.mark.parametrize("name", sorted(PASSAGE_AUDITS))
 def test_operator_documents_hold_the_whole_invariant(name):
     """Passages, not lines, and the full invariant rather than verbs alone.
 
@@ -945,37 +1194,91 @@ def test_operator_documents_hold_the_whole_invariant(name):
     untouched.
     """
     path = REPO_ROOT / name
-    if not path.exists():
-        pytest.skip(f"{name} is not present in this checkout")
+    passages = _evidence_passages(path)
+
+    minimum = PASSAGE_AUDITS[name]
+    assert len(passages) >= minimum, (
+        f"{name} is expected to yield at least {minimum} evidence "
+        f"passage(s) and yielded {len(passages)}; the selector is broken or "
+        "the document changed"
+    )
 
     failures = []
-    for passage_index, passage in enumerate(_evidence_passages(path)):
-        flat = " ".join(passage.split())
-        for pattern in INSTRUCTION_PATTERNS:
-            if re.search(pattern, flat, re.IGNORECASE):
-                failures.append(f"instruction ({pattern}): {flat[:120]}")
-        for label, pattern in SHAPE_PATTERNS.items():
-            if re.search(pattern, flat, re.IGNORECASE):
-                failures.append(f"{label}: {flat[:120]}")
-        for term in _supplied_denylist():
-            if term in flat.lower():
-                # The passage itself is the disclosure; report its position.
-                failures.append(_opaque(f"passage #{passage_index + 1}"))
-                break
-    assert not failures, f"{name} discloses on the evidence path: {failures}"
+    for index, passage in enumerate(passages):
+        failures.extend(_audit_passage(passage, index))
+    assert not failures, (
+        f"{name} discloses on the evidence path. Passages are identified by "
+        "position and category, never by the matching text — this audit runs "
+        f"in a public workflow: {failures}"
+    )
+
+
+@pytest.mark.disclosure_release
+def test_every_markdown_file_is_name_audited():
+    """The denylist reaches every document, exempt from the patterns or not.
+
+    A real private name is a disclosure wherever it is written. Pattern
+    exemptions exist because English is ambiguous; a private identifier is not.
+    """
+    terms = _supplied_denylist()
+    if not terms:
+        pytest.skip("ORI_DISCLOSURE_DENYLIST not set; a private CI supplies it")
+    documents = _all_markdown()
+    assert documents, "no markdown found to audit"
+    offenders = []
+    for name in documents:
+        if any(term in name.lower() for term in terms):
+            # The filename is the disclosure. Reported like any other location:
+            # the file is committed to a public repository, so the name is
+            # already public and the fix is to rename it.
+            offenders.append(_opaque(f"{name} (document name)"))
+            continue
+        body = (REPO_ROOT / name).read_text(errors="ignore").lower()
+        if any(term in body for term in terms):
+            offenders.append(_opaque(f"{name} (document body)"))
+    assert not offenders, (
+        f"a document carries a prohibited term ({len(documents)} scanned): {offenders}"
+    )
 
 
 def test_document_audit_actually_reads_evidence_passages():
     """A selector that matches nothing audits nothing."""
     total = sum(
         len(_evidence_passages(REPO_ROOT / name))
-        for name in OPERATOR_DOCS
+        for name in PASSAGE_AUDITS
         if (REPO_ROOT / name).exists()
     )
     assert total >= 3, (
         f"only {total} evidence passages found across operator documents; "
         "the selector or the document list is wrong"
     )
+
+
+ANCHOR_ONLY_DISCLOSURES = (
+    "The anchor is held at vault.internal and the operator registers it there.",
+    "Anchor custody lives in the KMS console; contact the administrator.",
+    "Upload the anchor to https://evidence.example.com after provisioning.",
+)
+
+
+@pytest.mark.parametrize("passage", ANCHOR_ONLY_DISCLOSURES)
+def test_a_disclosure_in_an_anchor_only_paragraph_is_caught(passage, tmp_path):
+    """The escape the selector used to leave open.
+
+    Each of these says "anchor" without saying "evidence", "attestation" or
+    "verification anchor". Under the narrower selector none was selected, so
+    the patterns — which do catch all three — were never given them. Selection
+    is the half that failed, so the regression drives selection, not matching.
+    """
+    document = tmp_path / "runbook.md"
+    document.write_text(f"# Runbook\n\nSetup notes.\n\n{passage}\n")
+
+    selected = _evidence_passages(document)
+    assert any(passage in candidate for candidate in selected), (
+        "the selector did not hand this paragraph to the patterns"
+    )
+    failures = [f for i, p in enumerate(selected) for f in _audit_passage(p, i)]
+    assert failures, f"an anchor-only disclosure passed the audit: {passage}"
 
 
 # --------------------------------------------------------------------------
@@ -1243,6 +1546,7 @@ DENYLIST_BACKED_CHECKS = (
     "test_installed_distributions_disclose_nothing_supplied",
     "test_wheelhouse_distributions_disclose_nothing",
     "test_operator_documents_hold_the_whole_invariant",
+    "test_every_markdown_file_is_name_audited",
 )
 
 
