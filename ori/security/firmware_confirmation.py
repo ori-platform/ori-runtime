@@ -146,12 +146,13 @@ class FirmwareConfirmationCoordinator:
     async def _unreachable(self, device_id: str, epoch: str) -> str:
         # Fail-closed path for granting authority: remain pending, retried
         # later, never optimistic.
+        # Detail at DEBUG, not WARNING: the exception is raised by the chain
+        # handle and can name the private component or its files.
         logger.warning(
-            "[confirmation] evidence store unreachable confirming %s epoch %s; "
+            "[confirmation] confirmation authority unreachable for %s epoch %s; "
             "remaining confirmation_pending",
             device_id,
             epoch,
-            exc_info=True,
         )
         await self._record_attempt(device_id, epoch)
         return CONFIRMATION_PENDING

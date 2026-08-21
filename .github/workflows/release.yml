@@ -246,6 +246,22 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ steps.identity.outputs.epoch }}
         run: bash scripts/build-wheelhouse.sh
 
+      # The wheelhouse is what reaches the device, and it is where the private
+      # compiled component ships — not inside the pure-Python runtime wheel.
+      # Auditing it here is the only point at which that artifact exists.
+      #
+      # ORI_REQUIRE_WHEELHOUSE_AUDIT=1 turns every skip in that test into a
+      # failure, including a missing denylist: a job that inspects binaries
+      # without knowing what to look for has inspected nothing.
+      - name: Audit the wheelhouse for evidence-store disclosure
+        env:
+          ORI_WHEELHOUSE_OUT: ${{ runner.temp }}/wheelhouse
+          ORI_REQUIRE_WHEELHOUSE_AUDIT: "1"
+          ORI_DISCLOSURE_DENYLIST: ${{ secrets.ORI_DISCLOSURE_DENYLIST }}
+        run: |
+          python -m pytest tests/test_evidence_disclosure.py \
+            -k "wheelhouse or supplied" -q
+
       - name: Confirm the bundle matches the matrix target
         run: |
           set -euo pipefail

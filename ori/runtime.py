@@ -2139,7 +2139,7 @@ class OriRuntime:
         try:
             rows = await self._state_store.get_actions_needing_attestation()
         except Exception:
-            logger.exception("[evidence] reconciliation scan failed")
+            logger.warning("[evidence] reconciliation scan failed")
             return
         if not rows:
             return
@@ -2165,7 +2165,7 @@ class OriRuntime:
                     int(row["id"]), status=status, attestation_seq=seq
                 )
             except Exception:
-                logger.exception(
+                logger.warning(
                     "[evidence] failed to record reconciliation for action id=%s",
                     row.get("id"),
                 )
@@ -2251,7 +2251,6 @@ class OriRuntime:
             logger.warning(
                 "[confirmation] reconciling %s failed; leaving evidence pending",
                 source_device_id,
-                exc_info=True,
             )
             return False
         return status == _FIRMWARE_CONFIRMED
@@ -2266,7 +2265,13 @@ class OriRuntime:
         health: dict[str, Any] = {
             "enabled": enabled,
             "available": bool(attestor is not None and attestor.available),
+            # This device's own anchor, which is its own property to report.
             "public_key_hex": attestor.public_key_hex if attestor else "",
+            # Required by ori-specs runtime-health/v1. Removing it is arguably
+            # right — a private component's version is weak implementation
+            # metadata — but that is a contract change, not a runtime decision
+            # to take unilaterally. Tracked separately; the field stays until
+            # the contract says otherwise.
             "artifact_version": attestor.artifact_version if attestor else "",
             "protocol_version": (
                 PUBLIC_EVIDENCE_PROTOCOL_VERSION
@@ -2302,7 +2307,7 @@ class OriRuntime:
                 health["attestation_gap_count"] = summary["attestation_gap_count"]
                 health["status_counts"] = summary["status_counts"]
             except Exception:
-                logger.exception("[evidence] attestation summary read failed")
+                logger.warning("[evidence] attestation summary read failed")
         return health
 
     async def _build_health_snapshot(self) -> dict[str, Any]:
