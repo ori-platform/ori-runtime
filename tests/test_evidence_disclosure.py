@@ -969,10 +969,56 @@ class _IdentityBearingError(RuntimeError):
     ],
 )
 def test_failure_reason_is_a_category_never_derived_text(exc, expected):
-    reason = evidence_module.safe_failure_reason(exc)
-    assert reason == expected
-    assert "acme" not in reason.lower()
-    assert type(exc).__name__ not in reason or reason == expected == "timeout"
+    # Equality against a literal is the whole check: a reason built from the
+    # exception could not equal one of these. Anything further added here —
+    # that the class name is absent, that "acme" is absent — is implied by it,
+    # and reads as a check while testing nothing. The invariants that are not
+    # implied are below: the set of categories is closed, and it is mapped
+    # from builtins only.
+    assert evidence_module.safe_failure_reason(exc) == expected
+
+
+# The categories a reviewer has cleared for an operator to see. The test owns
+# this set rather than importing it — a new category is new text on an
+# operator's screen, so it fails here until someone has read it.
+REVIEWED_FAILURE_CATEGORIES = frozenset(
+    {
+        "module_unavailable",
+        "permission_denied",
+        "not_found",
+        "timeout",
+        "resource_exhausted",
+        "io_error",
+        "invalid_value",
+        "invalid_type",
+        "interface_mismatch",
+        "internal_error",
+    }
+)
+
+
+def test_declared_failure_categories_are_all_reviewed():
+    declared = {
+        category for _, category in evidence_module._PUBLIC_FAILURE_CATEGORIES
+    } | {evidence_module._UNCATEGORISED_FAILURE}
+    assert declared == REVIEWED_FAILURE_CATEGORIES, (
+        "the categories an operator can be shown changed; review the wording "
+        "against the disclosure boundary before listing it here"
+    )
+
+
+def test_failure_categories_are_mapped_from_builtin_types_only():
+    """Why a private class name cannot reach the mapping in the first place.
+
+    Every entry keys on a builtin, so the table cannot come to depend on a
+    private component's exception hierarchy — which is how the class name
+    would get back into an operator's view after being removed from the text.
+    """
+    for exception_type, _ in evidence_module._PUBLIC_FAILURE_CATEGORIES:
+        assert exception_type.__module__ == "builtins", (
+            f"{exception_type.__name__} is not a builtin exception; the "
+            "category table must not reference a private component's types"
+        )
 
 
 def test_failure_reason_never_returns_the_exception_class_name():
