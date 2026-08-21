@@ -4375,6 +4375,7 @@ actions:
             "enabled": False,
             "qos": 1,
             "publish_timeout_s": 10.0,
+            "confirmation_retry_interval_s": 60.0,
             "runtime_command_key_env": "",
             "provisioner_key_env": "",
         }
@@ -4438,9 +4439,45 @@ actions:
             "enabled": True,
             "qos": 1,
             "publish_timeout_s": 4.5,
+            "confirmation_retry_interval_s": 60.0,
             "runtime_command_key_env": "ORI_FW_RUNTIME_COMMAND_KEY",
             "provisioner_key_env": "ORI_FW_PROVISIONER_KEY",
         }
+
+    @pytest.mark.parametrize(
+        "value", ["not-a-number", ".nan", ".inf", "0", "-1", "900.5", "3600"]
+    )
+    def test_rejects_invalid_confirmation_retry_interval(self, tmp_path, value):
+        """A malformed interval must fail config load, not runtime construction.
+
+        NaN in particular would make every deadline comparison false and stop
+        the worker retrying while it reported itself healthy — the failure the
+        retry exists to prevent.
+        """
+        with pytest.raises(
+            ConfigValidationError, match="confirmation_retry_interval_s"
+        ):
+            Config.load(
+                _write_yaml(
+                    tmp_path,
+                    f"""
+                    device:
+                      id: d
+                      name: n
+                      location: l
+                    sensors:
+                      - id: cpu
+                        type: cpu_percent
+                        protocol: psutil
+                        poll_interval_ms: 1000
+                    gateway:
+                      enabled: true
+                      broker_url: mqtt://127.0.0.1:1883
+                      firmware_commands:
+                        confirmation_retry_interval_s: {value}
+                    """,
+                )
+            )
 
     def test_rejects_enabled_firmware_commands_without_key_envs(self, tmp_path):
         with pytest.raises(ConfigValidationError, match="firmware_commands"):

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -1024,8 +1025,40 @@ def _parse_gateway(data: Any) -> GatewayConfig:
             "gateway.firmware_commands.runtime_command_key_env and "
             "gateway.firmware_commands.provisioner_key_env are required when enabled"
         )
+    # Bounded by the reconciler's own backoff ceiling rather than an
+    # independent number. A base interval above the ceiling is incoherent: the
+    # first delay would already exceed the maximum the backoff is allowed to
+    # reach, so there is nothing to back off to and the documented ceiling
+    # would be a false claim for that configuration.
+    from ori.security.firmware_reconciliation import (
+        DEFAULT_INTERVAL_S,
+        DEFAULT_MAX_INTERVAL_S,
+    )
+
+    try:
+        confirmation_retry_interval_s = float(
+            firmware_commands.get("confirmation_retry_interval_s", DEFAULT_INTERVAL_S)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            "gateway.firmware_commands.confirmation_retry_interval_s must be a number"
+        ) from exc
+    if not math.isfinite(confirmation_retry_interval_s):
+        # NaN would make every deadline comparison false and stop the worker
+        # retrying while it reported itself healthy, which is the failure the
+        # retry exists to prevent.
+        raise ConfigValidationError(
+            "gateway.firmware_commands.confirmation_retry_interval_s must be finite"
+        )
+    if not 1.0 <= confirmation_retry_interval_s <= DEFAULT_MAX_INTERVAL_S:
+        raise ConfigValidationError(
+            "gateway.firmware_commands.confirmation_retry_interval_s must be "
+            f"between 1 and {DEFAULT_MAX_INTERVAL_S:.0f} seconds, the maximum "
+            "the retry backoff is allowed to reach"
+        )
     firmware_commands["qos"] = command_qos
     firmware_commands["publish_timeout_s"] = publish_timeout_s
+    firmware_commands["confirmation_retry_interval_s"] = confirmation_retry_interval_s
     firmware_commands["runtime_command_key_env"] = runtime_command_key_env
     firmware_commands["provisioner_key_env"] = provisioner_key_env
 
