@@ -4624,15 +4624,16 @@ def _warn_gateway_security_posture(config: Config) -> None:
 
     auth_enabled = bool(auth_cfg.get("enabled", False))
     tls_enabled = bool(tls_cfg.get("enabled", False))
-    is_loopback = any(
-        broker_url.startswith(p)
-        for p in (
-            "mqtt://127.",
-            "mqtt://localhost",
-            "mqtts://127.",
-            "mqtts://localhost",
-        )
-    )
+    # Parse the host out rather than prefix-matching the URL. Production
+    # posture requires broker credentials, so the very configuration this
+    # runtime asks for — `mqtt://user:pass@127.0.0.1:1883` — carries userinfo
+    # ahead of the host and matches no prefix. Classifying that as a public
+    # broker made the runtime log, at ERROR, that traffic was unauthenticated
+    # while it was in fact authenticated. A security channel that cries wolf
+    # is worse than a silent one: the operator either acts on a false alarm or
+    # learns to ignore it.
+    parsed = urlparse(broker_url if "://" in broker_url else f"mqtt://{broker_url}")
+    is_loopback = _is_loopback_host(parsed.hostname)
 
     if not auth_enabled:
         if not is_loopback:
@@ -4677,7 +4678,7 @@ def _warn_sms_webhook_security_posture(config: Config) -> None:
         return
 
     host = str(webhook_cfg.get("host", "127.0.0.1") or "").strip()
-    if _is_loopback_bind_host(host):
+    if _is_loopback_host(host):
         return
 
     signature_cfg = webhook_cfg.get("signature") or {}
@@ -4705,7 +4706,7 @@ def _warn_sms_webhook_security_posture(config: Config) -> None:
         )
 
 
-def _is_loopback_bind_host(host: str | None) -> bool:
+def _is_loopback_host(host: str | None) -> bool:
     value = str(host or "").strip().lower()
     if value in {"localhost", "::1"}:
         return True

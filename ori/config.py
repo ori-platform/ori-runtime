@@ -1111,6 +1111,20 @@ def _parse_gateway(data: Any) -> GatewayConfig:
 
     enabled = bool(data.get("enabled", False))
     broker_url = str(data.get("broker_url", ""))
+    if enabled and "${" in broker_url:
+        # `_expand_env_vars` deliberately leaves `${VAR}` literal when the
+        # variable is unset, and every other field carrying a secret or an
+        # endpoint checks for the leftover. This one did not, so an unset
+        # variable produced a URL the parser below accepts and no client can
+        # reach: the only symptom was a refusal from every connection, with
+        # nothing naming the cause. Report it here, where the variable can be
+        # named, rather than leaving an operator to infer it from a broker log.
+        unexpanded = re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", broker_url)
+        detail = f": {', '.join(unexpanded)}" if unexpanded else ""
+        raise ConfigValidationError(
+            "gateway.broker_url contains an unexpanded environment variable"
+            f"{detail}. Set it in the environment, or remove it from the URL."
+        )
     if enabled:
         # An enabled gateway with an unusable endpoint is invalid configuration,
         # not a runtime availability problem. Validated with the same parser the
