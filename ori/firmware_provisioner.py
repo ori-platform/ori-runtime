@@ -334,7 +334,10 @@ def cmd_approve(args: argparse.Namespace) -> int:
         )
     )
     print(f"{args.device_id} approved in the runtime registry")
-    print("Run `publish` to sign and publish the retained approval.")
+    print(
+        "Run `prepare-approval` to sign the approval bytes, then publish them "
+        "through the runtime gateway."
+    )
     return 0
 
 
@@ -397,7 +400,17 @@ async def _publish(
         await store.close()
 
 
-def cmd_publish(args: argparse.Namespace) -> int:
+def cmd_prepare_approval(args: argparse.Namespace) -> int:
+    """Sign from the approved row and emit the approval bytes.
+
+    This command does not publish and never has. `_publish` refuses a live
+    publisher on purpose: live publication runs inside the runtime's gateway,
+    because a CLI that is about to exit must not assert liveness supervision
+    over a device. What it did do was print `publish RETAINED on ...` to
+    stderr afterwards, which read as confirmation that a retained message had
+    reached the broker. On a security-critical step, an operator who believed
+    that would think a device had been provisioned when nothing had been sent.
+    """
     message = asyncio.run(
         _publish(
             args.db,
@@ -413,10 +426,24 @@ def cmd_publish(args: argparse.Namespace) -> int:
     else:
         sys.stdout.write(message.decode("utf-8") + "\n")
     print(
-        f"publish RETAINED on ori/fw/{args.device_id}/provision (QoS 1)",
+        "signed approval emitted for "
+        f"{args.device_id}; NOT published. Publish it through the runtime "
+        f"gateway on ori/fw/{args.device_id}/provision (retained, QoS 1), "
+        "or hand these bytes to your bench MQTT client.",
         file=sys.stderr,
     )
     return 0
+
+
+# The old name asserted an act this command does not perform. It stays as a
+# deprecated alias so existing provisioning scripts keep working, and warns.
+def cmd_publish(args: argparse.Namespace) -> int:
+    print(
+        "warning: `publish` is deprecated and never published; it emits signed "
+        "approval bytes. Use `prepare-approval`.",
+        file=sys.stderr,
+    )
+    return cmd_prepare_approval(args)
 
 
 async def _reinstate(db_path: str, device_id: str, actor: str, reason: str) -> None:
@@ -586,15 +613,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.set_defaults(func=cmd_approve)
 
-    p = sub.add_parser(
-        "publish", help="sign from the approved row and emit the approval"
-    )
-    p.add_argument("--db", required=True)
-    p.add_argument("--device-id", required=True)
-    p.add_argument("--provisioner-seed", required=True)
-    p.add_argument("--runtime-command-seed", required=True)
-    p.add_argument("--out")
-    p.set_defaults(func=cmd_publish)
+    for _name, _help, _fn in (
+        (
+            "prepare-approval",
+            "sign from the approved row and emit the approval bytes (does not publish)",
+            cmd_prepare_approval,
+        ),
+        ("publish", "deprecated alias for prepare-approval", cmd_publish),
+    ):
+        p = sub.add_parser(_name, help=_help)
+        p.add_argument("--db", required=True)
+        p.add_argument("--device-id", required=True)
+        p.add_argument("--provisioner-seed", required=True)
+        p.add_argument("--runtime-command-seed", required=True)
+        p.add_argument("--out")
+        p.set_defaults(func=_fn)
 
     p = sub.add_parser(
         "reinstate", help="return a revoked identity to service (anchor -> pending)"

@@ -25,6 +25,7 @@ from ori.security.config_signatures import (
 from ori.security.remote_command_lockout import normalize_remote_command_lockout_config
 from ori.security.remote_commands import normalize_remote_command_sender
 from ori.utils.bool_utils import is_truthy
+from ori.utils.net_utils import is_loopback_host
 from ori.utils.path_utils import path_is_relative_to
 
 logger = logging.getLogger(__name__)
@@ -1111,6 +1112,20 @@ def _parse_gateway(data: Any) -> GatewayConfig:
 
     enabled = bool(data.get("enabled", False))
     broker_url = str(data.get("broker_url", ""))
+    if enabled and "${" in broker_url:
+        # `_expand_env_vars` deliberately leaves `${VAR}` literal when the
+        # variable is unset, and every other field carrying a secret or an
+        # endpoint checks for the leftover. This one did not, so an unset
+        # variable produced a URL the parser below accepts and no client can
+        # reach: the only symptom was a refusal from every connection, with
+        # nothing naming the cause. Report it here, where the variable can be
+        # named, rather than leaving an operator to infer it from a broker log.
+        unexpanded = re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", broker_url)
+        detail = f": {', '.join(unexpanded)}" if unexpanded else ""
+        raise ConfigValidationError(
+            "gateway.broker_url contains an unexpanded environment variable"
+            f"{detail}. Set it in the environment, or remove it from the URL."
+        )
     if enabled:
         # An enabled gateway with an unusable endpoint is invalid configuration,
         # not a runtime availability problem. Validated with the same parser the
@@ -1184,7 +1199,7 @@ def _warn_gateway_network_posture(gateway: GatewayConfig) -> None:
     if not broker_url:
         return
     parsed = urlparse(broker_url if "://" in broker_url else f"mqtt://{broker_url}")
-    if parsed.hostname is None or _is_loopback_host(parsed.hostname):
+    if parsed.hostname is None or is_loopback_host(parsed.hostname):
         return
 
     missing: list[str] = []
@@ -1266,7 +1281,7 @@ def _parse_telemetry_export(data: Any) -> TelemetryExportConfig:
             raise ConfigValidationError(
                 "telemetry_export.endpoint must be an absolute http(s) URL."
             )
-        if parsed.scheme != "https" and not _is_loopback_host(parsed.hostname):
+        if parsed.scheme != "https" and not is_loopback_host(parsed.hostname):
             raise ConfigValidationError(
                 "telemetry_export.endpoint must use https:// unless it targets "
                 "localhost or 127.0.0.1."
@@ -1971,7 +1986,7 @@ def _validate_production_security_posture(
                 "production posture requires gateway.encryption.enabled: true "
                 "when gateway is enabled"
             )
-        non_loopback = not _is_loopback_host(parsed.hostname)
+        non_loopback = not is_loopback_host(parsed.hostname)
         if non_loopback:
             if scheme != "mqtts" and not is_truthy(gateway.tls.get("enabled", False)):
                 raise ConfigValidationError(
@@ -2013,7 +2028,7 @@ def _validate_production_security_posture(
     incoming = sms_cfg.get("incoming_webhook") or {}
     if isinstance(incoming, dict) and is_truthy(incoming.get("enabled", False)):
         host = str(incoming.get("host", "127.0.0.1") or "").strip()
-        if not _is_loopback_host(host):
+        if not is_loopback_host(host):
             allowed_source_cidrs = incoming.get("allowed_source_cidrs")
             if not _sms_webhook_source_cidrs_present(allowed_source_cidrs):
                 raise ConfigValidationError(
@@ -2050,11 +2065,6 @@ def _validate_production_security_posture(
         raise ConfigValidationError(
             "production posture requires a verified config_signature block"
         )
-
-
-def _is_loopback_host(host: str | None) -> bool:
-    value = str(host or "").strip().lower()
-    return value in {"localhost", "::1"} or value.startswith("127.")
 
 
 def _validate_state_store_encryption_posture(

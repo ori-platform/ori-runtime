@@ -553,3 +553,107 @@ class TestBackfillDoesNotFireOnNewDevices:
         assert len(first) == len(second) == 1
         assert second[0]["actor"] == ""
         assert "migration" not in {t["actor"] for t in second}
+
+
+def _prepare_approval(bench, device_id="ori-fw-bench0001", command="prepare-approval"):
+    return main(
+        [
+            command,
+            "--db",
+            bench["db"],
+            "--device-id",
+            device_id,
+            "--provisioner-seed",
+            bench["auth_seed"],
+            "--runtime-command-seed",
+            bench["rt_seed"],
+        ]
+    )
+
+
+class TestTheCliClaimsNoPublicationItDoesNotPerform:
+    """This CLI signs an approval and exits. It never reaches a broker.
+
+    That refusal is deliberate: live publication runs inside the runtime's
+    gateway, because a tool about to exit must not assert liveness
+    supervision over a device. What the command used to do was print
+    `publish RETAINED on ori/fw/<id>/provision (QoS 1)` afterwards, which
+    reads as confirmation that a retained message was delivered. An
+    operator who believed it would think a device was provisioned when
+    nothing had been sent — on the step that grants a device its identity.
+
+    These tests exercise the commands rather than their help text, because
+    the help was never the thing that lied.
+    """
+
+    def test_prepare_approval_emits_the_signed_bytes(self, bench, capsys) -> None:
+        assert _register(bench) == 0
+        assert _approve(bench) == 0
+        _confirm(bench)
+        capsys.readouterr()  # discard fixture setup output
+        assert _prepare_approval(bench) == 0
+
+        message = json.loads(capsys.readouterr().out)
+        assert message["approval"]["device_id"] == "ori-fw-bench0001"
+        assert message["signature"].startswith("ed25519:")
+
+    def test_prepare_approval_says_it_did_not_publish(self, bench, capsys) -> None:
+        assert _register(bench) == 0
+        assert _approve(bench) == 0
+        _confirm(bench)
+        assert _prepare_approval(bench) == 0
+
+        err = capsys.readouterr().err
+        assert "NOT published" in err
+
+    def test_prepare_approval_never_claims_a_retained_publication(
+        self, bench, capsys
+    ) -> None:
+        assert _register(bench) == 0
+        assert _approve(bench) == 0
+        _confirm(bench)
+        assert _prepare_approval(bench) == 0
+
+        captured = capsys.readouterr()
+        combined = (captured.out + captured.err).lower()
+        assert "publish retained" not in combined
+        assert "qos 1)" not in combined.replace("(retained, qos 1)", "")
+
+    def test_deprecated_publish_alias_warns_and_still_works(
+        self, bench, capsys
+    ) -> None:
+        """Renaming alone would break provisioning scripts in the field."""
+        assert _register(bench) == 0
+        assert _approve(bench) == 0
+        _confirm(bench)
+        capsys.readouterr()  # discard fixture setup output
+        assert _prepare_approval(bench, command="publish") == 0
+
+        captured = capsys.readouterr()
+        assert "deprecated" in captured.err
+        assert "prepare-approval" in captured.err
+        assert "NOT published" in captured.err
+        message = json.loads(captured.out)
+        assert message["approval"]["device_id"] == "ori-fw-bench0001"
+
+    def test_both_names_emit_identical_bytes(self, bench, capsys) -> None:
+        assert _register(bench) == 0
+        assert _approve(bench) == 0
+        _confirm(bench)
+        capsys.readouterr()  # discard fixture setup output
+
+        assert _prepare_approval(bench) == 0
+        renamed = capsys.readouterr().out
+        assert _prepare_approval(bench, command="publish") == 0
+        aliased = capsys.readouterr().out
+
+        assert json.loads(renamed) == json.loads(aliased)
+
+    def test_approve_does_not_tell_the_operator_to_publish(self, bench, capsys) -> None:
+        """The approve hint carried the same false instruction."""
+        assert _register(bench) == 0
+        assert _approve(bench) == 0
+
+        out = capsys.readouterr().out.lower()
+        assert "prepare-approval" in out
+        assert "publish the retained approval" not in out
