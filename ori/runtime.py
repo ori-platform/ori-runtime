@@ -98,6 +98,12 @@ from ori.security.firmware_liveness import (
 from ori.security.firmware_mqtt_certificate import FirmwareMqttCertificateAuthority
 from ori.security.firmware_mqtt_provisioning import FirmwareMqttProvisioningService
 from ori.security.firmware_mqtt_workflow import FirmwareMqttProvisioningWorkflow
+from ori.security.firmware_reconciliation import (
+    DEFAULT_INTERVAL_S as CONFIRMATION_RETRY_INTERVAL_S,
+)
+from ori.security.firmware_reconciliation import (
+    FirmwareConfirmationReconciler,
+)
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
@@ -242,6 +248,9 @@ class OriRuntime:
         self._evidence_attestor: EvidenceAttestor | None = None
         self._firmware_confirmation_coordinator: (
             FirmwareConfirmationCoordinator | None
+        ) = None
+        self._firmware_confirmation_reconciler: (
+            FirmwareConfirmationReconciler | None
         ) = None
         self._health_socket_path: str = ""
         self._firmware_mqtt_operator_socket_path: str = ""
@@ -565,10 +574,31 @@ class OriRuntime:
         ):
             confirmation_chain = evidence_attestor.confirmation_chain()
             if confirmation_chain is not None:
-                self._firmware_confirmation_coordinator = (
-                    FirmwareConfirmationCoordinator(
-                        store=self._state_store, chain=confirmation_chain
-                    )
+                coordinator = FirmwareConfirmationCoordinator(
+                    store=self._state_store, chain=confirmation_chain
+                )
+                self._firmware_confirmation_coordinator = coordinator
+                # Approval alone cannot reach the evidence store, and a
+                # confirmation that arrives later has nothing re-examining
+                # the obligation. This is that missing layer.
+                firmware_cfg = (
+                    config.gateway.firmware_commands
+                    if isinstance(config.gateway.firmware_commands, dict)
+                    else {}
+                )
+                # Config bounds the interval by the backoff ceiling, so the
+                # default maximum always admits it and no compensation is
+                # needed here. An interval already at the ceiling simply has
+                # nowhere to back off to.
+                self._firmware_confirmation_reconciler = FirmwareConfirmationReconciler(
+                    store=self._state_store,
+                    coordinator=coordinator,
+                    interval_s=float(
+                        firmware_cfg.get(
+                            "confirmation_retry_interval_s",
+                            CONFIRMATION_RETRY_INTERVAL_S,
+                        )
+                    ),
                 )
 
         dispatcher = ActionDispatcher(
@@ -1076,6 +1106,10 @@ class OriRuntime:
             event_bus,
             self._state_store,
             self._deduplicator,
+            # Late-bound on purpose: the subscriber is built before the
+            # evidence attestor decides whether a reconciler exists at all,
+            # so the callback reads it when a reconnect actually happens.
+            self._nudge_firmware_confirmations,
         )
         if firmware_telemetry_subscriber is not None:
             self._background_tasks.append(
@@ -1127,6 +1161,15 @@ class OriRuntime:
         await self._start_health_socket_if_enabled(config)
 
         await self._drain_pending_firmware_confirmations()
+        if self._firmware_confirmation_reconciler is not None:
+            self._background_tasks.append(
+                asyncio.create_task(
+                    self._firmware_confirmation_reconciler.serve_until(
+                        self._shutdown_event
+                    ),
+                    name="firmware-confirmation-reconciler",
+                )
+            )
         await self._reconcile_pending_attestations()
 
         if status_indicator is not None:
@@ -2136,55 +2179,50 @@ class OriRuntime:
             remaining,
         )
 
+    def _nudge_firmware_confirmations(self) -> None:
+        """Reconcile outstanding obligations now, because a link came back.
+
+        A restored transport is the most likely moment for a pending
+        confirmation to resolve, so waiting out the remaining backoff would be
+        the wrong response to the one event suggesting a retry will work.
+        """
+        reconciler = self._firmware_confirmation_reconciler
+        if reconciler is not None:
+            reconciler.nudge()
+
     async def _drain_pending_firmware_confirmations(self) -> None:
         """Reconcile every outstanding confirmation obligation once, now.
 
         Approval records a durable confirmation_pending obligation but cannot
         itself reach the evidence store (the provisioner is offline). At the
-        runtime's earliest opportunity, drain every pending obligation
-        through the coordinator, so a normally-approved device -- one with no
-        firmware action waiting -- still gets its epoch confirmed and can
-        publish approvals and receive commands. Recurring reconnect and
-        periodic retries are layered on later around this same coordinator.
+        runtime's earliest opportunity, drain every pending obligation through
+        the coordinator, so a normally-approved device -- one with no firmware
+        action waiting -- still gets its epoch confirmed and can publish
+        approvals and receive commands.
+
+        Recurring retries are the reconciler's `serve_until`, started as a
+        background task. This drives the same worker once, so startup does not
+        wait out an interval before doing what it can immediately.
         """
-        coordinator = self._firmware_confirmation_coordinator
-        store = self._state_store
-        if coordinator is None or store is None:
-            return
-        if not hasattr(store, "list_pending_firmware_confirmations"):
-            return
-        try:
-            pending = await store.list_pending_firmware_confirmations()
-        except Exception:
-            logger.exception("[confirmation] failed to list pending confirmations")
-            return
-        # One confirm() reconciles a device's active epoch, so collapse the
-        # obligations to their distinct devices (order preserved).
-        device_ids: list[str] = []
-        seen: set[str] = set()
-        for row in pending:
-            device_id = str(row.get("device_id", "") or "")
-            if device_id and device_id not in seen:
-                seen.add(device_id)
-                device_ids.append(device_id)
-        if not device_ids:
-            return
-        confirmed = 0
-        for device_id in device_ids:
-            try:
-                status = await coordinator.confirm(device_id)
-            except Exception:
-                logger.warning(
-                    "[confirmation] reconciling %s failed", device_id, exc_info=True
-                )
-                continue
-            if status == _FIRMWARE_CONFIRMED:
-                confirmed += 1
-        logger.info(
-            "[confirmation] startup drain: %d of %d devices confirmed",
-            confirmed,
-            len(device_ids),
-        )
+        reconciler = self._firmware_confirmation_reconciler
+        if reconciler is None:
+            # The coordinator is what decides whether draining is possible;
+            # the reconciler only schedules around it. Building a transient
+            # one here keeps a caller that has a coordinator from getting a
+            # silent no-op because scheduling was not set up.
+            coordinator = self._firmware_confirmation_coordinator
+            if coordinator is None or self._state_store is None:
+                return
+            reconciler = FirmwareConfirmationReconciler(
+                store=self._state_store, coordinator=coordinator
+            )
+        confirmed, seen = await reconciler.reconcile_once()
+        if seen:
+            logger.info(
+                "[confirmation] startup drain: %d of %d devices confirmed",
+                confirmed,
+                seen,
+            )
 
     async def _firmware_source_confirmed(self, row: dict) -> bool:
         """Whether a firmware-sourced action may be signed yet.
@@ -4165,6 +4203,7 @@ def _build_firmware_telemetry_subscriber(
     state_store: StateStore,
     deduplicator: EventDeduplicator | None,
     liveness_supervisor: FirmwareLivenessSupervisor,
+    on_connected: Callable[[], None] | None = None,
 ) -> MqttFirmwareTelemetrySubscriber | None:
     """Instantiate the signed firmware telemetry subscriber when configured."""
     if not bool(config.gateway.enabled):
@@ -4188,6 +4227,7 @@ def _build_firmware_telemetry_subscriber(
             tls_config=getattr(config.gateway, "tls", {}),
             deduplicator=deduplicator,
             liveness_supervisor=liveness_supervisor,
+            on_connected=on_connected,
         )
     except Exception:
         logger.exception("[runtime] invalid firmware telemetry MQTT configuration")
@@ -4266,6 +4306,7 @@ def _build_firmware_liveness_stack(
     event_bus: EventBus,
     state_store: StateStore,
     deduplicator: EventDeduplicator | None,
+    on_telemetry_connected: Callable[[], None] | None = None,
 ) -> tuple[
     FirmwareLivenessSupervisor,
     MqttFirmwareTelemetrySubscriber | None,
@@ -4294,6 +4335,7 @@ def _build_firmware_liveness_stack(
         state_store,
         deduplicator,
         supervisor,
+        on_connected=on_telemetry_connected,
     )
     command_pair = _build_firmware_command_service(
         config,

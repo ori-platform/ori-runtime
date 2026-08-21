@@ -59,6 +59,7 @@ class MqttFirmwareTelemetrySubscriber:
         deduplicator: EventDeduplicator | None = None,
         client_factory: Callable[..., Any] | None = None,
         liveness_supervisor: FirmwareLivenessSupervisor,
+        on_connected: Callable[[], None] | None = None,
     ) -> None:
         if not _PAHO_AVAILABLE or mqtt is None:
             raise RuntimeError("paho-mqtt is not installed")
@@ -88,6 +89,7 @@ class MqttFirmwareTelemetrySubscriber:
                 "shared with the firmware command service"
             )
         self._liveness_supervisor = liveness_supervisor
+        self._on_connected = on_connected
         self._client_factory = client_factory or _default_client_factory
         self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -146,6 +148,13 @@ class MqttFirmwareTelemetrySubscriber:
             logger.warning("[firmware-telemetry] MQTT connect failed rc=%s", rc)
             return
         client.subscribe(self._topic, qos=self._qos)
+        # A restored link is the most likely moment for anything waiting on
+        # the far side to resolve. This runs on the MQTT client's thread, so
+        # the callback is handed to the loop rather than invoked here.
+        callback = self._on_connected
+        loop = self._loop
+        if callback is not None and loop is not None:
+            loop.call_soon_threadsafe(callback)
 
     def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
         loop = self._loop

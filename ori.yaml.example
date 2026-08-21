@@ -337,6 +337,16 @@ gateway:
     # still derives runtime_reachable from broker connectivity, so this
     # setting does not yet affect orphan state.
     liveness_interval_s: 15.0        # 1.0 .. 20.0; must be <= expiry window (60s) / 3
+    # Firmware authority becomes effective only when this runtime and the
+    # evidence store agree on the same anchor_epoch_id. Approval records that
+    # obligation durably but cannot itself reach the store, so a confirmation
+    # arriving later needs something to re-examine it — without this a
+    # normally-approved device with no firmware traffic waits for a restart.
+    # Cycles that resolve nothing double the delay, up to a fixed 15-minute
+    # ceiling; a restored transport reconciles immediately and clears the
+    # backoff. The interval is bounded by that same ceiling, since a base
+    # delay above it would leave nowhere to back off to.
+    confirmation_retry_interval_s: 60.0  # 1.0 .. 900.0 (the backoff ceiling)
   reasoning:
     enabled: true                    # Tier 3 request/response on ori/{device_id}/reasoning/*
     timeout_ms: 10000                # per-phase timeout: connect/subscribe and response wait
