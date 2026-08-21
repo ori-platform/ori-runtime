@@ -246,9 +246,18 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ steps.identity.outputs.epoch }}
         run: bash scripts/build-wheelhouse.sh
 
-      # The wheelhouse is what reaches the device, and it is where the private
-      # compiled component ships — not inside the pure-Python runtime wheel.
-      # Auditing it here is the only point at which that artifact exists.
+      # The wheelhouse is everything this repository puts on a device: the
+      # built ori-runtime wheel plus every pinned dependency. Auditing it here
+      # inspects the deliverable rather than the source tree, and covers the
+      # metadata and compiled members no source-level check reads.
+      #
+      # It does not audit the private evidence artifact. That component is
+      # never fetched by build-wheelhouse.sh and reaches a device through a
+      # separate provisioning path, so it is absent from every wheelhouse this
+      # job builds. Describing this step as auditing it would make a check
+      # that passes over an empty target sound decisive. What it does catch is
+      # a name crossing into what we ship — including the case where a future
+      # change vendors that artifact in here.
       #
       # ORI_REQUIRE_WHEELHOUSE_AUDIT=1 turns every skip in that test into a
       # failure, including a missing denylist: a job that inspects binaries

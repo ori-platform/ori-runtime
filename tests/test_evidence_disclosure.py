@@ -746,13 +746,45 @@ def test_wheelhouse_distributions_disclose_nothing():
     # outlives the run. Secret masking cannot be relied on here either: it
     # knows the whole comma-separated secret, not every individual term, and
     # certainly not the surrounding binary string.
-    def _category(text: str) -> str | None:
+    def _denied(text: str) -> str | None:
+        """A supplied private term. A leak wherever it appears, prose included."""
         lowered = text.lower()
-        if any(term in lowered for term in terms):
-            return PRIVATE_IDENTIFIER
+        return PRIVATE_IDENTIFIER if any(term in lowered for term in terms) else None
+
+    def _implementation_named(text: str) -> str | None:
+        """An identifier shaped like an evidence implementation.
+
+        Scope matters here as much as the pattern. This matcher is for names —
+        a distribution, an archive member, a RECORD path, a declared metadata
+        field. Run over free text it fires on the README, which METADATA
+        embeds as the long description, and which states the boundary in
+        deliberate prose: that private artifacts exist and integrate through
+        public contracts, with their coordinates absent. That sentence is the
+        honest public position rather than a disclosure, so treating it as a
+        finding would fail every release over the project describing itself
+        accurately. The sibling wheel test already draws this line; this audit
+        did not, and a wheelhouse built from a real tag is what showed it.
+        """
         if VENDORED_IMPLEMENTATION.search(text):
             return "evidence-implementation naming"
         return None
+
+    def _category(text: str) -> str | None:
+        """Both checks, for an input that is an identifier rather than prose."""
+        return _denied(text) or _implementation_named(text)
+
+    def _declared_fields(member_name: str, text: str) -> list[str]:
+        """The structural lines of a metadata member, excluding prose."""
+        if member_name.endswith("RECORD"):
+            return [line.split(",")[0] for line in text.splitlines() if line]
+        if member_name.endswith("METADATA"):
+            return [
+                line.strip()
+                for line in text.splitlines()
+                if line.startswith(("Name:", "Requires-Dist:", "Provides-Extra:"))
+            ]
+        # WHEEL carries no long description; every line of it is structural.
+        return [line.strip() for line in text.splitlines() if line.strip()]
 
     failures: list[str] = []
     inspected_binaries = 0
@@ -776,9 +808,19 @@ def test_wheelhouse_distributions_disclose_nothing():
                         failures.append(_opaque(f"{member} (compiled strings)", found))
                 if name.endswith(("METADATA", "RECORD", "WHEEL")):
                     text = archive.read(name).decode("utf-8", "ignore")
-                    found = _category(text)
+                    # A supplied private identifier is a leak anywhere in the
+                    # file, so this half reads the whole text.
+                    found = _denied(text)
                     if found:
                         failures.append(_opaque(f"{member} (wheel metadata)", found))
+                    # The naming pattern reads declared fields only.
+                    for field in _declared_fields(name, text):
+                        found = _implementation_named(field)
+                        if found:
+                            failures.append(
+                                _opaque(f"{member} (declared field)", found)
+                            )
+                            break
 
     assert not failures, (
         "the wheelhouse reaching the device carries a prohibited identifier. "
@@ -1094,6 +1136,88 @@ def test_a_clean_wheelhouse_passes_the_audit(tmp_path, monkeypatch):
     monkeypatch.setenv("ORI_REQUIRE_WHEELHOUSE_AUDIT", "1")
 
     test_wheelhouse_distributions_disclose_nothing()
+
+
+# The README sentence, verbatim in shape: METADATA embeds the long description,
+# and the project states its boundary there on purpose.
+_BOUNDARY_PROSE = (
+    "Private evidence-chain and edge-firmware artifacts integrate through the "
+    "public contracts in this repository. Their source coordinates are "
+    "deliberately absent."
+)
+
+
+def _wheel_with_metadata(wheelhouse: pathlib.Path, name: str, metadata: str) -> None:
+    wheelhouse.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(wheelhouse / f"{name}-1.0-py3-none-any.whl", "w") as archive:
+        archive.writestr(f"{name}/__init__.py", "VERSION = '1.0'\n")
+        archive.writestr(f"{name}-1.0.dist-info/METADATA", metadata)
+        archive.writestr(f"{name}-1.0.dist-info/RECORD", f"{name}/__init__.py,,\n")
+
+
+@pytest.mark.disclosure_release
+def test_the_boundary_stated_in_prose_is_not_a_finding(tmp_path, monkeypatch):
+    """Our own wheel must survive its own README.
+
+    The naming pattern matches identifiers, and METADATA carries the README as
+    its long description. Run over that free text it matches the sentence the
+    project publishes on purpose — that private artifacts exist and integrate
+    through public contracts, with their coordinates absent — and the release
+    would fail on every tag over an accurate self-description with nothing
+    disclosed in it. A real wheelhouse built from a tag is what surfaced this;
+    no synthesised fixture had a long description in it to fire on.
+    """
+    wheelhouse = tmp_path / "wheelhouse"
+    _wheel_with_metadata(
+        wheelhouse,
+        "ori_runtime",
+        f"Metadata-Version: 2.1\nName: ori-runtime\nVersion: 1.0\n\n{_BOUNDARY_PROSE}\n",
+    )
+    monkeypatch.setenv("ORI_WHEELHOUSE_OUT", str(wheelhouse))
+    monkeypatch.setenv("ORI_DISCLOSURE_DENYLIST", "acmechain")
+    monkeypatch.setenv("ORI_REQUIRE_WHEELHOUSE_AUDIT", "1")
+
+    test_wheelhouse_distributions_disclose_nothing()
+
+
+@pytest.mark.disclosure_release
+def test_the_same_naming_in_a_declared_field_is_a_finding(tmp_path, monkeypatch):
+    """The other half: narrowing the scope must not disarm the check.
+
+    The identical string, moved from the long description into a declared
+    dependency, is an implementation actually being shipped.
+    """
+    wheelhouse = tmp_path / "wheelhouse"
+    _wheel_with_metadata(
+        wheelhouse,
+        "ori_runtime",
+        "Metadata-Version: 2.1\nName: ori-runtime\nVersion: 1.0\n"
+        "Requires-Dist: evidence-chain-core>=1.0\n",
+    )
+    monkeypatch.setenv("ORI_WHEELHOUSE_OUT", str(wheelhouse))
+    monkeypatch.setenv("ORI_DISCLOSURE_DENYLIST", "acmechain")
+    monkeypatch.setenv("ORI_REQUIRE_WHEELHOUSE_AUDIT", "1")
+
+    with pytest.raises(AssertionError, match="prohibited identifier"):
+        test_wheelhouse_distributions_disclose_nothing()
+
+
+@pytest.mark.disclosure_release
+def test_a_private_term_in_prose_is_still_a_finding(tmp_path, monkeypatch):
+    """Scope narrowed for the pattern only, never for a supplied real name."""
+    wheelhouse = tmp_path / "wheelhouse"
+    _wheel_with_metadata(
+        wheelhouse,
+        "ori_runtime",
+        "Metadata-Version: 2.1\nName: ori-runtime\nVersion: 1.0\n\n"
+        "Talks to the acmechain host during provisioning.\n",
+    )
+    monkeypatch.setenv("ORI_WHEELHOUSE_OUT", str(wheelhouse))
+    monkeypatch.setenv("ORI_DISCLOSURE_DENYLIST", "acmechain")
+    monkeypatch.setenv("ORI_REQUIRE_WHEELHOUSE_AUDIT", "1")
+
+    with pytest.raises(AssertionError, match="prohibited identifier"):
+        test_wheelhouse_distributions_disclose_nothing()
 
 
 # --------------------------------------------------------------------------
