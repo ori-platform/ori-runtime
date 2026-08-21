@@ -289,8 +289,12 @@ jobs:
             echo "know what to look for and must not report success" >&2
             exit 1
           fi
+          # Selected by marker, not by name. An earlier revision matched
+          # "wheelhouse or supplied", which silently omitted the document
+          # audit — a check that reads the denylist but happens not to carry
+          # either word in its name.
           ORI_DISCLOSURE_DENYLIST="${terms}" python -m pytest \
-            tests/test_evidence_disclosure.py -k "wheelhouse or supplied" -q
+            tests/test_evidence_disclosure.py -m disclosure_release -q
 
       - name: Confirm the bundle matches the matrix target
         run: |

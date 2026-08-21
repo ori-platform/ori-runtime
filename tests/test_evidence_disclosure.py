@@ -706,6 +706,7 @@ def _printable_strings(blob: bytes, minimum: int = 4) -> str:
     return "\n".join(out)
 
 
+@pytest.mark.disclosure_release
 def test_wheelhouse_distributions_disclose_nothing():
     """The wheelhouse is what actually reaches the device.
 
@@ -791,6 +792,7 @@ def test_wheelhouse_distributions_disclose_nothing():
     )
 
 
+@pytest.mark.disclosure_release
 def test_built_wheel_discloses_nothing_supplied(built_wheel):
     terms = _supplied_denylist()
     if not terms:
@@ -808,6 +810,7 @@ def test_built_wheel_discloses_nothing_supplied(built_wheel):
     assert not offenders, f"the built wheel carries a prohibited term: {offenders}"
 
 
+@pytest.mark.disclosure_release
 def test_package_contents_disclose_nothing_supplied():
     terms = _supplied_denylist()
     if not terms:
@@ -827,6 +830,7 @@ def test_package_contents_disclose_nothing_supplied():
     )
 
 
+@pytest.mark.disclosure_release
 def test_installed_distributions_disclose_nothing_supplied():
     terms = _supplied_denylist()
     if not terms:
@@ -889,6 +893,7 @@ def _evidence_passages(path: pathlib.Path) -> list[str]:
     return [para for para in re.split(r"\n\s*\n", text) if EVIDENCE_TOPIC.search(para)]
 
 
+@pytest.mark.disclosure_release
 @pytest.mark.parametrize("name", OPERATOR_DOCS)
 def test_operator_documents_hold_the_whole_invariant(name):
     """Passages, not lines, and the full invariant rather than verbs alone.
@@ -1005,6 +1010,7 @@ def _adversarial_wheelhouse(root: pathlib.Path) -> pathlib.Path:
     return wheelhouse
 
 
+@pytest.mark.disclosure_release
 def test_wheelhouse_audit_catches_a_neutral_wheel_with_a_bearing_binary(
     tmp_path, monkeypatch
 ):
@@ -1026,6 +1032,7 @@ def test_wheelhouse_audit_catches_a_neutral_wheel_with_a_bearing_binary(
     assert "_native.so" not in report
 
 
+@pytest.mark.disclosure_release
 def test_a_clean_wheelhouse_passes_the_audit(tmp_path, monkeypatch):
     """The audit must not fail on everything, or failing proves nothing."""
     wheelhouse = tmp_path / "wheelhouse"
@@ -1128,6 +1135,27 @@ def _denylist_backed_test_bodies() -> dict[str, str]:
         if "_supplied_denylist()" in body and name not in _SANITISATION_META_TESTS:
             bodies[name] = body
     return bodies
+
+
+def test_every_denylist_backed_check_carries_the_release_marker():
+    """The release job selects by marker; an unmarked check never runs there.
+
+    Selecting by name substring omitted the document audit, which reads the
+    denylist but carries neither "wheelhouse" nor "supplied" in its name. A
+    marker cannot be missed by accident in the same way, and this asserts the
+    two stay in step.
+    """
+    source = pathlib.Path(__file__).read_text()
+    unmarked = []
+    for name, body in _denylist_backed_test_bodies().items():
+        definition = source.split(f"def {name}(", 1)[0]
+        preceding = definition[definition.rindex("\n\n") :]
+        if "disclosure_release" not in preceding:
+            unmarked.append(name)
+    assert not unmarked, (
+        "these checks read the private denylist but are not marked "
+        f"disclosure_release, so the release job will not run them: {unmarked}"
+    )
 
 
 def test_every_denylist_backed_check_is_sanitised():
