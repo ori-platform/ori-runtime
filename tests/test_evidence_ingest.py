@@ -33,6 +33,7 @@ from ori.security.evidence_ingest import (
     REJECT_BAD_AUTHENTICATOR,
     REJECT_BINDING_MISMATCH,
     REJECT_NON_CONTIGUOUS,
+    REJECT_REASONS,
     REJECT_UNKNOWN_SEQUENCE,
     REJECT_UNRECOGNISED_VERSION,
     REJECT_WRONG_PURPOSE,
@@ -488,7 +489,72 @@ def test_an_undefined_field_is_rejected(registry, name):
         verifier(artifact, device_id=DEVICE, registry=registry, **kwargs)
 
 
-def test_every_rejection_reason_is_from_the_closed_set():
-    """A reason outside the set would put free text where an operator reads it."""
+def test_a_free_text_rejection_reason_cannot_be_constructed():
+    """Construction is the action under test: the reason is validated in `__init__`.
+
+    That placement is the point. A free-text reason cannot be created at all,
+    rather than being created and filtered somewhere downstream where a caller
+    might forget — and the text here is the shape of what would leak, an
+    endpoint reaching a diagnostic an operator reads.
+    """
     with pytest.raises(ValueError, match="not a recognised rejection reason"):
-        IngestRejectedError("connection to private.host failed", "detail")
+        _ = IngestRejectedError("connection to private.host failed", "detail")
+
+
+@pytest.mark.parametrize("reason", sorted(REJECT_REASONS))
+def test_every_published_reason_can_be_constructed(reason):
+    """The closed set must not reject the reasons the verifiers actually use."""
+    assert IngestRejectedError(reason, "detail").reason == reason
+
+
+def test_the_verifiers_only_use_published_reasons():
+    """A verifier raising an unpublished reason would fail at the point of failure.
+
+    Asserted structurally rather than by exercising every path: the constructor
+    refuses an unknown reason, so any such call site raises `ValueError` instead
+    of the rejection it meant to report — losing the finding it was trying to
+    make.
+    """
+    import ast
+    import pathlib as _pathlib
+
+    source = (
+        _pathlib.Path(__file__).parent.parent
+        / "ori"
+        / "security"
+        / "evidence_ingest.py"
+    ).read_text()
+    import ori.security.evidence_ingest as module
+
+    used: set[str] = set()
+    unresolved: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "IngestRejectedError"
+            and node.args
+        ):
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            used.add(first.value)
+        elif isinstance(first, ast.Name):
+            # Call sites name the constants rather than repeating the strings,
+            # which an earlier version of this scan did not handle — and it
+            # said so rather than reporting full coverage of nothing.
+            resolved = getattr(module, first.id, None)
+            if isinstance(resolved, str):
+                used.add(resolved)
+            else:
+                unresolved.append(first.id)
+        else:
+            unresolved.append(ast.dump(first)[:40])
+
+    assert not unresolved, f"rejection reasons the scan could not resolve: {unresolved}"
+    assert len(used) >= 6, (
+        f"only {len(used)} reasons found in use; the scan is not working"
+    )
+    assert used <= REJECT_REASONS, (
+        f"unpublished reasons in use: {sorted(used - REJECT_REASONS)}"
+    )

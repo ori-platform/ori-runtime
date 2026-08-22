@@ -204,10 +204,12 @@ def _select(
     try:
         return select_verifying_key(registry, purpose, str(key_id))
     except AuthorityKeyError as exc:
-        reason = (
-            REJECT_WRONG_PURPOSE if "is held for" in str(exc) else REJECT_UNKNOWN_KEY
-        )
-        raise IngestRejectedError(reason, str(exc)) from exc
+        # Named at each branch rather than computed into a variable, so every
+        # call site states its reason literally and can be checked statically.
+        # A reason assembled at runtime is one nothing can audit.
+        if "is held for" in str(exc):
+            raise IngestRejectedError(REJECT_WRONG_PURPOSE, str(exc)) from exc
+        raise IngestRejectedError(REJECT_UNKNOWN_KEY, str(exc)) from exc
 
 
 def _verify_ed25519(
