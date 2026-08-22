@@ -1,0 +1,77 @@
+{
+  "artifact": "custody_acknowledgement",
+  "domain_ascii": "ori.evidence_custody_ack.v1",
+  "domain_note": "Authenticated bytes are the ASCII domain, one NUL byte, then the canonical payload with signature or mac removed.",
+  "canonicalisation": "json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False).encode('utf-8')",
+  "authenticator_note": "Cases marked authenticator=valid must pass cryptographic verification so the semantic rule under test is actually reached. Cases marked invalid fail verification itself.",
+  "warning": "Seeds below are published test values and must never sign anything real.",
+  "cases": [
+    {
+      "name": "valid",
+      "authenticator": "valid",
+      "expected": "accept",
+      "note": "Canonical bytes reproduce and the MAC recomputes.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a34303538333762343230656538353064386530353033636338316566326538383636323733316535323738623465626437356664336661323833393532613433222c226b65795f6964223a2267772d7365637265742d31222c226c6f63616c5f736571223a31322c2276223a317d",
+      "artifact": {
+        "custody_at_ms": 1787000000900,
+        "device_id": "energy-monitor-ikeja-01",
+        "envelope_digest": "sha256:405837b420ee850d8e0503cc81ef2e88662731e5278b4ebd75fd3fa283952a43",
+        "key_id": "gw-secret-1",
+        "local_seq": 12,
+        "v": 1,
+        "mac": "hmac-sha256:f967a3cd8b965ece1d6e02471e6f4a7c32fe4190b9fd03bb00ce01a95ccb8206"
+      }
+    },
+    {
+      "name": "invalid_mac",
+      "authenticator": "invalid",
+      "expected": "reject",
+      "note": "Runtime ignores it; the envelope stays pending custody.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a36366539643338393333333432623063316537303831656635633438313532613461643132633961373838616363333932376164316566616238386463363637222c226b65795f6964223a2267772d7365637265742d31222c226c6f63616c5f736571223a31322c2276223a317d",
+      "artifact": {
+        "custody_at_ms": 1787000000900,
+        "device_id": "energy-monitor-ikeja-01",
+        "envelope_digest": "sha256:66e9d38933342b0c1e7081ef5c48152a4ad12c9a788acc3927ad1efab88dc667",
+        "key_id": "gw-secret-1",
+        "local_seq": 12,
+        "v": 1,
+        "mac": "hmac-sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    {
+      "name": "unknown_local_seq",
+      "authenticator": "valid",
+      "expected": "reject",
+      "note": "MAC is valid but no such sealed envelope exists; ignored and security-audited.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a34303538333762343230656538353064386530353033636338316566326538383636323733316535323738623465626437356664336661323833393532613433222c226b65795f6964223a2267772d7365637265742d31222c226c6f63616c5f736571223a3939392c2276223a317d",
+      "artifact": {
+        "custody_at_ms": 1787000000900,
+        "device_id": "energy-monitor-ikeja-01",
+        "envelope_digest": "sha256:405837b420ee850d8e0503cc81ef2e88662731e5278b4ebd75fd3fa283952a43",
+        "key_id": "gw-secret-1",
+        "local_seq": 999,
+        "v": 1,
+        "mac": "hmac-sha256:380e7b34bf04a5d070d8856dafa84f9d2560a513e95f711a523278a1b7ec6306"
+      }
+    },
+    {
+      "name": "unknown_key_id",
+      "authenticator": "valid",
+      "expected": "reject",
+      "note": "MAC recomputes under the current secret, but the declared generation is not held.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a34303538333762343230656538353064386530353033636338316566326538383636323733316535323738623465626437356664336661323833393532613433222c226b65795f6964223a2267772d7365637265742d72657469726564222c226c6f63616c5f736571223a31322c2276223a317d",
+      "artifact": {
+        "custody_at_ms": 1787000000900,
+        "device_id": "energy-monitor-ikeja-01",
+        "envelope_digest": "sha256:405837b420ee850d8e0503cc81ef2e88662731e5278b4ebd75fd3fa283952a43",
+        "key_id": "gw-secret-retired",
+        "local_seq": 12,
+        "v": 1,
+        "mac": "hmac-sha256:d4c15720f7ab40dad932b4701dfe3da70264dfe4324fb7d935fc740ca42eb664"
+      }
+    }
+  ],
+  "shared_secret_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+  "gateway_secret_hex": "6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f",
+  "envelope_digest_note": "envelope_digest is sha256 over the complete envelope as received \u2014 delivery-envelope.json's wire_hex \u2014 not over the signing preimage. Custody asserts possession of the signed artifact, so a digest that excluded the signature would let a gateway acknowledge bytes whose signature it never held."
+}
