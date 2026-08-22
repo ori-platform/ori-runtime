@@ -111,9 +111,7 @@ def test_the_producer_refuses_every_form_it_can_be_handed():
             # NaN and the infinities have no JSON literal, so they are parsed
             # with constants allowed and then handed to the producer, which is
             # the component that must refuse them.
-            value = json.loads(
-                case["input_json"], parse_constant=lambda name: float(name)
-            )
+            value = json.loads(case["input_json"], parse_constant=float)
         with pytest.raises(CanonicalisationError):
             canonical_json(value)
         checked += 1
