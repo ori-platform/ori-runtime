@@ -30,6 +30,11 @@ import base64
 import hashlib
 from typing import Any
 
+from ori.security.evidence_anchor import (
+    EvidenceCapabilityProfile,
+    derive_anchor_epoch_id,
+    derive_key_id,
+)
 from ori.security.evidence_canonical import canonical_json
 from ori.security.evidence_device_key import EvidenceDeviceKey
 
@@ -45,6 +50,7 @@ REGISTRATION_FIELDS = frozenset(
         "anchor_epoch_id",
         "alg",
         "posture",
+        "capability_profile",
         "registered_at_ms",
         "commissioning_digest",
         "key_id",
@@ -102,6 +108,7 @@ def build_anchor_registration(
     key_id: str,
     registered_at_ms: int,
     authorisation: dict[str, Any],
+    capability_profile: dict[str, Any],
 ) -> dict[str, Any]:
     """Build and sign this device's registration for one epoch.
 
@@ -121,6 +128,30 @@ def build_anchor_registration(
         pubkey_hex=device_key.public_key_hex,
     )
 
+    # The authority recomputes both key_id and anchor_epoch_id from these
+    # inputs before accepting the registration, so a claim that disagrees with
+    # the profile carried alongside it is refused rather than trusted. Building
+    # them here from anything other than the same inputs would produce a
+    # registration this device could sign and no authority would accept.
+    expected_key_id = derive_key_id(
+        device_id=str(device_id), pubkey_hex=device_key.public_key_hex
+    )
+    if str(key_id) != expected_key_id:
+        raise RegistrationError(
+            "key_id must be derived from the device identity and this key"
+        )
+    expected_epoch = derive_anchor_epoch_id(
+        device_id=str(device_id),
+        pubkey_hex=device_key.public_key_hex,
+        posture=str(posture),
+        profile=_profile_from_document(capability_profile),
+    )
+    if str(anchor_epoch_id) != expected_epoch:
+        raise RegistrationError(
+            "anchor_epoch_id must be derived from the device identity, key, "
+            "posture and capability profile"
+        )
+
     registration: dict[str, Any] = {
         "v": REGISTRATION_VERSION,
         "device_id": str(device_id),
@@ -128,6 +159,7 @@ def build_anchor_registration(
         "anchor_epoch_id": str(anchor_epoch_id),
         "alg": ALGORITHM,
         "posture": str(posture),
+        "capability_profile": dict(capability_profile),
         "registered_at_ms": int(registered_at_ms),
         "commissioning_digest": commissioning_digest(authorisation),
         "key_id": str(key_id),
@@ -181,3 +213,18 @@ def _require_authorisation_describes_this(
             "the commissioning authorisation authorises a different key than this "
             "device holds"
         )
+
+
+def _profile_from_document(document: dict[str, Any]) -> EvidenceCapabilityProfile:
+    """Read a capability profile from its wire form, refusing an unusable one."""
+    try:
+        return EvidenceCapabilityProfile(
+            artifact_purposes=tuple(document["artifact_purposes"]),
+            chain_protocol=str(document["chain_protocol"]),
+            signing_alg=str(document["signing_alg"]),
+            firmware_freshness_verified=bool(document["firmware_freshness_verified"]),
+        )
+    except (KeyError, TypeError) as exc:
+        raise RegistrationError(
+            "the capability profile is missing a field the epoch derives from"
+        ) from exc
