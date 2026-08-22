@@ -1254,3 +1254,123 @@ def test_complete_delivery_state_is_still_accepted(rig):
     stored = ledger.find(row["event_id"])
     assert stored["custody_state"] == CUSTODY_HELD
     assert stored["receipt_state"] == RECEIPT_ACCEPTED
+
+
+# --------------------------------------------------------------------------
+# Rejection cases must still contain their defect
+#
+# A regeneration that re-signed every case whose `authenticator` was "valid"
+# erased two of them: both rejections in `delivery-receipt.json` became
+# byte-identical to the valid case, and one was then refused as
+# `unknown_sequence` — the right outcome for the wrong reason, which is
+# indistinguishable from working.
+#
+# "valid" marks a case that must verify so the semantic rule under test is
+# actually reached. It does not mark a case that is correct.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(p.name for p in EXCHANGE.glob("*.json") if p.name != "MANIFEST.json"),
+)
+def test_no_rejection_case_is_identical_to_the_valid_case(name):
+    """The defect a case is named for has to be present in it."""
+    vector = exchange(name)
+    cases = vector.get("cases") or []
+    valid = next((c for c in cases if c["name"] == "valid"), None)
+    if valid is None:
+        pytest.skip(f"{name} publishes no valid case to compare against")
+
+    for case in cases:
+        if case["name"] == "valid" or case.get("expected") != "reject":
+            continue
+        differing = sorted(
+            key
+            for key in set(case["artifact"]) | set(valid["artifact"])
+            if case["artifact"].get(key) != valid["artifact"].get(key)
+        )
+        assert differing, (
+            f"{name}: rejection case {case['name']!r} is byte-identical to the "
+            "valid case, so whatever defect it is named for has been erased"
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(p.name for p in EXCHANGE.glob("*.json") if p.name != "MANIFEST.json"),
+)
+def test_every_rejection_case_differs_in_its_authenticator_or_a_field(name):
+    """A case differing only in bookkeeping would not exercise anything.
+
+    Distinguishing this from the check above: that one catches an exact
+    duplicate; this one catches a case whose only difference is a field the
+    rule under test does not read.
+    """
+    vector = exchange(name)
+    cases = vector.get("cases") or []
+    valid = next((c for c in cases if c["name"] == "valid"), None)
+    if valid is None:
+        pytest.skip(f"{name} publishes no valid case")
+
+    for case in cases:
+        if case["name"] == "valid" or case.get("expected") != "reject":
+            continue
+        artifact, reference = case["artifact"], valid["artifact"]
+        authenticator = "signature" if "signature" in artifact else "mac"
+        differing = {
+            key
+            for key in set(artifact) | set(reference)
+            if artifact.get(key) != reference.get(key)
+        }
+        # Either the authenticator itself differs — a wrong key or a forged one
+        # — or some substantive field does. A case where only the authenticator
+        # changed because the content changed is covered by the latter.
+        assert differing - {authenticator} or authenticator in differing, (
+            f"{name}: rejection case {case['name']!r} differs from valid in "
+            "nothing that a rule would read"
+        )
+
+
+def test_the_cross_purpose_receipt_is_signed_by_the_epoch_key():
+    """The specific case an over-broad regeneration destroyed.
+
+    Asserted directly rather than through the generic checks above, because
+    this is the one that was silently flattened and the generic checks are new.
+    A receipt naming the receipt key id but signed by the epoch authority is
+    what purpose separation exists to refuse.
+    """
+    vector = exchange("delivery-receipt.json")
+    case = next(c for c in vector["cases"] if c["name"] == "signed_with_epoch_key")
+    artifact = case["artifact"]
+    valid = next(c for c in vector["cases"] if c["name"] == "valid")["artifact"]
+
+    assert artifact["key_id"] == valid["key_id"], (
+        "the case is only meaningful while it names the receipt key id"
+    )
+    assert artifact["signature"] != valid["signature"], (
+        "the cross-purpose signature has been re-signed with the receipt key"
+    )
+
+    body = canonical_json({k: v for k, v in artifact.items() if k != "signature"})
+    signed = b"ori.evidence_delivery_receipt.v1\x00" + body
+    signature = base64.b64decode(artifact["signature"].split("ed25519:")[1])
+
+    def verifies_under(seed_hex: str) -> bool:
+        public = Ed25519PrivateKey.from_private_bytes(
+            bytes.fromhex(seed_hex)
+        ).public_key()
+        try:
+            public.verify(signature, signed)
+        except Exception:
+            return False
+        return True
+
+    assert verifies_under(vector["epoch_authority_seed_hex"]), (
+        "the case must verify under the epoch key, or it is not cryptographically "
+        "sound and never reaches the purpose rule"
+    )
+    assert not verifies_under(vector["authority_receipt_seed_hex"]), (
+        "the case must fail under the receipt key, or purpose separation is "
+        "not what refuses it"
+    )
