@@ -1,0 +1,47 @@
+{
+  "artifact": "epoch_confirmation",
+  "domain_ascii": "ori.evidence_epoch_confirmation.v1",
+  "domain_note": "Authenticated bytes are the ASCII domain, one NUL byte, then the canonical payload with signature or mac removed.",
+  "canonicalisation": "json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False).encode('utf-8')",
+  "authenticator_note": "Cases marked authenticator=valid must pass cryptographic verification so the semantic rule under test is actually reached. Cases marked invalid fail verification itself.",
+  "warning": "Seeds below are published test values and must never sign anything real.",
+  "cases": [
+    {
+      "name": "valid",
+      "authenticator": "valid",
+      "expected": "accept",
+      "note": "Canonical bytes reproduce and the signature verifies.",
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a2265706f63682d30303032222c22636f6e6669726d65645f61745f6d73223a313738373030303030323030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a22617574682d65706f63682d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c2276223a317d",
+      "artifact": {
+        "actor": "commissioning@site",
+        "anchor_epoch_id": "epoch-0002",
+        "confirmed_at_ms": 1787000002000,
+        "device_id": "energy-monitor-ikeja-01",
+        "key_id": "auth-epoch-1",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "v": 1,
+        "signature": "ed25519:Xn7qPiCJvmXXOJyHYAwTE1kFkeXTpvvUGYLmk0js8dauIcg0yJ252+pV/K437Kq8usOdJSaWRmKRor+GmapiCQ=="
+      }
+    },
+    {
+      "name": "signed_with_receipt_key",
+      "authenticator": "valid",
+      "expected": "reject",
+      "note": "Cryptographically sound under the receipt key. A receipt key cannot assert that an epoch became effective, so the refusal is purpose separation.",
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a2265706f63682d30303032222c22636f6e6669726d65645f61745f6d73223a313738373030303030323030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a22617574682d65706f63682d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c2276223a317d",
+      "artifact": {
+        "actor": "commissioning@site",
+        "anchor_epoch_id": "epoch-0002",
+        "confirmed_at_ms": 1787000002000,
+        "device_id": "energy-monitor-ikeja-01",
+        "key_id": "auth-epoch-1",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "v": 1,
+        "signature": "ed25519:aqvNkLpNSdrdGApddw59uTgcrXwRHfbEk7ws7CGlp0H/L5cZFPiald4ibtbvubx6CMuyYK1UeYWPcdaYGDGZAg=="
+      }
+    }
+  ],
+  "key_purpose": "evidence_authority_epoch",
+  "signing_key_seed_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+  "signing_key_public_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5"
+}

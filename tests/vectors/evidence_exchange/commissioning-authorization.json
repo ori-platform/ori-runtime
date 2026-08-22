@@ -1,0 +1,85 @@
+{
+  "artifact": "commissioning_authorization",
+  "domain_ascii": "ori.evidence_commissioning_authorization.v1",
+  "domain_note": "Authenticated bytes are the ASCII domain, one NUL byte, then the canonical payload with signature or mac removed.",
+  "canonicalisation": "json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False).encode('utf-8')",
+  "authenticator_note": "Cases marked authenticator=valid must pass cryptographic verification so the semantic rule under test is actually reached. Cases marked invalid fail verification itself.",
+  "warning": "Seeds below are published test values and must never sign anything real.",
+  "cases": [
+    {
+      "name": "valid",
+      "authenticator": "valid",
+      "expected": "accept",
+      "note": "Canonical bytes reproduce and the signature verifies.",
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a2265706f63682d30303032222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738363939393030303030302c226b65795f6964223a22636f6d6d2d6b65792d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "artifact": {
+        "actor": "commissioning@site",
+        "anchor_epoch_id": "epoch-0002",
+        "device_id": "energy-monitor-ikeja-01",
+        "issued_at_ms": 1786999000000,
+        "key_id": "comm-key-1",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "reason": "initial commissioning",
+        "v": 1,
+        "signature": "ed25519:10y/yKgrDepagdCAyIADb/fOxSB9i8km+etCGY1zP9QQwqI13W6LbYYCLMQs0u6QqkQUjTI+qgRkPSvNlSFsAg=="
+      }
+    },
+    {
+      "name": "wrong_pubkey",
+      "authenticator": "valid",
+      "expected": "reject",
+      "note": "Correctly signed, but authorises a different key than the registration presents.",
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a2265706f63682d30303032222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738363939393030303030302c226b65795f6964223a22636f6d6d2d6b65792d31222c227075626b65795f686578223a2230303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "artifact": {
+        "actor": "commissioning@site",
+        "anchor_epoch_id": "epoch-0002",
+        "device_id": "energy-monitor-ikeja-01",
+        "issued_at_ms": 1786999000000,
+        "key_id": "comm-key-1",
+        "pubkey_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+        "reason": "initial commissioning",
+        "v": 1,
+        "signature": "ed25519:B0upkm4VFlWqkaZ4lUQ5J+8yrI1PqQCAFJmn59e1u/HzuTb49bqu1FC8p4AQSwNM68eD1Z5CIgNGlOvnA8glDA=="
+      }
+    },
+    {
+      "name": "self_authorised_by_device_key",
+      "authenticator": "valid",
+      "expected": "reject",
+      "note": "Verifies under the device key, which is not a commissioning key. The device cannot authorise its own deployment.",
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a2265706f63682d30303032222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738363939393030303030302c226b65795f6964223a22636f6d6d2d6b65792d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "artifact": {
+        "actor": "commissioning@site",
+        "anchor_epoch_id": "epoch-0002",
+        "device_id": "energy-monitor-ikeja-01",
+        "issued_at_ms": 1786999000000,
+        "key_id": "comm-key-1",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "reason": "initial commissioning",
+        "v": 1,
+        "signature": "ed25519:UL3rPuJGq37raalmufMnVRydCVohLCIQW+odjT3BXOFWrLI3lVMmE/r9OQsyawLUk8jCUXTHvqJUy8vB7QfvCQ=="
+      }
+    },
+    {
+      "name": "unknown_key_id",
+      "authenticator": "valid",
+      "expected": "reject",
+      "note": "Signature is well formed, but no key is held for (commissioning_authority, key_id).",
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a2265706f63682d30303032222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738363939393030303030302c226b65795f6964223a22636f6d6d2d6b65792d756e6b6e6f776e222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "artifact": {
+        "actor": "commissioning@site",
+        "anchor_epoch_id": "epoch-0002",
+        "device_id": "energy-monitor-ikeja-01",
+        "issued_at_ms": 1786999000000,
+        "key_id": "comm-key-unknown",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "reason": "initial commissioning",
+        "v": 1,
+        "signature": "ed25519:VJfouLwF+8Jx1/skm2cKY7BRURDWT2kRxxd3kOKdvKDfbv063/xPGyBXRrM2yIeQhbBPKZfu/GQdECDTCbf7CQ=="
+      }
+    }
+  ],
+  "key_purpose": "commissioning_authority",
+  "signing_key_seed_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "signing_key_public_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7"
+}
