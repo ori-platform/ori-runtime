@@ -32,8 +32,10 @@ from ori.security.evidence_authority_keys import (
 from ori.security.evidence_ingest import (
     REJECT_BAD_AUTHENTICATOR,
     REJECT_BINDING_MISMATCH,
+    REJECT_MALFORMED,
     REJECT_NON_CONTIGUOUS,
     REJECT_REASONS,
+    REJECT_UNKNOWN_KEY,
     REJECT_UNKNOWN_SEQUENCE,
     REJECT_UNRECOGNISED_VERSION,
     REJECT_WRONG_PURPOSE,
@@ -42,6 +44,27 @@ from ori.security.evidence_ingest import (
     verify_delivery_receipt,
     verify_epoch_confirmation,
 )
+
+# Every rejection reason, by the name the verifiers use for it. Written out
+# rather than gathered from `globals()`: a dynamically resolved import looks
+# unused to a linter and gets stripped, which silently shrinks the scan below
+# to whatever happened to survive.
+REASON_CONSTANTS = {
+    "REJECT_BAD_AUTHENTICATOR": REJECT_BAD_AUTHENTICATOR,
+    "REJECT_BINDING_MISMATCH": REJECT_BINDING_MISMATCH,
+    "REJECT_MALFORMED": REJECT_MALFORMED,
+    "REJECT_NON_CONTIGUOUS": REJECT_NON_CONTIGUOUS,
+    "REJECT_UNKNOWN_KEY": REJECT_UNKNOWN_KEY,
+    "REJECT_UNKNOWN_SEQUENCE": REJECT_UNKNOWN_SEQUENCE,
+    "REJECT_UNRECOGNISED_VERSION": REJECT_UNRECOGNISED_VERSION,
+    "REJECT_WRONG_PURPOSE": REJECT_WRONG_PURPOSE,
+}
+
+
+def test_this_module_knows_every_published_reason():
+    """The map above is the scan's vocabulary; a gap in it shrinks the scan."""
+    assert set(REASON_CONSTANTS.values()) == REJECT_REASONS
+
 
 VECTORS = pathlib.Path(__file__).parent / "vectors" / "evidence_exchange"
 DEVICE = "energy-monitor-ikeja-01"
@@ -497,8 +520,12 @@ def test_a_free_text_rejection_reason_cannot_be_constructed():
     might forget — and the text here is the shape of what would leak, an
     endpoint reaching a diagnostic an operator reads.
     """
+
+    def construct(reason: str) -> IngestRejectedError:
+        return IngestRejectedError(reason, "detail")
+
     with pytest.raises(ValueError, match="not a recognised rejection reason"):
-        _ = IngestRejectedError("connection to private.host failed", "detail")
+        construct("connection to private.host failed")
 
 
 @pytest.mark.parametrize("reason", sorted(REJECT_REASONS))
@@ -524,8 +551,6 @@ def test_the_verifiers_only_use_published_reasons():
         / "security"
         / "evidence_ingest.py"
     ).read_text()
-    import ori.security.evidence_ingest as module
-
     used: set[str] = set()
     unresolved: list[str] = []
     for node in ast.walk(ast.parse(source)):
@@ -543,7 +568,7 @@ def test_the_verifiers_only_use_published_reasons():
             # Call sites name the constants rather than repeating the strings,
             # which an earlier version of this scan did not handle — and it
             # said so rather than reporting full coverage of nothing.
-            resolved = getattr(module, first.id, None)
+            resolved = REASON_CONSTANTS.get(first.id)
             if isinstance(resolved, str):
                 used.add(resolved)
             else:
