@@ -1,10 +1,10 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "evidence/vectors",
-  "source_commit": "789e1a4118665840a5b17e6c9013fd9d304c9088",
+  "source_commit": "32ba96b605866790e9a2ccaf6933e44cd38eb877",
   "note": "Vendored copies of the normative vectors. The runtime must produce bytes these describe, so they are its conformance fixtures. digests detect a local edit; refresh with scripts/refresh-evidence-vectors.sh to detect upstream drift.",
   "files": {
-    "canonical-form.json": "b2b78ad6c2918b0d59bf992d1ba259e800b6967952deb9f728a852895a0ce229",
+    "canonical-form.json": "80018fc74b3f59de5a9e24b2c738cdba29c6e9ca2614f006d4b5deab83ff898a",
     "chain-row.json": "c69c8c4b9158482beac607c830b3f9f1870e42932242a89ece7c2cc05fcfc646",
     "event-id.json": "f9b0b0f71237b4b717dc2a92433aebec758444c9be78e3c9f2abf32d5a31c068",
     "genesis.json": "b838f02c80606148307cca450640a92a71d30d90e0841ccc4a98d10c63b2d190",
