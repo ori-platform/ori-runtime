@@ -13,6 +13,7 @@ from ori.security.gateway_messages import (
     GatewayMessageEncryptionError,
     GatewayMessageEncryptor,
     GatewayReplayCache,
+    _canonical_json,
 )
 
 
@@ -507,3 +508,27 @@ def test_authenticator_rejects_replay_across_cache_restart(tmp_path):
             expected_request_id="req-001",
             now_ms_value=11_000,
         )
+
+
+def test_canonical_json_refuses_non_finite_numbers() -> None:
+    """NaN and Infinity are not valid JSON and must never reach the wire.
+
+    ``json.dumps`` emits them as bare ``NaN``/``Infinity`` tokens by default. No
+    conforming parser accepts those, so the Go gateway rejects the payload and the
+    message becomes unverifiable rather than merely odd.
+    """
+    for value in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError):
+            _canonical_json({"reading": value})
+
+
+def test_canonical_json_keeps_operational_telemetry_range() -> None:
+    """Gateway MQTT is not evidence/v2 and must not impose the D-011 zone.
+
+    A small leakage-current reading is ordinary telemetry. Constraining this
+    serializer to the evidence agreement zone would turn it into an authentication
+    failure.
+    """
+    assert _canonical_json({"value": 5e-05}) == '{"value":5e-05}'
+    assert _canonical_json({"value": 1e-05}) == '{"value":1e-05}'
+    assert _canonical_json({"value": 1e300}) == '{"value":1e+300}'
