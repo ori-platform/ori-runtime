@@ -872,7 +872,6 @@ class EvidenceDeliveryLedger:
                 problems.append(
                     f"local_seq {actual}: expected {expected}; the sequence has a hole"
                 )
-                expected = actual
             wire = str(row["envelope_json"]).encode("utf-8")
             digest = "sha256:" + hashlib.sha256(wire).hexdigest()
             if digest != str(row["envelope_digest"]):

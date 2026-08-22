@@ -501,7 +501,13 @@ def test_concurrent_seals_allocate_distinct_sequences(tmp_path):
             ready.wait(timeout=30)
             sealed = ledger.seal(dict(rows[position]), sealed_at_ms=1000 + position)
             results[position] = (int(sealed["local_seq"]), str(sealed["event_id"]))
-        except BaseException as exc:  # recorded, not raised, so every thread finishes
+        except Exception as exc:
+            # Recorded rather than raised, so every thread reaches the barrier
+            # and the failure is reported instead of surfacing as seven
+            # BrokenBarrierErrors that say nothing about the cause. `Exception`
+            # covers everything this harness can produce — SQLite errors,
+            # ledger errors, BrokenBarrierError — while leaving genuine
+            # control-flow exceptions to propagate.
             results[position] = exc
         finally:
             ledger.close()
@@ -1202,22 +1208,25 @@ def test_a_well_formed_signature_still_seals(rig):
 # --------------------------------------------------------------------------
 
 
+# Only the SET clause varies, so each case fits on one line. An earlier
+# version split long statements across lines, where adjacent literals
+# concatenate implicitly — which is indistinguishable from a missing comma,
+# and a missing comma in a parametrize list silently merges two cases into one
+# and reduces coverage without failing anything.
 @pytest.mark.parametrize(
-    "statement",
+    "assignments",
     [
-        "UPDATE evidence_delivery_ledger SET custody_state='held' WHERE local_seq=1",
-        "UPDATE evidence_delivery_ledger SET custody_state='held', custody_at_ms=1"
-        " WHERE local_seq=1",
-        "UPDATE evidence_delivery_ledger SET custody_state='held', custody_key_id=''"
-        ", custody_at_ms=1 WHERE local_seq=1",
-        "UPDATE evidence_delivery_ledger SET receipt_state='accepted' WHERE local_seq=1",
-        "UPDATE evidence_delivery_ledger SET receipt_state='accepted', receipt_at_ms=1"
-        " WHERE local_seq=1",
-        "UPDATE evidence_delivery_ledger SET custody_at_ms=5 WHERE local_seq=1",
-        "UPDATE evidence_delivery_ledger SET receipt_key_id='x' WHERE local_seq=1",
+        "custody_state='held'",
+        "custody_state='held', custody_at_ms=1",
+        "custody_state='held', custody_key_id='', custody_at_ms=1",
+        "receipt_state='accepted'",
+        "receipt_state='accepted', receipt_at_ms=1",
+        "receipt_state='accepted', receipt_key_id='', receipt_at_ms=1",
+        "custody_at_ms=5",
+        "receipt_key_id='x'",
     ],
 )
-def test_half_written_delivery_state_is_refused(rig, statement):
+def test_half_written_delivery_state_is_refused(rig, assignments):
     """A state naming nobody and no moment still reads as recorded to a query.
 
     Both directions are constrained: an acceptance without its metadata, and
@@ -1229,7 +1238,9 @@ def test_half_written_delivery_state_is_refused(rig, statement):
     connection = sqlite3.connect(ledger._db_path)
     try:
         with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(statement)
+            connection.execute(
+                f"UPDATE evidence_delivery_ledger SET {assignments} WHERE local_seq = 1"
+            )
     finally:
         connection.close()
 
