@@ -2,13 +2,16 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 #
-# Refresh the vendored ori-specs evidence/v2 vectors.
+# Refresh the vendored ori-specs evidence vectors.
 #
 # The vectors are vendored rather than fetched at test time so the suite is
 # hermetic and works offline, which is the same reason the firmware repository
 # carries its own copies. The cost of vendoring is drift: upstream can change
 # without anything here noticing. This script is how that is detected, and it
 # reports rather than silently overwrites.
+#
+# Two sets are vendored, and they move together — an envelope wraps a chain
+# row, so a change to one is usually a change to both.
 #
 # Usage:
 #   bash scripts/refresh-evidence-vectors.sh            # report drift only
@@ -19,9 +22,15 @@
 
 set -euo pipefail
 
-DEST="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tests/vectors/evidence_v2"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPLY="${ORI_VECTORS_APPLY:-0}"
 CLEANUP=""
+
+# "<path in ori-specs>:<path in this repo>"
+SETS=(
+  "evidence/vectors:tests/vectors/evidence_v2"
+  "evidence-exchange/vectors:tests/vectors/evidence_exchange"
+)
 
 if [ -n "${ORI_SPECS_DIR:-}" ]; then
   SPECS="${ORI_SPECS_DIR}"
@@ -32,78 +41,91 @@ else
 fi
 trap '[ -n "${CLEANUP}" ] && rm -rf "${CLEANUP}"' EXIT
 
-SRC="${SPECS}/evidence/vectors"
-test -d "${SRC}" || { echo "no vectors at ${SRC}" >&2; exit 1; }
 COMMIT="$(git -C "${SPECS}" rev-parse HEAD)"
+overall_drift=0
 
-drift=0
-for file in "${SRC}"/*.json; do
-  name="$(basename "${file}")"
-  if [ ! -f "${DEST}/${name}" ]; then
-    echo "NEW      ${name}"; drift=1; continue
+write_manifest() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import hashlib, json, pathlib, sys
+commit, source, dest = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3])
+(dest / "MANIFEST.json").write_text(json.dumps({
+    "source_repository": "ori-platform/ori-specs",
+    "source_path": source,
+    "source_commit": commit,
+    "note": ("Vendored copies of the normative vectors. The runtime must produce and "
+             "accept the bytes they describe, so they are its conformance fixtures. "
+             "Digests detect a local edit; the source commit is the provenance trail."),
+    "files": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+              for p in sorted(dest.glob("*.json")) if p.name != "MANIFEST.json"},
+}, indent=2) + "\n")
+PY
+}
+
+for entry in "${SETS[@]}"; do
+  SRC="${SPECS}/${entry%%:*}"
+  DEST="${REPO}/${entry##*:}"
+  label="${entry%%:*}"
+  test -d "${SRC}" || { echo "no vectors at ${SRC}" >&2; exit 1; }
+  mkdir -p "${DEST}"
+
+  drift=0
+  for file in "${SRC}"/*.json; do
+    name="$(basename "${file}")"
+    if [ ! -f "${DEST}/${name}" ]; then
+      echo "NEW      ${label}/${name}"; drift=1; continue
+    fi
+    cmp -s "${file}" "${DEST}/${name}" || { echo "CHANGED  ${label}/${name}"; drift=1; }
+  done
+  for file in "${DEST}"/*.json; do
+    name="$(basename "${file}")"
+    [ "${name}" = "MANIFEST.json" ] && continue
+    [ -f "${SRC}/${name}" ] || { echo "REMOVED  ${label}/${name}"; drift=1; }
+  done
+
+  # Contents matching is not the whole story. The manifest also records which
+  # ori-specs commit the vectors came from, and that pin is the cross-repository
+  # provenance trail. A squash merge rewrites the commit while leaving every
+  # byte identical, so a contents-only check reports "match" and leaves the
+  # manifest naming a commit that no longer exists on main — provenance
+  # pointing at nothing, which is worse than no pin because it looks
+  # authoritative.
+  PINNED=""
+  if [ -f "${DEST}/MANIFEST.json" ]; then
+    PINNED="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_commit"])' \
+      "${DEST}/MANIFEST.json" 2>/dev/null || echo "")"
   fi
-  if ! cmp -s "${file}" "${DEST}/${name}"; then
-    echo "CHANGED  ${name}"; drift=1
+
+  if [ "${drift}" -eq 0 ] && [ "${PINNED}" = "${COMMIT}" ]; then
+    echo "${label}: vectors match ori-specs at ${COMMIT}"
+    continue
   fi
-done
-for file in "${DEST}"/*.json; do
-  name="$(basename "${file}")"
-  [ "${name}" = "MANIFEST.json" ] && continue
-  [ -f "${SRC}/${name}" ] || { echo "REMOVED  ${name}"; drift=1; }
-done
 
-# Contents matching is not the whole story. The manifest also records which
-# ori-specs commit the vectors came from, and that pin is the cross-repository
-# provenance trail. A squash merge rewrites the commit while leaving every byte
-# identical, so a contents-only check reports "match" and leaves the manifest
-# naming a commit that no longer exists on main — provenance pointing at
-# nothing, which is worse than no pin because it looks authoritative.
-PINNED="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_commit"])'   "${DEST}/MANIFEST.json" 2>/dev/null || echo "")"
-
-if [ "${drift}" -eq 0 ] && [ "${PINNED}" = "${COMMIT}" ]; then
-  echo "vendored vectors match ori-specs at ${COMMIT}"
-  exit 0
-fi
-
-if [ "${drift}" -eq 0 ]; then
   if [ "${APPLY}" != "1" ]; then
-    echo "vector contents match, but the manifest pins ${PINNED:-<none>}" >&2
-    echo "and ori-specs is now at ${COMMIT}." >&2
-    echo "Re-run with ORI_VECTORS_APPLY=1 to update the provenance pin." >&2
-    exit 1
+    if [ "${drift}" -eq 0 ]; then
+      echo "${label}: contents match, but the manifest pins ${PINNED:-<none>}" >&2
+      echo "  and ori-specs is now at ${COMMIT}." >&2
+    fi
+    overall_drift=1
+    continue
   fi
-  echo "contents unchanged; updating the provenance pin to ${COMMIT}"
-fi
 
-if [ "${APPLY}" != "1" ]; then
-  echo
+  # Reconcile the whole set, not just additions and changes. Copying alone
+  # would leave a vector upstream had deleted sitting in the destination,
+  # where it would be re-recorded in the manifest and reported again forever.
+  for file in "${DEST}"/*.json; do
+    name="$(basename "${file}")"
+    [ "${name}" = "MANIFEST.json" ] && continue
+    [ -f "${SRC}/${name}" ] || { rm -f "${file}"; echo "deleted  ${label}/${name}"; }
+  done
+  cp "${SRC}"/*.json "${DEST}/"
+  write_manifest "${COMMIT}" "${entry%%:*}" "${DEST}"
+  echo "${label}: updated to ${COMMIT}"
+done
+
+if [ "${overall_drift}" -ne 0 ]; then
+  echo >&2
   echo "Vendored vectors differ from ori-specs at ${COMMIT}." >&2
   echo "Re-run with ORI_VECTORS_APPLY=1 to update, then review the diff:" >&2
   echo "  a vector change is a contract change, not a refresh." >&2
   exit 1
 fi
-
-# Reconcile the whole set, not just additions and changes. Copying alone would
-# leave a vector upstream had deleted sitting in the destination, where it would
-# be re-recorded in the manifest and reported as drift again on every run.
-for file in "${DEST}"/*.json; do
-  name="$(basename "${file}")"
-  [ "${name}" = "MANIFEST.json" ] && continue
-  if [ ! -f "${SRC}/${name}" ]; then
-    rm -f "${file}"
-    echo "deleted  ${name}"
-  fi
-done
-cp "${SRC}"/*.json "${DEST}/"
-python3 - "${COMMIT}" "${DEST}" <<'PY'
-import hashlib, json, pathlib, sys
-commit, dest = sys.argv[1], pathlib.Path(sys.argv[2])
-manifest = json.loads((dest / "MANIFEST.json").read_text())
-manifest["source_commit"] = commit
-manifest["files"] = {
-    p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(dest.glob("*.json"))
-    if p.name != "MANIFEST.json"
-}
-(dest / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
-print(f"updated {len(manifest['files'])} vectors to {commit}")
-PY

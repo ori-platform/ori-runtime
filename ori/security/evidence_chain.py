@@ -163,6 +163,17 @@ class EvidenceChain:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(self._db_path, isolation_level=None)
         self._connection.row_factory = sqlite3.Row
+        # Set before any other pragma. Switching to WAL takes a brief exclusive
+        # lock of its own, so a busy timeout applied afterwards is applied too
+        # late to protect the statement that most needs it — several processes
+        # opening the same database at once is exactly when that happens.
+        #
+        # SQLite's default is zero: a concurrent writer gets "database is
+        # locked" immediately rather than waiting. Every write here is short and
+        # bounded, so waiting is the right answer; failing turns ordinary
+        # contention into a spurious evidence failure, and evidence that fails
+        # because two things happened at once is worse than useless.
+        self._connection.execute("PRAGMA busy_timeout=5000")
         self._connection.execute("PRAGMA journal_mode=WAL")
         # Durability matters more than throughput here: a row acknowledged as
         # signed and then lost to a power cut is worse than a slower append,
