@@ -219,6 +219,14 @@ REVIEWED_OPERATOR_MESSAGES = frozenset(
         "actions continue and are recorded as attestation gaps until "
         "signing is restored.",
         "[evidence] evidence store open at %s; this device's verification anchor is %s",
+        # Reviewed: names a local epoch identifier and the fact that an
+        # authorisation is absent. Says nothing about who issues one, where
+        # they are held, or that any off-device party exists.
+        "[evidence] anchor registration for epoch %s is pending: no "
+        "commissioning authorisation is held",
+        # Reviewed: a sanitised failure reason for a local handle. No path,
+        # no identity, no exception detail.
+        "[evidence] an evidence handle did not close cleanly (%s)",
         "[confirmation] startup drain: %d of %d devices confirmed",
         "[confirmation] reconciled %d of %d outstanding obligations",
         "[evidence] evidence signing is unavailable: this runtime "
