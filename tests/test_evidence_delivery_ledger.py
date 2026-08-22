@@ -819,14 +819,17 @@ def test_the_checkpoint_reproduces_the_contract_vector_byte_for_byte(tmp_path):
 # authorisation is not the runtime's artifact at all. Filing work under whoever
 # has not done it yet is how an obligation ends up owned by nobody.
 
-# Produced by the runtime, in this step.
-PRODUCED_HERE = {"delivery-envelope.json", "checkpoint.json"}
+# Produced by the runtime.
+PRODUCED_HERE = {
+    "delivery-envelope.json",
+    "checkpoint.json",
+    # Registration binds this device's verification key to the epoch
+    # authorising it, and is signed by the key being registered. It was
+    # outstanding through steps 2 and 3, and is produced as of #350.
+    "anchor-registration.json",
+}
 
-# Produced by the runtime, still outstanding: ori-platform/ori-runtime#350.
-# Registration binds this device's verification key to the epoch authorising
-# it, and is signed by the key being registered — a runtime obligation, not an
-# ingest one.
-RUNTIME_PRODUCER_OUTSTANDING = {"anchor-registration.json"}
+RUNTIME_PRODUCER_OUTSTANDING: set[str] = set()
 
 # Received by the runtime and verified on ingest, step 4.
 STEP_FOUR_INGEST_VECTORS = {
@@ -872,8 +875,21 @@ def test_the_owner_sets_do_not_overlap():
 
 @pytest.mark.parametrize("name", sorted(PRODUCED_HERE))
 def test_vectors_produced_here_have_a_valid_case(name):
-    """The two this step owes must each carry a case to reproduce."""
+    """Each artifact the runtime produces must carry a case to reproduce."""
     assert _valid_case(exchange(name))["expected"] == "accept"
+
+
+def test_nothing_the_runtime_produces_is_still_outstanding():
+    """Empty once every runtime-produced artifact has a producer.
+
+    Kept rather than deleted: the next artifact this contract assigns to the
+    runtime lands here first, and a set that exists is harder to forget than
+    one that has to be reinvented.
+    """
+    assert RUNTIME_PRODUCER_OUTSTANDING == set(), (
+        f"runtime-produced artifacts with no producer: "
+        f"{sorted(RUNTIME_PRODUCER_OUTSTANDING)}"
+    )
 
 
 # --------------------------------------------------------------------------
