@@ -571,6 +571,28 @@ def _supplied_denylist() -> list[str]:
     return [term.strip().lower() for term in raw.split(",") if term.strip()]
 
 
+# The runtime's own evidence modules, by exact path.
+#
+# `VENDORED_IMPLEMENTATION` matches names shaped like an evidence
+# implementation, and until the runtime produced chain rows itself, every such
+# name in the wheel was necessarily somebody else's implementation being
+# vendored in. That assumption ended with #326: the runtime is now a producer,
+# and a module describing what it holds is exactly what should be there.
+#
+# The check therefore becomes a closed registry rather than a blanket refusal.
+# A new evidence-implementation-shaped entry still fails — which is the part
+# worth keeping — until someone adds it here deliberately, and a vendored
+# third-party implementation never appears on this list because nobody would
+# add it.
+FIRST_PARTY_EVIDENCE_MODULES = frozenset(
+    {
+        "ori/security/evidence_chain.py",
+        "ori/security/evidence_canonical.py",
+        "ori/security/evidence_device_key.py",
+    }
+)
+
+
 VENDORED_IMPLEMENTATION = re.compile(
     r"(?:evidence|attest|ledger|chain)[-_]?(?:chain|store|db|impl|core)", re.IGNORECASE
 )
@@ -638,13 +660,29 @@ def test_the_built_wheel_carries_no_compiled_artifact(built_wheel):
     assert not compiled, f"compiled artifacts ship in the wheel: {compiled}"
 
 
-def test_the_built_wheel_names_no_evidence_implementation(built_wheel):
+def test_the_built_wheel_names_no_foreign_evidence_implementation(built_wheel):
+    """First-party evidence modules are expected; anything else is vendored."""
     offenders = [
         name
         for name in _wheel_names(built_wheel)
         if VENDORED_IMPLEMENTATION.search(name)
+        and name not in FIRST_PARTY_EVIDENCE_MODULES
     ]
-    assert not offenders, f"wheel entries name an evidence implementation: {offenders}"
+    assert not offenders, (
+        "wheel entries name an evidence implementation that is not a "
+        f"registered first-party module: {offenders}"
+    )
+
+
+def test_the_first_party_registry_is_not_stale(built_wheel):
+    """A registry naming files that no longer ship would silently widen itself.
+
+    Each entry suppresses a real check, so an entry that stopped corresponding
+    to anything is an exemption nobody is watching.
+    """
+    shipped = set(_wheel_names(built_wheel))
+    missing = sorted(FIRST_PARTY_EVIDENCE_MODULES - shipped)
+    assert not missing, f"registered first-party modules no longer ship: {missing}"
 
 
 def test_wheel_metadata_and_record_disclose_nothing_structural(built_wheel):
@@ -659,11 +697,15 @@ def test_wheel_metadata_and_record_disclose_nothing_structural(built_wheel):
     record = _wheel_record(built_wheel)
     assert record, "wheel has no RECORD to inspect"
     offenders = [
-        line.split(",")[0]
+        path
         for line in record.splitlines()
-        if line and VENDORED_IMPLEMENTATION.search(line.split(",")[0])
+        if line
+        and VENDORED_IMPLEMENTATION.search(path := line.split(",")[0])
+        and path not in FIRST_PARTY_EVIDENCE_MODULES
     ]
-    assert not offenders, f"wheel RECORD ships: {offenders}"
+    assert not offenders, (
+        f"wheel RECORD ships a foreign evidence implementation: {offenders}"
+    )
 
     metadata = _wheel_metadata(built_wheel)
     assert metadata, "wheel has no METADATA to inspect"
