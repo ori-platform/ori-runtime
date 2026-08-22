@@ -124,6 +124,23 @@ CREATE INDEX IF NOT EXISTS idx_evidence_ledger_undelivered
 -- Locally observed delivery failures. Separate from the ledger because a
 -- failure is not an envelope: several attempts can fail for one row, and a
 -- failure to seal produces no row at all.
+-- Anchor epochs this device has seen confirmed by the authority.
+--
+-- The confirmation coordinator needs to know whether an epoch is active before
+-- firmware authority becomes effective, and under the off-device topology that
+-- answer arrives as a signed epoch confirmation rather than from a chain object
+-- in this process. This is where the answer is kept once it has been proven.
+CREATE TABLE IF NOT EXISTS evidence_device_epochs (
+    device_id       TEXT PRIMARY KEY,
+    anchor_epoch_id TEXT    NOT NULL,
+    pubkey_hex      TEXT    NOT NULL,
+    actor           TEXT    NOT NULL,
+    confirmed_at_ms INTEGER NOT NULL,
+    key_id          TEXT    NOT NULL,
+    CHECK (length(anchor_epoch_id) > 0),
+    CHECK (length(key_id) > 0)
+);
+
 -- One row, holding the boot counter. Durable and strictly increasing across
 -- restarts, so a restart is visible to the authority as a new boot rather than
 -- reading as a sequence regression.
@@ -693,6 +710,80 @@ class EvidenceDeliveryLedger:
 
     # -- delivery state --------------------------------------------------
 
+    def _apply_verified_epoch(
+        self,
+        device_id: str,
+        *,
+        anchor_epoch_id: str,
+        pubkey_hex: str,
+        actor: str,
+        confirmed_at_ms: int,
+        key_id: str,
+    ) -> None:
+        """Persist an epoch confirmation whose signature and bindings are proven.
+
+        Not a public boundary, for the same reason the delivery transitions are
+        not: this method cannot check what it is told. A caller able to assert
+        an active epoch without an authority signature could make firmware
+        authority effective on its own say-so, which is the decision the epoch
+        confirmation exists to take out of the device's hands.
+
+        Last confirmation wins. The authority is the sole source of epoch
+        truth, so a later statement supersedes an earlier one rather than
+        conflicting with it; a device holding two and choosing between them
+        would be adjudicating something it does not decide.
+        """
+        self._connection.execute(
+            """
+            INSERT INTO evidence_device_epochs (
+                device_id, anchor_epoch_id, pubkey_hex, actor, confirmed_at_ms, key_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(device_id) DO UPDATE SET
+                anchor_epoch_id = excluded.anchor_epoch_id,
+                pubkey_hex      = excluded.pubkey_hex,
+                actor           = excluded.actor,
+                confirmed_at_ms = excluded.confirmed_at_ms,
+                key_id          = excluded.key_id
+            """,
+            (
+                str(device_id),
+                str(anchor_epoch_id),
+                str(pubkey_hex),
+                str(actor),
+                int(confirmed_at_ms),
+                str(key_id),
+            ),
+        )
+
+    def active_anchor_epoch_id(self, device_id: str) -> str | None:
+        """The epoch the authority last confirmed for this device, if any.
+
+        The read the confirmation coordinator performs. `None` means no
+        confirmation has been proven — which keeps the obligation pending
+        rather than granting authority by default.
+        """
+        row = self._connection.execute(
+            "SELECT anchor_epoch_id FROM evidence_device_epochs WHERE device_id = ?",
+            (str(device_id),),
+        ).fetchone()
+        return str(row["anchor_epoch_id"]) if row is not None else None
+
+    def confirmed_epoch(self, device_id: str) -> sqlite3.Row | None:
+        row: sqlite3.Row | None = self._connection.execute(
+            "SELECT * FROM evidence_device_epochs WHERE device_id = ?",
+            (str(device_id),),
+        ).fetchone()
+        return row
+
+    def envelope_digests(self, from_seq: int, to_seq: int) -> dict[int, str]:
+        """Digests for a closed interval, for checking a receipt's range claim."""
+        rows = self._connection.execute(
+            "SELECT local_seq, envelope_digest FROM evidence_delivery_ledger"
+            " WHERE local_seq BETWEEN ? AND ?",
+            (int(from_seq), int(to_seq)),
+        )
+        return {int(r["local_seq"]): str(r["envelope_digest"]) for r in rows}
+
     def _require_sealed(self, local_seq: int) -> sqlite3.Row:
         """Refuse to act on a sequence this ledger never allocated.
 
@@ -824,6 +915,13 @@ class EvidenceDeliveryLedger:
     def find(self, event_id: str) -> sqlite3.Row | None:
         row: sqlite3.Row | None = self._connection.execute(
             "SELECT * FROM evidence_delivery_ledger WHERE event_id = ?", (event_id,)
+        ).fetchone()
+        return row
+
+    def find_by_local_seq(self, local_seq: int) -> sqlite3.Row | None:
+        row: sqlite3.Row | None = self._connection.execute(
+            "SELECT * FROM evidence_delivery_ledger WHERE local_seq = ?",
+            (int(local_seq),),
         ).fetchone()
         return row
 
