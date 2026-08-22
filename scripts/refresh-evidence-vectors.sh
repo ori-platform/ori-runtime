@@ -52,9 +52,27 @@ for file in "${DEST}"/*.json; do
   [ -f "${SRC}/${name}" ] || { echo "REMOVED  ${name}"; drift=1; }
 done
 
-if [ "${drift}" -eq 0 ]; then
+# Contents matching is not the whole story. The manifest also records which
+# ori-specs commit the vectors came from, and that pin is the cross-repository
+# provenance trail. A squash merge rewrites the commit while leaving every byte
+# identical, so a contents-only check reports "match" and leaves the manifest
+# naming a commit that no longer exists on main — provenance pointing at
+# nothing, which is worse than no pin because it looks authoritative.
+PINNED="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_commit"])'   "${DEST}/MANIFEST.json" 2>/dev/null || echo "")"
+
+if [ "${drift}" -eq 0 ] && [ "${PINNED}" = "${COMMIT}" ]; then
   echo "vendored vectors match ori-specs at ${COMMIT}"
   exit 0
+fi
+
+if [ "${drift}" -eq 0 ]; then
+  if [ "${APPLY}" != "1" ]; then
+    echo "vector contents match, but the manifest pins ${PINNED:-<none>}" >&2
+    echo "and ori-specs is now at ${COMMIT}." >&2
+    echo "Re-run with ORI_VECTORS_APPLY=1 to update the provenance pin." >&2
+    exit 1
+  fi
+  echo "contents unchanged; updating the provenance pin to ${COMMIT}"
 fi
 
 if [ "${APPLY}" != "1" ]; then

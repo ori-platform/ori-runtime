@@ -146,49 +146,56 @@
       "why": "non-finite numbers are forbidden",
       "input_json": "{\"n\":NaN}",
       "violates": "non_finite",
-      "input_kind": "json_text"
+      "input_kind": "json_text",
+      "binds": "both"
     },
     {
       "name": "Infinity",
       "why": "non-finite numbers are forbidden",
       "input_json": "{\"n\":Infinity}",
       "violates": "non_finite",
-      "input_kind": "json_text"
+      "input_kind": "json_text",
+      "binds": "both"
     },
     {
       "name": "-Infinity",
       "why": "non-finite numbers are forbidden",
       "input_json": "{\"n\":-Infinity}",
       "violates": "non_finite",
-      "input_kind": "json_text"
+      "input_kind": "json_text",
+      "binds": "both"
     },
     {
       "name": "float below the agreement zone (1e-5)",
       "why": "serializers disagree: 0.00001 vs 1e-05",
       "input_json": "{\"n\":1e-05}",
       "violates": "number_zone",
-      "input_kind": "json_text"
+      "input_kind": "json_text",
+      "binds": "both"
     },
     {
       "name": "float at or above 1e16",
       "why": "serializers disagree in exponent notation",
       "input_json": "{\"n\":1e16}",
       "violates": "number_zone",
-      "input_kind": "json_text"
+      "input_kind": "json_text",
+      "binds": "both"
     },
     {
       "name": "integer above 2^53-1",
       "why": "outside the JSON-safe integer range",
       "input_json": "{\"n\":9007199254740992}",
       "violates": "integer_range",
-      "input_kind": "json_text"
+      "input_kind": "json_text",
+      "binds": "both"
     },
     {
       "name": "duplicate object keys",
       "why": "the canonical form of an object with repeated keys is undefined",
       "input_json": "{\"a\":1,\"a\":2}",
       "violates": "duplicate_key",
-      "input_kind": "json_text"
+      "input_kind": "json_text",
+      "binds": "verifier"
     },
     {
       "name": "non-string object key",
@@ -201,7 +208,8 @@
           1,
           2
         ]
-      ]
+      ],
+      "binds": "producer"
     }
   ],
   "reject_input_note": "Each refusal carries an executable input. input_kind is json_text for inputs expressible as JSON, and native_pairs where it is not. The text cases are deliberately not always valid JSON: NaN and Infinity are extensions some parsers accept, and a duplicate key does not survive an ordinary parse because most parsers silently keep the last occurrence. A verifier must parse with duplicate detection and constant rejection rather than calling a default loader and inspecting the result. Every case must produce exactly its declared violation; an implementation that cannot construct one must say so rather than exempt it.",
@@ -211,5 +219,6 @@
     "integer_range": "integer magnitude above 2^53-1",
     "duplicate_key": "an object carrying the same key twice",
     "non_string_key": "an object key that is not a string"
-  }
+  },
+  "binds_note": "binds names which side can enforce the refusal: 'both', 'producer' for a defect only a native value can carry, or 'verifier' for one only present in bytes and destroyed by an ordinary parse. A conformance suite asserts this rather than inferring it from input_kind, so a case skipped as unreachable is recorded as such instead of quietly passing."
 }

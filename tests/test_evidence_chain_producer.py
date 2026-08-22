@@ -96,14 +96,20 @@ def test_canonical_form_matches_the_contract_vector():
 # collapsed to `{"a": 2}` before the producer sees it. So the duplicate-key
 # rule binds whoever parses bytes back, never the producer, and asserting the
 # producer refuses it would be asserting something structurally impossible.
-PARSE_SIDE_VIOLATIONS = frozenset({"duplicate_key"})
+PRODUCER_BINDINGS = frozenset({"producer", "both"})
+
+
+def test_the_contract_declares_an_owner_for_every_refusal():
+    """An unowned refusal is one nobody is obliged to enforce."""
+    for case in load("canonical-form.json")["reject_cases"]:
+        assert case["binds"] in {"producer", "verifier", "both"}, case["name"]
 
 
 def test_the_producer_refuses_every_form_it_can_be_handed():
     """The refusals are the producer's own, not a test-local reimplementation."""
     checked = 0
     for case in load("canonical-form.json")["reject_cases"]:
-        if case["violates"] in PARSE_SIDE_VIOLATIONS:
+        if case["binds"] not in PRODUCER_BINDINGS:
             continue
         if case["input_kind"] == "native_pairs":
             value = {key: item for key, item in case["input_pairs"]}
@@ -128,8 +134,9 @@ def test_duplicate_keys_are_a_parse_side_rule_the_producer_cannot_reach():
     case = next(
         c
         for c in load("canonical-form.json")["reject_cases"]
-        if c["violates"] == "duplicate_key"
+        if c["binds"] == "verifier"
     )
+    assert case["violates"] == "duplicate_key"
     collapsed = json.loads(case["input_json"])
     assert collapsed == {"a": 2}, "the duplicate was not collapsed as expected"
     # Having collapsed, it is an ordinary object the producer will accept.
