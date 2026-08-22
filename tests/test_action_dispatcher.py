@@ -1784,3 +1784,131 @@ class TestSnapshotBuildFailureIsContained:
         # The snapshot could not be built, so nothing spurious was logged.
         _, kwargs = store.log_action_for_event.await_args
         assert kwargs["input_firmware_registration"] == ""
+
+
+class TestTierDIsIndependentOfEvidence:
+    """Evidence unavailability must never prevent a physical safety action.
+
+    Tier D fires before any LLM and cannot be disabled or overridden. Evidence
+    is a record of what happened, not a precondition for it: a chain that will
+    not open, an attestor that raises, or an anchor registration still waiting
+    on a commissioning authorisation must not become the reason a relay failed
+    to open. Attestation is append-after-log for exactly this reason -- the
+    action executes first, and the record is written afterwards.
+
+    Every test here asserts that attestation was actually attempted. Without a
+    state store the dispatcher returns before it reaches the attestor, so a
+    test that only checked ``executed`` would pass while exercising nothing.
+    """
+
+    @staticmethod
+    def _attesting_context():
+        store = _mock_store()
+        store.set_action_attestation = AsyncMock(return_value=None)
+        store.log_action_for_event = AsyncMock(return_value=7)
+        store.get_firmware_device = AsyncMock(return_value=None)
+        return SkillContext(skill=FakeSkill(), event=_event(), state_store=store), store
+
+    async def test_tier_d_executes_when_the_attestor_raises(self):
+        attempted: list[str] = []
+
+        class _ExplodingAttestor:
+            available = True
+            public_key_hex = ""
+            artifact_version = ""
+            protocol_version = ""
+            action_event_type = "SAFETY_ACTION_EXECUTED"
+            atomic_freshness_available = False
+
+            async def attest_action(self, row):
+                attempted.append("attest")
+                raise RuntimeError("evidence chain is unavailable")
+
+        ctx, _store = self._attesting_context()
+        mock_exec = AsyncMock(return_value=True)
+        d = ActionDispatcher(evidence_attestor=_ExplodingAttestor())
+        d.register_executor("emergency_cutoff", mock_exec)
+
+        result = await d.dispatch(
+            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result()
+        )
+
+        assert attempted == ["attest"], "attestation was never attempted"
+        assert result.executed is True
+        assert result.tier == ActionTier.SAFETY_CRITICAL
+        mock_exec.assert_awaited()
+
+    async def test_tier_d_executes_when_attestation_returns_no_sequence(self):
+        """A chain that answers but seals nothing is still not a veto."""
+        attempted: list[str] = []
+
+        class _SilentAttestor:
+            available = True
+            public_key_hex = ""
+            artifact_version = ""
+            protocol_version = ""
+            action_event_type = "SAFETY_ACTION_EXECUTED"
+            atomic_freshness_available = False
+
+            async def attest_action(self, row):
+                attempted.append("attest")
+                return None
+
+        ctx, store = self._attesting_context()
+        mock_exec = AsyncMock(return_value=True)
+        d = ActionDispatcher(evidence_attestor=_SilentAttestor())
+        d.register_executor("emergency_cutoff", mock_exec)
+
+        result = await d.dispatch(
+            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result()
+        )
+
+        assert attempted == ["attest"]
+        assert result.executed is True
+        store.set_action_attestation.assert_awaited()
+
+    async def test_tier_d_executes_with_no_attestor_at_all(self):
+        ctx, _store = self._attesting_context()
+        mock_exec = AsyncMock(return_value=True)
+        d = ActionDispatcher(evidence_attestor=None)
+        d.register_executor("emergency_cutoff", mock_exec)
+
+        result = await d.dispatch(
+            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result()
+        )
+
+        assert result.executed is True
+        mock_exec.assert_awaited()
+
+    async def test_attestation_runs_after_the_action_not_before(self):
+        """Ordering is the invariant, not merely that both happen.
+
+        If attestation preceded execution, a slow or wedged evidence path would
+        delay a safety cutoff even when it eventually succeeded.
+        """
+        order: list[str] = []
+
+        class _OrderingAttestor:
+            available = True
+            public_key_hex = ""
+            artifact_version = ""
+            protocol_version = ""
+            action_event_type = "SAFETY_ACTION_EXECUTED"
+            atomic_freshness_available = False
+
+            async def attest_action(self, row):
+                order.append("attest")
+                return 1
+
+        async def _executor(*args, **kwargs):
+            order.append("execute")
+            return True
+
+        ctx, _store = self._attesting_context()
+        d = ActionDispatcher(evidence_attestor=_OrderingAttestor())
+        d.register_executor("emergency_cutoff", _executor)
+
+        await d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result())
+
+        assert "attest" in order, "attestation was never attempted"
+        assert order[0] == "execute", order
