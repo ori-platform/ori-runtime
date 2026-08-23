@@ -94,4 +94,4 @@ class CommissioningAuthorisationSource(Protocol):
         self, *, device_id: str, anchor_epoch_id: str
     ) -> Mapping[str, Any] | None:
         """Return the signed authorisation, or None when none is held."""
-        ...
+        raise NotImplementedError

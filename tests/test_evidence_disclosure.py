@@ -611,19 +611,10 @@ def _supplied_denylist() -> list[str]:
 # worth keeping — until someone adds it here deliberately, and a vendored
 # third-party implementation never appears on this list because nobody would
 # add it.
-FIRST_PARTY_EVIDENCE_MODULES = frozenset(
-    {
-        "ori/security/evidence_chain.py",
-        "ori/security/evidence_canonical.py",
-        "ori/security/evidence_device_key.py",
-        "ori/security/evidence_anchor.py",
-        "ori/security/evidence_first_party.py",
-        "ori/security/evidence_policy.py",
-        "ori/security/evidence_bound.py",
-        "ori/security/evidence_executor.py",
-        "ori/security/evidence_registrar.py",
-    }
-)
+# Only names the vendored-implementation pattern would otherwise flag. Listing
+# a name it does not match exempts nothing and reads as a judgement nobody made,
+# which the guard below refuses.
+FIRST_PARTY_EVIDENCE_MODULES = frozenset({"ori/security/evidence_chain.py"})
 
 
 VENDORED_IMPLEMENTATION = re.compile(
@@ -704,6 +695,25 @@ def test_the_built_wheel_names_no_foreign_evidence_implementation(built_wheel):
     assert not offenders, (
         "wheel entries name an evidence implementation that is not a "
         f"registered first-party module: {offenders}"
+    )
+
+
+def test_every_registry_entry_suppresses_a_real_check():
+    """An entry that exempts nothing is decoration that reads as a decision.
+
+    The registry allowlists module names that would otherwise be flagged as a
+    vendored evidence implementation. A name that does not match that pattern is
+    not being exempted from anything, so listing it implies a judgement nobody
+    made -- and hides how few names are genuinely load-bearing here.
+    """
+    decorative = sorted(
+        name
+        for name in FIRST_PARTY_EVIDENCE_MODULES
+        if not VENDORED_IMPLEMENTATION.search(name)
+    )
+    assert not decorative, (
+        "these entries exempt nothing, because their names do not match the "
+        f"vendored-implementation pattern: {decorative}"
     )
 
 

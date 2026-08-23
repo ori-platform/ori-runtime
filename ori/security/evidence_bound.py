@@ -33,20 +33,20 @@ class IngestBackend(Protocol):
 
     def accept_custody(self, artifact: object) -> IngestOutcome:
         """Record that a courier holds an envelope. Never that it arrived."""
-        ...
+        raise NotImplementedError
 
     def accept_receipt(self, artifact: object) -> IngestOutcome:
         """Apply an authority receipt for a contiguous delivered range."""
-        ...
+        raise NotImplementedError
 
     def accept_epoch_confirmation(self, artifact: object) -> IngestOutcome:
         """Activate an anchor epoch the authority has confirmed."""
-        ...
+        raise NotImplementedError
 
     @property
     def rejections(self) -> tuple[IngestOutcome, ...]:
         """Every artifact refused, so a refusal is visible rather than silent."""
-        ...
+        raise NotImplementedError
 
 
 class ConfirmedEpochProvider(Protocol):
@@ -54,7 +54,7 @@ class ConfirmedEpochProvider(Protocol):
 
     def active_anchor_epoch_id(self, device_id: str) -> str | None:
         """The epoch a signed confirmation proved active, or None."""
-        ...
+        raise NotImplementedError
 
 
 class BoundIngestService:
@@ -124,4 +124,6 @@ class ExecutorBoundConfirmationBackend:
 class AnchorRegistrar(Protocol):
     """Produces an anchor registration, or reports why it cannot."""
 
-    def register(self, request: AnchorRegistrationRequest) -> RegistrationOutcome: ...
+    def register(self, request: AnchorRegistrationRequest) -> RegistrationOutcome:
+        """Request registration. Grants nothing locally, whatever it returns."""
+        raise NotImplementedError
