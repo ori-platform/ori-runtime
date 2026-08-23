@@ -54,11 +54,12 @@ EVIDENCE_CHANNELS = re.compile(r"\[(?:evidence|confirmation)\]")
 # 1. AST enumeration — not a regex over source
 # --------------------------------------------------------------------------
 #
-# An earlier revision matched `logger.<level>("...")` textually. A single-quoted
+# Matching `logger.<level>("...")` textually would not do. A single-quoted
 # string, an f-string, a module-level alias, a LoggerAdapter, or a message built
-# from a variable all bypassed it, and the scan proved nothing about what it had
-# not found. Walking the AST removes the bypasses and, more importantly, makes
-# an unresolvable message a *reported finding* rather than a silent miss.
+# from a variable each bypass such a pattern, and a scan that misses them proves
+# nothing about what it did not find. Walking the AST removes the bypasses and,
+# more importantly, makes an unresolvable message a *reported finding* rather
+# than a silent miss.
 
 
 LOG_LEVELS = {"debug", "info", "warning", "error", "critical", "exception", "log"}
@@ -121,9 +122,9 @@ def _operator_messages() -> list[tuple[str, int, str]]:
 
     No level is excluded. `logging.level: INFO` is the default and DEBUG is a
     documented operator choice, so an audit that skips a level is an audit with
-    a hole the configuration file tells you how to open. An earlier revision
-    excluded DEBUG while arguing DEBUG was operator-visible, which was the same
-    inconsistency in the other direction.
+    a hole the configuration file tells you how to open. Excluding DEBUG on the
+    grounds that it is only for developers contradicts itself: a level an
+    operator is documented as being able to turn on is operator-visible.
     """
     out = []
     for path in _evidence_modules():
@@ -626,10 +627,10 @@ VENDORED_IMPLEMENTATION = re.compile(
 def built_wheel(tmp_path_factory) -> pathlib.Path:
     """Build the deliverable and inspect that, not the source tree.
 
-    An earlier revision took whichever wheel happened to be in `dist/`, then
-    installed metadata, then the source tree. With no wheel present it fell
-    through to source — which proves nothing about what a wheel contains, and
-    the wheel is the artifact the acceptance criterion is about.
+    Falling back to whichever wheel happens to sit in `dist/`, to installed
+    metadata, or to the source tree would leave this passing without ever
+    inspecting a wheel — and the wheel is the artifact the acceptance criterion
+    is about. It is built here so that what is audited is what would ship.
     """
     import subprocess
     import sys
@@ -776,9 +777,9 @@ def _wheelhouse_dir() -> pathlib.Path:
     """Where the wheelhouse actually is.
 
     The release workflow builds into `ORI_WHEELHOUSE_OUT`, not into the
-    checkout. An earlier revision looked only at `REPO_ROOT/wheelhouse`, so its
-    claim that a release job could not pass without auditing the wheelhouse was
-    simply untrue — the job builds elsewhere and never ran this.
+    checkout. Looking only at `REPO_ROOT/wheelhouse` would make this audit
+    silently inapplicable to the release job it exists to gate: the job builds
+    elsewhere, so the directory would simply be absent and nothing inspected.
     """
     configured = os.environ.get("ORI_WHEELHOUSE_OUT", "").strip()
     return pathlib.Path(configured) if configured else REPO_ROOT / "wheelhouse"
@@ -839,9 +840,9 @@ def test_wheelhouse_distributions_disclose_nothing():
 
     # Report *that* something matched and *where*, never *what*.
     #
-    # This audit runs in a public release workflow. An earlier revision put the
-    # matching term into the failure message, so the check that exists to stop
-    # the identity being published would have published it — in a log that
+    # This audit runs in a public release workflow. Putting the matching term
+    # into the failure message would make the check that exists to stop the
+    # identity being published the thing that publishes it — into a log that
     # outlives the run. Secret masking cannot be relied on here either: it
     # knows the whole comma-separated secret, not every individual term, and
     # certainly not the surrounding binary string.
@@ -1045,13 +1046,12 @@ PASSAGE_AUDITS = {
 # Exempt from the *pattern* audit only, each with the reason. Still fully
 # covered by the name audit below.
 #
-# Every path is written out. An earlier revision exempted whole directories by
-# prefix — `docs/releases/`, `docs/review/`, `packaging/`, `mobile/` — which
-# quietly contradicted the guarantee this classification exists to give: a new
-# operator runbook dropped into `docs/releases/` would have been exempted the
-# moment it was created, by a rule written before anyone had seen it. An
-# enumerated list cannot do that. Adding a document is now a decision someone
-# has to make in this file.
+# Every path is written out. Exempting whole directories by prefix —
+# `docs/releases/`, `docs/review/`, `packaging/`, `mobile/` — would quietly
+# contradict the guarantee this classification exists to give: a new operator
+# runbook dropped into `docs/releases/` would be exempted the moment it was
+# created, by a rule written before anyone had seen it. An enumerated list
+# cannot do that. Adding a document is a decision someone has to make here.
 HISTORICAL_RELEASE_NOTE = (
     "Historical release note. It records what shipped and is not edited "
     "afterwards; the current release is passage-audited above."
@@ -1141,10 +1141,9 @@ def _all_markdown() -> list[str]:
 # A tracked document *path* is not worth hiding. This repository is public, so
 # `docs/linux-install.md` is already readable by anyone, and withholding it
 # from a CI log buys nothing while making a failure materially harder to act
-# on. An earlier revision reported paths as indices anyway. That was theatre,
-# and theatre in a security check is worse than nothing, because it reads as
-# protection to the next person and discourages them from asking what is
-# actually protected.
+# on. Reporting paths as indices instead would be theatre, and theatre in a
+# security check is worse than nothing: it reads as protection to the next
+# person and discourages them from asking what is actually protected.
 #
 # The one case that looks like a counter-example is a filename that itself
 # carries a private identifier. Such a file is committed to a public
@@ -1219,12 +1218,12 @@ def _evidence_passages(path: pathlib.Path) -> list[str]:
 def _audit_passage(passage: str, passage_index: int) -> list[str]:
     """Apply the full invariant to one passage, reporting where and what kind.
 
-    An earlier revision put `flat[:120]` into every finding so a maintainer
-    could see what matched. That is the same mistake the denylist half was
-    written to avoid, one category across: the shape patterns match hostnames,
-    URLs, IP addresses and credential assignments, so a document carrying a
-    private endpoint would have had the audit print that endpoint into a public
-    Actions log — the check publishing the thing it exists to keep private.
+    Including the matched text — `flat[:120]`, say — so a maintainer can see
+    what tripped the check is the same mistake the denylist half avoids, one
+    category across: the shape patterns match hostnames, URLs, IP addresses and
+    credential assignments, so a document carrying a private endpoint would have
+    the audit print that endpoint into a public Actions log, publishing the
+    thing it exists to keep private.
 
     The regex is withheld for the same reason. `credential value` names the
     category without reproducing the pattern that would let a reader
@@ -1273,10 +1272,10 @@ def test_whole_documents_hold_the_invariant(name):
 def test_operator_documents_hold_the_whole_invariant(name):
     """Passages, not lines, and the full invariant rather than verbs alone.
 
-    An earlier revision matched single lines containing an evidence keyword and
-    applied only the instruction patterns. A multi-line instruction, or an
-    endpoint or custody detail a sentence away from the keyword, passed
-    untouched.
+    Matching single lines that contain an evidence keyword, and applying only
+    the instruction patterns to them, would let a multi-line instruction pass,
+    along with any endpoint or custody detail sitting a sentence away from the
+    keyword.
     """
     path = REPO_ROOT / name
     passages = _evidence_passages(path)

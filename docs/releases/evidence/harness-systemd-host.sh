@@ -124,13 +124,13 @@ finish() {
 
 # --- verification and binding live in Python ---------------------------------
 #
-# Five review rounds found the same defect in five shell variables: a value
-# checked in one place and used in another. `scripts/evidence_host.py` makes
-# each of them a function argument — the target parsed from the signed
-# envelope, the interpreter selected and validated in one act, the digest and
-# signature checked with tooling that predates the artifact, the install record
-# written atomically and bound to its version. Shell keeps `sudo`, systemctl,
-# and phase dispatch.
+# A value checked in one place and used in another is two facts that nothing
+# forces to agree, and shell variables give no way to bind them.
+# `scripts/evidence_host.py` makes each one a function argument instead: the
+# target parsed from the signed envelope, the interpreter selected and
+# validated in a single act, the digest and signature checked with tooling that
+# predates the artifact, the install record written atomically and bound to its
+# version. Shell keeps `sudo`, systemctl, and phase dispatch.
 EVIDENCE_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/scripts/evidence_host.py"
 [ -f "$EVIDENCE_PY" ] || fail "the evidence module is present" "$EVIDENCE_PY"
 

@@ -831,9 +831,8 @@ def test_gateway_check_reports_the_secret_variable_without_claiming_presence(
     """Naming the variable helps; claiming to know whether it is set does not.
 
     The service reads its secret from its own environment file, which `ori
-    doctor` does not inherit. An earlier revision warned from `os.environ` and
-    so reported a false "not set" against correctly configured, running
-    deployments.
+    doctor` does not inherit. Warning from `os.environ` would therefore report
+    a false "not set" against correctly configured, running deployments.
     """
     _with_config(tmp_path)
     posture = {

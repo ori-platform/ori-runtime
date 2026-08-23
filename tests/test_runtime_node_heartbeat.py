@@ -244,11 +244,11 @@ async def test_degradation_reasons_emitted_on_a_degraded_heartbeat(monkeypatch):
 async def test_degradation_reasons_are_unique_and_ordered(monkeypatch):
     """Uniqueness and ordering, without teaching production to emit junk.
 
-    An earlier version of this test used invented tokens and therefore
-    asserted that the publisher emits values a conforming gateway is
-    required to reject — encoding the opposite of the rollout rule. The
-    vocabulary is extended for the duration of the test instead, so the
-    ordering behaviour is exercised with tokens the boundary accepts.
+    Asserting on invented tokens would assert that the publisher emits
+    values a conforming gateway is required to reject, encoding the
+    opposite of the rollout rule. The vocabulary is extended for the
+    duration of the test instead, so the ordering behaviour is exercised
+    with tokens the boundary accepts.
     """
     monkeypatch.setattr(node_heartbeat_module, "now_ms", lambda: 1_000_000)
     monkeypatch.setattr(

@@ -628,9 +628,9 @@ def test_enabled_gateway_with_unusable_broker_url_fails_validation(
 ):
     """An unusable endpoint is invalid configuration, not broker unavailability.
 
-    An earlier revision returned success with a `broker_error` field, which made
-    a config the transport cannot act on look merely degraded. It now fails
-    validation, so doctor's mandatory `config.valid` check catches it.
+    Returning success with a `broker_error` field would make a config the
+    transport cannot act on look merely degraded. It fails validation instead,
+    so doctor's mandatory `config.valid` check catches it.
     """
     cfg = _config_with_gateway(tmp_path, f"  enabled: true\n  broker_url: {broker_url}")
 

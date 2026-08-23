@@ -108,11 +108,11 @@ VALID_INPUT = {
 def signer() -> FirmwareLivenessSigner:
     """The production signer, on the corpus's own test seed.
 
-    An earlier revision signed with ``Ed25519PrivateKey`` directly and
-    reassembled the envelope by hand in the test. That proved the corpus
-    was self-consistent and nothing about the runtime: a regression in
-    ``sign_liveness_bytes`` — a changed separator, a different signature
-    encoding, a reordered envelope — would have left every vector green.
+    Signing with ``Ed25519PrivateKey`` directly and reassembling the
+    envelope by hand here would prove the corpus self-consistent and
+    nothing about the runtime: a regression in ``sign_liveness_bytes`` — a
+    changed separator, a different signature encoding, a reordered
+    envelope — would leave every vector green.
     """
 
     class _NoStore:

@@ -221,13 +221,13 @@ def test_an_interval_below_the_floor_is_refused(bad) -> None:
 
 @pytest.mark.parametrize("bad", [20.1, 30.0, 60.0, 3600.0])
 def test_an_interval_that_cannot_keep_a_device_alive_is_refused(bad) -> None:
-    """The safety-relevant bound, and the one an earlier revision missed.
+    """The safety-relevant bound: an interval too slow to keep a device alive.
 
     The contract requires the device's expiry window to be at least 3x the
     publication interval, so isolated message loss cannot mark a healthy
-    runtime unreachable. Above the ceiling a single dropped message expires
-    a device — 30s and 60s were accepted before, and 60s means a device
-    expires exactly as its replacement message is due.
+    runtime unreachable. Above that ceiling a single dropped message expires
+    a device, and at 60s a device expires exactly as its replacement message
+    falls due — which is why the ceiling is enforced rather than advisory.
     """
     with pytest.raises(ValueError, match="at most"):
         FirmwareLivenessScheduler(_FakeService(), interval_s=bad)
@@ -262,10 +262,11 @@ def test_an_invalid_concurrency_bound_is_refused(bad) -> None:
 
 
 def test_the_latency_bound_accounts_for_semaphore_batching() -> None:
-    """An earlier revision claimed a constant `interval + timeout`. That is
-    false the moment the fleet exceeds `max_concurrent`: devices in later
-    batches wait for the batches ahead of them, each of which can take the
-    full timeout before giving up.
+    """The bound is not the constant `interval + timeout` it first appears.
+
+    That figure holds only while the fleet fits inside `max_concurrent`. Beyond
+    it, devices in later batches wait for the batches ahead of them, each of
+    which can take the full timeout before giving up.
     """
     scheduler = FirmwareLivenessScheduler(
         _FakeService(), interval_s=15.0, per_device_timeout_s=15.0, max_concurrent=16
@@ -286,10 +287,10 @@ def test_capacity_is_strictly_inside_the_expiry_window() -> None:
     expiring devices.
 
     A device is reachable only while elapsed time is UNDER the window, so a
-    batch whose worst case lands exactly on 60s is already expired. An
-    earlier revision took `floor(budget / timeout)` and advertised 48
-    devices at `15 + 3 x 15 = 60`, and the test of the day ratified it with
-    `<=`. The last strictly-inside batch count is 2, so 32.
+    batch whose worst case lands exactly on 60s is already expired. This is
+    why the capacity is not `floor(budget / timeout)`: that arithmetic admits
+    the batch landing exactly on `15 + 3 x 15 = 60` and would advertise 48
+    devices. The last strictly-inside batch count is 2, so 32.
     """
     scheduler = FirmwareLivenessScheduler(
         _FakeService(), interval_s=15.0, per_device_timeout_s=15.0, max_concurrent=16
@@ -384,12 +385,12 @@ class _BrokenService(_FakeService):
 
 
 async def test_a_failing_tick_does_not_end_the_loop(caplog) -> None:
-    """An earlier revision logged once and returned forever. Every
-    supervised device then expired while the runtime carried on looking
-    healthy, and the test of the day asserted that as correct.
+    """A failing tick must not end the loop.
 
-    The loop must keep trying: a transient store or supervisor failure
-    that resolves itself should resume publishing without an operator.
+    Logging the failure once and returning would let every supervised device
+    expire while the runtime carried on reporting healthy. The loop keeps
+    trying instead, so a transient store or supervisor failure that resolves
+    itself resumes publishing without an operator.
     """
     vclock = _VirtualClock()
     scheduler = _VirtualScheduler(_BrokenService(), vclock=vclock, max_waits=3)

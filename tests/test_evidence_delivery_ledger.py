@@ -814,8 +814,8 @@ def test_the_checkpoint_reproduces_the_contract_vector_byte_for_byte(tmp_path):
 # Every exchange vector, and who owes it — taken from the contract's own
 # producer table rather than from what this PR happens to implement.
 #
-# An earlier revision swept every unimplemented vector into "ingest", which was
-# wrong twice: anchor registration is produced by the runtime, and commissioning
+# Sweeping every unimplemented vector into "ingest" would be wrong twice over:
+# anchor registration is produced by the runtime, and commissioning
 # authorisation is not the runtime's artifact at all. Filing work under whoever
 # has not done it yet is how an obligation ends up owned by nobody.
 
@@ -1189,8 +1189,8 @@ def test_non_canonical_signed_bytes_are_refused(rig):
             "Base64",
         ),
         # Substituting a character that may not be present mangles nothing when
-        # it is absent, which made an earlier version of this case pass or fail
-        # on the randomness of a generated key.
+        # it is absent, which would leave this case passing or failing on the
+        # randomness of a generated key. The prefix is replaced instead.
         (lambda sig: "ed25519:_" + sig.split("ed25519:")[1][1:], "Base64"),
         (lambda sig: "ed25519:" + sig.split("ed25519:")[1][:-8], "64 bytes"),
     ],

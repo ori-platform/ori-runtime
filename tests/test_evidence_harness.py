@@ -584,10 +584,10 @@ def _uninstall_commands() -> str:
 def test_the_uninstall_phase_removes_nothing_recursively() -> None:
     """As root, `rm -rf` on a system path needs stronger authority than a grep.
 
-    An earlier revision authorised it when the evidence device id appeared
-    anywhere in the YAML — a string that can occur in any field, including a
-    real deployment's. `rmdir` needs no such judgement: it removes a directory
-    only when the directory is already empty.
+    Authorising it on the evidence device id appearing anywhere in the YAML
+    would rest on a string that can occur in any field, including a real
+    deployment's. `rmdir` needs no such judgement: it removes a directory only
+    when the directory is already empty.
     """
     executed = _uninstall_commands()
 
