@@ -206,3 +206,10 @@ def derive_runtime_anchor(
             profile=resolved,
         ),
     )
+
+
+def _public_key_b64_to_hex(value: Any) -> str:
+    raw = base64.b64decode(str(value or ""), validate=True)
+    if len(raw) != 32:
+        raise ValueError("Layer 1 public key must decode to 32 bytes")
+    return raw.hex()

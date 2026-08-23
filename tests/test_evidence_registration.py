@@ -15,6 +15,7 @@ import base64
 import hashlib
 import json
 import pathlib
+from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -238,7 +239,7 @@ def test_the_same_inputs_produce_the_same_bytes(device_key, authorisation, ancho
     or supplied, so re-presenting an identical binding is genuinely identical
     rather than merely equivalent.
     """
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         device_key=device_key,
         device_id="energy-monitor-ikeja-01",
         anchor_epoch_id=anchor.anchor_epoch_id,
@@ -351,7 +352,7 @@ def test_a_claimed_key_id_its_inputs_do_not_produce_is_refused(
 
 @pytest.mark.parametrize("missing", ["device_id", "anchor_epoch_id", "key_id"])
 def test_the_identity_fields_are_required(device_key, authorisation, missing, anchor):
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         device_key=device_key,
         device_id="energy-monitor-ikeja-01",
         anchor_epoch_id=anchor.anchor_epoch_id,

@@ -251,13 +251,13 @@ jobs:
       # inspects the deliverable rather than the source tree, and covers the
       # metadata and compiled members no source-level check reads.
       #
-      # It does not audit the private evidence artifact. That component is
-      # never fetched by build-wheelhouse.sh and reaches a device through a
-      # separate provisioning path, so it is absent from every wheelhouse this
-      # job builds. Describing this step as auditing it would make a check
-      # that passes over an empty target sound decisive. What it does catch is
-      # a name crossing into what we ship — including the case where a future
-      # change vendors that artifact in here.
+      # The runtime no longer builds or loads a private evidence artifact; the
+      # loader and its environment variables were retired with the first-party
+      # chain. The audit remains, and the artifact identifiers remain denylist
+      # terms, because a component ceasing to be built does not make its names
+      # safe to ship: they can still reach a wheelhouse through a stale
+      # dependency, a vendored file, or a symbol in a compiled object. What
+      # this step catches is any such name crossing into what we ship.
       #
       # ORI_REQUIRE_WHEELHOUSE_AUDIT=1 turns every skip in that test into a
       # failure, including a missing denylist: a job that inspects binaries
@@ -266,10 +266,11 @@ jobs:
         env:
           ORI_WHEELHOUSE_OUT: ${{ runner.temp }}/wheelhouse
           ORI_REQUIRE_WHEELHOUSE_AUDIT: "1"
-          # Composed from the secrets that already configure the artifact,
-          # rather than a separate hand-maintained list. Deriving them here
-          # keeps the core denylist aligned with the artifact actually
-          # configured, and removes one thing to remember to update.
+          # Composed from the secrets that named the retired artifact, rather
+          # than a separate hand-maintained list. Nothing configures that
+          # component any more, so these are historical identifiers kept as
+          # denylist terms: the names must not appear in a wheelhouse whether or
+          # not anything still builds them.
           #
           # It is not exhaustive, and should not be described as though it
           # were: module, class and owner/repository do not cover native

@@ -21,6 +21,7 @@ from ori.security.evidence_bound import (
     ExecutorBoundConfirmationBackend,
 )
 from ori.security.evidence_executor import EvidenceExecutor
+from ori.security.evidence_ingest_service import IngestOutcome
 from ori.security.evidence_registrar import (
     AnchorRegistrationRequest,
     RegistrationOutcome,
@@ -41,22 +42,25 @@ class _RecordingIngest:
         self.threads: dict[str, int] = {}
         self.calls: list[tuple[str, object]] = []
 
-    def _record(self, name: str, artifact: object) -> str:
+    def _record(self, name: str, artifact: object) -> IngestOutcome:
         self.threads[name] = threading.get_ident()
         self.calls.append((name, artifact))
-        return name
+        # A real IngestOutcome, not a stand-in: the façade must hand the
+        # service's own result back unchanged, and a double returning some
+        # other type would let a mangled return value pass unnoticed.
+        return IngestOutcome(artifact=name, state="accepted", detail="recorded")
 
-    def accept_custody(self, artifact: object) -> str:
+    def accept_custody(self, artifact: object) -> IngestOutcome:
         return self._record("accept_custody", artifact)
 
-    def accept_receipt(self, artifact: object) -> str:
+    def accept_receipt(self, artifact: object) -> IngestOutcome:
         return self._record("accept_receipt", artifact)
 
-    def accept_epoch_confirmation(self, artifact: object) -> str:
+    def accept_epoch_confirmation(self, artifact: object) -> IngestOutcome:
         return self._record("accept_epoch_confirmation", artifact)
 
     @property
-    def rejections(self) -> tuple:
+    def rejections(self) -> tuple[IngestOutcome, ...]:
         self.threads["rejections"] = threading.get_ident()
         return ()
 
@@ -104,10 +108,11 @@ def test_ingest_methods_run_on_the_owner_thread(executor, method) -> None:
     owner = executor.run(threading.get_ident)
 
     caller_thread: dict[str, int] = {}
+    returned: dict = {}
 
     def caller() -> None:
         caller_thread["ident"] = threading.get_ident()
-        getattr(bound, method)({"v": 1})
+        returned["value"] = getattr(bound, method)({"v": 1})
 
     thread = threading.Thread(target=caller, name="fake-mqtt")
     thread.start()
@@ -116,6 +121,12 @@ def test_ingest_methods_run_on_the_owner_thread(executor, method) -> None:
     assert service.threads[method] == owner
     assert caller_thread["ident"] != owner
     assert service.calls == [(method, {"v": 1})]
+    # The façade marshals; it must not transform. A returned outcome that
+    # arrived altered would mean the boundary is doing more than it claims.
+    outcome = returned["value"]
+    assert isinstance(outcome, IngestOutcome)
+    assert outcome.artifact == method
+    assert outcome.detail == "recorded"
 
 
 def test_ingest_rejections_are_read_on_the_owner_thread(executor) -> None:

@@ -932,6 +932,38 @@ class EvidenceDeliveryLedger:
         ).fetchone()
         return int(row["head"])
 
+    def awaiting_custody_count(self) -> int:
+        """Sealed envelopes the courier has not acknowledged holding.
+
+        This counts the delivery ledger, not the chain. A chain row exists the
+        moment an action is signed; an envelope exists only once sealing
+        completes, and counting chain rows would report evidence as awaiting a
+        courier before there was anything for a courier to take.
+
+        Custody is deliberately the measure rather than receipt. Custody says a
+        courier holds the bytes; a receipt says the authority accepted them, and
+        those degrade for different reasons. A rising custody count means
+        delivery has stalled at the first hop, which is the failure this metric
+        exists to make visible.
+        """
+        row = self._connection.execute(
+            "SELECT COUNT(*) AS pending FROM evidence_delivery_ledger "
+            "WHERE custody_state = 'none'"
+        ).fetchone()
+        return int(row["pending"])
+
+    def awaiting_receipt_count(self) -> int:
+        """Envelopes held by a courier but not yet receipted by the authority.
+
+        Separate from the custody count on purpose: conflating them would hide
+        which hop is failing, and the two have different remedies.
+        """
+        row = self._connection.execute(
+            "SELECT COUNT(*) AS pending FROM evidence_delivery_ledger "
+            "WHERE custody_state = 'held' AND receipt_state = 'none'"
+        ).fetchone()
+        return int(row["pending"])
+
     def undelivered(self, limit: int = 100) -> list[sqlite3.Row]:
         """Sealed but unreceipted, oldest first. Custody does not count."""
         return list(

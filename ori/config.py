@@ -220,6 +220,27 @@ class EvidenceConfig:
     key_path: str = "ori_evidence.key"
     device_secret_env: str = "ORI_EVIDENCE_DEVICE_SECRET"
 
+    # Four things are deliberately absent from this surface, for one reason:
+    # a site operator is the party evidence exists to constrain, so nothing an
+    # operator can edit may weaken it.
+    #
+    # authority_keys_path -- the authority trust root arrives only in the signed
+    # release. A path here would let an operator point the runtime at keys of
+    # their choosing and make arbitrary receipts and epoch confirmations
+    # trusted, which is the whole property the registry exists to provide.
+    #
+    # checkpoint_interval_s -- a checkpoint constrains the device and its
+    # courier, so its cadence cannot be set by them. An operator who could
+    # widen it could make the obligation meaningless without disabling
+    # anything. The cadence is release-owned, and its permitted maximum is
+    # still open in the contract.
+    #
+    # anchor_epoch_id and key_id -- derived per runtime-evidence-anchor/v1. They are derived per
+    # runtime-evidence-anchor/v1 from the device identity, evidence key, custody
+    # posture and capability profile. Both are sealed into immutable envelopes
+    # and recomputed by the evidence authority, so a value an operator could set
+    # is one that would eventually be set wrongly and could not be corrected.
+
 
 @dataclass
 class Config:
@@ -2465,6 +2486,15 @@ def _parse_evidence(data: Any) -> EvidenceConfig:
             raise ConfigValidationError(
                 "evidence.db_path and evidence.key_path must differ"
             )
+    for owned in ("authority_keys_path", "checkpoint_interval_s"):
+        if owned in data:
+            raise ConfigValidationError(
+                f"'evidence.{owned}' is not a site setting. The authority trust "
+                "root and the checkpoint cadence are owned by the signed "
+                "release, because a site operator is the party evidence exists "
+                "to constrain."
+            )
+
     return EvidenceConfig(
         enabled=enabled,
         db_path=db_path,

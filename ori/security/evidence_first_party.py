@@ -27,7 +27,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from ori.security.evidence import safe_failure_reason
+from ori.security.evidence_anchor import RuntimeAnchor, derive_runtime_anchor
 from ori.security.evidence_bound import (
     BoundIngestService,
     ExecutorBoundConfirmationBackend,
@@ -44,6 +44,7 @@ from ori.security.evidence_ingest_service import (
     EvidenceIngestService,
 )
 from ori.security.evidence_ledger import EvidenceDeliveryLedger
+from ori.security.evidence_policy import safe_failure_reason
 from ori.security.evidence_registrar import (
     AnchorRegistrationRequest,
     RegistrationOutcome,
@@ -94,8 +95,6 @@ class FirstPartyEvidenceAttestor:
         key_path: str,
         device_secret: str,
         device_id: str,
-        anchor_epoch_id: str,
-        key_id: str,
         gateway_shared_secret: str = "",
         authority_keys: dict[tuple[str, str], Any] | None = None,
     ) -> None:
@@ -103,8 +102,10 @@ class FirstPartyEvidenceAttestor:
         self._key_path = str(key_path)
         self._device_secret = str(device_secret)
         self._device_id = str(device_id)
-        self._anchor_epoch_id = str(anchor_epoch_id)
-        self._key_id = str(key_id)
+        # Derived once the key exists, never supplied. A caller cannot pass an
+        # epoch or selector that disagrees with the key actually in use, because
+        # there is no argument through which to pass one.
+        self._anchor: RuntimeAnchor | None = None
         self._gateway_shared_secret = str(gateway_shared_secret)
         self._authority_keys = dict(authority_keys or {})
 
@@ -151,6 +152,11 @@ class FirstPartyEvidenceAttestor:
         return False
 
     @property
+    def anchor(self) -> RuntimeAnchor | None:
+        """The derived identity this runtime seals evidence under."""
+        return self._anchor
+
+    @property
     def ingest(self) -> BoundIngestService | None:
         """Inbound authority artifacts, marshalled onto the evidence thread."""
         return self._ingest
@@ -183,13 +189,16 @@ class FirstPartyEvidenceAttestor:
         """Construct every thread-bound object on the evidence worker."""
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         key = EvidenceDeviceKey.load_or_create(self._key_path, self._device_secret)
+        anchor = derive_runtime_anchor(
+            device_id=self._device_id, pubkey_hex=key.public_key_hex
+        )
         chain = EvidenceChain(self._db_path, key, self._device_id)
         ledger = EvidenceDeliveryLedger(
             self._db_path,
             key,
             self._device_id,
-            anchor_epoch_id=self._anchor_epoch_id,
-            key_id=self._key_id,
+            anchor_epoch_id=anchor.anchor_epoch_id,
+            key_id=anchor.key_id,
         )
         service = EvidenceIngestService(
             ledger=ledger,
@@ -198,6 +207,7 @@ class FirstPartyEvidenceAttestor:
             device_pubkey_hex=key.public_key_hex,
             gateway_shared_secret=self._gateway_shared_secret,
         )
+        self._anchor = anchor
         self._chain = chain
         self._ledger = ledger
         self._ingest = BoundIngestService(self._executor, service)
@@ -270,6 +280,79 @@ class FirstPartyEvidenceAttestor:
         )
         self._ledger.seal(row, sealed_at_ms=now_ms())
         return row
+
+    async def chain_head_hash(self) -> str | None:
+        """The hash of the most recent chain row, or None when unavailable.
+
+        Read on the health path, so a failure returns None rather than raising:
+        health exists to report state, and a health call that raises reports
+        nothing at all -- including the parts that were fine.
+        """
+        if self._chain is None:
+            return None
+        try:
+            return await self._executor.run_async(self._head_hash_sync)
+        except Exception as exc:
+            logger.warning(
+                "[evidence] chain head read failed (%s)", safe_failure_reason(exc)
+            )
+            return None
+
+    def _head_hash_sync(self) -> str:
+        assert self._chain is not None
+        _seq, head_hash = self._chain.head()
+        return head_hash
+
+    async def pending_export_count(self) -> int | None:
+        """Sealed envelopes no courier has acknowledged holding.
+
+        Measured on the delivery ledger, not the chain: a chain row exists as
+        soon as an action is signed, and counting those would report evidence as
+        awaiting a courier before sealing had produced anything to carry.
+
+        Custody rather than receipt, because they fail for different reasons and
+        conflating them hides which hop is stalled. Nothing collects these yet,
+        so the count only rises -- which is itself the honest signal, and why it
+        is reported.
+        """
+        if self._ledger is None:
+            return None
+        try:
+            return await self._executor.run_async(self._pending_count_sync)
+        except Exception as exc:
+            logger.warning(
+                "[evidence] pending count read failed (%s)", safe_failure_reason(exc)
+            )
+            return None
+
+    def _pending_count_sync(self) -> int:
+        assert self._ledger is not None
+        return self._ledger.awaiting_custody_count()
+
+    async def issue_checkpoint(self) -> dict[str, Any] | None:
+        """Sign a checkpoint for the current high-water mark.
+
+        A checkpoint turns unexplained silence into a missed obligation: without
+        one, a stalled courier and an idle device look the same to the
+        authority. Failure is contained -- a checkpoint that cannot be issued
+        must not stop the runtime, since it is a record about the runtime rather
+        than a precondition for it.
+        """
+        if self._ledger is None:
+            return None
+        try:
+            return await self._executor.run_async(self._checkpoint_sync, now_ms())
+        except Exception as exc:
+            logger.warning(
+                "[evidence] could not issue a checkpoint (%s); the high-water "
+                "mark is unchanged and the next interval will retry",
+                safe_failure_reason(exc),
+            )
+            return None
+
+    def _checkpoint_sync(self, issued_at_ms: int) -> dict[str, Any]:
+        assert self._ledger is not None
+        return self._ledger.checkpoint(issued_at_ms=issued_at_ms)
 
     def confirmation_backend(self) -> ExecutorBoundConfirmationBackend | None:
         """The confirmation coordinator's bound view of evidence state."""

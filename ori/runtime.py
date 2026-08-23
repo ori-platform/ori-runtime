@@ -23,6 +23,7 @@ import os
 import signal
 import stat
 from collections.abc import Awaitable, Callable
+from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -80,10 +81,9 @@ from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfi
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM, local_llm_backend_available
 from ori.runtime_health_socket import RuntimeHealthSocketServer
-from ori.security.evidence import (
-    PUBLIC_EVIDENCE_PROTOCOL_VERSION,
-    EvidenceAttestor,
-)
+from ori.security.evidence_authority_keys import load_authority_key_registry
+from ori.security.evidence_chain import SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION
+from ori.security.evidence_first_party import FirstPartyEvidenceAttestor
 from ori.security.firmware_confirmation import (
     CONFIRMED as _FIRMWARE_CONFIRMED,
 )
@@ -245,7 +245,7 @@ class OriRuntime:
         self._firmware_command_service: FirmwareCommandService | None = None
         self._firmware_liveness_scheduler: FirmwareLivenessScheduler | None = None
         self._telemetry_exporter: HttpTelemetryExporter | None = None
-        self._evidence_attestor: EvidenceAttestor | None = None
+        self._evidence_attestor: FirstPartyEvidenceAttestor | None = None
         self._firmware_confirmation_coordinator: (
             FirmwareConfirmationCoordinator | None
         ) = None
@@ -562,17 +562,23 @@ class OriRuntime:
             await evidence_attestor.start()
         self._evidence_attestor = evidence_attestor
 
+        # Checkpoint scheduling is deliberately not started yet. issue_checkpoint
+        # signs an artifact, and nothing durably retains it or hands it to the
+        # courier, so scheduling one would produce a signed record that is
+        # discarded -- and describing that as an obligation on the authority
+        # would be false. It starts when the outbound outbox exists.
+
         # The confirmation coordinator reconciles a locally-approved anchor
         # with the evidence store before its authority is treated as
-        # effective. It is runtime-owned and drives the chain only through
-        # the attestor's executor-bound handle, so the unsendable chain
-        # stays on its owning thread.
+        # effective. It is runtime-owned and reaches evidence state only
+        # through the attestor's executor-bound backend, so the thread-bound
+        # SQLite connections stay on the thread that opened them.
         if (
             evidence_attestor is not None
             and self._state_store is not None
             and evidence_attestor.available
         ):
-            confirmation_chain = evidence_attestor.confirmation_chain()
+            confirmation_chain = evidence_attestor.confirmation_backend()
             if confirmation_chain is not None:
                 coordinator = FirmwareConfirmationCoordinator(
                     store=self._state_store, chain=confirmation_chain
@@ -1267,8 +1273,12 @@ class OriRuntime:
             self._firmware_mqtt_operator_server = None
             self._firmware_mqtt_operator_socket_path = ""
 
-        # 2g. Stop evidence attestor executor.
+        # 2g. Issue a final checkpoint, then stop the evidence executor.
         if self._evidence_attestor is not None:
+            # A shutdown checkpoint is not issued here yet. It would be signed
+            # and dropped, since nothing retains it, and an orderly stop would
+            # still be indistinguishable from a crash to the authority. Issuing
+            # it without retaining it would look like the problem was solved.
             try:
                 self._evidence_attestor.close()
             except Exception:
@@ -2277,7 +2287,7 @@ class OriRuntime:
             # because v1 still required it and a published contract is not a
             # runtime's to change unilaterally. v2 is what licenses this.
             "protocol_version": (
-                PUBLIC_EVIDENCE_PROTOCOL_VERSION
+                EVIDENCE_SCHEMA_VERSION
                 if attestor is not None and attestor.available
                 else ""
             ),
@@ -4076,12 +4086,18 @@ def _build_gateway_reasoner(config: Config) -> MqttGatewayReasoner | None:
     return reasoner
 
 
-def _build_evidence_attestor(config: Config) -> EvidenceAttestor | None:
+def _build_evidence_attestor(config: Config) -> FirstPartyEvidenceAttestor | None:
     """Build the optional Tier C/D evidence attestor.
 
     Evidence signing is opt-in via ``evidence.enabled``. A configured but
-    missing device secret fails startup loudly — a silently unkeyed evidence
+    missing device secret fails startup loudly -- a silently unkeyed evidence
     chain would defeat the point of enabling it.
+
+    The epoch and key selector are not read from configuration. They are derived
+    from the device identity and the evidence key once that key exists, because
+    they are sealed into immutable envelopes and recomputed by the evidence
+    authority: a configured value would eventually be set wrongly on some device
+    and could not be corrected afterwards.
     """
     evidence = getattr(config, "evidence", None)
     if evidence is None or not bool(evidence.enabled):
@@ -4093,12 +4109,53 @@ def _build_evidence_attestor(config: Config) -> EvidenceAttestor | None:
             f"environment variable ({evidence.device_secret_env}) is empty; "
             "provision a random install secret (not just the device serial)"
         )
-    return EvidenceAttestor(
+    return FirstPartyEvidenceAttestor(
         db_path=evidence.db_path,
         key_path=evidence.key_path,
         device_secret=secret,
         device_id=config.device.id,
+        gateway_shared_secret=_gateway_shared_secret(config),
+        authority_keys=_load_authority_keys(),
     )
+
+
+def _load_authority_keys() -> dict:
+    """Resolve the authority key registry from the signed release.
+
+    Packaged inside the wheel, so it is covered by the release signature and
+    arrives only through an activated release -- the same path the installer
+    already uses for release keys. It is deliberately not a configurable path:
+    an operator who could point the runtime at a registry of their choosing
+    could make arbitrary receipts and epoch confirmations trusted, which is the
+    entire property this registry exists to provide.
+
+    A release that ships none yields an empty registry, so inbound receipts and
+    epoch confirmations are refused as unknown-key rather than accepted
+    unverified. A registry that is present but unreadable is fatal, because that
+    is a deployment claiming a verification it cannot perform.
+    """
+    resource = resources.files("ori.security").joinpath("evidence-authority-keys.json")
+    try:
+        with resources.as_file(resource) as path:
+            if not path.exists():
+                return {}
+            return load_authority_key_registry(path)
+    except (FileNotFoundError, ModuleNotFoundError):
+        return {}
+
+
+def _gateway_shared_secret(config: Config) -> str:
+    """The runtime-gateway secret a custody acknowledgement is authenticated with.
+
+    Absent when gateway auth is disabled, in which case custody cannot be
+    verified and is refused at ingest rather than accepted unauthenticated.
+    """
+    raw_auth = getattr(config.gateway, "auth", {})
+    auth_cfg = raw_auth if isinstance(raw_auth, dict) else {}
+    if not bool(auth_cfg.get("enabled", False)):
+        return ""
+    env_name = str(auth_cfg.get("shared_secret_env", "") or "").strip()
+    return os.environ.get(env_name, "") if env_name else ""
 
 
 def _build_gateway_message_auth(config: Config) -> GatewayMessageAuthenticator | None:

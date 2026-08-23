@@ -32,15 +32,16 @@ Built for the world's majority condition — unreliable power, intermittent conn
   state-encryption, and signed-config requirements or the runtime refuses to
   start. Development-profile deployments remain warning-only.
 - High-authority action evidence is implemented behind `evidence.enabled`:
-  Tier C/D dispatch records can be signed through a privately supplied evidence
-  artifact, reconciled after restart, and surfaced through runtime health and
-  gateway heartbeat evidence. Device-origin telemetry is now consumed by the
+  Tier C/D dispatch records are signed into the runtime's own local evidence
+  chain, reconciled after restart, and surfaced through runtime health and
+  gateway heartbeat evidence. Delivery is not built: the device retains its
+  evidence locally, and nothing yet consumes it. Device-origin telemetry is now consumed by the
   runtime verification gate: firmware signs readings at the physical edge, the
-  runtime verifies and trust-grades them, and the private evidence artifact
+  runtime verifies and trust-grades them, and the runtime's own evidence chain
   verifies the shared golden bytes/signatures without owning firmware
   canonicalization.
 - Safety invariants (tier guards, the runtime action registry, strict skill validation, skill provenance) are CI-enforced on every PR.
-- Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0. The runtime health payload is also read by companion repos and is versioned separately: `2.4.x` serves `ori-specs/runtime-health/v1`, and the next release serves `v2`, which removes the evidence artifact version.
+- Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0. The runtime health payload is also read by companion repos and is versioned separately: `2.4.x` serves `ori-specs/runtime-health/v1`, and the next release serves `v2`, which removes the evidence artifact version, a field that no longer has a source now that the private artifact is retired.
 - Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
 - Upgrading from `2.3.x` and scripting the Linux installer? `2.4.0` makes
   `--scope` explicit, prints a human summary unless `--json` is passed, and
@@ -57,7 +58,7 @@ Related public repos in the org:
 - SDK (Python): `ori-platform/ori-sdk-python`
 - Specs/RFCs: `ori-platform/ori-specs`
 
-Private evidence-chain and edge-firmware artifacts integrate through the public
+Edge-firmware artifacts integrate through the public
 contracts in `ori-specs`; their source coordinates are intentionally not part of
 this public runtime repository.
 
@@ -134,7 +135,7 @@ runtime always pairs a reasoning decision with an action decision. Runtime Layer
 are **evidence Layer 1** producers: they sign sensor-origin telemetry at the
 point of measurement. This runtime verifies and normalises those readings,
 reasons over them, acts through the Action Tier Framework, and records Tier C/D
-action evidence through the private evidence artifact as **evidence Layer 2**.
+action evidence through the runtime's own signed chain as **evidence Layer 2**.
 
 For the full architectural specification, read [`CLAUDE.md`](CLAUDE.md). For the design philosophy, read [`PRINCIPLES.md`](PRINCIPLES.md).
 
@@ -233,13 +234,20 @@ Ori is designed for [physical actuation trust](PRINCIPLES.md). The safety archit
 - **Hardware circuit breakers** — failing sensor buses are auto-isolated using a three-state (CLOSED → OPEN → HALF_OPEN) circuit breaker so one bad sensor doesn't crash the runtime
 - **Approval workflows for hard physical actions** — Tier C actions always require operator approval via WhatsApp/SMS. No config flag to skip it
 - **Alert transport failover** — approval requests use the configured primary channel first, then fail over to the secondary channel if delivery fails
-- **Evidence chain for high-authority actions** — when configured, a private
-  evidence artifact signs Tier C/D dispatch records and exposes chain head, gap
-  count, and selected action-event vocabulary in health. The artifact's own
-  version is deliberately absent: it is implementation metadata of a component
-  the operator has no part in, and `available` with `protocol_version` already
-  answer whether this device can sign. This is runtime action evidence;
-  device-origin telemetry attestation is the firmware/Layer 1 contract.
+- **Evidence chain for high-authority actions** — when configured, the Ori
+  runtime signs Tier C/D dispatch records into its own local hash-chained store,
+  in the publicly specified `evidence/v2` format, and seals each row into a
+  delivery envelope. Health exposes the chain head, the attestation gap count,
+  the action-event vocabulary, and a count of envelopes no courier has yet
+  acknowledged holding. `protocol_version` names the chain format this device
+  writes, which is what tells a reader whether its evidence can be verified;
+  `available` says whether this device can sign at all.
+
+  The device produces and locally retains verifiable evidence. Delivery is not
+  built, so the count of unacknowledged envelopes only rises — which is the
+  honest signal that this half is incomplete rather than idle. This is runtime
+  action evidence; device-origin telemetry attestation is the firmware/Layer 1
+  contract.
 
 For constrained deployments, a common pattern is MQTT for continuous telemetry plus CoAP for low-overhead command delivery.
 

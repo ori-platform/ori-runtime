@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 
+from ori.security.evidence_anchor import derive_runtime_anchor
 from ori.security.evidence_chain import (
     EVENT_ID_NAMESPACE,
     SCHEMA_VERSION,
@@ -34,7 +36,7 @@ DEVICE = "energy-monitor-ikeja-01"
 SECRET = "install-secret-for-tests"
 
 
-def _action_row(action_log_id: int = 42, **overrides) -> dict:
+def _action_row(action_log_id: int = 42, **overrides) -> dict:  # noqa: D401
     row = {
         "id": action_log_id,
         "action_name": "emergency_cutoff",
@@ -57,8 +59,6 @@ async def attestor(tmp_path):
         key_path=str(tmp_path / "device.key"),
         device_secret=SECRET,
         device_id=DEVICE,
-        anchor_epoch_id="epoch-1",
-        key_id="dev-key-1",
     )
     assert await a.start() is True
     try:
@@ -75,8 +75,6 @@ class TestEventIdentity:
             key_path=str(tmp_path / "k"),
             device_secret=SECRET,
             device_id=DEVICE,
-            anchor_epoch_id="epoch-1",
-            key_id="dev-key-1",
         )
         assert a.attestation_event_id(42) == attestation_event_id(DEVICE, 42)
 
@@ -89,8 +87,6 @@ class TestEventIdentity:
                 key_path=str(tmp_path / f"{device}.key"),
                 device_secret=SECRET,
                 device_id=device,
-                anchor_epoch_id="epoch-1",
-                key_id="dev-key-1",
             )
             ids.add(a.attestation_event_id(42))
         assert len(ids) == 2
@@ -112,8 +108,6 @@ class TestEventIdentity:
             key_path=str(tmp_path / "k"),
             device_secret=SECRET,
             device_id=DEVICE,
-            anchor_epoch_id="epoch-1",
-            key_id="dev-key-1",
         )
         assert a.attestation_event_id(42) != legacy
         assert EVENT_ID_NAMESPACE != legacy_namespace
@@ -210,8 +204,6 @@ class TestHonestClaims:
             key_path=str(tmp_path / "k"),
             device_secret="",  # an empty secret seals nothing, so open fails
             device_id=DEVICE,
-            anchor_epoch_id="epoch-1",
-            key_id="dev-key-1",
         )
         assert await a.start() is False
         assert a.available is False
@@ -245,8 +237,377 @@ class TestRegistrationRemainsPending:
             AnchorRegistrationRequest(
                 device_id=DEVICE,
                 public_key_hex=attestor.public_key_hex,
-                anchor_epoch_id="epoch-1",
-                posture="sealed_flash",
+                anchor_epoch_id=attestor.anchor.anchor_epoch_id,
+                posture=attestor.anchor.posture,
             )
         )
         assert backend.active_anchor_epoch_id(DEVICE) is None
+
+
+class TestHealthReadingSurface:
+    """The health payload reads these; a missing one crashes the whole report.
+
+    `runtime.py` calls both without a guard, so an absent method raises
+    `AttributeError` while building health — taking down the parts that were
+    fine along with the part that was not. The full suite passed while both
+    methods were missing, because nothing exercised the health path with an
+    available attestor. That gap is why this class exists.
+    """
+
+    async def test_chain_head_hash_is_a_sha256_hex_digest(self, attestor) -> None:
+        head = await attestor.chain_head_hash()
+        assert head is not None
+        assert len(head) == 64, "a chain head is a SHA-256 digest in hex"
+        int(head, 16)  # raises if it is not hex
+
+    async def test_chain_head_advances_when_an_action_is_attested(
+        self, attestor
+    ) -> None:
+        before = await attestor.chain_head_hash()
+        await attestor.attest_action(_action_row(1))
+        after = await attestor.chain_head_hash()
+        assert after != before, "the head did not move after a signed action"
+        assert len(after) == 64
+
+    async def test_pending_export_count_starts_at_zero(self, attestor) -> None:
+        assert await attestor.pending_export_count() == 0
+
+    async def test_pending_export_count_advances_by_one_per_signed_action(
+        self, attestor
+    ) -> None:
+        """A rising count is the visible signal that delivery has stalled."""
+        await attestor.attest_action(_action_row(1))
+        assert await attestor.pending_export_count() == 1
+        await attestor.attest_action(_action_row(2))
+        assert await attestor.pending_export_count() == 2
+
+    async def test_a_retry_does_not_inflate_the_pending_count(self, attestor) -> None:
+        """Idempotent re-attestation must not look like new undelivered evidence."""
+        await attestor.attest_action(_action_row(1))
+        await attestor.attest_action(_action_row(1))
+        assert await attestor.pending_export_count() == 1
+
+    async def test_an_unavailable_attestor_reports_none_rather_than_raising(
+        self, tmp_path
+    ) -> None:
+        """Health reports state; a health call that raises reports nothing at all."""
+        a = FirstPartyEvidenceAttestor(
+            db_path=str(tmp_path / "e.db"),
+            key_path=str(tmp_path / "k"),
+            device_secret="",
+            device_id=DEVICE,
+        )
+        assert await a.start() is False
+        assert await a.chain_head_hash() is None
+        assert await a.pending_export_count() is None
+        a.close()
+
+    async def test_pending_count_measures_envelopes_not_chain_rows(
+        self, attestor
+    ) -> None:
+        """The two diverge exactly between append and seal, so test there.
+
+        Attesting an action does both, which makes chain rows, ledger rows and
+        the health count all equal -- and a count implemented against the chain
+        table would pass just as happily. The distinguishing state is a row that
+        has been appended and not yet sealed.
+        """
+        chain = attestor._chain
+        ledger = attestor._ledger
+        assert chain is not None and ledger is not None
+
+        def _append_only():
+            return chain.append(
+                event_id=attestor.attestation_event_id(41),
+                event_type=ACTION_EVENT_TYPE,
+                emitted_at_ms=1787000000000,
+                payload={"kind": "runtime_action", "action_log_id": 41},
+                created_at_ms=1787000000040,
+            )
+
+        row = attestor._executor.run(_append_only)
+
+        chain_rows = attestor._executor.run(
+            lambda: chain._connection.execute(
+                "SELECT COUNT(*) AS n FROM evidence_chain"
+            ).fetchone()["n"]
+        )
+        assert chain_rows == 1, "the row was not appended"
+        assert attestor._executor.run(ledger.awaiting_custody_count) == 0, (
+            "an unsealed row was counted as awaiting a courier"
+        )
+        assert await attestor.pending_export_count() == 0
+
+        attestor._executor.run(lambda: ledger.seal(row, sealed_at_ms=1787000000500))
+
+        assert attestor._executor.run(ledger.awaiting_custody_count) == 1
+        assert await attestor.pending_export_count() == 1, (
+            "sealing did not make the envelope visible as awaiting a courier"
+        )
+
+    async def test_custody_and_receipt_counts_move_independently(
+        self, attestor
+    ) -> None:
+        """Only the transitions prove the two are distinct.
+
+        Asserting the initial (none, none) state would pass against a receipt
+        count hard-coded to zero. Custody and receipt are separate hops with
+        separate remedies, so each must move on its own event.
+        """
+        await attestor.attest_action(_action_row(1))
+        ledger = attestor._ledger
+        assert ledger is not None
+        run = attestor._executor.run
+
+        assert run(ledger.awaiting_custody_count) == 1
+        assert run(ledger.awaiting_receipt_count) == 0
+
+        # A courier takes custody. The envelope leaves the custody queue and
+        # enters the receipt queue -- it is held, but nothing has accepted it.
+        run(
+            lambda: ledger._apply_verified_custody(
+                1, custody_at_ms=1787000000900, key_id="gw-secret-1"
+            )
+        )
+        assert run(ledger.awaiting_custody_count) == 0
+        assert run(ledger.awaiting_receipt_count) == 1, (
+            "custody did not move the envelope into the receipt queue"
+        )
+
+        # The authority accepts it. Only now is the envelope out of both queues.
+        run(
+            lambda: ledger._apply_verified_receipt(
+                1, receipt_at_ms=1787000001000, key_id="auth-receipt-1"
+            )
+        )
+        assert run(ledger.awaiting_custody_count) == 0
+        assert run(ledger.awaiting_receipt_count) == 0
+
+
+class TestProvisioningAndIdentity:
+    """Key provisioning and the identity it produces.
+
+    A fixture that starts successfully proves the fixture works. It cannot fail
+    with a diagnosis about provisioning, and asserts nothing about the anchor's
+    shape or whether it survives a restart -- which is the whole point of a
+    sealed key.
+    """
+
+    async def test_first_start_provisions_a_key_and_exposes_its_anchor(
+        self, tmp_path
+    ) -> None:
+        key_path = tmp_path / "device.key"
+        assert not key_path.exists()
+
+        a = FirstPartyEvidenceAttestor(
+            db_path=str(tmp_path / "e.db"),
+            key_path=str(key_path),
+            device_secret=SECRET,
+            device_id=DEVICE,
+        )
+        try:
+            assert await a.start() is True
+            assert a.available is True
+            assert key_path.exists(), "first start did not provision a key"
+            anchor = a.public_key_hex
+            assert len(anchor) == 64, "an Ed25519 anchor is 32 bytes in hex"
+            int(anchor, 16)
+            assert anchor == anchor.lower()
+        finally:
+            a.close()
+
+    async def test_the_anchor_derives_from_this_device_and_this_key(
+        self, tmp_path
+    ) -> None:
+        """Stability is not enough: a hard-coded identity is also stable.
+
+        The anchor must follow the device it is bound to, or two devices would
+        seal evidence under one identity and the authority could not tell them
+        apart.
+        """
+        anchors = {}
+        for device_id in (DEVICE, "energy-monitor-ikeja-02"):
+            a = FirstPartyEvidenceAttestor(
+                db_path=str(tmp_path / f"{device_id}.db"),
+                key_path=str(tmp_path / f"{device_id}.key"),
+                device_secret=SECRET,
+                device_id=device_id,
+            )
+            assert await a.start() is True
+            assert a.anchor is not None
+            anchors[device_id] = (a.anchor.anchor_epoch_id, a.anchor.key_id)
+            # The derivation must be the contract's, over this device's own key.
+            assert (
+                a.anchor.anchor_epoch_id
+                == derive_runtime_anchor(
+                    device_id=device_id, pubkey_hex=a.public_key_hex
+                ).anchor_epoch_id
+            )
+            a.close()
+        assert len(set(anchors.values())) == 2, (
+            "two devices derived the same evidence identity"
+        )
+
+    async def test_identity_is_stable_across_a_restart(self, tmp_path) -> None:
+        """A key that changed on restart would orphan every prior signature."""
+        paths: dict[str, Any] = {
+            "db_path": str(tmp_path / "e.db"),
+            "key_path": str(tmp_path / "device.key"),
+            "device_secret": SECRET,
+            "device_id": DEVICE,
+        }
+        first = FirstPartyEvidenceAttestor(**paths)
+        assert await first.start() is True
+        anchor = first.public_key_hex
+        epoch = first.anchor.anchor_epoch_id if first.anchor else None
+        key_id = first.anchor.key_id if first.anchor else None
+        first.close()
+
+        second = FirstPartyEvidenceAttestor(**paths)
+        try:
+            assert await second.start() is True
+            assert second.public_key_hex == anchor, "the device key changed"
+            assert second.anchor is not None
+            assert second.anchor.anchor_epoch_id == epoch, "the epoch moved"
+            assert second.anchor.key_id == key_id, "the selector moved"
+        finally:
+            second.close()
+
+    async def test_a_wrong_secret_leaves_the_attestor_unavailable(
+        self, tmp_path
+    ) -> None:
+        """Fail closed: a key that cannot be unsealed must not degrade to unsigned.
+
+        The key layer refuses the wrong secret. This asserts the consequence at
+        the attestor -- that it reports unavailable and signs nothing, rather
+        than starting with no key and quietly producing no evidence.
+        """
+        paths: dict[str, Any] = {
+            "db_path": str(tmp_path / "e.db"),
+            "key_path": str(tmp_path / "device.key"),
+            "device_id": DEVICE,
+        }
+        first = FirstPartyEvidenceAttestor(device_secret=SECRET, **paths)
+        assert await first.start() is True
+        first.close()
+
+        wrong = FirstPartyEvidenceAttestor(device_secret="a-different-secret", **paths)
+        try:
+            assert await wrong.start() is False
+            assert wrong.available is False
+            assert wrong.public_key_hex == ""
+            assert await wrong.attest_action(_action_row()) is None
+        finally:
+            wrong.close()
+
+
+class TestSignedPayloadFidelity:
+    async def test_the_payload_preserves_the_action_identity_and_time(
+        self, attestor
+    ) -> None:
+        """A verifier reads these. A rewritten timestamp is a different claim."""
+        row = _action_row(42, timestamp=1787000000123)
+        await attestor.attest_action(row)
+        chain = attestor._chain
+        assert chain is not None
+        stored = attestor._executor.run(
+            chain.find_by_event_id, attestor.attestation_event_id(42)
+        )
+        assert stored is not None
+        assert int(stored["emitted_at_ms"]) == 1787000000123, (
+            "the signed row does not carry the action's own timestamp"
+        )
+        assert stored["device_id"] == DEVICE
+        body = _text(stored["canonical_json"])
+        assert '"action_log_id":42' in body
+        assert '"action_name":"emergency_cutoff"' in body
+
+    async def test_emission_evidence_is_marked_at_emission(self, attestor) -> None:
+        await attestor.attest_action(_action_row(1))
+        assert '"attestation":"at_emission"' in _text(
+            self._stored(attestor, 1)["canonical_json"]
+        )
+
+    async def test_reconciled_evidence_is_explicitly_marked_late(
+        self, attestor
+    ) -> None:
+        """Late evidence must never be presentable as emission-time evidence.
+
+        The distinction is the whole value of reconciliation: a reader has to be
+        able to tell that this signature was produced after the fact, because
+        the gap between the action and the signature is itself a fact about the
+        device.
+        """
+        await attestor.attest_action(_action_row(2), reconciled=True)
+        body = _text(self._stored(attestor, 2)["canonical_json"])
+        assert '"attestation":"reconciled_late"' in body
+        assert '"attestation":"at_emission"' not in body
+
+    @staticmethod
+    def _stored(attestor, action_log_id: int):
+        chain = attestor._chain
+        assert chain is not None
+        row = attestor._executor.run(
+            chain.find_by_event_id, attestor.attestation_event_id(action_log_id)
+        )
+        assert row is not None
+        return row
+
+
+class TestFailureContainment:
+    async def test_an_append_failure_returns_none_rather_than_raising(
+        self, tmp_path
+    ) -> None:
+        """The caller marks the row failed and continues; it must not crash.
+
+        The action has already happened by the time signing runs, so a raised
+        exception here would turn a recording problem into an action-path
+        problem.
+        """
+        a = FirstPartyEvidenceAttestor(
+            db_path=str(tmp_path / "e.db"),
+            key_path=str(tmp_path / "device.key"),
+            device_secret=SECRET,
+            device_id=DEVICE,
+        )
+        assert await a.start() is True
+        # Close the underlying handles while leaving the attestor believing it
+        # is available, which is what a mid-flight failure looks like.
+        chain = a._chain
+        assert chain is not None
+        a._executor.run(chain.close)
+
+        assert await a.attest_action(_action_row(1)) is None
+        a.close()
+
+    async def test_the_chain_is_durable_across_close_and_reopen(self, tmp_path) -> None:
+        """Evidence that does not survive a restart evidences nothing."""
+        paths: dict[str, Any] = {
+            "db_path": str(tmp_path / "e.db"),
+            "key_path": str(tmp_path / "device.key"),
+            "device_secret": SECRET,
+            "device_id": DEVICE,
+        }
+        first = FirstPartyEvidenceAttestor(**paths)
+        assert await first.start() is True
+        seq = await first.attest_action(_action_row(7))
+        head = await first.chain_head_hash()
+        first.close()
+
+        second = FirstPartyEvidenceAttestor(**paths)
+        try:
+            assert await second.start() is True
+            assert await second.chain_head_hash() == head, "the head did not persist"
+            chain = second._chain
+            assert chain is not None
+            row = second._executor.run(
+                chain.find_by_event_id, second.attestation_event_id(7)
+            )
+            assert row is not None and int(row["seq"]) == seq
+            assert second._executor.run(chain.verify_chain) == [], (
+                "the reopened chain does not verify"
+            )
+            # And a retry after the restart still must not double-attest.
+            assert await second.attest_action(_action_row(7)) == seq
+        finally:
+            second.close()
