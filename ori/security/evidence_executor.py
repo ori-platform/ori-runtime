@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
@@ -140,22 +140,21 @@ class EvidenceExecutor:
         rather than returning a guarantee it has not met.
         """
         closing_elsewhere = False
+        pending: Future[None] | None = None
         with self._lock:
             claimed = self._state == self._OPEN
             if claimed:
                 # Ordinary submission is refused from here, before teardown is
                 # queued, so nothing can be admitted behind it.
                 self._state = self._CLOSING
-                pending = (
-                    self._executor.submit(teardown)
-                    if teardown is not None and not self.owns_current_thread
-                    else None
-                )
+                if teardown is not None and not self.owns_current_thread:
+                    pending = self._executor.submit(teardown)
             else:
                 # Someone else owns the shutdown. Decide here and wait outside
                 # the lock: that closer must take this same lock to record
                 # CLOSED, so waiting while holding it would deadlock both.
-                pending = None
+                # No teardown is queued on this path -- the closer that claimed
+                # the shutdown owns it.
                 closing_elsewhere = (
                     self._state == self._CLOSING and not self.owns_current_thread
                 )

@@ -191,7 +191,9 @@ def test_registration_runs_on_the_owner_thread_and_grants_nothing(executor) -> N
 
 def test_no_outcome_is_ever_authoritative() -> None:
     """Even a produced registration confers nothing until a confirmation lands."""
-    for status in RegistrationStatus:
+    # list() rather than iterating the class directly: some static
+    # analysers do not model Enum metaclass iteration.
+    for status in list(RegistrationStatus):
         outcome = RegistrationOutcome(status=status, registration={"v": 1})
         assert not outcome.authoritative
 

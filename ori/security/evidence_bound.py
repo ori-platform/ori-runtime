@@ -31,20 +31,30 @@ from ori.security.evidence_registrar import (
 class IngestBackend(Protocol):
     """What the ingest façade needs. Implemented by EvidenceIngestService."""
 
-    def accept_custody(self, artifact: object) -> IngestOutcome: ...
+    def accept_custody(self, artifact: object) -> IngestOutcome:
+        """Record that a courier holds an envelope. Never that it arrived."""
+        ...
 
-    def accept_receipt(self, artifact: object) -> IngestOutcome: ...
+    def accept_receipt(self, artifact: object) -> IngestOutcome:
+        """Apply an authority receipt for a contiguous delivered range."""
+        ...
 
-    def accept_epoch_confirmation(self, artifact: object) -> IngestOutcome: ...
+    def accept_epoch_confirmation(self, artifact: object) -> IngestOutcome:
+        """Activate an anchor epoch the authority has confirmed."""
+        ...
 
     @property
-    def rejections(self) -> tuple[IngestOutcome, ...]: ...
+    def rejections(self) -> tuple[IngestOutcome, ...]:
+        """Every artifact refused, so a refusal is visible rather than silent."""
+        ...
 
 
 class ConfirmedEpochProvider(Protocol):
     """What the confirmation façade reads. Implemented by ConfirmedEpochReader."""
 
-    def active_anchor_epoch_id(self, device_id: str) -> str | None: ...
+    def active_anchor_epoch_id(self, device_id: str) -> str | None:
+        """The epoch a signed confirmation proved active, or None."""
+        ...
 
 
 class BoundIngestService:

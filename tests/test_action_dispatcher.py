@@ -1949,24 +1949,40 @@ class TestWhichTiersReachEvidence:
         return SkillContext(skill=FakeSkill(), event=_event(), state_store=store), store
 
     async def test_a_tier_c_action_is_signed_on_the_dispatch_path(self):
+        """Tier C reaches evidence, whatever the approval workflow resolves to.
+
+        An earlier version of this test built a context and then dispatched with
+        a different, store-less one, so `_log_action` returned before reaching
+        the attestor -- and it asserted on Tier D, which a Tier C test cannot
+        stand on. It proved nothing about Tier C.
+        """
+        seen: list = []
+        ctx, store = self._ctx()
+        d = ActionDispatcher(
+            evidence_attestor=self._attestor(seen),
+            config={"approval_timeout_seconds": 0},
+        )
+        d.register_executor("open_safety_circuit", AsyncMock(return_value=True))
+        d.register_executor("log_to_dashboard", AsyncMock(return_value=True))
+
+        await d.dispatch(
+            "open_safety_circuit", ActionTier.HARD_PHYSICAL, ctx, _result()
+        )
+
+        assert seen, "a Tier C action never reached the evidence path"
+        tiers = [tier for tier, _reconciled in seen]
+        assert "C" in tiers, f"Tier C was not attested; saw {tiers}"
+        assert all(not reconciled for _tier, reconciled in seen), (
+            "emission-time signing was marked as late evidence"
+        )
+        store.log_action_for_event.assert_awaited()
+
+    async def test_a_tier_d_action_is_signed_on_the_dispatch_path(self):
         seen: list = []
         ctx, _store = self._ctx()
         d = ActionDispatcher(evidence_attestor=self._attestor(seen))
-        d.register_executor("open_safety_circuit", AsyncMock(return_value=True))
-        await d.dispatch(
-            "open_safety_circuit",
-            ActionTier.HARD_PHYSICAL,
-            _context(skill_config={"approval_timeout_seconds": 0}),
-            _result(),
-        )
-        # Tier C runs an approval workflow; what matters here is that whatever
-        # it resolves to is attested, not that it was approved.
-        ctx2, _ = self._ctx()
-        d2 = ActionDispatcher(evidence_attestor=self._attestor(seen))
-        d2.register_executor("emergency_cutoff", AsyncMock(return_value=True))
-        await d2.dispatch(
-            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx2, _result()
-        )
+        d.register_executor("emergency_cutoff", AsyncMock(return_value=True))
+        await d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result())
         assert ("D", False) in seen, "a Tier D action was not attested"
 
     @pytest.mark.parametrize(
