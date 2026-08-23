@@ -36,6 +36,32 @@ pip-compile requirements/pi.in --allow-unsafe --generate-hashes -o requirements/
 Do not edit `.txt` files manually. If a generated lock changes, the matching
 `.in` file or Dependabot PR should explain why.
 
+## One Lock Per Profile, Not Per Interpreter
+
+`runtime.txt` is a single hash-lock compiled under one interpreter and used for
+every published target, including the two Python 3.13 targets added for
+Raspberry Pi OS Trixie. It carries no environment markers, so the resolution
+does not branch on interpreter version.
+
+That is a decision, not an accident, and it holds only while the pinned set
+resolves binary-only on every target. It was measured rather than assumed
+before 3.13 was added: `pip download --require-hashes --only-binary=:all:` on
+`aarch64` under CPython 3.13 resolves the whole of `runtime.txt` from wheels,
+with `cp313` builds where a package is version-specific and `abi3` wheels for
+`cryptography` and `psutil`. Nothing fell back to a source distribution.
+
+Per-version locks would be the alternative, and they are worse while this
+holds: they multiply the files Dependabot maintains, they let two targets drift
+onto different resolved versions of the same dependency, and they make the
+bundle manifest describe a different dependency set per target. Keep one lock.
+
+**When to revisit.** If a future interpreter or dependency makes the
+binary-only resolution fail, do not paper over it by allowing source builds —
+a device installs from the wheelhouse with `--no-index --require-hashes` and
+cannot compile anything. Re-run the check above, and if it cannot pass, split
+the lock per interpreter version and update `scripts/build-wheelhouse.sh`, the
+release matrix, and the bundle manifest together.
+
 ## Wheelhouse Naming
 
 Source files live under `requirements/`, but device wheelhouses still emit

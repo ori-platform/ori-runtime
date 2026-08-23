@@ -2,20 +2,20 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""The bindings the host evidence harness kept getting wrong.
+"""Host evidence bindings, expressed so a checked value is the value used.
 
-Five review rounds found the same defect in five variables: a value checked in
-one place and used in another, with the two free to disagree. A target verified
-but not enforced. Tooling hash-locked but not used. An interpreter selected but
-not applied. A boot recorded but its version ignored. Each was a shell variable,
-and each was defended by a test that matched text rather than behaviour — which
-is how a comment containing a flag's name came to satisfy an assertion about
-the flag.
+Every claim this harness records depends on a binding between what was verified
+and what was then acted on: the target the artifact was signed for, the
+interpreter that will build it, the tooling that checks the signature, and the
+boot a passing install was recorded under. Held in shell variables, each of
+those is two independent facts that nothing forces to agree — verified in one
+place, consumed in another, with drift between them invisible.
 
-Here they are function arguments. Selecting the interpreter and returning it is
-one act; a caller cannot verify one thing and use another without saying so.
-The tests exercise these functions rather than reading the script that calls
-them.
+Here each is a function argument or a return value. Selecting an interpreter
+and reporting which one was selected is a single act, so a caller cannot verify
+one thing and use another without writing that down explicitly. The tests
+exercise these functions directly, which means a binding that drifts changes
+observable behaviour rather than only the text of the script.
 
 Shell keeps what shell is for: `sudo`, `systemctl`, and dispatching phases.
 
@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-SUPPORTED_PYTHON = ("3.11", "3.12")
+SUPPORTED_PYTHON = ("3.11", "3.12", "3.13")
 SIGNATURE_DOMAIN = b"ori.runtime_release_bundle_signature.v1\0"
 _ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 

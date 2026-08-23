@@ -18,12 +18,21 @@ and Debian Bookworm supplies Python 3.11.
 | --- | --- | --- | --- |
 | Raspberry Pi OS Bookworm | `aarch64` | 3.11 (stock) | Production-supported |
 | Ubuntu 24.04 | `x86_64` | 3.12 (stock) | Production-supported |
-| Other published bundles | `x86_64`, `aarch64` | 3.11, 3.12 | Community compatibility |
+| Raspberry Pi OS Trixie | `aarch64` | 3.13 (stock) | Bundle published, hardware validation pending |
+| Other published bundles | `x86_64`, `aarch64` | 3.11, 3.12, 3.13 | Community compatibility |
 
-Fedora is deferred compatibility work: current releases ship Python 3.13, for
-which no bundle is published, and validating one requires full dependency and
-runtime work rather than a hurried artifact. Fedora provides a separate
-`python3.12` package that a future evidenced tuple can build on.
+Trixie is listed separately rather than as production-supported, because the
+two are different claims and only one of them is evidenced. A published bundle
+means the target builds, signs, verifies and passes the suite. Production
+support means an installation was carried out on the hardware and survived a
+reboot, and that has not been done for Trixie. The distinction is the whole
+point of expressing support as tested tuples, so it is not collapsed here for
+the convenience of a shorter table.
+
+Fedora is deferred compatibility work. Its current releases ship Python 3.13,
+which is now a published target, so the interpreter is no longer the obstacle —
+what remains is that no Fedora tuple has been evidenced, and validating one is
+distribution work rather than interpreter work.
 
 ## Reporting a Vulnerability
 

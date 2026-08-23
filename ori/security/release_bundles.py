@@ -49,7 +49,7 @@ _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _VERSION_RE = re.compile(
     r"^(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}(?:-rc\.[1-9][0-9]*)?$"
 )
-_TARGET_RE = re.compile(r"^linux-(?:x86_64|aarch64)-python3\.(?:11|12)$")
+_TARGET_RE = re.compile(r"^linux-(?:x86_64|aarch64)-python3\.(?:11|12|13)$")
 _KEY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _MAX_JSON_BYTES = 1024 * 1024
 _MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
@@ -565,7 +565,12 @@ def _verify_extracted_manifest(
         _fail("bundle_manifest_mismatch", "manifest target mismatch")
     python_version = manifest.get("python")
     expected_python = verified.target.rsplit("python", 1)[1]
-    if python_version != expected_python:
+    # The manifest is untrusted input, so the field's type is asserted rather
+    # than inferred from the comparison. A bare `!=` against the expected
+    # string does reject a non-string, but only as a side effect of the values
+    # differing, and it leaves the surviving value untyped for anything that
+    # consumes it below.
+    if not isinstance(python_version, str) or python_version != expected_python:
         _fail("bundle_manifest_mismatch", "manifest Python version mismatch")
 
     declared = manifest.get("files")

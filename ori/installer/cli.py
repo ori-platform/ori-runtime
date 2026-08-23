@@ -47,19 +47,38 @@ from ori.utils import terminal
 _SERVICE_NAME = "ori-runtime.service"
 
 
+#: Interpreter versions with a published release bundle. Named rather than
+#: inlined so that the tests exercising this boundary read the set the function
+#: actually enforces: a hardcoded copy in a test file is a second definition of
+#: the predicate, and adding a target would leave the copy asserting that a
+#: supported version is rejected.
+SUPPORTED_PYTHON_VERSIONS = frozenset({"3.11", "3.12", "3.13"})
+
+#: Architectures a release publishes bundles for, in the spelling a target
+#: tuple uses. `_ARCHITECTURE_ALIASES` below maps what a host reports onto
+#: these; this is the set of distinct answers, not the set of accepted inputs.
+SUPPORTED_ARCHITECTURES = frozenset({"x86_64", "aarch64"})
+
+#: What `platform.machine()` may report for each supported architecture.
+_ARCHITECTURE_ALIASES = {
+    "amd64": "x86_64",
+    "x86_64": "x86_64",
+    "arm64": "aarch64",
+    "aarch64": "aarch64",
+}
+
+
 def detected_release_target() -> str:
     """Return the v1 release target for this interpreter and Linux machine."""
     if platform.system() != "Linux":
         raise ReleaseBundleError("unsupported_target", "installer requires Linux")
     architecture = platform.machine().lower()
-    normalized_architecture = {
-        "amd64": "x86_64",
-        "x86_64": "x86_64",
-        "arm64": "aarch64",
-        "aarch64": "aarch64",
-    }.get(architecture)
+    normalized_architecture = _ARCHITECTURE_ALIASES.get(architecture)
     python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-    if normalized_architecture is None or python_version not in {"3.11", "3.12"}:
+    if (
+        normalized_architecture is None
+        or python_version not in SUPPORTED_PYTHON_VERSIONS
+    ):
         raise ReleaseBundleError(
             "unsupported_target", "Linux architecture or Python version is unsupported"
         )

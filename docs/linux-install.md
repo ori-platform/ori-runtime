@@ -16,7 +16,7 @@ different guarantees.
 | Requirement | Why |
 | --- | --- |
 | Linux on `x86_64` or `aarch64` | The only published targets |
-| Python 3.11 or 3.12 | Bundles are built per interpreter version |
+| Python 3.11, 3.12 or 3.13 | Bundles are built per interpreter version |
 | Bash | The bootstrap is a Bash/Python polyglot and refuses other shells |
 | OpenSSL 3 or newer | Ed25519 verification needs `pkeyutl -rawin` |
 | systemd | The runtime is installed as a managed service |
@@ -28,16 +28,37 @@ interpreter version:
 | --- | --- | --- | --- |
 | Raspberry Pi OS Bookworm | `aarch64` | 3.11 (stock) | Production-supported |
 | Ubuntu 24.04 | `x86_64` | 3.12 (stock) | Production-supported |
-| Other published bundles | `x86_64`, `aarch64` | 3.11, 3.12 | Community compatibility |
+| Raspberry Pi OS Trixie | `aarch64` | 3.13 (stock) | Bundle published, hardware validation pending |
+| Other published bundles | `x86_64`, `aarch64` | 3.11, 3.12, 3.13 | Community compatibility |
 
-Both production tuples use the interpreter their distribution ships, so no
-manual Python installation is required.
+Every tuple above uses the interpreter its distribution ships, so no manual
+Python installation is required. Trixie is listed as a published bundle rather
+than production-supported because those are different claims: the bundle
+builds, signs, verifies and passes the suite on 3.13, and an installation on
+the hardware followed by a reboot has not yet been evidenced.
 
 Where the distribution's `python3` is some other version, the installer looks
-for a supported one rather than refusing the host: it tries `python3.12`,
-`python3.11`, then `python3`, and uses the first that reports 3.11 or 3.12. A
-workstation whose default is 3.10 installs normally as long as one of those is
-present. If none is, the installer says so and names what to install.
+for a supported one rather than refusing the host: it tries `python3.13`,
+`python3.12`, `python3.11`, then `python3`, and uses the first that reports a
+supported version. A workstation whose default is 3.10 installs normally as
+long as one of those is present. If none is, the installer says so — and names
+a package only after asking `apt-cache policy` whether this host can actually
+install it, so it never sends you to a command that cannot work.
+
+### Trixie before 3.13 bundles existed
+
+Earlier releases published 3.11 and 3.12 only, so a stock Trixie host reported
+`unsupported_target` despite being perfectly capable. The documented workaround
+was to install 3.12 and point a root-owned `/usr/local/bin/python3.12` at it,
+which `ori/installer/trusted_paths.py` accepts deliberately — a root-owned
+symlink under a root-owned prefix satisfies the system-scope trust check.
+
+**That step is no longer needed.** It remains valid, and an installation made
+that way keeps working, but a fresh Trixie install should simply use the stock
+`python3`. If you set up such a symlink, note that re-running the installer now
+selects `python3.13` ahead of it, which installs the 3.13 bundle rather than
+the 3.12 one — a normal interpreter change, not a fault, and identity and data
+are preserved across it.
 
 **System scope additionally requires that interpreter to be one only root can
 change.** The release's environment is built from it and links back to it, so a
@@ -45,15 +66,16 @@ Python installed under pyenv, a home directory, or any other prefix an
 unprivileged account can write would produce a release whose executing code
 that account could replace. The installer checks this before it changes
 anything and stops with the package-manager command if it fails; a distribution
-Python (`sudo apt install python3.12`) satisfies it. User scope is unaffected —
+Python (`sudo apt install python3`) satisfies it. User scope is unaffected —
 it never claims code the runtime cannot rewrite.
 
 **Raspberry Pi OS Bullseye is not supported.** It ships OpenSSL 1.1.1, which
 cannot perform the required verification — the installer reports
 `crypto_unavailable` rather than pretending otherwise.
 
-**Fedora is deferred.** Current releases ship Python 3.13, for which no bundle
-is published, so the bootstrap reports `unsupported_target`.
+**Fedora is deferred.** Its current releases ship Python 3.13, which is now a
+published target, so the interpreter is no longer the obstacle. What remains is
+that no Fedora tuple has been evidenced end to end.
 
 ---
 

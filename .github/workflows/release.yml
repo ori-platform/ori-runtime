@@ -90,7 +90,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - name: Harden runner
@@ -189,6 +189,12 @@ jobs:
           - target: linux-aarch64-python3.12
             runner: ubuntu-24.04-arm
             python-version: "3.12"
+          - target: linux-x86_64-python3.13
+            runner: ubuntu-24.04
+            python-version: "3.13"
+          - target: linux-aarch64-python3.13
+            runner: ubuntu-24.04-arm
+            python-version: "3.13"
 
     steps:
       - name: Harden runner
@@ -305,10 +311,10 @@ jobs:
             echo "know what to look for and must not report success" >&2
             exit 1
           fi
-          # Selected by marker, not by name. An earlier revision matched
-          # "wheelhouse or supplied", which silently omitted the document
-          # audit — a check that reads the denylist but happens not to carry
-          # either word in its name.
+          # Selected by marker, not by name. Matching on a name fragment such
+          # as "wheelhouse or supplied" silently omits the document audit — a
+          # check that reads the denylist but happens to carry neither word in
+          # its name.
           ORI_DISCLOSURE_DENYLIST="${terms}" python -m pytest \
             tests/test_evidence_disclosure.py -m disclosure_release -q
 
@@ -691,6 +697,8 @@ jobs:
             --target linux-x86_64-python3.12 \
             --target linux-aarch64-python3.11 \
             --target linux-aarch64-python3.12 \
+            --target linux-x86_64-python3.13 \
+            --target linux-aarch64-python3.13 \
             --workspace "${{ runner.temp }}/reverify"
 
       # always() so the outcome is recorded even when an earlier step failed;

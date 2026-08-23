@@ -91,28 +91,65 @@ def test_detected_release_target_normalizes_supported_machine(
     assert cli.detected_release_target() == "linux-aarch64-python3.12"
 
 
+def _unsupported_minor_versions() -> tuple[int, int]:
+    """One minor version below the supported range, and one above it.
+
+    Naming them outright is how this test came to assert that 3.13 was
+    unsupported, which stayed true only until 3.13 became a release target. The
+    edges move with the set; what does not move is that the version immediately
+    outside it in either direction must be refused.
+    """
+    minors = sorted(
+        int(version.split(".", 1)[1]) for version in cli.SUPPORTED_PYTHON_VERSIONS
+    )
+    return minors[0] - 1, minors[-1] + 1
+
+
 @pytest.mark.parametrize(
-    ("system", "machine", "version"),
+    ("system", "machine"),
     [
-        ("Darwin", "arm64", (3, 12)),
-        ("Linux", "riscv64", (3, 12)),
-        ("Linux", "x86_64", (3, 13)),
+        ("Darwin", "arm64"),
+        ("Linux", "riscv64"),
     ],
 )
 def test_detected_release_target_rejects_unsupported_host(
     monkeypatch: pytest.MonkeyPatch,
     system: str,
     machine: str,
-    version: tuple[int, int],
 ) -> None:
+    """A supported interpreter does not rescue an unsupported platform."""
     monkeypatch.setattr(cli.platform, "system", lambda: system)
     monkeypatch.setattr(cli.platform, "machine", lambda: machine)
-    monkeypatch.setattr(
-        cli.sys, "version_info", SimpleNamespace(major=version[0], minor=version[1])
-    )
+    monkeypatch.setattr(cli.sys, "version_info", SimpleNamespace(major=3, minor=12))
 
     with pytest.raises(ReleaseBundleError, match="unsupported_target"):
         cli.detected_release_target()
+
+
+@pytest.mark.parametrize("minor", _unsupported_minor_versions())
+def test_detected_release_target_rejects_interpreters_outside_the_set(
+    monkeypatch: pytest.MonkeyPatch, minor: int
+) -> None:
+    """An otherwise-supported host on an interpreter with no bundle is refused."""
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(cli.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(cli.sys, "version_info", SimpleNamespace(major=3, minor=minor))
+
+    with pytest.raises(ReleaseBundleError, match="unsupported_target"):
+        cli.detected_release_target()
+
+
+@pytest.mark.parametrize("version", sorted(cli.SUPPORTED_PYTHON_VERSIONS))
+def test_detected_release_target_accepts_every_published_version(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    """Every version with a published bundle resolves to that bundle's target."""
+    monkeypatch.setattr(cli.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(cli.platform, "machine", lambda: "aarch64")
+    minor = int(version.split(".", 1)[1])
+    monkeypatch.setattr(cli.sys, "version_info", SimpleNamespace(major=3, minor=minor))
+
+    assert cli.detected_release_target() == f"linux-aarch64-python{version}"
 
 
 def test_install_verifies_before_extracting_and_composing(

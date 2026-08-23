@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import runpy
 import shutil
 import subprocess
@@ -17,6 +18,9 @@ from typing import Any
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+from ori.installer import cli
+from ori.security import release_bundles
 
 
 @pytest.fixture
@@ -454,8 +458,40 @@ def test_unexpected_faults_are_not_blamed_on_the_archive() -> None:
 # --- interpreter discovery -------------------------------------------------
 
 
-def _selected_interpreter(tmp_path: Path, entries: dict[str, str | None]) -> str:
-    """Run the real preamble and report which interpreter it chose."""
+def _supported_versions() -> frozenset[str]:
+    """The versions the real preamble accepts, read out of the preamble itself.
+
+    A fake interpreter has to decide whether to report success, and the obvious
+    way to write that is a literal list in this file. That is a second
+    implementation of the predicate the script owns: add a release target and
+    the two disagree silently, with the weaker copy deciding what the tests
+    believe. Reading the probe's own tuple keeps one source of truth, and a
+    version added to the script is a version these tests immediately exercise.
+    """
+    probe = re.search(
+        r"sys\.version_info\[:2\] in \((.*?)\) else 1", _preamble(), re.DOTALL
+    )
+    assert probe is not None, "the interpreter probe is no longer recognisable"
+    versions = frozenset(
+        f"{major}.{minor}" for major, minor in re.findall(r"\((\d+), (\d+)\)", probe[1])
+    )
+    assert versions, "no supported versions parsed from the interpreter probe"
+    return versions
+
+
+def _selected_interpreter(
+    tmp_path: Path,
+    entries: dict[str, str | None],
+    *,
+    apt_candidates: dict[str, str] | None = None,
+) -> str:
+    """Run the real preamble and report which interpreter it chose.
+
+    *apt_candidates* installs a fake `apt-cache` on PATH mapping a package name
+    to the `Candidate:` value it reports. Omitting it leaves `apt-cache` absent,
+    which is the non-Debian host.
+    """
+    supported = _supported_versions()
     binaries = tmp_path / "bin"
     binaries.mkdir(exist_ok=True)
     for name, version in entries.items():
@@ -468,12 +504,28 @@ def _selected_interpreter(tmp_path: Path, entries: dict[str, str | None]) -> str
             script.write_text(
                 "#!/bin/sh\n"
                 'case "$*" in\n'
-                f"  *version_info*) exit {0 if version in ('3.11', '3.12') else 1} ;;\n"
+                f"  *version_info*) exit {0 if version in supported else 1} ;;\n"
                 f'  *) echo "{name}" ;;\n'
                 "esac\n",
                 encoding="utf-8",
             )
         script.chmod(0o755)
+
+    if apt_candidates is not None:
+        cases = "".join(
+            f'  {package}) echo "  Candidate: {candidate}" ;;\n'
+            for package, candidate in apt_candidates.items()
+        )
+        (binaries / "apt-cache").write_text(
+            "#!/bin/sh\n"
+            "# policy <package>\n"
+            'case "$2" in\n'
+            f"{cases}"
+            '  *) echo "N: Unable to locate package $2" >&2; exit 100 ;;\n'
+            "esac\n",
+            encoding="utf-8",
+        )
+        (binaries / "apt-cache").chmod(0o755)
 
     # bash by absolute path: PATH is reserved for the interpreters under test,
     # so a real python3 on the system PATH cannot be the one selected.
@@ -527,14 +579,108 @@ def test_a_named_interpreter_that_cannot_run_is_skipped(tmp_path: Path) -> None:
     assert chosen == "python3.11"
 
 
+def test_the_stock_trixie_interpreter_is_used(tmp_path: Path) -> None:
+    """Raspberry Pi OS Trixie ships 3.13 as python3 and only 3.13.
+
+    This is the shape that reported a supported host as unsupported before
+    3.13 became a release target, and it is the demo platform.
+    """
+    chosen = _selected_interpreter(tmp_path, {"python3": "3.13"})
+
+    assert chosen == "python3"
+
+
 def test_a_host_with_no_supported_interpreter_is_told_what_to_install(
     tmp_path: Path,
 ) -> None:
-    chosen = _selected_interpreter(tmp_path, {"python3": "3.10"})
+    """A Debian host is named a package its own sources can supply."""
+    chosen = _selected_interpreter(
+        tmp_path,
+        {"python3": "3.10"},
+        apt_candidates={"python3.12": "3.12.3-0ubuntu1"},
+    )
 
     assert chosen.startswith("ERROR:")
     assert "unsupported_target" in chosen
-    assert "3.11 or 3.12" in chosen
+    assert "sudo apt install python3.12" in chosen
+
+
+def test_a_package_the_host_cannot_supply_is_never_named(tmp_path: Path) -> None:
+    """`apt-cache policy` reports `(none)` for a package no source provides.
+
+    Trixie is exactly this case for `python3.12`: the name is known to apt
+    through some dependency but nothing can install it. Naming it would send
+    an operator to a command that fails, which is what this message did before.
+    """
+    chosen = _selected_interpreter(
+        tmp_path,
+        {"python3": "3.10"},
+        apt_candidates={"python3.12": "(none)", "python3.11": "(none)"},
+    )
+
+    assert chosen.startswith("ERROR:")
+    assert "apt install" not in chosen
+    assert "docs/linux-install.md" in chosen
+
+
+def test_a_host_without_apt_is_pointed_at_the_documented_route(
+    tmp_path: Path,
+) -> None:
+    """No `apt-cache` at all — a non-Debian host — still gets somewhere to go."""
+    chosen = _selected_interpreter(tmp_path, {"python3": "3.10"})
+
+    assert chosen.startswith("ERROR:")
+    assert "apt install" not in chosen
+    assert "docs/linux-install.md" in chosen
+
+
+def test_every_declaration_of_the_supported_set_agrees() -> None:
+    """The supported interpreter versions are declared five times. Pin them together.
+
+    They cannot be reduced to one declaration, and that is not an oversight.
+    `scripts/install-linux.sh` runs before anything is installed and
+    `scripts/evidence_host.py` runs on an operator's machine before the package
+    exists, so neither may import `ori`; the bash probe and the Python half of
+    the polyglot are read by different interpreters and cannot share a literal.
+
+    What can be removed is the silence when they drift. A partial update leaves
+    a host that the bash preamble accepts and `detected_release_target` then
+    refuses, or a bundle the release verifier admits and the installer will not
+    run — each of which reads as an unrelated fault at a different layer.
+    """
+    preamble = _preamble()
+    script = Path("scripts/install-linux.sh").read_text(encoding="utf-8")
+    harness = Path("scripts/evidence_host.py").read_text(encoding="utf-8")
+
+    # The Python half of the polyglot: everything the bash preamble never parses.
+    python_half = script[len(preamble) :]
+    polyglot_versions = re.search(r"python_version not in \{([^}]*)\}", python_half)
+    assert polyglot_versions is not None, "detected_target's version set moved"
+
+    harness_versions = re.search(r"SUPPORTED_PYTHON = \(([^)]*)\)", harness)
+    assert harness_versions is not None, "evidence_host's version set moved"
+
+    declarations = {
+        "install-linux.sh bash probe": _supported_versions(),
+        "install-linux.sh detected_target": frozenset(
+            re.findall(r"3\.\d+", polyglot_versions[1])
+        ),
+        "evidence_host.SUPPORTED_PYTHON": frozenset(
+            re.findall(r"3\.\d+", harness_versions[1])
+        ),
+        "cli.SUPPORTED_PYTHON_VERSIONS": frozenset(cli.SUPPORTED_PYTHON_VERSIONS),
+    }
+    expected = declarations["cli.SUPPORTED_PYTHON_VERSIONS"]
+    assert expected, "the installer declares no supported versions"
+    for name, versions in declarations.items():
+        assert versions == expected, f"{name} declares {sorted(versions)}"
+
+    # The signed-bundle target grammar is the fifth, and it is what decides
+    # whether an authentic bundle is admitted at all.
+    for version in expected:
+        assert release_bundles._TARGET_RE.fullmatch(f"linux-aarch64-python{version}")
+    outside = f"3.{max(int(v.split('.')[1]) for v in expected) + 1}"
+    assert not release_bundles._TARGET_RE.fullmatch(f"linux-aarch64-python{outside}")
 
 
 def test_the_preamble_always_hands_off_before_python_begins() -> None:

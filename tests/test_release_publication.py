@@ -13,6 +13,8 @@ from typing import Any
 import pytest
 import yaml
 
+from ori.installer import cli
+
 WORKFLOW_PATH = Path(".github/workflows/release.yml")
 SHA_PIN_RE = re.compile(r"^[^\s@]+@[0-9a-f]{40}$")
 
@@ -374,8 +376,22 @@ def test_main_maps_bad_input_to_stable_exit_code(
     assert verifier["main"]([*arguments, "--workspace", "relative"]) == code
 
 
+def _triggers(workflow: dict[str, Any]) -> Any:
+    """The workflow's `on:` block, whichever key YAML parsed it under.
+
+    YAML 1.1 reads a bare `on` as the boolean true, so a document loaded with
+    `yaml.safe_load` may carry the trigger block under `True` rather than
+    `"on"`. Both are looked up, and the key type is widened at the boundary so
+    the lookup does not depend on which one this parser happened to produce.
+    """
+    keys: dict[Any, Any] = workflow
+    if True in keys:
+        return keys[True]
+    return keys["on"]
+
+
 def test_release_runs_only_on_immutable_version_tags(workflow: dict[str, Any]) -> None:
-    triggers = workflow[True] if True in workflow else workflow["on"]
+    triggers = _triggers(workflow)
 
     assert set(triggers) == {"push"}
     assert set(triggers["push"]) == {"tags"}
@@ -558,21 +574,70 @@ def test_publication_ships_the_bootstrap_with_its_checksum(
     assert "gh release create" in publish
 
 
+def _built_targets(workflow: dict[str, Any]) -> list[str]:
+    """Every target the build matrix produces a signed bundle for."""
+    matrix = workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
+    targets = [str(entry["target"]) for entry in matrix]
+    assert targets, "the build matrix names no targets"
+    return targets
+
+
 def test_publication_is_reverified_from_the_public_origin(
     workflow: dict[str, Any],
 ) -> None:
+    """Every built target is reverified, with the list taken from the matrix.
+
+    Naming the targets here instead would make this assertion a copy of the
+    matrix rather than a check on it: adding a release target and forgetting
+    the reverification step would leave a bundle published to the public origin
+    and never re-fetched from it, with this test still green. The matrix is the
+    only place a target is declared, so it is the only place to read it from.
+    """
     reverify = "\n".join(
         str(step.get("run", "")) for step in _steps(workflow, "reverify")
     )
 
     assert "scripts/verify_published_release.py" in reverify
-    for target in (
-        "linux-x86_64-python3.11",
-        "linux-x86_64-python3.12",
-        "linux-aarch64-python3.11",
-        "linux-aarch64-python3.12",
-    ):
-        assert target in reverify
+    for target in _built_targets(workflow):
+        assert target in reverify, f"built target {target} is never reverified"
+
+
+def test_the_installer_accepts_exactly_the_versions_that_are_published(
+    workflow: dict[str, Any],
+) -> None:
+    """`detected_release_target` must admit a host iff a bundle exists for it.
+
+    The two failures this catches are opposite and both silent. A version in
+    the installer's set with no target built is a host told it is supported
+    and then handed a 404 mid-install. A target built with no version in the
+    set is a bundle nobody can install, published every release.
+
+    Deriving the installer's edges from its own set — which is the tempting
+    way to write this — asserts nothing: widen the set and the edges widen
+    with it. The matrix is the independent fact, because it is what actually
+    gets built, signed and published.
+    """
+    published = {target.rsplit("python", 1)[1] for target in _built_targets(workflow)}
+
+    assert cli.SUPPORTED_PYTHON_VERSIONS == published
+
+
+def test_every_supported_tuple_is_actually_built(workflow: dict[str, Any]) -> None:
+    """Both dimensions, not just the version one.
+
+    Checking versions alone leaves the architecture dimension unguarded:
+    dropping `linux-x86_64-python3.13` while keeping the aarch64 build still
+    contributes `3.13` to the published version set, so the version assertion
+    stays green while half a release goes missing. The installer promises a
+    bundle for every combination it admits, so the product is the invariant.
+    """
+    expected = {
+        f"linux-{architecture}-python{version}"
+        for architecture in cli.SUPPORTED_ARCHITECTURES
+        for version in cli.SUPPORTED_PYTHON_VERSIONS
+    }
+
+    assert set(_built_targets(workflow)) == expected
 
 
 @pytest.fixture(scope="module")
