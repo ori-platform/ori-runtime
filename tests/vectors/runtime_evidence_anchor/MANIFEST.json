@@ -1,0 +1,9 @@
+{
+  "source_repository": "ori-platform/ori-specs",
+  "source_path": "runtime-evidence-anchor/vectors",
+  "source_commit": "c6d780fe9023464dd1524c5edb133c85834e6c5f",
+  "note": "Vendored copies of the normative vectors. The runtime must reproduce the derivations they describe. Digests detect a local edit; the source commit is the provenance trail.",
+  "files": {
+    "runtime-anchor.json": "bd8e46cdff590447213d99e892b7f67480188134163d0a207e9f396b94847190"
+  }
+}

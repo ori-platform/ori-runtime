@@ -5,43 +5,44 @@
   "canonicalisation": "json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False).encode('utf-8')",
   "authenticator_note": "Cases marked authenticator=valid must pass cryptographic verification so the semantic rule under test is actually reached. Cases marked invalid fail verification itself.",
   "warning": "Seeds below are published test values and must never sign anything real.",
+  "key_purpose": "evidence_authority_epoch",
+  "signing_key_seed_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "signing_key_public_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+  "receipt_authority_seed_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
   "cases": [
     {
       "name": "valid",
       "authenticator": "valid",
       "expected": "accept",
       "note": "Canonical bytes reproduce and the signature verifies.",
-      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a2265706f63682d30303032222c22636f6e6669726d65645f61745f6d73223a313738373030303030323030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a22617574682d65706f63682d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c2276223a317d",
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c22636f6e6669726d65645f61745f6d73223a313738373030303030323030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a22617574682d65706f63682d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c2276223a317d",
       "artifact": {
-        "actor": "commissioning@site",
-        "anchor_epoch_id": "epoch-0002",
-        "confirmed_at_ms": 1787000002000,
-        "device_id": "energy-monitor-ikeja-01",
-        "key_id": "auth-epoch-1",
-        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
         "v": 1,
-        "signature": "ed25519:Xn7qPiCJvmXXOJyHYAwTE1kFkeXTpvvUGYLmk0js8dauIcg0yJ252+pV/K437Kq8usOdJSaWRmKRor+GmapiCQ=="
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "actor": "commissioning@site",
+        "confirmed_at_ms": 1787000002000,
+        "key_id": "auth-epoch-1",
+        "signature": "ed25519:G8vXCTcfnGtzMVZlRqO9Gbxx8lJz5rD+oBkZn2cn7r8U/w/jDFUzTFVFJe2oLkneeGQ8KgN7QRUt4QTWDQGTCg=="
       }
     },
     {
       "name": "signed_with_receipt_key",
       "authenticator": "valid",
       "expected": "reject",
-      "note": "Cryptographically sound under the receipt key. A receipt key cannot assert that an epoch became effective, so the refusal is purpose separation.",
-      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a2265706f63682d30303032222c22636f6e6669726d65645f61745f6d73223a313738373030303030323030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a22617574682d65706f63682d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c2276223a317d",
+      "note": "Cryptographically sound under the receipt key. A receipt key cannot assert that an epoch became active: purpose separation is the rule under test.",
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c22636f6e6669726d65645f61745f6d73223a313738373030303030323030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a22617574682d65706f63682d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c2276223a317d",
       "artifact": {
-        "actor": "commissioning@site",
-        "anchor_epoch_id": "epoch-0002",
-        "confirmed_at_ms": 1787000002000,
-        "device_id": "energy-monitor-ikeja-01",
-        "key_id": "auth-epoch-1",
-        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
         "v": 1,
-        "signature": "ed25519:aqvNkLpNSdrdGApddw59uTgcrXwRHfbEk7ws7CGlp0H/L5cZFPiald4ibtbvubx6CMuyYK1UeYWPcdaYGDGZAg=="
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "actor": "commissioning@site",
+        "confirmed_at_ms": 1787000002000,
+        "key_id": "auth-epoch-1",
+        "signature": "ed25519:dS/NJNFoc9QsoVDOK82Jw4TQLQf/OvjqEGYigulm2IIwwsX0ad4zfxeWIRbDjF6a6KVt6SfAA40e7tQMgSYOAw=="
       }
     }
-  ],
-  "key_purpose": "evidence_authority_epoch",
-  "signing_key_seed_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
-  "signing_key_public_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5"
+  ]
 }

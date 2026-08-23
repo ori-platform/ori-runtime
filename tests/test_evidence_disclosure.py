@@ -42,7 +42,8 @@ import zipfile
 
 import pytest
 
-from ori.security import evidence as evidence_module
+from ori.security import evidence_policy as evidence_module
+from ori.security.evidence_first_party import FirstPartyEvidenceAttestor
 
 PACKAGE_ROOT = pathlib.Path(evidence_module.__file__).resolve().parent.parent
 REPO_ROOT = PACKAGE_ROOT.parent
@@ -134,7 +135,8 @@ def _operator_messages() -> list[tuple[str, int, str]]:
 
 
 EVIDENCE_DEDICATED_MODULES = (
-    "security/evidence.py",
+    "security/evidence_first_party.py",
+    "security/evidence_policy.py",
     "security/firmware_confirmation.py",
     "security/firmware_reconciliation.py",
 )
@@ -218,17 +220,27 @@ REVIEWED_OPERATOR_MESSAGES = frozenset(
         "[evidence] evidence signing is unavailable (%s); Tier C/D "
         "actions continue and are recorded as attestation gaps until "
         "signing is restored.",
-        "[evidence] evidence store open at %s; this device's verification anchor is %s",
+        # Reviewed: names a local epoch identifier and the fact that an
+        # authorisation is absent. Says nothing about who issues one, where
+        # they are held, or that any off-device party exists.
+        "[evidence] anchor registration for epoch %s is pending: no "
+        "commissioning authorisation is held",
+        # Reviewed: a sanitised failure reason for a local handle. No path,
+        # no identity, no exception detail.
+        "[evidence] an evidence handle did not close cleanly (%s)",
+        # Reviewed: both report that a local read of this device's own state
+        # failed, with a sanitised reason. Neither names a path, an identity,
+        # or anything about who receives evidence.
+        "[evidence] chain head read failed (%s)",
+        "[evidence] pending count read failed (%s)",
+        # Reviewed: says only that this device's own high-water mark was not
+        # advanced, and that it will retry. Nothing about who receives a
+        # checkpoint, or that anyone does.
+        "[evidence] could not issue a checkpoint (%s); the high-water "
+        "mark is unchanged and the next interval will retry",
         "[confirmation] startup drain: %d of %d devices confirmed",
         "[confirmation] reconciled %d of %d outstanding obligations",
-        "[evidence] evidence signing is unavailable: this runtime "
-        "requires protocol %s with idempotent appends and the local "
-        "store does not provide it. Tier C/D actions continue and are "
-        "recorded as attestation gaps.",
         "[evidence] failed to sign action_log id=%s tier=%s",
-        "[evidence] chain head read failed",
-        "[evidence] pending count read failed",
-        "[evidence] chain release on evidence thread failed",
         "[evidence] failed to record reconciliation for action id=%s",
         "[evidence] startup reconciliation: %d repaired, %d still unsigned",
         "[evidence] reconciliation scan failed",
@@ -311,56 +323,71 @@ def _capture(level: int):
 
 
 @pytest.mark.asyncio
-async def test_a_failing_artifact_load_discloses_nothing_to_the_operator(
+async def test_a_failing_evidence_open_discloses_nothing_to_the_operator(
     monkeypatch, tmp_path
 ):
     """The traceback, not the message, was the leak.
 
-    Reproduced before it was fixed: the configured module name appeared in the
-    operator's journal through `exc_info=True`, where auditing every format
-    string would never have found it.
+    Reproduced before it was fixed: a configured path reached the operator's
+    journal through `exc_info=True`, where auditing every format string would
+    never have found it. The loader that leaked it is gone, but the surface is
+    not -- a first-party open still fails against real paths, and must still say
+    nothing about them.
     """
-    monkeypatch.setenv("ORI_EVIDENCE_ARTIFACT_MODULE", POISON)
+    poisoned_dir = tmp_path / POISON
+    poisoned_dir.mkdir()
+    key_path = poisoned_dir / "e.key"
+    key_path.write_bytes(b"not a sealed key")
     buffer, restore = _capture(logging.WARNING)
+    attestor: FirstPartyEvidenceAttestor | None = None
     try:
-        attestor = evidence_module.EvidenceAttestor(
-            db_path=str(tmp_path / "e.db"),
-            key_path=str(tmp_path / "e.key"),
+        attestor = FirstPartyEvidenceAttestor(
+            db_path=str(poisoned_dir / "e.db"),
+            key_path=str(key_path),
             device_secret="secret",
             device_id="dev-1",
         )
         assert await attestor.start() is False
         assert POISON not in buffer.getvalue(), (
-            "the configured artifact module name reached the operator's journal"
+            "a configured path reached the operator's journal"
         )
     finally:
         restore()
+        # Guarded: a constructor failure must report itself, not be replaced by
+        # an UnboundLocalError raised while tearing down what was never built.
+        if attestor is not None:
+            attestor.close()
 
 
 @pytest.mark.asyncio
 async def test_nothing_discloses_even_at_debug(monkeypatch, tmp_path):
-    """DEBUG is a documented operator choice, not a private channel.
+    """DEBUG is an operator-selectable level, so it is not a private channel.
 
-    An earlier revision asserted the opposite — that the private name *should*
-    appear at DEBUG — which made an operator-selectable setting the boundary.
+    Relocating detail there does not protect it; only not producing it does.
     """
-    monkeypatch.setenv("ORI_EVIDENCE_ARTIFACT_MODULE", POISON)
+    poisoned_dir = tmp_path / POISON
+    poisoned_dir.mkdir()
+    key_path = poisoned_dir / "e.key"
+    key_path.write_bytes(b"not a sealed key")
     buffer, restore = _capture(logging.DEBUG)
+    attestor: FirstPartyEvidenceAttestor | None = None
     try:
-        attestor = evidence_module.EvidenceAttestor(
-            db_path=str(tmp_path / "e.db"),
-            key_path=str(tmp_path / "e.key"),
+        attestor = FirstPartyEvidenceAttestor(
+            db_path=str(poisoned_dir / "e.db"),
+            key_path=str(key_path),
             device_secret="secret",
             device_id="dev-1",
         )
-        await attestor.start()
-        assert POISON not in buffer.getvalue()
-        assert "module_unavailable" in buffer.getvalue(), (
-            "the failure category must survive, or removing disclosure has "
-            "removed diagnosability instead"
+        assert await attestor.start() is False
+        assert POISON not in buffer.getvalue(), (
+            "a configured path reached the operator's journal at DEBUG"
         )
     finally:
         restore()
+        # Guarded: a constructor failure must report itself, not be replaced by
+        # an UnboundLocalError raised while tearing down what was never built.
+        if attestor is not None:
+            attestor.close()
 
 
 def test_no_evidence_path_logging_attaches_an_exception():
@@ -584,13 +611,10 @@ def _supplied_denylist() -> list[str]:
 # worth keeping — until someone adds it here deliberately, and a vendored
 # third-party implementation never appears on this list because nobody would
 # add it.
-FIRST_PARTY_EVIDENCE_MODULES = frozenset(
-    {
-        "ori/security/evidence_chain.py",
-        "ori/security/evidence_canonical.py",
-        "ori/security/evidence_device_key.py",
-    }
-)
+# Only names the vendored-implementation pattern would otherwise flag. Listing
+# a name it does not match exempts nothing and reads as a judgement nobody made,
+# which the guard below refuses.
+FIRST_PARTY_EVIDENCE_MODULES = frozenset({"ori/security/evidence_chain.py"})
 
 
 VENDORED_IMPLEMENTATION = re.compile(
@@ -671,6 +695,25 @@ def test_the_built_wheel_names_no_foreign_evidence_implementation(built_wheel):
     assert not offenders, (
         "wheel entries name an evidence implementation that is not a "
         f"registered first-party module: {offenders}"
+    )
+
+
+def test_every_registry_entry_suppresses_a_real_check():
+    """An entry that exempts nothing is decoration that reads as a decision.
+
+    The registry allowlists module names that would otherwise be flagged as a
+    vendored evidence implementation. A name that does not match that pattern is
+    not being exempted from anything, so listing it implies a judgement nobody
+    made -- and hides how few names are genuinely load-bearing here.
+    """
+    decorative = sorted(
+        name
+        for name in FIRST_PARTY_EVIDENCE_MODULES
+        if not VENDORED_IMPLEMENTATION.search(name)
+    )
+    assert not decorative, (
+        "these entries exempt nothing, because their names do not match the "
+        f"vendored-implementation pattern: {decorative}"
     )
 
 

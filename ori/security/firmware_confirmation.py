@@ -38,7 +38,7 @@ import asyncio
 import logging
 from typing import Any
 
-from ori.security.evidence import _public_key_b64_to_hex
+from ori.security.evidence_anchor import _public_key_b64_to_hex
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)

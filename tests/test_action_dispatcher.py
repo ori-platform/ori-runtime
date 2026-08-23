@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from ori.network.events import (
     ActionResult,
     ActionTier,
@@ -1784,3 +1786,298 @@ class TestSnapshotBuildFailureIsContained:
         # The snapshot could not be built, so nothing spurious was logged.
         _, kwargs = store.log_action_for_event.await_args
         assert kwargs["input_firmware_registration"] == ""
+
+
+class TestTierDIsIndependentOfEvidence:
+    """Evidence unavailability must never prevent a physical safety action.
+
+    Tier D fires before any LLM and cannot be disabled or overridden. Evidence
+    is a record of what happened, not a precondition for it: a chain that will
+    not open, an attestor that raises, or an anchor registration still waiting
+    on a commissioning authorisation must not become the reason a relay failed
+    to open. Attestation is append-after-log for exactly this reason -- the
+    action executes first, and the record is written afterwards.
+
+    Every test here asserts that attestation was actually attempted. Without a
+    state store the dispatcher returns before it reaches the attestor, so a
+    test that only checked ``executed`` would pass while exercising nothing.
+    """
+
+    @staticmethod
+    def _attesting_context():
+        store = _mock_store()
+        store.set_action_attestation = AsyncMock(return_value=None)
+        store.log_action_for_event = AsyncMock(return_value=7)
+        store.get_firmware_device = AsyncMock(return_value=None)
+        return SkillContext(skill=FakeSkill(), event=_event(), state_store=store), store
+
+    async def test_tier_d_executes_when_the_attestor_raises(self):
+        attempted: list[str] = []
+
+        class _ExplodingAttestor:
+            available = True
+            public_key_hex = ""
+            artifact_version = ""
+            protocol_version = ""
+            action_event_type = "SAFETY_ACTION_EXECUTED"
+            atomic_freshness_available = False
+
+            async def attest_action(self, row):
+                attempted.append("attest")
+                raise RuntimeError("evidence chain is unavailable")
+
+        ctx, _store = self._attesting_context()
+        mock_exec = AsyncMock(return_value=True)
+        d = ActionDispatcher(evidence_attestor=_ExplodingAttestor())
+        d.register_executor("emergency_cutoff", mock_exec)
+
+        result = await d.dispatch(
+            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result()
+        )
+
+        assert attempted == ["attest"], "attestation was never attempted"
+        assert result.executed is True
+        assert result.tier == ActionTier.SAFETY_CRITICAL
+        mock_exec.assert_awaited()
+
+    async def test_tier_d_executes_when_attestation_returns_no_sequence(self):
+        """A chain that answers but seals nothing is still not a veto."""
+        attempted: list[str] = []
+
+        class _SilentAttestor:
+            available = True
+            public_key_hex = ""
+            artifact_version = ""
+            protocol_version = ""
+            action_event_type = "SAFETY_ACTION_EXECUTED"
+            atomic_freshness_available = False
+
+            async def attest_action(self, row):
+                attempted.append("attest")
+                return None
+
+        ctx, store = self._attesting_context()
+        mock_exec = AsyncMock(return_value=True)
+        d = ActionDispatcher(evidence_attestor=_SilentAttestor())
+        d.register_executor("emergency_cutoff", mock_exec)
+
+        result = await d.dispatch(
+            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result()
+        )
+
+        assert attempted == ["attest"]
+        assert result.executed is True
+        store.set_action_attestation.assert_awaited()
+
+    async def test_tier_d_executes_with_no_attestor_at_all(self):
+        ctx, _store = self._attesting_context()
+        mock_exec = AsyncMock(return_value=True)
+        d = ActionDispatcher(evidence_attestor=None)
+        d.register_executor("emergency_cutoff", mock_exec)
+
+        result = await d.dispatch(
+            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result()
+        )
+
+        assert result.executed is True
+        mock_exec.assert_awaited()
+
+    async def test_attestation_runs_after_the_action_not_before(self):
+        """Ordering is the invariant, not merely that both happen.
+
+        If attestation preceded execution, a slow or wedged evidence path would
+        delay a safety cutoff even when it eventually succeeded.
+        """
+        order: list[str] = []
+
+        class _OrderingAttestor:
+            available = True
+            public_key_hex = ""
+            artifact_version = ""
+            protocol_version = ""
+            action_event_type = "SAFETY_ACTION_EXECUTED"
+            atomic_freshness_available = False
+
+            async def attest_action(self, row):
+                order.append("attest")
+                return 1
+
+        async def _executor(*args, **kwargs):
+            order.append("execute")
+            return True
+
+        ctx, _store = self._attesting_context()
+        d = ActionDispatcher(evidence_attestor=_OrderingAttestor())
+        d.register_executor("emergency_cutoff", _executor)
+
+        await d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result())
+
+        assert "attest" in order, "attestation was never attempted"
+        assert order[0] == "execute", order
+
+
+class TestWhichTiersReachEvidence:
+    """Exactly Tier C and D are attested, on the real dispatch path.
+
+    Tier A and B are excluded because evidence exists for actions with physical
+    consequence a third party may later need to reason about. Signing them would
+    not merely be wasteful: it would dilute the chain with records nobody needs
+    to verify, and make the gap count meaningless as a safety signal.
+    """
+
+    @staticmethod
+    def _attestor(seen: list):
+        class _Recording:
+            available = True
+            public_key_hex = ""
+            protocol_version = "ori.evidence.v2"
+            action_event_type = "SAFETY_ACTION_EXECUTED"
+            atomic_freshness_available = False
+
+            async def attest_action(self, row, *, reconciled: bool = False):
+                seen.append((row.get("tier"), reconciled))
+                return len(seen)
+
+        return _Recording()
+
+    @staticmethod
+    def _ctx():
+        store = _mock_store()
+        store.set_action_attestation = AsyncMock(return_value=None)
+        store.log_action_for_event = AsyncMock(return_value=3)
+        store.get_firmware_device = AsyncMock(return_value=None)
+        return SkillContext(skill=FakeSkill(), event=_event(), state_store=store), store
+
+    async def test_a_tier_c_action_is_signed_on_the_dispatch_path(self):
+        """Tier C reaches evidence, whatever the approval workflow resolves to.
+
+        An earlier version of this test built a context and then dispatched with
+        a different, store-less one, so `_log_action` returned before reaching
+        the attestor -- and it asserted on Tier D, which a Tier C test cannot
+        stand on. It proved nothing about Tier C.
+        """
+        seen: list = []
+        ctx, store = self._ctx()
+        d = ActionDispatcher(
+            evidence_attestor=self._attestor(seen),
+            config={"approval_timeout_seconds": 0},
+        )
+        d.register_executor("open_safety_circuit", AsyncMock(return_value=True))
+        d.register_executor("log_to_dashboard", AsyncMock(return_value=True))
+
+        await d.dispatch(
+            "open_safety_circuit", ActionTier.HARD_PHYSICAL, ctx, _result()
+        )
+
+        assert seen, "a Tier C action never reached the evidence path"
+        tiers = [tier for tier, _reconciled in seen]
+        assert "C" in tiers, f"Tier C was not attested; saw {tiers}"
+        assert all(not reconciled for _tier, reconciled in seen), (
+            "emission-time signing was marked as late evidence"
+        )
+        store.log_action_for_event.assert_awaited()
+
+    async def test_a_tier_d_action_is_signed_on_the_dispatch_path(self):
+        seen: list = []
+        ctx, _store = self._ctx()
+        d = ActionDispatcher(evidence_attestor=self._attestor(seen))
+        d.register_executor("emergency_cutoff", AsyncMock(return_value=True))
+        await d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result())
+        assert ("D", False) in seen, "a Tier D action was not attested"
+
+    @pytest.mark.parametrize(
+        "tier", [ActionTier.INFORMATIONAL, ActionTier.SOFT_PHYSICAL]
+    )
+    async def test_a_non_attested_tier_is_never_signed(self, tier):
+        seen: list = []
+        ctx, _store = self._ctx()
+        d = ActionDispatcher(evidence_attestor=self._attestor(seen))
+        d.register_executor("alert_whatsapp", AsyncMock(return_value=True))
+        d.register_executor("switch_power_source", AsyncMock(return_value=True))
+        action = (
+            "alert_whatsapp"
+            if tier == ActionTier.INFORMATIONAL
+            else "switch_power_source"
+        )
+        await d.dispatch(action, tier, ctx, _result())
+        assert seen == [], f"tier {tier} reached the evidence path"
+
+    async def test_the_attested_tier_matrix_is_exactly_c_and_d(self):
+        """The matrix itself, independent of any dispatch."""
+        from ori.security.evidence_policy import tier_requires_attestation
+
+        assert tier_requires_attestation("C") is True
+        assert tier_requires_attestation("D") is True
+        assert tier_requires_attestation("A") is False
+        assert tier_requires_attestation("B") is False
+        # Case and whitespace must not change the answer: a tier read from a
+        # skill file is untrusted input.
+        assert tier_requires_attestation("d") is True
+        assert tier_requires_attestation("") is False
+        assert tier_requires_attestation("X") is False
+
+
+class TestAttestationFailureIsRecordedNotSilent:
+    """A gap that cannot be seen is indistinguishable from no gap."""
+
+    async def test_a_failing_attestation_marks_the_row_failed(self):
+        class _Failing:
+            available = True
+            public_key_hex = ""
+            protocol_version = "ori.evidence.v2"
+            action_event_type = "SAFETY_ACTION_EXECUTED"
+            atomic_freshness_available = False
+
+            async def attest_action(self, row, *, reconciled: bool = False):
+                raise RuntimeError("chain unavailable")
+
+        store = _mock_store()
+        store.set_action_attestation = AsyncMock(return_value=None)
+        store.log_action_for_event = AsyncMock(return_value=5)
+        store.get_firmware_device = AsyncMock(return_value=None)
+        ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=store)
+
+        d = ActionDispatcher(evidence_attestor=_Failing())
+        d.register_executor("emergency_cutoff", AsyncMock(return_value=True))
+        result = await d.dispatch(
+            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result()
+        )
+
+        assert result.executed is True
+        store.set_action_attestation.assert_awaited()
+        statuses = [
+            call.kwargs.get("status")
+            for call in store.set_action_attestation.await_args_list
+        ]
+        assert "failed" in statuses, (
+            "a failed attestation left no visible record; the gap is invisible"
+        )
+
+    async def test_an_attestation_returning_no_sequence_is_marked_failed(self):
+        class _Silent:
+            available = True
+            public_key_hex = ""
+            protocol_version = "ori.evidence.v2"
+            action_event_type = "SAFETY_ACTION_EXECUTED"
+            atomic_freshness_available = False
+
+            async def attest_action(self, row, *, reconciled: bool = False):
+                return None
+
+        store = _mock_store()
+        store.set_action_attestation = AsyncMock(return_value=None)
+        store.log_action_for_event = AsyncMock(return_value=6)
+        store.get_firmware_device = AsyncMock(return_value=None)
+        ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=store)
+
+        d = ActionDispatcher(evidence_attestor=_Silent())
+        d.register_executor("emergency_cutoff", AsyncMock(return_value=True))
+        await d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result())
+
+        statuses = [
+            call.kwargs.get("status")
+            for call in store.set_action_attestation.await_args_list
+        ]
+        assert "failed" in statuses, (
+            "a chain that sealed nothing was recorded as signed"
+        )
