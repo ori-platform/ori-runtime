@@ -3,12 +3,16 @@
 
 """The in-process hook loader is retired, and provenance is positive.
 
-These tests previously asserted that the restricted-import loader blocked
-`import os` and cleaned up its `sys.meta_path` finder. Both properties were
-real; neither made the loader a security boundary, and on Python 3.12 the
-finder was not consulted at all. The tests now assert the replacement
-properties: nothing executes community hook code in this interpreter, and a
-skill is trusted only because it ships with the runtime.
+The retired loader could be shown to block `import os` and to clean up its
+`sys.meta_path` finder. Both properties were real, and neither made it a
+security boundary — the denylisted namespace left the object graph reachable,
+and on Python 3.12 the finder was not consulted at all, so it failed open.
+Asserting those properties would therefore describe a boundary that was not
+one.
+
+What is asserted here instead is the replacement: nothing executes community
+hook code in this interpreter, and a skill is trusted only because it ships
+with the runtime.
 """
 
 import textwrap

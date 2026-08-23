@@ -565,9 +565,9 @@ def test_the_verifiers_only_use_published_reasons():
         if isinstance(first, ast.Constant) and isinstance(first.value, str):
             used.add(first.value)
         elif isinstance(first, ast.Name):
-            # Call sites name the constants rather than repeating the strings,
-            # which an earlier version of this scan did not handle — and it
-            # said so rather than reporting full coverage of nothing.
+            # Call sites name the constants rather than repeating the strings.
+            # A scan that resolved only literals would report full coverage of
+            # nothing, so an unresolvable name is collected and reported.
             resolved = REASON_CONSTANTS.get(first.id)
             if isinstance(resolved, str):
                 used.add(resolved)

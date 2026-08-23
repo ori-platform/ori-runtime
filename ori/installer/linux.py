@@ -1250,7 +1250,7 @@ def require_trusted_base_interpreter(profile: SystemdServiceProfile) -> None:
         f"{failure}. The release environment is built from it, so its "
         f"code would be replaceable by whoever controls that path. Install "
         f"Python from the distribution — for example 'sudo apt install "
-        f"python3.12' — and run this again with that interpreter, or install "
+        f"python3' — and run this again with that interpreter, or install "
         f"with --scope user for a workstation or trial.",
     )
 

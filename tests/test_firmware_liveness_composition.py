@@ -8,10 +8,10 @@ forever while the subscriber records into a map nobody reads — production
 behaviour identical to the feature being absent, with every unit test
 still green.
 
-That is not a hypothetical. An earlier revision wired the hook inside the
-subscriber and the signer inside the service, and connected neither at the
-composition root. Unit tests passed because they called ``note_telemetry``
-by hand. These tests go through the real builders instead.
+Unit tests cannot see this, because they reach ``note_telemetry`` by hand and
+never exercise the composition root where the two halves are meant to meet.
+These tests go through the real builders instead, so the shared instance is
+what is actually asserted.
 """
 
 from __future__ import annotations

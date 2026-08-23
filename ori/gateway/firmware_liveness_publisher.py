@@ -374,10 +374,10 @@ class FirmwareLivenessScheduler:
         """Publish for every supervised device and report what happened.
 
         Returns the outcome rather than a bare count. A tick that reached
-        no device is not a successful tick, and an earlier revision could
-        not tell the difference: every publication failing produced the
-        same "zero sent" as an empty fleet, so the loop recorded a healthy
-        tick while the whole fleet expired.
+        no device is not a successful tick, and a count cannot express the
+        difference: every publication failing produces the same "zero sent"
+        as an empty fleet, which would let the loop record a healthy tick
+        while the whole fleet expired.
 
         Raises only if the supervisor snapshot itself fails; per-device
         failures are contained. The snapshot is taken once, so a device

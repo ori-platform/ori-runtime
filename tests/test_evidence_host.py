@@ -3,13 +3,14 @@
 
 """The host evidence bindings, exercised rather than read.
 
-Five review rounds found the same defect in five shell variables — a value
-checked in one place and used in another — and each was defended by a test that
-matched text. One of those assertions was satisfied by a comment containing the
-name of the flag it was meant to police, which survived the flag's removal.
+These tests call the functions in `scripts/evidence_host.py` directly. That is
+the point of them: a binding between a verified value and the value actually
+used must fail here because behaviour changed, not because a string moved.
 
-These call the functions. A binding that drifts fails here because the
-behaviour changes, not because a string moved.
+Asserting on the text of the harness script instead would be weaker than it
+looks. A search for a flag's name is satisfied by any occurrence of that name,
+including one inside a comment, so such an assertion keeps passing after the
+flag it was meant to police is gone.
 """
 
 from __future__ import annotations

@@ -1951,10 +1951,11 @@ class TestWhichTiersReachEvidence:
     async def test_a_tier_c_action_is_signed_on_the_dispatch_path(self):
         """Tier C reaches evidence, whatever the approval workflow resolves to.
 
-        An earlier version of this test built a context and then dispatched with
-        a different, store-less one, so `_log_action` returned before reaching
-        the attestor -- and it asserted on Tier D, which a Tier C test cannot
-        stand on. It proved nothing about Tier C.
+        Two things would make this test vacuous: dispatching with a different,
+        store-less context than the one built, so `_log_action` returns before
+        reaching the attestor at all; and asserting on Tier D, which a Tier C
+        test cannot stand on. The same context is used throughout, and the
+        assertion names Tier C.
         """
         seen: list = []
         ctx, store = self._ctx()

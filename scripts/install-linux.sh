@@ -13,23 +13,53 @@ if [ -z "${BASH_VERSION:-}" ]; then
   exit 2
 fi
 # Find an interpreter this installer can actually use. Bundles are published
-# for 3.11 and 3.12 only, and `python3` is whatever the distribution chose: on
-# Pop!_OS it is 3.10 while a perfectly good python3.12 sits alongside it. Using
-# `python3` alone reports the host as unsupported when it is not.
+# for 3.11, 3.12 and 3.13 only, and `python3` is whatever the distribution
+# chose: on Pop!_OS it is 3.10 while a perfectly good python3.12 sits alongside
+# it. Using `python3` alone reports the host as unsupported when it is not.
 #
 # Each candidate is asked its own version rather than trusted for its name. A
-# `python3.12` on PATH may be a wrapper, a shim, or a broken symlink, and the
+# `python3.13` on PATH may be a wrapper, a shim, or a broken symlink, and the
 # name proves nothing about what running it produces.
 ori_python=""
-for ori_candidate in python3.12 python3.11 python3; do
+for ori_candidate in python3.13 python3.12 python3.11 python3; do
   command -v "${ori_candidate}" >/dev/null 2>&1 || continue
-  if "${ori_candidate}" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] in ((3, 11), (3, 12)) else 1)' >/dev/null 2>&1; then
+  if "${ori_candidate}" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] in ((3, 11), (3, 12), (3, 13)) else 1)' >/dev/null 2>&1; then
     ori_python="${ori_candidate}"
     break
   fi
 done
 if [ -z "${ori_python}" ]; then
-  echo "unsupported_target: no supported Python found on PATH. Ori requires Python 3.11 or 3.12; install one (for example 'sudo apt install python3.12') and run this again." >&2
+  # Name a package only after confirming this host can install it. The previous
+  # message hardcoded `python3.12`, which does not exist on Trixie at any
+  # version, so the one instruction given to an operator whose host was
+  # genuinely unsupported was an apt invocation guaranteed to fail. Telling
+  # someone to run a command that cannot work is worse than telling them
+  # nothing: it costs them a round of debugging before they reach the docs.
+  ori_hint=""
+  if command -v apt-cache >/dev/null 2>&1; then
+    for ori_package in python3.13 python3.12 python3.11; do
+      # `apt-cache policy` prints a Candidate line for a package the configured
+      # sources can actually supply, and `Candidate: (none)` for one merely
+      # referenced by some dependency. Only the former is installable.
+      #
+      # Matched with a bash `case` rather than piped through grep. This runs
+      # before anything is installed, on a host whose state is unknown, and the
+      # fewer external commands the failure path needs the fewer ways it has to
+      # fail while explaining a failure. `case` is a shell builtin.
+      ori_policy="$(apt-cache policy "${ori_package}" 2>/dev/null)"
+      case "${ori_policy}" in
+        *"Candidate: (none)"*) continue ;;
+        *"Candidate: "*)
+          ori_hint="install it with 'sudo apt install ${ori_package}'"
+          break
+          ;;
+      esac
+    done
+  fi
+  if [ -z "${ori_hint}" ]; then
+    ori_hint="see docs/linux-install.md for a supported interpreter route"
+  fi
+  echo "unsupported_target: no supported Python found on PATH. Ori requires Python 3.11, 3.12 or 3.13; ${ori_hint}, then run this again." >&2
   exit 2
 fi
 
@@ -122,7 +152,7 @@ def detected_target() -> str:
         "aarch64": "aarch64",
     }.get(platform.machine().lower())
     python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-    if architecture is None or python_version not in {"3.11", "3.12"}:
+    if architecture is None or python_version not in {"3.11", "3.12", "3.13"}:
         fail(
             "unsupported_target",
             "Linux architecture or Python version is unsupported",

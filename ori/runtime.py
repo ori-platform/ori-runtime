@@ -4389,9 +4389,9 @@ def _build_firmware_liveness_stack(
 
     This exists as a function rather than as three statements inside
     ``start`` because that is what makes the shared instance assertable.
-    An earlier revision wired each half correctly and connected neither,
-    and no test could see it; the same mistake now has no place to happen,
-    since there is exactly one construction site and one name to pass.
+    Wiring each half correctly while connecting neither to the other is a
+    mistake no unit test can see; with exactly one construction site and one
+    name to pass, it has nowhere to happen.
     """
     supervisor = FirmwareLivenessSupervisor()
     subscriber = _build_firmware_telemetry_subscriber(
