@@ -10,8 +10,9 @@
 # without anything here noticing. This script is how that is detected, and it
 # reports rather than silently overwrites.
 #
-# Two sets are vendored, and they move together — an envelope wraps a chain
-# row, so a change to one is usually a change to both.
+# The evidence sets move together — an envelope wraps a chain row, so a change
+# to one is usually a change to both. The transport set does not: it belongs to
+# a contract with its own version.
 #
 # Usage:
 #   bash scripts/refresh-evidence-vectors.sh            # report drift only
@@ -36,6 +37,11 @@ SETS=(
   # a byte-level suite silently omits, and therefore the ones most worth
   # drift-checking.
   "evidence-exchange/vectors/receiver-state:tests/vectors/evidence_exchange_receiver_state"
+  # Transport rather than artifact: gateway-api fixes how an inbound artifact
+  # travels, and versions independently of the evidence contracts. Vendored
+  # here so the same drift check covers it, and pinned separately because it
+  # has no reason to move when the evidence vectors do.
+  "gateway-api/vectors:tests/vectors/gateway_api"
 )
 
 if [ -n "${ORI_SPECS_DIR:-}" ]; then
