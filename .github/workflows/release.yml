@@ -144,6 +144,16 @@ jobs:
       - name: Run test suite
         run: pytest tests/ -q -m "not hardware"
 
+      # The ordinary runner umask is 0022, while Debian private-user-group
+      # hosts commonly use 0002. The tag gate must exercise installer fixtures
+      # under the target host's ambient umask too.
+      - name: Installer checks under private-group umask
+        run: |
+          umask 0002
+          pytest -q \
+            tests/test_linux_installer.py \
+            tests/test_installer_activation.py
+
       # System scope is only meaningful as root: the execution guard returns
       # immediately for any other account, so an unprivileged run of these
       # would pass without exercising anything. They assert `geteuid() == 0`

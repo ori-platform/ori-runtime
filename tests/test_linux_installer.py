@@ -323,6 +323,36 @@ def test_first_install_activates_only_after_prepare_and_validate(
     assert layout.current.resolve() == layout.release("2.3.0")
 
 
+def test_first_install_scaffolding_is_private_under_group_writable_umask(
+    tmp_path: Path,
+) -> None:
+    """Exercise the real first-install order without a pre-created root.
+
+    Debian's private-user-group setup commonly supplies 0002. Host-owned
+    parents may inherit that umask, while the outermost-first installer loop
+    creates each managed directory explicitly and pins it to 0700.
+    """
+    layout = InstallLayout.resolve(tmp_path / "home" / ".local" / "ori")
+    previous_umask = os.umask(0o002)
+    try:
+        install_release(
+            layout=layout,
+            version="2.3.0",
+            prepare=_prepare,
+            validate=_validate,
+            restart_service=lambda: None,
+            stop_service=lambda: None,
+            check_health=lambda _path: None,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    assert [
+        stat.S_IMODE(directory.stat().st_mode)
+        for directory in (layout.root, layout.releases, layout.data)
+    ] == [0o700, 0o700, 0o700]
+
+
 def test_composed_install_orders_assets_health_and_enablement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1148,7 +1178,8 @@ def test_releases_symlink_is_rejected(tmp_path: Path) -> None:
 
 def test_dangling_managed_current_pointer_is_repaired(tmp_path: Path) -> None:
     layout = InstallLayout.resolve(tmp_path / "ori")
-    layout.releases.mkdir(parents=True)
+    layout.root.mkdir(mode=0o700)
+    layout.releases.mkdir(mode=0o700)
     layout.current.symlink_to(Path("releases") / "2.2.0")
     install_release(
         layout=layout,
@@ -1452,8 +1483,10 @@ def test_system_permissions_fail_closed_for_non_root_and_data_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     layout = InstallLayout.resolve(tmp_path / "ori")
-    layout.releases.mkdir(parents=True)
-    layout.data.mkdir()
+    layout.root.mkdir(mode=0o700)
+    layout.root.chmod(0o755)
+    layout.releases.mkdir(mode=0o700)
+    layout.data.mkdir(mode=0o700)
     monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 501)
     with pytest.raises(LinuxInstallError, match="service_start_failed"):
         apply_system_service_permissions(layout, SystemdServiceProfile.system())
@@ -1518,7 +1551,7 @@ def test_system_upgrade_preserves_access_and_reapplies_permissions(
     destination = layout.release("2.3.0")
     destination.mkdir(parents=True)
     _prepare(destination)
-    layout.data.mkdir()
+    layout.data.mkdir(mode=0o700)
     layout.root.chmod(0o750)
     layout.releases.chmod(0o750)
     observed_modes: list[tuple[int, int]] = []

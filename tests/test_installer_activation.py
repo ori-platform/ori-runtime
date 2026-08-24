@@ -831,7 +831,6 @@ def test_a_real_user_scope_install_passes_the_real_gate(tmp_path: Path) -> None:
     from ori import doctor
 
     root = tmp_path / "ori"
-    root.mkdir()
     _release, identity = _install_release_for_real(root, "user")
 
     reported = _as_reported(doctor.check_permissions(identity))
@@ -857,7 +856,6 @@ def test_a_real_system_scope_install_is_blocked_when_code_is_writable(
     from ori import doctor
 
     root = tmp_path / "ori"
-    root.mkdir()
     _release, identity = _install_release_for_real(root, "system")
 
     reported = _as_reported(doctor.check_permissions(identity))
