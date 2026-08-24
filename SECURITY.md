@@ -21,6 +21,19 @@ and Debian Bookworm supplies Python 3.11.
 | Raspberry Pi OS Trixie | `aarch64` | 3.13 (stock) | Bundle published, hardware validation pending |
 | Other published bundles | `x86_64`, `aarch64` | 3.11, 3.12, 3.13 | Community compatibility |
 
+The state store additionally requires **SQLite 3.39 or newer**: its history
+queries use a `HAVING` clause on an aggregate query with no `GROUP BY`, and
+older libraries reject that form. The three stock distribution rows above ship
+newer libraries already — Bookworm 3.40.1, Ubuntu 24.04 3.45.1, Trixie 3.46.1.
+
+This is a property of the host, not of the release. `sqlite3` binds to the
+library the distribution supplies rather than to anything the bundle pins, so
+"other published bundles" makes no claim about it — a bundle carries no SQLite.
+Clearing the interpreter requirement does not imply clearing this one: a Python
+built by hand on an older distribution satisfies one and not the other. The
+runtime therefore checks the library when opening the store and refuses there,
+rather than failing later inside a query.
+
 Trixie is listed separately rather than as production-supported, because the
 two are different claims and only one of them is evidenced. A published bundle
 means the target builds, signs, verifies and passes the suite. Production

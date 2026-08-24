@@ -675,6 +675,57 @@ def _require_attribution(operation: str, actor: str, reason: str) -> None:
         )
 
 
+#: The oldest SQLite this store's queries are known to run on.
+#:
+#: The sensor-history averages and the compaction read path use a ``HAVING``
+#: clause on an aggregate query that has no ``GROUP BY``. SQLite refused that
+#: form with ``a GROUP BY clause is required before HAVING`` until it was
+#: allowed on any aggregate query, so on an older library those reads fail at
+#: query time rather than at startup. An operator meets that as a skill that
+#: stopped working, which is the wrong place to learn the platform is
+#: unsupported.
+#:
+#: Measured rather than inferred from release notes. 3.34.1 (Debian Bullseye)
+#: and 3.37.2 (Ubuntu 22.04) refuse the form; 3.40.1 (Debian Bookworm) and
+#: 3.46.1 (Debian Trixie) accept it, which bounds the floor to this release.
+#:
+#: ``sqlite3`` binds to whatever library the host supplies, so this is the one
+#: dependency the hash-locked wheelhouse cannot pin. The stock distribution
+#: tuples this runtime is tested on clear the floor with their own libraries:
+#: Debian Bookworm 3.40.1, Ubuntu 24.04 3.45.1, Debian Trixie 3.46.1.
+#:
+#: Clearing the interpreter floor does not imply clearing this one, and the two
+#: must not be conflated. A newer Python built by hand on an older
+#: distribution -- the trusted-symlink shape the installer admits by design --
+#: satisfies the interpreter requirement while the host library stays where the
+#: distribution left it. That combination is what this refusal exists to
+#: catch.
+MINIMUM_SQLITE_VERSION = (3, 39, 0)
+
+
+class UnsupportedSQLiteError(RuntimeError):
+    """The host's SQLite library is too old for this store's queries."""
+
+
+def require_supported_sqlite() -> None:
+    """Refuse a SQLite that cannot run the queries this store issues.
+
+    Compared as a tuple of integers. Comparing the version *strings* would
+    order ``"3.9"`` after ``"3.40"``, so a lexical check would admit exactly
+    the old libraries this exists to refuse.
+    """
+    if sqlite3.sqlite_version_info >= MINIMUM_SQLITE_VERSION:
+        return
+    required = ".".join(str(part) for part in MINIMUM_SQLITE_VERSION)
+    raise UnsupportedSQLiteError(
+        f"SQLite {sqlite3.sqlite_version} is too old for this runtime; "
+        f"{required} or newer is required. Python's `sqlite3` uses the library "
+        f"the host supplies, so this is a property of the platform rather than "
+        f"of the installed dependencies -- upgrade the distribution, or build "
+        f"the interpreter against a newer SQLite."
+    )
+
+
 class StateStore:
     """Async-safe SQLite state store.
 
@@ -699,6 +750,19 @@ class StateStore:
             self._conn = conn
 
     def _open_sync(self) -> sqlite3.Connection:
+        # Refuse here rather than at import, so a tool that merely imports this
+        # module on an unsupported host still runs. Opening the store is the
+        # first moment the requirement is real.
+        #
+        # Checking only here is complete rather than merely convenient. The
+        # read path in `_open_read_conn_sync` is what actually issues the
+        # query this floor exists for, and it is reachable only through an
+        # opened store -- but the reason one check suffices is that
+        # `sqlite3.sqlite_version_info` is fixed for the life of the process.
+        # It cannot become false after this returns, so re-checking per
+        # connection would cost a comparison on every read to re-establish
+        # something already known.
+        require_supported_sqlite()
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._restrict_db_file_permissions()
         conn.row_factory = sqlite3.Row

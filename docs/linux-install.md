@@ -17,6 +17,7 @@ different guarantees.
 | --- | --- |
 | Linux on `x86_64` or `aarch64` | The only published targets |
 | Python 3.11, 3.12 or 3.13 | Bundles are built per interpreter version |
+| SQLite 3.39 or newer | The state store's history queries need it, and `sqlite3` uses the library the host supplies |
 | Bash | The bootstrap is a Bash/Python polyglot and refuses other shells |
 | OpenSSL 3 or newer | Ed25519 verification needs `pkeyutl -rawin` |
 | systemd | The runtime is installed as a managed service |
@@ -72,6 +73,19 @@ it never claims code the runtime cannot rewrite.
 **Raspberry Pi OS Bullseye is not supported.** It ships OpenSSL 1.1.1, which
 cannot perform the required verification — the installer reports
 `crypto_unavailable` rather than pretending otherwise.
+
+**SQLite comes from the distribution, not from the bundle.** Python's `sqlite3`
+binds to the library the host provides, so it is the one dependency the
+hash-locked wheelhouse cannot pin. The runtime refuses to open its state store
+below 3.39, because the sensor-history averages use a `HAVING` clause on an
+aggregate query with no `GROUP BY` and older libraries reject that form.
+
+The three stock distribution rows above ship newer libraries already — Bookworm
+3.40.1, Ubuntu 24.04 3.45.1, Trixie 3.46.1. "Other published bundles" makes no
+claim here, because a bundle carries no SQLite. And clearing the Python
+requirement does not imply clearing this one: an interpreter installed at a
+trusted path on an older distribution satisfies the first while the host library
+stays where the distribution left it.
 
 **Fedora is deferred.** Its current releases ship Python 3.13, which is now a
 published target, so the interpreter is no longer the obstacle. What remains is
