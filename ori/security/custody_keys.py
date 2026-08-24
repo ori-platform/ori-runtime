@@ -57,9 +57,24 @@ class CustodyKeyRegistryError(ValueError):
 
 
 def derive_custody_key_id(secret: str) -> str:
-    """The `(gateway_custody, key_id)` selector for one secret generation."""
+    """The `(gateway_custody, key_id)` selector for one secret generation.
+
+    Keys from the secret's exact UTF-8 bytes, and normalises nothing. A secret
+    carrying a stray newline -- the ordinary shape of one read from a file or a
+    systemd `EnvironmentFile` -- is refused rather than trimmed, because
+    trimming would key from bytes the operator never provisioned and derive an
+    identifier no conforming peer reproduces. That divergence presents as
+    `bad_authenticator` on every acknowledgement instead of as the
+    configuration error it is, and the two sides can only agree here by
+    agreeing exactly.
+    """
     if not secret:
         raise CustodyKeyRegistryError("a custody secret must not be empty")
+    if secret != secret.strip():
+        raise CustodyKeyRegistryError(
+            "a custody secret must not carry leading or trailing whitespace; "
+            "the key is the secret's exact UTF-8 bytes"
+        )
     material = HKDF(
         algorithm=hashes.SHA256(),
         length=CUSTODY_KEY_ID_BYTES,

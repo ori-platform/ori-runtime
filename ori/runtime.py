@@ -4154,6 +4154,12 @@ def _envelope_secrets(config: Config) -> tuple[str, ...]:
     Handed to the custody registry so reuse is refused on the bytes. Two
     environment variables can hold the same value, so comparing the names an
     operator wrote would report that configuration as correct.
+
+    Each value is contributed both as provisioned and stripped of surrounding
+    whitespace. A custody secret differing from an envelope secret only by a
+    trailing newline is the same secret to any peer that trims one of them, and
+    treating those as distinct key material would let a stray keystroke defeat
+    the separation rather than report it.
     """
     raw_auth = getattr(config.gateway, "auth", {})
     auth_cfg = raw_auth if isinstance(raw_auth, dict) else {}
@@ -4161,13 +4167,15 @@ def _envelope_secrets(config: Config) -> tuple[str, ...]:
         str(auth_cfg.get("shared_secret_env", "") or "").strip(),
         str(auth_cfg.get("previous_shared_secret_env", "") or "").strip(),
     )
-    return tuple(
-        value
-        for name in names
-        if name
-        for value in (os.environ.get(name, ""),)
-        if value
-    )
+    resolved: list[str] = []
+    for name in names:
+        if not name:
+            continue
+        value = os.environ.get(name, "")
+        for candidate in (value, value.strip()):
+            if candidate and candidate not in resolved:
+                resolved.append(candidate)
+    return tuple(resolved)
 
 
 def _custody_key_registry(config: Config) -> CustodyKeyRegistry | None:
@@ -4194,7 +4202,11 @@ def _custody_key_registry(config: Config) -> CustodyKeyRegistry | None:
     # runtime silently refusing every acknowledgement.
     if not env_name:
         return None
-    active = os.environ.get(env_name, "").strip()
+    # Read exactly as provisioned. The custody MAC keys from these bytes, so
+    # trimming would key from bytes the operator did not set; the registry
+    # refuses surrounding whitespace instead of silently deriving a different
+    # identifier from the one the gateway holds.
+    active = os.environ.get(env_name, "")
     if not active:
         raise ValueError(
             f"gateway.custody.secret_env names {env_name}, but that environment "
@@ -4205,7 +4217,7 @@ def _custody_key_registry(config: Config) -> CustodyKeyRegistry | None:
     previous_env = str(custody_cfg.get("previous_secret_env", "") or "").strip()
     previous = ""
     if previous_env:
-        previous = os.environ.get(previous_env, "").strip()
+        previous = os.environ.get(previous_env, "")
         if not previous:
             raise ValueError(
                 f"gateway.custody.previous_secret_env names {previous_env}, but "

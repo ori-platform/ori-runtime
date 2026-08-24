@@ -362,3 +362,60 @@ class TestCustodyKeysReachTheIngestPath:
         attestor = _build_evidence_attestor(self._config(tmp_path, {"secret_env": ""}))
         assert attestor is not None
         assert attestor._custody_keys is None
+
+    @pytest.mark.parametrize(
+        "provisioned",
+        ["custody-secret\n", "custody-secret ", " custody-secret", "\tcustody-secret"],
+    )
+    def test_a_custody_secret_carrying_whitespace_stops_startup(
+        self, tmp_path, monkeypatch, provisioned
+    ) -> None:
+        """The key is the secret's exact bytes, so the runtime must not trim.
+
+        Trimming here and not on the far side -- or the reverse -- derives two
+        identifiers from one provisioned secret, and every acknowledgement then
+        fails as `bad_authenticator` while both sides believe they hold the
+        same key. Refusing at startup is the only outcome that cannot diverge
+        silently.
+        """
+        monkeypatch.setenv("ORI_TEST_DEVICE_SECRET", "a-random-install-secret")
+        monkeypatch.setenv("ORI_TEST_ENVELOPE", self.ENVELOPE)
+        monkeypatch.setenv("ORI_TEST_CUSTODY_UNTRIMMED", provisioned)
+
+        with pytest.raises(ValueError, match="whitespace"):
+            _build_evidence_attestor(
+                self._config(
+                    tmp_path,
+                    {
+                        "secret_env": "ORI_TEST_CUSTODY_UNTRIMMED",
+                        "previous_secret_env": "",
+                        "retired_key_ids": [],
+                    },
+                )
+            )
+
+    def test_whitespace_cannot_smuggle_the_envelope_secret_into_custody(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Separation compares key material, not the keystrokes around it.
+
+        An envelope secret provisioned with a trailing newline is the same
+        secret as the custody one to any peer that trims it, so comparing only
+        the bytes as provisioned would call this configuration separated while
+        both purposes ran on one key.
+        """
+        monkeypatch.setenv("ORI_TEST_DEVICE_SECRET", "a-random-install-secret")
+        monkeypatch.setenv("ORI_TEST_ENVELOPE", self.ENVELOPE + "\n")
+        monkeypatch.setenv("ORI_TEST_CUSTODY_TRIMMED", self.ENVELOPE)
+
+        with pytest.raises(ValueError, match="envelope secret"):
+            _build_evidence_attestor(
+                self._config(
+                    tmp_path,
+                    {
+                        "secret_env": "ORI_TEST_CUSTODY_TRIMMED",
+                        "previous_secret_env": "",
+                        "retired_key_ids": [],
+                    },
+                )
+            )
