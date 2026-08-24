@@ -1,9 +1,8 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "gateway-api/vectors",
-  "source_commit": "9ba1fb7198ea7a85d183ee4860af567d17c98cff",
+  "source_commit": "d17ce6908efa24a005f0828f2b73a781f3a2c903",
   "note": "Vendored copy of the normative transport fixture. The runtime must verify the inbound message and reproduce the acknowledgement byte for byte, so this is its conformance fixture for gateway-api/v1 inbound evidence delivery. Digests detect a local edit; the source commit is the provenance trail.",
-  "pin_status": "Pinned to the ori-specs branch commit that introduced the fixture, because ori-specs#101 has not merged. Re-pin to the merge commit during ori-runtime#377 reconciliation.",
   "files": {
     "inbound-evidence.json": "cb18d5f6fad051f6ca1924b20ef1040d2d67185c41a9a9eccee6159db0eb0473"
   }
