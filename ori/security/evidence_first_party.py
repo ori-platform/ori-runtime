@@ -312,9 +312,9 @@ class FirstPartyEvidenceAttestor:
         awaiting a courier before sealing had produced anything to carry.
 
         Custody rather than receipt, because they fail for different reasons and
-        conflating them hides which hop is stalled. Nothing collects these yet,
-        so the count only rises -- which is itself the honest signal, and why it
-        is reported.
+        conflating them hides which hop is stalled. An accepted custody
+        acknowledgement is what makes this fall; a receipt does not, since it
+        moves the next hop.
         """
         if self._ledger is None:
             return None
