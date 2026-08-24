@@ -351,6 +351,181 @@ def test_first_install_scaffolding_is_private_under_group_writable_umask(
         stat.S_IMODE(directory.stat().st_mode)
         for directory in (layout.root, layout.releases, layout.data)
     ] == [0o700, 0o700, 0o700]
+    assert stat.S_IMODE((tmp_path / "home" / ".local").stat().st_mode) == 0o775
+
+
+def test_creation_provenance_race_refuses_existing_entry_and_rolls_back_only_ours(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EEXIST after an absence observation must not become `created=True`.
+
+    Replacing the hardened helper with main's exists/mkdir/chmod sequence makes
+    this test silently adopt ``data`` and complete the install. The assertion
+    therefore pins both creation-result provenance and rollback ownership.
+    """
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.root.mkdir(mode=0o700)
+    real_mkdir = os.mkdir
+
+    def mkdir_with_race(
+        candidate: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        if Path(candidate) == layout.data:
+            real_mkdir(candidate, mode, dir_fd=dir_fd)
+            os.chmod(candidate, 0o775, dir_fd=dir_fd)
+            raise FileExistsError(17, "simulated concurrent creation", str(candidate))
+        real_mkdir(candidate, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(installer_linux.os, "mkdir", mkdir_with_race)
+
+    with pytest.raises(LinuxInstallError, match="data is group-writable"):
+        install_release(
+            layout=layout,
+            version="2.3.0",
+            prepare=_prepare,
+            validate=_validate,
+            restart_service=lambda: None,
+            stop_service=lambda: None,
+            check_health=lambda _path: None,
+        )
+
+    assert stat.S_IMODE(layout.data.stat().st_mode) == 0o775
+    assert layout.root.exists(), "the pre-existing root is not rollback-owned"
+    assert not layout.releases.exists(), "only our successful mkdir is rolled back"
+
+
+def test_path_substitution_never_chmods_or_accepts_the_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mode repair stays on the opened inode and substitution fails closed.
+
+    The test hooks both mutation APIs so it also mutation-checks the old
+    pathname implementation: Path.chmod would change and accept the substitute;
+    descriptor-backed fchmod changes only the displaced, already-open inode.
+    """
+    path = tmp_path / "ori"
+    displaced = tmp_path / "opened-inode"
+    path.mkdir(mode=0o700)
+    path.chmod(0o701)
+    real_mkdir = os.mkdir
+    real_fchmod = os.fchmod
+    real_path_chmod = Path.chmod
+    replaced = False
+
+    def replace_entry() -> None:
+        nonlocal replaced
+        if replaced:
+            return
+        path.rename(displaced)
+        real_mkdir(path, 0o755)
+        os.chmod(path, 0o755)
+        replaced = True
+
+    def raced_fchmod(descriptor: int, mode: int) -> None:
+        replace_entry()
+        real_fchmod(descriptor, mode)
+
+    def raced_path_chmod(candidate: Path, *args: object, **kwargs: object) -> None:
+        if candidate == path:
+            replace_entry()
+        real_path_chmod(candidate, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(installer_linux.os, "fchmod", raced_fchmod)
+    monkeypatch.setattr(Path, "chmod", raced_path_chmod)
+
+    with pytest.raises(LinuxInstallError, match="changed during preparation"):
+        installer_linux._ensure_private_directory(path)
+
+    assert replaced is True
+    assert stat.S_IMODE(path.stat().st_mode) == 0o755
+    assert stat.S_IMODE(displaced.stat().st_mode) == 0o700
+
+
+def test_scaffolding_cleanup_refuses_a_substituted_inode(tmp_path: Path) -> None:
+    path = tmp_path / "ori"
+    displaced = tmp_path / "created-by-installer"
+    created = installer_linux._ensure_private_directory(path)
+    assert created is not None
+    path.rename(displaced)
+    path.mkdir(mode=0o700)
+
+    installer_linux._remove_created_scaffolding([created])
+
+    assert path.exists(), "the replacement was not created by this invocation"
+    assert displaced.exists(), "the proven inode is no longer at its recorded path"
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o775, 0o720, 0o2775])
+def test_preexisting_group_writable_directory_is_refused_unmodified(
+    tmp_path: Path, mode: int
+) -> None:
+    path = tmp_path / "ori"
+    path.mkdir(mode=0o700)
+    path.chmod(mode)
+
+    with pytest.raises(LinuxInstallError, match="group-writable"):
+        installer_linux._ensure_private_directory(path)
+
+    assert stat.S_IMODE(path.stat().st_mode) == mode
+
+
+@pytest.mark.parametrize(
+    ("kind", "detail"),
+    [
+        ("symlink", "must not be a symlink"),
+        ("file", "is not a directory"),
+        ("missing_parent", "parent is unavailable"),
+    ],
+)
+def test_private_directory_object_failures_are_stable_and_non_creating(
+    tmp_path: Path, kind: str, detail: str
+) -> None:
+    path = tmp_path / "ori"
+    if kind == "symlink":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        path.symlink_to(outside, target_is_directory=True)
+    elif kind == "file":
+        path.write_text("not a directory", encoding="utf-8")
+    else:
+        path = tmp_path / "missing" / "ori"
+
+    with pytest.raises(LinuxInstallError) as raised:
+        installer_linux._ensure_private_directory(path)
+
+    assert detail in raised.value.detail
+    if kind == "missing_parent":
+        assert not path.parent.exists()
+
+
+def test_owner_stripping_umask_is_rejected_stably_and_cleaned_up(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ori"
+    previous_umask = os.umask(0o500)
+    try:
+        with pytest.raises(LinuxInstallError) as raised:
+            installer_linux._ensure_private_directory(path)
+    finally:
+        os.umask(previous_umask)
+
+    assert "owner-stripping umasks are unsupported" in raised.value.detail
+    assert not path.exists()
+
+
+def test_missing_descriptor_platform_contract_fails_without_partial_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "ori"
+    monkeypatch.delattr(installer_linux.os, "O_NOFOLLOW")
+
+    with pytest.raises(LinuxInstallError, match="descriptor support"):
+        installer_linux._ensure_private_directory(path)
+
+    assert not path.exists()
 
 
 def test_composed_install_orders_assets_health_and_enablement(
@@ -751,6 +926,36 @@ def test_systemd_manager_installs_atomically_without_enabling(tmp_path: Path) ->
     assert unit.read_text(encoding="utf-8").startswith("# Copyright")
     assert unit.stat().st_mode & 0o777 == 0o600
     assert commands == [["systemctl", "--user", "daemon-reload"]]
+
+
+def test_user_systemd_recursive_parents_remain_below_private_home(
+    tmp_path: Path,
+) -> None:
+    """Systemd parents are host-owned, not managed install scaffolding.
+
+    Recursive mkdir may leave host-policy modes on implicit parents. They are
+    safe here because the user service hierarchy stays beneath the invoking
+    account's pre-existing 0700 home, which the installer leaves untouched.
+    """
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    unit = (home / ".config" / "systemd" / "user" / "ori-runtime.service").resolve()
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=unit,
+        runner=lambda command: subprocess.CompletedProcess(command, 0, "", ""),
+        effective_uid=1001,
+    )
+    previous_umask = os.umask(0o002)
+    try:
+        manager.install_unit(_rendered_unit(tmp_path, SystemdServiceProfile.user()))
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(home.stat().st_mode) == 0o700
+    assert stat.S_IMODE((home / ".config").stat().st_mode) == 0o775
+    assert stat.S_IMODE((home / ".config" / "systemd").stat().st_mode) == 0o775
+    assert stat.S_IMODE(unit.parent.stat().st_mode) == 0o700
 
 
 def test_systemd_unit_transaction_can_remove_new_unit(tmp_path: Path) -> None:
@@ -1728,11 +1933,49 @@ def test_installer_config_is_validated_by_runtime_bridge_and_written_privately(
     assert list(config_path.parent.glob(".ori.yaml.*.tmp")) == []
 
 
+def test_config_parent_uses_managed_directory_policy_under_umask_0002(
+    tmp_path: Path,
+) -> None:
+    config_path = (tmp_path / "data" / "ori.yaml").resolve()
+    previous_umask = os.umask(0o002)
+    try:
+        provision_runtime_config(
+            values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+            config_path=config_path,
+            release_python=Path(sys.executable),
+            health_socket_path=config_path.parent / "health.sock",
+        )
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(config_path.parent.stat().st_mode) == 0o700
+
+
+def test_config_parent_refuses_group_writable_directory_without_mutation(
+    tmp_path: Path,
+) -> None:
+    config_path = (tmp_path / "data" / "ori.yaml").resolve()
+    config_path.parent.mkdir(mode=0o700)
+    config_path.parent.chmod(0o775)
+
+    with pytest.raises(LinuxInstallError) as raised:
+        provision_runtime_config(
+            values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+            config_path=config_path,
+            release_python=Path(sys.executable),
+            health_socket_path=config_path.parent / "health.sock",
+        )
+
+    assert raised.value.code == "config_validation_failed"
+    assert stat.S_IMODE(config_path.parent.stat().st_mode) == 0o775
+    assert not config_path.exists()
+
+
 def test_successful_config_provision_can_restore_previous_content_and_mode(
     tmp_path: Path,
 ) -> None:
     config_path = (tmp_path / "data" / "ori.yaml").resolve()
-    config_path.parent.mkdir()
+    config_path.parent.mkdir(mode=0o700)
     config_path.write_text("previous\n", encoding="utf-8")
     config_path.chmod(0o640)
 
@@ -1791,8 +2034,11 @@ def test_config_destination_error_uses_stable_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "ori.installer.linux.Path.mkdir",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("denied")),
+        installer_linux,
+        "_ensure_private_directory",
+        lambda _path: (_ for _ in ()).throw(
+            LinuxInstallError("unsafe_install_root", "denied")
+        ),
     )
     with pytest.raises(LinuxInstallError) as raised:
         provision_runtime_config(
@@ -1806,7 +2052,7 @@ def test_config_destination_error_uses_stable_failure(
 
 def test_invalid_generated_config_preserves_existing_file(tmp_path: Path) -> None:
     config_path = (tmp_path / "data" / "ori.yaml").resolve()
-    config_path.parent.mkdir()
+    config_path.parent.mkdir(mode=0o700)
     config_path.write_text("existing\n", encoding="utf-8")
 
     def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -1867,7 +2113,7 @@ def test_config_directory_sync_failure_restores_previous_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config_path = (tmp_path / "data" / "ori.yaml").resolve()
-    config_path.parent.mkdir()
+    config_path.parent.mkdir(mode=0o700)
     config_path.write_text("existing\n", encoding="utf-8")
     config_path.chmod(0o640)
     real_fsync = os.fsync
@@ -2285,8 +2531,18 @@ def test_cleanup_removes_every_empty_directory_it_created(tmp_path: Path) -> Non
     for directory in (root, releases, data):
         directory.mkdir()
     (data / "ori.yaml").write_text("device: {}\n", encoding="utf-8")
+    created = []
+    for directory in (root, releases, data):
+        info = directory.stat()
+        created.append(
+            installer_linux._CreatedDirectory(
+                path=directory,
+                device=info.st_dev,
+                inode=info.st_ino,
+            )
+        )
 
-    installer_linux._remove_created_scaffolding([root, releases, data])
+    installer_linux._remove_created_scaffolding(created)
 
     assert not releases.exists()
     assert data.exists(), "operator data must never be removed by cleanup"

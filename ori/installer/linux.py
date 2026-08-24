@@ -499,7 +499,12 @@ def provision_runtime_config(
     }
     encoded = yaml.safe_dump(document, sort_keys=False).encode("utf-8")
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # In the composed transaction this is ``layout.data``, already created
+        # by the managed-scaffolding loop. Keep the standalone API equally
+        # strict: creation provenance and any mode repair must come from the
+        # same no-follow descriptor primitive, not a pathname check followed by
+        # recursive mkdir/chmod operations.
+        _ensure_private_directory(config_path.parent)
         previous: tuple[bytes, int, int, int] | None = None
         if config_path.is_file():
             previous_stat = config_path.stat()
@@ -509,6 +514,10 @@ def provision_runtime_config(
                 previous_stat.st_uid,
                 previous_stat.st_gid,
             )
+    except LinuxInstallError as exc:
+        raise LinuxInstallError(
+            "config_validation_failed", "config destination could not be prepared"
+        ) from exc
     except OSError as exc:
         raise LinuxInstallError(
             "config_validation_failed", "config destination could not be prepared"
@@ -906,6 +915,12 @@ class SystemdServiceManager:
             raise LinuxInstallError(
                 "service_start_failed", "systemd unit directory must not be a symlink"
             )
+        # This is deliberately not installer-owned scaffolding. System scope
+        # writes inside a root-owned systemd hierarchy; user scope writes below
+        # the invoking account's private home. Recursive creation may prepare
+        # host-owned parents, which must keep the host's policy and must never
+        # be adopted or chmodded by ``_ensure_private_directory``. The unit
+        # itself is still placed with O_EXCL/O_NOFOLLOW in ``_atomic_write``.
         parent.mkdir(parents=True, exist_ok=True, mode=self._directory_mode())
         previous: tuple[bytes, int] | None = None
         installed = False
@@ -2100,12 +2115,24 @@ def install_release(
     # result only after the last element, so a root that exists while `data` is
     # a symlink would create `releases/`, raise, and leave it behind with no
     # record that this run had made it.
-    scaffolding: list[Path] = []
+    scaffolding: list[_CreatedDirectory] = []
     try:
+        # ``root`` is the first boundary the installer owns. Its parent may be
+        # a host-owned directory such as ``~/.local`` and is intentionally
+        # governed by host policy. Prepare it separately; every managed entry
+        # below it is then created exactly one component at a time so implicit
+        # parents cannot escape descriptor validation or rollback provenance.
+        try:
+            layout.root.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise LinuxInstallError(
+                "unsafe_install_root", "install root parent could not be prepared"
+            ) from exc
         for directory in (layout.root, layout.releases, layout.data):
             # Ordered outermost first, so cleanup can unwind it in reverse.
-            if _ensure_private_directory(directory):
-                scaffolding.append(directory)
+            created_directory = _ensure_private_directory(directory)
+            if created_directory is not None:
+                scaffolding.append(created_directory)
         return _install_release(
             layout=layout,
             version=version,
@@ -2325,28 +2352,147 @@ def _assert_managed_path(layout: InstallLayout, path: Path) -> None:
         ) from exc
 
 
-def _ensure_private_directory(path: Path) -> bool:
-    if path.is_symlink():
-        raise LinuxInstallError(
-            "unsafe_install_root", f"{path.name} must not be a symlink"
-        )
-    created = not path.exists()
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if not path.is_dir():
-        raise LinuxInstallError(
-            "unsafe_install_root", f"{path.name} is not a directory"
+@dataclass(frozen=True)
+class _CreatedDirectory:
+    path: Path
+    device: int
+    inode: int
+
+
+def _ensure_private_directory(path: Path) -> _CreatedDirectory | None:
+    """Create one managed directory privately, or validate the existing inode.
+
+    A successful ``mkdir`` is the only creation-provenance signal. An earlier
+    ``exists`` result cannot say whether ``mkdir(exist_ok=True)`` later met a
+    different entry. Once opened, type and mode decisions stay bound to that
+    no-follow descriptor, and the pathname is rechecked before success so a
+    concurrent replacement fails closed instead of becoming the install root.
+
+    Linux and macOS both provide the required O_DIRECTORY/O_NOFOLLOW and
+    fchmod contract. A platform without it is rejected explicitly; silently
+    falling back to stat-then-chmod would restore the race this function closes.
+    """
+    created = False
+    completed = False
+    descriptor = -1
+    created_identity: tuple[int, int] | None = None
+    try:
+        try:
+            os.mkdir(path, 0o700)
+            created = True
+            created_info = os.stat(path, follow_symlinks=False)
+            created_identity = (created_info.st_dev, created_info.st_ino)
+        except FileExistsError:
+            # EEXIST establishes no trust. It only says this invocation did not
+            # create the entry; the descriptor checks below decide whether the
+            # existing object is acceptable and it is never rollback-owned.
+            pass
+
+        try:
+            open_flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+            fchmod = os.fchmod
+        except AttributeError as exc:
+            raise LinuxInstallError(
+                "unsafe_install_root",
+                "platform lacks no-follow directory descriptor support",
+            ) from exc
+
+        descriptor = os.open(path, open_flags)
+        info = os.fstat(descriptor)
+        if not stat.S_ISDIR(info.st_mode):  # O_DIRECTORY also enforces this.
+            raise LinuxInstallError(
+                "unsafe_install_root", f"{path.name} is not a directory"
+            )
+        descriptor_identity = (info.st_dev, info.st_ino)
+        if created_identity is not None and descriptor_identity != created_identity:
+            raise LinuxInstallError(
+                "unsafe_install_root", f"{path.name} changed during preparation"
+            )
+
+        mode = stat.S_IMODE(info.st_mode)
+        if not created and mode & 0o020:
+            # Never silently adopt a shared pre-existing directory. Its exact
+            # mode is evidence that another account could replace entries.
+            raise LinuxInstallError(
+                "unsafe_install_root", f"{path.name} is group-writable"
+            )
+        if created or mode & 0o007:
+            # Pin created directories despite umask/default ACLs, and tighten
+            # only the previously accepted (non-group-writable) existing case.
+            fchmod(descriptor, 0o700)
+            info = os.fstat(descriptor)
+            if stat.S_IMODE(info.st_mode) != 0o700:
+                raise LinuxInstallError(
+                    "unsafe_install_root", f"{path.name} could not be made private"
+                )
+
+        current = os.stat(path, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != descriptor_identity:
+            raise LinuxInstallError(
+                "unsafe_install_root", f"{path.name} changed during preparation"
+            )
+        completed = True
+        if created:
+            return _CreatedDirectory(
+                path=path,
+                device=descriptor_identity[0],
+                inode=descriptor_identity[1],
+            )
+        return None
+    except LinuxInstallError:
+        raise
+    except OSError as exc:
+        detail = _private_directory_error_detail(path, created=created, error=exc)
+        raise LinuxInstallError("unsafe_install_root", detail) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if created and not completed:
+            _remove_created_directory(path, created_identity)
+
+
+def _private_directory_error_detail(
+    path: Path, *, created: bool, error: OSError
+) -> str:
+    """Explain a kernel refusal without using pathname state as authority."""
+    if created and isinstance(error, PermissionError):
+        return (
+            f"{path.name} was created but is not accessible; "
+            "owner-stripping umasks are unsupported"
         )
     if created:
-        path.chmod(0o700)
-    mode = stat.S_IMODE(path.stat().st_mode)
-    if mode & 0o020:
-        raise LinuxInstallError("unsafe_install_root", f"{path.name} is group-writable")
-    if mode & 0o007:
-        path.chmod(0o700)
-    return created
+        return f"{path.name} could not be verified after creation"
+    try:
+        info = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        return f"{path.name} parent is unavailable"
+    except OSError:
+        return f"{path.name} could not be prepared"
+    if stat.S_ISLNK(info.st_mode):
+        return f"{path.name} must not be a symlink"
+    if not stat.S_ISDIR(info.st_mode):
+        return f"{path.name} is not a directory"
+    return f"{path.name} could not be prepared"
 
 
-def _remove_created_scaffolding(directories: Sequence[Path]) -> None:
+def _remove_created_directory(path: Path, identity: tuple[int, int] | None) -> None:
+    """Best-effort cleanup only when the pathname still names our inode."""
+    if identity is None:
+        return
+    try:
+        current = os.stat(path, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != identity:
+            return
+        path.rmdir()
+    except OSError:
+        # Replacement, content, disappearance, or permissions all mean leave it
+        # alone. Cleanup must never replace the original installer diagnosis.
+        return
+
+
+def _remove_created_scaffolding(
+    directories: Sequence[_CreatedDirectory],
+) -> None:
     """Undo the empty directory tree this invocation brought into being.
 
     Only directories this run created are considered, and only while they are
@@ -2359,9 +2505,12 @@ def _remove_created_scaffolding(directories: Sequence[Path]) -> None:
     unsafe. Raising here would replace the operator's real diagnosis with a
     cleanup error.
     """
-    for directory in reversed(list(directories)):
+    for created in reversed(list(directories)):
         try:
-            directory.rmdir()
+            current = os.stat(created.path, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (created.device, created.inode):
+                continue
+            created.path.rmdir()
         except OSError:
             # Not empty, not present, or not permitted — all fine to leave, and
             # none of them says anything about the next one. Stopping here would
