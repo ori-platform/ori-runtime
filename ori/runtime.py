@@ -41,6 +41,10 @@ from ori.firmware_mqtt_operator import (
     FirmwareMqttOperatorController,
     FirmwareMqttOperatorServer,
 )
+from ori.gateway.evidence_inbound import (
+    EvidenceInboundRouter,
+    MqttEvidenceInboundSubscriber,
+)
 from ori.gateway.export import GatewayExportResponder, MqttGatewayExportServer
 from ori.gateway.firmware_commands import (
     FirmwareCommandService,
@@ -250,6 +254,7 @@ class OriRuntime:
         self._firmware_liveness_scheduler: FirmwareLivenessScheduler | None = None
         self._telemetry_exporter: HttpTelemetryExporter | None = None
         self._evidence_attestor: FirstPartyEvidenceAttestor | None = None
+        self._evidence_inbound_subscriber: MqttEvidenceInboundSubscriber | None = None
         self._firmware_confirmation_coordinator: (
             FirmwareConfirmationCoordinator | None
         ) = None
@@ -1103,6 +1108,18 @@ class OriRuntime:
                 asyncio.create_task(
                     hb_subscriber.serve_until(self._shutdown_event),
                     name="gateway-heartbeat",
+                )
+            )
+
+        evidence_inbound_subscriber = _build_evidence_inbound_subscriber(
+            config, evidence_attestor
+        )
+        self._evidence_inbound_subscriber = evidence_inbound_subscriber
+        if evidence_inbound_subscriber is not None:
+            self._background_tasks.append(
+                asyncio.create_task(
+                    evidence_inbound_subscriber.serve_until(self._shutdown_event),
+                    name="evidence-inbound",
                 )
             )
 
@@ -2306,6 +2323,14 @@ class OriRuntime:
             ),
             "chain_head_hash": None,
             "pending_export_count": None,
+            # Whether inbound authority artifacts can currently arrive. A route
+            # that is down stalls delivery without stalling anything else, so
+            # nothing on the device would otherwise show it.
+            "inbound_route_connected": (
+                self._evidence_inbound_subscriber.connected
+                if self._evidence_inbound_subscriber is not None
+                else False
+            ),
             "last_attested_action_id": None,
             "attestation_gap_count": 0,
             "status_counts": {},
@@ -4339,6 +4364,67 @@ def _build_gateway_heartbeat_subscriber(
     logger.info(
         "[runtime] MQTT gateway heartbeat subscriber enabled on %s (auth=%s)",
         "ori/gateway/health",
+        "enabled" if auth_enabled else "disabled",
+    )
+    return subscriber
+
+
+def _build_evidence_inbound_subscriber(
+    config: Config,
+    attestor: FirstPartyEvidenceAttestor | None,
+) -> MqttEvidenceInboundSubscriber | None:
+    """Instantiate the inbound authority-artifact route when configured.
+
+    Requires a gateway and a started attestor. Without the attestor there is no
+    ledger to apply anything to, and subscribing anyway would leave a runtime
+    acknowledging receipt of artifacts it cannot record -- which is worse than
+    not listening, because the gateway would stop retrying.
+
+    Envelope authentication is defense in depth rather than the proof. Every
+    artifact carries its own authenticator, verified under key material this
+    transport never sees: custody under the dedicated custody secret, receipts
+    and epoch confirmations under authority keys from the signed release. An
+    unauthenticated envelope therefore degrades the route rather than opening
+    it, which is why development may run without one while staging and
+    production reject an auth-disabled gateway broker at config load.
+    """
+    if not bool(config.gateway.enabled):
+        return None
+    if attestor is None or not attestor.available:
+        return None
+    ingest = attestor.ingest
+    if ingest is None:
+        return None
+
+    auth_cfg = getattr(config.gateway, "auth", {}) or {}
+    auth_enabled = bool(auth_cfg.get("enabled", False))
+    if not auth_enabled:
+        logger.warning(
+            "[evidence-inbound] gateway.auth.enabled is false — inbound "
+            "authority artifacts are accepted without envelope verification. "
+            "Each artifact is still verified under its own key material, so "
+            "nothing is trusted on arrival, but anything on the site network "
+            "can then spend this runtime's ingest path. Enable gateway.auth "
+            "for all production deployments."
+        )
+    try:
+        router = EvidenceInboundRouter(
+            device_id=config.device.id,
+            ingest=ingest,
+            message_auth=_build_gateway_message_auth(config),
+        )
+        subscriber = MqttEvidenceInboundSubscriber(
+            broker_url=config.gateway.broker_url,
+            router=router,
+            device_id=config.device.id,
+            tls_config=getattr(config.gateway, "tls", {}),
+        )
+    except Exception:
+        logger.exception("[runtime] invalid inbound evidence route configuration")
+        return None
+    logger.info(
+        "[runtime] inbound evidence route enabled on %s (envelope auth=%s)",
+        subscriber.topic,
         "enabled" if auth_enabled else "disabled",
     )
     return subscriber

@@ -1,0 +1,64 @@
+{
+  "contract": "gateway-api/v1 inbound evidence delivery",
+  "warning": "The secret below is a published test value and must never sign anything real.",
+  "shared_secret": "published-test-gateway-envelope-secret-do-not-use",
+  "shared_secret_note": "The runtime-gateway envelope secret named by gateway.auth.shared_secret_env. NOT the custody secret.",
+  "canonicalisation": "json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False).encode('utf-8')",
+  "signing_string_note": "message_type, device_id, request_id, signed_at_ms and the canonical payload without `auth`, joined by \\n. request_id is empty: inbound evidence is not correlated.",
+  "cases": [
+    {
+      "name": "inbound_custody_acknowledgement",
+      "topic": "ori/site-a-edge-01/evidence/inbound",
+      "direction": "gateway_to_runtime",
+      "qos": 1,
+      "message_type": "evidence_inbound",
+      "signed_at_ms": 1787000000950,
+      "payload": {
+        "device_id": "site-a-edge-01",
+        "artifact_type": "custody_acknowledgement",
+        "artifact": {
+          "v": 1,
+          "device_id": "site-a-edge-01",
+          "local_seq": 12,
+          "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
+          "custody_at_ms": 1787000000900,
+          "key_id": "hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac",
+          "mac": "hmac-sha256:b8bb7b1357c0a93bd76c2d0caa69426b3defa2c26bb17c5c68d76d23df69366a"
+        },
+        "auth": {
+          "scheme": "hmac-sha256",
+          "signed_at_ms": 1787000000950,
+          "signature": "hmac-sha256:7be4ef223c8f27fc8cac6634c1fcec96d2acfb865840bbd917e67c9416cc0d14"
+        }
+      },
+      "canonical_payload_without_auth_hex": "7b226172746966616374223a7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22736974652d612d656467652d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a6436616666336330383337636131613037613531323465333064393631326163222c226c6f63616c5f736571223a31322c226d6163223a22686d61632d7368613235363a62386262376231333537633061393362643736633264306361613639343236623364656661326332366262313763356336386437366432336466363933363661222c2276223a317d2c2261727469666163745f74797065223a22637573746f64795f61636b6e6f776c656467656d656e74222c226465766963655f6964223a22736974652d612d656467652d3031227d",
+      "signing_string": "evidence_inbound\nsite-a-edge-01\n\n1787000000950\n{\"artifact\":{\"custody_at_ms\":1787000000900,\"device_id\":\"site-a-edge-01\",\"envelope_digest\":\"sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248\",\"key_id\":\"hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac\",\"local_seq\":12,\"mac\":\"hmac-sha256:b8bb7b1357c0a93bd76c2d0caa69426b3defa2c26bb17c5c68d76d23df69366a\",\"v\":1},\"artifact_type\":\"custody_acknowledgement\",\"device_id\":\"site-a-edge-01\"}",
+      "expected_signature": "hmac-sha256:7be4ef223c8f27fc8cac6634c1fcec96d2acfb865840bbd917e67c9416cc0d14"
+    },
+    {
+      "name": "ingest_acknowledgement_applied",
+      "topic": "ori/site-a-edge-01/evidence/inbound/ack",
+      "direction": "runtime_to_gateway",
+      "qos": 1,
+      "message_type": "evidence_inbound_ack",
+      "signed_at_ms": 1787000001000,
+      "artifact_digest_note": "sha256 over the canonical bytes of the artifact object in the inbound case above.",
+      "payload": {
+        "device_id": "site-a-edge-01",
+        "artifact_type": "custody_acknowledgement",
+        "artifact_digest": "sha256:0037460fd07ddc90b8f007b0b5cc92337003122304c9a3dd286add85f6a750c0",
+        "outcome": "applied",
+        "reason": "",
+        "acknowledged_at_ms": 1787000001000,
+        "auth": {
+          "scheme": "hmac-sha256",
+          "signed_at_ms": 1787000001000,
+          "signature": "hmac-sha256:7ff9584961f53179e8f0352fb039090ab8bd77917a0e71fdb8494b949d79d272"
+        }
+      },
+      "canonical_payload_without_auth_hex": "7b2261636b6e6f776c65646765645f61745f6d73223a313738373030303030313030302c2261727469666163745f646967657374223a227368613235363a30303337343630666430376464633930623866303037623062356363393233333730303331323233303463396133646432383661646438356636613735306330222c2261727469666163745f74797065223a22637573746f64795f61636b6e6f776c656467656d656e74222c226465766963655f6964223a22736974652d612d656467652d3031222c226f7574636f6d65223a226170706c696564222c22726561736f6e223a22227d",
+      "signing_string": "evidence_inbound_ack\nsite-a-edge-01\n\n1787000001000\n{\"acknowledged_at_ms\":1787000001000,\"artifact_digest\":\"sha256:0037460fd07ddc90b8f007b0b5cc92337003122304c9a3dd286add85f6a750c0\",\"artifact_type\":\"custody_acknowledgement\",\"device_id\":\"site-a-edge-01\",\"outcome\":\"applied\",\"reason\":\"\"}",
+      "expected_signature": "hmac-sha256:7ff9584961f53179e8f0352fb039090ab8bd77917a0e71fdb8494b949d79d272"
+    }
+  ]
+}

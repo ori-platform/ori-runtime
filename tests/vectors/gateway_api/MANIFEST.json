@@ -1,0 +1,9 @@
+{
+  "source_repository": "ori-platform/ori-specs",
+  "source_path": "gateway-api/vectors",
+  "source_commit": "d17ce6908efa24a005f0828f2b73a781f3a2c903",
+  "note": "Vendored copy of the normative transport fixture. The runtime must verify the inbound message and reproduce the acknowledgement byte for byte, so this is its conformance fixture for gateway-api/v1 inbound evidence delivery. Digests detect a local edit; the source commit is the provenance trail.",
+  "files": {
+    "inbound-evidence.json": "cb18d5f6fad051f6ca1924b20ef1040d2d67185c41a9a9eccee6159db0eb0473"
+  }
+}

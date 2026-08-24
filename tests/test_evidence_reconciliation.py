@@ -49,10 +49,19 @@ class _Attestor:
 class _Runtime:
     """The attributes the reconciliation and health paths actually read."""
 
-    def __init__(self, *, attestor=None, store=None, coordinator=None, enabled=True):
+    def __init__(
+        self,
+        *,
+        attestor=None,
+        store=None,
+        coordinator=None,
+        enabled=True,
+        inbound=None,
+    ):
         self._evidence_attestor = attestor
         self._state_store = store
         self._firmware_confirmation_coordinator = coordinator
+        self._evidence_inbound_subscriber = inbound
         self._config = type(
             "_Cfg", (), {"evidence": type("_Ev", (), {"enabled": enabled})()}
         )()
@@ -238,6 +247,25 @@ class TestEvidenceHealth:
         assert health["available"] is True
         assert health["chain_head_hash"] == "ef" * 32
         assert health["pending_export_count"] == 4
+
+    async def test_health_reports_whether_inbound_evidence_can_arrive(self) -> None:
+        """A stalled inbound route is invisible everywhere else.
+
+        Evidence simply stops arriving: nothing errors, no count moves, and a
+        device with no route reads exactly like one whose gateway has sent
+        nothing.
+        """
+        for connected in (True, False):
+            inbound = type("_Sub", (), {"connected": connected})()
+            health = await self._health(
+                _Runtime(attestor=_Attestor(), store=_store([]), inbound=inbound)
+            )
+            assert health["inbound_route_connected"] is connected
+
+    async def test_health_reports_no_inbound_route_as_disconnected(self) -> None:
+        """A runtime with no route cannot receive, and must not read as able to."""
+        health = await self._health(_Runtime(attestor=_Attestor(), store=_store([])))
+        assert health["inbound_route_connected"] is False
         assert health["public_key_hex"] == "ab" * 32
         assert health["protocol_version"] == "ori.evidence.v2"
 
