@@ -305,6 +305,14 @@ gateway:
     # purpose: this one authenticates the gateway's claim that it is carrying
     # evidence. Reusing the envelope secret would let anything holding it for
     # one purpose mint artifacts for the other.
+    #
+    # Generate it from a CSPRNG with at least 256 bits of entropy -- for
+    # example `openssl rand -base64 32` -- and provision it with no surrounding
+    # whitespace, since the key is the secret's exact UTF-8 bytes and a stray
+    # newline derives an identifier the gateway does not hold. A passphrase is
+    # not acceptable: the custody MAC is what stands between this runtime's
+    # queue and anything on the site network that can reach the broker, and
+    # nothing at startup can measure entropy, so this one is yours to keep.
     secret_env: ""                   # env var name only; never put the secret in ori.yaml
     previous_secret_env: ""          # optional verify-only previous generation during rotation
     # A retired generation is named, never re-derived: retiring it destroys the
