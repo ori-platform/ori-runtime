@@ -122,6 +122,16 @@ jobs:
             --cov-report=xml \
             -m "not hardware"
 
+      # GitHub's runner normally starts at 0022. Debian private-user-group
+      # hosts, including stock Raspberry Pi OS Trixie, commonly use 0002;
+      # installer fixtures must not depend on the runner's ambient umask.
+      - name: Installer checks under private-group umask
+        run: |
+          umask 0002
+          pytest -q \
+            tests/test_linux_installer.py \
+            tests/test_installer_activation.py
+
       # System scope is only meaningful as root: the execution guard returns
       # immediately for any other account, so an unprivileged run of these
       # would pass without exercising anything. They assert `geteuid() == 0`
