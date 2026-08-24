@@ -438,6 +438,7 @@ EVIDENCE_HEALTH_KEYS = {
     "action_event_type",
     "chain_head_hash",
     "pending_export_count",
+    "inbound_route_connected",
     "last_attested_action_id",
     "attestation_gap_count",
     "status_counts",
@@ -466,6 +467,7 @@ async def test_health_evidence_block_matches_ori_specs_runtime_health_v2():
     runtime._evidence_attestor = None
     runtime._config = None
     runtime._state_store = None
+    runtime._evidence_inbound_subscriber = None
 
     health = await runtime._evidence_health()
     assert set(health) == EVIDENCE_HEALTH_KEYS
@@ -507,6 +509,7 @@ async def test_degraded_evidence_stays_visible_to_the_operator():
     runtime._evidence_attestor = None
     runtime._config = None
     runtime._state_store = None
+    runtime._evidence_inbound_subscriber = None
 
     health = await runtime._evidence_health()
     for field in ("enabled", "available", "attestation_gap_count", "status_counts"):

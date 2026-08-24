@@ -79,7 +79,22 @@ def test_every_vendored_vector_set_records_its_provenance() -> None:
             )
 
 
-def test_all_vendored_sets_pin_the_same_specs_commit() -> None:
+#: Vendored sets that together reconstruct the evidence graph. Transport
+#: fixtures are deliberately absent: `gateway-api` versions independently of
+#: the evidence contracts and its fixtures take no part in reconstructing a
+#: chain, so requiring one pin across both would couple two contracts that have
+#: no reason to move together.
+GRAPH_VECTOR_SETS = frozenset(
+    {
+        "evidence_exchange",
+        "evidence_exchange_receiver_state",
+        "evidence_v2",
+        "runtime_evidence_anchor",
+    }
+)
+
+
+def test_all_graph_vector_sets_pin_the_same_specs_commit() -> None:
     """A split pin means the graph was assembled from two different contracts.
 
     The exchange vectors reference the anchor derivations, so a manifest that
@@ -88,8 +103,32 @@ def test_all_vendored_sets_pin_the_same_specs_commit() -> None:
     pins = {
         m.parent.name: json.loads(m.read_text())["source_commit"]
         for m in sorted(VECTORS.rglob("MANIFEST.json"))
+        if m.parent.name in GRAPH_VECTOR_SETS
     }
+    assert set(pins) == set(GRAPH_VECTOR_SETS), (
+        f"a graph vector set is missing or renamed: {sorted(pins)}"
+    )
     assert len(set(pins.values())) == 1, f"vendored sets pin different commits: {pins}"
+
+
+def test_every_vendored_set_is_either_a_graph_set_or_declares_why_not() -> None:
+    """A new vendored set must be classified, not silently exempted.
+
+    Narrowing the pin check to the graph sets creates a way to escape it by
+    accident: a set added under a new name is simply not compared. Anything
+    outside the graph belongs to another contract and must say so in its own
+    manifest.
+    """
+    for manifest_path in sorted(VECTORS.rglob("MANIFEST.json")):
+        if manifest_path.parent.name in GRAPH_VECTOR_SETS:
+            continue
+        manifest = json.loads(manifest_path.read_text())
+        source = str(manifest.get("source_path", ""))
+        assert not source.startswith("evidence"), (
+            f"{manifest_path.parent.name} vendors from {source!r}, which is part "
+            "of the evidence graph; add it to GRAPH_VECTOR_SETS so its pin is "
+            "compared rather than exempted"
+        )
 
 
 #: Fields each vector family must publish. Written out rather than derived from

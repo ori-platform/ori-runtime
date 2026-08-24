@@ -21,6 +21,7 @@ delivery state, and only a verified epoch confirmation activates an epoch.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -28,11 +29,13 @@ from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.security.evidence_bound import BoundIngestService
+from ori.security.evidence_canonical import canonical_json
 from ori.security.evidence_ingest_service import IngestOutcome
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
 )
+from ori.utils.time_utils import now_ms
 
 try:
     import paho.mqtt.client as mqtt
@@ -45,6 +48,7 @@ except ImportError:  # pragma: no cover — paho is always installed in producti
 logger = logging.getLogger(__name__)
 
 EVIDENCE_INBOUND_TOPIC_TEMPLATE = "ori/{device_id}/evidence/inbound"
+EVIDENCE_INBOUND_ACK_TOPIC_TEMPLATE = "ori/{device_id}/evidence/inbound/ack"
 
 _RECONNECT_MIN_S = 5.0
 _RECONNECT_MAX_S = 300.0
@@ -52,6 +56,7 @@ _RECONNECT_MAX_S = 300.0
 #: Distinct from every other runtime-gateway message type, so an envelope
 #: authenticating another exchange cannot be replayed onto this one.
 EVIDENCE_INBOUND_MESSAGE_TYPE = "evidence_inbound"
+EVIDENCE_INBOUND_ACK_MESSAGE_TYPE = "evidence_inbound_ack"
 
 #: The sender names the artifact. The three have disjoint field sets, but
 #: inferring the type from which verifier succeeds is trial verification by
@@ -68,6 +73,14 @@ REFUSE_ENVELOPE_UNAUTHENTICATED = "envelope_unauthenticated"
 REFUSE_UNKNOWN_ARTIFACT_TYPE = "unknown_artifact_type"
 REFUSE_MISSING_ARTIFACT = "missing_artifact"
 REFUSE_INGEST_UNAVAILABLE = "ingest_unavailable"
+
+
+@dataclass(frozen=True)
+class Routed:
+    """What happened to one message, and what to tell the courier about it."""
+
+    outcome: IngestOutcome | InboundRefusal
+    acknowledgement: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -114,17 +127,24 @@ class EvidenceInboundRouter:
     def envelope_authenticated(self) -> bool:
         return self._message_auth is not None
 
-    def handle_payload(
-        self, payload: bytes | str | dict[str, Any]
-    ) -> IngestOutcome | InboundRefusal:
-        """Route one message, returning what happened to it.
+    @property
+    def ack_topic(self) -> str:
+        return EVIDENCE_INBOUND_ACK_TOPIC_TEMPLATE.format(device_id=self._device_id)
+
+    def handle_payload(self, payload: bytes | str | dict[str, Any]) -> Routed:
+        """Route one message, returning what happened and what to acknowledge.
 
         Never raises for a bad message: a refusal is a value, not an exception
         for some handler up the stack to interpret.
+
+        An acknowledgement accompanies only an outcome ingest actually reached.
+        A transport refusal produces none: it is not a statement about an
+        artifact, and answering an unauthenticated message with a signed reply
+        would hand anything on the site network a signing oracle.
         """
         decoded = _decode(payload)
         if isinstance(decoded, InboundRefusal):
-            return decoded
+            return Routed(decoded)
 
         if self._message_auth is not None:
             try:
@@ -134,35 +154,71 @@ class EvidenceInboundRouter:
                     expected_device_id=self._device_id,
                 )
             except GatewayMessageAuthError as exc:
-                return InboundRefusal(REFUSE_ENVELOPE_UNAUTHENTICATED, str(exc))
+                return Routed(InboundRefusal(REFUSE_ENVELOPE_UNAUTHENTICATED, str(exc)))
 
         artifact_type = str(decoded.get("artifact_type", "") or "")
         if artifact_type not in ARTIFACT_TYPES:
-            return InboundRefusal(
-                REFUSE_UNKNOWN_ARTIFACT_TYPE,
-                f"artifact_type {artifact_type!r} is not one this route accepts",
+            return Routed(
+                InboundRefusal(
+                    REFUSE_UNKNOWN_ARTIFACT_TYPE,
+                    f"artifact_type {artifact_type!r} is not one this route accepts",
+                )
             )
 
         artifact = decoded.get("artifact")
         if not isinstance(artifact, dict):
-            return InboundRefusal(
-                REFUSE_MISSING_ARTIFACT,
-                f"the {artifact_type} carries no artifact object",
+            return Routed(
+                InboundRefusal(
+                    REFUSE_MISSING_ARTIFACT,
+                    f"the {artifact_type} carries no artifact object",
+                )
             )
 
         # Reported after the message is understood, so an operator reads "a real
         # artifact arrived with nowhere to go" rather than "malformed".
         if self._ingest is None:
-            return InboundRefusal(
-                REFUSE_INGEST_UNAVAILABLE,
-                "evidence ingest is not available on this runtime",
+            return Routed(
+                InboundRefusal(
+                    REFUSE_INGEST_UNAVAILABLE,
+                    "evidence ingest is not available on this runtime",
+                )
             )
 
         if artifact_type == ARTIFACT_CUSTODY:
-            return self._ingest.accept_custody(artifact)
-        if artifact_type == ARTIFACT_RECEIPT:
-            return self._ingest.accept_receipt(artifact)
-        return self._ingest.accept_epoch_confirmation(artifact)
+            outcome = self._ingest.accept_custody(artifact)
+        elif artifact_type == ARTIFACT_RECEIPT:
+            outcome = self._ingest.accept_receipt(artifact)
+        else:
+            outcome = self._ingest.accept_epoch_confirmation(artifact)
+        return Routed(outcome, self._acknowledgement(artifact_type, artifact, outcome))
+
+    def _acknowledgement(
+        self, artifact_type: str, artifact: dict[str, Any], outcome: IngestOutcome
+    ) -> dict[str, Any]:
+        """The courier's retirement signal for one artifact.
+
+        Identified by a digest over the artifact's canonical bytes rather than
+        a correlation identifier: the artifact already carries its identity in
+        the bytes the authority signed, and a transport identifier would be a
+        second name the two sides could disagree about.
+
+        It reports that this receiver decided, never that the artifact was
+        true.
+        """
+        digest = hashlib.sha256(canonical_json(artifact)).hexdigest()
+        payload: dict[str, Any] = {
+            "device_id": self._device_id,
+            "artifact_type": artifact_type,
+            "artifact_digest": f"sha256:{digest}",
+            "outcome": "applied" if outcome.accepted else "refused",
+            "reason": "" if outcome.accepted else str(outcome.reason or ""),
+            "acknowledged_at_ms": now_ms(),
+        }
+        if self._message_auth is None:
+            return payload
+        return self._message_auth.sign(
+            payload, message_type=EVIDENCE_INBOUND_ACK_MESSAGE_TYPE
+        )
 
 
 def _decode(
@@ -207,6 +263,7 @@ class MqttEvidenceInboundSubscriber:
         self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected = False
+        self._lost: asyncio.Event | None = None
 
     @property
     def topic(self) -> str:
@@ -221,6 +278,7 @@ class MqttEvidenceInboundSubscriber:
         gateway retried deliveries that could no longer land.
         """
         self._loop = asyncio.get_running_loop()
+        self._lost = asyncio.Event()
         delay = _RECONNECT_MIN_S
         while not shutdown_event.is_set():
             try:
@@ -247,17 +305,23 @@ class MqttEvidenceInboundSubscriber:
 
     @property
     def connected(self) -> bool:
-        """Whether the route currently holds a subscription.
+        """Whether the broker has granted this route's subscription.
 
-        Read by health reporting: an inbound route that is down is a delivery
-        stall, not a runtime fault, and must be visible as such.
+        Reported in runtime health. A route that is down is a delivery stall
+        rather than a runtime fault, and nothing else on the device can
+        observe it: evidence simply stops arriving.
         """
         return self._connected
 
     async def _connect_and_serve(self, shutdown_event: asyncio.Event) -> None:
+        lost = self._lost
+        assert lost is not None
+        lost.clear()
         client = self._client_factory(client_id=f"ori-evidence-in-{self._device_id}")
         self._client = client
         client.on_connect = self._on_connect
+        client.on_subscribe = self._on_subscribe
+        client.on_disconnect = self._on_disconnect
         client.on_message = self._on_message
         username = self._broker.username
         password = self._broker.password
@@ -271,7 +335,13 @@ class MqttEvidenceInboundSubscriber:
             60,
         )
         await asyncio.to_thread(client.loop_start)
-        await shutdown_event.wait()
+        # Either end of the route can fail: the broker may refuse the
+        # subscription, or drop a session it had granted. Both must reconnect
+        # rather than leave a task parked on a route that no longer carries
+        # anything.
+        await _wait_first(shutdown_event, lost)
+        if not shutdown_event.is_set():
+            raise ConnectionError("subscription lost")
 
     async def close(self) -> None:
         """Stop the paho network loop and disconnect cleanly."""
@@ -294,20 +364,47 @@ class MqttEvidenceInboundSubscriber:
     def _on_connect(
         self, client: Any, _userdata: Any, _flags: Any, rc: Any, *_: Any
     ) -> None:
-        if int(getattr(rc, "value", rc)) != 0:
+        if _rc_value(rc) != 0:
             logger.warning("[evidence-inbound] MQTT connect failed rc=%s", rc)
+            self._signal_lost()
             return
         # QoS 1: a dropped authority artifact is not recoverable by asking
         # again, since the runtime does not know it was sent.
+        #
+        # Sending SUBSCRIBE is not being subscribed. The return value says the
+        # packet was queued; the broker's grant or refusal arrives later in
+        # SUBACK, so `connected` is decided in _on_subscribe.
         result = client.subscribe(self.topic, qos=1)
-        # Connecting is not subscribing. Reporting the route up on connect
-        # alone would leave a broker that refused the subscription looking
-        # healthy while no artifact could arrive.
         code = result[0] if isinstance(result, tuple) else result
-        if int(getattr(code, "value", code)) != 0:
+        if _rc_value(code) != 0:
             logger.warning(
-                "[evidence-inbound] subscribe to %s refused rc=%s", self.topic, code
+                "[evidence-inbound] could not send subscribe for %s rc=%s",
+                self.topic,
+                code,
             )
+            self._signal_lost()
+
+    def _on_subscribe(
+        self, _client: Any, _userdata: Any, _mid: Any, reason_codes: Any, *_: Any
+    ) -> None:
+        """Mark the route up only once the broker has granted the subscription.
+
+        A broker that authenticates the connection and then refuses the topic
+        by ACL is the shape this catches. Without it the route reports healthy
+        and waits forever for artifacts the broker will never deliver.
+        """
+        codes = (
+            reason_codes if isinstance(reason_codes, (list, tuple)) else [reason_codes]
+        )
+        refused = [code for code in codes if _rc_value(code) >= 0x80]
+        if refused or not codes:
+            logger.warning(
+                "[evidence-inbound] broker refused subscription to %s (%s)",
+                self.topic,
+                refused or "no granted QoS",
+            )
+            self._connected = False
+            self._signal_lost()
             return
         self._connected = True
         logger.info(
@@ -317,6 +414,24 @@ class MqttEvidenceInboundSubscriber:
             self._broker.port,
             "enabled" if self._router.envelope_authenticated else "disabled",
         )
+
+    def _on_disconnect(self, _client: Any, _userdata: Any, *args: Any) -> None:
+        """Drop the route's claim to be up, and reconnect.
+
+        Without this `connected` stays true after the session is gone, which
+        would report a working route while nothing could arrive.
+        """
+        self._connected = False
+        logger.warning("[evidence-inbound] disconnected from broker")
+        self._signal_lost()
+
+    def _signal_lost(self) -> None:
+        """Wake the serve loop from a paho callback thread."""
+        loop = self._loop
+        lost = self._lost
+        if loop is None or lost is None:
+            return
+        loop.call_soon_threadsafe(lost.set)
 
     def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
         loop = self._loop
@@ -330,8 +445,73 @@ class MqttEvidenceInboundSubscriber:
         future.add_done_callback(_log_future_failure)
 
     async def _route(self, payload: bytes) -> None:
-        result = await asyncio.to_thread(self._router.handle_payload, payload)
-        _log_result(result)
+        routed = await asyncio.to_thread(self._router.handle_payload, payload)
+        _log_result(routed.outcome)
+        if routed.acknowledgement is None:
+            return
+        client = self._client
+        if client is None:
+            logger.warning(
+                "[evidence-inbound] no connection to acknowledge on; the courier "
+                "will redeliver"
+            )
+            return
+        try:
+            await asyncio.to_thread(
+                client.publish,
+                self._router.ack_topic,
+                json.dumps(routed.acknowledgement).encode(),
+                1,
+            )
+        except Exception:
+            # The courier retires an artifact only on an acknowledgement, so a
+            # lost one costs a redelivery rather than the evidence.
+            logger.warning("[evidence-inbound] failed to publish acknowledgement")
+
+
+def _rc_value(code: Any) -> int:
+    """Numeric value of a paho reason code, whichever API version produced it."""
+    value = getattr(code, "value", code)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return -1
+
+
+async def _wait_first(*events: asyncio.Event) -> None:
+    """Return once any of *events* is set."""
+    waiters = [asyncio.ensure_future(event.wait()) for event in events]
+    try:
+        await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for waiter in waiters:
+            waiter.cancel()
+
+
+def _log_future_failure(future: Any) -> None:
+    try:
+        future.result()
+    except Exception:
+        logger.exception("[evidence-inbound] routing an inbound artifact failed")
+
+
+def _default_client_factory(*, client_id: str) -> Any:
+    if mqtt is None:
+        raise RuntimeError("paho-mqtt is not installed")
+    # A persistent session, per gateway-api/v1. Under a clean session the
+    # broker discards this subscription on disconnect, so every artifact
+    # published while the runtime restarts is dropped with nothing recording
+    # that it existed. The client id is stable for the same reason: a session
+    # can only be resumed by the name that created it.
+    kwargs: dict[str, Any] = {"client_id": client_id, "clean_session": False}
+    callback_api_version = getattr(mqtt, "CallbackAPIVersion", None)
+    if callback_api_version is not None:
+        kwargs["callback_api_version"] = callback_api_version.VERSION2
+    try:
+        return mqtt.Client(**kwargs)
+    except TypeError:
+        kwargs.pop("callback_api_version", None)
+        return mqtt.Client(**kwargs)
 
 
 def _log_result(result: IngestOutcome | InboundRefusal) -> None:
@@ -361,24 +541,3 @@ def _log_result(result: IngestOutcome | InboundRefusal) -> None:
         result.reason,
         result.detail,
     )
-
-
-def _log_future_failure(future: Any) -> None:
-    try:
-        future.result()
-    except Exception:
-        logger.exception("[evidence-inbound] routing an inbound artifact failed")
-
-
-def _default_client_factory(*, client_id: str) -> Any:
-    if mqtt is None:
-        raise RuntimeError("paho-mqtt is not installed")
-    kwargs: dict[str, Any] = {"client_id": client_id}
-    callback_api_version = getattr(mqtt, "CallbackAPIVersion", None)
-    if callback_api_version is not None:
-        kwargs["callback_api_version"] = callback_api_version.VERSION2
-    try:
-        return mqtt.Client(**kwargs)
-    except TypeError:
-        kwargs.pop("callback_api_version", None)
-        return mqtt.Client(**kwargs)

@@ -254,6 +254,7 @@ class OriRuntime:
         self._firmware_liveness_scheduler: FirmwareLivenessScheduler | None = None
         self._telemetry_exporter: HttpTelemetryExporter | None = None
         self._evidence_attestor: FirstPartyEvidenceAttestor | None = None
+        self._evidence_inbound_subscriber: MqttEvidenceInboundSubscriber | None = None
         self._firmware_confirmation_coordinator: (
             FirmwareConfirmationCoordinator | None
         ) = None
@@ -1113,6 +1114,7 @@ class OriRuntime:
         evidence_inbound_subscriber = _build_evidence_inbound_subscriber(
             config, evidence_attestor
         )
+        self._evidence_inbound_subscriber = evidence_inbound_subscriber
         if evidence_inbound_subscriber is not None:
             self._background_tasks.append(
                 asyncio.create_task(
@@ -2321,6 +2323,14 @@ class OriRuntime:
             ),
             "chain_head_hash": None,
             "pending_export_count": None,
+            # Whether inbound authority artifacts can currently arrive. A route
+            # that is down stalls delivery without stalling anything else, so
+            # nothing on the device would otherwise show it.
+            "inbound_route_connected": (
+                self._evidence_inbound_subscriber.connected
+                if self._evidence_inbound_subscriber is not None
+                else False
+            ),
             "last_attested_action_id": None,
             "attestation_gap_count": 0,
             "status_counts": {},
