@@ -23,6 +23,7 @@ from ori.config import (
     _parse_evidence,
 )
 from ori.runtime import _build_evidence_attestor
+from ori.security.custody_keys import derive_custody_key_id
 
 
 class _Device:
@@ -30,7 +31,16 @@ class _Device:
 
 
 class _Gateway:
-    auth: dict = {}
+    """Carries both secret sections, because their separation is the point.
+
+    A stub with only `auth` cannot see the defect this file now guards: custody
+    reading the envelope secret looks correct until something holds the two
+    apart.
+    """
+
+    def __init__(self, auth: dict | None = None, custody: dict | None = None) -> None:
+        self.auth = auth if auth is not None else {}
+        self.custody = custody if custody is not None else {}
 
 
 class _Config:
@@ -42,10 +52,12 @@ class _Config:
     at each call site records that the narrowness is intentional.
     """
 
-    def __init__(self, evidence: EvidenceConfig) -> None:
+    def __init__(
+        self, evidence: EvidenceConfig, gateway: "_Gateway | None" = None
+    ) -> None:
         self.evidence = evidence
         self.device = _Device()
-        self.gateway = _Gateway()
+        self.gateway = gateway if gateway is not None else _Gateway()
 
 
 class TestEvidenceConfigParsing:
@@ -238,3 +250,115 @@ class TestConfigLoadWiresTheEvidenceParser:
                     "evidence:\n  enabled: true\n  checkpoint_interval_s: 900\n",
                 )
             )
+
+
+class TestCustodyKeysReachTheIngestPath:
+    """The seam: config -> environment -> registry -> attestor -> ingest.
+
+    Every piece was covered in isolation while the whole was wrong. The runtime
+    passed the runtime-gateway envelope secret into custody verification, the
+    conformance tests passed the custody secret directly, and nothing built the
+    attestor the way the runtime builds it. Both ends were proven and the join
+    was not.
+    """
+
+    CUSTODY = "site-custody-secret-not-the-envelope-one"
+    ENVELOPE = "site-envelope-secret"
+
+    def _config(self, tmp_path, custody: dict) -> Config:
+        evidence = EvidenceConfig(
+            enabled=True,
+            db_path=str(tmp_path / "e.db"),
+            key_path=str(tmp_path / "e.key"),
+            device_secret_env="ORI_TEST_DEVICE_SECRET",
+        )
+        gateway = _Gateway(
+            auth={
+                "shared_secret_env": "ORI_TEST_ENVELOPE",
+                "previous_shared_secret_env": "",
+            },
+            custody=custody,
+        )
+        return cast(Config, _Config(evidence, gateway))
+
+    def test_the_attestor_verifies_under_the_custody_secret_not_the_envelope_one(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The regression #371 needed, driven through the real constructor."""
+        monkeypatch.setenv("ORI_TEST_DEVICE_SECRET", "a-random-install-secret")
+        monkeypatch.setenv("ORI_TEST_ENVELOPE", self.ENVELOPE)
+        monkeypatch.setenv("ORI_TEST_CUSTODY", self.CUSTODY)
+
+        attestor = _build_evidence_attestor(
+            self._config(
+                tmp_path,
+                {
+                    "secret_env": "ORI_TEST_CUSTODY",
+                    "previous_secret_env": "",
+                    "retired_key_ids": [],
+                },
+            )
+        )
+        assert attestor is not None
+        registry = attestor._custody_keys
+        assert registry is not None
+
+        # The custody secret is the one that resolves; the envelope secret is
+        # not held at all. Before this, the registry would have carried the
+        # envelope secret and every real acknowledgement would have failed.
+        assert registry.lookup(derive_custody_key_id(self.CUSTODY)) is not None
+        assert registry.lookup(derive_custody_key_id(self.ENVELOPE)) is None
+
+    def test_reusing_the_envelope_secret_for_custody_fails_construction(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Pointing both settings at one value is refused on the bytes."""
+        monkeypatch.setenv("ORI_TEST_DEVICE_SECRET", "a-random-install-secret")
+        monkeypatch.setenv("ORI_TEST_ENVELOPE", self.ENVELOPE)
+        monkeypatch.setenv("ORI_TEST_CUSTODY_SAME", self.ENVELOPE)
+
+        with pytest.raises(ValueError, match="envelope secret"):
+            _build_evidence_attestor(
+                self._config(
+                    tmp_path,
+                    {
+                        "secret_env": "ORI_TEST_CUSTODY_SAME",
+                        "previous_secret_env": "",
+                        "retired_key_ids": [],
+                    },
+                )
+            )
+
+    def test_a_configured_but_missing_custody_secret_stops_startup(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Declared-and-broken is not the same as not configured.
+
+        Returning None here would report a deployment whose secret never
+        reached the process as one deliberately running without custody, and
+        the runtime would look healthy while refusing every acknowledgement.
+        """
+        monkeypatch.setenv("ORI_TEST_DEVICE_SECRET", "a-random-install-secret")
+        monkeypatch.delenv("ORI_TEST_CUSTODY_ABSENT", raising=False)
+
+        with pytest.raises(ValueError, match="ORI_TEST_CUSTODY_ABSENT"):
+            _build_evidence_attestor(
+                self._config(
+                    tmp_path,
+                    {
+                        "secret_env": "ORI_TEST_CUSTODY_ABSENT",
+                        "previous_secret_env": "",
+                        "retired_key_ids": [],
+                    },
+                )
+            )
+
+    def test_no_custody_configuration_stays_optional(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Absence is a choice and must not become a startup failure."""
+        monkeypatch.setenv("ORI_TEST_DEVICE_SECRET", "a-random-install-secret")
+
+        attestor = _build_evidence_attestor(self._config(tmp_path, {"secret_env": ""}))
+        assert attestor is not None
+        assert attestor._custody_keys is None

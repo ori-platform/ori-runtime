@@ -19,8 +19,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ori.security.custody_keys import CustodyKeyRegistry
 from ori.security.evidence_authority_keys import AuthorityKey
 from ori.security.evidence_ingest import (
+    REJECT_UNKNOWN_KEY,
     IngestRejectedError,
     verify_custody_acknowledgement,
     verify_delivery_receipt,
@@ -57,13 +59,17 @@ class EvidenceIngestService:
         registry: dict[tuple[str, str], AuthorityKey],
         device_id: str,
         device_pubkey_hex: str,
-        gateway_shared_secret: str = "",
+        custody_keys: CustodyKeyRegistry | None = None,
     ) -> None:
         self._ledger = ledger
         self._registry = registry
         self._device_id = str(device_id)
         self._device_pubkey_hex = str(device_pubkey_hex)
-        self._gateway_shared_secret = str(gateway_shared_secret)
+        # Named for what it holds. The previous parameter was
+        # `gateway_shared_secret`, which described the runtime-gateway envelope
+        # secret and invited exactly the wrong value at the call site -- and
+        # got it.
+        self._custody_keys = custody_keys
         self._rejections: list[IngestOutcome] = []
 
     @property
@@ -96,10 +102,19 @@ class EvidenceIngestService:
                 ),
             )
         try:
+            if self._custody_keys is None:
+                return self._refuse(
+                    "custody_acknowledgement",
+                    IngestRejectedError(
+                        REJECT_UNKNOWN_KEY,
+                        "no custody key registry is configured",
+                    ),
+                )
             verified = verify_custody_acknowledgement(
                 artifact,
                 device_id=self._device_id,
-                shared_secret=self._gateway_shared_secret,
+                custody_keys=self._custody_keys,
+                authority_keys=self._registry,
                 expected_digest=str(sealed["envelope_digest"]),
                 expected_local_seq=local_seq,
             )

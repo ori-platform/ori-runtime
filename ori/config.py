@@ -144,6 +144,7 @@ class GatewayConfig:
     firmware_telemetry: dict = field(default_factory=dict)
     firmware_commands: dict = field(default_factory=dict)
     auth: dict = field(default_factory=dict)
+    custody: dict = field(default_factory=dict)
     tls: dict = field(default_factory=dict)
     encryption: dict = field(default_factory=dict)
     broker_posture: dict = field(default_factory=dict)
@@ -1083,6 +1084,53 @@ def _parse_gateway(data: Any) -> GatewayConfig:
     firmware_commands["runtime_command_key_env"] = runtime_command_key_env
     firmware_commands["provisioner_key_env"] = provisioner_key_env
 
+    # Custody keys are their own section, not part of `auth`, because they are
+    # a different secret for a different purpose. Folding them into `auth`
+    # would invite reuse of the envelope secret, which is the confusion this
+    # section exists to end.
+    from ori.security.custody_keys import is_well_formed_key_id
+
+    custody_raw = data.get("custody") or {}
+    if not isinstance(custody_raw, dict):
+        raise ConfigValidationError("'gateway.custody' section must be a mapping.")
+    custody = dict(custody_raw)
+    custody_secret_env = str(custody.get("secret_env", "") or "").strip()
+    custody["secret_env"] = custody_secret_env
+    previous_custody_secret_env = str(
+        custody.get("previous_secret_env", "") or ""
+    ).strip()
+    if (
+        previous_custody_secret_env
+        and previous_custody_secret_env == custody_secret_env
+    ):
+        raise ConfigValidationError(
+            "gateway.custody.previous_secret_env must differ from secret_env"
+        )
+    custody["previous_secret_env"] = previous_custody_secret_env
+
+    # A retired generation is named, never re-derived: its secret was destroyed,
+    # so the identifier is the only record that it existed.
+    retired_raw = custody.get("retired_key_ids") or []
+    if not isinstance(retired_raw, list):
+        raise ConfigValidationError(
+            "'gateway.custody.retired_key_ids' must be a list of key_id strings."
+        )
+    retired: list[str] = []
+    for entry in retired_raw:
+        key_id = str(entry or "").strip()
+        if not is_well_formed_key_id(key_id):
+            raise ConfigValidationError(
+                "gateway.custody.retired_key_ids entries must look like "
+                f"'hkdf-sha256:<32 lowercase hex>'; got {key_id!r}"
+            )
+        if key_id in retired:
+            raise ConfigValidationError(
+                f"gateway.custody.retired_key_ids lists {key_id} more than once"
+            )
+        retired.append(key_id)
+    custody["retired_key_ids"] = retired
+    data["custody"] = custody
+
     auth_raw = data.get("auth") or {}
     if not isinstance(auth_raw, dict):
         raise ConfigValidationError("'gateway.auth' section must be a mapping.")
@@ -1200,6 +1248,7 @@ def _parse_gateway(data: Any) -> GatewayConfig:
         firmware_telemetry=firmware_telemetry,
         firmware_commands=firmware_commands,
         auth=auth,
+        custody=custody,
         tls=tls,
         encryption=encryption,
         broker_posture=broker_posture,

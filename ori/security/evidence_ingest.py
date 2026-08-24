@@ -28,8 +28,14 @@ import base64
 import hashlib
 import hmac
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
+from ori.security.custody_keys import (
+    CUSTODY_KEY_PURPOSE,
+    CUSTODY_MAC_RE,
+    CustodyKeyRegistry,
+    is_well_formed_key_id,
+)
 from ori.security.evidence_authority_keys import (
     PURPOSE_EPOCH,
     PURPOSE_RECEIPT,
@@ -82,6 +88,7 @@ EPOCH_FIELDS = frozenset(
 REJECT_UNRECOGNISED_VERSION = "unrecognised_version"
 REJECT_MALFORMED = "malformed"
 REJECT_UNKNOWN_KEY = "unknown_key"
+REJECT_RETIRED_KEY = "retired_key"
 REJECT_WRONG_PURPOSE = "wrong_purpose"
 REJECT_BAD_AUTHENTICATOR = "bad_authenticator"
 REJECT_UNKNOWN_SEQUENCE = "unknown_sequence"
@@ -92,6 +99,7 @@ REJECT_REASONS = frozenset(
         REJECT_UNRECOGNISED_VERSION,
         REJECT_MALFORMED,
         REJECT_UNKNOWN_KEY,
+        REJECT_RETIRED_KEY,
         REJECT_WRONG_PURPOSE,
         REJECT_BAD_AUTHENTICATOR,
         REJECT_UNKNOWN_SEQUENCE,
@@ -227,40 +235,96 @@ def _verify_ed25519(
         ) from exc
 
 
+def _held_under_another_purpose(
+    key_id: str, authority_keys: Mapping[tuple[str, str], Any] | None
+) -> bool:
+    """Whether *key_id* is registered for some purpose other than custody."""
+    if not authority_keys:
+        return False
+    return any(
+        held_key_id == key_id and purpose != CUSTODY_KEY_PURPOSE
+        for purpose, held_key_id in authority_keys
+    )
+
+
 def verify_custody_acknowledgement(
     artifact: Any,
     *,
     device_id: str,
-    shared_secret: str,
+    custody_keys: CustodyKeyRegistry,
     expected_digest: str,
     expected_local_seq: int,
+    authority_keys: Mapping[tuple[str, str], Any] | None = None,
 ) -> VerifiedCustody:
     """Prove the gateway acknowledged the envelope this device actually sealed.
 
-    Authenticated with the runtime–gateway shared secret rather than a
-    signature, because the gateway signs nothing on the evidence path. The MAC
-    is what stops any process on the site network forging custody: the runtime
-    uses custody state to manage its queue, so a forged acknowledgement would
-    let an attacker cause evidence to be deprioritised that was never carried.
+    Authenticated under a secret dedicated to custody rather than the
+    runtime-gateway envelope secret, and with a MAC rather than a signature,
+    because the gateway signs nothing on the evidence path. The MAC is what
+    stops any process on the site network forging custody: the runtime uses
+    custody state to manage its queue, so a forged acknowledgement would let an
+    attacker cause evidence to be deprioritised that was never carried.
+
+    The secret is **selected by `key_id`**, never found by trying each one held.
+    Trial verification would accept an artifact whose `key_id` names one
+    generation while its MAC was produced under another, which makes "which key
+    authenticated this" unanswerable afterwards -- and during a rotation it
+    would silently accept under the wrong generation.
     """
     parsed = _require_shape(artifact, CUSTODY_FIELDS, "custody acknowledgement")
-    if not shared_secret:
+
+    # Shape before registry: an identifier that cannot name any generation is
+    # malformed, which is a different fact from one that is well formed and not
+    # held. Comparison is byte-exact, so uppercase hex is malformed rather than
+    # equivalent.
+    key_id = str(parsed["key_id"])
+    if not is_well_formed_key_id(key_id):
         raise IngestRejectedError(
-            REJECT_UNKNOWN_KEY, "no runtime-gateway secret is configured"
+            REJECT_MALFORMED, "a custody key_id must be hkdf-sha256 with 32 hex digits"
         )
 
-    mac_wire = str(parsed["mac"])
-    if not mac_wire.startswith("hmac-sha256:"):
+    generation = custody_keys.lookup(key_id)
+    if generation is None:
+        # Purpose separation before absence. An identifier held under another
+        # purpose is a different fact from one held under none, and answering
+        # `unknown_key` for it would hide a key being used across purposes --
+        # which is what purpose separation exists to prevent. The defect lives
+        # in receiver state rather than in the artifact, so it cannot be
+        # detected from the bytes alone.
+        if _held_under_another_purpose(key_id, authority_keys):
+            raise IngestRejectedError(
+                REJECT_WRONG_PURPOSE,
+                "that key_id is held for a different key purpose",
+            )
         raise IngestRejectedError(
-            REJECT_MALFORMED, "a custody MAC must carry its algorithm prefix"
+            REJECT_UNKNOWN_KEY, "no custody generation is held for that key_id"
+        )
+    if not generation.can_verify:
+        # A tombstone: the identifier was kept and the secret destroyed, so this
+        # is unverifiable by construction rather than merely unverified.
+        raise IngestRejectedError(
+            REJECT_RETIRED_KEY,
+            "that custody generation was retired and its secret destroyed",
+        )
+
+    # Shape before comparison. A value of the wrong length or alphabet was
+    # never a candidate authenticator, so reporting it as a failed
+    # authentication sends an operator hunting a key mismatch that does not
+    # exist. Checking only the prefix would let every one of those through.
+    mac_wire = str(parsed["mac"])
+    if not CUSTODY_MAC_RE.fullmatch(mac_wire):
+        raise IngestRejectedError(
+            REJECT_MALFORMED,
+            "a custody MAC must be hmac-sha256 with 64 lowercase hex digits",
         )
     signed = _signing_bytes(parsed, "mac", CUSTODY_DOMAIN)
-    expected_mac = hmac.new(
-        shared_secret.encode("utf-8"), signed, hashlib.sha256
-    ).hexdigest()
+    secret = generation.secret
+    assert secret is not None  # can_verify above
+    expected_mac = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(mac_wire[len("hmac-sha256:") :], expected_mac):
         raise IngestRejectedError(
-            REJECT_BAD_AUTHENTICATOR, "the custody MAC does not verify"
+            REJECT_BAD_AUTHENTICATOR,
+            "the custody MAC does not verify under the generation its key_id names",
         )
 
     if str(parsed["device_id"]) != device_id:

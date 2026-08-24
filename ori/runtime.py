@@ -81,6 +81,10 @@ from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfi
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM, local_llm_backend_available
 from ori.runtime_health_socket import RuntimeHealthSocketServer
+from ori.security.custody_keys import (
+    CustodyKeyRegistry,
+    CustodyKeyRegistryError,
+)
 from ori.security.evidence_authority_keys import load_authority_key_registry
 from ori.security.evidence_chain import SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION
 from ori.security.evidence_first_party import FirstPartyEvidenceAttestor
@@ -4114,7 +4118,7 @@ def _build_evidence_attestor(config: Config) -> FirstPartyEvidenceAttestor | Non
         key_path=evidence.key_path,
         device_secret=secret,
         device_id=config.device.id,
-        gateway_shared_secret=_gateway_shared_secret(config),
+        custody_keys=_custody_key_registry(config),
         authority_keys=_load_authority_keys(),
     )
 
@@ -4144,18 +4148,84 @@ def _load_authority_keys() -> dict:
         return {}
 
 
-def _gateway_shared_secret(config: Config) -> str:
-    """The runtime-gateway secret a custody acknowledgement is authenticated with.
+def _envelope_secrets(config: Config) -> tuple[str, ...]:
+    """Every runtime-gateway envelope secret currently resolvable.
 
-    Absent when gateway auth is disabled, in which case custody cannot be
-    verified and is refused at ingest rather than accepted unauthenticated.
+    Handed to the custody registry so reuse is refused on the bytes. Two
+    environment variables can hold the same value, so comparing the names an
+    operator wrote would report that configuration as correct.
     """
     raw_auth = getattr(config.gateway, "auth", {})
     auth_cfg = raw_auth if isinstance(raw_auth, dict) else {}
-    if not bool(auth_cfg.get("enabled", False)):
-        return ""
-    env_name = str(auth_cfg.get("shared_secret_env", "") or "").strip()
-    return os.environ.get(env_name, "") if env_name else ""
+    names = (
+        str(auth_cfg.get("shared_secret_env", "") or "").strip(),
+        str(auth_cfg.get("previous_shared_secret_env", "") or "").strip(),
+    )
+    return tuple(
+        value
+        for name in names
+        if name
+        for value in (os.environ.get(name, ""),)
+        if value
+    )
+
+
+def _custody_key_registry(config: Config) -> CustodyKeyRegistry | None:
+    """The custody generations acknowledgements are verified against.
+
+    Built from `gateway.custody`, which is a **different secret** from
+    `gateway.auth.shared_secret_env`. Custody previously read the envelope
+    secret here, which every conformance test contradicted and no running
+    system exercised, because nothing routes an acknowledgement inbound yet.
+
+    None when no custody secret is configured. Custody is then refused at
+    ingest rather than accepted unauthenticated, since an unauthenticated
+    acknowledgement is forgeable by anything on the site network and the
+    runtime uses custody state to manage its queue.
+    """
+    raw = getattr(config.gateway, "custody", {})
+    custody_cfg = raw if isinstance(raw, dict) else {}
+    env_name = str(custody_cfg.get("secret_env", "") or "").strip()
+
+    # Not configured at all is a choice; configured and empty is a broken
+    # credential. Collapsing the second into the first would report a
+    # deployment whose custody secret never reached the process as one that
+    # deliberately runs without custody, and the operator would see a healthy
+    # runtime silently refusing every acknowledgement.
+    if not env_name:
+        return None
+    active = os.environ.get(env_name, "").strip()
+    if not active:
+        raise ValueError(
+            f"gateway.custody.secret_env names {env_name}, but that environment "
+            "variable is empty or unset; provision the custody secret or remove "
+            "the setting to run without custody verification"
+        )
+
+    previous_env = str(custody_cfg.get("previous_secret_env", "") or "").strip()
+    previous = ""
+    if previous_env:
+        previous = os.environ.get(previous_env, "").strip()
+        if not previous:
+            raise ValueError(
+                f"gateway.custody.previous_secret_env names {previous_env}, but "
+                "that environment variable is empty or unset; a rotation window "
+                "needs the outgoing secret, so remove the setting to close it"
+            )
+
+    retired = tuple(str(v) for v in (custody_cfg.get("retired_key_ids") or ()))
+    try:
+        return CustodyKeyRegistry(
+            active_secret=active,
+            previous_secret=previous or None,
+            retired_key_ids=retired,
+            forbidden_secrets=_envelope_secrets(config),
+        )
+    except CustodyKeyRegistryError as exc:
+        # Fail closed and loudly. A registry that cannot be built is a
+        # misconfiguration an operator must fix, and silently continuing
+        # without custody verification would look like a working deployment.
+        raise ValueError(f"gateway.custody is misconfigured: {exc}") from exc
 
 
 def _build_gateway_message_auth(config: Config) -> GatewayMessageAuthenticator | None:

@@ -13,12 +13,18 @@ failure a signature check alone reports as success.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import pathlib
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from ori.security.custody_keys import (
+    CustodyKeyRegistry,
+    CustodyKeyRegistryError,
+    derive_custody_key_id,
+)
 from ori.security.evidence_authority_keys import (
     PURPOSE_EPOCH,
     PURPOSE_RECEIPT,
@@ -35,6 +41,7 @@ from ori.security.evidence_ingest import (
     REJECT_MALFORMED,
     REJECT_NON_CONTIGUOUS,
     REJECT_REASONS,
+    REJECT_RETIRED_KEY,
     REJECT_UNKNOWN_KEY,
     REJECT_UNKNOWN_SEQUENCE,
     REJECT_UNRECOGNISED_VERSION,
@@ -54,6 +61,7 @@ REASON_CONSTANTS = {
     "REJECT_BINDING_MISMATCH": REJECT_BINDING_MISMATCH,
     "REJECT_MALFORMED": REJECT_MALFORMED,
     "REJECT_NON_CONTIGUOUS": REJECT_NON_CONTIGUOUS,
+    "REJECT_RETIRED_KEY": REJECT_RETIRED_KEY,
     "REJECT_UNKNOWN_KEY": REJECT_UNKNOWN_KEY,
     "REJECT_UNKNOWN_SEQUENCE": REJECT_UNKNOWN_SEQUENCE,
     "REJECT_UNRECOGNISED_VERSION": REJECT_UNRECOGNISED_VERSION,
@@ -402,65 +410,371 @@ def test_a_confirmation_for_another_device_is_refused(registry):
 # --------------------------------------------------------------------------
 
 
-def _custody_secret() -> str:
+def _custody_secret(which: str = "gateway_secret_hex") -> str:
     published = vector("custody-acknowledgement")
-    return bytes.fromhex(published["gateway_secret_hex"]).decode("latin-1")
+    return bytes.fromhex(published[which]).decode("utf-8")
 
 
-def test_the_valid_custody_acknowledgement_verifies():
+def _custody_registry() -> CustodyKeyRegistry:
+    """The registry the published vectors describe.
+
+    Built from the file's own `registry_state`, so the fixture cannot drift
+    from the cases it is meant to verify. The retired generation is a
+    tombstone: its secret is published as generator material, and a conforming
+    receiver never holds it.
+    """
     published = vector("custody-acknowledgement")
-    artifact = case("custody-acknowledgement", "valid")["artifact"]
-    secret = _custody_secret()
-    verified = verify_custody_acknowledgement(
-        artifact,
-        device_id=DEVICE,
-        shared_secret=secret,
-        expected_digest=artifact["envelope_digest"],
-        expected_local_seq=artifact["local_seq"],
+    return CustodyKeyRegistry(
+        active_secret=_custody_secret("gateway_secret_hex"),
+        previous_secret=_custody_secret("previous_gateway_secret_hex"),
+        retired_key_ids=(published["registry_state"]["retired"]["key_id"],),
     )
+
+
+def _custody_case(name: str):
+    return case("custody-acknowledgement", name)
+
+
+def _verify_custody(artifact, **overrides):
+    kwargs = {
+        "device_id": DEVICE,
+        "custody_keys": _custody_registry(),
+        "expected_digest": artifact["envelope_digest"],
+        "expected_local_seq": artifact["local_seq"],
+    }
+    kwargs.update(overrides)
+    return verify_custody_acknowledgement(artifact, **kwargs)
+
+
+def test_the_registry_the_vectors_describe_reproduces_from_the_secrets():
+    """Every published identifier derives from its own secret.
+
+    If this drifts, every case below is verifying against a registry the
+    vector file does not describe, and the outcomes would prove nothing.
+    """
+    published = vector("custody-acknowledgement")
+    state = published["registry_state"]
+    assert (
+        derive_custody_key_id(_custody_secret("gateway_secret_hex"))
+        == (state["active"]["key_id"])
+    )
+    assert (
+        derive_custody_key_id(_custody_secret("previous_gateway_secret_hex"))
+        == (state["verify_only"]["key_id"])
+    )
+    assert (
+        derive_custody_key_id(_custody_secret("retired_gateway_secret_hex"))
+        == (state["retired"]["key_id"])
+    )
+    assert state["retired"]["secret"] is None, "a tombstone must hold no secret"
+
+
+@pytest.mark.parametrize("name", ["valid", "valid_previous_generation"])
+def test_both_live_generations_verify(name):
+    """Selection is by key_id, so a rotation window keeps verifying.
+
+    The previous generation is `verify_only` rather than removed, which is what
+    stops acknowledgements already in the courier's hands from failing the
+    moment a secret is rotated.
+    """
+    artifact = _custody_case(name)["artifact"]
+    verified = _verify_custody(artifact)
     assert verified.local_seq == artifact["local_seq"]
-    assert published["domain_ascii"] == "ori.evidence_custody_ack.v1"
+    assert verified.key_id == artifact["key_id"]
 
 
-def test_a_forged_custody_mac_is_refused():
-    """Anything on the site network could otherwise claim custody."""
-    artifact = case("custody-acknowledgement", "valid")["artifact"]
+@pytest.mark.parametrize(
+    "name",
+    [
+        "invalid_mac",
+        "unknown_key_id",
+        "retired_key_id",
+        "malformed_key_id",
+        "malformed_mac_too_short",
+        "malformed_mac_too_long",
+        "malformed_mac_non_hex",
+        "malformed_mac_uppercase",
+        "key_id_not_derived_from_signing_secret",
+    ],
+)
+def test_each_published_refusal_carries_the_reason_the_vector_names(name):
+    """The vector names the outcome; this asserts the implementation agrees.
+
+    Mapping case names to reasons here instead would be a second copy of the
+    contract, and the copy would be the one that drifted.
+    """
+    published = _custody_case(name)
+    artifact = published["artifact"]
     with pytest.raises(IngestRejectedError) as raised:
-        verify_custody_acknowledgement(
-            artifact,
-            device_id=DEVICE,
-            shared_secret="not-the-shared-secret",
-            expected_digest=artifact["envelope_digest"],
-            expected_local_seq=artifact["local_seq"],
-        )
+        _verify_custody(artifact)
+    assert raised.value.reason == published["reject_reason"]
+
+
+def test_a_key_id_naming_another_generation_is_refused_without_trial_verification():
+    """The case that separates selection from trial verification.
+
+    Its MAC verifies under the ACTIVE secret while its key_id derives from the
+    PREVIOUS one. A verifier that selects by key_id checks the previous secret
+    and refuses. A verifier that tries every secret it holds finds the active
+    one and wrongly accepts, which would make "which key authenticated this"
+    unanswerable and would silently accept under the wrong generation during a
+    rotation.
+    """
+    published = vector("custody-acknowledgement")
+    artifact = _custody_case("key_id_not_derived_from_signing_secret")["artifact"]
+
+    # The premise, established independently: the artifact really does verify
+    # under a secret the registry holds -- just not the one it names. Without
+    # this the test would pass for the wrong reason, since any refusal at all
+    # satisfies the assertion below.
+    body = {k: v for k, v in artifact.items() if k != "mac"}
+    signed = b"ori.evidence_custody_ack.v1\x00" + json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    under_active = (
+        "hmac-sha256:"
+        + hmac.new(
+            _custody_secret("gateway_secret_hex").encode("utf-8"),
+            signed,
+            hashlib.sha256,
+        ).hexdigest()
+    )
+    assert artifact["mac"] == under_active, "premise: it verifies under the active key"
+    assert artifact["key_id"] == published["registry_state"]["verify_only"]["key_id"], (
+        "premise: but names the previous generation"
+    )
+
+    with pytest.raises(IngestRejectedError) as raised:
+        _verify_custody(artifact)
     assert raised.value.reason == REJECT_BAD_AUTHENTICATOR
 
 
-def test_custody_for_an_envelope_this_device_did_not_seal_is_refused():
-    artifact = case("custody-acknowledgement", "valid")["artifact"]
+RECEIVER_STATE = (
+    pathlib.Path(__file__).parent / "vectors" / "evidence_exchange_receiver_state"
+)
+
+
+def receiver_state_vector(name: str) -> dict:
+    return json.loads((RECEIVER_STATE / f"{name}.json").read_text())
+
+
+#: Parties a receiver-state vector may be owned by, named as roles.
+#:
+#: An allowlist rather than a check against forbidden names. Banning a specific
+#: implementation would mean writing that implementation's name here, which is
+#: the disclosure the check exists to prevent -- and it would still admit every
+#: other name. Requiring one of these admits only a role.
+RECEIVER_STATE_OWNERS = frozenset(
+    {
+        "the evidence authority",
+        "the site gateway",
+    }
+)
+
+#: Statuses an unexercised vector may carry. Ownership and proof are separate
+#: facts, and collapsing them is how "someone else owns this" becomes "someone
+#: else has done this". Only `proven_elsewhere` asserts that a proof exists.
+RECEIVER_STATE_STATUSES = {
+    "proof_pending": "owned by another repository; not proven anywhere yet",
+    "proven_elsewhere": "a conforming implementation exercises it in the owning repository",
+}
+
+#: Receiver-state vectors this runtime cannot exercise.
+#:
+#: Vendoring a vector proves nothing on its own. The set is drift-checked, which
+#: is worth having, but a file nothing reads is a file whose invariant is
+#: unproven -- and one that reads as covered because it sits beside files that
+#: are. Each entry therefore records three separate things: who is responsible,
+#: whether a proof actually exists yet, and where that is tracked.
+RECEIVER_STATE_NOT_EXERCISED_HERE = {
+    "anchor-quarantine": {
+        # A role, not an implementation. The authority's identity is not
+        # disclosed in this repository, and an accounting note is not an
+        # exception to that.
+        "owner": "the evidence authority",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#372",
+        "reason": (
+            "Authority-side. Its receiver_state is `held_anchors`, the registry "
+            "an evidence authority keeps of other devices' anchors, and the "
+            "outcome is that authority refusing to rebind one. This runtime "
+            "produces its own registration and never holds another device's "
+            "anchor, so there is no code path here to drive."
+        ),
+    },
+}
+
+
+def test_every_vendored_receiver_state_vector_is_exercised_or_accounted_for():
+    """A vendored vector is either consumed here or accounted for precisely.
+
+    This is the failure mode the vendoring work was filed against: files
+    arriving in the tree, passing the drift check, and quietly implying a
+    coverage that does not exist. Adding a receiver-state vector forces a
+    decision rather than allowing silent accumulation.
+
+    The accounting separates ownership from proof deliberately. An entry naming
+    a repository says who is responsible, not that the work is done, and an
+    earlier revision of this list conflated the two by asserting only that a
+    repository was named.
+    """
+    vendored = {p.stem for p in RECEIVER_STATE.glob("*.json") if p.stem != "MANIFEST"}
+    assert vendored, "no receiver-state vectors are vendored"
+
+    exercised = {"custody-key-purpose"}
+    accounted = exercised | set(RECEIVER_STATE_NOT_EXERCISED_HERE)
+
+    assert vendored <= accounted, (
+        "vendored receiver-state vectors that nothing consumes and nothing "
+        f"explains: {sorted(vendored - accounted)}"
+    )
+    assert set(RECEIVER_STATE_NOT_EXERCISED_HERE) <= vendored, (
+        "an exemption names a vector that is not vendored: "
+        f"{sorted(set(RECEIVER_STATE_NOT_EXERCISED_HERE) - vendored)}"
+    )
+    assert not (exercised & set(RECEIVER_STATE_NOT_EXERCISED_HERE)), (
+        "a vector cannot be both exercised here and exempted from being so"
+    )
+
+    for name, entry in RECEIVER_STATE_NOT_EXERCISED_HERE.items():
+        assert set(entry) == {"owner", "status", "tracking", "reason"}, (
+            f"{name} must record owner, status, tracking and reason"
+        )
+        assert entry["status"] in RECEIVER_STATE_STATUSES, (
+            f"{name} carries an unrecognised status {entry['status']!r}"
+        )
+        assert entry["owner"] in RECEIVER_STATE_OWNERS, (
+            f"{name} must name a responsible role, one of "
+            f"{sorted(RECEIVER_STATE_OWNERS)}, rather than an implementation"
+        )
+        assert "#" in entry["tracking"], (
+            f"{name} must cite a tracking issue, not just a repository"
+        )
+
+
+def test_an_unproven_vector_is_not_recorded_as_proven():
+    """`proof_pending` means no proof exists, and must not read as ownership alone.
+
+    ori-runtime#372 states that the anchor quarantine invariant is unproven
+    anywhere today. If this list said `proven_elsewhere`, the two would
+    contradict each other and the more comfortable one would be the one people
+    read.
+    """
+    entry = RECEIVER_STATE_NOT_EXERCISED_HERE["anchor-quarantine"]
+    assert entry["status"] == "proof_pending"
+    assert "proven" not in entry["reason"].lower(), (
+        "the reason must explain why it cannot be exercised here, not assert a "
+        "proof elsewhere"
+    )
+
+
+def test_a_key_id_held_for_another_purpose_is_refused_as_such():
+    """Purpose separation, from the vector that describes the receiver's state.
+
+    The artifact is byte-identical to a conforming one -- `key_id` is derived,
+    so an identifier held under another purpose cannot differ in the bytes.
+    The defect is entirely in what the receiver holds, which is why this case
+    lives in the receiver-state set and why it cannot be found by inspecting
+    the acknowledgement.
+
+    Answering `unknown_key` here would hide a key being used across purposes,
+    which is the thing purpose separation exists to prevent.
+    """
+    published = receiver_state_vector("custody-key-purpose")
+    case_ = published["cases"][0]
+    artifact = case_["artifact"]
+    held = case_["receiver_state"]["held_keys"][0]
+
+    # The registry holds no custody generation deriving to this identifier...
+    registry = CustodyKeyRegistry(active_secret="a-different-custody-secret")
+    assert registry.lookup(artifact["key_id"]) is None
+    # ...but an authority key is registered under another purpose for it.
+    authority_keys = {(held["key_purpose"], held["key_id"]): object()}
+    assert held["key_purpose"] != "gateway_custody"
+
     with pytest.raises(IngestRejectedError) as raised:
         verify_custody_acknowledgement(
             artifact,
             device_id=DEVICE,
-            shared_secret=_custody_secret(),
+            custody_keys=registry,
+            authority_keys=authority_keys,
             expected_digest=artifact["envelope_digest"],
-            expected_local_seq=int(artifact["local_seq"]) + 1,
+            expected_local_seq=artifact["local_seq"],
         )
+    assert raised.value.reason == case_["reject_reason"]
+
+
+def test_the_same_artifact_is_unknown_key_when_no_purpose_holds_it():
+    """The contrast that gives the previous test meaning.
+
+    Identical bytes, identical custody registry -- only the purpose-aware state
+    differs. If both produced the same reason, the distinction would be
+    decorative.
+    """
+    published = receiver_state_vector("custody-key-purpose")
+    artifact = published["cases"][0]["artifact"]
+
+    with pytest.raises(IngestRejectedError) as raised:
+        verify_custody_acknowledgement(
+            artifact,
+            device_id=DEVICE,
+            custody_keys=CustodyKeyRegistry(active_secret="a-different-custody-secret"),
+            authority_keys={},
+            expected_digest=artifact["envelope_digest"],
+            expected_local_seq=artifact["local_seq"],
+        )
+    assert raised.value.reason == REJECT_UNKNOWN_KEY
+
+
+def test_custody_key_material_may_not_be_an_envelope_secret():
+    """Separation is enforced on the bytes, not on the variable names.
+
+    Two environment variables can hold one value, so an operator who points
+    both at the same secret has reused the envelope secret for custody. A check
+    on the names an operator wrote would call that configuration correct.
+    """
+    with pytest.raises(CustodyKeyRegistryError, match="envelope secret"):
+        CustodyKeyRegistry(
+            active_secret="one-secret-for-both",
+            forbidden_secrets=("one-secret-for-both",),
+        )
+    with pytest.raises(CustodyKeyRegistryError, match="envelope secret"):
+        CustodyKeyRegistry(
+            active_secret="custody-secret",
+            previous_secret="one-secret-for-both",
+            forbidden_secrets=("one-secret-for-both",),
+        )
+
+
+def test_custody_for_an_envelope_this_device_did_not_seal_is_refused():
+    artifact = _custody_case("valid")["artifact"]
+    with pytest.raises(IngestRejectedError) as raised:
+        _verify_custody(artifact, expected_local_seq=int(artifact["local_seq"]) + 1)
     assert raised.value.reason == REJECT_UNKNOWN_SEQUENCE
 
 
 def test_custody_over_different_bytes_is_refused():
     """Custody commits to the artifact the gateway actually holds."""
-    artifact = case("custody-acknowledgement", "valid")["artifact"]
+    artifact = _custody_case("valid")["artifact"]
     with pytest.raises(IngestRejectedError) as raised:
-        verify_custody_acknowledgement(
-            artifact,
-            device_id=DEVICE,
-            shared_secret=_custody_secret(),
-            expected_digest="sha256:" + "0" * 64,
-            expected_local_seq=artifact["local_seq"],
-        )
+        _verify_custody(artifact, expected_digest="sha256:" + "0" * 64)
     assert raised.value.reason == REJECT_BINDING_MISMATCH
+
+
+def test_a_registry_cannot_hold_one_secret_as_two_generations():
+    """An operator error that would silently collapse the rotation window."""
+    secret = _custody_secret("gateway_secret_hex")
+    with pytest.raises(CustodyKeyRegistryError, match="distinct secrets"):
+        CustodyKeyRegistry(active_secret=secret, previous_secret=secret)
+
+
+def test_a_tombstone_cannot_name_a_generation_that_still_holds_a_secret():
+    """The tombstone asserts the secret was destroyed; here it demonstrably was not."""
+    secret = _custody_secret("gateway_secret_hex")
+    with pytest.raises(CustodyKeyRegistryError, match="still holds"):
+        CustodyKeyRegistry(
+            active_secret=secret, retired_key_ids=(derive_custody_key_id(secret),)
+        )
 
 
 # --------------------------------------------------------------------------

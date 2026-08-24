@@ -27,6 +27,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from ori.security.custody_keys import CustodyKeyRegistry
 from ori.security.evidence_anchor import RuntimeAnchor, derive_runtime_anchor
 from ori.security.evidence_bound import (
     BoundIngestService,
@@ -95,7 +96,7 @@ class FirstPartyEvidenceAttestor:
         key_path: str,
         device_secret: str,
         device_id: str,
-        gateway_shared_secret: str = "",
+        custody_keys: CustodyKeyRegistry | None = None,
         authority_keys: dict[tuple[str, str], Any] | None = None,
     ) -> None:
         self._db_path = str(db_path)
@@ -106,7 +107,7 @@ class FirstPartyEvidenceAttestor:
         # epoch or selector that disagrees with the key actually in use, because
         # there is no argument through which to pass one.
         self._anchor: RuntimeAnchor | None = None
-        self._gateway_shared_secret = str(gateway_shared_secret)
+        self._custody_keys = custody_keys
         self._authority_keys = dict(authority_keys or {})
 
         self._executor = EvidenceExecutor()
@@ -205,7 +206,7 @@ class FirstPartyEvidenceAttestor:
             registry=self._authority_keys,
             device_id=self._device_id,
             device_pubkey_hex=key.public_key_hex,
-            gateway_shared_secret=self._gateway_shared_secret,
+            custody_keys=self._custody_keys,
         )
         self._anchor = anchor
         self._chain = chain

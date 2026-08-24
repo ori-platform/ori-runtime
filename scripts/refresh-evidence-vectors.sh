@@ -30,6 +30,12 @@ CLEANUP=""
 SETS=(
   "evidence/vectors:tests/vectors/evidence_v2"
   "evidence-exchange/vectors:tests/vectors/evidence_exchange"
+  "runtime-evidence-anchor/vectors:tests/vectors/runtime_evidence_anchor"
+  # Receiver-state vectors are a separate set because the copy loop below is a
+  # flat glob. They cover the rules a wire artifact cannot express -- the ones
+  # a byte-level suite silently omits, and therefore the ones most worth
+  # drift-checking.
+  "evidence-exchange/vectors/receiver-state:tests/vectors/evidence_exchange_receiver_state"
 )
 
 if [ -n "${ORI_SPECS_DIR:-}" ]; then
