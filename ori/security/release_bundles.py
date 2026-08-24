@@ -586,6 +586,9 @@ def _create_private_extraction_root(path: Path) -> None:
                 if (current.st_dev, current.st_ino) == identity:
                     path.rmdir()
             except OSError:
+                # Cleanup is best effort after preparation has already failed.
+                # Disappearance, replacement, content, or permissions must not
+                # replace the original release-bundle diagnosis.
                 pass
 
 
