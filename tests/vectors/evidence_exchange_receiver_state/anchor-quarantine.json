@@ -1,0 +1,97 @@
+{
+  "artifact": "anchor_quarantine_state",
+  "domain_ascii": "ori.evidence_anchor_registration.v1",
+  "domain_note": "Authenticated bytes are the ASCII domain, one NUL byte, then the canonical payload with signature or mac removed.",
+  "canonicalisation": "json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False).encode('utf-8')",
+  "authenticator_note": "Cases marked authenticator=valid must pass cryptographic verification so the semantic rule under test is actually reached. Cases marked invalid fail verification itself.",
+  "warning": "Seeds below are published test values and must never sign anything real.",
+  "key_purpose": "evidence_device",
+  "why_this_file_exists": "Quarantine cannot be exercised by a wire artifact under evidence-exchange/v1. The epoch is derived from the key, so two conforming registrations cannot naturally name the same epoch with different keys -- that would require a SHA-256 collision. A registration claiming a held epoch with a different key now fails epoch recomputation first, which is covered by anchor-registration's claimed_epoch_mismatch case. Quarantine remains as a receiver-state invariant against rows that predate recomputation, were migrated, or were corrupted, and that is what this file tests: stored state plus one conforming artifact.",
+  "cases": [
+    {
+      "name": "conflicting_stored_anchor",
+      "authenticator": "valid",
+      "expected": "quarantine",
+      "note": "The registration is fully conforming: correctly self-signed, and both its key_id and its epoch recompute from its own inputs. The authority already holds that epoch bound to a different key, from a row written before recomputation was required. The registration MUST NOT be applied, because silently rebinding an anchor hands the chain to whoever registered last.",
+      "receiver_state": {
+        "held_anchors": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "13d9908a70925992ed546007d27f50da68ba7217ef62ac3cca784529ff10471c",
+            "key_id": "sha256:a804d0b07d657f68e0ee1e4ea4efd6da95bc26d856aa59fe16bd35faa7e23a05",
+            "provenance": "pre_derivation"
+          }
+        ]
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+      }
+    },
+    {
+      "name": "matching_stored_anchor",
+      "authenticator": "valid",
+      "expected": "accept",
+      "note": "Same registration against state that already binds this epoch to this key. Re-presenting an identical binding is idempotent, so this is the control that keeps the case above about the conflict rather than about the registration.",
+      "receiver_state": {
+        "held_anchors": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "provenance": "derived"
+          }
+        ]
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+      }
+    }
+  ],
+  "legacy_key_seed_hex": "e0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+  "legacy_key_public_hex": "13d9908a70925992ed546007d27f50da68ba7217ef62ac3cca784529ff10471c",
+  "signing_key_public_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
+}

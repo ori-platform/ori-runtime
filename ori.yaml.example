@@ -300,6 +300,18 @@ gateway:
     max_clock_skew_ms: 300000
     replay_ttl_ms: 300000
     persistent_replay_cache: true    # persist seen envelope keys to the state DB so restarts cannot reopen the replay window
+  custody:
+    # A SEPARATE secret from auth.shared_secret_env above, for a different
+    # purpose: this one authenticates the gateway's claim that it is carrying
+    # evidence. Reusing the envelope secret would let anything holding it for
+    # one purpose mint artifacts for the other.
+    secret_env: ""                   # env var name only; never put the secret in ori.yaml
+    previous_secret_env: ""          # optional verify-only previous generation during rotation
+    # A retired generation is named, never re-derived: retiring it destroys the
+    # secret, so this identifier is the only record it existed. Keeping it is
+    # what lets the runtime say "retired" instead of "unknown" when a courier
+    # presents evidence acknowledged under it.
+    retired_key_ids: []              # e.g. ["hkdf-sha256:<32 lowercase hex>"]
   encryption:
     enabled: false                   # required in staging/production for every broker; requires gateway.auth.enabled
   node_heartbeat:

@@ -1,0 +1,39 @@
+{
+  "artifact": "custody_key_purpose_state",
+  "domain_ascii": "ori.evidence_custody_ack.v1",
+  "domain_note": "Authenticated bytes are the ASCII domain, one NUL byte, then the canonical payload with signature or mac removed.",
+  "canonicalisation": "json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False).encode('utf-8')",
+  "authenticator_note": "Cases marked authenticator=valid must pass cryptographic verification so the semantic rule under test is actually reached. Cases marked invalid fail verification itself.",
+  "warning": "Seeds below are published test values and must never sign anything real.",
+  "key_purpose": "gateway_custody",
+  "why_this_file_exists": "Cross-purpose refusal cannot be exercised by a wire artifact. key_id is derived from the custody secret, so an acknowledgement whose key_id is held under another purpose is byte-identical to a valid one -- the defect is entirely in receiver state. Emitting it beside the valid case in custody-acknowledgement.json would produce a rejection indistinguishable from the acceptance, which this contract forbids. What is tested here is stored state plus one conforming artifact.",
+  "cases": [
+    {
+      "name": "key_id_held_for_another_purpose",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "wrong_purpose",
+      "note": "The acknowledgement is fully conforming and its MAC recomputes. The registry holds this key_id under evidence_device rather than gateway_custody, and purpose separation is enforced at selection, so it MUST NOT be accepted however well it verifies.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a6436616666336330383337636131613037613531323465333064393631326163222c226c6f63616c5f736571223a31322c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "local_seq": 12,
+        "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
+        "custody_at_ms": 1787000000900,
+        "key_id": "hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac",
+        "mac": "hmac-sha256:b8bb7b1357c0a93bd76c2d0caa69426b3defa2c26bb17c5c68d76d23df69366a"
+      },
+      "receiver_state": {
+        "held_keys": [
+          {
+            "key_id": "hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac",
+            "key_purpose": "evidence_device",
+            "status": "active"
+          }
+        ],
+        "gateway_custody_registry": "holds no generation deriving to this key_id"
+      }
+    }
+  ]
+}

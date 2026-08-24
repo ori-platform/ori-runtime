@@ -17,6 +17,10 @@ import json
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from ori.security.custody_keys import (
+    CustodyKeyRegistry,
+    derive_custody_key_id,
+)
 from ori.security.evidence_authority_keys import (
     PURPOSE_EPOCH,
     PURPOSE_RECEIPT,
@@ -29,6 +33,7 @@ from ori.security.evidence_device_key import EvidenceDeviceKey
 from ori.security.evidence_ingest import (
     REJECT_BAD_AUTHENTICATOR,
     REJECT_BINDING_MISMATCH,
+    REJECT_UNKNOWN_KEY,
     REJECT_UNKNOWN_SEQUENCE,
     REJECT_WRONG_PURPOSE,
 )
@@ -46,7 +51,8 @@ from ori.security.evidence_ledger import (
 DEVICE = "energy-monitor-ikeja-01"
 EPOCH = "epoch-0002"
 KEY_ID = "anchor-key-2"
-GATEWAY_SECRET = "site-gateway-secret"
+CUSTODY_SECRET = "site-custody-secret"
+PREVIOUS_CUSTODY_SECRET = "site-custody-secret-previous"
 
 RECEIPT_SEED = bytes([0x7A] * 32)
 EPOCH_SEED = bytes([0x6B] * 32)
@@ -119,7 +125,10 @@ def rig(tmp_path):
         registry=load_authority_key_registry(registry_path),
         device_id=DEVICE,
         device_pubkey_hex=key.public_key_hex,
-        gateway_shared_secret=GATEWAY_SECRET,
+        custody_keys=CustodyKeyRegistry(
+            active_secret=CUSTODY_SECRET,
+            previous_secret=PREVIOUS_CUSTODY_SECRET,
+        ),
     )
     yield key, chain, ledger, service
     chain.close()
@@ -182,7 +191,13 @@ def _confirmation(
     )
 
 
-def _custody(ledger, local_seq: int, secret=GATEWAY_SECRET):
+def _custody(ledger, local_seq: int, secret=CUSTODY_SECRET, key_id=None):
+    """Build an acknowledgement, naming the generation it was actually signed with.
+
+    `key_id` defaults to the identifier derived from *secret*, so a caller that
+    changes the secret gets a coherent artifact rather than the mismatch case.
+    Pass `key_id` explicitly only to build that mismatch deliberately.
+    """
     sealed = ledger.find_by_local_seq(local_seq)
     return _mac(
         {
@@ -191,7 +206,7 @@ def _custody(ledger, local_seq: int, secret=GATEWAY_SECRET):
             "local_seq": local_seq,
             "envelope_digest": str(sealed["envelope_digest"]),
             "custody_at_ms": 1787000000900,
-            "key_id": "gw-secret-1",
+            "key_id": key_id or derive_custody_key_id(secret),
         },
         secret,
     )
@@ -259,14 +274,47 @@ def test_an_unverified_receipt_changes_nothing(rig, corrupt, expected, resign):
     assert service.rejections[-1].reason == expected
 
 
-def test_a_forged_custody_changes_nothing(rig):
+@pytest.mark.parametrize(
+    ("name", "build", "expected"),
+    [
+        (
+            "invented_secret",
+            lambda ledger: _custody(ledger, 1, secret="not-the-custody-secret"),
+            REJECT_UNKNOWN_KEY,
+        ),
+        (
+            "replayed_key_id",
+            lambda ledger: _custody(
+                ledger,
+                1,
+                secret="not-the-custody-secret",
+                key_id=derive_custody_key_id(CUSTODY_SECRET),
+            ),
+            REJECT_BAD_AUTHENTICATOR,
+        ),
+    ],
+)
+def test_a_forged_custody_changes_nothing(rig, name, build, expected):
+    """Both forgery shapes are refused, and they are refused differently.
+
+    A forger without any held secret can invent one, and its derived key_id
+    then names nothing the registry holds. Or it can copy a key_id off the
+    wire -- they travel in clear -- and forge a MAC under a secret it does not
+    have. The second is the more realistic attack, and asserting only the
+    first would leave it uncovered.
+
+    The reasons differ because the operator remedies differ: an unknown key
+    says a party is presenting a secret this runtime never shared, while a bad
+    authenticator says something is claiming a generation it cannot
+    authenticate under.
+    """
     _, chain, ledger, service = rig
     _seal(chain, ledger, 1)
-    artifact = _custody(ledger, 1, secret="not-the-gateway-secret")
+    artifact = build(ledger)
 
     outcome = service.accept_custody(artifact)
     assert not outcome.accepted
-    assert outcome.reason == REJECT_BAD_AUTHENTICATOR
+    assert outcome.reason == expected
     assert ledger.find_by_local_seq(1)["custody_state"] == "none"
 
 
@@ -275,7 +323,7 @@ def test_custody_for_an_envelope_never_sealed_changes_nothing(rig):
     _seal(chain, ledger, 1)
     artifact = _custody(ledger, 1)
     artifact["local_seq"] = 99
-    _mac(artifact, GATEWAY_SECRET)  # re-authenticated, so the sequence rule is reached
+    _mac(artifact, CUSTODY_SECRET)  # re-authenticated, so the sequence rule is reached
 
     outcome = service.accept_custody(artifact)
     assert not outcome.accepted

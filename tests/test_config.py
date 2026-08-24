@@ -195,6 +195,88 @@ class TestLoadExample:
         assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
         assert cfg.telemetry_export.batch_size == 50
 
+    def _custody_yaml(self, tmp_path, custody_block: str):
+        return _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway:
+              enabled: true
+              broker_url: mqtt://broker.local
+              custody:
+{custody_block}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            """,
+        )
+
+    def test_custody_retired_key_ids_must_have_the_derived_shape(self, tmp_path):
+        """A retired identifier is the only record a generation existed.
+
+        It cannot be re-derived, because retiring destroys the secret. A
+        malformed one is therefore unrecoverable rather than merely wrong, so
+        it is refused where an operator can still fix it.
+        """
+        yaml_path = self._custody_yaml(
+            tmp_path,
+            "                secret_env: ORI_CUSTODY_SECRET\n"
+            '                retired_key_ids: ["gw-secret-1"]\n',
+        )
+        with pytest.raises(ConfigValidationError, match="hkdf-sha256"):
+            Config.load(yaml_path)
+
+    def test_custody_retired_key_ids_reject_uppercase_hex(self, tmp_path):
+        """Identifiers compare byte-exact, so uppercase is malformed, not equal."""
+        upper = "hkdf-sha256:" + "D6AFF3C0837CA1A07A5124E30D9612AC"
+        yaml_path = self._custody_yaml(
+            tmp_path,
+            "                secret_env: ORI_CUSTODY_SECRET\n"
+            f'                retired_key_ids: ["{upper}"]\n',
+        )
+        with pytest.raises(ConfigValidationError, match="hkdf-sha256"):
+            Config.load(yaml_path)
+
+    def test_custody_previous_secret_env_must_differ(self, tmp_path):
+        """Both generations reading one variable is not a rotation window."""
+        yaml_path = self._custody_yaml(
+            tmp_path,
+            "                secret_env: ORI_CUSTODY_SECRET\n"
+            "                previous_secret_env: ORI_CUSTODY_SECRET\n",
+        )
+        with pytest.raises(ConfigValidationError, match="must differ"):
+            Config.load(yaml_path)
+
+    def test_custody_retired_key_ids_reject_duplicates(self, tmp_path):
+        key_id = "hkdf-sha256:" + "d6aff3c0837ca1a07a5124e30d9612ac"
+        yaml_path = self._custody_yaml(
+            tmp_path,
+            "                secret_env: ORI_CUSTODY_SECRET\n"
+            f'                retired_key_ids: ["{key_id}", "{key_id}"]\n',
+        )
+        with pytest.raises(ConfigValidationError, match="more than once"):
+            Config.load(yaml_path)
+
+    def test_custody_defaults_to_absent_rather_than_to_the_envelope_secret(
+        self, tmp_path
+    ):
+        """Omitting the section leaves custody unconfigured, never inherited.
+
+        Falling back to `gateway.auth.shared_secret_env` is exactly the defect
+        this section exists to end, so absence must stay absence.
+        """
+        yaml_path = self._custody_yaml(tmp_path, "                secret_env: ''\n")
+        cfg = Config.load(yaml_path)
+        assert cfg.gateway.custody["secret_env"] == ""
+        assert cfg.gateway.custody["retired_key_ids"] == []
+
     def test_gateway_node_heartbeat_interval_must_be_numeric(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,

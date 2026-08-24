@@ -7,15 +7,138 @@
   "warning": "Seeds below are published test values and must never sign anything real.",
   "shared_secret_hex": "7075626c69736865642d746573742d72756e74696d652d676174657761792d7365637265742d646f2d6e6f742d757365",
   "gateway_secret_hex": "7075626c69736865642d746573742d676174657761792d7365637265742d646f2d6e6f742d757365",
+  "previous_gateway_secret_hex": "7075626c69736865642d746573742d637573746f64792d7365637265742d70726576696f75732d67656e65726174696f6e2d646f2d6e6f742d757365",
+  "retired_gateway_secret_hex": "7075626c69736865642d746573742d637573746f64792d7365637265742d726574697265642d67656e65726174696f6e2d646f2d6e6f742d757365",
+  "retired_secret_note": "Generator material only. It exists so the retired_key_id case can be produced with a real MAC. A conforming receiver holds a tombstone carrying the key_id and no secret, which is why that case is unverifiable by construction rather than merely unverified.",
   "secret_separation_note": "shared_secret_hex is the runtime-gateway envelope secret and gateway_secret_hex is the custody secret. They are distinct, and a custody MAC verifies only under the latter.",
   "gateway_secret_note": "The hex is the UTF-8 encoding of the shared-secret string, which is what the MAC key is. Decode to bytes and use directly; do not treat the hex as raw key material of some other origin.",
+  "key_id_derivation": "key_id = \"hkdf-sha256:\" + lowercase_hex(HKDF-SHA256(ikm=secret UTF-8, salt=\"ori.evidence_custody_key_id.v1\" ASCII, info=\"gateway_custody\" ASCII, length=16))",
+  "key_id_note": "Derived, never configured. The identifier names a secret generation and not a device: one gateway holding custody for several devices under one secret issues the same key_id for all of them.",
+  "registry_state": {
+    "active": {
+      "key_id": "hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac",
+      "secret": "gateway_secret_hex"
+    },
+    "verify_only": {
+      "key_id": "hkdf-sha256:a9a0a00f72f5b7b8499577306838f790",
+      "secret": "previous_gateway_secret_hex"
+    },
+    "retired": {
+      "key_id": "hkdf-sha256:2ae92a030a65e9e931a91b012a721048",
+      "secret": null,
+      "note": "A tombstone. The receiver holds the identifier and MUST NOT hold the secret -- retiring a generation means destroying it. retired_gateway_secret_hex below is published generator material only, so this case can be produced; a conforming receiver never has it."
+    }
+  },
   "envelope_digest_note": "sha256 over the envelope's complete wire bytes, signature included -- not its signing preimage.",
   "cases": [
     {
       "name": "valid",
       "authenticator": "valid",
       "expected": "accept",
-      "note": "Canonical bytes reproduce and the MAC recomputes.",
+      "reject_reason": null,
+      "note": "Active generation. Canonical bytes reproduce and the MAC recomputes.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a6436616666336330383337636131613037613531323465333064393631326163222c226c6f63616c5f736571223a31322c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "local_seq": 12,
+        "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
+        "custody_at_ms": 1787000000900,
+        "key_id": "hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac",
+        "mac": "hmac-sha256:b8bb7b1357c0a93bd76c2d0caa69426b3defa2c26bb17c5c68d76d23df69366a"
+      }
+    },
+    {
+      "name": "valid_previous_generation",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "note": "Issued before a rotation. Its key_id selects the verify_only generation, so it keeps verifying while the active secret is a different one.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303430302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a6139613061303066373266356237623834393935373733303638333866373930222c226c6f63616c5f736571223a31312c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "local_seq": 11,
+        "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
+        "custody_at_ms": 1787000000400,
+        "key_id": "hkdf-sha256:a9a0a00f72f5b7b8499577306838f790",
+        "mac": "hmac-sha256:b0f9a8efe4f3b63e2d991c394724fe08fa7f2dc18adcde52396d03e74db8a3fd"
+      }
+    },
+    {
+      "name": "invalid_mac",
+      "authenticator": "invalid",
+      "expected": "reject",
+      "reject_reason": "bad_authenticator",
+      "note": "The MAC does not recompute under the custody secret its key_id names.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a6436616666336330383337636131613037613531323465333064393631326163222c226c6f63616c5f736571223a31322c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "local_seq": 12,
+        "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
+        "custody_at_ms": 1787000000900,
+        "key_id": "hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac",
+        "mac": "hmac-sha256:b8bb7b1357c0a93bd76c2d0caa69426b3defa2c26bb17c5c68d76d23df693660"
+      }
+    },
+    {
+      "name": "unknown_local_seq",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "unknown_sequence",
+      "note": "MAC verifies, but names a local_seq this device never sealed.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a6436616666336330383337636131613037613531323465333064393631326163222c226c6f63616c5f736571223a393939392c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "local_seq": 9999,
+        "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
+        "custody_at_ms": 1787000000900,
+        "key_id": "hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac",
+        "mac": "hmac-sha256:77e60a49e86d4a1071e0fe6fdc27afc87df3610e44332abbb8e8b221cc8c002c"
+      }
+    },
+    {
+      "name": "unknown_key_id",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "unknown_key",
+      "note": "Well-formed key_id that no held generation derives to. Selection fails before the MAC is considered, so the MAC's validity is irrelevant.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a3534343339303130363664623864353834633433633637383633313435643763222c226c6f63616c5f736571223a31322c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "local_seq": 12,
+        "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
+        "custody_at_ms": 1787000000900,
+        "key_id": "hkdf-sha256:5443901066db8d584c43c67863145d7c",
+        "mac": "hmac-sha256:50c45fa36a6dac9f5171929ddca312b473a7d15dbbbe807b567e41a93c22e131"
+      }
+    },
+    {
+      "name": "retired_key_id",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "retired_key",
+      "note": "Names a generation the receiver holds as a tombstone: identifier retained, secret destroyed. Unverifiable by construction, and distinct from unknown_key because a stalled courier queue and an unknown gateway need different remedies.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a3261653932613033306136356539653933316139316230313261373231303438222c226c6f63616c5f736571223a31322c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "local_seq": 12,
+        "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
+        "custody_at_ms": 1787000000900,
+        "key_id": "hkdf-sha256:2ae92a030a65e9e931a91b012a721048",
+        "mac": "hmac-sha256:c9e54b5a616f368bd920c0aa36d1c37acf225a6e096c536df27e4481970dbc3a"
+      }
+    },
+    {
+      "name": "malformed_key_id",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "malformed",
+      "note": "Not hkdf-sha256: followed by 32 lowercase hex. Shape is refused before the registry is consulted.",
       "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a2267772d7365637265742d31222c226c6f63616c5f736571223a31322c2276223a317d",
       "artifact": {
         "v": 1,
@@ -28,51 +151,88 @@
       }
     },
     {
-      "name": "invalid_mac",
+      "name": "malformed_mac_too_short",
       "authenticator": "invalid",
       "expected": "reject",
-      "note": "The MAC does not recompute under the runtime-gateway secret.",
-      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a2267772d7365637265742d31222c226c6f63616c5f736571223a31322c2276223a317d",
+      "reject_reason": "malformed",
+      "note": "63 hex digits. Shape is refused before the MAC is compared, so this is malformed rather than bad_authenticator.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a6436616666336330383337636131613037613531323465333064393631326163222c226c6f63616c5f736571223a31322c2276223a317d",
       "artifact": {
         "v": 1,
         "device_id": "energy-monitor-ikeja-01",
         "local_seq": 12,
         "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
         "custody_at_ms": 1787000000900,
-        "key_id": "gw-secret-1",
-        "mac": "hmac-sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        "key_id": "hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac",
+        "mac": "hmac-sha256:b8bb7b1357c0a93bd76c2d0caa69426b3defa2c26bb17c5c68d76d23df69366"
       }
     },
     {
-      "name": "unknown_local_seq",
-      "authenticator": "valid",
+      "name": "malformed_mac_too_long",
+      "authenticator": "invalid",
       "expected": "reject",
-      "note": "MAC verifies, but names a local_seq this device never sealed.",
-      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a2267772d7365637265742d31222c226c6f63616c5f736571223a3939392c2276223a317d",
-      "artifact": {
-        "v": 1,
-        "device_id": "energy-monitor-ikeja-01",
-        "local_seq": 999,
-        "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
-        "custody_at_ms": 1787000000900,
-        "key_id": "gw-secret-1",
-        "mac": "hmac-sha256:64d0327ec0184352fe6e1f47b1fc7c1ac025056ffbc9a26a632d7baba8fba95b"
-      }
-    },
-    {
-      "name": "unknown_key_id",
-      "authenticator": "valid",
-      "expected": "reject",
-      "note": "MAC is well formed, but no secret generation is held for that key_id.",
-      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a2267772d7365637265742d756e6b6e6f776e222c226c6f63616c5f736571223a31322c2276223a317d",
+      "reject_reason": "malformed",
+      "note": "65 hex digits.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a6436616666336330383337636131613037613531323465333064393631326163222c226c6f63616c5f736571223a31322c2276223a317d",
       "artifact": {
         "v": 1,
         "device_id": "energy-monitor-ikeja-01",
         "local_seq": 12,
         "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
         "custody_at_ms": 1787000000900,
-        "key_id": "gw-secret-unknown",
-        "mac": "hmac-sha256:897c5294f637b301ff39e016d7819c7475d36072c25a20dd07f682812804881b"
+        "key_id": "hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac",
+        "mac": "hmac-sha256:b8bb7b1357c0a93bd76c2d0caa69426b3defa2c26bb17c5c68d76d23df69366aa"
+      }
+    },
+    {
+      "name": "malformed_mac_non_hex",
+      "authenticator": "invalid",
+      "expected": "reject",
+      "reject_reason": "malformed",
+      "note": "A non-hex character where hex is required.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a6436616666336330383337636131613037613531323465333064393631326163222c226c6f63616c5f736571223a31322c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "local_seq": 12,
+        "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
+        "custody_at_ms": 1787000000900,
+        "key_id": "hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac",
+        "mac": "hmac-sha256:b8bb7b1357c0a93bd76c2d0caa69426b3defa2c26bb17c5c68d76d23df69366z"
+      }
+    },
+    {
+      "name": "malformed_mac_uppercase",
+      "authenticator": "invalid",
+      "expected": "reject",
+      "reject_reason": "malformed",
+      "note": "Uppercase hex. The encoding is lowercase and comparison is byte-exact, so this is malformed rather than an equivalent spelling.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a6436616666336330383337636131613037613531323465333064393631326163222c226c6f63616c5f736571223a31322c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "local_seq": 12,
+        "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
+        "custody_at_ms": 1787000000900,
+        "key_id": "hkdf-sha256:d6aff3c0837ca1a07a5124e30d9612ac",
+        "mac": "hmac-sha256:B8BB7B1357C0A93BD76C2D0CAA69426B3DEFA2C26BB17C5C68D76D23DF69366A"
+      }
+    },
+    {
+      "name": "key_id_not_derived_from_signing_secret",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "bad_authenticator",
+      "note": "THE NO-TRIAL-VERIFICATION CASE. The MAC verifies under the ACTIVE secret while the key_id derives from the PREVIOUS one. A verifier selecting by key_id checks the previous secret and refuses. A verifier that trial-verifies against every secret it holds finds the active one and wrongly accepts.",
+      "canonical_hex": "7b22637573746f64795f61745f6d73223a313738373030303030303930302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656e76656c6f70655f646967657374223a227368613235363a61303739393936353763333662383438646362336262383764653961343065316239623761343633336536653662646165323231323961646464653736323438222c226b65795f6964223a22686b64662d7368613235363a6139613061303066373266356237623834393935373733303638333866373930222c226c6f63616c5f736571223a31322c2276223a317d",
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "local_seq": 12,
+        "envelope_digest": "sha256:a07999657c36b848dcb3bb87de9a40e1b9b7a4633e6e6bdae22129addde76248",
+        "custody_at_ms": 1787000000900,
+        "key_id": "hkdf-sha256:a9a0a00f72f5b7b8499577306838f790",
+        "mac": "hmac-sha256:2f60f6902feee7d440c4cf60e134b1d25fa3f5b89497cbe57ffa9b7134784585"
       }
     }
   ]
