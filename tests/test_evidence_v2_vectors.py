@@ -16,7 +16,7 @@ What this does *not* establish: cross-language agreement. These vectors were
 generated in Python and this reconstruction is also Python, so passing proves
 the derivations are self-consistent and reproducible, not that a Rust or C
 implementation reaches the same bytes. That remains open under
-`ori-platform/ori-verity#39`, and `evidence/v2` stays a design target until it
+the verifier's own tracking issue, and `evidence/v2` stays a design target until it
 lands.
 """
 

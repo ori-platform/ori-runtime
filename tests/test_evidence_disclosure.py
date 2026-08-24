@@ -805,6 +805,111 @@ def _printable_strings(blob: bytes, minimum: int = 4) -> str:
     return "\n".join(out)
 
 
+#: Paths where a denylisted term legitimately appears, each with its reason.
+#:
+#: An exemption is a path and a justification. It never carries the term, so
+#: this list can live in the public repository alongside the check.
+TEXT_SCAN_EXEMPT = {
+    "tests/test_evidence_v2_vectors.py": (
+        "asserts that produced vector bytes carry no foreign vocabulary; the "
+        "literal is the assertion, and sourcing it from the denylist would turn "
+        "an always-on guard into a release-only one"
+    ),
+    "tests/test_evidence_chain_producer.py": (
+        "the same guard, over names the producer emits"
+    ),
+}
+
+#: Trees excluded from the text scan, each because the bytes are not ours.
+TEXT_SCAN_EXCLUDED_TREES = {
+    # Vendored from ori-specs and drift-checked. Their content is the
+    # contract's to decide, and a schema value naming a superseded vocabulary
+    # is a negative test case there rather than a disclosure here.
+    "tests/vectors",
+}
+
+_TEXT_SCAN_SUFFIXES = {
+    ".py",
+    ".md",
+    ".sh",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".cfg",
+    ".txt",
+}
+
+
+def _text_scan_paths() -> list[pathlib.Path]:
+    for root in ("ori", "tests", "docs", "scripts"):
+        base = REPO_ROOT / root
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in _TEXT_SCAN_SUFFIXES:
+                continue
+            relative = path.relative_to(REPO_ROOT).as_posix()
+            if any(
+                relative.startswith(f"{tree}/") for tree in TEXT_SCAN_EXCLUDED_TREES
+            ):
+                continue
+            if relative in TEXT_SCAN_EXEMPT:
+                continue
+            yield path
+
+
+@pytest.mark.disclosure_release
+def test_no_denylisted_term_appears_anywhere_in_the_repository():
+    """The private identifier must not be written here, in any file.
+
+    The module audit reads log messages out of `ori/` and the document audits
+    read an enumerated set under `docs/`. Neither reaches a test, and tests are
+    where this is most likely to happen: a test has to say who owns a
+    behaviour, and that is the sentence in which an implementation gets named.
+    A name in a test file is as public as a name in a module.
+
+    Findings report a path and a category, never the matched text, for the same
+    reason the wheelhouse audit does: this runs in a public log.
+    """
+    required = os.environ.get("ORI_REQUIRE_WHEELHOUSE_AUDIT") == "1"
+
+    def _skip_or_fail(reason: str) -> None:
+        if required:
+            pytest.fail(f"ORI_REQUIRE_WHEELHOUSE_AUDIT=1 but {reason}")
+        pytest.skip(reason)
+
+    terms = _supplied_denylist()
+    if not terms:
+        _skip_or_fail("ORI_DISCLOSURE_DENYLIST is not set")
+
+    findings = []
+    for path in _text_scan_paths():
+        try:
+            body = path.read_text(errors="ignore").lower()
+        except OSError:
+            continue
+        if any(term in body for term in terms):
+            findings.append(
+                _opaque(path.relative_to(REPO_ROOT).as_posix(), PRIVATE_IDENTIFIER)
+            )
+
+    assert not findings, "private identifiers present in tracked files: " + "; ".join(
+        sorted(findings)
+    )
+
+
+def test_every_text_scan_exemption_still_exists_and_is_justified():
+    """An exemption that outlives its file silently widens the scan's blind spot."""
+    for relative, reason in TEXT_SCAN_EXEMPT.items():
+        assert (REPO_ROOT / relative).is_file(), (
+            f"{relative} is exempted from the disclosure text scan but does not exist"
+        )
+        assert len(reason) > 40, f"{relative} is exempted without a real reason"
+    for tree in TEXT_SCAN_EXCLUDED_TREES:
+        assert (REPO_ROOT / tree).is_dir(), f"{tree} is excluded but does not exist"
+
+
 @pytest.mark.disclosure_release
 def test_wheelhouse_distributions_disclose_nothing():
     """The wheelhouse is what actually reaches the device.

@@ -115,7 +115,7 @@ TELEMETRY_CASES = [name for name, case in CASES.items() if case["kind"] == "tele
 MANIFEST_CASES = [name for name, case in CASES.items() if case["kind"] == "manifest"]
 
 # Signed fault-event vectors, shared byte-for-byte with ori-edge-firmware
-# (C producer) and ori-verity (Rust verifier). The runtime is the
+# (C producer) and the independent verifier. The runtime is the
 # receiving end: these bytes and signatures are the contract it must
 # accept, not a shape it gets to reinterpret.
 FAULT_VECTORS = json.loads(
@@ -311,7 +311,7 @@ class TestGoldenVectors:
 class TestGoldenFaultVectors:
     """The runtime's own verifier, run over the committed shared fault
     vectors. This is the receiving end of the cross-language loop: the C
-    producer signs these bytes, ori-verity's ring verifier accepts them,
+    producer signs these bytes, the independent verifier accepts them,
     and the ingestion gate must accept the identical bytes here."""
 
     @pytest.mark.parametrize("name", list(FAULT_CASES))

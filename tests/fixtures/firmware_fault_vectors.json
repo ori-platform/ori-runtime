@@ -1,7 +1,7 @@
 {
   "contract": "ori-specs/firmware-telemetry/v1.md",
   "version": 1,
-  "comment": "Cross-language golden vectors for Verity Layer 1 signed fault events, covering every code in the closed fault vocabulary. Shared with ori-verity and ori-runtime; all implementations must produce and verify these bytes exactly. Signed with the TEST-ONLY seed in test_keypair.json — never provision that seed.",
+  "comment": "Cross-language golden vectors for Layer 1 signed fault events, covering every code in the closed fault vocabulary. Shared with the independent verifier and ori-runtime; all implementations must produce and verify these bytes exactly. Signed with the TEST-ONLY seed in test_keypair.json — never provision that seed.",
   "signature_encoding": "ed25519:<standard-base64-64-byte-signature>",
   "public_key_hex": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
   "public_key_b64": "IVL40Zt5HSRFMkLhXy6rbLfP+ntqXtMAl5YOBpiB2xI=",
