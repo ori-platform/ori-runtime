@@ -1,5 +1,24 @@
 # Raspberry Pi hardware dependencies. Keep these out of requirements/runtime.in so
 # phone and generic Linux deployments do not install Pi GPIO packages.
+#
+# There is deliberately no pin factory here, and that is the whole subtlety of
+# this file.
+#
+# `RPi.GPIO` was pinned here and could never satisfy this target: it publishes
+# sdists only, so the wheelhouse build's `--only-binary` filter reduced its
+# candidate set to nothing. Raspberry Pi OS Trixie has also moved on from it --
+# GPIO is driven through /dev/gpiochip, the image ships `python3-rpi-lgpio` (a
+# shim over lgpio) rather than the classic package, and gpiozero 2.x selects
+# `LGPIOFactory` there.
+#
+# `lgpio` cannot replace it from PyPI. The installable release is 0.0.0.2, whose
+# wheel contains a zero-byte `lgpio.py` -- a placeholder, not the library. The
+# working module is apt's `python3-lgpio`, whose extension is built per
+# interpreter: `_lgpio.cpython-313-aarch64-linux-gnu.so`.
+#
+# So the pin factory comes from the operating system, and the runtime venv must
+# be able to see it. That is also why the interpreter matters: a venv on any
+# version other than the one apt built for cannot import that extension, and
+# GPIO silently degrades to simulation. See docs/RASPBERRY_PI_SUPPORT.md.
 gpiozero>=2.0.1.post3
 smbus2>=0.4
-RPi.GPIO>=0.7
