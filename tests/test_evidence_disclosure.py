@@ -38,6 +38,7 @@ import os
 import pathlib
 import re
 import subprocess
+import tomllib
 import zipfile
 from collections.abc import Sequence
 
@@ -634,6 +635,13 @@ def _mentions(haystack: str, terms: Sequence[str]) -> bool:
 # Only names the vendored-implementation pattern would otherwise flag. Listing
 # a name it does not match exempts nothing and reads as a judgement nobody made,
 # which the guard below refuses.
+#: The wheel this repository builds, as a wheel filename normalises it.
+#: Read from the packaging metadata so a rename cannot silently turn the
+#: first-party checks off.
+DISTRIBUTION_NAME = tomllib.loads(
+    (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]["name"].replace("-", "_")
+
 FIRST_PARTY_EVIDENCE_MODULES = frozenset({"ori/security/evidence_chain.py"})
 
 
@@ -989,6 +997,12 @@ def test_wheelhouse_distributions_disclose_nothing():
         accurately. The sibling wheel test already draws this line; this audit
         did not, and a wheelhouse built from a real tag is what showed it.
         """
+        if text.strip() in FIRST_PARTY_EVIDENCE_MODULES:
+            # This runtime produces chain rows itself, so a module named for
+            # that work is what should ship. Without the registry the audit
+            # flags the package for containing the thing it exists to contain,
+            # as both a member name and a RECORD path.
+            return None
         if VENDORED_IMPLEMENTATION.search(text):
             return "evidence-implementation naming"
         return None
@@ -1010,9 +1024,17 @@ def test_wheelhouse_distributions_disclose_nothing():
         # WHEEL carries no long description; every line of it is structural.
         return [line.strip() for line in text.splitlines() if line.strip()]
 
+    def _is_first_party(wheel_name: str) -> bool:
+        """Whether this wheel is the one this repository builds.
+
+        Wheel names normalise the project name with underscores.
+        """
+        return wheel_name.startswith(f"{DISTRIBUTION_NAME}-")
+
     failures: list[str] = []
     inspected_binaries = 0
     for path in distributions:
+        first_party = _is_first_party(path.name)
         # Distribution names are printed only when they do not themselves
         # match; the location of an offending wheel is its index, not its name.
         location = f"distribution #{distributions.index(path) + 1}"
@@ -1022,7 +1044,14 @@ def test_wheelhouse_distributions_disclose_nothing():
         with zipfile.ZipFile(path) as archive:
             for index, name in enumerate(archive.namelist()):
                 member = f"{location} member #{index + 1}"
-                found = _category(name)
+                # The shape pattern asks whether *this project* is shipping an
+                # evidence implementation, so it reads our own members only. A
+                # third-party module that happens to be called something like
+                # `chain_store` is not our artifact, and flagging it would make
+                # any dependency bump able to fail a release. A private
+                # identifier is a leak wherever it appears, so that half reads
+                # every distribution.
+                found = _category(name) if first_party else _denied(name)
                 if found:
                     failures.append(_opaque(f"{member} (member name)", found))
                 if name.endswith((".so", ".dylib", ".pyd", ".dll")):
@@ -1030,6 +1059,13 @@ def test_wheelhouse_distributions_disclose_nothing():
                     found = _category(_printable_strings(archive.read(name)))
                     if found:
                         failures.append(_opaque(f"{member} (compiled strings)", found))
+                elif name.endswith((".py", ".pyi")):
+                    # A vendored implementation can be imported by name from
+                    # source without any filename revealing it. Names and
+                    # metadata alone missed that, in any distribution.
+                    found = _denied(archive.read(name).decode("utf-8", "ignore"))
+                    if found:
+                        failures.append(_opaque(f"{member} (source)", found))
                 if name.endswith(("METADATA", "RECORD", "WHEEL")):
                     text = archive.read(name).decode("utf-8", "ignore")
                     # A supplied private identifier is a leak anywhere in the
@@ -1039,6 +1075,8 @@ def test_wheelhouse_distributions_disclose_nothing():
                         failures.append(_opaque(f"{member} (wheel metadata)", found))
                     # The naming pattern reads declared fields only.
                     for field in _declared_fields(name, text):
+                        if not first_party:
+                            break
                         found = _implementation_named(field)
                         if found:
                             failures.append(
