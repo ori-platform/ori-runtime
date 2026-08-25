@@ -381,7 +381,7 @@ def test_creation_provenance_race_refuses_existing_entry_and_rolls_back_only_our
 
     monkeypatch.setattr(installer_linux.os, "mkdir", mkdir_with_race)
 
-    with pytest.raises(LinuxInstallError, match="data is group-writable"):
+    with pytest.raises(LinuxInstallError, match="data is writable by another account"):
         install_release(
             layout=layout,
             version="2.3.0",
@@ -458,15 +458,15 @@ def test_scaffolding_cleanup_refuses_a_substituted_inode(tmp_path: Path) -> None
     assert displaced.exists(), "the proven inode is no longer at its recorded path"
 
 
-@pytest.mark.parametrize("mode", [0o770, 0o775, 0o720, 0o2775])
-def test_preexisting_group_writable_directory_is_refused_unmodified(
+@pytest.mark.parametrize("mode", [0o770, 0o775, 0o720, 0o2775, 0o707])
+def test_preexisting_directory_writable_by_another_account_is_refused_unmodified(
     tmp_path: Path, mode: int
 ) -> None:
     path = tmp_path / "ori"
     path.mkdir(mode=0o700)
     path.chmod(mode)
 
-    with pytest.raises(LinuxInstallError, match="group-writable"):
+    with pytest.raises(LinuxInstallError, match="writable by another account"):
         installer_linux._ensure_private_directory(path)
 
     assert stat.S_IMODE(path.stat().st_mode) == mode

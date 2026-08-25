@@ -2410,15 +2410,15 @@ def _ensure_private_directory(path: Path) -> _CreatedDirectory | None:
             )
 
         mode = stat.S_IMODE(info.st_mode)
-        if not created and mode & 0o020:
-            # Never silently adopt a shared pre-existing directory. Its exact
-            # mode is evidence that another account could replace entries.
+        if not created and mode & 0o022:
+            # Never silently adopt a pre-existing directory another account
+            # can modify. Its exact mode is evidence that entries are replaceable.
             raise LinuxInstallError(
-                "unsafe_install_root", f"{path.name} is group-writable"
+                "unsafe_install_root", f"{path.name} is writable by another account"
             )
         if created or mode & 0o007:
             # Pin created directories despite umask/default ACLs, and tighten
-            # only the previously accepted (non-group-writable) existing case.
+            # only an existing directory no other account can modify.
             fchmod(descriptor, 0o700)
             info = os.fstat(descriptor)
             if stat.S_IMODE(info.st_mode) != 0o700:
@@ -2454,7 +2454,7 @@ def _ensure_private_directory(path: Path) -> _CreatedDirectory | None:
 def _private_directory_error_detail(
     path: Path, *, created: bool, error: OSError
 ) -> str:
-    """Explain a kernel refusal without using pathname state as authority."""
+    """Explain a kernel refusal; pathname inspection here is diagnostic only."""
     if created and isinstance(error, PermissionError):
         return (
             f"{path.name} was created but is not accessible; "

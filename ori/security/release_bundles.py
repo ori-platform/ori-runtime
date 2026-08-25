@@ -513,8 +513,9 @@ def _extract_member(
         # ``destination`` was created as an exact 0700 boundary before archive
         # parsing. Every validated member stays beneath it, so recursive parent
         # creation cannot expose content even when an implicit directory
-        # inherits a permissive umask. The caller later normalises the verified
-        # release tree for its service scope.
+        # inherits a permissive umask. This temporary tree supplies the verified
+        # wheelhouse used to build a separate release staging directory; the
+        # extracted directories are not installed directly.
         target.mkdir(mode=0o700, parents=True, exist_ok=True)
         return
 
