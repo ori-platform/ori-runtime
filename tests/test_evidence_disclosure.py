@@ -1146,6 +1146,7 @@ PASSAGE_AUDITS = {
     # one of them gains a passage, it is audited without anyone remembering.
     "docs/MQTT_SECURITY.md": 0,
     "docs/SMS_WEBHOOK_SECURITY.md": 0,
+    "docs/RASPBERRY_PI_SUPPORT.md": 0,
     "docs/android-runtime-mobile.md": 0,
     "docs/alpha-release-notes.md": 0,
     "docs/beta-release-notes.md": 0,
