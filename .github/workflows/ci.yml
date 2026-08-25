@@ -55,6 +55,39 @@ jobs:
         if: matrix.python-version == '3.12'
         run: bash scripts/refresh-evidence-vectors.sh
 
+      # The wheelhouse audit runs only under the release marker, so defects in
+      # it reach tags before any branch can see them: v2.5.0-rc.1 and rc.2 were
+      # both spent that way. It needs a built wheelhouse rather than a secret,
+      # so it can run here on a synthetic term.
+      - name: Audit a built wheelhouse for disclosure
+        if: matrix.python-version == '3.12'
+        env:
+          ORI_WHEELHOUSE_OUT: ${{ runner.temp }}/wheelhouse
+          ORI_WHEELHOUSE_TARGET: generic
+        run: |
+          set -euo pipefail
+          bash scripts/build-wheelhouse.sh
+          # The real identifiers stay in the release environment. A synthetic
+          # term proves the machinery rather than the secret.
+          term="orisyntheticdisclosureprobe"
+          ORI_DISCLOSURE_DENYLIST="${term}" python -m pytest \
+            tests/test_evidence_disclosure.py -m disclosure_release -q
+          # Silence is only evidence if the audit would have spoken. Plant the
+          # term in a shipped wheel and require a refusal, so a wheelhouse that
+          # is never really read cannot report itself clean.
+          probe="${RUNNER_TEMP}/wheelhouse-probe"
+          rm -rf "${probe}"
+          cp -r "${ORI_WHEELHOUSE_OUT}" "${probe}"
+          printf 'LEAKED = "%s"\n' "${term}" > "${RUNNER_TEMP}/probe_leak.py"
+          (cd "${RUNNER_TEMP}" && zip -q "$(ls "${probe}"/*.whl | head -1)" probe_leak.py)
+          if ORI_WHEELHOUSE_OUT="${probe}" ORI_DISCLOSURE_DENYLIST="${term}" \
+             python -m pytest tests/test_evidence_disclosure.py \
+             -m disclosure_release -q >/dev/null 2>&1; then
+            echo "the audit accepted a wheelhouse carrying the probe term" >&2
+            exit 1
+          fi
+          rm -rf "${probe}" "${RUNNER_TEMP}/probe_leak.py"
+
       - name: Type check runtime contract boundaries
         run: bash scripts/typecheck-boundaries.sh
 
