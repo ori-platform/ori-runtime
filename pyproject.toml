@@ -216,6 +216,15 @@ warn_return_any = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
+# llama-cpp-python is optional and absent from the hash-locked CI environment.
+# With it installed the ImportError fallback rebinds an imported class and needs
+# an ignore; without it the same ignore is unused. The comment cannot be correct
+# in both, so this module opts out of the unused-ignore check rather than
+# carrying a comment whose correctness depends on which extras are present.
+module = ["ori.reasoning.local_llm"]
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
 module = [
     "ori.gateway.*",
     "ori.integration.*",
