@@ -1142,6 +1142,7 @@ PASSAGE_AUDITS = {
     "docs/releases/evidence/systemd-host-runbook.md": 1,
     "docs/RELEASE_SIGNING.md": 1,
     "docs/releases/v2.4.0.md": 1,
+    "docs/releases/v2.5.0.md": 1,
     # No evidence passages today. Listed rather than exempted so that the day
     # one of them gains a passage, it is audited without anyone remembering.
     "docs/MQTT_SECURITY.md": 0,

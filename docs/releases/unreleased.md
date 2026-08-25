@@ -1,6 +1,6 @@
 # Ori Runtime — Unreleased
 
-Changes merged to `main` after `v2.4.0` are collected here until the next
-release is cut.
+Changes merged to `main` after `v2.5.0-rc.1` are collected here until the next
+candidate or release is cut.
 
 _No changes yet._
