@@ -35,14 +35,32 @@ That package ships a compiled extension built **per interpreter version**:
 /usr/lib/python3/dist-packages/_lgpio.cpython-313-aarch64-linux-gnu.so
 ```
 
-A runtime on any interpreter other than the one apt built for cannot import it.
-The consequence is quiet rather than loud: `gpiozero` finds no usable factory,
-the HAL guards catch the ImportError, and the adapter enters simulation mode. A
-relay configured under `deployment_profile: development` then reports healthy
-while no pin is ever driven.
+A runtime on any interpreter other than the one apt built for cannot import it,
+and the consequence is worse than a failure.
+
+`gpiozero` does not raise when no real factory is available. It warns and falls
+back to `NativeFactory`, its own experimental implementation. Measured on the
+bench Pi, installing this lock into an isolated virtual environment gives:
+
+```
+PinFactoryFallback: Falling back from pigpio: No module named 'pigpio'
+NativePinFactoryFallback: Falling back to the experimental pin factory
+NativeFactory because no other pin factory could be loaded.
+pin factory: NativeFactory
+```
+
+So `from gpiozero import DigitalOutputDevice, OutputDevice` succeeds,
+`gpio_backend_importable()` returns true, and the hardened-posture check passes.
+The runtime reports GPIO as available and drives Tier D through an experimental
+fallback rather than refusing to start.
+
+That is the opposite of failing closed. `relay.py` says as much in its own
+docstring -- the import check "proves dependency availability only" -- but
+nothing between that check and a Tier D trip asks *which* factory was loaded.
 
 This is why running Ori on a bundled 3.12 interpreter beside a 3.13 system is
-not a workaround. It produces a runtime that cannot actuate and does not say so.
+not a workaround, and why the check below is on the factory rather than on the
+import.
 
 ## Why there is no pin factory in `requirements/pi.txt`
 
@@ -78,8 +96,9 @@ sudo /opt/ori/current/venv/bin/python -c \
   "from gpiozero import Device; Device.ensure_pin_factory(); print(type(Device.pin_factory).__name__)"
 ```
 
-`LGPIOFactory` means GPIO is live. `ModuleNotFoundError` or a factory error
-means the runtime will simulate every relay operation.
+`LGPIOFactory` means GPIO is live. **`NativeFactory` means it is not** -- the
+import succeeded, every availability check passes, and the pins are driven by an
+experimental fallback. Treat that result as a failed check, not a partial pass.
 
 ## Verifying a Pi before you rely on it
 
@@ -97,14 +116,16 @@ python3 -c "from gpiozero import Device; Device.ensure_pin_factory(); \
 
 # 3. The runtime's own venv resolves it too.
 sudo /opt/ori/current/venv/bin/python -c \
-  "from gpiozero import Device; Device.ensure_pin_factory(); print('ok')"
+  "from gpiozero import Device; Device.ensure_pin_factory(); \
+   print(type(Device.pin_factory).__name__)"
 
 # 4. The interpreter the service actually runs.
 systemctl cat ori-runtime.service | grep ExecStart
 ```
 
-Step 3 is the one that matters. Steps 1 and 2 can pass on a device whose Ori
-install still cannot drive a pin.
+Step 3 is the one that matters, and read its output rather than its exit code:
+it prints `ok` for any factory at all, including the experimental fallback.
+Steps 1 and 2 can pass on a device whose Ori install still cannot drive a pin.
 
 ## Before a demo
 
