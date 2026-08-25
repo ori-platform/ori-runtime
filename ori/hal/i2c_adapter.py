@@ -23,14 +23,16 @@ try:
     import smbus2 as smbus  # type: ignore[import-untyped]
 
     _SMBUS_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - exercised on non-Pi hosts
+    smbus = None
     _SMBUS_AVAILABLE = False
 
 try:
     import bme280 as _bme280_lib  # type: ignore[import-untyped]
 
     _BME280_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - exercised on non-Pi hosts
+    _bme280_lib = None
     _BME280_AVAILABLE = False
 
 try:
@@ -40,14 +42,19 @@ try:
     import busio as _busio  # type: ignore[import-untyped]
 
     _ADS1115_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - exercised on non-Pi hosts
+    _ads1115 = None
+    _analog_in = None
+    _board = None
+    _busio = None
     _ADS1115_AVAILABLE = False
 
 try:
     import adafruit_scd4x  # type: ignore[import-untyped]
 
     _SCD40_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - exercised on non-Pi hosts
+    adafruit_scd4x = None
     _SCD40_AVAILABLE = False
 
 # Sensor types that require the ADS1115 ADC
@@ -86,6 +93,12 @@ def _get_shared_busio_i2c(bus_number: int) -> Any:
         raise AdapterConnectionError(
             f"I2CAdapter: Adafruit sensor drivers currently only support "
             f"I2C bus 1 on Raspberry Pi. You requested bus {bus_number}."
+        )
+
+    if _busio is None or _board is None:
+        raise AdapterConnectionError(
+            "I2CAdapter: Adafruit I2C drivers are not installed. "
+            "Run: pip install adafruit-blinka adafruit-circuitpython-ads1x15"
         )
 
     with _shared_busio_lock:
@@ -214,11 +227,11 @@ class I2CAdapter(BaseAdapter):
             self._connect_scd40()
 
     def _connect_bme280(self) -> None:
-        if not _SMBUS_AVAILABLE:
+        if not _SMBUS_AVAILABLE or smbus is None:
             raise AdapterConnectionError(
                 "I2CAdapter: 'smbus2' is not installed. Run: pip install smbus2"
             )
-        if not _BME280_AVAILABLE:
+        if not _BME280_AVAILABLE or _bme280_lib is None or smbus is None:
             raise AdapterConnectionError(
                 "I2CAdapter: 'RPi.bme280' is not installed. Run: pip install RPi.bme280"
             )
@@ -228,7 +241,7 @@ class I2CAdapter(BaseAdapter):
         )
 
     def _connect_ads1115(self) -> None:
-        if not _ADS1115_AVAILABLE:
+        if not _ADS1115_AVAILABLE or _ads1115 is None or _analog_in is None:
             raise AdapterConnectionError(
                 "I2CAdapter: Adafruit ADS1x15 library is not installed. "
                 "Run: pip install adafruit-circuitpython-ads1x15"
@@ -237,12 +250,12 @@ class I2CAdapter(BaseAdapter):
         self._ads = _ads1115.ADS1115(i2c, address=self._address)
 
     def _connect_scd40(self) -> None:
-        if not _SCD40_AVAILABLE:
+        if not _SCD40_AVAILABLE or adafruit_scd4x is None:
             raise AdapterConnectionError(
                 "I2CAdapter: 'adafruit-circuitpython-scd4x' is not installed. "
                 "Run: pip install adafruit-circuitpython-scd4x"
             )
-        if not _ADS1115_AVAILABLE:
+        if not _ADS1115_AVAILABLE or _ads1115 is None or _analog_in is None:
             # busio/board come from the same adafruit-blinka bundle
             raise AdapterConnectionError(
                 "I2CAdapter: 'adafruit-blinka' (busio/board) is not installed."
@@ -334,6 +347,10 @@ class I2CAdapter(BaseAdapter):
     # ── BME280 ────────────────────────────────────────────────────────────────
 
     def _read_bme280(self, sensor_id: str) -> SensorReading:
+        if _bme280_lib is None:
+            raise AdapterConnectionError(
+                "I2CAdapter: the BME280 driver is not loaded; connect() must run first"
+            )
         data = _bme280_lib.sample(self._bus, self._address, self._bme280_params)
         # bme280.sample returns an object with .temperature (°C), .pressure (hPa),
         # .humidity (%).  Temperature is the primary value; the other two travel
@@ -354,6 +371,10 @@ class I2CAdapter(BaseAdapter):
     # ── ADS1115 current ───────────────────────────────────────────────────────
 
     def _read_ads1115_current(self, sensor_id: str) -> SensorReading:
+        if _analog_in is None:
+            raise AdapterConnectionError(
+                "I2CAdapter: the ADS1115 driver is not loaded; connect() must run first"
+            )
         chan = _analog_in.AnalogIn(self._ads, self._channel)
         adc_voltage = chan.voltage  # volts
         current_amps = adc_voltage / self._sensitivity
@@ -374,6 +395,10 @@ class I2CAdapter(BaseAdapter):
     # ── ADS1115 voltage ───────────────────────────────────────────────────────
 
     def _read_ads1115_voltage(self, sensor_id: str) -> SensorReading:
+        if _analog_in is None:
+            raise AdapterConnectionError(
+                "I2CAdapter: the ADS1115 driver is not loaded; connect() must run first"
+            )
         chan = _analog_in.AnalogIn(self._ads, self._channel)
         voltage = chan.voltage
         return SensorReading(

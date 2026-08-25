@@ -15,7 +15,11 @@ try:
     from llama_cpp import Llama  # pyright: ignore[reportMissingImports]
 
     _LLAMA_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - exercised without llama-cpp-python
+    # A sentinel, not a type. mypy reads the imported name as `type[Llama]`;
+    # binding it here is what lets the call site check availability directly
+    # rather than relying on a module flag no checker can correlate.
+    Llama = None  # type: ignore[assignment,misc]
     _LLAMA_AVAILABLE = False
 
 
@@ -147,6 +151,8 @@ class LocalLLM:
             logger.info("LocalLLM: model loaded")
 
     def _load_model(self) -> object:
+        if Llama is None:
+            raise RuntimeError("LocalLLM: llama-cpp-python is not installed")
         return Llama(
             model_path=self._model_path,
             n_ctx=self._context_window,

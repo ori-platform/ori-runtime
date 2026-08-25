@@ -607,8 +607,9 @@ def _peer_uid(peer_socket: Any) -> int:
             "authentication_failed",
             "peer credentials are unavailable",
         )
-    if sys.platform.startswith("linux") and hasattr(socket, "SO_PEERCRED"):
-        raw = peer_socket.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+    so_peercred = getattr(socket, "SO_PEERCRED", None)
+    if sys.platform.startswith("linux") and so_peercred is not None:
+        raw = peer_socket.getsockopt(socket.SOL_SOCKET, so_peercred, 12)
         _, uid, _ = struct.unpack("=3i", raw)
         return int(uid)
     if sys.platform == "darwin" and hasattr(socket, "LOCAL_PEERCRED"):

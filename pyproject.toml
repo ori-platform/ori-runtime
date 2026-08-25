@@ -198,6 +198,10 @@ ignore = ["E501"]
 # and reported an unresolved import in the editor; declaring the path once
 # fixes both rather than scattering per-file suppressions.
 [tool.pyright]
+# Without an explicit include, pyright resolves `ori/hal/x.py` a second time as
+# `hal/x.py` through the package root and reports every diagnostic twice. The
+# duplicate is invisible in a total and makes the count untrackable.
+include = ["ori", "tests", "scripts"]
 extraPaths = ["scripts"]
 
 [tool.mypy]

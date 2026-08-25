@@ -207,6 +207,10 @@ class MqttCachedAdapter(BaseAdapter):
 
         try:
             client_kwargs = self._build_mqtt_client_kwargs(config)
+            if _aiomqtt is None:
+                raise AdapterConnectionError(
+                    "MQTT adapter: 'aiomqtt' is not installed. Run: pip install aiomqtt"
+                )
             client = _aiomqtt.Client(
                 hostname=self._broker_host,
                 port=self._port,

@@ -66,6 +66,15 @@ jobs:
       - name: Type check the whole package
         run: python -m mypy ori/
 
+      # Pyright catches what mypy does not: unbound locals behind optional
+      # imports, attributes missing from a None-typed handle, and async context
+      # managers entered synchronously. Scoped to `ori/` because the test tree
+      # still carries stub-typing diagnostics; widening it is #358's remaining
+      # half. A ratchet only holds if the clean half is enforced.
+      - name: Type check production code (pyright)
+        if: matrix.python-version == '3.12'
+        run: npx --yes pyright@latest ori/
+
       - name: Pre-commit (lint + format + hygiene)
         env:
           SKIP: no-commit-to-branch

@@ -67,6 +67,7 @@ class _RelayDevice(Protocol):
     @property
     def value(self) -> float:
         """Current pin value; non-zero while the relay is energised."""
+        ...
 
     def on(self) -> None:
         """Energise the pin."""

@@ -364,8 +364,9 @@ def _default_client_factory(*, client_id: str) -> Any:
     if mqtt is None:
         raise RuntimeError("paho-mqtt is not installed")
     kwargs: dict[str, Any] = {"client_id": client_id}
-    if hasattr(mqtt, "CallbackAPIVersion"):
-        kwargs["callback_api_version"] = mqtt.CallbackAPIVersion.VERSION2
+    callback_api_version = getattr(mqtt, "CallbackAPIVersion", None)
+    if callback_api_version is not None:
+        kwargs["callback_api_version"] = callback_api_version.VERSION2
     try:
         return mqtt.Client(**kwargs)
     except TypeError:

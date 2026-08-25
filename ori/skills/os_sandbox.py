@@ -316,6 +316,8 @@ class OSSandboxHookRunner:
 
         async def _read_stderr() -> None:
             nonlocal stderr_bytes
+            if proc.stderr is None:
+                return
             while True:
                 chunk = await proc.stderr.read(1024)
                 if not chunk:
@@ -327,8 +329,10 @@ class OSSandboxHookRunner:
 
         try:
             timeout_s = float(self._cfg["exec_timeout_ms"]) / 1000.0
-            with asyncio.timeout(timeout_s):
+            async with asyncio.timeout(timeout_s):
                 while True:
+                    if proc.stdout is None:
+                        break
                     line = await proc.stdout.readline()
                     if not line:
                         break
@@ -726,7 +730,7 @@ def _install_landlock_readonly(paths: list[str]) -> None:
         raise OSError(err, "landlock_create_ruleset failed")
     try:
         for path in paths:
-            fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
+            fd = os.open(path, getattr(os, "O_PATH", 0) | os.O_CLOEXEC)
             try:
                 rule = _LandlockPathBeneathAttr(
                     allowed_access=_LANDLOCK_READ_EXEC,

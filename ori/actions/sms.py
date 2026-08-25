@@ -254,7 +254,7 @@ class SMSAction:
 
             # Africa's Talking SDK is synchronous — offload to thread.
             def _send_sync() -> dict[Any, Any]:
-                sms = africastalking.SMS
+                sms = cast(Any, africastalking.SMS)
                 return cast(
                     dict[Any, Any], sms.send(message, [to_number], self._sender_id)
                 )

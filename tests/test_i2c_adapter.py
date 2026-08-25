@@ -123,6 +123,7 @@ class TestConnect:
         adapter = I2CAdapter()
         with (
             patch("ori.hal.i2c_adapter._SMBUS_AVAILABLE", True),
+            patch("ori.hal.i2c_adapter.smbus"),
             patch("ori.hal.i2c_adapter._BME280_AVAILABLE", False),
             pytest.raises(AdapterConnectionError, match="RPi.bme280"),
         ):
@@ -165,7 +166,11 @@ class TestConnect:
 
     async def test_connect_adafruit_unsupported_bus_raises(self):
         adapter = I2CAdapter()
-        with patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", True):
+        with (
+            patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", True),
+            patch("ori.hal.i2c_adapter._ads1115"),
+            patch("ori.hal.i2c_adapter._analog_in"),
+        ):
             with pytest.raises(
                 AdapterConnectionError, match="currently only support I2C bus 1"
             ):
@@ -178,6 +183,7 @@ class TestConnect:
             patch("ori.hal.i2c_adapter._busio", create=True),
             patch("ori.hal.i2c_adapter._board", create=True),
             patch("ori.hal.i2c_adapter._ads1115", create=True),
+            patch("ori.hal.i2c_adapter._analog_in", create=True),
         ):
             await adapter.connect(
                 _config(sensor_type="ads1115_current", sensitivity=0.05)
@@ -191,6 +197,7 @@ class TestConnect:
             patch("ori.hal.i2c_adapter._busio", create=True),
             patch("ori.hal.i2c_adapter._board", create=True),
             patch("ori.hal.i2c_adapter._ads1115", create=True),
+            patch("ori.hal.i2c_adapter._analog_in", create=True),
         ):
             await adapter.connect(_config(sensor_type="ads1115_current", channel=2))
         assert adapter._channel == 2

@@ -3,7 +3,7 @@
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
 
 from ori.hal.base import (
     AdapterConnectionError,
@@ -213,7 +213,10 @@ class SolarmanModbusAdapter(BaseAdapter):
                     port=self._port,
                 )
             except TypeError:
-                self._client = _PySolarmanV5(self._host, self._serial, self._port)
+                # Older releases take the port positionally.
+                self._client = cast(Any, _PySolarmanV5)(
+                    self._host, self._serial, self._port
+                )
         except Exception as exc:
             raise AdapterConnectionError(
                 f"SolarmanModbusAdapter: failed to create client for "

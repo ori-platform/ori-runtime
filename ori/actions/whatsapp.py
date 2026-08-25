@@ -219,7 +219,7 @@ class TwilioProvider:
                 ),
                 timeout=self._request_timeout_s,
             )
-            return [m.body for m in messages]
+            return [m.body for m in messages if m.body is not None]
         except Exception as exc:
             status = getattr(exc, "status", None)
             code = getattr(exc, "code", None)
