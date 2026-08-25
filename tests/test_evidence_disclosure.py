@@ -1147,6 +1147,7 @@ PASSAGE_AUDITS = {
     "docs/MQTT_SECURITY.md": 0,
     "docs/SMS_WEBHOOK_SECURITY.md": 0,
     "docs/RASPBERRY_PI_SUPPORT.md": 0,
+    "docs/ALERT_DELIVERY_SETUP.md": 0,
     "docs/android-runtime-mobile.md": 0,
     "docs/alpha-release-notes.md": 0,
     "docs/beta-release-notes.md": 0,
