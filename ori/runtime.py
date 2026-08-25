@@ -32,7 +32,12 @@ from ori.actions.alert_failover import AlertFailoverSender
 from ori.actions.coap import CoAPAction, coap_backend_available
 from ori.actions.logger import LoggerAction
 from ori.actions.process_manager import ProcessManagerAction
-from ori.actions.relay import RelayAction, gpio_backend_importable
+from ori.actions.relay import (
+    RelayAction,
+    gpio_backend_arbitrated,
+    gpio_backend_importable,
+    resolved_pin_factory_name,
+)
 from ori.actions.sms import SMSAction
 from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
@@ -3941,9 +3946,7 @@ def _validate_required_runtime_capabilities(
         config.device.deployment_type != "phone" and "gpio_pin" in config.actions.relay
     )
     status_signaling_requested = is_truthy(status_cfg.get("enabled", False))
-    if (
-        relay_requested or status_signaling_requested
-    ) and not gpio_backend_importable():
+    if relay_requested or status_signaling_requested:
         requested_by = (
             "relay control and status signaling"
             if relay_requested and status_signaling_requested
@@ -3951,7 +3954,19 @@ def _validate_required_runtime_capabilities(
             if relay_requested
             else "status signaling"
         )
-        missing.append(f"gpiozero is unavailable but {requested_by} is configured")
+        if not gpio_backend_importable():
+            missing.append(f"gpiozero is unavailable but {requested_by} is configured")
+        elif not gpio_backend_arbitrated():
+            # The dependency is present and pins would move, so the import check
+            # passes. gpiozero fell back to a factory that drives /dev/gpiomem
+            # without claiming the line, so the kernel refuses no second writer.
+            # A hardened runtime must not report a physical capability it cannot
+            # hold exclusively.
+            factory = resolved_pin_factory_name() or "none"
+            missing.append(
+                f"{requested_by} is configured but the resolved GPIO backend "
+                f"({factory}) does not claim its lines through the kernel"
+            )
 
     coap_requested = is_truthy(config.actions.coap.get("enabled", False)) or any(
         sensor.protocol == "coap" for sensor in config.sensors

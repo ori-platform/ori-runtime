@@ -624,6 +624,61 @@ class TestRequiredRuntimeCapabilities:
         with pytest.raises(ConfigValidationError, match="gpiozero.*status signaling"):
             _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
 
+    @pytest.mark.parametrize("profile", ["staging", "production"])
+    def test_hardened_gpio_refuses_an_unarbitrated_backend(
+        self, profile, monkeypatch, tmp_path
+    ):
+        """gpiozero present and pins moving is not the same as pins owned.
+
+        The fallback drives /dev/gpiomem directly and claims no line, so the
+        kernel refuses no second writer. Measured on a Pi 4: a claimed line
+        reports `consumer="lg"` and an unclaimed one still reads as an input
+        while it is being held high.
+
+        The import check cannot see the difference -- it passes either way --
+        which is what made this reachable.
+        """
+        config = _capability_config(
+            profile=profile,
+            relay={"enabled": True, "gpio_pin": 26},
+        )
+        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: True)
+        monkeypatch.setattr("ori.runtime.gpio_backend_arbitrated", lambda: False)
+        monkeypatch.setattr(
+            "ori.runtime.resolved_pin_factory_name", lambda: "NativeFactory"
+        )
+
+        with pytest.raises(ConfigValidationError, match="NativeFactory"):
+            _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
+    def test_hardened_gpio_accepts_an_arbitrated_backend(self, monkeypatch, tmp_path):
+        config = _capability_config(
+            profile="production",
+            relay={"enabled": True, "gpio_pin": 26},
+        )
+        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: True)
+        monkeypatch.setattr("ori.runtime.gpio_backend_arbitrated", lambda: True)
+
+        _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
+    def test_a_missing_dependency_is_reported_as_such_not_as_a_bad_factory(
+        self, monkeypatch, tmp_path
+    ):
+        """The two failures need different fixes, so they must read differently.
+
+        One means install a package; the other means the package is installed
+        and the platform cannot back it.
+        """
+        config = _capability_config(
+            profile="production",
+            relay={"enabled": True, "gpio_pin": 26},
+        )
+        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: False)
+        monkeypatch.setattr("ori.runtime.gpio_backend_arbitrated", lambda: False)
+
+        with pytest.raises(ConfigValidationError, match="gpiozero is unavailable"):
+            _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
+
     def test_hardened_unwired_relay_without_gpio_pin_needs_no_gpiozero(
         self, monkeypatch, tmp_path
     ):
@@ -722,6 +777,9 @@ class TestRequiredRuntimeCapabilities:
         config.actions.relay = {"enabled": True, "gpio_pin": 26}
         monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
         monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: True)
+        # The posture check now also asks which factory resolved, so reaching
+        # relay initialisation means claiming an arbitrated backend as well.
+        monkeypatch.setattr("ori.runtime.gpio_backend_arbitrated", lambda: True)
         connect = AsyncMock(side_effect=RuntimeError("GPIO chip unavailable"))
         monkeypatch.setattr("ori.runtime.RelayAction.connect", connect)
         runtime = OriRuntime(config_path=str(minimal_config))

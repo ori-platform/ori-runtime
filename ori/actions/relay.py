@@ -81,6 +81,13 @@ class _RelayDevice(Protocol):
 _VALID_BCM_PINS: frozenset[int] = frozenset(range(2, 28))
 
 
+#: gpiozero's fallback when no real pin factory loads. It drives pins by mapping
+#: /dev/gpiomem directly and registers no claim with the kernel, so the line
+#: still reads as an unused input while it is being held. Nothing refuses a
+#: second writer, which is the property a safety cutoff depends on.
+_UNARBITRATED_PIN_FACTORY = "NativeFactory"
+
+
 def gpio_backend_importable() -> bool:
     """Return whether gpiozero exposes the required output classes.
 
@@ -95,6 +102,41 @@ def gpio_backend_importable() -> bool:
     except ImportError:
         return False
     return DigitalOutputDevice is not None and OutputDevice is not None
+
+
+def resolved_pin_factory_name() -> str:
+    """The pin factory gpiozero actually loads, or "" when none can be.
+
+    Asked separately from :func:`gpio_backend_importable` because the two answer
+    different questions and only one of them is cheap. The import proves the
+    dependency is installed; this proves something can drive a pin, and finding
+    out costs opening the GPIO chip.
+
+    gpiozero never raises for a missing backend -- it warns and falls back --
+    so an import-level check cannot tell a kernel-arbitrated factory from the
+    fallback. Only the resolved name can.
+    """
+    try:
+        from gpiozero import Device  # pyright: ignore[reportMissingImports]
+
+        Device.ensure_pin_factory()
+    except Exception:
+        # Includes BadPinFactory, a missing gpiozero, and any chip-open error.
+        # All mean the same thing to a caller: nothing here can drive a pin.
+        return ""
+    factory = getattr(Device, "pin_factory", None)
+    return type(factory).__name__ if factory is not None else ""
+
+
+def gpio_backend_arbitrated() -> bool:
+    """Whether a resolved factory claims its lines through the kernel.
+
+    A hardened runtime needs this rather than the import check. The fallback
+    does drive pins, so a smoke test passes; it drives them without exclusive
+    ownership, so nothing keeps a Tier D pin where the safety path put it.
+    """
+    name = resolved_pin_factory_name()
+    return bool(name) and name != _UNARBITRATED_PIN_FACTORY
 
 
 class RelayAction:

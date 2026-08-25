@@ -9,9 +9,11 @@ that require real hardware.
 """
 
 import sys
+import types
 
 import pytest
 
+from ori.actions import relay as relay_module
 from ori.actions.relay import RelayAction
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -200,3 +202,78 @@ async def test_connect_rejects_pin_zero():
     r = RelayAction()
     with pytest.raises(ValueError, match="BCM range"):
         await r.connect(gpio_pin=0)
+
+
+class TestResolvedPinFactory:
+    """What gpiozero loaded, as distinct from what imported.
+
+    gpiozero never raises for a missing backend. It warns and falls back to
+    NativeFactory, which drives /dev/gpiomem directly and registers no claim
+    with the kernel. Measured on a Pi 4: a line held by the arbitrated factory
+    reports `consumer="lg"`, while the same line held by the fallback still
+    reads as an unused input. Nothing refuses a second writer.
+    """
+
+    def test_no_gpiozero_resolves_to_nothing(self, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def refuse_gpiozero(name, *args, **kwargs):
+            if name == "gpiozero":
+                raise ImportError("no gpiozero here")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", refuse_gpiozero)
+
+        assert relay_module.resolved_pin_factory_name() == ""
+        assert relay_module.gpio_backend_arbitrated() is False
+
+    def test_a_factory_that_cannot_open_the_chip_resolves_to_nothing(self, monkeypatch):
+        """A raise means the same thing as a fallback to the caller: no backend.
+
+        gpiozero raises BadPinFactory when an explicitly requested factory is
+        unavailable, and chip-open errors surface here too.
+        """
+        module = types.ModuleType("gpiozero")
+
+        class _Device:
+            pin_factory = None
+
+            @staticmethod
+            def ensure_pin_factory():
+                raise RuntimeError("could not open /dev/gpiochip0")
+
+        module.Device = _Device  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "gpiozero", module)
+
+        assert relay_module.resolved_pin_factory_name() == ""
+        assert relay_module.gpio_backend_arbitrated() is False
+
+    @pytest.mark.parametrize(
+        "factory_name, arbitrated",
+        [
+            ("LGPIOFactory", True),
+            ("RPiGPIOFactory", True),
+            ("PiGPIOFactory", True),
+            ("NativeFactory", False),
+        ],
+    )
+    def test_only_the_unarbitrated_fallback_is_refused(
+        self, monkeypatch, factory_name, arbitrated
+    ):
+        module = types.ModuleType("gpiozero")
+        factory = type(factory_name, (), {})()
+
+        class _Device:
+            pin_factory = factory
+
+            @staticmethod
+            def ensure_pin_factory():
+                return None
+
+        module.Device = _Device  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "gpiozero", module)
+
+        assert relay_module.resolved_pin_factory_name() == factory_name
+        assert relay_module.gpio_backend_arbitrated() is arbitrated
