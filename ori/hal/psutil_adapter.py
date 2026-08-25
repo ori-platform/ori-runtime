@@ -254,8 +254,9 @@ class PsutilAdapter(BaseAdapter):
         system = platform.system()
 
         # (i) psutil.sensors_temperatures — Linux / WSL
-        if hasattr(psutil, "sensors_temperatures"):
-            temps = await asyncio.to_thread(psutil.sensors_temperatures)
+        sensors_temperatures = getattr(psutil, "sensors_temperatures", None)
+        if sensors_temperatures is not None:
+            temps = await asyncio.to_thread(sensors_temperatures)
             for key in ("coretemp", "k10temp", "cpu_thermal", "acpitz"):
                 if key in temps and temps[key]:
                     readings = temps[key]

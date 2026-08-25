@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+from collections.abc import Awaitable, Callable
 from numbers import Real
-from typing import Any
+from typing import Any, cast
 
 from ori.hal.base import (
     AdapterConnectionError,
@@ -129,11 +130,17 @@ class OpcUaAdapter(BaseAdapter):
         if self._node is None:
             raise AdapterReadError("OpcUaAdapter: node is not initialized")
 
-        read_data_value = getattr(self._node, "read_data_value", None)
+        read_data_value = cast(
+            Callable[[], Awaitable[Any]] | None,
+            getattr(self._node, "read_data_value", None),
+        )
         if callable(read_data_value):
             return await read_data_value()
 
-        read_value = getattr(self._node, "read_value", None)
+        read_value = cast(
+            Callable[[], Awaitable[Any]] | None,
+            getattr(self._node, "read_value", None),
+        )
         if callable(read_value):
             return await read_value()
 

@@ -9,7 +9,7 @@ import logging
 import time
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
 from ori.security.webhook_signatures import WebhookSignatureVerifier
@@ -122,7 +122,10 @@ class SMSWebhookServer:
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         get_extra = getattr(writer, "get_extra_info", None)
-        peer = get_extra("peername") if callable(get_extra) else None
+        peer = cast(
+            "tuple[Any, ...] | None",
+            get_extra("peername") if callable(get_extra) else None,
+        )
         peer_ip = str(peer[0]) if peer else "unknown"
         try:
             if not self._source_allowed(peer_ip):

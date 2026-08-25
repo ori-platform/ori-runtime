@@ -3,7 +3,7 @@
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
 
 from ori.hal.base import (
     AdapterConnectionError,
@@ -181,7 +181,8 @@ class GrowattAdapter(BaseAdapter):
             try:
                 return _PySolarmanV5(self._host, self._serial, port=self._port)
             except TypeError:
-                return _PySolarmanV5(self._host, self._serial, self._port)
+                # Older releases take the port positionally.
+                return cast(Any, _PySolarmanV5)(self._host, self._serial, self._port)
         except Exception as exc:
             raise AdapterConnectionError(
                 f"GrowattAdapter: failed to create Solarman client for "

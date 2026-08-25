@@ -22,7 +22,8 @@ try:
     import serial  # type: ignore[import-untyped]
 
     _SERIAL_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - exercised without pyserial
+    serial = None
     _SERIAL_AVAILABLE = False
 
 # ── Modbus RTU constants ───────────────────────────────────────────────────────
@@ -253,6 +254,10 @@ class SerialAdapter(BaseAdapter):
         self._connected = True
 
     def _open_port(self) -> None:
+        if serial is None:
+            raise AdapterConnectionError(
+                "SerialAdapter: 'pyserial' is not installed. Run: pip install pyserial"
+            )
         self._serial = serial.Serial(
             port=self._port,
             baudrate=self._baudrate,
