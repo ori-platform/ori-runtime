@@ -1038,7 +1038,11 @@ def test_wheelhouse_distributions_disclose_nothing():
         # Distribution names are printed only when they do not themselves
         # match; the location of an offending wheel is its index, not its name.
         location = f"distribution #{distributions.index(path) + 1}"
-        found = _category(path.name)
+        # A package name is its author's choice as much as a module name is, so
+        # shape judges ours and the denylist judges everyone. A vendored
+        # implementation is caught by the identifiers it carries rather than by
+        # a name we would have to guess at.
+        found = _category(path.name) if first_party else _denied(path.name)
         if found:
             failures.append(_opaque(f"{location} (distribution name)", found))
         with zipfile.ZipFile(path) as archive:
