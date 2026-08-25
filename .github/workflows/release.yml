@@ -305,17 +305,25 @@ jobs:
           # the secret values, but the audit's own failure output is sanitised
           # independently: it reports a location and a category, never a match.
           terms=""
-          for value in "${ARTIFACT_MODULE}" "${ARTIFACT_CLASS}" \
-                       "${ARTIFACT_REPOSITORY}" "${DENYLIST_EXTRA}"; do
-            [ -n "${value}" ] || continue
-            # A dotted module or an owner/name repository yields useful terms
-            # only once split; the bare string would miss a symbol carrying
-            # just the leaf.
-            for part in $(printf '%s' "${value}" | tr './,' ' '); do
+          add_terms() {
+            # A dotted module yields useful terms only once split; the bare
+            # string would miss a symbol carrying just the leaf.
+            for part in $(printf '%s' "$1" | tr './,' ' '); do
               [ ${#part} -ge 4 ] || continue
               terms="${terms}${terms:+,}${part}"
             done
+          }
+          for value in "${ARTIFACT_MODULE}" "${ARTIFACT_CLASS}" \
+                       "${DENYLIST_EXTRA}"; do
+            [ -n "${value}" ] || continue
+            add_terms "${value}"
           done
+          # Only the name half is private. The owner appears in every install
+          # URL here, so emitting it as a term flags the project for naming
+          # itself. v2.5.0-rc.1 was spent discovering that.
+          if [ -n "${ARTIFACT_REPOSITORY}" ]; then
+            add_terms "${ARTIFACT_REPOSITORY##*/}"
+          fi
           if [ -z "${terms}" ]; then
             echo "no artifact identifiers are configured; the audit cannot" >&2
             echo "know what to look for and must not report success" >&2

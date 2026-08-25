@@ -39,6 +39,7 @@ import pathlib
 import re
 import subprocess
 import zipfile
+from collections.abc import Sequence
 
 import pytest
 
@@ -602,6 +603,21 @@ def _supplied_denylist() -> list[str]:
     return [term.strip().lower() for term in raw.split(",") if term.strip()]
 
 
+def _mentions(haystack: str, terms: Sequence[str]) -> bool:
+    """Whether *haystack* names any denylisted term, on word boundaries.
+
+    A term inside an unrelated word is not a disclosure: `severity` contains
+    the authority's name and says nothing about it. Separators count as
+    boundaries, so a repository path still matches the identifier inside it.
+    """
+    lowered = haystack.lower()
+    for term in terms:
+        pattern = rf"(?<![0-9a-z]){re.escape(term)}(?![0-9a-z])"
+        if re.search(pattern, lowered):
+            return True
+    return False
+
+
 # The runtime's own evidence modules, by exact path.
 #
 # `VENDORED_IMPLEMENTATION` matches names shaped like an evidence
@@ -892,7 +908,7 @@ def test_no_denylisted_term_appears_anywhere_in_the_repository():
             body = path.read_text(errors="ignore").lower()
         except OSError:
             continue
-        if any(term in body for term in terms):
+        if _mentions(body, terms):
             findings.append(
                 _opaque(path.relative_to(REPO_ROOT).as_posix(), PRIVATE_IDENTIFIER)
             )
@@ -957,7 +973,7 @@ def test_wheelhouse_distributions_disclose_nothing():
     def _denied(text: str) -> str | None:
         """A supplied private term. A leak wherever it appears, prose included."""
         lowered = text.lower()
-        return PRIVATE_IDENTIFIER if any(term in lowered for term in terms) else None
+        return PRIVATE_IDENTIFIER if _mentions(lowered, terms) else None
 
     def _implementation_named(text: str) -> str | None:
         """An identifier shaped like an evidence implementation.
@@ -1054,7 +1070,7 @@ def test_built_wheel_discloses_nothing_supplied(built_wheel):
     offenders = [
         _opaque(f"built wheel {label}")
         for label, text in surfaces.items()
-        if any(term in text.lower() for term in terms)
+        if _mentions(text, terms)
     ]
     assert not offenders, f"the built wheel carries a prohibited term: {offenders}"
 
@@ -1070,8 +1086,9 @@ def test_package_contents_disclose_nothing_supplied():
         _opaque(f"package source #{index + 1}")
         for index, path in enumerate(sources)
         if any(
-            term in path.read_text(errors="ignore").lower() or term in path.name.lower()
-            for term in terms
+            _mentions(path.read_text(errors="ignore"), terms)
+            or _mentions(path.name, terms)
+            for _ in (0,)
         )
     ]
     assert not offenders, (
@@ -1092,7 +1109,7 @@ def test_installed_distributions_disclose_nothing_supplied():
     offenders = [
         _opaque(f"installed distribution #{index + 1}")
         for index, name in enumerate(installed)
-        if any(term in name.lower() for term in terms)
+        if _mentions(name, terms)
     ]
     assert not offenders, (
         f"an installed distribution name carries a prohibited term "
@@ -1422,14 +1439,14 @@ def test_every_markdown_file_is_name_audited():
     assert documents, "no markdown found to audit"
     offenders = []
     for name in documents:
-        if any(term in name.lower() for term in terms):
+        if _mentions(name, terms):
             # The filename is the disclosure. Reported like any other location:
             # the file is committed to a public repository, so the name is
             # already public and the fix is to rename it.
             offenders.append(_opaque(f"{name} (document name)"))
             continue
         body = (REPO_ROOT / name).read_text(errors="ignore").lower()
-        if any(term in body for term in terms):
+        if _mentions(body, terms):
             offenders.append(_opaque(f"{name} (document body)"))
     assert not offenders, (
         f"a document carries a prohibited term ({len(documents)} scanned): {offenders}"
