@@ -59,11 +59,16 @@ jobs:
       # it reach tags before any branch can see them: v2.5.0-rc.1 and rc.2 were
       # both spent that way. It needs a built wheelhouse rather than a secret,
       # so it can run here on a synthetic term.
+      #
+      # The Pi target is audited rather than the generic one because it is a
+      # superset: the same runtime lock plus the Raspberry Pi hardware wheels
+      # that aarch64 bundles now ship. Auditing the smaller target would leave
+      # the wheels that actually reach a device uninspected.
       - name: Audit a built wheelhouse for disclosure
         if: matrix.python-version == '3.12'
         env:
           ORI_WHEELHOUSE_OUT: ${{ runner.temp }}/wheelhouse
-          ORI_WHEELHOUSE_TARGET: generic
+          ORI_WHEELHOUSE_TARGET: pi
         run: |
           set -euo pipefail
           bash scripts/build-wheelhouse.sh

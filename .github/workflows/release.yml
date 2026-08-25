@@ -188,21 +188,27 @@ jobs:
       matrix:
         include:
           - target: linux-x86_64-python3.11
+            wheelhouse-target: generic
             runner: ubuntu-24.04
             python-version: "3.11"
           - target: linux-x86_64-python3.12
+            wheelhouse-target: generic
             runner: ubuntu-24.04
             python-version: "3.12"
           - target: linux-aarch64-python3.11
+            wheelhouse-target: pi
             runner: ubuntu-24.04-arm
             python-version: "3.11"
           - target: linux-aarch64-python3.12
+            wheelhouse-target: pi
             runner: ubuntu-24.04-arm
             python-version: "3.12"
           - target: linux-x86_64-python3.13
+            wheelhouse-target: generic
             runner: ubuntu-24.04
             python-version: "3.13"
           - target: linux-aarch64-python3.13
+            wheelhouse-target: pi
             runner: ubuntu-24.04-arm
             python-version: "3.13"
 
@@ -255,7 +261,7 @@ jobs:
       - name: Build offline wheelhouse and deterministic bundle
         env:
           ORI_WHEELHOUSE_OUT: ${{ runner.temp }}/wheelhouse
-          ORI_WHEELHOUSE_TARGET: generic
+          ORI_WHEELHOUSE_TARGET: ${{ matrix.wheelhouse-target }}
           ORI_RELEASE_BUNDLE_VERSION: ${{ steps.identity.outputs.version }}
           ORI_RELEASE_BUNDLE_TARGET: ${{ matrix.target }}
           ORI_RELEASE_BUNDLE_OUT: ${{ runner.temp }}/bundle

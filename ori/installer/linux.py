@@ -17,7 +17,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Literal, Sequence
+from typing import Callable, Literal, NoReturn, Sequence
 
 import yaml
 
@@ -1722,6 +1722,74 @@ def _set_owned_mode(change: _PermissionChange, uid: int, gid: int, mode: int) ->
         os.close(descriptor)
 
 
+_SYSTEM_PIN_FACTORY_MODULE = "lgpio"
+# Where a Raspberry Pi OS image puts apt's Python packages. Discovery is
+# constrained to this set so an interpreter answering from somewhere else
+# cannot decide what gets copied into a release.
+_SYSTEM_PACKAGE_DIRECTORIES = (Path("/usr/lib/python3/dist-packages"),)
+_DEVICE_MODEL = Path("/proc/device-tree/model")
+
+
+def _is_raspberry_pi() -> bool:
+    """Whether this host is Raspberry Pi hardware.
+
+    `aarch64` bundles carry the Pi wheels and also serve community `aarch64`
+    Linux, which has no apt pin factory and no pins to drive. The absent module
+    is a failed install on the first and a non-event on the second, so the
+    hardware decides rather than the bundle.
+    """
+    try:
+        model = _DEVICE_MODEL.read_bytes()
+    except OSError:
+        return False
+    return b"raspberry pi" in model.lower()
+
+
+def _staging_refusal(
+    venv: Path, base: str, purelib: str, suffix: str, origin: str
+) -> str | None:
+    """Why the pin factory cannot be staged from this system, or None."""
+    if not base:
+        return "the base interpreter could not be identified"
+    if not purelib or not Path(purelib).is_dir():
+        return "the release site directory is missing"
+    # The destination is named by a probe, and root is about to write there.
+    # Bind it to the environment being built, the way every other privileged
+    # write in this installer is bound to its intended path.
+    try:
+        destination = Path(purelib).resolve(strict=True)
+        environment = venv.resolve(strict=True)
+    except OSError:
+        return "the release site directory could not be resolved"
+    if not destination.is_relative_to(environment):
+        return "the release site directory lies outside the environment"
+    if not suffix:
+        return "the interpreter reports no extension suffix"
+    if not origin:
+        return (
+            f"{_SYSTEM_PIN_FACTORY_MODULE} is not installed; "
+            "install the system package that provides it"
+        )
+    if Path(origin).parent not in _SYSTEM_PACKAGE_DIRECTORIES:
+        return "it resolves outside the admitted system package directories"
+    return None
+
+
+def _system_file_failure(path: Path) -> str | None:
+    """Why a system file cannot be taken into a release, or None."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return "is missing"
+    if not stat.S_ISREG(info.st_mode):
+        return "is not a regular file"
+    if info.st_uid != 0:
+        return "is not owned by root"
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return "is writable beyond its owner"
+    return None
+
+
 class OfflineReleasePreparer:
     """Build an isolated release environment without package-index access."""
 
@@ -1746,6 +1814,7 @@ class OfflineReleasePreparer:
                 "offline_install_failed", "verified wheelhouse is incomplete"
             )
         venv = staging / "venv"
+        pi_requirements = wheelhouse / "requirements-pi.txt"
         self._run([self._bootstrap_python, "-m", "venv", str(venv)])
         python = str(venv / "bin" / "python")
         base = [
@@ -1758,10 +1827,11 @@ class OfflineReleasePreparer:
             str(wheelhouse),
         ]
         self._run([*base, "--require-hashes", "-r", str(requirements)])
-        pi_requirements = wheelhouse / "requirements-pi.txt"
         if pi_requirements.is_file():
             self._run([*base, "--require-hashes", "-r", str(pi_requirements)])
         self._run([*base, "--no-deps", str(wheels[0])])
+        if pi_requirements.is_file() and _is_raspberry_pi():
+            self._stage_system_pin_factory(venv)
 
     def validate(self, release: Path) -> None:
         python = release / "venv" / "bin" / "python"
@@ -1791,6 +1861,111 @@ class OfflineReleasePreparer:
                 "offline_install_failed", "release entrypoint is missing"
             )
         self._run([str(entrypoint), "--help"])
+
+    def _stage_system_pin_factory(self, venv: Path) -> None:
+        """Copy the operating system's pin factory into the isolated venv.
+
+        `lgpio` ships only from apt: PyPI's release carries an empty module, and
+        apt builds the extension per interpreter version. An isolated venv
+        cannot import it, so gpiozero falls back to NativeFactory, which drives
+        pins without claiming the line through the kernel.
+
+        The venv stays isolated and the module is taken by name. Creating it
+        with `--system-site-packages` would put every apt package on the
+        runtime's import path, where an unpinned optional import — a transport,
+        a hardware backend — could activate a capability no release reviewed.
+
+        The bytes are copied rather than linked, for two reasons. The release
+        permission transaction requires an external symlink target to be
+        executable and apt ships both files `0644`, so a link is refused at a
+        later seam than the one that created it. Copying also freezes the
+        reviewed bytes into the release instead of leaving live code attached to
+        whatever a future apt upgrade puts at that path.
+
+        Reached only on Pi hardware. Failing to stage both halves fails the
+        install: the device is expected to drive pins, and an install that
+        quietly finishes without that capability is the silent degradation this
+        path exists to remove. The same `aarch64` bundle installs elsewhere
+        without ever asking, because community Linux has no apt pin factory and
+        no pins to drive.
+        """
+        python = str(venv / "bin" / "python")
+        base = self._probe(python, "import sys; print(sys._base_executable or '')")
+        purelib = self._probe(
+            python, "import sysconfig; print(sysconfig.get_paths()['purelib'])"
+        )
+        # The extension is ABI-tagged, so asking the interpreter that will
+        # import it is the only way to name the one file it can load. A glob
+        # would also match extensions left behind for other ABIs.
+        suffix = (
+            self._probe(
+                base,
+                "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX') or '')",
+            )
+            if base
+            else ""
+        )
+        # Discovery is constrained as well as isolated: the interpreter says
+        # where it would import from, and only an admitted system directory is
+        # accepted as that answer.
+        origin = (
+            self._probe(
+                base,
+                "import importlib.util as u;"
+                f"s = u.find_spec({_SYSTEM_PIN_FACTORY_MODULE!r});"
+                "print(s.origin or '' if s else '')",
+            )
+            if base
+            else ""
+        )
+        reason = _staging_refusal(venv, base, purelib, suffix, origin)
+        if reason is not None:
+            self._refuse_pin_factory(reason)
+
+        source = Path(origin).parent
+        members = [
+            source / f"{_SYSTEM_PIN_FACTORY_MODULE}.py",
+            source / f"_{_SYSTEM_PIN_FACTORY_MODULE}{suffix}",
+        ]
+        for member in members:
+            failure = _system_file_failure(member)
+            if failure is not None:
+                self._refuse_pin_factory(f"{member.name} {failure}")
+        destination = Path(purelib)
+        for member in members:
+            target = destination / member.name
+            # A fresh venv holds neither name. One already sitting there means
+            # the wheelhouse or the staging tree is not what it should be, and
+            # overwriting it would hide that.
+            if target.exists() or target.is_symlink():
+                self._refuse_pin_factory(
+                    f"{member.name} is already present in the release"
+                )
+        for member in members:
+            target = destination / member.name
+            shutil.copyfile(member, target)
+            os.chmod(target, 0o644)
+
+    def _refuse_pin_factory(self, reason: str) -> NoReturn:
+        raise LinuxInstallError(
+            "prerequisite_install_failed",
+            f"this device needs the system {_SYSTEM_PIN_FACTORY_MODULE} "
+            f"pin factory and {reason}",
+        )
+
+    def _probe(self, interpreter: str, source: str) -> str:
+        """Ask an interpreter one question, in isolated mode.
+
+        `-I` keeps the answer from depending on `PYTHON*` variables, a user site
+        directory, or the working directory the installer happens to run from.
+        """
+        try:
+            result = self._runner([interpreter, "-I", "-c", source])
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if result.returncode != 0:
+            return ""
+        return result.stdout.strip()
 
     def _run(
         self, command: Sequence[str], *, expected_stdout: str | None = None
