@@ -12,23 +12,26 @@
   "epoch_authority_seed_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
   "key_naming_note": "signing_key_seed_hex and authority_receipt_seed_hex are the same key: the receipt authority's. Both names are published because the first is this corpus's convention for whichever key signs the artifact, and the second names its purpose. A previous revision had them differ, so signing_key_seed_hex named a key that did not sign the valid case -- a trap for anyone following the convention.",
   "rejection_integrity_note": "Each rejection case must differ from the valid case in the field or authenticator its name identifies. A regeneration that re-signs every case whose authenticator is 'valid' erases exactly these defects -- 'valid' marks a case that must verify so the semantic rule is reached, not a case that is correct.",
-  "range_digest_note": "sha256 over the concatenation of the raw 32-byte chain_row_digest values for from_seq..to_seq in ascending local_seq order, with no separators and no hex encoding.",
+  "range_digest_note": "sha256 over the concatenation of the raw 32-byte chain_row_digest values for from_seq..to_seq in ascending local_seq order, with no separators and no hex encoding. The valid case receipts local_seq 12 from delivery-envelope.json so an independent implementation can reproduce the range rather than trusting hidden generator state.",
+  "valid_range_chain_row_digests": [
+    "sha256:34ca36496d75a259e5324e9ce9feddc9e3642897ad7a62fa9f2402b8499d5c53"
+  ],
   "cases": [
     {
       "name": "valid",
       "authenticator": "valid",
       "expected": "accept",
-      "note": "Canonical bytes reproduce and the signature verifies under the receipt key.",
-      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a31312c226b65795f6964223a22617574682d726563656970742d31222c2272616e67655f646967657374223a227368613235363a62356566386461643939396430353161323632333537666333363639313637353261653136303165643230373937643163303862616130333434373063613832222c22746f5f736571223a31322c2276223a317d",
+      "note": "Canonical bytes, range digest and signature independently reproduce under the receipt key.",
+      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a31322c226b65795f6964223a22617574682d726563656970742d31222c2272616e67655f646967657374223a227368613235363a34353536656161643633373464663930306264333461353537313732343832396135666137623138313665393739656532616161616238643138306239616232222c22746f5f736571223a31322c2276223a317d",
       "artifact": {
         "v": 1,
         "device_id": "energy-monitor-ikeja-01",
-        "from_seq": 11,
+        "from_seq": 12,
         "to_seq": 12,
-        "range_digest": "sha256:b5ef8dad999d051a262357fc366916752ae1601ed20797d1c08baa034470ca82",
+        "range_digest": "sha256:4556eaad6374df900bd34a5571724829a5fa7b1816e979ee2aaaab8d180b9ab2",
         "accepted_at_ms": 1787000001000,
         "key_id": "auth-receipt-1",
-        "signature": "ed25519:AsGYw3IHwkqtNgutM6ePInjz77NM4W0n0taAfghhk/KMLYvx2jRxXHlV0bptl2xjBwaDRzsm0vfvf+jEQJv/Dg=="
+        "signature": "ed25519:K4oyX2I5waCnP2ks8nmc9fJv1ukoKCWa9gqFd6Ngf9Q1LhdEB1ecce3pwvtb7lKIXX7TpHRTHNKC/D0VNR+tBA=="
       }
     },
     {
@@ -36,33 +39,33 @@
       "authenticator": "valid",
       "expected": "reject",
       "note": "Identical content to the valid case, signed with the epoch authority's key. Purpose separation is the rule under test: an epoch key cannot receipt a range.",
-      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a31312c226b65795f6964223a22617574682d726563656970742d31222c2272616e67655f646967657374223a227368613235363a62356566386461643939396430353161323632333537666333363639313637353261653136303165643230373937643163303862616130333434373063613832222c22746f5f736571223a31322c2276223a317d",
+      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a31322c226b65795f6964223a22617574682d726563656970742d31222c2272616e67655f646967657374223a227368613235363a34353536656161643633373464663930306264333461353537313732343832396135666137623138313665393739656532616161616238643138306239616232222c22746f5f736571223a31322c2276223a317d",
       "artifact": {
         "v": 1,
         "device_id": "energy-monitor-ikeja-01",
-        "from_seq": 11,
+        "from_seq": 12,
         "to_seq": 12,
-        "range_digest": "sha256:b5ef8dad999d051a262357fc366916752ae1601ed20797d1c08baa034470ca82",
+        "range_digest": "sha256:4556eaad6374df900bd34a5571724829a5fa7b1816e979ee2aaaab8d180b9ab2",
         "accepted_at_ms": 1787000001000,
         "key_id": "auth-receipt-1",
-        "signature": "ed25519:B+HrKg7QvBaWtmPwzuCVzx/vgKUJEKW3tTPEkFkU/qm9gpdKamsCeZn0DLLJKCao8XvbPkH9Ek/KPi5q+dFVAQ=="
+        "signature": "ed25519:/45ndwmnyuYbiaVwyA84t6za+XsbqHtl6mQ5D2kzZCZSXWrZpu88UC994uGGTUQMuEpYBZBLXRD3RII0UqbmCA=="
       }
     },
     {
       "name": "non_contiguous_range",
       "authenticator": "valid",
       "expected": "reject",
-      "note": "Correctly signed by the receipt key, claiming 9 to 12 while the range digest covers only 11 and 12. A receipt must not span a local_seq the authority did not accept.",
-      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a392c226b65795f6964223a22617574682d726563656970742d31222c2272616e67655f646967657374223a227368613235363a62356566386461643939396430353161323632333537666333363639313637353261653136303165643230373937643163303862616130333434373063613832222c22746f5f736571223a31322c2276223a317d",
+      "note": "Correctly signed by the receipt key, claiming 9 to 12 while the range digest covers only 12. A receipt must not span a local_seq the authority did not accept.",
+      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a392c226b65795f6964223a22617574682d726563656970742d31222c2272616e67655f646967657374223a227368613235363a34353536656161643633373464663930306264333461353537313732343832396135666137623138313665393739656532616161616238643138306239616232222c22746f5f736571223a31322c2276223a317d",
       "artifact": {
         "v": 1,
         "device_id": "energy-monitor-ikeja-01",
         "from_seq": 9,
         "to_seq": 12,
-        "range_digest": "sha256:b5ef8dad999d051a262357fc366916752ae1601ed20797d1c08baa034470ca82",
+        "range_digest": "sha256:4556eaad6374df900bd34a5571724829a5fa7b1816e979ee2aaaab8d180b9ab2",
         "accepted_at_ms": 1787000001000,
         "key_id": "auth-receipt-1",
-        "signature": "ed25519:gzt7e52Ftoz/VS1pySNnQV4Tx/gqwoQypjqLJg1bOrrI/AauL+LcC+UuHy5o6cOFzY/tisivKGhxecMigWbeDw=="
+        "signature": "ed25519:AgZo1aPwrcj69bwHI7aeSF/VkXY5mLPDgq06xfVP+sRtJ9kTHdcCwKxHZHcLPSnxOAVcq/pwkyGv2uulGK2FCg=="
       }
     }
   ]

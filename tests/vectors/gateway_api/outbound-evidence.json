@@ -1,0 +1,45 @@
+{
+  "contract": "gateway-api/v1 outbound evidence carriage",
+  "warning": "The secret below is a published test value and must never sign anything real.",
+  "shared_secret": "published-test-gateway-envelope-secret-do-not-use",
+  "artifact_source": "evidence-exchange/vectors/checkpoint.json valid",
+  "cases": [
+    {
+      "name": "checkpoint_carriage",
+      "topic": "ori/energy-monitor-ikeja-01/evidence/outbound",
+      "direction": "runtime_to_gateway",
+      "qos": 1,
+      "payload": {
+        "device_id": "energy-monitor-ikeja-01",
+        "artifact_type": "checkpoint",
+        "artifact_b64": "eyJhbmNob3JfZXBvY2hfaWQiOiJzaGEyNTY6N2YxYjY1YjhiMjRmNjk4MDc0NDFkODBjODkwMTIwN2NmMjI2NTdhOTYzMGIxMjkwMTQxOGE5OWVmYmQzNmYwYSIsImJvb3RfaWQiOjcsImRldmljZV9pZCI6ImVuZXJneS1tb25pdG9yLWlrZWphLTAxIiwiaGlnaF93YXRlcl9zZXEiOjEzLCJpc3N1ZWRfYXRfbXMiOjE3ODcwMDA5MDAwMDAsImtleV9pZCI6InNoYTI1Njo2M2E2MTEzNzRmMDk3NTRhN2JjYTZjNjBmZDUxY2YyYWUwNWE2ZWI4ZjdjNThmYmJlN2ZmNTkwNjEyMzc4NGEwIiwic2lnbmF0dXJlIjoiZWQyNTUxOTpVRi9OcGF3MVgwMkw1VjVISDNkTTROYkh0M3JJUm43TEFWelFTN1VNUUY5NzRXclZ1Wk5JbStvd2toT1pQZlZBOC80Z2c3WHNrMytOTndZajhFZDZCdz09IiwidiI6MX0="
+      },
+      "decoded_artifact_hex": "7b22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c22626f6f745f6964223a372c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22686967685f77617465725f736571223a31332c226973737565645f61745f6d73223a313738373030303930303030302c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c227369676e6174757265223a22656432353531393a55462f4e706177315830324c355635484833644d344e624874337249526e374c41567a515337554d5146393734577256755a4e496d2b6f776b684f5a50665641382f3467673758736b332b4e4e77596a3845643642773d3d222c2276223a317d",
+      "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07"
+    },
+    {
+      "name": "queued_acknowledgement",
+      "topic": "ori/energy-monitor-ikeja-01/evidence/outbound/ack",
+      "direction": "gateway_to_runtime",
+      "qos": 1,
+      "message_type": "evidence_outbound_ack",
+      "signed_at_ms": 1787000003000,
+      "payload": {
+        "device_id": "energy-monitor-ikeja-01",
+        "artifact_type": "checkpoint",
+        "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+        "outcome": "queued",
+        "reason": "",
+        "acknowledged_at_ms": 1787000003000,
+        "auth": {
+          "scheme": "hmac-sha256",
+          "signed_at_ms": 1787000003000,
+          "signature": "hmac-sha256:adc8be975ad2e4710365e46f89ec3d8f4dd63eaa639b57a556735d4ec80cfb07"
+        }
+      },
+      "canonical_payload_without_auth": "{\"acknowledged_at_ms\":1787000003000,\"artifact_digest\":\"sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07\",\"artifact_type\":\"checkpoint\",\"device_id\":\"energy-monitor-ikeja-01\",\"outcome\":\"queued\",\"reason\":\"\"}",
+      "signing_string": "evidence_outbound_ack\nenergy-monitor-ikeja-01\n\n1787000003000\n{\"acknowledged_at_ms\":1787000003000,\"artifact_digest\":\"sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07\",\"artifact_type\":\"checkpoint\",\"device_id\":\"energy-monitor-ikeja-01\",\"outcome\":\"queued\",\"reason\":\"\"}",
+      "expected_signature": "hmac-sha256:adc8be975ad2e4710365e46f89ec3d8f4dd63eaa639b57a556735d4ec80cfb07"
+    }
+  ]
+}
