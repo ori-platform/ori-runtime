@@ -17,6 +17,7 @@ kept passing.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import pathlib
@@ -329,3 +330,263 @@ def test_the_rejection_integrity_note_survives() -> None:
     assert "re-signs every case" in note, (
         "the rejection integrity note has been removed or reworded past recognition"
     )
+
+
+# --------------------------------------------------------------------------
+# Behavioural accounting for every vendored vector
+# --------------------------------------------------------------------------
+
+#: Statuses an unexercised vector may carry. Ownership and proof are separate
+#: facts, and collapsing them is how "someone else owns this" becomes "someone
+#: else has done this". Only `proven_elsewhere` asserts that a proof exists.
+EXEMPTION_STATUSES = {
+    "proof_pending": "owned by a repository or milestone; not proven anywhere yet",
+    "proven_elsewhere": "a conforming implementation exercises it in the owning repository",
+}
+
+EXEMPTION_FIELDS = frozenset({"owner", "status", "tracking", "reason"})
+
+#: Roles an exemption may name. A closed set, because an accounting note is a
+#: public file: naming the implementation behind a role would disclose through
+#: the diagnostic channel exactly what the role exists to keep out of it.
+EXEMPTION_OWNERS = frozenset(
+    {
+        "the runtime",
+        "the evidence authority",
+        "the site gateway",
+    }
+)
+
+#: Vendored vector -> one or more behavioural tests demonstrating that this
+#: runtime reads and exercises the vector's normative bytes.
+#:
+#: **Not an exhaustive conformance-test catalogue.** A vector is a corpus, and
+#: several tests usually consume one: `canonical-form` has rejection cases
+#: beyond the entry named here, and `custody-acknowledgement` has parameterised
+#: cases beyond its two. Entries record that the bytes are consumed and where to
+#: start reading, not that every published case is covered. Whether the corpus
+#: is fully exercised is a review question this registry cannot answer.
+#:
+#: Named tests, never a search of the tree. Textual mention establishes nothing:
+#: a comment, a dead helper, or a `json.load` with no assertions all read as
+#: consumption, which is the false green this accounting exists to refuse.
+VECTOR_CONSUMERS = {
+    ("evidence_exchange", "anchor-registration"): (
+        "test_evidence_registration.py"
+        "::test_the_registration_reproduces_the_contract_vector_byte_for_byte",
+        "test_evidence_registration.py"
+        "::test_the_registration_carries_exactly_the_contract_field_set",
+    ),
+    ("evidence_exchange", "checkpoint"): (
+        "test_evidence_delivery_ledger.py"
+        "::test_the_checkpoint_reproduces_the_contract_vector_byte_for_byte",
+    ),
+    ("evidence_exchange", "commissioning-authorization"): (
+        "test_evidence_registration.py::test_the_digest_covers_the_complete_authorisation",
+        "test_evidence_registration.py"
+        "::test_an_authorisation_that_does_not_describe_this_registration_is_refused",
+    ),
+    ("evidence_exchange", "custody-acknowledgement"): (
+        "test_evidence_ingest.py::test_the_registry_the_vectors_describe_reproduces_from_the_secrets",
+        "test_evidence_ingest.py"
+        "::test_a_key_id_naming_another_generation_is_refused_without_trial_verification",
+    ),
+    ("evidence_exchange", "delivery-envelope"): (
+        "test_evidence_delivery_ledger.py"
+        "::test_the_envelope_reproduces_the_contract_vector_byte_for_byte",
+    ),
+    ("evidence_exchange", "delivery-receipt"): (
+        "test_evidence_ingest.py::test_the_valid_receipt_verifies",
+        "test_evidence_ingest.py::test_a_receipt_signed_with_the_epoch_key_is_refused",
+        "test_evidence_ingest.py::test_a_non_contiguous_receipt_is_refused",
+    ),
+    ("evidence_exchange", "epoch-confirmation"): (
+        "test_evidence_ingest.py::test_the_valid_epoch_confirmation_verifies",
+        "test_evidence_ingest.py::test_a_confirmation_signed_with_the_receipt_key_is_refused",
+    ),
+    ("evidence_exchange_receiver_state", "custody-key-purpose"): (
+        "test_evidence_ingest.py::test_a_key_id_held_for_another_purpose_is_refused_as_such",
+        "test_evidence_ingest.py::test_the_same_artifact_is_unknown_key_when_no_purpose_holds_it",
+    ),
+    ("evidence_v2", "canonical-form"): (
+        "test_evidence_chain_producer.py::test_canonical_form_matches_the_contract_vector",
+    ),
+    ("evidence_v2", "chain-row"): (
+        "test_evidence_v2_vectors.py::test_rows_chain_hash_and_verify",
+        "test_evidence_v2_vectors.py::test_each_rejection_case_violates_exactly_the_rule_it_names",
+    ),
+    ("evidence_v2", "event-id"): (
+        "test_evidence_chain_producer.py::test_event_ids_match_the_contract_vector",
+    ),
+    ("evidence_v2", "genesis"): (
+        "test_evidence_chain_producer.py::test_genesis_matches_the_contract_vector",
+    ),
+    ("evidence_v2", "key-rotation"): (
+        "test_evidence_v2_vectors.py::test_rotation_proof_uses_the_neutral_context",
+        "test_evidence_v2_vectors.py::test_rotation_is_dual_signed",
+    ),
+    ("gateway_api", "inbound-evidence"): (
+        "test_evidence_inbound_route.py::test_the_runtime_verifies_the_published_inbound_fixture",
+        "test_evidence_inbound_route.py"
+        "::test_the_runtime_reproduces_the_published_acknowledgement_fixture",
+    ),
+    ("runtime_evidence_anchor", "runtime-anchor"): (
+        "test_evidence_anchor.py::test_derivations_match_the_contract_vectors",
+    ),
+}
+
+#: Vendored vectors this runtime cannot exercise yet.
+#:
+#: Vendoring proves nothing on its own. The set is drift-checked, which is worth
+#: having, but a file nothing reads is a file whose invariant is unproven -- and
+#: one that reads as covered because it sits beside files that are. Each entry
+#: records who is responsible, whether a proof exists yet, and where that is
+#: tracked, because naming a repository says who is answerable rather than that
+#: the work is done.
+VECTOR_EXEMPTIONS = {
+    ("evidence_exchange_receiver_state", "anchor-quarantine"): {
+        "owner": "the evidence authority",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#372",
+        "reason": (
+            "Authority-side. Its receiver_state is `held_anchors`, the registry "
+            "an evidence authority keeps of other devices' anchors, and the "
+            "outcome is that authority refusing to rebind one. This runtime "
+            "produces its own registration and never holds another device's "
+            "anchor, so there is no code path here to drive."
+        ),
+    },
+    ("gateway_api", "outbound-evidence"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#326",
+        "reason": (
+            "Outbound carriage is this runtime's own half of gateway-api/v1, so "
+            "no other repository can establish it. Nothing here publishes an "
+            "artifact to the courier yet: the producer and delivery ledger that "
+            "would hand one over are still open. Vendored now so the drift "
+            "check covers the bytes the producer must match, and exempt until a "
+            "publisher exists to assert against them."
+        ),
+    },
+}
+
+
+def _vendored_vectors() -> set[tuple[str, str]]:
+    return {
+        (path.parent.name, path.stem)
+        for path in VECTORS.rglob("*.json")
+        if path.stem != "MANIFEST"
+    }
+
+
+def _module_source(module: str) -> str:
+    path = pathlib.Path(__file__).resolve().parent / module
+    return path.read_text() if path.is_file() else ""
+
+
+def test_every_vendored_vector_is_classified_exactly_once() -> None:
+    """A vendored vector is either consumed here or accounted for precisely.
+
+    This is the failure mode the vendoring work was filed against: files
+    arriving in the tree, passing the drift check, and quietly implying a
+    coverage that does not exist. Adding a vector forces a decision rather than
+    allowing silent accumulation.
+    """
+    vendored = _vendored_vectors()
+    assert vendored, "no vectors are vendored"
+
+    consumed = set(VECTOR_CONSUMERS)
+    exempt = set(VECTOR_EXEMPTIONS)
+
+    assert not (consumed & exempt), (
+        f"a vector is recorded as both consumed and exempt: {sorted(consumed & exempt)}"
+    )
+    assert vendored <= consumed | exempt, (
+        "vendored vectors that nothing consumes and nothing explains: "
+        f"{sorted(vendored - (consumed | exempt))}"
+    )
+    assert (consumed | exempt) <= vendored, (
+        "the registry names vectors that are not vendored: "
+        f"{sorted((consumed | exempt) - vendored)}"
+    )
+
+
+def test_every_named_consumer_resolves_to_a_test_that_reads_its_vector() -> None:
+    """Each consumer entry must resolve, and its module must load that vector.
+
+    Two checks, and neither is the whole claim. Resolving the function refuses a
+    plausible name that no longer exists; requiring the module to load the
+    vector refuses an entry pointed at a test that could never have read it,
+    which is how the checkpoint entry was wrong on its first writing.
+
+    What this cannot establish is that the named test asserts anything about
+    what it read -- replacing its body with `pass` leaves the mapping resolvable
+    and the load in place -- nor that the vector's other cases are covered. Both
+    are review obligations, and the registry is the artefact a reviewer checks
+    rather than a substitute for checking.
+    """
+    for vector, references in sorted(VECTOR_CONSUMERS.items()):
+        assert references, f"{vector}: no consumer named"
+        stem = vector[1]
+        for reference in references:
+            module, _, name = reference.partition("::")
+            assert name, f"{vector}: consumer reference {reference!r} has no test name"
+            source = _module_source(module)
+            assert source, f"{vector}: consumer names a missing module {module}"
+            defined = {
+                node.name
+                for node in ast.walk(ast.parse(source))
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            assert name in defined, f"{vector}: {module} defines no {name}"
+            assert stem in source, (
+                f"{vector}: {module} never loads {stem}, so {name} cannot read it"
+            )
+
+
+def test_every_exemption_records_owner_status_tracking_and_reason() -> None:
+    """`proof_pending` must never read as conformance.
+
+    The four fields are separate on purpose. An entry naming a role says who is
+    answerable; only `proven_elsewhere` says a proof exists. An earlier revision
+    conflated the two by asserting only that a repository was named.
+    """
+    for vector, entry in sorted(VECTOR_EXEMPTIONS.items()):
+        assert set(entry) == EXEMPTION_FIELDS, (
+            f"{vector}: exemption fields are {sorted(entry)}, "
+            f"expected {sorted(EXEMPTION_FIELDS)}"
+        )
+        for field in EXEMPTION_FIELDS:
+            assert str(entry[field]).strip(), f"{vector}: {field} is empty"
+        assert entry["owner"] in EXEMPTION_OWNERS, (
+            f"{vector}: owner {entry['owner']!r} is not one of the declared "
+            f"roles {sorted(EXEMPTION_OWNERS)}; an accounting note must not "
+            "name an implementation"
+        )
+        assert entry["status"] in EXEMPTION_STATUSES, (
+            f"{vector}: unrecognised status {entry['status']!r}"
+        )
+        assert "#" in entry["tracking"], (
+            f"{vector}: tracking must name an issue, got {entry['tracking']!r}"
+        )
+
+
+def test_no_pending_proof_claims_a_proof_exists_elsewhere() -> None:
+    """Applies to every `proof_pending` entry, not to a list of today's two.
+
+    A rule written against named entries stops covering the next one, which is
+    the moment it is most needed: a new exemption is exactly when someone is
+    deciding how much the accounting has to say.
+    """
+    pending = {
+        vector: entry
+        for vector, entry in VECTOR_EXEMPTIONS.items()
+        if entry["status"] == "proof_pending"
+    }
+    assert pending, "no pending exemptions; drop this test rather than weaken it"
+    for vector, entry in sorted(pending.items()):
+        assert "proven" not in entry["reason"].lower(), (
+            f"{vector}: the reason must explain why it cannot be exercised "
+            "here, not assert a proof elsewhere"
+        )
