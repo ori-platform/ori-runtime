@@ -8,6 +8,8 @@ import builtins
 import hashlib
 import io
 import json
+import os
+import stat
 import tarfile
 from pathlib import Path
 
@@ -161,6 +163,34 @@ def test_verifies_and_extracts_exact_signed_bundle(tmp_path: Path) -> None:
     assert extracted.python == "3.12"
     assert extracted.file_count == 4
     assert extracted.root.name == artifact.name.removesuffix(".tar.gz")
+
+
+def test_extraction_members_remain_below_exact_private_workspace_under_umask_0002(
+    tmp_path: Path,
+) -> None:
+    """Recursive member parents are safe only below the pinned 0700 root."""
+    files = {"deep/implicit/payload.txt": b"verified payload"}
+    artifact = _write_archive(tmp_path, files=files)
+    envelope = _write_envelope(tmp_path, artifact)
+    verified = verify_release_bundle(
+        artifact_path=artifact,
+        envelope_path=envelope,
+        key_registry={KEY_ID: _release_key()},
+    )
+    destination = tmp_path / "extract"
+    previous_umask = os.umask(0o002)
+    try:
+        extracted = extract_verified_bundle(verified, destination=destination)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o700
+    assert stat.S_IMODE(extracted.root.stat().st_mode) == 0o700
+    assert stat.S_IMODE((extracted.root / "deep").stat().st_mode) == 0o775
+    assert stat.S_IMODE((extracted.root / "deep" / "implicit").stat().st_mode) == 0o700
+    assert (extracted.root / "deep" / "implicit" / "payload.txt").read_bytes() == (
+        b"verified payload"
+    )
 
 
 def test_verify_only_key_can_verify_existing_release(tmp_path: Path) -> None:
@@ -655,3 +685,15 @@ def test_extraction_destination_must_be_new(tmp_path: Path) -> None:
         extract_verified_bundle(verified, destination=destination)
 
     assert exc.value.code == "unsafe_bundle_archive"
+
+
+def test_extraction_destination_parent_must_already_exist(tmp_path: Path) -> None:
+    _, verified = _verify(tmp_path)
+    destination = tmp_path / "missing" / "extract"
+
+    with pytest.raises(ReleaseBundleError) as exc:
+        extract_verified_bundle(verified, destination=destination)
+
+    assert exc.value.code == "unsafe_bundle_archive"
+    assert "workspace could not be prepared" in exc.value.detail
+    assert not destination.parent.exists()

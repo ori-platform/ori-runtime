@@ -377,9 +377,7 @@ def extract_verified_bundle(
 ) -> ExtractedReleaseBundle:
     """Validate, extract, and manifest-check an authenticated bundle."""
     destination_path = Path(destination)
-    if destination_path.exists():
-        _fail("unsafe_bundle_archive", "extraction destination already exists")
-    destination_path.mkdir(mode=0o700, parents=True)
+    _create_private_extraction_root(destination_path)
 
     try:
         with _open_artifact(verified.artifact) as artifact_handle:
@@ -512,9 +510,19 @@ def _extract_member(
 ) -> None:
     target = destination.joinpath(*PurePosixPath(member.name).parts)
     if member.isdir():
+        # ``destination`` was created as an exact 0700 boundary before archive
+        # parsing. Every validated member stays beneath it, so recursive parent
+        # creation cannot expose content even when an implicit directory
+        # inherits a permissive umask. This temporary tree supplies the verified
+        # wheelhouse used to build a separate release staging directory; the
+        # extracted directories are not installed directly.
         target.mkdir(mode=0o700, parents=True, exist_ok=True)
         return
 
+    # Same private-ancestor invariant as directory members: file parents can be
+    # recursive only because the authenticated path is relative and the 0700
+    # extraction root already exists. ``_copy_new_file`` still uses exclusive
+    # creation, so an archive member never replaces an existing entry.
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     source = archive.extractfile(member)
     if source is None:
@@ -537,6 +545,52 @@ def _copy_new_file(source: IO[bytes], target: Path, expected_size: int) -> None:
             output.write(chunk)
     if written != expected_size:
         _fail("unsafe_bundle_archive", "archive member was truncated")
+
+
+def _create_private_extraction_root(path: Path) -> None:
+    """Create exactly one private workspace component and pin its mode."""
+    descriptor = -1
+    created = False
+    completed = False
+    identity: tuple[int, int] | None = None
+    try:
+        os.mkdir(path, 0o700)
+        created = True
+        created_info = os.stat(path, follow_symlinks=False)
+        identity = (created_info.st_dev, created_info.st_ino)
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        os.fchmod(descriptor, 0o700)
+        info = os.fstat(descriptor)
+        if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700:
+            _fail("unsafe_bundle_archive", "extraction workspace is not private")
+        if (info.st_dev, info.st_ino) != identity:
+            _fail("unsafe_bundle_archive", "extraction workspace changed")
+        current = os.stat(path, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != identity:
+            _fail("unsafe_bundle_archive", "extraction workspace changed")
+        completed = True
+    except FileExistsError:
+        _fail("unsafe_bundle_archive", "extraction destination already exists")
+    except ReleaseBundleError:
+        raise
+    except (AttributeError, OSError):
+        _fail("unsafe_bundle_archive", "extraction workspace could not be prepared")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if created and not completed and identity is not None:
+            try:
+                current = os.stat(path, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) == identity:
+                    path.rmdir()
+            except OSError:
+                # Cleanup is best effort after preparation has already failed.
+                # Disappearance, replacement, content, or permissions must not
+                # replace the original release-bundle diagnosis.
+                pass
 
 
 def _verify_extracted_manifest(
