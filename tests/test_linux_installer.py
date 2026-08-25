@@ -1451,6 +1451,329 @@ def test_offline_preparer_uses_only_verified_wheelhouse_and_exact_version(
     assert "--no-deps" in pip_commands[-1]
 
 
+_EXT_SUFFIX = ".cpython-313-aarch64-linux-gnu.so"
+_ADMITTED = Path("/usr/lib/python3/dist-packages")
+
+
+def _pi_preparer(
+    tmp_path: Path,
+    *,
+    source: Path | None,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str = _EXT_SUFFIX,
+    on_pi: bool = True,
+    purelib: Path | None = None,
+    occupied: bool = False,
+) -> tuple[Path, list[Sequence[str]], Callable[[], None]]:
+    """A Pi bundle whose system probe answers with *source* as lgpio's home."""
+    root = tmp_path / "bundle"
+    wheelhouse = root / "wheelhouse"
+    wheelhouse.mkdir(parents=True)
+    (wheelhouse / "requirements.txt").write_text("locked", encoding="utf-8")
+    (wheelhouse / "requirements-pi.txt").write_text("locked", encoding="utf-8")
+    (wheelhouse / "ori_runtime-2.3.0-py3-none-any.whl").write_bytes(b"wheel")
+    bundle = ExtractedReleaseBundle(
+        root, "2.3.0", "linux-aarch64-python3.13", "3.13", 2
+    )
+
+    site_packages = purelib or tmp_path / "release" / "venv" / "site-packages"
+    commands: list[Sequence[str]] = []
+
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if "venv" in command:
+            venv = Path(command[-1])
+            (venv / "bin").mkdir(parents=True)
+            (venv / "bin" / "python").write_text("", encoding="utf-8")
+            for name in ENTRY_POINTS:
+                (venv / "bin" / name).write_text("", encoding="utf-8")
+            site_packages.mkdir(parents=True, exist_ok=True)
+            if occupied:
+                (site_packages / "lgpio.py").write_text("SQUATTER", encoding="utf-8")
+        body = command[-1]
+        stdout = ""
+        if "sys._base_executable" in body:
+            stdout = "/usr/bin/python3.13"
+        elif "EXT_SUFFIX" in body:
+            stdout = suffix
+        elif "find_spec" in body:
+            stdout = str(source / "lgpio.py") if source is not None else ""
+        elif "purelib" in body:
+            stdout = str(site_packages)
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    monkeypatch.setattr(installer_linux, "_is_raspberry_pi", lambda: on_pi)
+    release = tmp_path / "release"
+    release.mkdir()
+    preparer = OfflineReleasePreparer(
+        bundle=bundle, runner=runner, bootstrap_python="python3"
+    )
+    return site_packages, commands, lambda: preparer.prepare(release)
+
+
+def _plant(directory: Path, *, suffix: str = _EXT_SUFFIX) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "lgpio.py").write_text("PIN_FACTORY", encoding="utf-8")
+    (directory / f"_lgpio{suffix}").write_bytes(b"\x7fELF")
+    (directory / "yaml.py").write_text("", encoding="utf-8")
+    # An extension left behind for a different interpreter ABI.
+    (directory / "_lgpio.cpython-311-aarch64-linux-gnu.so").write_bytes(b"stale")
+
+
+def _accept_system_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Treat planted fixtures as root-owned; tests do not run as root."""
+    monkeypatch.setattr(installer_linux, "_system_file_failure", lambda path: None)
+
+
+def test_offline_preparer_copies_the_pin_factory_into_a_pi_venv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gpiozero without a backend silently falls back to NativeFactory.
+
+    The bytes are copied rather than linked: the release permission transaction
+    requires an external symlink target to be executable and apt ships these
+    `0644`, so a link is refused at a later seam than the one that made it.
+    """
+    _plant(tmp_path / "dist")
+    _accept_system_files(monkeypatch)
+    monkeypatch.setattr(
+        installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (tmp_path / "dist",)
+    )
+    purelib, _, run = _pi_preparer(
+        tmp_path, source=tmp_path / "dist", monkeypatch=monkeypatch
+    )
+    run()
+    staged = sorted(entry.name for entry in purelib.iterdir())
+    assert staged == [f"_lgpio{_EXT_SUFFIX}", "lgpio.py"]
+    assert not any((purelib / name).is_symlink() for name in staged)
+    assert (purelib / "lgpio.py").read_text(encoding="utf-8") == "PIN_FACTORY"
+
+
+def test_offline_preparer_takes_only_the_current_abi_and_nothing_else(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A glob would admit an extension built for another interpreter ABI."""
+    _plant(tmp_path / "dist")
+    _accept_system_files(monkeypatch)
+    monkeypatch.setattr(
+        installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (tmp_path / "dist",)
+    )
+    purelib, _, run = _pi_preparer(
+        tmp_path, source=tmp_path / "dist", monkeypatch=monkeypatch
+    )
+    run()
+    staged = {entry.name for entry in purelib.iterdir()}
+    assert "yaml.py" not in staged
+    assert "_lgpio.cpython-311-aarch64-linux-gnu.so" not in staged
+
+
+def test_offline_preparer_probes_the_system_in_isolated_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Discovery must not depend on PYTHON* variables or the working directory."""
+    _plant(tmp_path / "dist")
+    _accept_system_files(monkeypatch)
+    monkeypatch.setattr(
+        installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (tmp_path / "dist",)
+    )
+    _, commands, run = _pi_preparer(
+        tmp_path, source=tmp_path / "dist", monkeypatch=monkeypatch
+    )
+    run()
+    probes = [command for command in commands if "-c" in command]
+    assert probes, "the preparer probed nothing"
+    assert all("-I" in command for command in probes)
+
+
+def test_offline_preparer_refuses_a_pin_factory_outside_admitted_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The interpreter says where it would import from; only a known home counts."""
+    _plant(tmp_path / "elsewhere")
+    _accept_system_files(monkeypatch)
+    monkeypatch.setattr(installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (_ADMITTED,))
+    _, _, run = _pi_preparer(
+        tmp_path, source=tmp_path / "elsewhere", monkeypatch=monkeypatch
+    )
+    with pytest.raises(LinuxInstallError, match="prerequisite_install_failed"):
+        run()
+
+
+def test_offline_preparer_refuses_a_pi_bundle_without_the_pin_factory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Pi bundle carries GPIO wheels because the device is meant to drive pins.
+
+    Finishing the install without that capability is the silent degradation this
+    path exists to remove, and development posture would not catch it.
+    """
+    _, _, run = _pi_preparer(tmp_path, source=None, monkeypatch=monkeypatch)
+    with pytest.raises(LinuxInstallError, match="prerequisite_install_failed"):
+        run()
+
+
+def test_offline_preparer_refuses_a_pin_factory_it_cannot_trust(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ownership and mode are checked before any byte enters the release."""
+    _plant(tmp_path / "dist")
+    # World-writable rather than wrongly-owned: the suite runs as root in a
+    # container and as an ordinary user on a laptop, and only one of those can
+    # make a file fail an ownership check.
+    (tmp_path / "dist" / "lgpio.py").chmod(0o666)
+    monkeypatch.setattr(
+        installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (tmp_path / "dist",)
+    )
+    _, _, run = _pi_preparer(
+        tmp_path, source=tmp_path / "dist", monkeypatch=monkeypatch
+    )
+    with pytest.raises(LinuxInstallError, match="prerequisite_install_failed"):
+        run()
+
+
+def test_offline_preparer_stages_nothing_on_hardware_that_is_not_a_pi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An `aarch64` bundle also serves Linux that is not a Pi.
+
+    The source here is present and valid, so an absent module cannot be what
+    makes this pass. Non-Pi hardware must not stage the factory even when it
+    could: the host has no pins to drive, and copying system code into a release
+    that will never use it is exposure bought for nothing. Nothing is copied and
+    the system is never probed at all.
+    """
+    _plant(tmp_path / "dist")
+    _accept_system_files(monkeypatch)
+    monkeypatch.setattr(
+        installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (tmp_path / "dist",)
+    )
+    purelib, commands, run = _pi_preparer(
+        tmp_path, source=tmp_path / "dist", monkeypatch=monkeypatch, on_pi=False
+    )
+    run()
+    assert list(purelib.iterdir()) == []
+    assert not any("find_spec" in command[-1] for command in commands)
+
+
+def test_offline_preparer_reads_pi_hardware_rather_than_trusting_the_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model file is the signal, and a missing one is not a Pi."""
+    monkeypatch.setattr(installer_linux, "_DEVICE_MODEL", tmp_path / "absent")
+    assert installer_linux._is_raspberry_pi() is False
+
+    model = tmp_path / "model"
+    model.write_bytes(b"Raspberry Pi 4 Model B Rev 1.5\x00")
+    monkeypatch.setattr(installer_linux, "_DEVICE_MODEL", model)
+    assert installer_linux._is_raspberry_pi() is True
+
+    model.write_bytes(b"Some Other ARM Board\x00")
+    assert installer_linux._is_raspberry_pi() is False
+
+
+def test_offline_preparer_binds_the_destination_to_the_venv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Root is about to write where a probe pointed, so the path is bound.
+
+    Every other privileged write in this installer is tied to its intended
+    path; a destination named by a subprocess is no exception.
+    """
+    _plant(tmp_path / "dist")
+    _accept_system_files(monkeypatch)
+    monkeypatch.setattr(
+        installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (tmp_path / "dist",)
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _, _, run = _pi_preparer(
+        tmp_path, source=tmp_path / "dist", monkeypatch=monkeypatch, purelib=outside
+    )
+    with pytest.raises(LinuxInstallError, match="prerequisite_install_failed"):
+        run()
+    assert list(outside.iterdir()) == [], "a file was written outside the venv"
+
+
+def test_offline_preparer_refuses_to_overwrite_a_staged_pin_factory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh venv holds neither name; one already there means something else."""
+    _plant(tmp_path / "dist")
+    _accept_system_files(monkeypatch)
+    monkeypatch.setattr(
+        installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (tmp_path / "dist",)
+    )
+    purelib, _, run = _pi_preparer(
+        tmp_path, source=tmp_path / "dist", monkeypatch=monkeypatch, occupied=True
+    )
+    with pytest.raises(LinuxInstallError, match="prerequisite_install_failed"):
+        run()
+    assert (purelib / "lgpio.py").read_text(encoding="utf-8") == "SQUATTER"
+
+
+def test_system_file_failure_names_each_way_a_file_is_untrusted(
+    tmp_path: Path,
+) -> None:
+    """The check the installer runs before copying anything out of the system."""
+    missing = tmp_path / "absent.py"
+    assert installer_linux._system_file_failure(missing) == "is missing"
+
+    directory = tmp_path / "adirectory"
+    directory.mkdir()
+    assert installer_linux._system_file_failure(directory) == "is not a regular file"
+
+    link = tmp_path / "alink.py"
+    real = tmp_path / "real.py"
+    real.write_text("", encoding="utf-8")
+    link.symlink_to(real)
+    assert installer_linux._system_file_failure(link) == "is not a regular file"
+
+    loose = tmp_path / "loose.py"
+    loose.write_text("", encoding="utf-8")
+    loose.chmod(0o666)
+    assert installer_linux._system_file_failure(loose) in {
+        # Which one is reported depends on whether the suite runs as root.
+        "is not owned by root",
+        "is writable beyond its owner",
+    }
+    tight = tmp_path / "tight.py"
+    tight.write_text("", encoding="utf-8")
+    tight.chmod(0o644)
+    expected = None if os.geteuid() == 0 else "is not owned by root"
+    assert installer_linux._system_file_failure(tight) == expected
+
+
+def test_offline_preparer_leaves_a_generic_venv_isolated(tmp_path: Path) -> None:
+    """A bundle carrying no Pi wheels never probes the system at all."""
+    root = tmp_path / "bundle"
+    wheelhouse = root / "wheelhouse"
+    wheelhouse.mkdir(parents=True)
+    (wheelhouse / "requirements.txt").write_text("locked", encoding="utf-8")
+    (wheelhouse / "ori_runtime-2.3.0-py3-none-any.whl").write_bytes(b"wheel")
+    bundle = ExtractedReleaseBundle(root, "2.3.0", "linux-x86_64-python3.13", "3.13", 2)
+    commands: list[Sequence[str]] = []
+
+    def runner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if "venv" in command:
+            venv = Path(command[-1])
+            (venv / "bin").mkdir(parents=True)
+            (venv / "bin" / "python").write_text("", encoding="utf-8")
+            for name in ENTRY_POINTS:
+                (venv / "bin" / name).write_text("", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    release = tmp_path / "release"
+    release.mkdir()
+    OfflineReleasePreparer(
+        bundle=bundle, runner=runner, bootstrap_python="python3"
+    ).prepare(release)
+    assert not any("find_spec" in command[-1] for command in commands)
+    assert "--system-site-packages" not in next(
+        command for command in commands if "venv" in command
+    )
+
+
 def test_offline_preparer_rejects_missing_or_ambiguous_runtime_wheel(
     tmp_path: Path,
 ) -> None:

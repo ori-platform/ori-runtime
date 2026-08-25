@@ -1319,3 +1319,26 @@ def test_installer_failure_codes_are_all_documented() -> None:
 
     undocumented = sorted(raised - documented)
     assert not undocumented, f"codes the guide does not explain: {undocumented}"
+
+
+def test_arm_bundles_carry_the_raspberry_pi_wheelhouse(
+    workflow: dict[str, Any],
+) -> None:
+    """Every published aarch64 bundle must ship the Pi hardware wheels.
+
+    The build matrix once pinned `ORI_WHEELHOUSE_TARGET: generic` for all six
+    targets, so no released bundle carried `gpiozero` at all and a Pi install
+    came up with no actuator. The target is a per-entry decision now, and the
+    architecture in the bundle name is what decides it.
+    """
+    entries = workflow["jobs"]["build"]["strategy"]["matrix"]["include"]
+    wheelhouse_targets = {
+        entry["target"]: entry["wheelhouse-target"] for entry in entries
+    }
+    assert wheelhouse_targets, "the build matrix declares no targets"
+    for target, wheelhouse_target in wheelhouse_targets.items():
+        expected = "pi" if "aarch64" in target else "generic"
+        assert wheelhouse_target == expected, (
+            f"{target} builds the {wheelhouse_target!r} wheelhouse; "
+            f"expected {expected!r}"
+        )

@@ -560,7 +560,9 @@ def bootstrap_install(
             except OSError as exc:
                 raise BootstrapError(
                     "config_validation_failed",
-                    "interactive install requires a terminal; use --unattended or download the script first",
+                    "interactive install requires a terminal; pass "
+                    "-- --unattended --scope system (or --scope user), "
+                    "or download the script and run it from a terminal",
                 ) from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise BootstrapError(

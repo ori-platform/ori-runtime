@@ -84,10 +84,53 @@ Both are present on a stock Trixie image; the command is for a minimal one.
 
 ## The venv must be able to see it
 
-The installer creates an isolated virtual environment. An isolated venv cannot
-import apt packages, so a Pi install needs the system site directory visible for
-the GPIO layer — otherwise `gpiozero` is present but factory-less, which fails
-in exactly the silent way described above.
+An isolated venv cannot import apt packages, so a Pi install needs the pin
+factory reachable from inside it — otherwise `gpiozero` is present but
+factory-less, which fails in exactly the silent way described above.
+
+The venv stays isolated and the installer takes the module by name. The two
+files apt ships, `lgpio.py` and the extension built for this interpreter's ABI,
+are **copied** into the release's own `site-packages`.
+
+Copied rather than linked, for two reasons. The release permission transaction
+requires an external symlink target to be executable and apt ships both files
+`0644`, so a link is accepted where it is made and refused a seam later.
+Copying also freezes the reviewed bytes into the release instead of leaving
+live code attached to whatever a future apt upgrade puts at that path.
+
+Creating the venv with `--system-site-packages` would have been simpler and is
+the wrong trade. It puts every apt package on the runtime's import path, where
+an unpinned optional import — a transport, a hardware backend — could activate
+a capability from a package no release reviewed. It also lets pip treat a pinned
+dependency whose version matches a system one as already satisfied, leaving the
+runtime importing unhashed code.
+
+Before anything is copied, the source is checked: discovery runs the interpreter
+in isolated mode so no environment variable or working directory can steer it,
+the answer must land in an admitted system package directory, and each file must
+be a regular file, root-owned, and not writable beyond its owner. The extension
+is named from the interpreter's own `EXT_SUFFIX` rather than matched by pattern,
+so an extension left behind for another ABI cannot be taken.
+
+**Only Pi hardware stages it, and there it is required.** An install that
+cannot stage both halves fails with `prerequisite_install_failed` rather than
+finishing without the capability the bundle exists to deliver. On Linux that is
+not a Pi the same `aarch64` bundle installs without asking: nothing is copied
+even where the apt package happens to be present, because that host has no pins
+to drive and system code in a release that will never use it is exposure bought
+for nothing. `/proc/device-tree/model` is what decides.
+
+To check what a deployed venv can reach beyond its own tree:
+
+```bash
+sudo /opt/ori/current/venv/bin/python -c \
+  "import importlib.util as u; \
+   print([m for m in ('yaml','cryptography','requests','RPi','aiocoap') \
+          if (s := u.find_spec(m)) and 'dist-packages' in (s.origin or '')])"
+```
+
+An empty list is the expected answer. Anything else means the venv is reading
+the system path for something other than the pin factory.
 
 Check a deployed install:
 
@@ -99,6 +142,29 @@ sudo /opt/ori/current/venv/bin/python -c \
 `LGPIOFactory` means GPIO is live. **`NativeFactory` means it is not** -- the
 import succeeded, every availability check passes, and the pins are driven by an
 experimental fallback. Treat that result as a failed check, not a partial pass.
+
+## Upgrading off a hand-placed interpreter
+
+Upgrade first, then remove the old interpreter. The installer binds an existing
+installation to its release symlinks and refuses an install root it cannot
+validate, so deleting the interpreter a previous release points at leaves the
+upgrade blocked on `unsafe_install_root` with nothing installable in its place.
+
+The order that works:
+
+```bash
+# 1. Install the new release while the old interpreter is still present.
+sudo bash install-linux.sh --version <version> -- --unattended --scope system
+
+# 2. Confirm the new venv is on the system interpreter.
+sudo readlink -f /opt/ori/current/venv/bin/python   # expect /usr/bin/python3.13
+
+# 3. Only then remove the hand-placed interpreter and its symlink.
+sudo rm -rf /usr/local/ori-python /usr/local/bin/python3.12
+```
+
+Step 2 before step 3. A release whose venv still resolves through
+`/usr/local` will stop working the moment step 3 runs.
 
 ## Verifying a Pi before you rely on it
 
@@ -123,9 +189,10 @@ sudo /opt/ori/current/venv/bin/python -c \
 systemctl cat ori-runtime.service | grep ExecStart
 ```
 
-Step 3 is the one that matters, and read its output rather than its exit code:
-it prints `ok` for any factory at all, including the experimental fallback.
-Steps 1 and 2 can pass on a device whose Ori install still cannot drive a pin.
+Step 3 is the one that matters, and read the name it prints rather than its
+exit code: it succeeds for any factory at all, including the experimental
+fallback. Steps 1 and 2 can pass on a device whose Ori install still cannot
+drive a pin.
 
 ## Before a demo
 
@@ -133,7 +200,7 @@ Anything that must physically actuate has to be proven on the device, under a
 profile that refuses to pretend:
 
 1. Install from a release bundle carrying a `linux-aarch64-python3.13` target.
-2. Confirm step 3 above returns `ok`.
+2. Confirm step 3 above prints `LGPIOFactory`.
 3. Wire the relay to **normally closed** terminals and declare its `gpio_pin`.
 4. Move `deployment_profile` off `development`. A hardened profile fails
    startup when a configured GPIO path has no `gpiozero` behind it, which is
