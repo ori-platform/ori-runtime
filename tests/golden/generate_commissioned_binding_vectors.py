@@ -438,20 +438,22 @@ accept_cases[-1]["expected_activation"] = {
 }
 
 
+_first = base_binding()
+
+
 def _revision(b: dict) -> None:
+    """The recalibration revision, superseding the first binding."""
     b["binding_seq"] = 2
     b["reason"] = "recalibration after clamp re-seating"
     b["zones"][0]["sensor"]["calibration_ref"] = "sct013-100-2026-08-26-a"
     b["zones"][0]["proof"]["performed_at_ms"] = 1800000600000
+    b["supersedes"] = digest(_first)
 
 
-_first = base_binding()
 accept_cases.append(
     case(
         "revision_with_fresh_proof_accepted",
-        mutate(
-            lambda b: (_revision(b), b.__setitem__("supersedes", digest(_first)))[0]
-        ),
+        mutate(_revision),
         "A recalibration changes `calibration_ref`, so the prior proof no "
         "longer establishes the binding and a fresh one is carried. "
         "`supersedes` names the canonical hash of the document it replaces.",

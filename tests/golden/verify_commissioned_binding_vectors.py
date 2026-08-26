@@ -15,6 +15,7 @@ import base64
 import binascii
 import hashlib
 import json
+import pathlib
 import re
 import sys
 
@@ -149,10 +150,15 @@ def _vocab(value, allowed) -> None:
 def _encodable(value: str) -> None:
     """Reject strings that cannot be canonically serialised.
 
-    ``json.loads`` happily produces unpaired surrogates from ``\ud800``
-    escapes, and they survive every type and vocabulary check — then raise
+    ``json.loads`` happily produces unpaired surrogates from a ``\\ud800``
+    escape, and they survive every type and vocabulary check -- then raise
     UnicodeEncodeError at canonicalisation, downstream of the grammar. What a
-    caller sees is a crash rather than a verdict.
+    caller sees is a crash rather than a verdict. Go does not even fail there:
+    it substitutes U+FFFD and signs different bytes.
+
+    The escape is written doubled above on purpose. Spelled singly it is not a
+    description of the defect, it *is* the defect: the docstring would hold a
+    real lone surrogate, and importing this module raises on Python 3.13+.
     """
     try:
         value.encode("utf-8")
@@ -634,7 +640,7 @@ def run_profile_envelope(envelope, ctx):
 
 
 def main(path: str) -> int:
-    corpus = json.loads(open(path, encoding="utf-8").read())
+    corpus = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
     failures = []
 
     for c in corpus["cases"] + corpus["reject_cases"]:

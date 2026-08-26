@@ -194,6 +194,9 @@ def test_every_declared_stage_is_exercised() -> None:
 
 BASE = CASES[0]
 
+#: Built rather than written. See `_hostile_shapes`.
+LONE_SURROGATE = chr(0xD800)
+
 
 def _mutated(mutate: Callable[[dict], Any]) -> dict:
     case = copy.deepcopy(BASE)
@@ -338,8 +341,13 @@ def _hostile_shapes() -> list[Callable[[dict], Any]]:
     Wrong JSON types where objects are expected; arrays and objects where a
     closed vocabulary is expected, which are unhashable and raise TypeError on
     a membership test written before a type test; and unpaired surrogates,
-    which `json.loads` produces from a `\\ud800` escape and which survive
+    which `json.loads` produces from a `\\\\ud800` escape and which survive
     every type check to raise UnicodeEncodeError at canonicalisation.
+
+    The surrogates are built with `chr()` rather than written as literals. A
+    literal would put a real lone surrogate into this module's compiled
+    constants, and importing it raises on Python 3.13+ -- the defect under
+    test, relocated into the test that is supposed to catch it.
     """
     return [
         lambda b: b.update({"zones": "not a list"}),
@@ -369,10 +377,10 @@ def _hostile_shapes() -> list[Callable[[dict], Any]]:
         ),
         lambda b: b["zones"][0]["proof"]["observations"][0].update({"gpio_level": []}),
         # Unpaired surrogates, in a value, in a nested value, and in a key.
-        lambda b: b.update({"reason": "\ud800"}),
-        lambda b: b["zones"][0].update({"zone_id": "a\udfffb"}),
-        lambda b: b["zones"][0]["sensor"].update({"calibration_ref": "\udc00"}),
-        lambda b: b["zones"][0]["sensor"].update({"\ud800": "surrogate key"}),
+        lambda b: b.update({"reason": LONE_SURROGATE}),
+        lambda b: b["zones"][0].update({"zone_id": "a" + chr(0xDFFF) + "b"}),
+        lambda b: b["zones"][0]["sensor"].update({"calibration_ref": chr(0xDC00)}),
+        lambda b: b["zones"][0]["sensor"].update({LONE_SURROGATE: "surrogate key"}),
         # Encodings.
         lambda b: b.update({"signing_key": "ed25519:!!!!not base64!!!!"}),
         lambda b: b.update({"signing_key": 42}),
@@ -430,7 +438,7 @@ def test_neither_envelope_form_raises_on_hostile_input() -> None:
         lambda e, k: e.update({"signature": []}),
         lambda e, k: e.update({"signature": {}}),
         lambda e, k: e.update({"signature": 64}),
-        lambda e, k: e.update({"signature": "ed25519:\ud800"}),
+        lambda e, k: e.update({"signature": "ed25519:" + LONE_SURROGATE}),
         lambda e, k: e.update({k: "not an object"}),
         lambda e, k: e.update({k: []}),
         lambda e, k: e.update({k: None}),
