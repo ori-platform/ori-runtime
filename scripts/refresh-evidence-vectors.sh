@@ -42,6 +42,11 @@ SETS=(
   # here so the same drift check covers it, and pinned separately because it
   # has no reason to move when the evidence vectors do.
   "gateway-api/vectors:tests/vectors/gateway_api"
+  # Commissioned safety binding: a separate contract again, and the only
+  # vendored set whose vectors describe physical commissioning rather than
+  # evidence carriage. It pins independently because it has no reason to move
+  # when the evidence contracts do.
+  "commissioned-safety-binding:tests/vectors/commissioned_safety_binding"
 )
 
 if [ -n "${ORI_SPECS_DIR:-}" ]; then
