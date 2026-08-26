@@ -75,7 +75,7 @@ phone-victron = [
 pi = [
     "gpiozero>=2.0",
     "smbus2>=0.4",
-    "RPi.GPIO>=0.7",
+    "adafruit-circuitpython-ads1x15>=2.2",
 ]
 llm = [
     "llama-cpp-python>=0.2",
@@ -100,7 +100,7 @@ all = [
     "urllib3>=2.7.0",
     "gpiozero>=2.0",
     "smbus2>=0.4",
-    "RPi.GPIO>=0.7",
+    "adafruit-circuitpython-ads1x15>=2.2",
     "llama-cpp-python>=0.2",
     "anthropic>=0.28",
 ]

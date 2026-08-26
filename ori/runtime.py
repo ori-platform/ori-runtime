@@ -64,7 +64,7 @@ from ori.gateway.node_heartbeat import (
     MqttRuntimeNodeHeartbeatPublisher,
 )
 from ori.gateway.reasoning import MqttGatewayReasoner
-from ori.hal.base import AdapterReadError, BaseAdapter
+from ori.hal.base import AdapterReadError, BaseAdapter, MeasurementRefusedError
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
 from ori.hardware.led_indicator import (
     LEDIndicator,
@@ -184,6 +184,23 @@ CAPABILITY_POSTURE_UPDATE_INTERVAL_S = 30.0
 DEVICE_POLICY_REFRESH_DEFAULT_S = 21600.0
 DEVICE_POLICY_TRANSIENT_AUDIT_SUPPRESS_MS = 900_000
 STALE_SENSOR_MIN_CHECK_INTERVAL_S = 1.0
+
+# How many consecutive refused measurement windows mark a sensor degraded. One
+# refusal is a transient the poll cadence will retry; a run of them means the
+# signal, the wiring or the timing has changed and the reading is not coming
+# back on its own.
+MEASUREMENT_REFUSALS_BEFORE_DEGRADED = 3
+
+# And how many consecutive good windows clear it. Recovery is deliberately
+# slower than failure: a measurement path that alternates is not trustworthy,
+# and flapping between degraded and healthy would produce an alert stream that
+# operators learn to ignore.
+MEASUREMENT_WINDOWS_TO_RECOVER = 5
+
+# How many times a degradation warning is retried when it could not be
+# delivered or durably queued. Paced by the poll interval, and bounded so a
+# broken alert path does not retry forever on every refused window.
+MEASUREMENT_NOTIFY_MAX_ATTEMPTS = 5
 STALE_SENSOR_MAX_CHECK_INTERVAL_S = 30.0
 HEALTH_SOCKET_DEFAULT_PATH = "/run/ori/health.sock"
 
@@ -243,6 +260,13 @@ class OriRuntime:
         self._sensor_poll_interval_ms: dict[str, int] = {}
         self._sensor_last_seen_ms: dict[str, int] = {}
         self._stale_sensor_active: set[str] = set()
+        # A refused measurement window is not a failed read. The sensor is
+        # present and answering; what it returned was not a measurement.
+        self._measurement_refusals: dict[str, int] = {}
+        self._measurement_valid_streak: dict[str, int] = {}
+        self._measurement_degraded: set[str] = set()
+        self._measurement_unnotified: set[str] = set()
+        self._measurement_notify_attempts: dict[str, int] = {}
         self._runtime_started_at_ms: int = 0
         self._configured_sensors: list[Any] = []
         self._connected_sensor_ids: set[str] = set()
@@ -913,6 +937,24 @@ class OriRuntime:
         self._sensor_poll_interval_ms = {}
         self._sensor_last_seen_ms = {}
         self._stale_sensor_active = set()
+        self._measurement_refusals = {}
+        self._measurement_valid_streak = {}
+        # Restored rather than cleared. The alert fires on the transition into
+        # degradation, so an in-memory set emptied by every start would make a
+        # crash-looping runtime re-send the same warning after each restart.
+        restored = (
+            await self._state_store.get_measurement_degradation()
+            if self._state_store is not None
+            else {}
+        )
+        self._measurement_degraded = set(restored)
+        # A degradation whose warning never got out is still owed one. Losing
+        # that distinction would make the crash that prevented the alert the
+        # reason it is never sent.
+        self._measurement_unnotified = {
+            sensor_id for sensor_id, notified in restored.items() if not notified
+        }
+        self._measurement_notify_attempts = {}
         self._last_alert_timestamps_by_channel = {}
         self._last_alert_timestamps_by_trigger = {}
 
@@ -925,6 +967,10 @@ class OriRuntime:
                 "sensor_id": sensor_cfg.id,
                 "sensor_type": sensor_cfg.type,
                 "circuit_breaker": config.hal.circuit_breaker,
+                # Calibration is passed as its own block rather than flattened
+                # into the same namespace. Flattening is what let a documented
+                # `sensitivity` sit unread beside the adapter's own default.
+                "calibration": dict(sensor_cfg.calibration),
                 **sensor_cfg.metadata,
             }
             if sensor_cfg.protocol == "coap":
@@ -2412,6 +2458,10 @@ class OriRuntime:
                     "protocol": str(sensor_cfg.protocol),
                     "poll_interval_ms": poll_ms,
                     "connected": sensor_id in self._connected_sensor_ids,
+                    "measurement_degraded": sensor_id in self._measurement_degraded,
+                    "consecutive_refusals": self._measurement_refusals.get(
+                        sensor_id, 0
+                    ),
                     "last_seen_ms": int(last_seen_ms)
                     if last_seen_ms is not None
                     else None,
@@ -2657,6 +2707,7 @@ class OriRuntime:
             try:
                 reading = await adapter.read(sensor_cfg.id)
                 self._sensor_last_seen_ms[sensor_cfg.id] = now_ms()
+                await self._note_measurement_accepted(str(sensor_cfg.id))
                 if sensor_cfg.id in self._stale_sensor_active:
                     self._stale_sensor_active.discard(sensor_cfg.id)
                     logger.info(
@@ -2699,6 +2750,11 @@ class OriRuntime:
                     _sync_power_state_from_reading(self._status_indicator, reading)
             except AdapterReadError as exc:
                 logger.warning("[sensor] %s read failed: %s", sensor_cfg.id, exc)
+                if isinstance(exc, MeasurementRefusedError):
+                    await self._note_measurement_refusal(
+                        sensor_id=str(sensor_cfg.id),
+                        detail=str(exc),
+                    )
                 if self._status_indicator is not None and "circuit breaker OPEN" in str(
                     exc
                 ):
@@ -2745,6 +2801,161 @@ class OriRuntime:
                 break
             except asyncio.TimeoutError:
                 pass
+
+    async def _note_measurement_accepted(self, sensor_id: str) -> None:
+        """A window that was a measurement. Counts toward clearing degradation."""
+        if sensor_id not in self._measurement_degraded:
+            self._measurement_refusals.pop(sensor_id, None)
+            return
+        streak = self._measurement_valid_streak.get(sensor_id, 0) + 1
+        self._measurement_valid_streak[sensor_id] = streak
+        if streak < MEASUREMENT_WINDOWS_TO_RECOVER:
+            return
+        # Persisted before the in-memory state is cleared. The other order
+        # would let a store failure leave a sensor healthy in memory and
+        # degraded on disk, so the next restart resurrects a resolved fault.
+        if not await self._clear_measurement_state(sensor_id):
+            return
+        self._measurement_degraded.discard(sensor_id)
+        self._measurement_unnotified.discard(sensor_id)
+        self._measurement_notify_attempts.pop(sensor_id, None)
+        self._measurement_refusals.pop(sensor_id, None)
+        self._measurement_valid_streak.pop(sensor_id, None)
+        logger.info(
+            "[sensor] %s measurement recovered after %d consecutive valid windows",
+            sensor_id,
+            streak,
+        )
+
+    async def _note_measurement_refusal(self, *, sensor_id: str, detail: str) -> None:
+        """A window that was not a measurement.
+
+        No reading was published, so nothing downstream saw a value. What the
+        operator must not be left with is silence: a sensor that has quietly
+        stopped measuring looks identical to one measuring zero.
+        """
+        # Any refusal breaks a recovery run. Alternating windows are not a
+        # measurement path coming back.
+        self._measurement_valid_streak.pop(sensor_id, None)
+        refusals = self._measurement_refusals.get(sensor_id, 0) + 1
+        self._measurement_refusals[sensor_id] = refusals
+        if refusals < MEASUREMENT_REFUSALS_BEFORE_DEGRADED:
+            return
+        if sensor_id in self._measurement_degraded:
+            if sensor_id not in self._measurement_unnotified:
+                # Already reported. The alert fires on the transition, not per
+                # window, so a persistent fault does not become a message flood.
+                return
+            # Degraded, but the operator was never actually reached — no sender,
+            # no contact, or send and durable queueing both failed. Retry on
+            # this refusal rather than treating the failure as delivery.
+            attempts = self._measurement_notify_attempts.get(sensor_id, 0)
+            if attempts >= MEASUREMENT_NOTIFY_MAX_ATTEMPTS:
+                return
+            self._measurement_notify_attempts[sensor_id] = attempts + 1
+            await self._deliver_measurement_warning(
+                sensor_id=sensor_id, refusals=refusals
+            )
+            return
+        self._measurement_degraded.add(sensor_id)
+        self._measurement_unnotified.add(sensor_id)
+        # Recorded before the alert is attempted, and without letting a store
+        # failure escape the poll loop: this runs inside an `except` clause, so
+        # an exception here would not be caught by the handler below it and
+        # would end polling for this sensor entirely.
+        await self._persist_measurement_state(sensor_id, notified=False)
+        logger.warning(
+            "[sensor] %s measurement degraded after %d consecutive refused windows: %s",
+            sensor_id,
+            refusals,
+            detail,
+        )
+        self._measurement_notify_attempts[sensor_id] = 1
+        await self._deliver_measurement_warning(sensor_id=sensor_id, refusals=refusals)
+
+    async def _deliver_measurement_warning(
+        self, *, sensor_id: str, refusals: int
+    ) -> None:
+        """Try to reach the operator, and record it only if that succeeded."""
+        if not await self._emit_measurement_degraded_warning(
+            sensor_id=sensor_id, refusals=refusals
+        ):
+            return
+        # Delivered or durably queued. Only now is the operator owed nothing
+        # further, so only now may a restart stay quiet.
+        self._measurement_unnotified.discard(sensor_id)
+        self._measurement_notify_attempts.pop(sensor_id, None)
+        await self._persist_measurement_state(sensor_id, notified=True)
+
+    async def _persist_measurement_state(
+        self, sensor_id: str, *, notified: bool
+    ) -> None:
+        """Record degradation durably. A store failure must not stop polling."""
+        if self._state_store is None:
+            return
+        try:
+            await self._state_store.set_measurement_degraded(
+                sensor_id, notified=notified
+            )
+        except Exception:
+            logger.exception(
+                "[sensor] could not persist measurement degradation for %s; "
+                "the alert still fires, but a restart may repeat it",
+                sensor_id,
+            )
+
+    async def _clear_measurement_state(self, sensor_id: str) -> bool:
+        """Record recovery durably. Returns False when it could not be written."""
+        if self._state_store is None:
+            return True
+        try:
+            await self._state_store.clear_measurement_degraded(sensor_id)
+        except Exception:
+            logger.exception(
+                "[sensor] could not persist measurement recovery for %s; "
+                "leaving it degraded rather than diverging from disk",
+                sensor_id,
+            )
+            return False
+        return True
+
+    async def _emit_measurement_degraded_warning(
+        self, *, sensor_id: str, refusals: int
+    ) -> bool:
+        """Send or queue the Tier A notice that a sensor stopped measuring.
+
+        Returns whether the operator is owed nothing further — delivered, or
+        durably queued for delivery. A False answer leaves the notification
+        pending so a later poll or a restart tries again.
+        """
+        if self._alert_sender is None:
+            logger.warning(
+                "[runtime] measurement degraded warning not sent: no alert sender"
+            )
+            return False
+        if not self._operator_contact:
+            logger.warning(
+                "[runtime] measurement degraded warning not sent: "
+                "operator_contact is not configured"
+            )
+            return False
+        message = (
+            f"Sensor {sensor_id} has stopped producing valid measurements after "
+            f"{refusals} consecutive refused windows. Readings are not being "
+            "published for it, and any protection depending on them is not "
+            "running. Check the sensor wiring and signal."
+        )
+        return bool(
+            await self._send_or_queue_alert(
+                channel=self._primary_alert_channel,
+                message=message,
+                recipient=self._operator_contact,
+                action_tier="A",
+                trigger_name=f"measurement_degraded:{sensor_id}",
+                original_ts=now_ms(),
+                alert_sender=self._alert_sender,
+            )
+        )
 
     async def _emit_stale_sensor_warning(
         self,

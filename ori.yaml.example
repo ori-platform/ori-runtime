@@ -39,7 +39,17 @@ sensors:
     channel: 0                       # ADS1115 channel A0
     poll_interval_ms: 1000
     calibration:
-      sensitivity: 0.1              # SCT-013-030: 1A per 10mV output
+      # Both are required and have no defaults: they are facts about this
+      # installation, and a guessed value produces a plausible number rather
+      # than a measurement.
+      #
+      # The clamp's output in volts RMS per ampere RMS. Read it off the part:
+      # a clamp marked "30A : 1V" is 1/30 = 0.0333; one marked "100A : 50mA"
+      # is a current-output type and needs a burden resistor, after which the
+      # figure is the burden's volts per ampere.
+      sensitivity_v_per_amp: 0.0333
+      # The supply frequency the sampling window is aligned to.
+      mains_frequency_hz: 50
       # Optional deterministic gateway-escalation guardrails.
       # When gateway reasoning transport is available, readings outside these
       # bounds escalate before local SLM inference.

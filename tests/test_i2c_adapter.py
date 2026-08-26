@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import math
 import os
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,7 +15,7 @@ from ori.hal.base import (
     AdapterTimeoutError,
     HardwareCircuitBreaker,
 )
-from ori.hal.i2c_adapter import _DEFAULT_SENSITIVITY, I2CAdapter
+from ori.hal.i2c_adapter import I2CAdapter, _window_spec
 
 # ─── Pi guard ─────────────────────────────────────────────────────────────────
 
@@ -38,22 +40,31 @@ def _clear_shared_i2c_bus_cache():
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
+# A 30 A : 1 V clamp on a 50 Hz supply. Stated rather than defaulted, because
+# the adapter refuses to guess either.
+CALIBRATION = {"sensitivity_v_per_amp": 1 / 30, "mains_frequency_hz": 50.0}
+
+
 def _config(
     sensor_type: str = "bme280",
     sensor_id: str = "env-01",
     address: int = 0x76,
     bus: int = 1,
     channel: int = 0,
-    sensitivity: float = _DEFAULT_SENSITIVITY,
+    calibration: dict | None = None,
 ) -> dict:
-    return {
+    config: dict = {
         "sensor_type": sensor_type,
         "sensor_id": sensor_id,
         "address": address,
         "bus": bus,
         "channel": channel,
-        "sensitivity": sensitivity,
     }
+    if sensor_type == "ads1115_current":
+        config["calibration"] = (
+            dict(CALIBRATION) if calibration is None else calibration
+        )
+    return config
 
 
 def _connected_bme280_adapter() -> I2CAdapter:
@@ -68,14 +79,22 @@ def _connected_bme280_adapter() -> I2CAdapter:
     return adapter
 
 
-def _connected_ads_adapter(sensor_type: str = "ads1115_current") -> I2CAdapter:
+def _connected_ads_adapter(
+    sensor_type: str = "ads1115_current", calibration: dict | None = None
+) -> I2CAdapter:
     adapter = I2CAdapter()
     adapter._connected = True
     adapter._sensor_type = sensor_type
     adapter._channel = 0
-    adapter._sensitivity = _DEFAULT_SENSITIVITY
     adapter._breaker = HardwareCircuitBreaker("I2CAdapter", {})
     adapter._ads = MagicMock()
+    if sensor_type == "ads1115_current":
+        from ori.hal.i2c_adapter import _resolve_calibration
+
+        adapter._calibration = _resolve_calibration(
+            {"calibration": dict(calibration or CALIBRATION)}
+        )
+        adapter._window = _window_spec(adapter._calibration)
     return adapter
 
 
@@ -169,6 +188,7 @@ class TestConnect:
         with (
             patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", True),
             patch("ori.hal.i2c_adapter._ads1115"),
+            patch("ori.hal.i2c_adapter._ads1x15"),
             patch("ori.hal.i2c_adapter._analog_in"),
         ):
             with pytest.raises(
@@ -176,19 +196,27 @@ class TestConnect:
             ):
                 await adapter.connect(_config(sensor_type="ads1115_current", bus=3))
 
-    async def test_connect_stores_sensitivity(self):
+    async def test_connect_resolves_the_declared_calibration(self):
         adapter = I2CAdapter()
         with (
             patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", True),
             patch("ori.hal.i2c_adapter._busio", create=True),
             patch("ori.hal.i2c_adapter._board", create=True),
             patch("ori.hal.i2c_adapter._ads1115", create=True),
+            patch("ori.hal.i2c_adapter._ads1x15", create=True),
             patch("ori.hal.i2c_adapter._analog_in", create=True),
         ):
             await adapter.connect(
-                _config(sensor_type="ads1115_current", sensitivity=0.05)
+                _config(
+                    sensor_type="ads1115_current",
+                    calibration={
+                        "sensitivity_v_per_amp": 0.05,
+                        "mains_frequency_hz": 60.0,
+                    },
+                )
             )
-        assert adapter._sensitivity == 0.05
+        assert adapter._calibration["sensitivity_v_per_amp"] == 0.05
+        assert adapter._calibration["mains_frequency_hz"] == 60.0
 
     async def test_connect_stores_channel(self):
         adapter = I2CAdapter()
@@ -197,6 +225,7 @@ class TestConnect:
             patch("ori.hal.i2c_adapter._busio", create=True),
             patch("ori.hal.i2c_adapter._board", create=True),
             patch("ori.hal.i2c_adapter._ads1115", create=True),
+            patch("ori.hal.i2c_adapter._ads1x15", create=True),
             patch("ori.hal.i2c_adapter._analog_in", create=True),
         ):
             await adapter.connect(_config(sensor_type="ads1115_current", channel=2))
@@ -380,59 +409,257 @@ class TestReadBme280:
 # ─── read — ADS1115 current ───────────────────────────────────────────────────
 
 
+class TestCalibrationResolution:
+    """Calibration is refused rather than defaulted, and owns only its own keys."""
+
+    def _resolve(self, block: dict, top_level: dict | None = None) -> dict:
+        from ori.hal.i2c_adapter import _resolve_calibration
+
+        config: dict = {"calibration": block}
+        config.update(top_level or {})
+        return _resolve_calibration(config)
+
+    def test_the_required_keys_have_no_defaults(self):
+        """A guessed sensitivity produces a plausible number, not a measurement."""
+        for missing in ("sensitivity_v_per_amp", "mains_frequency_hz"):
+            block = dict(CALIBRATION)
+            del block[missing]
+            with pytest.raises(AdapterConnectionError, match=missing):
+                self._resolve(block)
+
+    def test_the_same_key_beside_the_block_is_refused_not_chosen(self):
+        """The shape of the original defect, refused instead of resolved.
+
+        A documented `sensitivity` sat at the sensor's top level, never reached
+        the adapter, and the adapter's own default was used instead. Silently
+        preferring one of two placements is what made that invisible.
+        """
+        with pytest.raises(AdapterConnectionError, match="not beside it"):
+            self._resolve(dict(CALIBRATION), {"sensitivity_v_per_amp": 0.05})
+
+    def test_a_misspelled_key_is_refused(self):
+        block = dict(CALIBRATION)
+        block["sensitivty_v_per_amp"] = 0.05
+        with pytest.raises(AdapterConnectionError, match="unknown calibration keys"):
+            self._resolve(block)
+
+    def test_bounds_belonging_to_gateway_escalation_pass_through(self):
+        """`calibration` is shared with escalation policy, which reads bounds here.
+
+        Refusing unknown keys must not mean claiming the whole namespace.
+        """
+        block = dict(CALIBRATION)
+        block.update({"min_value": 0.0, "max_value": 30.0})
+        resolved = self._resolve(block)
+        assert resolved["sensitivity_v_per_amp"] == pytest.approx(1 / 30)
+
+    @pytest.mark.parametrize("bad", [0, -1, "abc", None, float("nan")])
+    def test_a_value_that_is_not_a_positive_number_is_refused(self, bad):
+        block = dict(CALIBRATION)
+        block["sensitivity_v_per_amp"] = bad
+        with pytest.raises(AdapterConnectionError):
+            self._resolve(block)
+
+    def test_a_fractional_window_is_refused_rather_than_truncated(self):
+        """2.5 cycles truncated to 2 is a window that is not what config says."""
+        block = dict(CALIBRATION)
+        block["window_cycles"] = 2.5
+        with pytest.raises(AdapterConnectionError, match="whole number of"):
+            self._resolve(block)
+
+    def test_a_rate_the_part_does_not_implement_is_refused(self):
+        """The driver would substitute one, and the window would not be as declared."""
+        block = dict(CALIBRATION)
+        block["data_rate"] = 500
+        with pytest.raises(AdapterConnectionError, match="not an ADS1115 rate"):
+            self._resolve(block)
+
+    def test_the_supply_rail_bounds_clipping_not_the_pga_range(self):
+        """An ADS1115 on 3.3 V cannot see above 3.3 V, whatever the PGA is set to.
+
+        Gain 1 is a +/-4.096 V conversion range. Treating that as the input
+        limit would accept a waveform flattened against the 3.3 V supply rail,
+        which reads as an honest, low RMS — an under-report, in the direction
+        that talks a cutoff out of firing.
+        """
+        window = _window_spec(self._resolve(dict(CALIBRATION)))
+        assert window.full_scale_volts == pytest.approx(3.3)
+
+    def test_the_supply_rail_is_not_operator_calibration(self):
+        """Raising it would disable the guard that catches a clipped waveform.
+
+        It is a fact about the wiring, not a preference, so it is refused as a
+        calibration key rather than accepted and used.
+        """
+        block = dict(CALIBRATION)
+        block["supply_volts"] = 4.096
+        with pytest.raises(AdapterConnectionError, match="unknown calibration keys"):
+            self._resolve(block)
+
+    def test_a_wider_pga_still_cannot_see_past_the_rail(self):
+        """Gain 2/3 is +/-6.144 V; the input limit does not move with it."""
+        block = dict(CALIBRATION)
+        block["gain"] = 2 / 3
+        assert _window_spec(self._resolve(block)).full_scale_volts == pytest.approx(3.3)
+
+
 class TestReadAds1115Current:
-    def _mock_channel(self, voltage: float) -> MagicMock:
-        chan = MagicMock()
-        chan.voltage = voltage
-        return chan
+    """The clamp path reads a window, not a sample.
 
-    async def test_current_calibration_applied(self):
-        """current_amps = adc_voltage / sensitivity"""
+    The old tests here set a single constant voltage and asserted a division.
+    That is the defect, not the behaviour: one instantaneous sample of an
+    alternating signal is a number whose value depends on when the poll landed.
+    """
+
+    def _waveform_channel(
+        self, *, amplitude: float, bias: float = 1.65, cycles: int = 2
+    ) -> MagicMock:
+        """A channel whose voltage walks a sine, one step per read."""
+        step = {"i": 0}
+
+        def voltage() -> float:
+            index = step["i"]
+            step["i"] += 1
+            # 64 points per window keeps the series smooth for any sample count
+            # the adapter happens to take before its deadline.
+            return bias + amplitude * math.sin(2 * math.pi * cycles * index / 64)
+
+        channel = MagicMock()
+        type(channel).voltage = property(lambda _self: voltage())
+        return channel
+
+    async def test_a_clamp_reading_is_the_rms_of_a_window(self):
+        """1 V RMS into a 30 A : 1 V clamp is 30 A."""
         adapter = _connected_ads_adapter("ads1115_current")
-        adapter._sensitivity = 0.1
-        mock_chan = self._mock_channel(0.5)  # 0.5V / 0.1 V/A = 5.0A
+        channel = self._waveform_channel(amplitude=math.sqrt(2))
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as mock_analog:
-            mock_analog.AnalogIn.return_value = mock_chan
+        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
+            analog.AnalogIn.return_value = channel
             reading = await adapter.read("load-current")
 
-        assert reading.value == 5.0
         assert reading.unit == "ampere"
         assert reading.sensor_type == "ads1115_current"
+        assert reading.value == pytest.approx(30.0, rel=0.05)
 
-    async def test_custom_sensitivity_applied(self):
-        adapter = _connected_ads_adapter("ads1115_current")
-        adapter._sensitivity = 0.05  # 0.5V / 0.05 V/A = 10.0A
-        mock_chan = self._mock_channel(0.5)
+    async def test_the_declared_sensitivity_is_what_scales_the_reading(self):
+        """The value the operator configured, not the adapter's own idea.
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as mock_analog:
-            mock_analog.AnalogIn.return_value = mock_chan
+        A configured calibration that never reached the adapter is how a real
+        10 A load could report as 1 A.
+        """
+        adapter = _connected_ads_adapter(
+            "ads1115_current",
+            calibration={"sensitivity_v_per_amp": 0.1, "mains_frequency_hz": 50.0},
+        )
+        channel = self._waveform_channel(amplitude=math.sqrt(2))
+
+        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
+            analog.AnalogIn.return_value = channel
             reading = await adapter.read("load-current")
 
-        assert reading.value == 10.0
+        assert reading.value == pytest.approx(10.0, rel=0.05)
 
-    async def test_adc_voltage_in_metadata(self):
+    async def test_no_load_reads_as_no_current(self):
         adapter = _connected_ads_adapter("ads1115_current")
-        adapter._sensitivity = 0.1
-        mock_chan = self._mock_channel(0.5)
+        channel = MagicMock()
+        channel.voltage = 1.65
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as mock_analog:
-            mock_analog.AnalogIn.return_value = mock_chan
+        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
+            analog.AnalogIn.return_value = channel
             reading = await adapter.read("load-current")
 
-        assert reading.metadata["adc_voltage"] == 0.5
-        assert reading.metadata["sensitivity_v_per_a"] == 0.1
+        assert reading.value == pytest.approx(0.0, abs=1e-3)
+
+    async def test_metadata_records_what_the_window_actually_did(self):
+        adapter = _connected_ads_adapter("ads1115_current")
+        channel = self._waveform_channel(amplitude=1.0)
+
+        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
+            analog.AnalogIn.return_value = channel
+            reading = await adapter.read("load-current")
+
+        assert reading.metadata["sensitivity_v_per_amp"] == pytest.approx(1 / 30)
+        assert reading.metadata["mains_frequency_hz"] == 50.0
+        assert reading.metadata["sample_count"] >= adapter._window.min_samples
+        assert reading.metadata["window_ms"] > 0
+        assert "bias_volts" in reading.metadata
+
+    async def test_a_clipped_window_emits_no_reading_at_all(self):
+        """The refusal must not arrive as a plausible number.
+
+        A clipped waveform has lost its peaks, so its RMS reads low. Emitting
+        that as amperes would under-report the current, which is the direction
+        that talks a cutoff out of firing.
+        """
+        adapter = _connected_ads_adapter("ads1115_current")
+        channel = MagicMock()
+        channel.voltage = 4.09  # hard against the +/-4.096 V full scale
+
+        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
+            analog.AnalogIn.return_value = channel
+            with pytest.raises(AdapterReadError, match="clipped"):
+                await adapter.read("load-current")
+
+    async def test_a_window_the_hardware_could_not_fill_is_refused(self):
+        """Too few samples cannot resolve a waveform, however plausible they look."""
+        adapter = _connected_ads_adapter("ads1115_current")
+        channel = MagicMock()
+        slow = iter([1.65, 1.9, 1.4])
+
+        def voltage() -> float:
+            try:
+                return next(slow)
+            except StopIteration:
+                time.sleep(adapter._window.nominal_seconds)
+                return 1.65
+
+        type(channel).voltage = property(lambda _self: voltage())
+
+        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
+            analog.AnalogIn.return_value = channel
+            with pytest.raises(AdapterReadError, match="fewer than"):
+                await adapter.read("load-current")
+
+    async def test_reads_are_paced_so_the_sample_floor_counts_conversions(self):
+        """An unpaced loop counts reads, not conversions.
+
+        In continuous mode the conversion register holds the last result and
+        can be read far faster than the part converts, so a tight loop
+        satisfies the sample floor with the same few values repeated. The
+        floor would then be passing on nothing.
+        """
+        adapter = _connected_ads_adapter("ads1115_current")
+        channel = self._waveform_channel(amplitude=1.0)
+        reads: list[float] = []
+
+        original = channel.__class__.voltage
+
+        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
+            analog.AnalogIn.return_value = channel
+            started = time.monotonic()
+            reading = await adapter.read("load-current")
+            elapsed = time.monotonic() - started
+
+        del original, reads
+        rate = adapter._calibration["data_rate"]
+        expected = rate * adapter._window.nominal_seconds
+        # Pacing bounds the count by the conversion rate. Without it the loop
+        # takes thousands of reads in the same window.
+        assert reading.metadata["sample_count"] <= expected * 1.2, (
+            "more samples than the ADC could have converted in the window"
+        )
+        assert elapsed >= adapter._window.nominal_seconds * 0.9
 
     async def test_channel_used_correctly(self):
         adapter = _connected_ads_adapter("ads1115_current")
         adapter._channel = 2
-        mock_chan = self._mock_channel(0.2)
+        channel = self._waveform_channel(amplitude=1.0)
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as mock_analog:
-            mock_analog.AnalogIn.return_value = mock_chan
+        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
+            analog.AnalogIn.return_value = channel
             await adapter.read("load-current")
 
-        mock_analog.AnalogIn.assert_called_once_with(adapter._ads, 2)
+        analog.AnalogIn.assert_called_once_with(adapter._ads, 2)
 
 
 # ─── read — ADS1115 voltage ───────────────────────────────────────────────────
@@ -554,7 +781,7 @@ class TestPiIntegration:
                 "address": 0x48,
                 "bus": 1,
                 "channel": 0,
-                "sensitivity": 0.1,
+                "calibration": dict(CALIBRATION),
             }
         )
         assert adapter.is_connected

@@ -22,3 +22,14 @@
 # GPIO silently degrades to simulation. See docs/RASPBERRY_PI_SUPPORT.md.
 gpiozero>=2.0.1.post3
 smbus2>=0.4
+# The ADS1115 driver the I2C adapter imports. Never declared until now, so the
+# ads1115_current and ads1115_voltage sensor types could not work on any
+# deployment: their imports are guarded and always failed. The bme280 and scd40
+# types have the same undeclared-dependency problem and are not fixed by this;
+# they need `bme280` and `adafruit-circuitpython-scd4x` respectively.
+#
+# This pulls in Adafruit's Blinka compatibility layer and its own dependencies,
+# which is a substantial closure for a Pi image. Using the vendor's supported
+# driver is still preferable to writing a bespoke ADC driver and placing it on
+# the Tier D measurement path.
+adafruit-circuitpython-ads1x15>=2.2

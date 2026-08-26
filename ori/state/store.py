@@ -603,6 +603,17 @@ BEGIN
     SELECT RAISE(ABORT, 'firmware MQTT operator responses are retained');
 END;
 
+CREATE TABLE IF NOT EXISTS sensor_measurement_state (
+    sensor_id     TEXT    PRIMARY KEY,
+    degraded      INTEGER NOT NULL,
+    -- NULL means degraded but the operator has not been told yet. Recording
+    -- the degradation and recording that it was reported are separate facts:
+    -- collapsing them means a restart restores an unreported sensor as
+    -- already reported, and the warning is suppressed permanently.
+    notified_at   INTEGER,
+    updated_at    INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS firmware_fault_events (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id         TEXT    NOT NULL,
@@ -5433,6 +5444,69 @@ class StateStore:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
     # ─── skill_state ──────────────────────────────────────────────────────────
+
+    async def get_measurement_degradation(self) -> dict[str, bool]:
+        """Degraded sensors, mapped to whether the operator has been told.
+
+        Restored at startup so a crash-looping runtime does not re-send the
+        same warning on every restart, and so one whose warning never got out
+        still sends it.
+        """
+        return await self._run_read(self._get_measurement_degradation_sync)
+
+    def _get_measurement_degradation_sync(
+        self, conn: sqlite3.Connection
+    ) -> dict[str, bool]:
+        rows = conn.execute(
+            "SELECT sensor_id, notified_at FROM sensor_measurement_state "
+            "WHERE degraded = 1"
+        ).fetchall()
+        return {str(row[0]): row[1] is not None for row in rows}
+
+    async def set_measurement_degraded(self, sensor_id: str, *, notified: bool) -> None:
+        """Record a degradation, and separately whether it has been reported."""
+        await self._run_write(self._set_measurement_degraded_sync, sensor_id, notified)
+
+    def _set_measurement_degraded_sync(self, sensor_id: str, notified: bool) -> None:
+        assert self._conn is not None
+        now = now_ms()
+        self._conn.execute(
+            """
+            INSERT INTO sensor_measurement_state
+                (sensor_id, degraded, notified_at, updated_at)
+            VALUES (?, 1, ?, ?)
+            ON CONFLICT(sensor_id) DO UPDATE SET
+                degraded = 1,
+                -- Once reported, stays reported. A later write that has not
+                -- itself notified must not reopen the alert.
+                notified_at = COALESCE(
+                    sensor_measurement_state.notified_at, excluded.notified_at
+                ),
+                updated_at = excluded.updated_at
+            """,
+            (sensor_id, now if notified else None, now),
+        )
+        self._conn.commit()
+
+    async def clear_measurement_degraded(self, sensor_id: str) -> None:
+        """Record that a sensor is measuring again."""
+        await self._run_write(self._clear_measurement_degraded_sync, sensor_id)
+
+    def _clear_measurement_degraded_sync(self, sensor_id: str) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO sensor_measurement_state
+                (sensor_id, degraded, notified_at, updated_at)
+            VALUES (?, 0, NULL, ?)
+            ON CONFLICT(sensor_id) DO UPDATE SET
+                degraded = 0,
+                notified_at = NULL,
+                updated_at = excluded.updated_at
+            """,
+            (sensor_id, now_ms()),
+        )
+        self._conn.commit()
 
     async def get_skill_state(self, skill_name: str, key: str) -> Optional[str]:
         return await self._run_read(self._get_skill_state_sync, skill_name, key)

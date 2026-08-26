@@ -3,15 +3,23 @@
 
 import asyncio
 import logging
+import math
 import threading
+import time
 from typing import Any
 
+from ori.hal.ac_measurement import (
+    WindowRefusedError,
+    WindowSpec,
+    summarise_window,
+)
 from ori.hal.base import (
     AdapterConnectionError,
     AdapterReadError,
     AdapterTimeoutError,
     BaseAdapter,
     HardwareCircuitBreaker,
+    MeasurementRefusedError,
 )
 from ori.network.events import SensorReading
 from ori.utils.time_utils import now_ms
@@ -36,6 +44,7 @@ except ImportError:  # pragma: no cover - exercised on non-Pi hosts
     _BME280_AVAILABLE = False
 
 try:
+    import adafruit_ads1x15.ads1x15 as _ads1x15  # type: ignore[import-untyped]
     import adafruit_ads1x15.ads1115 as _ads1115  # type: ignore[import-untyped]
     import adafruit_ads1x15.analog_in as _analog_in  # type: ignore[import-untyped]
     import board as _board  # type: ignore[import-untyped]
@@ -44,6 +53,7 @@ try:
     _ADS1115_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised on non-Pi hosts
     _ads1115 = None
+    _ads1x15 = None
     _analog_in = None
     _board = None
     _busio = None
@@ -70,9 +80,202 @@ _SUPPORTED = frozenset(
     }
 )
 
-# Default ADS1115 current-clamp sensitivity (V/A) for common SCT-013 clamps.
-# Override via config key ``sensitivity`` in ori.yaml.
-_DEFAULT_SENSITIVITY = 0.1  # V/A
+# Calibration keys read from a sensor's nested ``calibration`` block. The two
+# required ones have no default: a clamp's sensitivity and the supply frequency
+# are facts about an installation, and guessing either produces a plausible
+# number rather than a measurement.
+_REQUIRED_CALIBRATION = ("sensitivity_v_per_amp", "mains_frequency_hz")
+# PROVISIONAL — these four are datasheet figures, not measurements.
+#
+# Nothing here has been run against an ADS1115. The arithmetic and the refusals
+# are tested against synthetic waveforms, which proves what the code does with
+# samples and says nothing about what the hardware delivers. Whoever runs the
+# first hardware session should expect to change these, and should treat a
+# sensor that sits permanently degraded as a sign that one of them is wrong
+# rather than that the sensor is:
+#
+#   data_rate            the part advertises 860 SPS. Whether adafruit-blinka
+#                        over I2C on a Pi 4 sustains it, and with what jitter,
+#                        is unmeasured. If the achieved rate is lower, the
+#                        sample floor below refuses every window.
+#   _MIN_SAMPLE_FRACTION derived from data_rate, so wrong for the same reason.
+#   clip_margin_volts    assumes a saturated input reads near the rail. The
+#                        real signature may differ, and if it does the clipping
+#                        refusal never fires and an under-report passes.
+#   overrun_tolerance    a guess at how much scheduling slop a loaded Pi adds.
+#
+# `window_cycles` and `gain` are not in that list: two whole cycles is a
+# property of the measurement, and gain 1 is the only PGA range that spans a
+# 3.3 V-referenced input.
+_OPTIONAL_CALIBRATION = {
+    # Whole cycles per window. Two spans a full period twice over, so a small
+    # timing error cannot leave the window covering a fraction of a cycle.
+    "window_cycles": 2,
+    # The ADS1115's fastest advertised rate. At 50 Hz this is roughly 17
+    # samples per cycle; the driver default of 128 SPS yields about two, which
+    # cannot resolve a sine at all.
+    "data_rate": 860,
+    # Gain 1 is +/-4.096 V full scale, which spans a 3.3 V-referenced input.
+    # A narrower range would clip a clamp biased at mid-rail.
+    "gain": 1,
+    # A window is refused rather than trusted once it runs this much over.
+    "overrun_tolerance": 1.5,
+    # How close to a rail counts as clipped.
+    "clip_margin_volts": 0.05,
+}
+
+# What fraction of the samples the configured rate should have produced must
+# actually arrive for a window to count. Two thirds leaves room for scheduling
+# slop without accepting a window that covers only part of its cycles.
+# Provisional with `data_rate`: both describe the same unmeasured assumption.
+_MIN_SAMPLE_FRACTION = 2 / 3
+_CALIBRATION_KEYS = frozenset(_REQUIRED_CALIBRATION) | frozenset(_OPTIONAL_CALIBRATION)
+
+# The `calibration` block is a shared namespace: `ori/reasoning/escalation_policy.py`
+# reads bounds from it to decide gateway escalation. The adapter refuses keys it
+# does not know so a typo cannot silently become a default, which means it has
+# to know which keys are somebody else's rather than claiming the whole block.
+_FOREIGN_CALIBRATION_KEYS = frozenset(
+    {
+        "min_value",
+        "minimum_value",
+        "calibrated_min",
+        "safe_min",
+        "max_value",
+        "maximum_value",
+        "calibrated_max",
+        "safe_max",
+    }
+)
+
+# The ADC's supply rail on the supported wiring: an ADS1115 powered from the
+# Raspberry Pi's 3.3 V pin. Deliberately not a calibration key. The PGA range
+# and the physical input limit are separate, and this is the one that bounds
+# clipping — a waveform flattened against the rail sits well inside a
+# +/-4.096 V conversion range and reads as an honest, low RMS. An operator who
+# could raise this number could disable the guard that catches it, so it is
+# reviewed here until a commissioned hardware binding can carry it.
+_ADC_SUPPLY_VOLTS = 3.3
+
+# Conversion rates the ADS1115 implements, in samples per second.
+_ADS1115_DATA_RATES = frozenset({8, 16, 32, 64, 128, 250, 475, 860})
+
+# Full-scale voltage for each ADS1115 PGA setting. This is the conversion
+# range, not the input range: see `supply_volts`.
+_GAIN_FULL_SCALE = {
+    2 / 3: 6.144,
+    1: 4.096,
+    2: 2.048,
+    4: 1.024,
+    8: 0.512,
+    16: 0.256,
+}
+
+
+def _resolve_calibration(config: dict) -> dict[str, float]:
+    """Read a current clamp's calibration from its nested ``calibration`` block.
+
+    Nested is canonical. The same names are refused at the sensor's top level
+    rather than one of the two being chosen: a deployment that sets a value in
+    the wrong place must be told, not silently given a different one. That is
+    how a documented `sensitivity` sat in config unread while the adapter used
+    its own default.
+
+    Required, with no defaults, because both are facts about an installation
+    that cannot be guessed:
+
+    - ``sensitivity_v_per_amp`` — the clamp's output in volts RMS per ampere
+      RMS. A 30 A : 1 V clamp is ``0.0333``.
+    - ``mains_frequency_hz`` — the supply frequency the window is aligned to.
+    """
+    duplicated = sorted(_CALIBRATION_KEYS & set(config))
+    if duplicated:
+        raise AdapterConnectionError(
+            "I2CAdapter: calibration keys belong in the sensor's 'calibration' "
+            f"block, not beside it: {duplicated}"
+        )
+    raw = config.get("calibration")
+    if not isinstance(raw, dict):
+        raise AdapterConnectionError(
+            "I2CAdapter: 'ads1115_current' requires a 'calibration' block "
+            f"declaring {list(_REQUIRED_CALIBRATION)}"
+        )
+    unknown = sorted(set(raw) - _CALIBRATION_KEYS - _FOREIGN_CALIBRATION_KEYS)
+    if unknown:
+        raise AdapterConnectionError(
+            f"I2CAdapter: unknown calibration keys {unknown}; "
+            f"expected {sorted(_CALIBRATION_KEYS)}"
+        )
+    resolved: dict[str, float] = {}
+    for key in _REQUIRED_CALIBRATION:
+        if key not in raw:
+            raise AdapterConnectionError(
+                f"I2CAdapter: calibration is missing required key '{key}'"
+            )
+        resolved[key] = _positive(raw[key], key)
+    for key, fallback in _OPTIONAL_CALIBRATION.items():
+        resolved[key] = _positive(raw.get(key, fallback), key)
+    if resolved["gain"] not in _GAIN_FULL_SCALE:
+        raise AdapterConnectionError(
+            f"I2CAdapter: gain {raw.get('gain')} is not an ADS1115 setting; "
+            f"expected one of {sorted(_GAIN_FULL_SCALE)}"
+        )
+    # These two are refused rather than coerced. A fractional window would be
+    # truncated to a different number of cycles than the one declared, and an
+    # unsupported rate would be silently replaced by whatever the driver picks
+    # instead — in both cases the window would not be what its config says.
+    if resolved["window_cycles"] != int(resolved["window_cycles"]):
+        raise AdapterConnectionError(
+            "I2CAdapter: calibration 'window_cycles' must be a whole number of "
+            f"cycles, got {raw.get('window_cycles')!r}"
+        )
+    if resolved["data_rate"] not in _ADS1115_DATA_RATES:
+        raise AdapterConnectionError(
+            f"I2CAdapter: data_rate {raw.get('data_rate')!r} is not an ADS1115 "
+            f"rate; expected one of {sorted(_ADS1115_DATA_RATES)}"
+        )
+    return resolved
+
+
+def _positive(value: Any, key: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise AdapterConnectionError(
+            f"I2CAdapter: calibration '{key}' is not a number: {value!r}"
+        ) from exc
+    # isfinite covers NaN and both infinities; the ordering matters because a
+    # NaN comparison is False, so `number <= 0` alone would let one through.
+    if not math.isfinite(number) or number <= 0:
+        raise AdapterConnectionError(
+            f"I2CAdapter: calibration '{key}' must be a positive number, got {value!r}"
+        )
+    return number
+
+
+def _window_spec(calibration: dict[str, float]) -> WindowSpec:
+    """Derive the window a measurement must fill from the declared calibration.
+
+    The sample floor is a fraction of what the configured rate should deliver
+    over the window. Below that the hardware is not keeping up, and the samples
+    no longer span the cycles they are supposed to.
+
+    Both the rate and the fraction are provisional until measured on hardware;
+    see the note beside `_OPTIONAL_CALIBRATION`.
+    """
+    cycles = int(calibration["window_cycles"])
+    seconds = cycles / calibration["mains_frequency_hz"]
+    expected = calibration["data_rate"] * seconds
+    return WindowSpec(
+        mains_frequency_hz=calibration["mains_frequency_hz"],
+        window_cycles=cycles,
+        min_samples=max(8, int(expected * _MIN_SAMPLE_FRACTION)),
+        # Whichever limit binds first. Above the supply the input is clamped by
+        # the part itself; above the PGA range the conversion saturates.
+        full_scale_volts=min(_GAIN_FULL_SCALE[calibration["gain"]], _ADC_SUPPLY_VOLTS),
+        clip_margin_volts=calibration["clip_margin_volts"],
+        overrun_tolerance=calibration["overrun_tolerance"],
+    )
 
 
 # ── Shared I2C bus singleton registry ─────────────────────────────────────
@@ -157,7 +360,8 @@ class I2CAdapter(BaseAdapter):
         self._address: int = 0x00
         self._bus_number: int = 1
         self._channel: int = 0  # ADS1115 channel (0–3)
-        self._sensitivity: float = _DEFAULT_SENSITIVITY  # ADS1115 current calibration
+        self._calibration: dict[str, float] = {}
+        self._window: WindowSpec | None = None
 
         # Held device handles — populated in connect()
         self._bus: Any = None  # smbus2.SMBus
@@ -181,8 +385,8 @@ class I2CAdapter(BaseAdapter):
 
                 - ``bus`` (int, default ``1``) — I2C bus number
                 - ``channel`` (int, default ``0``) — ADC channel for ADS1115
-                - ``sensitivity`` (float, default ``0.1``) — V/A calibration
-                  for ``ads1115_current``
+                - ``calibration`` (dict) — required for ``ads1115_current``;
+                  see :func:`_resolve_calibration`
 
         Raises:
             :exc:`AdapterConnectionError`: Unsupported sensor type, missing
@@ -200,7 +404,9 @@ class I2CAdapter(BaseAdapter):
         self._address = int(config.get("address", 0x00))
         self._bus_number = int(config.get("bus", 1))
         self._channel = int(config.get("channel", 0))
-        self._sensitivity = float(config.get("sensitivity", _DEFAULT_SENSITIVITY))
+        if sensor_type == "ads1115_current":
+            self._calibration = _resolve_calibration(config)
+            self._window = _window_spec(self._calibration)
 
         try:
             await asyncio.to_thread(self._connect_sync, sensor_type)
@@ -241,13 +447,27 @@ class I2CAdapter(BaseAdapter):
         )
 
     def _connect_ads1115(self) -> None:
-        if not _ADS1115_AVAILABLE or _ads1115 is None or _analog_in is None:
+        if (
+            not _ADS1115_AVAILABLE
+            or _ads1115 is None
+            or _ads1x15 is None
+            or _analog_in is None
+        ):
             raise AdapterConnectionError(
                 "I2CAdapter: Adafruit ADS1x15 library is not installed. "
                 "Run: pip install adafruit-circuitpython-ads1x15"
             )
         i2c = _get_shared_busio_i2c(self._bus_number)
-        self._ads = _ads1115.ADS1115(i2c, address=self._address)
+        # The driver defaults are 128 SPS in single-shot mode, which yields
+        # about two samples per 50 Hz cycle. Continuous conversion at the
+        # configured rate is what makes a window resolvable at all.
+        self._ads = _ads1115.ADS1115(
+            i2c,
+            address=self._address,
+            gain=self._calibration.get("gain", 1),
+            data_rate=int(self._calibration.get("data_rate", 860)),
+            mode=_ads1x15.Mode.CONTINUOUS,
+        )
 
     def _connect_scd40(self) -> None:
         if not _SCD40_AVAILABLE or adafruit_scd4x is None:
@@ -371,13 +591,61 @@ class I2CAdapter(BaseAdapter):
     # ── ADS1115 current ───────────────────────────────────────────────────────
 
     def _read_ads1115_current(self, sensor_id: str) -> SensorReading:
+        """Measure RMS current over a frequency-aligned window, or refuse.
+
+        A current clamp outputs an alternating signal riding on a mid-rail bias.
+        One instantaneous sample of that is a number, not a measurement: the
+        same steady load reads near zero or near peak depending only on when the
+        poll landed. A threshold over such numbers is decided by sampling phase.
+
+        A refused window raises rather than returning a value, so no reading
+        carrying a plausible ampere figure can be emitted from samples that were
+        never a measurement.
+        """
         if _analog_in is None:
             raise AdapterConnectionError(
                 "I2CAdapter: the ADS1115 driver is not loaded; connect() must run first"
             )
-        chan = _analog_in.AnalogIn(self._ads, self._channel)
-        adc_voltage = chan.voltage  # volts
-        current_amps = adc_voltage / self._sensitivity
+        window = self._window
+        if window is None:
+            raise AdapterReadError(
+                "I2CAdapter: current calibration was not resolved at connect()"
+            )
+        channel = _analog_in.AnalogIn(self._ads, self._channel)
+
+        # Monotonic throughout: a wall clock stepped by NTP mid-window would
+        # otherwise make an overrun look like a normal window, or the reverse.
+        #
+        # Reads are paced at the conversion interval rather than taken as fast
+        # as the bus allows. In continuous mode the conversion register holds
+        # the last result and can be read many times over, so an unpaced loop
+        # counts reads instead of conversions and satisfies the sample floor
+        # with the same few values repeated. That is the sample-count guard
+        # passing on nothing.
+        interval = 1.0 / self._calibration["data_rate"]
+        samples: list[float] = []
+        started = time.monotonic()
+        deadline = started + window.nominal_seconds
+        due = started
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            if now < due:
+                time.sleep(due - now)
+            samples.append(float(channel.voltage))
+            due += interval
+        elapsed = time.monotonic() - started
+
+        try:
+            measured = summarise_window(samples, elapsed, window)
+        except WindowRefusedError as exc:
+            raise MeasurementRefusedError(
+                f"I2CAdapter: refused a current window on '{sensor_id}': {exc}"
+            ) from exc
+
+        sensitivity = self._calibration["sensitivity_v_per_amp"]
+        current_amps = measured.rms_volts / sensitivity
         return SensorReading(
             sensor_id=sensor_id,
             sensor_type="ads1115_current",
@@ -386,8 +654,12 @@ class I2CAdapter(BaseAdapter):
             timestamp=now_ms(),
             quality=1.0,
             metadata={
-                "adc_voltage": round(adc_voltage, 6),
-                "sensitivity_v_per_a": self._sensitivity,
+                "rms_volts": round(measured.rms_volts, 6),
+                "bias_volts": round(measured.bias_volts, 6),
+                "sample_count": measured.sample_count,
+                "window_ms": round(measured.elapsed_s * 1000, 3),
+                "sensitivity_v_per_amp": sensitivity,
+                "mains_frequency_hz": self._calibration["mains_frequency_hz"],
                 "channel": self._channel,
             },
         )
