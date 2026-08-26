@@ -456,6 +456,22 @@ VECTOR_EXEMPTIONS = {
             "anchor, so there is no code path here to drive."
         ),
     },
+    ("commissioned_safety_binding", "binding-vectors-v1"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#324",
+        "reason": (
+            "The runtime holds no commissioned binding and has no verifier for "
+            "one: the safety registry that would read a binding, and the "
+            "actuation seam that would resolve an outcome through it, are both "
+            "still open. `tests/test_commissioned_binding_vectors.py` drives a "
+            "reference verifier written from the contract over these cases, "
+            "which establishes that the corpus is internally coherent and says "
+            "nothing about runtime behaviour, because no runtime code reads a "
+            "binding. Vendored now so the drift check covers the bytes a "
+            "consumer will have to match."
+        ),
+    },
     ("gateway_api", "outbound-evidence"): {
         "owner": "the runtime",
         "status": "proof_pending",

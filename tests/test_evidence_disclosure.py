@@ -1255,6 +1255,11 @@ PATTERN_AUDIT_EXEMPT = {
         "of the document."
     ),
     ".github/PULL_REQUEST_TEMPLATE.md": "Pull-request template for contributors.",
+    "tests/golden/README.md": (
+        "How to regenerate and check the commissioned-binding golden corpus. "
+        "Its 'evidence' is a commissioning proof of what a contactor does to a "
+        "load, and its keys are the contract's published TEST-ONLY vectors."
+    ),
     "AGENTS.md": CONTRIBUTOR_DOC,
     "CLAUDE.md": CONTRIBUTOR_DOC,
     "CONTRIBUTING.md": CONTRIBUTOR_DOC,
