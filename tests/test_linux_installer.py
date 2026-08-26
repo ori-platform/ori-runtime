@@ -2138,9 +2138,14 @@ def _release_with_interpreter(layout: InstallLayout, version: str) -> Path:
     Python: an external symlink target is judged by the permission plan, and a
     real interpreter lives outside the install root by definition.
     """
+    # Explicit modes rather than the ambient umask: on a private-user-group
+    # host, umask 0002 makes a default mkdir group-writable and the installer
+    # refuses such a tree. Fixtures must not depend on the umask the suite
+    # happens to run under.
+    layout.releases.mkdir(parents=True, mode=0o750, exist_ok=True)
     release = layout.release(version)
     interpreter = release / "venv" / "bin" / "python"
-    interpreter.parent.mkdir(parents=True)
+    interpreter.parent.mkdir(parents=True, mode=0o750)
     interpreter.write_bytes(b"python")
     interpreter.chmod(0o700)
     return release
@@ -2576,7 +2581,12 @@ def test_the_probe_runs_the_release_captured_at_the_start(
     )
 
     layout = InstallLayout.resolve(tmp_path / "ori")
-    layout.data.mkdir(parents=True)
+    # The root is created with an explicit private mode rather than inheriting
+    # the ambient umask. On a private-user-group host, umask 0002 makes a
+    # default mkdir group-writable, and the installer refuses such a root — as
+    # it should. That is a fixture detail, not what this test is about.
+    layout.root.mkdir(parents=True, mode=0o750)
+    layout.data.mkdir(mode=0o700)
     captured = _release_with_interpreter(layout, "2.4.0")
     decoy = _release_with_interpreter(layout, "2.3.0")
     layout.current.symlink_to(captured)
