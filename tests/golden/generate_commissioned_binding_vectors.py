@@ -15,6 +15,7 @@ import base64
 import copy
 import hashlib
 import json
+import math
 import pathlib
 import sys
 from typing import Any
@@ -72,7 +73,7 @@ def _check_numbers(value: Any) -> None:
             raise ValueError(f"integer outside the agreement zone: {value}")
         return
     if isinstance(value, float):
-        if value != value or value in (float("inf"), float("-inf")):
+        if math.isnan(value) or math.isinf(value):
             raise ValueError(f"non-finite number: {value}")
         if value != 0.0 and not (1e-4 <= abs(value) < 1e16):
             raise ValueError(f"float outside the agreement zone: {value}")
