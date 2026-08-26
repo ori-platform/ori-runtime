@@ -35,7 +35,11 @@ from ori.security.release_bundles import (
     verify_release_bundle,
     write_signature_envelope,
 )
-from scripts.build_release_bundle import BundleBuildError, build_release_bundle
+from scripts.build_release_bundle import (
+    BundleBuildError,
+    _wheel_identity,
+    build_release_bundle,
+)
 
 VERSION = "2.3.0"
 TARGET = f"linux-x86_64-python{sys.version_info.major}.{sys.version_info.minor}"
@@ -168,6 +172,76 @@ def _explain_difference(first: Path, second: Path) -> str:
             lines.append(f"  first  {member_a}")
             lines.append(f"  second {member_b}")
     return "\n".join(lines)
+
+
+# The shape of a real setuptools wheel: its own metadata at the archive root,
+# and every vendored package's dist-info carried inside the package directory.
+_VENDORED_DIST_INFO = (
+    "setuptools/_vendor/autocommand-2.2.2.dist-info/METADATA",
+    "setuptools/_vendor/packaging-26.0.dist-info/METADATA",
+    "setuptools/_vendor/zipp-3.23.0.dist-info/METADATA",
+)
+
+
+def _write_vendoring_wheel(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        _add_zip_entry(
+            archive,
+            "setuptools-83.0.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: setuptools\nVersion: 83.0.0\n",
+        )
+        for name in _VENDORED_DIST_INFO:
+            vendored = name.split("/")[-2].split("-")[0]
+            _add_zip_entry(
+                archive,
+                name,
+                f"Metadata-Version: 2.1\nName: {vendored}\nVersion: 1.0\n",
+            )
+
+
+def test_a_wheel_that_vendors_dist_info_is_identified_by_its_own_metadata(
+    tmp_path: Path,
+) -> None:
+    """setuptools ships twelve vendored dist-info directories inside the wheel.
+
+    Matching `.dist-info/METADATA` anywhere in the archive finds thirteen and
+    calls an ordinary wheel ambiguous, which is what stopped v2.5.0-rc.4: the
+    Raspberry Pi wheelhouse is the first release target to carry setuptools, so
+    no earlier bundle build had ever opened one.
+    """
+    wheel = tmp_path / "setuptools-83.0.0-py3-none-any.whl"
+    _write_vendoring_wheel(wheel)
+    assert _wheel_identity(wheel) == ("setuptools", "83.0.0")
+
+
+def test_a_wheel_with_no_root_metadata_is_still_refused(tmp_path: Path) -> None:
+    """Narrowing the match must not turn a real defect into a pass.
+
+    A wheel carrying only vendored metadata has no identity of its own, and
+    selecting the first suffix match would have let it claim a vendored one.
+    """
+    wheel = tmp_path / "broken-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name in _VENDORED_DIST_INFO:
+            _add_zip_entry(
+                archive, name, "Metadata-Version: 2.1\nName: vendored\nVersion: 1.0\n"
+            )
+    with pytest.raises(BundleBuildError, match="ambiguous METADATA"):
+        _wheel_identity(wheel)
+
+
+def test_two_root_metadata_members_remain_ambiguous(tmp_path: Path) -> None:
+    """Genuine ambiguity is two distributions at the root, not vendored payload."""
+    wheel = tmp_path / "confused-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for dist in ("one-1.0", "two-2.0"):
+            _add_zip_entry(
+                archive,
+                f"{dist}.dist-info/METADATA",
+                f"Metadata-Version: 2.1\nName: {dist}\nVersion: 1.0\n",
+            )
+    with pytest.raises(BundleBuildError, match="ambiguous METADATA"):
+        _wheel_identity(wheel)
 
 
 def test_build_is_deterministic_and_verifies_end_to_end(tmp_path: Path) -> None:
