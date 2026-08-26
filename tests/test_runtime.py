@@ -43,6 +43,7 @@ from ori.runtime import (
     _build_remote_command_verifier,
     _build_runtime_node_heartbeat_publisher,
     _coap_command_from_context,
+    _count_active_triggers,
     _maybe_autoload_dotenv,
     _message_from_context,
     _process_target_from_context,
@@ -152,27 +153,142 @@ def test_resolve_setup_notification_channels_deduplicates_primary():
     ) == ["sms", "whatsapp"]
 
 
-def test_setup_success_message_is_bounded_and_operational():
+def test_setup_success_message_is_bounded_and_notification_only():
     config = SimpleNamespace(
         device=SimpleNamespace(
             id="phone-01",
             location="Temidayo Site",
             deployment_type="phone",
-        )
+        ),
+        actions=SimpleNamespace(relay={"enabled": True, "gpio_pin": 26}),
     )
 
     message = _setup_success_message(
         config=config,
         connected_sensor_count=1,
-        loaded_skill_count=3,
+        active_trigger_count=3,
     )
 
+    assert message == (
+        "Ori is online at Temidayo Site: 1 sensor connected and 3 rules active. "
+        "Ori will notify you when it detects a configured risk. "
+        "No safety cutoff is commissioned, so Ori can warn but cannot intervene."
+    )
     assert len(message) <= 320
-    assert "Ori is now watching and protecting your site" in message
-    assert "phone-01" in message
-    assert "Sensors connected: 1" in message
-    assert "skills loaded: 3" in message
-    assert "detects risk" in message
+    assert "protecting" not in message
+    assert "skills loaded" not in message
+    assert "intervention armed" not in message
+    assert "automatic protection" not in message
+    assert "relay" not in message
+
+
+@pytest.mark.parametrize("location", ["", "   ", "\n\t"])
+def test_setup_success_message_falls_back_for_empty_location(location):
+    config = SimpleNamespace(device=SimpleNamespace(location=location))
+
+    message = _setup_success_message(
+        config=config,
+        connected_sensor_count=0,
+        active_trigger_count=0,
+    )
+
+    assert message.startswith("Ori is online at site: 0 sensors connected")
+    assert message.endswith(
+        "No safety cutoff is commissioned, so Ori can warn but cannot intervene."
+    )
+
+
+def test_setup_success_message_truncates_only_normalized_location():
+    config = SimpleNamespace(
+        device=SimpleNamespace(location="  Abuja\n" + "very-long-site " * 100)
+    )
+
+    message = _setup_success_message(
+        config=config,
+        connected_sensor_count=12,
+        active_trigger_count=34,
+    )
+
+    assert len(message) == 320
+    assert "\n" not in message
+    assert ": 12 sensors connected and 34 rules active." in message
+    assert message.endswith(
+        "No safety cutoff is commissioned, so Ori can warn but cannot intervene."
+    )
+
+
+def test_count_active_triggers_counts_each_rule_once():
+    sensors = [
+        SimpleNamespace(id="temperature-1", type="temperature"),
+        SimpleNamespace(id="humidity-1", type="humidity"),
+        SimpleNamespace(id="current-1", type="current"),
+    ]
+    skills = [
+        SimpleNamespace(
+            sensors_required=[
+                {"type": "temperature"},
+                {"type": "temperature"},
+                {"type": "humidity"},
+            ],
+            triggers=[SimpleNamespace(name="hot"), SimpleNamespace(name="humid")],
+        ),
+        SimpleNamespace(
+            sensors_required=[{"type": "humidity"}],
+            triggers=[SimpleNamespace(name="condensation")],
+        ),
+    ]
+
+    count = _count_active_triggers(
+        configured_sensors=sensors,
+        connected_sensor_ids={"temperature-1", "humidity-1"},
+        loaded_skills=skills,
+    )
+
+    assert count == 3
+
+
+def test_count_active_triggers_excludes_unconnected_unrelated_and_wildcard_skills():
+    sensors = [
+        SimpleNamespace(id="temperature-1", type="temperature"),
+        SimpleNamespace(id="current-1", type="current"),
+    ]
+    skills = [
+        SimpleNamespace(
+            sensors_required=[{"type": "temperature"}],
+            triggers=[SimpleNamespace(name="hot")],
+        ),
+        SimpleNamespace(
+            sensors_required=[{"type": "voltage"}],
+            triggers=[SimpleNamespace(name="sag")],
+        ),
+        SimpleNamespace(
+            sensors_required=[],
+            triggers=[SimpleNamespace(name="wildcard")],
+        ),
+    ]
+
+    count = _count_active_triggers(
+        configured_sensors=sensors,
+        connected_sensor_ids={"current-1"},
+        loaded_skills=skills,
+    )
+
+    assert count == 0
+
+
+def test_count_active_triggers_uses_exact_event_bus_sensor_type():
+    count = _count_active_triggers(
+        configured_sensors=[SimpleNamespace(id="temperature-1", type=" temperature ")],
+        connected_sensor_ids={"temperature-1"},
+        loaded_skills=[
+            SimpleNamespace(
+                sensors_required=[{"type": "temperature"}],
+                triggers=[SimpleNamespace(name="hot")],
+            )
+        ],
+    )
+
+    assert count == 0
 
 
 @pytest.mark.asyncio
@@ -197,7 +313,13 @@ async def test_setup_success_notification_sends_enabled_channels():
     runtime = OriRuntime()
     runtime._operator_contact = "+2348000000000"
     runtime._connected_sensor_ids = {"phone-main-power"}
-    runtime._loaded_skills = [SimpleNamespace(name="energy-anomaly-detector")]
+    runtime._loaded_skills = [
+        SimpleNamespace(
+            name="energy-anomaly-detector",
+            sensors_required=[{"type": "usb_power"}],
+            triggers=[SimpleNamespace(name="high_draw")],
+        )
+    ]
     runtime._last_alert_timestamps_by_channel = {}
     runtime._last_alert_timestamps_by_trigger = {}
     runtime._runtime_started_at_ms = 1_700_000_000_000
@@ -208,6 +330,7 @@ async def test_setup_success_notification_sends_enabled_channels():
             location="Temidayo Site",
             deployment_type="phone",
         ),
+        sensors=[SimpleNamespace(id="phone-main-power", type="usb_power")],
         actions=SimpleNamespace(
             setup_notifications={"enabled": True, "channels": ["sms", "whatsapp"]},
             primary_alert_channel="sms",
@@ -221,10 +344,59 @@ async def test_setup_success_notification_sends_enabled_channels():
     assert [call["channel"] for call in sender.calls] == ["sms", "whatsapp"]
     assert all(call["to_number"] == "+2348000000000" for call in sender.calls)
     assert all(
-        "Ori is now watching and protecting your site" in call["message"]
+        "1 sensor connected and 1 rule active" in call["message"]
         for call in sender.calls
     )
+    assert all("cannot intervene" in call["message"] for call in sender.calls)
     assert runtime._last_alert_timestamps_by_trigger["runtime_setup_complete"] > 0
+
+
+@pytest.mark.asyncio
+async def test_setup_success_notification_queues_failed_delivery():
+    class FailingAlertSender:
+        async def send(self, *, message, to_number, preferred_channel=None):
+            raise AssertionError("setup notifications must use exact-channel send")
+
+        async def send_exact(self, *, message, to_number, channel):
+            return False
+
+    runtime = OriRuntime()
+    runtime._operator_contact = "+2348000000000"
+    runtime._connected_sensor_ids = {"temperature-1"}
+    runtime._loaded_skills = [
+        SimpleNamespace(
+            sensors_required=[{"type": "temperature"}],
+            triggers=[SimpleNamespace(name="overheat")],
+        )
+    ]
+    runtime._last_alert_timestamps_by_channel = {}
+    runtime._last_alert_timestamps_by_trigger = {}
+    runtime._runtime_started_at_ms = 1_700_000_000_000
+    runtime._state_store = SimpleNamespace(
+        enqueue_alert=AsyncMock(return_value=True),
+        get_skill_state=AsyncMock(return_value=None),
+        set_skill_state=AsyncMock(return_value=None),
+    )
+    config = SimpleNamespace(
+        device=SimpleNamespace(location="Abuja"),
+        sensors=[SimpleNamespace(id="temperature-1", type="temperature")],
+        actions=SimpleNamespace(
+            setup_notifications={"enabled": True, "channels": ["sms"]},
+            primary_alert_channel="sms",
+            sms={"enabled": True},
+            whatsapp={"enabled": False},
+        ),
+    )
+
+    await runtime._send_setup_success_notifications(config, FailingAlertSender())
+
+    runtime._state_store.enqueue_alert.assert_awaited_once()
+    queued = runtime._state_store.enqueue_alert.await_args.kwargs
+    assert queued["channel"] == "sms"
+    assert queued["action_tier"] == "A"
+    assert queued["trigger_name"] == "runtime_setup_complete"
+    assert "1 sensor connected and 1 rule active" in queued["message"]
+    assert "cannot intervene" in queued["message"]
 
 
 @pytest.mark.asyncio

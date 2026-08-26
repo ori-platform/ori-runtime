@@ -180,6 +180,7 @@ ALERT_OUTBOX_RETRY_INTERVAL_S = 30.0
 ALERT_OUTBOX_BATCH_SIZE = 50
 ALERT_OUTBOX_MAX_ATTEMPTS_NON_TIER_D = 10
 ALERT_OUTBOX_TIER_D_CRITICAL_THRESHOLD = 3
+SETUP_NOTIFICATION_MAX_CHARS = 320
 CAPABILITY_POSTURE_UPDATE_INTERVAL_S = 30.0
 DEVICE_POLICY_REFRESH_DEFAULT_S = 21600.0
 DEVICE_POLICY_TRANSIENT_AUDIT_SUPPRESS_MS = 900_000
@@ -3673,7 +3674,11 @@ class OriRuntime:
         message = _setup_success_message(
             config=config,
             connected_sensor_count=len(self._connected_sensor_ids),
-            loaded_skill_count=len(self._loaded_skills),
+            active_trigger_count=_count_active_triggers(
+                configured_sensors=config.sensors,
+                connected_sensor_ids=self._connected_sensor_ids,
+                loaded_skills=self._loaded_skills,
+            ),
         )
         original_ts = self._runtime_started_at_ms or now_ms()
         for channel in channels:
@@ -3900,17 +3905,79 @@ def _setup_success_message(
     *,
     config: Config,
     connected_sensor_count: int,
-    loaded_skill_count: int,
+    active_trigger_count: int,
 ) -> str:
-    location = str(config.device.location or "site").strip()
-    deployment = str(config.device.deployment_type or "runtime").strip()
-    return _cap_sms_message(
-        "Ori is now watching and protecting your site. "
-        f"{config.device.id} is monitoring {location} in {deployment} mode. "
-        f"Sensors connected: {connected_sensor_count}; skills loaded: {loaded_skill_count}. "
-        "You will receive alerts here when Ori detects risk.",
-        limit=320,
+    """Describe only the notification posture established at startup.
+
+    The safety disclaimer is fixed text and must never be removed by a generic
+    tail truncation.  ``device.location`` is operator-controlled and unbounded
+    by the config schema, so only that field is compacted and shortened to fit.
+    """
+    location = " ".join(str(config.device.location or "").split()) or "site"
+    sensor_label = "sensor" if connected_sensor_count == 1 else "sensors"
+    rule_label = "rule" if active_trigger_count == 1 else "rules"
+    prefix = "Ori is online at "
+    suffix = (
+        f": {connected_sensor_count} {sensor_label} connected and "
+        f"{active_trigger_count} {rule_label} active. "
+        "Ori will notify you when it detects a configured risk. "
+        "No safety cutoff is commissioned, so Ori can warn but cannot intervene."
     )
+    location_budget = max(
+        SETUP_NOTIFICATION_MAX_CHARS - len(prefix) - len(suffix),
+        0,
+    )
+    if len(location) > location_budget:
+        if location_budget <= 3:
+            location = "." * location_budget
+        else:
+            location = location[: location_budget - 3].rstrip() + "..."
+    return prefix + location + suffix
+
+
+def _count_active_triggers(
+    *,
+    configured_sensors: list[Any],
+    connected_sensor_ids: set[str],
+    loaded_skills: list[Any],
+) -> int:
+    """Count registered rules with at least one connected declared input.
+
+    A skill's triggers are registered for every type in ``sensors_required``.
+    Matching more than one connected type therefore makes a trigger reachable
+    through more than one subscription, but it remains one rule and is counted
+    once.  Skills without a declared type are excluded conservatively: a
+    wildcard subscription is not a declared operator-facing input contract.
+    """
+    connected_types: set[str] = set()
+    for sensor in configured_sensors:
+        sensor_id = str(getattr(sensor, "id", ""))
+        sensor_type = getattr(sensor, "type", "")
+        if (
+            sensor_id in connected_sensor_ids
+            and isinstance(sensor_type, str)
+            and sensor_type
+        ):
+            connected_types.add(sensor_type)
+
+    active_count = 0
+    for skill in loaded_skills:
+        required = getattr(skill, "sensors_required", [])
+        if not isinstance(required, list):
+            continue
+        declared_types: set[str] = set()
+        for item in required:
+            if not isinstance(item, dict):
+                continue
+            sensor_type = item.get("type")
+            if isinstance(sensor_type, str) and sensor_type:
+                declared_types.add(sensor_type)
+        if not connected_types.intersection(declared_types):
+            continue
+        triggers = getattr(skill, "triggers", [])
+        if isinstance(triggers, list):
+            active_count += len(triggers)
+    return active_count
 
 
 def _resolve_trigger_name(ctx: SkillContext) -> str:
