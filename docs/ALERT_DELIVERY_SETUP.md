@@ -177,40 +177,34 @@ never been exercised against two real providers failing for real reasons.
 
 ## 5. The startup notification
 
-This already exists. `_setup_success_message` in `ori/runtime.py` sends it once
-the runtime has connected sensors, loaded skills, started background services,
-completed reconciliation and reached normal health. Failed delivery is queued in
-the durable alert outbox, so a provider outage delays nothing.
+`_setup_success_message` in `ori/runtime.py` sends a notification once the
+runtime has connected sensors, loaded and registered skills, started background
+services, completed reconciliation and reached normal health. Failed delivery
+is queued in the durable alert outbox, so a provider outage does not block
+startup.
 
-That makes it the cheapest continuous proof the alert path works: every boot
-exercises the real provider, the real credentials and the failover decision.
+The notification is deliberately limited to facts the runtime has established:
 
-### It currently claims more than it establishes
+> Ori is online at Ikeja Office: 4 sensors connected and 3 rules active. Ori
+> will notify you when it detects a configured risk. No safety cutoff is
+> commissioned, so Ori can warn but cannot intervene.
 
-The message reads:
+"Rules active" means each counted rule belongs to a loaded skill that declares
+at least one sensor type with a successfully connected adapter. A rule is
+counted once even if several of its declared types are connected. This does not
+mean its condition is currently true, that history is available, or that an
+actuator exists.
 
-> Ori is now watching and protecting your site. {device_id} is monitoring
-> {location} in {deployment} mode. Sensors connected: N; skills loaded: M.
-> You will receive alerts here when Ori detects risk.
+The location is normalised and independently shortened when necessary so the
+complete message stays within 320 characters. The fixed no-cutoff disclaimer is
+never passed through general tail truncation.
 
-"Watching and protecting" is not supported by what the message counts. It
-reports connected sensors and loaded skills. It does not establish that any
-trigger is armed, that a relay is wired, or that a Tier D path can actuate.
+Relay configuration, GPIO library availability and an adapter connection are
+not evidence of a commissioned physical safety outcome, so none can strengthen
+this wording. A positive intervention claim requires the separately reviewed
+safety registry and commissioned actuator posture; until those exist, every
+startup notification states that Ori can warn but cannot intervene.
 
-A device with sensors and skills but no GPIO backend sends that sentence
-unchanged. So does a device whose relay is unwired. The operator reads a promise
-of intervention from a runtime that can, at most, warn.
-
-A message that reports what actually loaded:
-
-> Ori is online at Ikeja Office: 4 sensors connected, 3 skills loaded. Alert
-> delivery is active. Ori will notify you when it detects a configured risk.
-
-"Automatic safety intervention is armed" belongs in that message only when the
-runtime has positively established the Tier D registry and a real actuator
-posture — not inferred from a relay appearing in configuration, and not from
-`gpiozero` importing, which an unarbitrated fallback also satisfies.
-
-Until then the honest claim is notification, which is what the runtime can
-actually keep.
-
+Every boot with setup notifications enabled exercises the configured
+exact-channel sender, its credentials and the durable queue-on-failure path.
+Automatic channel failover is a separate path and must be tested deliberately.
