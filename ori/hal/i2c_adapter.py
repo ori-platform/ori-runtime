@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+import math
 import threading
 import time
 from typing import Any
@@ -243,7 +244,9 @@ def _positive(value: Any, key: str) -> float:
         raise AdapterConnectionError(
             f"I2CAdapter: calibration '{key}' is not a number: {value!r}"
         ) from exc
-    if number <= 0 or number != number or number in (float("inf"), float("-inf")):
+    # isfinite covers NaN and both infinities; the ordering matters because a
+    # NaN comparison is False, so `number <= 0` alone would let one through.
+    if not math.isfinite(number) or number <= 0:
         raise AdapterConnectionError(
             f"I2CAdapter: calibration '{key}' must be a positive number, got {value!r}"
         )
