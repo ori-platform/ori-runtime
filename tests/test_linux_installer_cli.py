@@ -1135,3 +1135,155 @@ def test_the_success_envelope_is_versioned(
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema_version"] == 1
     assert payload["ok"] is True
+
+
+# ─── release lifecycle commands ──────────────────────────────────────────────
+
+
+def _installed_release(root: Path, version: str, *, active: bool = False) -> Path:
+    release = root / "releases" / version
+    interpreter = release / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"python")
+    interpreter.chmod(0o700)
+    if active:
+        (root / "current").symlink_to(release)
+    return release
+
+
+def test_release_list_reports_installed_releases_as_json(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "ori"
+    (root / "releases").mkdir(parents=True)
+    _installed_release(root, "2.4.0")
+    _installed_release(root, "2.5.0", active=True)
+
+    assert cli.main(["release", "list", "--scope", "system", "--root", str(root)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    versions = {entry["version"]: entry for entry in payload["releases"]}
+    assert versions["2.5.0"]["active"] is True
+    assert versions["2.4.0"]["active"] is False
+    assert payload["status"] == "listed"
+
+
+def test_release_list_does_not_repair_a_dangling_current(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Through the command, not the helper.
+
+    The helper-level test proves the function; this proves the command wired to
+    it did not reintroduce the mutating resolver on the way through.
+    """
+    root = tmp_path / "ori"
+    (root / "releases").mkdir(parents=True)
+    (root / "current").symlink_to(root / "releases" / "2.4.0")
+
+    assert cli.main(["release", "list", "--scope", "system", "--root", str(root)]) == 0
+    capsys.readouterr()
+    assert (root / "current").is_symlink()
+
+
+def test_release_retire_moves_a_release_and_says_rollback_is_gone(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "ori"
+    (root / "releases").mkdir(parents=True)
+    _installed_release(root, "2.4.0")
+    _installed_release(root, "2.5.0", active=True)
+
+    exit_code = cli.main(
+        ["release", "retire", "2.4.0", "--scope", "system", "--root", str(root)]
+    )
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "retired"
+    # Stated, not implied: retiring gives up the ability to go back to it.
+    assert payload["rollback_available"] is False
+    assert not (root / "releases" / "2.4.0").exists()
+    assert (root / "retired" / "2.4.0" / "venv" / "bin" / "python").is_file()
+
+
+def test_release_retire_refuses_the_active_release_with_a_stable_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "ori"
+    (root / "releases").mkdir(parents=True)
+    _installed_release(root, "2.5.0", active=True)
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "release",
+                "retire",
+                "2.5.0",
+                "--scope",
+                "system",
+                "--root",
+                str(root),
+                "--json",
+            ]
+        )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"]["code"] == "config_validation_failed"
+    assert (root / "releases" / "2.5.0").is_dir()
+
+
+def test_release_retire_refuses_user_scope_rather_than_crashing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Retirement moves a root-owned tree between root-owned directories.
+
+    On the bench Pi the half-implemented version raised an uncaught
+    PermissionError. A CLI must fail with an error code it can render.
+    """
+    root = tmp_path / "ori"
+    (root / "releases").mkdir(parents=True)
+    _installed_release(root, "2.4.0")
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "release",
+                "retire",
+                "2.4.0",
+                "--scope",
+                "user",
+                "--root",
+                str(root),
+                "--json",
+            ]
+        )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"]["code"] == "config_validation_failed"
+    assert (root / "releases" / "2.4.0").is_dir()
+
+
+def test_release_retire_is_excluded_while_the_root_is_locked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The production protection for an in-progress install's rollback target."""
+    from ori.installer.linux import InstallLayout, release_lifecycle_lock
+
+    root = tmp_path / "ori"
+    (root / "releases").mkdir(parents=True)
+    _installed_release(root, "2.4.0")
+    layout = InstallLayout.resolve(root)
+
+    with release_lifecycle_lock(layout):
+        with pytest.raises(SystemExit):
+            cli.main(
+                [
+                    "release",
+                    "retire",
+                    "2.4.0",
+                    "--scope",
+                    "system",
+                    "--root",
+                    str(root),
+                    "--json",
+                ]
+            )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"]["code"] == "unsafe_install_root"
+    assert (root / "releases" / "2.4.0").is_dir()

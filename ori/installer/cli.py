@@ -33,7 +33,9 @@ from ori.installer.linux import (
     collect_installer_config,
     ensure_service_account,
     install_composed_release,
+    list_releases,
     require_trusted_base_interpreter,
+    retire_release,
     uninstall_runtime,
 )
 from ori.security.release_bundles import (
@@ -107,6 +109,20 @@ def _profile(scope: str, service_user: str | None = None) -> SystemdServiceProfi
             f"renamed; drop --service-user, or pass --service-user {SERVICE_USER}",
         )
     return SystemdServiceProfile.system()
+
+
+def _release_layout(scope: str, root: Path | None) -> InstallLayout:
+    """The install root alone, for commands that never touch a systemd unit.
+
+    `_paths` also resolves unit and environment-file locations and validates
+    them. Listing and retiring releases have nothing to do with either, so
+    asking for them would make an unrelated path constraint decide whether a
+    release command runs.
+    """
+    default_root = (
+        Path.home() / ".local" / "ori" if scope == "user" else Path("/opt/ori")
+    )
+    return InstallLayout.resolve(root or default_root)
 
 
 def _paths(
@@ -367,6 +383,43 @@ def _uninstall(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def _release_list(args: argparse.Namespace) -> dict[str, object]:
+    if args.scope is None:
+        raise LinuxInstallError(
+            "config_validation_failed",
+            "release list requires --scope system or --scope user",
+        )
+    layout = _release_layout(args.scope, args.root)
+    return {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "ok": True,
+        "releases": list_releases(layout),
+        "scope": args.scope,
+        "status": "listed",
+    }
+
+
+def _release_retire(args: argparse.Namespace) -> dict[str, object]:
+    if args.scope is None:
+        raise LinuxInstallError(
+            "config_validation_failed",
+            "release retire requires --scope system or --scope user",
+        )
+    layout = _release_layout(args.scope, args.root)
+    destination = retire_release(layout, args.version, scope=args.scope)
+    return {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "ok": True,
+        "version": args.version,
+        "retired_to": str(destination),
+        # Stated rather than implied: an operator retiring a release to unblock
+        # an interpreter removal has just given up the ability to go back to it.
+        "rollback_available": False,
+        "scope": args.scope,
+        "status": "retired",
+    }
+
+
 def _add_output_arguments(parser: argparse.ArgumentParser) -> None:
     """Machine output is requested explicitly, never inferred.
 
@@ -420,6 +473,24 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--location")
     install.add_argument("--deployment-type", choices=("pi", "server"), default="pi")
     install.add_argument("--operator-contact")
+
+    release = commands.add_parser(
+        "release", help="inspect and retire installed releases", allow_abbrev=False
+    )
+    release_actions = release.add_subparsers(dest="release_command", required=True)
+    release_list = release_actions.add_parser(
+        "list", help="list installed releases", allow_abbrev=False
+    )
+    _add_scope_arguments(release_list)
+    _add_output_arguments(release_list)
+    release_retire = release_actions.add_parser(
+        "retire",
+        help="move a release out of the selectable set without deleting it",
+        allow_abbrev=False,
+    )
+    _add_scope_arguments(release_retire)
+    _add_output_arguments(release_retire)
+    release_retire.add_argument("version")
 
     uninstall = commands.add_parser(
         "uninstall", help="remove Runtime and its unit", allow_abbrev=False
@@ -556,8 +627,17 @@ def _exit_error(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    handlers = {
+        "install": _install,
+        "uninstall": _uninstall,
+        "release": lambda parsed: (
+            _release_list(parsed)
+            if parsed.release_command == "list"
+            else _release_retire(parsed)
+        ),
+    }
     try:
-        result = _install(args) if args.command == "install" else _uninstall(args)
+        result = handlers[args.command](args)
     except (ReleaseBundleError, LinuxInstallError) as exc:
         _exit_error(exc, json_mode=bool(getattr(args, "json", False)))
     if getattr(args, "json", False) or args.command != "install":

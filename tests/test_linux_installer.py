@@ -116,12 +116,21 @@ def _validate(path: Path) -> None:
     assert (path / "venv" / "installed.txt").read_text(encoding="utf-8") == "ok"
 
 
+def _real_interpreter(interpreter: Path) -> None:
+    """Give a fake release an interpreter that genuinely starts.
+
+    The rollback pre-check runs the release's own interpreter and imports the
+    runtime through it, because an executable bit is not evidence: a file
+    containing the text `python` satisfies every file-level check and fails at
+    the one moment a rollback needs it.
+    """
+    interpreter.parent.mkdir(parents=True, exist_ok=True)
+    interpreter.symlink_to(sys.executable)
+
+
 def _health_release(tmp_path: Path) -> Path:
     release = (tmp_path / "releases" / "2.3.0").resolve()
-    interpreter = release / "venv" / "bin" / "python"
-    interpreter.parent.mkdir(parents=True)
-    interpreter.write_bytes(b"python")
-    interpreter.chmod(0o700)
+    _real_interpreter(release / "venv" / "bin" / "python")
     return release
 
 
@@ -1996,7 +2005,11 @@ def test_system_permissions_keep_code_root_owned_and_data_service_owned(
         ),
     )
 
-    apply_system_service_permissions(layout, SystemdServiceProfile.system())
+    apply_system_service_permissions(
+        layout,
+        SystemdServiceProfile.system(),
+        releases=[layout.release("2.3.0")],
+    )
 
     assert ownership[layout.root] == (0, 1002)
     assert ownership[regular] == (0, 1002)
@@ -2017,6 +2030,8 @@ def test_system_permissions_fail_closed_for_non_root_and_data_symlink(
     layout.data.mkdir(mode=0o700)
     monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 501)
     with pytest.raises(LinuxInstallError, match="service_start_failed"):
+        # No scoped release: this covers permission application failing, not
+        # which trees are in scope.
         apply_system_service_permissions(layout, SystemdServiceProfile.system())
 
     monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
@@ -2027,7 +2042,11 @@ def test_system_permissions_fail_closed_for_non_root_and_data_symlink(
     monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
     (layout.data / "escape").symlink_to(tmp_path / "outside")
     with pytest.raises(LinuxInstallError, match="unsafe_install_root"):
-        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+        apply_system_service_permissions(
+            layout,
+            SystemdServiceProfile.system(),
+            releases=[layout.release("2.3.0")],
+        )
     assert layout.root.stat().st_mode & 0o777 == 0o755
 
 
@@ -2112,6 +2131,493 @@ def test_system_upgrade_preserves_access_and_reapplies_permissions(
     assert observed_modes == [(0o750, 0o750)]
 
 
+def _release_with_interpreter(layout: InstallLayout, version: str) -> Path:
+    """A release for permission-plan tests, which do not run the probe.
+
+    The interpreter is a plain file rather than a symlink to the running
+    Python: an external symlink target is judged by the permission plan, and a
+    real interpreter lives outside the install root by definition.
+    """
+    release = layout.release(version)
+    interpreter = release / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"python")
+    interpreter.chmod(0o700)
+    return release
+
+
+def _startable_release(layout: InstallLayout, version: str) -> Path:
+    """A release for tests that cross the rollback pre-check."""
+    release = layout.release(version)
+    _real_interpreter(release / "venv" / "bin" / "python")
+    return release
+
+
+def _as_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+    monkeypatch.setattr("ori.installer.linux.os.fchmod", lambda *_args: None)
+
+
+def test_retiring_moves_a_release_out_of_the_selectable_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retirement quarantines rather than deletes.
+
+    An operator retiring a release to unblock an interpreter removal is making
+    a sequencing decision. Losing the tree at the same moment would turn that
+    into data loss, so deletion stays a separate act.
+    """
+    from ori.installer.linux import RETIRED_DIRNAME, list_releases, retire_release
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    active = _release_with_interpreter(layout, "2.5.0")
+    old = _release_with_interpreter(layout, "2.4.0")
+    layout.current.symlink_to(active)
+    monkeypatch.setattr("ori.installer.linux.os.chown", lambda *_args: None)
+
+    destination = retire_release(layout, "2.4.0")
+
+    assert not old.exists()
+    assert destination == layout.root / RETIRED_DIRNAME / "2.4.0"
+    assert (destination / "venv" / "bin" / "python").is_file()
+    assert [entry["version"] for entry in list_releases(layout)] == ["2.5.0"]
+
+
+def test_retiring_the_active_release_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ori.installer.linux import retire_release
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    active = _release_with_interpreter(layout, "2.5.0")
+    layout.current.symlink_to(active)
+    monkeypatch.setattr("ori.installer.linux.os.chown", lambda *_args: None)
+
+    with pytest.raises(LinuxInstallError, match="active release"):
+        retire_release(layout, "2.5.0")
+    assert active.is_dir()
+
+
+def test_retirement_cannot_run_while_an_install_holds_the_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No argument can protect an in-progress install's rollback target.
+
+    Neither command can see the other's state, so passing the target between
+    them is not possible in production — an earlier version of this test did
+    exactly that and proved nothing. Exclusion is the only mechanism that
+    works, and it is what production actually has.
+    """
+    from ori.installer.linux import release_lifecycle_lock, retire_release
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    _release_with_interpreter(layout, "2.4.0")
+
+    with release_lifecycle_lock(layout):
+        with pytest.raises(LinuxInstallError, match="already in progress|in progress"):
+            retire_release(layout, "2.4.0")
+
+
+def test_a_first_install_is_locked_before_the_root_exists(
+    tmp_path: Path,
+) -> None:
+    """The hole an earlier placement left open.
+
+    Locking the root's own descriptor cannot start before the root exists, so a
+    first install held nothing. The moment it created the root, a second caller
+    locked it and entered the same supposedly exclusive transaction.
+    """
+    from ori.installer.linux import release_lifecycle_lock
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    assert not layout.root.exists()
+
+    with release_lifecycle_lock(layout):
+        layout.root.mkdir(parents=True)
+        with pytest.raises(LinuxInstallError, match="in progress"):
+            with release_lifecycle_lock(layout):
+                pass
+
+
+def test_roots_sharing_a_parent_do_not_block_each_other(tmp_path: Path) -> None:
+    """`/opt` holds one install root today and could hold another.
+
+    The lock is named for the root it guards, so exclusion stays per-root
+    rather than becoming a lock on the directory installs happen to live in.
+    """
+    from ori.installer.linux import release_lifecycle_lock
+
+    first = InstallLayout.resolve(tmp_path / "ori")
+    second = InstallLayout.resolve(tmp_path / "ori-other")
+
+    with release_lifecycle_lock(first):
+        with release_lifecycle_lock(second):
+            pass
+
+
+def test_the_lock_is_released_so_a_later_command_can_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exclusion that never lets go is an outage, not a safeguard."""
+    from ori.installer.linux import release_lifecycle_lock, retire_release
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    _release_with_interpreter(layout, "2.4.0")
+
+    with release_lifecycle_lock(layout):
+        pass
+    retire_release(layout, "2.4.0")
+    assert not layout.release("2.4.0").exists()
+
+
+def test_user_scope_retirement_is_refused_with_a_stable_error(
+    tmp_path: Path,
+) -> None:
+    """It moves a root-owned tree between root-owned directories.
+
+    A user-scope implementation is a different ownership model, not a smaller
+    version of this one. Half-implementing it raised an uncaught PermissionError
+    rather than an installer error the CLI can render.
+    """
+    from ori.installer.linux import retire_release
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    _release_with_interpreter(layout, "2.4.0")
+
+    with pytest.raises(LinuxInstallError, match="scope system"):
+        retire_release(layout, "2.4.0", scope="user")
+    assert layout.release("2.4.0").is_dir()
+
+
+def test_a_symlinked_quarantine_directory_is_refused(
+    tmp_path: Path,
+) -> None:
+    """os.replace through a symlinked quarantine would move a release outside.
+
+    A plain mkdir(exist_ok=True) accepts an existing symlink, so the retirement
+    destination could be anywhere the link points.
+    """
+    from ori.installer.linux import RETIRED_DIRNAME, retire_release
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    _release_with_interpreter(layout, "2.4.0")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (layout.root / RETIRED_DIRNAME).symlink_to(elsewhere)
+
+    with pytest.raises(LinuxInstallError):
+        retire_release(layout, "2.4.0")
+    assert layout.release("2.4.0").is_dir()
+    assert not any(elsewhere.iterdir())
+
+
+def test_retiring_something_that_is_not_a_release_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a canonical direct child of releases/ may be retired."""
+    from ori.installer.linux import retire_release
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    monkeypatch.setattr("ori.installer.linux.os.chown", lambda *_args: None)
+
+    with pytest.raises(LinuxInstallError):
+        retire_release(layout, "never-installed")
+    with pytest.raises(LinuxInstallError):
+        retire_release(layout, "../data")
+
+
+def test_retiring_the_same_release_twice_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second retirement would overwrite the quarantined copy."""
+    from ori.installer.linux import retire_release
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    _release_with_interpreter(layout, "2.4.0")
+    monkeypatch.setattr("ori.installer.linux.os.chown", lambda *_args: None)
+    retire_release(layout, "2.4.0")
+
+    _release_with_interpreter(layout, "2.4.0")
+    with pytest.raises(LinuxInstallError, match="already been retired"):
+        retire_release(layout, "2.4.0")
+
+
+def test_listing_does_not_change_what_it_reports(tmp_path: Path) -> None:
+    """A read-only command must be read-only.
+
+    `_active_release` unlinks a dangling `current` as part of resolving it,
+    which is right inside an install transaction and wrong in a listing. On the
+    bench Pi, running the listing removed the symlink it was asked to report.
+    """
+    from ori.installer.linux import list_releases
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    layout.current.symlink_to(layout.releases / "2.4.0")
+    assert layout.current.is_symlink()
+
+    list_releases(layout)
+
+    assert layout.current.is_symlink(), "listing removed the dangling current link"
+
+
+def test_listing_reports_which_release_is_active_and_has_an_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`has_interpreter` reports a file, and is named for that.
+
+    It does not identify releases that block an upgrade — only the active
+    rollback candidate is load-bearing, and whether that one starts is
+    established by starting it at install time. Calling this field `runnable`
+    would claim both things it does not check.
+    """
+    from ori.installer.linux import list_releases
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    active = _release_with_interpreter(layout, "2.5.0")
+    broken = layout.release("2.4.0")
+    (broken / "venv" / "bin").mkdir(parents=True)
+    (broken / "venv" / "bin" / "python").symlink_to(tmp_path / "gone" / "python")
+    layout.current.symlink_to(active)
+
+    entries = {entry["version"]: entry for entry in list_releases(layout)}
+    assert entries["2.5.0"]["active"] is True
+    assert entries["2.5.0"]["has_interpreter"] is True
+    assert entries["2.4.0"]["active"] is False
+    assert entries["2.4.0"]["has_interpreter"] is False
+
+
+def test_a_stale_retained_release_cannot_block_an_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The defect: any retained release held a veto over every future install.
+
+    A release whose interpreter lived outside the install root kept that
+    reference after being superseded. Removing the interpreter — the documented
+    order, after a later release is installed and healthy — then failed the
+    external-symlink check for a tree nothing in the transaction referred to,
+    and left the installation permanently un-upgradeable.
+    """
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    candidate = _release_with_interpreter(layout, "2.5.0")
+
+    # A superseded release pointing at an interpreter that no longer exists.
+    stale = layout.release("2.4.0")
+    (stale / "venv" / "bin").mkdir(parents=True)
+    (stale / "venv" / "bin" / "python").symlink_to(tmp_path / "removed" / "python")
+
+    _as_root(monkeypatch)
+    apply_system_service_permissions(
+        layout, SystemdServiceProfile.system(), releases=[candidate]
+    )
+
+
+def test_the_rollback_candidate_is_in_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scoping to the candidate alone would leave the restore target unowned."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    candidate = _release_with_interpreter(layout, "2.5.0")
+    previous = _release_with_interpreter(layout, "2.4.0")
+
+    planned: list[Path] = []
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux._apply_permission_plan",
+        lambda plan: planned.extend(change.path for change in plan),
+    )
+    apply_system_service_permissions(
+        layout, SystemdServiceProfile.system(), releases=[candidate, previous]
+    )
+    assert previous / "venv" / "bin" / "python" in planned
+    assert candidate / "venv" / "bin" / "python" in planned
+
+
+def test_history_outside_the_scope_is_never_walked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inert history must not be searched, not merely tolerated."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    candidate = _release_with_interpreter(layout, "2.5.0")
+    history = _release_with_interpreter(layout, "2.3.0")
+
+    planned: list[Path] = []
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux._apply_permission_plan",
+        lambda plan: planned.extend(change.path for change in plan),
+    )
+    apply_system_service_permissions(
+        layout, SystemdServiceProfile.system(), releases=[candidate]
+    )
+    assert layout.releases in planned, "the releases directory itself is still owned"
+    assert not any(str(path).startswith(str(history)) for path in planned), (
+        "a release outside the transaction was walked"
+    )
+
+
+def test_reinstalling_the_active_version_does_not_plan_it_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The candidate and the rollback target are the same tree on a reinstall.
+
+    Planning it twice would apply two permission changes to every file, and
+    the second would record the first's result as the original to restore.
+    """
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    release = _release_with_interpreter(layout, "2.5.0")
+
+    planned: list[Path] = []
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux._apply_permission_plan",
+        lambda plan: planned.extend(change.path for change in plan),
+    )
+    apply_system_service_permissions(
+        layout, SystemdServiceProfile.system(), releases=[release, release]
+    )
+    interpreter = release / "venv" / "bin" / "python"
+    assert planned.count(interpreter) == 1
+
+
+def test_a_rollback_candidate_that_cannot_start_is_refused(
+    tmp_path: Path,
+) -> None:
+    """An executable bit is not evidence that a release starts.
+
+    On the bench Pi a file containing the text `not python` was accepted as a
+    valid rollback candidate: it is a regular file, it has the executable bit,
+    and it is not an interpreter. That is only discovered during a rollback,
+    which is the one moment there is no remaining fallback.
+    """
+    from ori.installer.linux import _assert_release_starts
+
+    impostor = tmp_path / "2.4.0"
+    interpreter = impostor / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("not python\n", encoding="utf-8")
+    interpreter.chmod(0o755)
+    assert interpreter.is_file() and os.access(interpreter, os.X_OK)
+
+    with pytest.raises(LinuxInstallError, match="does not start|could not be executed"):
+        _assert_release_starts(impostor)
+
+
+def test_a_real_release_passes_the_start_probe(tmp_path: Path) -> None:
+    """The probe must not refuse a release that genuinely runs.
+
+    A real venv, because that is what the probe is judging. A bare symlink to
+    the running interpreter is not one — it has no `pyvenv.cfg`, so it cannot
+    see the packages the release would ship, and it would fail for a reason
+    the probe is not testing for.
+    """
+    from ori.installer.linux import _assert_release_starts
+
+    release = tmp_path / "2.5.0"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--system-site-packages", str(release / "venv")],
+        check=True,
+        capture_output=True,
+    )
+    version_dir = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    site_packages = release / "venv" / "lib" / version_dir / "site-packages"
+    site_packages.mkdir(parents=True, exist_ok=True)
+    (site_packages / "ori-under-test.pth").write_text(
+        str(Path(sys.prefix) / "lib" / version_dir / "site-packages") + "\n",
+        encoding="utf-8",
+    )
+
+    _assert_release_starts(release)
+
+
+def test_the_probe_runs_the_release_captured_at_the_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not a fresh read of `current`.
+
+    `current` is moved between capture and preflight. Without that the test
+    cannot tell a captured value from a re-read that happens to agree, which
+    is the whole difference being asserted.
+    """
+    probed: list[Path] = []
+    monkeypatch.setattr(
+        "ori.installer.linux._assert_release_starts",
+        lambda release: probed.append(release),
+    )
+
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.data.mkdir(parents=True)
+    captured = _release_with_interpreter(layout, "2.4.0")
+    decoy = _release_with_interpreter(layout, "2.3.0")
+    layout.current.symlink_to(captured)
+
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux._apply_permission_plan", lambda _plan: None
+    )
+
+    def prepare(staging: Path) -> None:
+        interpreter = staging / "venv" / "bin" / "python"
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_bytes(b"python")
+        interpreter.chmod(0o700)
+        # Repoint `current` after the transaction captured it.
+        layout.current.unlink()
+        layout.current.symlink_to(decoy)
+
+    # 2.5.0 is deliberately not pre-created: an existing destination skips
+    # staging entirely, and `prepare` would never run.
+    install_release(
+        layout=layout,
+        version="2.5.0",
+        prepare=prepare,
+        validate=lambda _path: None,
+        restart_service=lambda: None,
+        stop_service=lambda: None,
+        check_health=lambda _path: None,
+        service_profile=SystemdServiceProfile.system(),
+    )
+
+    assert layout.current.resolve() != captured, "the hook did not move `current`"
+    assert probed == [captured], (
+        f"probed {probed} rather than the release captured at the start"
+    )
+
+
 def test_permission_failure_is_stable_and_restores_current_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2134,6 +2640,8 @@ def test_permission_failure_is_stable_and_restores_current_owner(
         lambda *_args: (_ for _ in ()).throw(NotImplementedError("old glibc")),
     )
     with pytest.raises(LinuxInstallError, match="service_start_failed"):
+        # No scoped release: this covers permission application failing, not
+        # which trees are in scope.
         apply_system_service_permissions(layout, SystemdServiceProfile.system())
     assert ownership_calls == [(0, 1002), (original.st_uid, original.st_gid)]
 
@@ -2160,7 +2668,11 @@ def test_system_permissions_accept_internal_venv_directory_symlink(
     )
     monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
 
-    apply_system_service_permissions(layout, SystemdServiceProfile.system())
+    apply_system_service_permissions(
+        layout,
+        SystemdServiceProfile.system(),
+        releases=[layout.release("2.3.0")],
+    )
 
     assert (release / "lib64").resolve() == library
     assert (binary / "python").resolve() == interpreter
@@ -2186,7 +2698,11 @@ def test_system_permissions_reject_escaping_release_symlinks(
     monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
 
     with pytest.raises(LinuxInstallError, match="unsafe_install_root"):
-        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+        apply_system_service_permissions(
+            layout,
+            SystemdServiceProfile.system(),
+            releases=[layout.release("2.3.0")],
+        )
 
     (release / "lib64").unlink()
     external_python = tmp_path / "python"
@@ -2198,7 +2714,11 @@ def test_system_permissions_reject_escaping_release_symlinks(
     with pytest.raises(
         LinuxInstallError, match="external release symlink target is not trusted"
     ):
-        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+        apply_system_service_permissions(
+            layout,
+            SystemdServiceProfile.system(),
+            releases=[layout.release("2.3.0")],
+        )
 
 
 def test_permission_failure_removes_new_release_before_activation(
