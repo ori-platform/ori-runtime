@@ -24,6 +24,17 @@ class AdapterReadError(Exception):
     """Raised when a connection exists but a sensor read fails."""
 
 
+class MeasurementRefusedError(AdapterReadError):
+    """Raised when a sensor answered but what it returned is not a measurement.
+
+    A distinct condition from a bus timeout or an open circuit breaker, and the
+    distinction has to be carried by the type. Classifying it by matching the
+    message text would mean a reworded string silently disables the degradation
+    tracking and the operator alert that depend on it, while every arithmetic
+    test stays green.
+    """
+
+
 class CircuitState(enum.Enum):
     """Three states of the circuit breaker state machine."""
 

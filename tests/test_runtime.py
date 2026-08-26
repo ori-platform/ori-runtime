@@ -1671,6 +1671,248 @@ class TestSensorPolling:
         warning_msgs = [r.message for r in caplog.records if "read failed" in r.message]
         assert warning_msgs, "Expected 'read failed' warning log"
 
+    async def test_a_refused_measurement_reaches_the_outbox_and_survives_restart(
+        self, tmp_path
+    ):
+        """The production path with a real store and the real alert call.
+
+        An earlier version of this test replaced `_send_or_queue_alert` and
+        claimed in its own docstring to be exercising it. It proved poll-loop
+        classification and nothing about delivery or durability. Here only the
+        transport is stubbed: the StateStore is real, the alert path is real,
+        and the assertions are about what ended up on disk.
+        """
+        from ori.hal.base import MeasurementRefusedError
+        from ori.runtime import MEASUREMENT_REFUSALS_BEFORE_DEGRADED
+        from ori.state.store import StateStore
+
+        store = StateStore(str(tmp_path / "state.db"))
+        await store.open()
+
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = store
+        runtime._shutdown_event = asyncio.Event()
+        runtime._operator_contact = "+2340000000000"
+        runtime._primary_alert_channel = "sms"
+        runtime._measurement_refusals = {}
+        runtime._measurement_valid_streak = {}
+        runtime._measurement_degraded = set()
+        runtime._measurement_unnotified = set()
+        runtime._measurement_notify_attempts = {}
+
+        # The transport refuses, so the alert must be durably queued instead.
+        sender = AsyncMock()
+        sender.send_exact = AsyncMock(return_value=False)
+        sender.send = AsyncMock(return_value=False)
+        runtime._alert_sender = sender
+
+        attempts = 0
+
+        class _RefusingAdapter:
+            async def read(self, sensor_id: str) -> SensorReading:
+                nonlocal attempts
+                attempts += 1
+                if attempts >= MEASUREMENT_REFUSALS_BEFORE_DEGRADED:
+                    runtime._shutdown_event.set()
+                raise MeasurementRefusedError(
+                    f"I2CAdapter: refused a current window on '{sensor_id}': clipped"
+                )
+
+        sensor_cfg = SimpleNamespace(id="load-current", poll_interval_ms=1)
+        await runtime._poll_sensor(
+            _RefusingAdapter(), sensor_cfg, AsyncMock(), "dev-01"
+        )
+
+        assert "load-current" in runtime._measurement_degraded
+
+        queued = await store.get_retryable_alerts(limit=10)
+        matching = [
+            row for row in queued if "load-current" in str(row.get("message", ""))
+        ]
+        assert matching, f"the warning was not durably queued: {queued}"
+        assert matching[0]["action_tier"] == "A"
+
+        # Degraded on disk, and marked as reported because queueing succeeded.
+        restored = await store.get_measurement_degradation()
+        assert restored == {"load-current": True}
+
+        # A restart restores it, and stays quiet rather than re-alerting.
+        successor = OriRuntime(config_path="ori.yaml")
+        successor._state_store = store
+        state = await store.get_measurement_degradation()
+        successor._measurement_degraded = set(state)
+        successor._measurement_unnotified = {
+            name for name, notified in state.items() if not notified
+        }
+        assert successor._measurement_degraded == {"load-current"}
+        assert successor._measurement_unnotified == set()
+
+        await store.close()
+
+    async def test_a_warning_that_never_reached_anyone_is_still_owed(self, tmp_path):
+        """The failure this durability exists to prevent, from the other side.
+
+        With no operator contact the warning cannot be sent or queued. Recording
+        that as reported would mean the crash or misconfiguration that stopped
+        the alert becomes the reason it is never sent again.
+        """
+        from ori.hal.base import MeasurementRefusedError
+        from ori.runtime import MEASUREMENT_REFUSALS_BEFORE_DEGRADED
+        from ori.state.store import StateStore
+
+        store = StateStore(str(tmp_path / "state.db"))
+        await store.open()
+
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = store
+        runtime._shutdown_event = asyncio.Event()
+        runtime._operator_contact = ""
+        runtime._primary_alert_channel = "sms"
+        runtime._alert_sender = AsyncMock()
+        runtime._measurement_refusals = {}
+        runtime._measurement_valid_streak = {}
+        runtime._measurement_degraded = set()
+        runtime._measurement_unnotified = set()
+        runtime._measurement_notify_attempts = {}
+
+        attempts = 0
+
+        class _RefusingAdapter:
+            async def read(self, sensor_id: str) -> SensorReading:
+                nonlocal attempts
+                attempts += 1
+                if attempts >= MEASUREMENT_REFUSALS_BEFORE_DEGRADED:
+                    runtime._shutdown_event.set()
+                raise MeasurementRefusedError("refused a current window: clipped")
+
+        sensor_cfg = SimpleNamespace(id="load-current", poll_interval_ms=1)
+        await runtime._poll_sensor(
+            _RefusingAdapter(), sensor_cfg, AsyncMock(), "dev-01"
+        )
+
+        assert await store.get_measurement_degradation() == {"load-current": False}
+        assert runtime._measurement_unnotified == {"load-current"}
+        await store.close()
+
+    async def test_a_store_failure_does_not_stop_polling(self, tmp_path):
+        """Persistence runs inside an `except` clause.
+
+        An exception raised there is not caught by the handler that follows it,
+        so it would escape `_poll_sensor` and end polling for the sensor — the
+        measurement-loss guard taking the sensor down with it.
+        """
+        from ori.hal.base import MeasurementRefusedError
+        from ori.runtime import MEASUREMENT_REFUSALS_BEFORE_DEGRADED
+
+        runtime = OriRuntime(config_path="ori.yaml")
+        broken = AsyncMock()
+        broken.set_measurement_degraded = AsyncMock(side_effect=OSError("disk gone"))
+        runtime._state_store = broken
+        runtime._shutdown_event = asyncio.Event()
+        runtime._operator_contact = "+2340000000000"
+        runtime._primary_alert_channel = "sms"
+        runtime._alert_sender = AsyncMock()
+        runtime._measurement_refusals = {}
+        runtime._measurement_valid_streak = {}
+        runtime._measurement_degraded = set()
+        runtime._measurement_unnotified = set()
+        runtime._measurement_notify_attempts = {}
+
+        attempts = 0
+
+        class _RefusingAdapter:
+            async def read(self, sensor_id: str) -> SensorReading:
+                nonlocal attempts
+                attempts += 1
+                if attempts >= MEASUREMENT_REFUSALS_BEFORE_DEGRADED + 2:
+                    runtime._shutdown_event.set()
+                raise MeasurementRefusedError("refused a current window: clipped")
+
+        sensor_cfg = SimpleNamespace(id="load-current", poll_interval_ms=1)
+        # Must return normally rather than propagating the store failure.
+        await runtime._poll_sensor(
+            _RefusingAdapter(), sensor_cfg, AsyncMock(), "dev-01"
+        )
+        assert attempts >= MEASUREMENT_REFUSALS_BEFORE_DEGRADED + 2, (
+            "polling stopped when persistence failed"
+        )
+        assert "load-current" in runtime._measurement_degraded
+
+    async def test_recovery_that_cannot_be_persisted_stays_degraded(self):
+        """Persist recovery first, then clear memory — not the other way round.
+
+        The other order leaves a sensor healthy in memory and degraded on disk,
+        so the next restart resurrects a fault that was already resolved and
+        warns about it again.
+        """
+        from ori.runtime import (
+            MEASUREMENT_REFUSALS_BEFORE_DEGRADED,
+            MEASUREMENT_WINDOWS_TO_RECOVER,
+        )
+
+        runtime = OriRuntime(config_path="ori.yaml")
+        store = AsyncMock()
+        store.clear_measurement_degraded = AsyncMock(side_effect=OSError("disk gone"))
+        runtime._state_store = store
+        runtime._operator_contact = "+2340000000000"
+        runtime._primary_alert_channel = "sms"
+        runtime._alert_sender = AsyncMock()
+        runtime._measurement_refusals = {}
+        runtime._measurement_valid_streak = {}
+        runtime._measurement_degraded = set()
+        runtime._measurement_unnotified = set()
+        runtime._measurement_notify_attempts = {}
+
+        async def _sent(**_kwargs):
+            return True
+
+        runtime._send_or_queue_alert = _sent  # type: ignore[method-assign]
+
+        for _ in range(MEASUREMENT_REFUSALS_BEFORE_DEGRADED):
+            await runtime._note_measurement_refusal(
+                sensor_id="load-current", detail="clipped"
+            )
+        assert runtime._measurement_degraded == {"load-current"}
+
+        for _ in range(MEASUREMENT_WINDOWS_TO_RECOVER + 3):
+            await runtime._note_measurement_accepted("load-current")
+
+        assert runtime._measurement_degraded == {"load-current"}, (
+            "memory diverged from disk when the recovery write failed"
+        )
+
+    async def test_a_bus_failure_is_not_treated_as_a_refused_measurement(self):
+        """A read that failed is a different condition from one that was refused.
+
+        The sensor did not answer, so there is nothing to say about whether it
+        is still measuring. Counting it toward degradation would fire the wrong
+        alert for a wiring fault the circuit breaker already handles.
+        """
+        from ori.hal.base import AdapterReadError
+
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = AsyncMock()
+        runtime._shutdown_event = asyncio.Event()
+        runtime._measurement_refusals = {}
+        runtime._measurement_valid_streak = {}
+        runtime._measurement_degraded = set()
+
+        attempts = 0
+
+        class _FailingAdapter:
+            async def read(self, sensor_id: str) -> SensorReading:
+                nonlocal attempts
+                attempts += 1
+                if attempts >= 5:
+                    runtime._shutdown_event.set()
+                raise AdapterReadError("I2CAdapter: bus read failed")
+
+        sensor_cfg = SimpleNamespace(id="load-current", poll_interval_ms=1)
+        await runtime._poll_sensor(_FailingAdapter(), sensor_cfg, AsyncMock(), "dev-01")
+
+        assert runtime._measurement_degraded == set()
+        assert runtime._measurement_refusals == {}
+
     async def test_poll_sensor_sets_non_empty_fingerprint(self):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = AsyncMock()

@@ -133,9 +133,19 @@ class TestLoadExample:
             assert 100 <= sensor.poll_interval_ms <= 60_000
 
     def test_calibration_parsed(self):
+        """The example's calibration reaches config as the adapter requires it.
+
+        Both keys are required by `ads1115_current` and have no defaults, and
+        the units are the ones the adapter divides by: volts RMS per ampere RMS.
+        The example previously declared `sensitivity: 0.1` beside a comment
+        describing 0.01, for a part that is 0.0333.
+        """
         cfg = Config.load(EXAMPLE_YAML)
         load_current = next(s for s in cfg.sensors if s.id == "load-current")
-        assert load_current.calibration == {"sensitivity": 0.1}
+        assert load_current.calibration == {
+            "sensitivity_v_per_amp": 0.0333,
+            "mains_frequency_hz": 50,
+        }
 
     def test_sensor_metadata_contains_extra_fields(self):
         cfg = Config.load(EXAMPLE_YAML)
