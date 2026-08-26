@@ -211,14 +211,25 @@ def _release_wheelhouse_files(wheelhouse: Path) -> list[Path]:
     return files
 
 
+def _is_root_dist_info_metadata(name: str) -> bool:
+    """Whether *name* is the wheel's own metadata rather than vendored payload."""
+    parts = name.split("/")
+    return (
+        len(parts) == 2 and parts[0].endswith(".dist-info") and parts[1] == "METADATA"
+    )
+
+
 def _wheel_identity(path: Path) -> tuple[str, str]:
     _require_regular_file(path, f"wheel {path.name!r}")
     try:
         with zipfile.ZipFile(path) as archive:
+            # A wheel's own metadata is the `*.dist-info/METADATA` at the
+            # archive root. Anything deeper is payload: setuptools vendors
+            # twelve packages and ships each one's dist-info inside the wheel,
+            # so matching the suffix anywhere finds thirteen and calls a
+            # perfectly ordinary wheel ambiguous.
             metadata_names = [
-                name
-                for name in archive.namelist()
-                if name.endswith(".dist-info/METADATA")
+                name for name in archive.namelist() if _is_root_dist_info_metadata(name)
             ]
             if len(metadata_names) != 1:
                 raise BundleBuildError(f"wheel {path.name!r} has ambiguous METADATA")

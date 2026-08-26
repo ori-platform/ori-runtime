@@ -62,14 +62,17 @@ from pathlib import Path
 import re
 
 wheel = Path(sys.argv[1])
-metadata_name = ""
+def _is_root_dist_info_metadata(name: str) -> bool:
+    # The wheel's own metadata, not a vendored package's copy of it.
+    parts = name.split("/")
+    return len(parts) == 2 and parts[0].endswith(".dist-info") and parts[1] == "METADATA"
+
+
 with zipfile.ZipFile(wheel) as zf:
-    for name in zf.namelist():
-        if name.endswith(".dist-info/METADATA"):
-            metadata_name = name
-            break
-    if not metadata_name:
-        raise AssertionError(f"missing METADATA in {wheel}")
+    candidates = [n for n in zf.namelist() if _is_root_dist_info_metadata(n)]
+    if len(candidates) != 1:
+        raise AssertionError(f"ambiguous METADATA in {wheel}")
+    metadata_name = candidates[0]
     metadata = zf.read(metadata_name).decode("utf-8")
 
 requires = [

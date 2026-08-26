@@ -93,6 +93,51 @@ jobs:
           fi
           rm -rf "${probe}" "${RUNNER_TEMP}/probe_leak.py"
 
+      # The bundle build is the last release-only step with no branch
+      # equivalent, and v2.5.0-rc.4 was spent proving it: the Pi wheelhouse is
+      # the first release target to carry setuptools, whose wheel vendors
+      # twelve dist-info directories, and the builder called it ambiguous. The
+      # wheelhouse above is reused rather than rebuilt.
+      - name: Assemble a release bundle from that wheelhouse
+        if: matrix.python-version == '3.12'
+        env:
+          ORI_WHEELHOUSE_OUT: ${{ runner.temp }}/wheelhouse
+        run: |
+          set -euo pipefail
+          # The bundle refuses a target whose Python does not match the build
+          # interpreter, so the target is derived here rather than written out.
+          target="$(python -c "
+          import platform, sys
+          arch = {'x86_64': 'x86_64', 'amd64': 'x86_64', 'aarch64': 'aarch64', 'arm64': 'aarch64'}[platform.machine()]
+          sys.stdout.write(f'linux-{arch}-python{sys.version_info.major}.{sys.version_info.minor}')
+          ")"
+          # The bundle names its version in SemVer and the wheel in PEP 440.
+          # check_release_identity.py is the authority on that pairing, so the
+          # tag derived here is handed to it rather than trusted.
+          tag="$(python -c "
+          import pathlib, re, sys
+          text = pathlib.Path('pyproject.toml').read_text(encoding='utf-8')
+          found = re.search(r'^version = \"([^\"]+)\"', text, re.M)
+          if not found:
+              sys.exit('pyproject declares no version')
+          packaged = found.group(1)
+          parts = re.fullmatch(r'(\d+\.\d+\.\d+)(?:(a|b|rc)(\d+))?', packaged)
+          if not parts:
+              sys.exit(f'unrecognised packaged version: {packaged}')
+          base, kind, number = parts.groups()
+          sys.stdout.write('v' + (base if kind is None else f'{base}-{kind}.{number}'))
+          ")"
+          version="$(python scripts/check_release_identity.py --tag "${tag}" | cut -d= -f2)"
+          echo "Assembling ${version} for ${target}"
+          python scripts/build_release_bundle.py \
+            --wheelhouse "${ORI_WHEELHOUSE_OUT}" \
+            --runtime-version "${version}" \
+            --target "${target}" \
+            --config-template ori.linux.yaml.example \
+            --service-template packaging/systemd/ori-runtime.service.in \
+            --output-dir "${RUNNER_TEMP}/bundle"
+          ls -l "${RUNNER_TEMP}/bundle"
+
       - name: Type check runtime contract boundaries
         run: bash scripts/typecheck-boundaries.sh
 

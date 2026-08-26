@@ -222,14 +222,20 @@ wheelhouse = Path(sys.argv[1])
 package_name = sys.argv[2].lower().replace("_", "-")
 
 
+def _is_root_dist_info_metadata(name: str) -> bool:
+    # A wheel's own metadata sits at the archive root. Deeper matches are
+    # vendored payload, and taking the first suffix match would let
+    # namelist() order decide which package this wheel claims to be.
+    parts = name.split("/")
+    return len(parts) == 2 and parts[0].endswith(".dist-info") and parts[1] == "METADATA"
+
+
 def _metadata_for_wheel(path: Path) -> tuple[str, str]:
     with zipfile.ZipFile(path) as zf:
-        metadata_name = next(
-            (name for name in zf.namelist() if name.endswith(".dist-info/METADATA")),
-            "",
-        )
-        if not metadata_name:
-            raise SystemExit(f"ERROR: missing METADATA in wheel: {path.name}")
+        candidates = [n for n in zf.namelist() if _is_root_dist_info_metadata(n)]
+        if len(candidates) != 1:
+            raise SystemExit(f"ERROR: ambiguous METADATA in wheel: {path.name}")
+        metadata_name = candidates[0]
         metadata = zf.read(metadata_name).decode("utf-8")
 
     name = ""
