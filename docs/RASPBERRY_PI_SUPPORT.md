@@ -145,12 +145,9 @@ experimental fallback. Treat that result as a failed check, not a partial pass.
 
 ## Upgrading off a hand-placed interpreter
 
-Upgrade first, then remove the old interpreter. The installer binds an existing
-installation to its release symlinks and refuses an install root it cannot
-validate, so deleting the interpreter a previous release points at leaves the
-upgrade blocked on `unsafe_install_root` with nothing installable in its place.
-
-The order that works:
+Upgrade first, then remove the old interpreter. A superseded release that
+nothing is using no longer blocks anything: an install inspects only the
+candidate and the release `current` points at, so inert history is left alone.
 
 ```bash
 # 1. Install the new release while the old interpreter is still present.
@@ -159,12 +156,46 @@ sudo bash install-linux.sh --version <version> -- --unattended --scope system
 # 2. Confirm the new venv is on the system interpreter.
 sudo readlink -f /opt/ori/current/venv/bin/python   # expect /usr/bin/python3.13
 
-# 3. Only then remove the hand-placed interpreter and its symlink.
+# 3. Remove the hand-placed interpreter and its symlink.
 sudo rm -rf /usr/local/ori-python /usr/local/bin/python3.12
 ```
 
-Step 2 before step 3. A release whose venv still resolves through
-`/usr/local` will stop working the moment step 3 runs.
+Step 2 before step 3. A release whose venv still resolves through `/usr/local`
+will stop working the moment step 3 runs.
+
+**Never remove the interpreter the active release is built on.** That release
+is what an upgrade rolls back to, so removing its interpreter leaves the
+installation with a rollback target that cannot start. An install refuses
+before interrupting the service rather than discovering it mid-rollback, so the
+symptom is a blocked upgrade rather than a failed one.
+
+That is why step 2 is a confirmation and not a formality. Once the new release
+is active, the old one is inert: nothing inspects it, and it does not block
+anything.
+
+### When retirement is useful
+
+Retirement is optional. It applies when you want to deliberately give up
+rollback and downgrade to an inactive release — not as a step in removing an
+interpreter, which the order above already handles.
+
+```bash
+sudo ori-install-linux release list --scope system
+sudo ori-install-linux release retire <version> --scope system
+```
+
+The active release cannot be retired, and the command refuses it. If the
+release you want to retire is still active, activate a different healthy
+release first.
+
+`release list` reports `has_interpreter` per release. It is named for what it
+checks — whether a file is there. Whether a release *starts* is only answered
+by starting it, which the installer does for the rollback candidate at install
+time. `has_interpreter` does not identify releases that block upgrades; only
+the active rollback candidate is load-bearing.
+
+Retiring moves a release into `/opt/ori/retired/` rather than deleting it, so
+it is reversible; deletion is a separate act.
 
 ## Verifying a Pi before you rely on it
 

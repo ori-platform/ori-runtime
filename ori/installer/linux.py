@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import pwd
@@ -17,7 +19,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Literal, NoReturn, Sequence
+from typing import Callable, Iterator, Literal, NoReturn, Sequence
 
 import yaml
 
@@ -1479,8 +1481,21 @@ def apply_system_service_permissions(
     profile: SystemdServiceProfile,
     *,
     allowed_data_sockets: Sequence[Path] = (),
+    releases: Sequence[Path] = (),
 ) -> None:
-    """Make verified code readable, and only data writable, by a system service."""
+    """Make verified code readable, and only data writable, by a system service.
+
+    *releases* names the release trees this installation may touch: the
+    candidate being installed, and the release `current` pointed at when it
+    began. Those are the only two a transaction can reach — a candidate to
+    activate, and a rollback target to restore.
+
+    Everything else under `releases/` is inert history. Walking it, as this
+    once did, gave any retained release a veto over every future install: one
+    whose interpreter had since been removed failed the external-symlink check
+    and left the installation permanently un-upgradeable, with nothing in the
+    transaction referring to it.
+    """
     if profile.scope != "system" or profile.service_user is None:
         raise LinuxInstallError(
             "service_start_failed", "system permissions require a system profile"
@@ -1522,18 +1537,31 @@ def apply_system_service_permissions(
             layout.root, root_stat, uid=0, gid=account.pw_gid, mode=0o750
         )
     ]
-    plan.extend(
-        _owned_tree_plan(
-            layout,
+    # The releases directory itself is still owned and mode-set. Its children
+    # are not searched: only the trees this transaction can reach are.
+    _assert_managed_path(layout, layout.releases)
+    plan.append(
+        _permission_change(
             layout.releases,
+            layout.releases.lstat(),
             uid=0,
             gid=account.pw_gid,
-            directory_mode=0o750,
-            regular_mode=0o440,
-            executable_mode=0o550,
-            allow_file_symlinks=True,
+            mode=0o750,
         )
     )
+    for release in _scoped_releases(layout, releases):
+        plan.extend(
+            _owned_tree_plan(
+                layout,
+                release,
+                uid=0,
+                gid=account.pw_gid,
+                directory_mode=0o750,
+                regular_mode=0o440,
+                executable_mode=0o550,
+                allow_file_symlinks=True,
+            )
+        )
     _assert_managed_path(layout, layout.data)
     plan.extend(
         _owned_tree_plan(
@@ -1549,6 +1577,228 @@ def apply_system_service_permissions(
         )
     )
     _apply_permission_plan(plan)
+
+
+RETIRED_DIRNAME = "retired"
+
+# A release that cannot import its own runtime within this is not one a
+# rollback could rely on.
+RELEASE_PROBE_TIMEOUT_S = 30.0
+
+
+@contextlib.contextmanager
+def release_lifecycle_lock(layout: InstallLayout) -> Iterator[None]:
+    """Serialise everything that can move a release under this root.
+
+    Install captures a rollback target and then activates. Retirement moves a
+    release out of the selectable set. Run concurrently, retirement can take
+    away the tree an in-progress install is holding as its way back — and no
+    argument passed between the two commands can prevent that, because neither
+    can see the other's state. The lock is the only thing that can.
+
+    It lives in the root's parent, not in the root. Two earlier placements were
+    both wrong in ways that only concurrency shows:
+
+    - A file inside the root is an artefact a failed first install cannot roll
+      back, leaving behind a root the transaction created and could not remove.
+    - The root's own directory descriptor cannot be locked before the root
+      exists, so a first install held nothing. The moment it created the root,
+      a second caller locked it and entered the same transaction.
+
+    The parent is where an install root is created, so it exists before any
+    install and outlives every one of them. Callers may share a parent —
+    `/opt` for a system root — so the lock is named for the root it guards.
+    """
+    parent = layout.root.parent
+    lock_path = parent / f".{layout.root.name}.lifecycle.lock"
+    try:
+        # The same preparation the transaction itself performs, for the same
+        # reason: the parent may be a host-owned directory such as `~/.local`
+        # that does not exist yet on a first install. Exclusion has to start
+        # before the root does, so it cannot wait for the transaction to make
+        # somewhere to put the lock.
+        parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise LinuxInstallError(
+            "unsafe_install_root", "install root parent could not be prepared"
+        ) from exc
+    try:
+        descriptor = os.open(
+            lock_path,
+            os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+    except OSError as exc:
+        raise LinuxInstallError(
+            "unsafe_install_root",
+            "the install root's parent does not admit a lifecycle lock",
+        ) from exc
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise LinuxInstallError(
+                "unsafe_install_root",
+                "another install or retirement is in progress for this root",
+            ) from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def list_releases(layout: InstallLayout) -> list[dict[str, object]]:
+    """Every installed release, and which one is active."""
+    if not layout.releases.is_dir():
+        return []
+    active = _inspect_current(layout)
+    entries: list[dict[str, object]] = []
+    for child in sorted(layout.releases.iterdir(), key=lambda item: item.name):
+        if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
+            continue
+        interpreter = child / "venv" / "bin" / "python"
+        entries.append(
+            {
+                "version": child.name,
+                "active": child == active,
+                # Deliberately not called "runnable": this is a file check, and
+                # whether a release starts is only answered by starting it.
+                "has_interpreter": interpreter.is_file(),
+            }
+        )
+    return entries
+
+
+def retire_release(
+    layout: InstallLayout,
+    version: str,
+    *,
+    scope: str = "system",
+) -> Path:
+    """Move a release out of the selectable set, without deleting it.
+
+    Retiring is separated from deleting on purpose. An operator retiring a
+    release to unblock an interpreter removal is making a reversible decision;
+    losing the tree at the same moment turns a sequencing step into data loss.
+
+    Returns the quarantine path the release was moved to.
+    """
+    with release_lifecycle_lock(layout):
+        return _retire_release_locked(layout, version, scope=scope)
+
+
+def _retire_release_locked(layout: InstallLayout, version: str, *, scope: str) -> Path:
+    if scope != "system":
+        # Retirement moves a root-owned tree between root-owned directories.
+        # A user-scope implementation is a different ownership model, not a
+        # smaller version of this one, and half-implementing it raised an
+        # uncaught PermissionError rather than a stable installer error.
+        raise LinuxInstallError(
+            "config_validation_failed",
+            "release retirement is only supported for --scope system",
+        )
+    candidate = layout.release(version)
+    _assert_managed_path(layout, candidate)
+    if candidate.parent != layout.releases:
+        raise LinuxInstallError(
+            "unsafe_install_root", "a release must be a direct child of releases"
+        )
+    if candidate.is_symlink() or not candidate.is_dir():
+        raise LinuxInstallError(
+            "config_validation_failed", f"no installed release named {version!r}"
+        )
+    if candidate == _active_release(layout):
+        raise LinuxInstallError(
+            "config_validation_failed",
+            f"{version!r} is the active release; activate another before retiring it",
+        )
+    # Created and validated through the same no-follow primitive the install
+    # root uses. A plain mkdir would accept an existing symlink here, and the
+    # os.replace below would then move a release outside the managed tree.
+    quarantine = layout.root / RETIRED_DIRNAME
+    _ensure_private_directory(quarantine)
+    if quarantine.is_symlink() or not quarantine.is_dir():
+        raise LinuxInstallError(
+            "unsafe_install_root", "the retirement directory is not a managed directory"
+        )
+    destination = quarantine / version
+    if destination.exists() or destination.is_symlink():
+        raise LinuxInstallError(
+            "config_validation_failed", f"{version!r} has already been retired"
+        )
+    os.replace(candidate, destination)
+    return destination
+
+
+def _assert_release_starts(release: Path) -> None:
+    """Prove a release can start, by starting it.
+
+    An executable bit is not evidence. A file containing the text `not python`
+    satisfies `is_file()` and `X_OK` and fails the moment a rollback needs it —
+    which is the one moment there is no remaining fallback. The probe runs the
+    release's own interpreter and imports the runtime through it.
+    """
+    interpreter = release / "venv" / "bin" / "python"
+    # No `-I`. Isolated mode ignores the venv's prefix computation, so the
+    # release's own site-packages never load and the probe would be testing a
+    # different interpreter configuration than the unit runs. Isolation comes
+    # from scrubbing the environment instead: PYTHON* inherited from whoever
+    # invoked the installer could otherwise satisfy an import the service
+    # itself would not.
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("PYTHON")
+    }
+    try:
+        completed = subprocess.run(
+            [str(interpreter), "-c", "import ori.runtime"],
+            capture_output=True,
+            text=True,
+            timeout=RELEASE_PROBE_TIMEOUT_S,
+            check=False,
+            env=environment,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LinuxInstallError(
+            "unsafe_install_root",
+            "the release that would be restored could not be executed",
+        ) from exc
+    if completed.returncode != 0:
+        # The reason is carried through. A refusal that says only "does not
+        # start" leaves an operator with a blocked upgrade and nothing to act
+        # on, and this runs while the service is still up.
+        detail = " ".join(completed.stderr.split())[-200:]
+        raise LinuxInstallError(
+            "unsafe_install_root",
+            f"the release that would be restored does not start: {detail}",
+        )
+
+
+def _scoped_releases(layout: InstallLayout, releases: Sequence[Path]) -> list[Path]:
+    """The release trees a transaction may touch, deduplicated and validated.
+
+    A caller naming nothing gets nothing: an empty scope permissions the
+    releases directory alone, which is the correct outcome for a call that
+    identifies no candidate and no rollback target.
+    """
+    scoped: list[Path] = []
+    seen: set[Path] = set()
+    for release in releases:
+        _assert_managed_path(layout, release)
+        if release.parent != layout.releases:
+            raise LinuxInstallError(
+                "unsafe_install_root", "scoped release is not a direct release"
+            )
+        if release.is_symlink() or not release.is_dir():
+            raise LinuxInstallError(
+                "unsafe_install_root", "scoped release is not a directory"
+            )
+        if release in seen:
+            continue
+        seen.add(release)
+        scoped.append(release)
+    return scoped
 
 
 def _owned_tree_plan(
@@ -2285,6 +2535,41 @@ def install_release(
     allowed_data_sockets: Sequence[Path] = (),
 ) -> InstallResult:
     """Prepare, activate, and health-gate one already-authenticated release."""
+    with release_lifecycle_lock(layout):
+        return _install_release_locked(
+            layout=layout,
+            version=version,
+            prepare=prepare,
+            validate=validate,
+            restart_service=restart_service,
+            stop_service=stop_service,
+            check_health=check_health,
+            allow_downgrade=allow_downgrade,
+            service_profile=service_profile,
+            prepare_activation=prepare_activation,
+            rollback_activation=rollback_activation,
+            commit_activation=commit_activation,
+            allowed_data_sockets=allowed_data_sockets,
+        )
+
+
+def _install_release_locked(
+    *,
+    layout: InstallLayout,
+    version: str,
+    prepare: Callable[[Path], None],
+    validate: Callable[[Path], None],
+    restart_service: Callable[[], None],
+    stop_service: Callable[[], None],
+    check_health: Callable[[Path], None],
+    allow_downgrade: bool,
+    service_profile: SystemdServiceProfile | None,
+    prepare_activation: Callable[[Path], None] | None,
+    rollback_activation: Callable[[], None] | None,
+    commit_activation: Callable[[Path], None] | None,
+    allowed_data_sockets: Sequence[Path],
+) -> InstallResult:
+    """The transaction itself, run while the lifecycle lock is held."""
     destination = layout.release(version)
     # Built inside the try, one directory at a time. A comprehension binds its
     # result only after the last element, so a root that exists while `data` is
@@ -2390,11 +2675,25 @@ def _install_release(
         validate(destination)
 
     if service_profile is not None and service_profile.scope == "system":
+        # `previous` as captured at the top of this transaction, not a fresh
+        # read of `current`. Re-resolving would probe whatever `current` points
+        # at now, which is not necessarily the release this transaction decided
+        # it would restore.
+        #
+        # It is probed by starting it rather than inspected: a live service
+        # proves the old release started once, not that it could start again if
+        # activation has to be undone.
+        if previous is not None:
+            _assert_release_starts(previous)
+        scope = [destination]
+        if previous is not None:
+            scope.append(previous)
         try:
             apply_system_service_permissions(
                 layout,
                 service_profile,
                 allowed_data_sockets=allowed_data_sockets,
+                releases=scope,
             )
         except Exception:
             if created and destination.exists():
@@ -2476,6 +2775,24 @@ def uninstall_runtime(
     if remove_data and layout.data.exists():
         _assert_managed_path(layout, layout.data)
         shutil.rmtree(layout.data)
+
+
+def _inspect_current(layout: InstallLayout) -> Path | None:
+    """Where `current` points, changing nothing.
+
+    `_active_release` unlinks a dangling `current` as part of resolving it,
+    which is right for an installer transaction and wrong for a listing. A
+    command that reports state must not alter it.
+    """
+    if not layout.current.is_symlink():
+        return None
+    try:
+        target = layout.current.resolve(strict=False)
+    except OSError:
+        return None
+    if target.parent != layout.releases or not target.is_dir():
+        return None
+    return target
 
 
 def _active_release(layout: InstallLayout) -> Path | None:
