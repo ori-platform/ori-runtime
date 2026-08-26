@@ -232,7 +232,12 @@ profile that refuses to pretend:
 
 1. Install from a release bundle carrying a `linux-aarch64-python3.13` target.
 2. Confirm step 3 above prints `LGPIOFactory`.
-3. Wire the relay to **normally closed** terminals and declare its `gpio_pin`.
+3. Wire the relay and declare its `gpio_pin`. Do not pick NC or NO by
+   convention — contact type establishes nothing about the protected circuit.
+   Commission the channel: de-energise the coil, observe what the load actually
+   does, and record it. Note that this release ignores `active_high`, so on an
+   active-low board the runtime's startup output energises the coil; verify the
+   resting state on the bench rather than assuming it.
 4. Move `deployment_profile` off `development`. A hardened profile fails
    startup when a configured GPIO path has no `gpiozero` behind it, which is
    the behaviour you want — it turns a silent simulation into a refusal.

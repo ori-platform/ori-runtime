@@ -855,11 +855,24 @@ Any other protocol in ori.yaml raises `ConfigValidationError` at
 startup before the event loop begins.
 
 **Relay wiring safety:**
-Always use Normally Closed (NC) relay terminals. NC wiring means the
-load is disconnected when the relay is de-energised. Power loss or
-an Ori crash defaults the system to the safe state without software
-intervention. Never use Normally Open (NO) terminals for any load
-that must be de-energised on failure.
+Never select NC or NO by convention. Contact type establishes nothing
+about the protected circuit — the downstream wiring decides whether a
+de-energised coil isolates or reconnects the load. Do not write code,
+config, or documentation that derives a coil state, or a circuit
+outcome, from a contact type.
+
+Losing the controller physically de-energises the coil. What that does
+to the protected circuit is established per channel by commissioning:
+de-energise the coil, observe what the load actually does, record it.
+That observation is the only thing that licenses calling any state safe.
+
+**The runtime's startup polarity is not trustworthy today.**
+`actions.relay.active_high` is documented in `ori.yaml` and never
+reaches `RelayAction`, so on an active-low board the logical inactive
+output energises the coil. The runtime also consumes no commissioned
+mapping. Until #397 lands, an installation is fail-safe only because its
+wiring was proven by test and its board polarity happens to match the
+default — the software guarantees neither.
 
 ---
 

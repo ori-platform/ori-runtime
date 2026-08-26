@@ -16,12 +16,19 @@ Used for Tier B (soft physical) and Tier D (safety-critical) actions.
     - Wiring must be inspected and approved by a qualified electrician.
     - Verify the relay's rated switching capacity (voltage, current) is
       not exceeded by the connected load.
-    - Confirm ``active_high`` matches the relay module's trigger logic
-      (most opto-isolated relay boards are ``active_low``).
-    - Wire to the Normally Closed (NC) terminal, not Normally Open
-      (NO).  NC wiring means power loss or an Ori crash defaults the
-      load to the safe state (disconnected) without software
-      intervention.
+    - Never select NC or NO by convention.  Contact type establishes
+      nothing about the protected circuit: the downstream wiring
+      decides whether a de-energised coil isolates or reconnects the
+      load.  Commission the channel instead — de-energise the coil,
+      observe what the load actually does, and record it.
+    - Losing the controller physically de-energises the coil.  What
+      that does to the protected circuit is whatever commissioning
+      observed, and nothing else.
+    - **Startup polarity is not trustworthy in this release.**
+      ``active_high`` is documented in ori.yaml and never reaches this
+      module, so on an active-low board the runtime's logical inactive
+      output energises the coil.  Do not rely on startup or crash state
+      to leave a load isolated until that is fixed (#397).
     - Test with the load de-energised before connecting live circuits.
     - Never operate a relay above its rated duty cycle.
 
