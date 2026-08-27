@@ -789,3 +789,18 @@ these rules can compromise the runtime that controls physical hardware.
 | Add a bundled skill                   | `skills/`                            |
 | Understand a design decision          | `CLAUDE.md`                          |
 | Understand the business context       | `CONTRIBUTING.md`                    |
+
+## Review before handoff
+
+Self-review before handing off work is **required, and is never sufficient
+proof.** State plainly what remains unverified: what was simulated, deferred,
+tested on the host only, or left dependent on another repository or on hardware.
+A handoff that lists only successes misrepresents its own coverage.
+
+It does not replace independent review for shared contracts, Tier D or
+physical-authority changes, release and install work, or any claim of HIL proof.
+
+The method is the `ori-rigorous-review` skill, kept in the `ori-specs`
+repository under `agent-skills/` and installed with
+`scripts/install-agent-skills`. Read it before reviewing; do not reimplement it
+here.
