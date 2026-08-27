@@ -239,3 +239,66 @@ def test_start_uses_the_shared_assembly_rather_than_its_own_dict() -> None:
         "start() must build the adapter config through the shared assembly"
     )
     assert literals == 0, "no dict literal may rebuild connect_cfg alongside it"
+
+
+# ── Why `allowed_hosts` is deliberately not reserved ─────────────────────────
+#
+# A sensor may still set `allowed_hosts`, and `adapter_connect_config` uses
+# setdefault, so the sensor's list wins at the adapter. That looks like the same
+# defect this file exists to close, and it is not: the uri host is validated at
+# config load against `actions.coap.allowed_hosts`, a section sensor metadata
+# cannot reach. A sensor can therefore narrow its own allowlist but never widen
+# it. Reserving the key would refuse a legitimate narrowing.
+#
+# That argument was used to justify leaving the key unreserved, so it is pinned
+# here rather than left as reasoning in a review comment.
+
+
+@pytest.mark.parametrize(
+    "sensor_allow",
+    [
+        None,
+        ["evil.example"],
+        ["evil.example", "allowed.example"],
+    ],
+)
+def test_a_sensor_cannot_widen_the_coap_host_allowlist(
+    sensor_allow: list[str] | None,
+) -> None:
+    from ori.config import _validate_coap_sensor_allowlist
+
+    entry: dict[str, Any] = {
+        "id": "s1",
+        "type": "temperature",
+        "protocol": "coap",
+        "uri": "coap://evil.example/r",
+        "json_path": "v",
+    }
+    if sensor_allow is not None:
+        entry["allowed_hosts"] = sensor_allow
+
+    parsed = _parse_sensors([entry])
+    with pytest.raises(ConfigValidationError, match="not listed in actions.coap"):
+        _validate_coap_sensor_allowlist(parsed, {"allowed_hosts": ["allowed.example"]})
+
+
+def test_a_sensor_may_narrow_its_own_coap_allowlist() -> None:
+    """The reason the key is not reserved: narrowing is legitimate."""
+    from ori.config import _validate_coap_sensor_allowlist
+
+    parsed = _parse_sensors(
+        [
+            {
+                "id": "s1",
+                "type": "temperature",
+                "protocol": "coap",
+                "uri": "coap://allowed.example/r",
+                "json_path": "v",
+                "allowed_hosts": ["allowed.example"],
+            }
+        ]
+    )
+    _validate_coap_sensor_allowlist(
+        parsed, {"allowed_hosts": ["allowed.example", "other.example"]}
+    )
+    assert parsed[0].metadata["allowed_hosts"] == ["allowed.example"]
