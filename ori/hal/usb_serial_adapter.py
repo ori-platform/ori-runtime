@@ -15,6 +15,7 @@ from ori.hal.base import (
     AdapterTimeoutError,
     BaseAdapter,
     HardwareCircuitBreaker,
+    resolve_baud_rate,
 )
 from ori.network.events import SensorReading
 from ori.utils.time_utils import now_ms
@@ -142,10 +143,14 @@ class UsbSerialAdapter(BaseAdapter):
                 "UsbSerialAdapter: 'device_path' is required (e.g. /dev/ttyUSB0)"
             )
 
-        baud_from_cfg = config.get(
-            "baud_rate", config.get("baudrate", _DEFAULT_BAUD_RATE)
+        self._baud_rate = resolve_baud_rate(
+            has_canonical="baud_rate" in config,
+            canonical=config.get("baud_rate"),
+            has_legacy="baudrate" in config,
+            legacy=config.get("baudrate"),
+            default=_DEFAULT_BAUD_RATE,
+            adapter_name="UsbSerialAdapter",
         )
-        self._baud_rate = int(baud_from_cfg)
         self._bytesize = int(config.get("bytesize", _DEFAULT_BYTESIZE))
         self._parity = str(config.get("parity", _DEFAULT_PARITY))
         self._stopbits = int(config.get("stopbits", _DEFAULT_STOPBITS))

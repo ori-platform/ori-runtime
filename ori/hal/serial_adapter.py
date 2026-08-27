@@ -12,6 +12,7 @@ from ori.hal.base import (
     AdapterTimeoutError,
     BaseAdapter,
     HardwareCircuitBreaker,
+    resolve_baud_rate,
 )
 from ori.network.events import SensorReading
 from ori.utils.time_utils import now_ms
@@ -166,7 +167,7 @@ class SerialAdapter(BaseAdapter):
             type: active_power
             protocol: serial
             port: /dev/ttyUSB0
-            baudrate: 9600
+            baud_rate: 9600
             slave_id: 1
     """
 
@@ -199,7 +200,8 @@ class SerialAdapter(BaseAdapter):
 
                 Optional keys:
 
-                - ``baudrate`` (int, default ``9600``)
+                - ``baud_rate`` (int, default ``9600``) — ``baudrate`` is
+                  accepted as a deprecated alias; setting both is refused
                 - ``bytesize`` (int, default ``8``)
                 - ``parity`` (str, default ``'N'``)
                 - ``stopbits`` (int, default ``1``)
@@ -230,7 +232,14 @@ class SerialAdapter(BaseAdapter):
                 "SerialAdapter: 'port' is required in sensor config (e.g. /dev/ttyUSB0)"
             )
 
-        self._baudrate = int(config.get("baudrate", _DEFAULT_BAUDRATE))
+        self._baudrate = resolve_baud_rate(
+            has_canonical="baud_rate" in config,
+            canonical=config.get("baud_rate"),
+            has_legacy="baudrate" in config,
+            legacy=config.get("baudrate"),
+            default=_DEFAULT_BAUDRATE,
+            adapter_name="SerialAdapter",
+        )
         self._bytesize = int(config.get("bytesize", _DEFAULT_BYTESIZE))
         self._parity = str(config.get("parity", _DEFAULT_PARITY))
         self._stopbits = int(config.get("stopbits", _DEFAULT_STOPBITS))

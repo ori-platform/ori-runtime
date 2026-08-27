@@ -287,17 +287,42 @@ def real_coverage() -> dict:
     return coverage(entries, example_paths())
 
 
-def test_real_coverage_maps_baud_rate_to_the_usb_adapter_only(
+def test_real_coverage_credits_baud_rate_to_both_serial_adapters(
     real_coverage: dict,
 ) -> None:
-    """The defect in ori-runtime #411, shown through the real adapters.
+    """ori-runtime #411, after the fix: one spelling, read by both adapters.
 
-    The shipped example sets `baud_rate` on a *serial* sensor, and only
-    `UsbSerialAdapter` reads that spelling.
+    The extractor sees a key only where an adapter reads it literally, so this
+    assertion is what keeps the shared resolver from hiding its own inputs. An
+    earlier version of the fix passed the whole config dict into the helper;
+    the extractor then reported that *neither* adapter read `baud_rate`, and a
+    schema built from `read_by_adapters` would have omitted the key outright.
+
+    An empty reader list is never the expected answer here. If this fails
+    because an adapter stopped reading the key explicitly, restore the read —
+    do not relax the assertion.
     """
     rows = {item["path"]: item for item in real_coverage["sensor_metadata"]}
     assert "sensors[].baud_rate" in rows
-    assert rows["sensors[].baud_rate"]["read_by_adapters"] == ["UsbSerialAdapter"]
+    assert rows["sensors[].baud_rate"]["read_by_adapters"] == [
+        "SerialAdapter",
+        "UsbSerialAdapter",
+    ]
+
+
+def test_the_deprecated_baud_alias_stays_discoverable() -> None:
+    """The migration window is only honest while the alias is visible.
+
+    `baudrate` is accepted until runtime-config/v2 lands. An operator's file may
+    still carry it, so an inventory that showed only the canonical spelling
+    would describe a surface narrower than the one the runtime accepts.
+    """
+    from tests.golden.build_config_surface_inventory import adapter_metadata
+
+    adapters = adapter_metadata()
+    for name in ("SerialAdapter", "UsbSerialAdapter"):
+        assert "baud_rate" in adapters[name]
+        assert "baudrate" in adapters[name], "the alias is still accepted"
 
 
 def test_real_coverage_credits_no_action_path_to_a_sensor_adapter(
