@@ -51,6 +51,14 @@ jobs:
 
       # Vendored contract vectors are hermetic, which is why the suite works
       # offline — and also how they could go stale invisibly. This notices.
+      # The provenance rule decides when a consumer must re-vendor, so a defect
+      # in it costs either false failures on every unrelated specs merge or a
+      # pin naming a commit nobody can find. It runs against throwaway git
+      # fixtures and needs no network.
+      - name: Test the vendored-vector provenance rule
+        if: matrix.python-version == '3.12'
+        run: bash scripts/test-refresh-evidence-vectors.sh
+
       - name: Check vendored evidence vectors against ori-specs
         if: matrix.python-version == '3.12'
         run: bash scripts/refresh-evidence-vectors.sh

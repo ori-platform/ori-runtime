@@ -54,7 +54,10 @@ if [ -n "${ORI_SPECS_DIR:-}" ]; then
 else
   SPECS="$(mktemp -d)"
   CLEANUP="${SPECS}"
-  git clone --quiet --depth 1 https://github.com/ori-platform/ori-specs.git "${SPECS}"
+  # Full history, blobs fetched on demand. --depth 1 makes ancestry
+  # unanswerable, and ancestry is what the pin means.
+  git clone --quiet --filter=blob:none \
+    https://github.com/ori-platform/ori-specs.git "${SPECS}"
 fi
 trap '[ -n "${CLEANUP}" ] && rm -rf "${CLEANUP}"' EXIT
 
@@ -102,25 +105,44 @@ for entry in "${SETS[@]}"; do
   # Contents matching is not the whole story. The manifest also records which
   # ori-specs commit the vectors came from, and that pin is the cross-repository
   # provenance trail. A squash merge rewrites the commit while leaving every
-  # byte identical, so a contents-only check reports "match" and leaves the
-  # manifest naming a commit that no longer exists on main — provenance
-  # pointing at nothing, which is worse than no pin because it looks
-  # authoritative.
+  # byte identical, so a contents-only check cannot tell a live pin from one
+  # naming a commit that never landed — provenance pointing at nothing, which
+  # is worse than no pin because it looks authoritative.
+  #
+  # What the pin asserts is "these bytes came from that commit", and that stays
+  # true as main advances. So the test is reachability, not equality with the
+  # tip. Requiring equality made every ori-specs merge stale every consumer,
+  # including documentation-only merges that touched no vector, and a check
+  # that fires when nothing relevant changed trains people to re-pin without
+  # reading the diff.
   PINNED=""
   if [ -f "${DEST}/MANIFEST.json" ]; then
     PINNED="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_commit"])' \
       "${DEST}/MANIFEST.json" 2>/dev/null || echo "")"
   fi
 
-  if [ "${drift}" -eq 0 ] && [ "${PINNED}" = "${COMMIT}" ]; then
-    echo "${label}: vectors match ori-specs at ${COMMIT}"
+  # A pin is live when the commit it names is an ancestor of main. An unknown
+  # commit is not an ancestor, so a rewritten or never-merged SHA fails here.
+  reachable=0
+  if [ -n "${PINNED}" ] && git -C "${SPECS}" merge-base --is-ancestor \
+      "${PINNED}" HEAD 2>/dev/null; then
+    reachable=1
+  fi
+
+  if [ "${drift}" -eq 0 ] && [ "${reachable}" -eq 1 ]; then
+    if [ "${PINNED}" = "${COMMIT}" ]; then
+      echo "${label}: vectors match ori-specs at ${COMMIT}"
+    else
+      echo "${label}: vectors match; pinned at ${PINNED} (an ancestor of ${COMMIT})"
+    fi
     continue
   fi
 
   if [ "${APPLY}" != "1" ]; then
     if [ "${drift}" -eq 0 ]; then
-      echo "${label}: contents match, but the manifest pins ${PINNED:-<none>}" >&2
-      echo "  and ori-specs is now at ${COMMIT}." >&2
+      echo "${label}: contents match, but the manifest pins ${PINNED:-<none>}," >&2
+      echo "  which is not an ancestor of ori-specs main at ${COMMIT}." >&2
+      echo "  That commit never landed on main, so the pin names nothing." >&2
     fi
     overall_drift=1
     continue
