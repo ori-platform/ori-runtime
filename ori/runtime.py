@@ -964,7 +964,14 @@ class OriRuntime:
                 adapter = make_adapter(sensor_cfg.protocol)
             except UnknownProtocolError as exc:
                 raise ConfigValidationError(str(exc)) from exc
+            # Metadata is spread first and the runtime's own values are applied
+            # over it, never the reverse. Config load already refuses a sensor
+            # that names one of these, and this ordering means the boundary does
+            # not depend on that check having run: a metadata key reaching here
+            # cannot displace the sensor's declared identity or the circuit
+            # breaker, which would make hardware recovery settable per sensor.
             connect_cfg = {
+                **sensor_cfg.metadata,
                 "sensor_id": sensor_cfg.id,
                 "sensor_type": sensor_cfg.type,
                 "circuit_breaker": config.hal.circuit_breaker,
@@ -972,7 +979,6 @@ class OriRuntime:
                 # into the same namespace. Flattening is what let a documented
                 # `sensitivity` sit unread beside the adapter's own default.
                 "calibration": dict(sensor_cfg.calibration),
-                **sensor_cfg.metadata,
             }
             if sensor_cfg.protocol == "coap":
                 coap_cfg = (

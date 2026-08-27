@@ -39,6 +39,13 @@ logger = logging.getLogger(__name__)
 
 _VALID_ACTION_TIERS = {"A", "B", "C", "D"}
 _SERIAL_PROTOCOLS = {"serial", "usb_serial"}
+
+# Supplied by runtime.py when it assembles an adapter's connect() config, and
+# therefore not settable on a sensor. `calibration` is absent because it is
+# already a first-class sensor key and never reaches metadata.
+RESERVED_SENSOR_METADATA_KEYS = frozenset(
+    {"sensor_id", "sensor_type", "circuit_breaker"}
+)
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -677,6 +684,7 @@ def _parse_sensors(data: Any) -> list[SensorConfig]:
         # Fields not in the first-class set go into metadata
         known = {"id", "type", "protocol", "poll_interval_ms", "calibration"}
         metadata = {k: v for k, v in item.items() if k not in known}
+        _refuse_reserved_sensor_metadata(metadata, f"sensors[{i}]", sensor_id)
         if protocol == "coap":
             _validate_coap_sensor_metadata(metadata, f"sensors[{i}]")
         if protocol in _SERIAL_PROTOCOLS:
@@ -693,6 +701,36 @@ def _parse_sensors(data: Any) -> list[SensorConfig]:
             )
         )
     return sensors
+
+
+def _refuse_reserved_sensor_metadata(
+    metadata: dict[str, Any], section: str, sensor_id: str
+) -> None:
+    """Refuse a sensor key that would displace a value the runtime supplies.
+
+    `runtime.py` builds the adapter's config by injecting the sensor's identity
+    and the HAL circuit-breaker settings, then spreading metadata over the top.
+    Metadata therefore wins, and these three names are not in the first-class
+    set, so a sensor entry could set them.
+
+    Both consequences are severe enough to refuse rather than resolve by
+    precedence. `circuit_breaker` makes hardware recovery configurable per
+    sensor, which is the bypass the HAL rules forbid. `sensor_type` decides what
+    the adapter reads and in what unit, so a sensor declared one way reaches its
+    adapter as another, and the reading is produced under an identity the
+    operator did not declare.
+
+    An operator who wrote one of these meant something by it, and silently
+    preferring the runtime's value would be the same defect one level down.
+    """
+    reserved = sorted(RESERVED_SENSOR_METADATA_KEYS & set(metadata))
+    if reserved:
+        raise ConfigValidationError(
+            f"{section} (id={sensor_id!r}): {', '.join(repr(k) for k in reserved)} "
+            f"{'is' if len(reserved) == 1 else 'are'} supplied by the runtime and "
+            f"cannot be set on a sensor. Use 'id' and 'type' for sensor identity, "
+            f"and 'hal.circuit_breaker' for breaker settings."
+        )
 
 
 def _normalise_serial_sensor_baud(metadata: dict[str, Any], section: str) -> None:
