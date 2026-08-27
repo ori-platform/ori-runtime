@@ -742,7 +742,9 @@ class TestAlertOutbox:
         assert rows[0]["attempt_count"] == 1
         assert rows[0]["last_attempt_ts"] is not None
 
-    async def test_mark_delivered_removes_from_retryable(self, store):
+    async def test_mark_accepted_removes_from_retryable_without_claiming_delivery(
+        self, store
+    ):
         await store.enqueue_alert(
             alert_id="d1",
             channel="sms",
@@ -753,9 +755,22 @@ class TestAlertOutbox:
             original_ts=1234,
         )
 
-        await store.mark_alert_delivered("d1")
+        await store.mark_alert_accepted(
+            "d1",
+            accepted_channel="sms",
+            provider_message_id="",
+            provider_status="accepted",
+            accepted_at_ms=2000,
+        )
         rows = await store.get_retryable_alerts(limit=10)
         assert rows == []
+        stored = store._conn.execute(
+            "SELECT status, accepted_at_ms, delivered_at_ms FROM alert_outbox "
+            "WHERE alert_id = 'd1'"
+        ).fetchone()
+        assert stored["status"] == "accepted"
+        assert stored["accepted_at_ms"] == 2000
+        assert stored["delivered_at_ms"] is None
 
     async def test_alert_outbox_summary_counts_retryable_oldest(self, store):
         empty = await store.get_alert_outbox_summary()
@@ -791,7 +806,13 @@ class TestAlertOutbox:
             trigger_name="high_draw",
             original_ts=500,
         )
-        await store.mark_alert_delivered("delivered")
+        await store.mark_alert_accepted(
+            "delivered",
+            accepted_channel="sms",
+            provider_message_id="",
+            provider_status="accepted",
+            accepted_at_ms=2000,
+        )
 
         summary = await store.get_alert_outbox_summary()
 
@@ -814,6 +835,144 @@ class TestAlertOutbox:
         await store.mark_alert_abandoned("ab1")
         rows = await store.get_retryable_alerts(limit=10)
         assert rows == []
+
+    async def test_typed_template_fields_survive_retry_queue(self, store):
+        await store.enqueue_alert(
+            alert_id="typed-1",
+            channel="whatsapp",
+            recipient="whatsapp:+2340000000000",
+            message="Detailed SMS text",
+            intent="tier_a_alert",
+            template_variables=("overcurrent", "Abuja", "Wednesday 23:00"),
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+
+        rows = await store.get_retryable_alerts(limit=10)
+
+        assert rows[0]["intent"] == "tier_a_alert"
+        assert rows[0]["template_variables"] == (
+            "overcurrent",
+            "Abuja",
+            "Wednesday 23:00",
+        )
+
+    async def test_provider_receipt_is_the_only_delivery_transition(self, store):
+        await store.enqueue_alert(
+            alert_id="receipt-1",
+            channel="whatsapp",
+            recipient="whatsapp:+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+        await store.mark_alert_accepted(
+            "receipt-1",
+            accepted_channel="whatsapp",
+            provider_message_id="SM" + "a" * 32,
+            provider_status="queued",
+            accepted_at_ms=2000,
+        )
+        assert len(await store.get_alerts_awaiting_delivery_receipt()) == 1
+
+        await store.record_alert_delivery_status(
+            "receipt-1",
+            provider_status="delivered",
+            observed_at_ms=3000,
+            delivered_at_ms=2900,
+            terminal_failure=False,
+        )
+
+        assert await store.get_alerts_awaiting_delivery_receipt() == []
+        row = store._conn.execute(
+            "SELECT status, provider_status, accepted_at_ms, delivered_at_ms "
+            "FROM alert_outbox WHERE alert_id = 'receipt-1'"
+        ).fetchone()
+        assert dict(row) == {
+            "status": "accepted",
+            "provider_status": "delivered",
+            "accepted_at_ms": 2000,
+            "delivered_at_ms": 2900,
+        }
+
+    async def test_terminal_provider_failure_requeues_accepted_alert(self, store):
+        await store.enqueue_alert(
+            alert_id="receipt-failed",
+            channel="whatsapp",
+            recipient="whatsapp:+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+        await store.mark_alert_accepted(
+            "receipt-failed",
+            accepted_channel="whatsapp",
+            provider_message_id="SM" + "b" * 32,
+            provider_status="queued",
+            accepted_at_ms=2000,
+        )
+
+        await store.record_alert_delivery_status(
+            "receipt-failed",
+            provider_status="undelivered",
+            observed_at_ms=3000,
+            delivered_at_ms=None,
+            terminal_failure=True,
+        )
+
+        retryable = await store.get_retryable_alerts()
+        assert retryable[0]["status"] == "failed"
+        assert retryable[0]["attempt_count"] == 1
+
+    async def test_migration_relabels_legacy_delivered_as_accepted(self, tmp_path):
+        db_path = tmp_path / "legacy-alert.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE alert_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_id TEXT NOT NULL UNIQUE,
+                channel TEXT NOT NULL,
+                recipient TEXT NOT NULL,
+                message TEXT NOT NULL,
+                action_tier TEXT NOT NULL,
+                trigger_name TEXT NOT NULL DEFAULT '',
+                original_ts INTEGER NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_attempt_ts INTEGER,
+                status TEXT NOT NULL DEFAULT 'pending'
+            );
+            INSERT INTO alert_outbox (
+                alert_id, channel, recipient, message, action_tier,
+                trigger_name, original_ts, last_attempt_ts, status
+            ) VALUES (
+                'legacy-1', 'sms', '+2340000000000', 'msg', 'A',
+                'high_draw', 1000, 2000, 'delivered'
+            );
+            """
+        )
+        conn.close()
+        legacy_store = StateStore(str(db_path))
+
+        await legacy_store.open()
+        try:
+            row = legacy_store._conn.execute(
+                "SELECT status, accepted_channel, provider_status, "
+                "accepted_at_ms, delivered_at_ms FROM alert_outbox "
+                "WHERE alert_id = 'legacy-1'"
+            ).fetchone()
+            assert dict(row) == {
+                "status": "accepted",
+                "accepted_channel": "sms",
+                "provider_status": "legacy_provider_success",
+                "accepted_at_ms": 2000,
+                "delivered_at_ms": None,
+            }
+        finally:
+            await legacy_store.close()
 
 
 class TestOfflineTokens:
