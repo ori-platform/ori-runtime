@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from ori.actions.alert_delivery import (
@@ -183,11 +184,11 @@ class AlertFailoverSender:
         getter = getattr(sender, "get_delivery_receipt", None)
         if not callable(getter):
             return None
+        receipt_getter = cast(
+            Callable[[str], Awaitable[AlertDeliveryReceipt | None]], getter
+        )
         try:
-            return cast(
-                AlertDeliveryReceipt | None,
-                await getter(provider_message_id),
-            )
+            return await receipt_getter(provider_message_id)
         except Exception:
             logger.exception(
                 "AlertFailoverSender: delivery receipt fetch failed channel=%s sid=%s",
