@@ -248,6 +248,11 @@ def adapter_connect_config(sensor_cfg: SensorConfig, config: Config) -> dict[str
         "sensor_id": sensor_cfg.id,
         "sensor_type": sensor_cfg.type,
         "circuit_breaker": config.hal.circuit_breaker,
+        # Adapters that run their own poll loop refresh a cache the runtime then
+        # reads on the same schedule. Without this the cache refreshed at the
+        # adapter's default while the runtime read at the operator's rate,
+        # serving one stale reading repeatedly as though it were fresh.
+        "poll_interval_ms": sensor_cfg.poll_interval_ms,
         # Calibration is passed as its own block rather than flattened into the
         # same namespace. Flattening is what let a documented `sensitivity` sit
         # unread beside the adapter's own default.
