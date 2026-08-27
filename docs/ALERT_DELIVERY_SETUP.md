@@ -92,7 +92,7 @@ error and disables delivery otherwise, rather than sending to a bare number.
    handset that has not joined will not receive anything.
 4. Set the three variables, using the sandbox number as `TWILIO_WHATSAPP_FROM`.
 
-### The constraint that shapes the product
+### Approved business templates
 
 Read this before planning any WhatsApp-first demo.
 
@@ -102,32 +102,53 @@ first. Outside a 24-hour window opened by the recipient's own message, a
 business-initiated WhatsApp message must use a **pre-approved template** —
 fixed wording with variable placeholders, submitted to Meta for review.
 
-Free-form text is exactly what an Ori alert is. The reasoning paragraph the
-elevator produces cannot be sent as an arbitrary business-initiated WhatsApp
-message.
+The runtime has four closed business-initiated intents. Each always uses an
+approved template, even when a provider-side session window may happen to be
+open. That window is remote state the runtime cannot safely infer after a
+restart, a missed inbound poll, or a second device.
 
-Three ways to live with it, in order of honesty:
+| Intent | Ordered variables and maximum lengths |
+| --- | --- |
+| `startup` | site (80), connected sensor count (4), active rule count (4) |
+| `tier_a_alert` | configured-risk category (64), site (80), timestamp (32) |
+| `tier_c_approval` | proposed action (64), site (80), timestamp (32), proposal ID (16), timeout seconds (8) |
+| `tier_c_escalation` | proposal ID (16), site (80), timestamp (32), safe-default outcome (16) |
 
-- **Use SMS as the primary channel.** Already the default, and the reason
-  `actions.primary_alert_channel` defaults to `sms`. Africa's Talking imposes no
-  template constraint, so a reasoned alert sends as written.
-- **Approve a template with a free-text variable.** A template such as
-  `ORI ALERT — {{1}}` with the reasoning as the variable satisfies review in
-  many cases, but the fixed scaffolding is part of the approved content and
-  variable length is bounded. Submit early; approval is not instant.
-- **Rely on the 24-hour window.** Valid only for a conversation the operator
-  started, such as a Tier C approval thread where they replied `YES-<id>`. Not
-  usable for the first unsolicited alert.
+Template wording must be purpose-specific and fixed around those fields. Do not
+submit a template such as `ORI ALERT — {{1}}`: carrying arbitrary model output
+in one variable recreates the free-form path inside a nominal template. The
+detailed reasoning remains in SMS and the audit/dashboard surfaces.
 
-For the Tier C approval workflow specifically, the operator's `YES`/`NO` reply
-opens the window, so follow-up messages in that thread are unconstrained. It is
-the *opening* message that needs the template.
+Free-form WhatsApp is restricted to a reply directly caused by an inbound
+message that the runtime has recorded, addressed back to that sender, and still
+inside the 24-hour window. Such a reply is never placed in the durable outbox;
+if the recorded window expires, the runtime refuses it rather than guessing.
 
 ### Production WhatsApp (long lead time)
 
 Business verification with Meta, a WhatsApp Business Account, a dedicated sender
-number, and template approval. Start it now if WhatsApp is meant to be a launch
-channel; do not assume it can be compressed.
+number, and four template approvals. Start it now if WhatsApp is meant to be a
+launch channel; do not assume it can be compressed.
+
+After approval, configure the provider Content SIDs by intent. All four are
+required whenever WhatsApp is enabled, and configuration fails closed if one is
+missing or is not an `HX` Content SID:
+
+```yaml
+actions:
+  whatsapp:
+    enabled: true
+    to_number: "${OWNER_WHATSAPP_NUMBER}"
+    templates:
+      startup: "${TWILIO_CONTENT_SID_STARTUP}"
+      tier_a_alert: "${TWILIO_CONTENT_SID_TIER_A_ALERT}"
+      tier_c_approval: "${TWILIO_CONTENT_SID_TIER_C_APPROVAL}"
+      tier_c_escalation: "${TWILIO_CONTENT_SID_TIER_C_ESCALATION}"
+```
+
+Content SIDs are deployment configuration, not literals in runtime code. Keep
+the actual approved identifiers in the root-owned service environment alongside
+the provider credentials.
 
 ---
 
@@ -145,6 +166,11 @@ actions:
   whatsapp:
     enabled: true
     to_number: "${OWNER_WHATSAPP_NUMBER}"
+    templates:
+      startup: "${TWILIO_CONTENT_SID_STARTUP}"
+      tier_a_alert: "${TWILIO_CONTENT_SID_TIER_A_ALERT}"
+      tier_c_approval: "${TWILIO_CONTENT_SID_TIER_C_APPROVAL}"
+      tier_c_escalation: "${TWILIO_CONTENT_SID_TIER_C_ESCALATION}"
 ```
 
 Secrets belong in the service environment file, readable only by the runtime
@@ -162,16 +188,25 @@ arrived. The proof is a handset.
 **Minimum evidence before v2.5.0 is called ready:**
 
 1. A sandbox SMS lands on a registered handset.
-2. A sandbox WhatsApp message lands on a joined handset.
+2. Each of the four approved WhatsApp templates lands on a joined handset from
+   the real sender; sandbox free-form acceptance does not prove this path.
 3. A live SMS lands from the approved sender ID.
 4. A Tier C approval message lands, the operator replies `YES-<proposal_id>`,
    and the runtime executes the approved action.
 5. The failover path is exercised deliberately: break the primary channel's
    credentials and confirm the secondary carries the alert.
+6. For each WhatsApp send, retain the provider message identifier and initial
+   acceptance status, then a later `delivered` or `read` observation. Provider
+   acceptance alone proves only that Twilio took custody, not that a handset
+   received the message.
 
 Item 5 matters more than it looks. `AlertFailoverSender` is the component that
 decides an operator hears anything at all when a provider is down, and it has
 never been exercised against two real providers failing for real reasons.
+
+Redact recipient numbers and message content from retained evidence. Keep the
+intent, provider message identifier, provider status, and observation times so
+the acceptance-to-delivery transition remains reproducible.
 
 ---
 
