@@ -27,7 +27,14 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from ori.actions.alert_delivery import (
+    AlertIntent,
+    AlertSendReceipt,
+    OutboundAlert,
+    build_outbound_alert,
+)
 from ori.actions.alert_failover import AlertFailoverSender
 from ori.actions.coap import CoAPAction, coap_backend_available
 from ori.actions.logger import LoggerAction
@@ -331,6 +338,8 @@ class OriRuntime:
         self._firmware_mqtt_operator_socket_path: str = ""
         self._device_policy_enabled: bool = False
         self._device_id: str = ""
+        self._device_location: str = "site"
+        self._device_timezone: str = "UTC"
         self._remote_command_lockout_states: dict[str, dict[str, Any]] = {}
         self._remote_command_lockout_config: dict[str, Any] = (
             default_remote_command_lockout_config()
@@ -503,6 +512,8 @@ class OriRuntime:
             config.device.deployment_type,
         )
         self._device_id = str(config.device.id)
+        self._device_location = str(config.device.location or "site")
+        self._device_timezone = str(config.device.timezone or "UTC")
         self._runtime_started_at_ms = now_ms()
         self._device_policy_enabled = bool(
             (config.device_policy or {}).get("enabled", False)
@@ -541,6 +552,7 @@ class OriRuntime:
         remote_command_verifier = _build_remote_command_verifier(config)
         whatsapp_action = WhatsAppAction(
             provider=TwilioProvider(),
+            templates=config.actions.whatsapp.get("templates") or {},
             state_store=self._state_store,
             remote_command_verifier=remote_command_verifier,
             remote_command_handler=self._handle_remote_command,
@@ -695,6 +707,7 @@ class OriRuntime:
                 "approval_timeout_seconds": _approval_timeout,
                 "primary_alert_channel": primary_alert_channel,
                 "device_timezone": config.device.timezone,
+                "device_location": config.device.location,
                 "log_action_decisions": config.logging.log_action_decisions,
                 "log_approval_workflow": config.logging.log_approval_workflow,
                 "relay_enabled": relay_enabled,
@@ -3498,11 +3511,12 @@ class OriRuntime:
         original_ts: int,
         alert_sender: AlertFailoverSender,
         allow_failover: bool = True,
+        outbound_alert: OutboundAlert | None = None,
     ) -> bool:
-        """Attempt immediate delivery; enqueue on failure.
+        """Durably record an alert, then attempt provider acceptance.
 
-        Returns True if delivered immediately or queued successfully.
-        Returns False only if queueing also fails.
+        Returns True if the provider accepted it or a durable retry obligation
+        exists. Provider acceptance is not handset delivery.
         """
         alert_ts = now_ms()
         self._last_alert_timestamps_by_channel[channel] = alert_ts
@@ -3527,13 +3541,57 @@ class OriRuntime:
             )
             return False
 
-        delivered = False
+        alert = outbound_alert or build_outbound_alert(
+            intent=AlertIntent.TIER_A_ALERT,
+            sms_body=message,
+            template_variables=(
+                trigger_name or "configured risk",
+                self._device_location or self._device_id or "site",
+                _format_alert_timestamp(original_ts, self._device_timezone),
+            ),
+        )
+        alert_id = _build_alert_id(
+            channel=channel,
+            recipient=recipient,
+            alert=alert,
+            action_tier=action_tier,
+            trigger_name=trigger_name,
+            original_ts=original_ts,
+        )
+
+        inserted = False
+        if self._state_store is not None:
+            inserted = await self._state_store.enqueue_alert(
+                alert_id=alert_id,
+                channel=channel,
+                recipient=recipient,
+                message=alert.sms_body,
+                intent=alert.intent.value,
+                template_variables=alert.template_variables,
+                action_tier=action_tier,
+                trigger_name=trigger_name,
+                original_ts=original_ts,
+            )
+            if not inserted:
+                logger.debug(
+                    "[runtime] alert already recorded id=%s channel=%s",
+                    alert_id,
+                    channel,
+                )
+                return True
+
+        receipt = AlertSendReceipt.refused(
+            channel=channel, error="submission_not_attempted"
+        )
         try:
             if allow_failover:
-                delivered = await alert_sender.send(
-                    message=message,
-                    to_number=recipient,
-                    preferred_channel=channel,
+                receipt = _coerce_alert_send_receipt(
+                    await alert_sender.send(
+                        alert=alert,
+                        to_number=recipient,
+                        preferred_channel=channel,
+                    ),
+                    fallback_channel=channel,
                 )
             else:
                 exact_sender = getattr(alert_sender, "send_exact", None)
@@ -3543,67 +3601,70 @@ class OriRuntime:
                     # duck-typed sender must satisfy; the guard is unchanged,
                     # so a non-callable attribute still falls through to
                     # `send()` rather than being invoked.
-                    send_exact = cast("Callable[..., Awaitable[bool]]", exact_sender)
-                    delivered = await send_exact(
-                        message=message,
-                        to_number=recipient,
-                        channel=channel,
+                    send_exact = cast("Callable[..., Awaitable[object]]", exact_sender)
+                    receipt = _coerce_alert_send_receipt(
+                        await send_exact(
+                            alert=alert,
+                            to_number=recipient,
+                            channel=channel,
+                        ),
+                        fallback_channel=channel,
                     )
                 else:
-                    delivered = await alert_sender.send(
-                        message=message,
-                        to_number=recipient,
-                        preferred_channel=channel,
+                    receipt = _coerce_alert_send_receipt(
+                        await alert_sender.send(
+                            alert=alert,
+                            to_number=recipient,
+                            preferred_channel=channel,
+                        ),
+                        fallback_channel=channel,
                     )
         except Exception:
             logger.exception(
                 "[runtime] unexpected %s send failure; falling back to outbox queue",
                 channel,
             )
-            delivered = False
+            receipt = AlertSendReceipt.refused(channel=channel, error="sender_raised")
 
-        if delivered:
-            await self._record_policy_counted_alert(channel, action_tier=action_tier)
+        if receipt.accepted:
+            if self._state_store is not None:
+                accepted_at_ms = receipt.accepted_at_ms or now_ms()
+                await self._state_store.mark_alert_accepted(
+                    alert_id,
+                    accepted_channel=receipt.channel,
+                    provider_message_id=receipt.provider_message_id,
+                    provider_status=receipt.provider_status or "accepted",
+                    accepted_at_ms=accepted_at_ms,
+                    delivered_at_ms=receipt.delivered_at_ms,
+                )
+            await self._record_policy_counted_alert(
+                receipt.channel, action_tier=action_tier
+            )
+            logger.info(
+                "[runtime] provider accepted alert id=%s channel=%s status=%s sid=%s",
+                alert_id,
+                receipt.channel,
+                receipt.provider_status,
+                receipt.provider_message_id,
+            )
             return True
 
-        if self._state_store is None:
-            logger.error(
-                "[runtime] alert delivery failed and StateStore is unavailable; dropping alert"
-            )
-            return False
-
-        alert_id = _build_alert_id(
-            channel=channel,
-            recipient=recipient,
-            message=message,
-            action_tier=action_tier,
-            trigger_name=trigger_name,
-            original_ts=original_ts,
-        )
-        inserted = await self._state_store.enqueue_alert(
-            alert_id=alert_id,
-            channel=channel,
-            recipient=recipient,
-            message=message,
-            action_tier=action_tier,
-            trigger_name=trigger_name,
-            original_ts=original_ts,
-        )
         if inserted:
             await self._record_policy_counted_alert(channel, action_tier=action_tier)
             logger.info(
-                "[runtime] queued failed %s alert id=%s tier=%s trigger=%s original_ts=%d",
+                "[runtime] queued refused %s alert id=%s tier=%s trigger=%s original_ts=%d",
                 channel,
                 alert_id,
                 action_tier,
                 trigger_name,
                 original_ts,
             )
-        else:
-            logger.debug(
-                "[runtime] alert already queued id=%s channel=%s", alert_id, channel
-            )
-        return True
+            return True
+
+        logger.error(
+            "[runtime] alert provider refused submission and StateStore is unavailable; dropping alert"
+        )
+        return False
 
     async def _policy_permits_external_alert(
         self,
@@ -3654,7 +3715,7 @@ class OriRuntime:
             )
         except Exception:
             logger.warning(
-                "[runtime] failed to persist %s alert policy count; delivered alert remains valid",
+                "[runtime] failed to persist %s alert policy count; accepted or queued alert remains valid",
                 channel,
                 exc_info=True,
             )
@@ -3690,16 +3751,27 @@ class OriRuntime:
             "sms": is_truthy(config.actions.sms.get("enabled", False)),
             "whatsapp": is_truthy(config.actions.whatsapp.get("enabled", False)),
         }
+        connected_sensor_count = len(self._connected_sensor_ids)
+        active_trigger_count = _count_active_triggers(
+            configured_sensors=config.sensors,
+            connected_sensor_ids=self._connected_sensor_ids,
+            loaded_skills=self._loaded_skills,
+        )
         message = _setup_success_message(
             config=config,
-            connected_sensor_count=len(self._connected_sensor_ids),
-            active_trigger_count=_count_active_triggers(
-                configured_sensors=config.sensors,
-                connected_sensor_ids=self._connected_sensor_ids,
-                loaded_skills=self._loaded_skills,
-            ),
+            connected_sensor_count=connected_sensor_count,
+            active_trigger_count=active_trigger_count,
         )
         original_ts = self._runtime_started_at_ms or now_ms()
+        startup_alert = build_outbound_alert(
+            intent=AlertIntent.STARTUP,
+            sms_body=message,
+            template_variables=(
+                config.device.location or "site",
+                connected_sensor_count,
+                active_trigger_count,
+            ),
+        )
         for channel in channels:
             if not channel_enabled.get(channel, False):
                 logger.info(
@@ -3717,6 +3789,7 @@ class OriRuntime:
                     original_ts=original_ts,
                     alert_sender=alert_sender,
                     allow_failover=False,
+                    outbound_alert=startup_alert,
                 )
             except Exception:
                 logger.exception(
@@ -3728,7 +3801,7 @@ class OriRuntime:
         self,
         alert_sender: AlertFailoverSender,
     ) -> None:
-        """Retry queued outbound alerts until delivered (or abandoned for non-Tier D)."""
+        """Retry refused alerts and reconcile accepted provider receipts."""
         while not self._shutdown_event.is_set():
             try:
                 await asyncio.wait_for(
@@ -3741,6 +3814,8 @@ class OriRuntime:
 
             if self._state_store is None:
                 continue
+
+            await self._reconcile_alert_delivery_receipts(alert_sender)
 
             try:
                 pending = await self._state_store.get_retryable_alerts(
@@ -3759,11 +3834,29 @@ class OriRuntime:
                     trigger_name = str(alert.get("trigger_name", "") or "")
                     attempt_count = int(alert.get("attempt_count", 0))
                     alert_id = str(alert["alert_id"])
+                    intent = AlertIntent(str(alert.get("intent", "tier_a_alert")))
+                    template_variables = tuple(alert.get("template_variables") or ())
+                    if not template_variables:
+                        template_variables = (
+                            trigger_name or "configured risk",
+                            self._device_location or self._device_id or "site",
+                            _format_alert_timestamp(
+                                int(alert.get("original_ts", 0)),
+                                self._device_timezone,
+                            ),
+                        )
+                    outbound_alert = OutboundAlert(
+                        intent=intent,
+                        sms_body=message,
+                        template_variables=template_variables,
+                    )
                 except Exception:
                     logger.exception("[runtime] malformed outbox row: %r", alert)
                     continue
 
-                delivered = False
+                receipt = AlertSendReceipt.refused(
+                    channel=channel, error="submission_not_attempted"
+                )
                 try:
                     preferred_channel = channel
                     if channel not in {"sms", "whatsapp"}:
@@ -3779,10 +3872,13 @@ class OriRuntime:
                         # stall notification delivery.
                         preferred_channel = "whatsapp" if channel == "sms" else "sms"
 
-                    delivered = await alert_sender.send(
-                        message=message,
-                        to_number=recipient,
-                        preferred_channel=preferred_channel,
+                    receipt = _coerce_alert_send_receipt(
+                        await alert_sender.send(
+                            alert=outbound_alert,
+                            to_number=recipient,
+                            preferred_channel=preferred_channel,
+                        ),
+                        fallback_channel=preferred_channel,
                     )
                 except Exception:
                     logger.exception(
@@ -3791,18 +3887,30 @@ class OriRuntime:
                         channel,
                     )
 
-                if delivered:
-                    delivered_ts = now_ms()
-                    self._last_alert_timestamps_by_channel[channel] = delivered_ts
+                if receipt.accepted:
+                    accepted_ts = receipt.accepted_at_ms or now_ms()
+                    self._last_alert_timestamps_by_channel[receipt.channel] = (
+                        accepted_ts
+                    )
                     if trigger_name:
                         self._last_alert_timestamps_by_trigger[trigger_name] = (
-                            delivered_ts
+                            accepted_ts
                         )
-                    await self._state_store.mark_alert_delivered(alert_id)
-                    logger.info(
-                        "[runtime] delivered queued alert id=%s channel=%s after %d attempt(s)",
+                    await self._state_store.mark_alert_accepted(
                         alert_id,
-                        channel,
+                        accepted_channel=receipt.channel,
+                        provider_message_id=receipt.provider_message_id,
+                        provider_status=receipt.provider_status or "accepted",
+                        accepted_at_ms=accepted_ts,
+                        delivered_at_ms=receipt.delivered_at_ms,
+                    )
+                    logger.info(
+                        "[runtime] provider accepted queued alert id=%s channel=%s "
+                        "status=%s sid=%s after %d attempt(s)",
+                        alert_id,
+                        receipt.channel,
+                        receipt.provider_status,
+                        receipt.provider_message_id,
                         attempt_count + 1,
                     )
                     continue
@@ -3836,6 +3944,81 @@ class OriRuntime:
                     await self._state_store.mark_alert_abandoned(alert_id)
                     logger.warning(
                         "[runtime] abandoning queued alert id=%s channel=%s after %d attempts",
+                        alert_id,
+                        channel,
+                        attempts_after,
+                    )
+
+    async def _reconcile_alert_delivery_receipts(
+        self,
+        alert_sender: AlertFailoverSender,
+    ) -> None:
+        """Advance accepted messages only from later provider observations."""
+
+        if self._state_store is None:
+            return
+        try:
+            awaiting = await self._state_store.get_alerts_awaiting_delivery_receipt(
+                self._alert_outbox_batch_size
+            )
+        except Exception:
+            logger.exception("[runtime] alert delivery receipt fetch failed")
+            return
+
+        for alert in awaiting:
+            alert_id = str(alert.get("alert_id", "") or "")
+            channel = str(alert.get("accepted_channel", "") or "")
+            provider_message_id = str(alert.get("provider_message_id", "") or "")
+            if not alert_id or not channel or not provider_message_id:
+                continue
+            receipt = await alert_sender.get_delivery_receipt(
+                channel=channel,
+                provider_message_id=provider_message_id,
+            )
+            if receipt is None:
+                continue
+            await self._state_store.record_alert_delivery_status(
+                alert_id,
+                provider_status=receipt.provider_status,
+                observed_at_ms=receipt.observed_at_ms,
+                delivered_at_ms=receipt.delivered_at_ms,
+                terminal_failure=receipt.terminal_failure,
+            )
+            if receipt.delivered_at_ms is not None:
+                logger.info(
+                    "[runtime] provider confirmed handset delivery id=%s channel=%s "
+                    "status=%s sid=%s",
+                    alert_id,
+                    channel,
+                    receipt.provider_status,
+                    provider_message_id,
+                )
+            elif receipt.terminal_failure:
+                action_tier = str(alert.get("action_tier", "A") or "A").upper()
+                attempts_after = int(alert.get("attempt_count", 0) or 0) + 1
+                logger.warning(
+                    "[runtime] provider reported terminal delivery failure id=%s "
+                    "channel=%s status=%s sid=%s attempt=%d",
+                    alert_id,
+                    channel,
+                    receipt.provider_status,
+                    provider_message_id,
+                    attempts_after,
+                )
+                if action_tier == "D":
+                    if attempts_after >= self._alert_outbox_tier_d_critical_threshold:
+                        logger.critical(
+                            "[runtime] Tier D notification reached terminal provider "
+                            "failure id=%s channel=%s attempts=%d (will keep retrying)",
+                            alert_id,
+                            channel,
+                            attempts_after,
+                        )
+                elif attempts_after >= self._alert_outbox_max_non_tier_d_attempts:
+                    await self._state_store.mark_alert_abandoned(alert_id)
+                    logger.warning(
+                        "[runtime] abandoning alert id=%s channel=%s after %d "
+                        "terminal provider failures",
                         alert_id,
                         channel,
                         attempts_after,
@@ -4040,13 +4223,46 @@ def _build_alert_id(
     *,
     channel: str,
     recipient: str,
-    message: str,
+    alert: OutboundAlert,
     action_tier: str,
     trigger_name: str,
     original_ts: int,
 ) -> str:
-    raw = f"{channel}|{recipient}|{action_tier}|{trigger_name}|{original_ts}|{message}"
+    variables = json.dumps(
+        list(alert.template_variables), separators=(",", ":"), ensure_ascii=False
+    )
+    raw = (
+        f"{channel}|{recipient}|{action_tier}|{trigger_name}|{original_ts}|"
+        f"{alert.intent.value}|{variables}|{alert.sms_body}"
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _format_alert_timestamp(timestamp_ms: int, timezone_name: str) -> str:
+    try:
+        timezone: dt.tzinfo = ZoneInfo(str(timezone_name or "UTC"))
+    except ZoneInfoNotFoundError:
+        timezone = dt.UTC
+    return dt.datetime.fromtimestamp(
+        max(0, int(timestamp_ms)) / 1000,
+        tz=timezone,
+    ).strftime("%Y-%m-%d %H:%M %Z")
+
+
+def _coerce_alert_send_receipt(
+    value: object,
+    *,
+    fallback_channel: str,
+) -> AlertSendReceipt:
+    """Keep legacy test doubles safe while production senders use receipts."""
+
+    if isinstance(value, AlertSendReceipt):
+        return value
+    if value is True:
+        return AlertSendReceipt.accepted_without_provider_receipt(
+            channel=fallback_channel
+        )
+    return AlertSendReceipt.refused(channel=fallback_channel, error="sender_refused")
 
 
 def _alert_policy_count_key(channel: str, timestamp_ms: int) -> str:
