@@ -745,9 +745,15 @@ class TestTierC:
             assert result.approved is True
             assert result.proposal_id == "AB12CD34"
             exec_mock.assert_awaited_once()
-            sent_message = sender.send.await_args.kwargs["message"]
-            assert "Proposal ID: AB12CD34" in sent_message
-            assert "YES-AB12CD34" in sent_message
+            sent_alert = sender.send.await_args.kwargs["alert"]
+            assert sent_alert.intent.value == "tier_c_approval"
+            assert "Proposal ID: AB12CD34" in sent_alert.sms_body
+            assert "YES-AB12CD34" in sent_alert.sms_body
+            assert sent_alert.template_variables[3] == "AB12CD34"
+            assert all(
+                "Detailed explanation" not in value
+                for value in sent_alert.template_variables
+            )
             action_rows = await store.get_action_log()
             assert action_rows[0]["proposal_id"] == "AB12CD34"
             decision_rows = await store.get_tier_c_decision_log()

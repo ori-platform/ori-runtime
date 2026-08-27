@@ -90,7 +90,8 @@ async def test_tier_c_dispatch_upgrade():
         # Dispatcher should have UPGRADED to C, entered _approval_workflow, and called send()
         mock_sender.send.assert_called_once()
         args, kwargs = mock_sender.send.call_args
-        assert "PROPOSED ACTION:\nrelay" in kwargs["message"]
+        assert "PROPOSED ACTION:\nrelay" in kwargs["alert"].sms_body
+        assert kwargs["alert"].intent.value == "tier_c_approval"
 
 
 @pytest.mark.asyncio
@@ -166,11 +167,12 @@ async def test_sender_keyword_validation():
             ),
         )
 
-        # Check that it was called with keyword 'message' and 'to_number'
+        # Business-initiated sends carry a typed alert, never a raw body.
         assert mock_sender.send.called
         args, kwargs = mock_sender.send.call_args
-        assert "message" in kwargs
+        assert "alert" in kwargs
         assert "to_number" in kwargs
+        assert kwargs["alert"].intent.value == "tier_c_approval"
         assert kwargs["to_number"] == "+234000"
 
 
