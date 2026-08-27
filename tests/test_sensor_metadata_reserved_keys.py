@@ -22,6 +22,7 @@ boundary.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -29,8 +30,12 @@ import pytest
 from ori.config import (
     RESERVED_SENSOR_METADATA_KEYS,
     ConfigValidationError,
+    SensorConfig,
     _parse_sensors,
 )
+from ori.hal.base import CircuitState
+from ori.hal.psutil_adapter import PsutilAdapter
+from ori.runtime import adapter_connect_config
 
 
 def _sensor(**overrides: Any) -> list[dict]:
@@ -81,59 +86,156 @@ def test_an_ordinary_sensor_still_loads() -> None:
 # ── Layer 2: the runtime's assembly cannot be displaced ──────────────────────
 
 
-def _assemble(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Reproduce runtime.py's connect_cfg assembly for a sensor.
+def _config(circuit_breaker: dict[str, Any] | None = None) -> Any:
+    """A Config stub carrying only what the assembly reads."""
+    return SimpleNamespace(
+        hal=SimpleNamespace(
+            circuit_breaker=circuit_breaker
+            or {
+                "failure_threshold": 5,
+                "recovery_timeout_s": 300,
+                "success_threshold": 2,
+            }
+        ),
+        actions=SimpleNamespace(coap={}),
+    )
 
-    Built from the real source rather than restated, so a change to the
-    ordering in runtime.py fails here instead of passing against a copy that
-    drifted.
+
+def _poisoned(**metadata: Any) -> SensorConfig:
+    """A sensor whose metadata names runtime-supplied keys.
+
+    Built directly rather than through the loader, because the loader now
+    refuses exactly this. That is the point: the assembly must hold on its own,
+    for a value that reached it by any route the loader did not see.
+    """
+    return SensorConfig(
+        id="load-current",
+        type="cpu_percent",
+        protocol="psutil",
+        poll_interval_ms=1000,
+        metadata=metadata,
+        calibration={},
+    )
+
+
+@pytest.mark.parametrize(
+    "key, poison",
+    [
+        ("sensor_id", "spoofed"),
+        ("sensor_type", "temperature"),
+        ("circuit_breaker", {"failure_threshold": 999}),
+    ],
+)
+def test_metadata_cannot_displace_a_runtime_supplied_key(key: str, poison: Any) -> None:
+    cfg = adapter_connect_config(_poisoned(**{key: poison}), _config())
+    assert cfg[key] != poison
+
+
+def test_metadata_that_names_nothing_reserved_survives_assembly() -> None:
+    cfg = adapter_connect_config(_poisoned(port="/dev/ttyUSB0"), _config())
+    assert cfg["port"] == "/dev/ttyUSB0"
+
+
+def test_every_reserved_key_is_actually_supplied_by_the_assembly() -> None:
+    """The reserved set and what the runtime supplies must not drift apart.
+
+    A name reserved at load but no longer supplied would refuse a key for a
+    reason that stopped being true; one supplied but not reserved is #416 again.
+    """
+    assert RESERVED_SENSOR_METADATA_KEYS <= set(
+        adapter_connect_config(_poisoned(), _config())
+    )
+
+
+# ── Behavioural: a real adapter, connected, keeps the runtime's breaker ──────
+#
+# Everything above inspects a dict. This drives a real HAL adapter through the
+# real assembly and asserts the breaker it built, because an assembly that
+# produces the right dict and an adapter that ignores it would pass the
+# structural check and still be wrong on a device.
+
+
+async def test_a_connected_adapter_uses_the_runtime_breaker_not_the_sensor_one() -> (
+    None
+):
+    global_cb = {
+        "failure_threshold": 5,
+        "recovery_timeout_s": 300,
+        "success_threshold": 2,
+    }
+    sensor = _poisoned(
+        circuit_breaker={"failure_threshold": 999, "recovery_timeout_s": 1}
+    )
+
+    adapter = PsutilAdapter()
+    await adapter.connect(adapter_connect_config(sensor, _config(global_cb)))
+
+    breaker = adapter._breaker
+    assert breaker is not None
+    assert breaker.failure_threshold == 5, "the sensor's 999 must not reach the breaker"
+    assert breaker.recovery_timeout_s == 300
+
+
+async def test_a_connected_adapter_keeps_the_declared_sensor_identity() -> None:
+    # Both types are ones PsutilAdapter supports, so a win by the poison would
+    # silently read the wrong metric rather than raising.
+    sensor = _poisoned(sensor_type="memory_percent", sensor_id="spoofed")
+
+    adapter = PsutilAdapter()
+    await adapter.connect(adapter_connect_config(sensor, _config()))
+
+    # `read()` takes the sensor id from its caller, so the identity that comes
+    # from config -- and therefore the one at risk here -- is the type.
+    reading = await adapter.read("load-current")
+    assert adapter._sensor_type == "cpu_percent"
+    assert reading.sensor_type == "cpu_percent"
+    assert reading.unit == "percent"
+
+
+async def test_the_breaker_still_opens_at_the_configured_threshold() -> None:
+    """A boundary that produced an unusable breaker would also pass the above."""
+    adapter = PsutilAdapter()
+    await adapter.connect(
+        adapter_connect_config(_poisoned(), _config({"failure_threshold": 2}))
+    )
+    breaker = adapter._breaker
+    assert breaker is not None
+    assert breaker.state is CircuitState.CLOSED
+    for _ in range(2):
+        breaker._record_failure()
+    assert breaker.state is CircuitState.OPEN
+
+
+def test_start_uses_the_shared_assembly_rather_than_its_own_dict() -> None:
+    """The join, not the unit.
+
+    Everything above drives `adapter_connect_config` directly. All of it would
+    still pass if `start()` went back to building its own `connect_cfg` literal,
+    which is precisely how the defect existed in the first place. This asserts
+    the call site, so the unit and its caller cannot drift apart.
     """
     import ast
     import pathlib
 
-    source = pathlib.Path("ori/runtime.py").read_text()
-    tree = ast.parse(source)
+    tree = ast.parse(pathlib.Path("ori/runtime.py").read_text())
+    calls, literals = 0, 0
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id == "connect_cfg" for t in node.targets
-            )
-            and isinstance(node.value, ast.Dict)
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(t, ast.Name) and t.id == "connect_cfg" for t in node.targets
         ):
-            keys: list[str | None] = [
-                k.value
-                if isinstance(k, ast.Constant) and isinstance(k.value, str)
-                else None
-                for k in node.value.keys
-            ]
-            # None marks the ** spread of metadata.
-            spread_at = keys.index(None)
-            injected_after = [k for k in keys[spread_at + 1 :] if k is not None]
-            result: dict[str, Any] = dict(metadata)
-            for name in injected_after:
-                result[name] = f"<runtime:{name}>"
-            return result
-    raise AssertionError("connect_cfg assignment not found in ori/runtime.py")
+            continue
+        if isinstance(node.value, ast.Dict):
+            literals += 1
+        elif (
+            isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "adapter_connect_config"
+        ):
+            calls += 1
 
-
-@pytest.mark.parametrize("key", ["sensor_id", "sensor_type", "circuit_breaker"])
-def test_metadata_cannot_displace_a_runtime_supplied_key(key: str) -> None:
-    """The spread comes first; the runtime's values are applied over it."""
-    assembled = _assemble({key: "spoofed"})
-    assert assembled[key] == f"<runtime:{key}>"
-
-
-def test_metadata_that_names_nothing_reserved_survives_assembly() -> None:
-    assembled = _assemble({"port": "/dev/ttyUSB0"})
-    assert assembled["port"] == "/dev/ttyUSB0"
-
-
-def test_every_reserved_key_is_actually_injected_by_the_runtime() -> None:
-    """The reserved set and the runtime's injection must not drift apart.
-
-    A name reserved at load but no longer injected would refuse a key for a
-    reason that stopped being true; one injected but not reserved is #416 again.
-    """
-    injected = set(_assemble({}))
-    assert RESERVED_SENSOR_METADATA_KEYS <= injected
+    assert calls == 1, (
+        "start() must build the adapter config through the shared assembly"
+    )
+    assert literals == 0, "no dict literal may rebuild connect_cfg alongside it"
