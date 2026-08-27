@@ -41,7 +41,12 @@ from ori.actions.relay import (
 from ori.actions.sms import SMSAction
 from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
-from ori.config import Config, ConfigValidationError, requires_production_posture
+from ori.config import (
+    Config,
+    ConfigValidationError,
+    SensorConfig,
+    requires_production_posture,
+)
 from ori.firmware_mqtt_operator import (
     FirmwareMqttOperatorController,
     FirmwareMqttOperatorServer,
@@ -223,6 +228,39 @@ def _resolve_dispatcher_approval_timeout(
         if candidate > resolved:
             resolved = candidate
     return max(1, resolved)
+
+
+def adapter_connect_config(sensor_cfg: SensorConfig, config: Config) -> dict[str, Any]:
+    """Build the dict handed to an adapter's ``connect()``.
+
+    Metadata is spread first and the runtime's own values are applied over it,
+    never the reverse. Config load already refuses a sensor that names one of
+    these, and this ordering means the boundary does not depend on that check
+    having run: a metadata key reaching here cannot displace the sensor's
+    declared identity or the circuit breaker, which would make hardware
+    recovery settable per sensor.
+
+    Extracted from ``start()`` so the boundary is a unit a test can drive with
+    a real adapter, rather than ten lines inside an eight-hundred-line method.
+    """
+    connect_cfg: dict[str, Any] = {
+        **sensor_cfg.metadata,
+        "sensor_id": sensor_cfg.id,
+        "sensor_type": sensor_cfg.type,
+        "circuit_breaker": config.hal.circuit_breaker,
+        # Calibration is passed as its own block rather than flattened into the
+        # same namespace. Flattening is what let a documented `sensitivity` sit
+        # unread beside the adapter's own default.
+        "calibration": dict(sensor_cfg.calibration),
+    }
+    if sensor_cfg.protocol == "coap":
+        coap_cfg = config.actions.coap if isinstance(config.actions.coap, dict) else {}
+        # setdefault, so a sensor may narrow its own host allowlist. It cannot
+        # widen it: the uri host is validated against actions.coap.allowed_hosts
+        # at config load, in a section sensor metadata cannot reach.
+        connect_cfg.setdefault("allowed_hosts", coap_cfg.get("allowed_hosts", []))
+        connect_cfg.setdefault("timeout_s", coap_cfg.get("timeout_s", 2.0))
+    return connect_cfg
 
 
 class OriRuntime:
@@ -964,24 +1002,7 @@ class OriRuntime:
                 adapter = make_adapter(sensor_cfg.protocol)
             except UnknownProtocolError as exc:
                 raise ConfigValidationError(str(exc)) from exc
-            connect_cfg = {
-                "sensor_id": sensor_cfg.id,
-                "sensor_type": sensor_cfg.type,
-                "circuit_breaker": config.hal.circuit_breaker,
-                # Calibration is passed as its own block rather than flattened
-                # into the same namespace. Flattening is what let a documented
-                # `sensitivity` sit unread beside the adapter's own default.
-                "calibration": dict(sensor_cfg.calibration),
-                **sensor_cfg.metadata,
-            }
-            if sensor_cfg.protocol == "coap":
-                coap_cfg = (
-                    config.actions.coap if isinstance(config.actions.coap, dict) else {}
-                )
-                connect_cfg.setdefault(
-                    "allowed_hosts", coap_cfg.get("allowed_hosts", [])
-                )
-                connect_cfg.setdefault("timeout_s", coap_cfg.get("timeout_s", 2.0))
+            connect_cfg = adapter_connect_config(sensor_cfg, config)
             try:
                 await adapter.connect(connect_cfg)
                 self._adapters.append(adapter)
