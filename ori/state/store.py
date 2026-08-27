@@ -266,12 +266,20 @@ CREATE TABLE IF NOT EXISTS alert_outbox (
     channel         TEXT    NOT NULL,   -- 'sms' | 'whatsapp'
     recipient       TEXT    NOT NULL,
     message         TEXT    NOT NULL,
+    intent          TEXT    NOT NULL DEFAULT 'tier_a_alert',
+    template_variables_json TEXT NOT NULL DEFAULT '[]',
     action_tier     TEXT    NOT NULL,   -- 'A' | 'B' | 'C' | 'D'
     trigger_name    TEXT    NOT NULL DEFAULT '',
     original_ts     INTEGER NOT NULL,
     attempt_count   INTEGER NOT NULL DEFAULT 0,
     last_attempt_ts INTEGER,
-    status          TEXT    NOT NULL DEFAULT 'pending' -- 'pending' | 'failed' | 'delivered' | 'abandoned'
+    status          TEXT    NOT NULL DEFAULT 'pending', -- queue: pending|failed|accepted|abandoned
+    accepted_channel TEXT   NOT NULL DEFAULT '',
+    provider_message_id TEXT NOT NULL DEFAULT '',
+    provider_status TEXT    NOT NULL DEFAULT '',
+    accepted_at_ms  INTEGER,
+    delivered_at_ms INTEGER,
+    last_status_at_ms INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_alert_outbox_status_tier_ts
@@ -872,6 +880,47 @@ class StateStore:
             "remote_command_log",
             "from_number",
             "TEXT    NOT NULL DEFAULT ''",
+        )
+        for col, typedef in (
+            ("intent", "TEXT NOT NULL DEFAULT 'tier_a_alert'"),
+            ("template_variables_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("accepted_channel", "TEXT NOT NULL DEFAULT ''"),
+            ("provider_message_id", "TEXT NOT NULL DEFAULT ''"),
+            ("provider_status", "TEXT NOT NULL DEFAULT ''"),
+            ("accepted_at_ms", "INTEGER"),
+            ("delivered_at_ms", "INTEGER"),
+            ("last_status_at_ms", "INTEGER"),
+        ):
+            self._add_column_if_missing_on_conn(conn, "alert_outbox", col, typedef)
+        # Earlier releases called a successful provider submission "delivered".
+        # That fact proves acceptance only, so preserve it without inventing a
+        # handset receipt that was never observed.
+        conn.execute(
+            """
+            UPDATE alert_outbox
+               SET status = 'accepted',
+                   accepted_channel = CASE
+                       WHEN accepted_channel = '' THEN channel
+                       ELSE accepted_channel
+                   END,
+                   provider_status = CASE
+                       WHEN provider_status = '' THEN 'legacy_provider_success'
+                       ELSE provider_status
+                   END,
+                   accepted_at_ms = COALESCE(
+                       accepted_at_ms, last_attempt_ts, original_ts
+                   ),
+                   delivered_at_ms = NULL
+             WHERE status = 'delivered'
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_alert_outbox_acceptance_receipt
+                ON alert_outbox (
+                    status, accepted_channel, delivered_at_ms, original_ts ASC
+                )
+            """
         )
         for col, typedef in (
             ("manifest_json", "TEXT    NOT NULL DEFAULT '{}'"),
@@ -2881,6 +2930,8 @@ class StateStore:
         channel: str,
         recipient: str,
         message: str,
+        intent: str = "tier_a_alert",
+        template_variables: tuple[str, ...] = (),
         action_tier: str,
         trigger_name: str,
         original_ts: int,
@@ -2897,6 +2948,8 @@ class StateStore:
             channel,
             recipient,
             message,
+            intent,
+            template_variables,
             action_tier,
             trigger_name,
             original_ts,
@@ -2908,6 +2961,8 @@ class StateStore:
         channel: str,
         recipient: str,
         message: str,
+        intent: str,
+        template_variables: tuple[str, ...],
         action_tier: str,
         trigger_name: str,
         original_ts: int,
@@ -2916,8 +2971,10 @@ class StateStore:
         cur = self._conn.execute(
             """
             INSERT INTO alert_outbox
-                (alert_id, channel, recipient, message, action_tier, trigger_name, original_ts, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+                (alert_id, channel, recipient, message, intent,
+                 template_variables_json, action_tier, trigger_name, original_ts,
+                 status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
             ON CONFLICT(alert_id) DO NOTHING
             """,
             (
@@ -2925,6 +2982,8 @@ class StateStore:
                 channel,
                 recipient,
                 message,
+                intent,
+                json.dumps(list(template_variables), separators=(",", ":")),
                 action_tier,
                 trigger_name,
                 original_ts,
@@ -2944,8 +3003,9 @@ class StateStore:
     ) -> list[dict]:
         rows = conn.execute(
             """
-            SELECT alert_id, channel, recipient, message, action_tier,
-                   trigger_name, original_ts, attempt_count, last_attempt_ts, status
+            SELECT alert_id, channel, recipient, message, intent,
+                   template_variables_json, action_tier, trigger_name,
+                   original_ts, attempt_count, last_attempt_ts, status
             FROM alert_outbox
             WHERE status IN ('pending', 'failed')
             ORDER BY original_ts ASC, id ASC
@@ -2953,7 +3013,14 @@ class StateStore:
             """,
             (limit,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["template_variables"] = tuple(
+                json.loads(item.pop("template_variables_json"))
+            )
+            result.append(item)
+        return result
 
     async def get_alert_outbox_summary(self) -> dict[str, int | None]:
         """Return a bounded health summary for pending/failed outbound alerts."""
@@ -2982,26 +3049,142 @@ class StateStore:
             "oldest_queued_original_ts": oldest_ts,
         }
 
-    async def mark_alert_delivered(
-        self, alert_id: str, delivered_ts_ms: int | None = None
+    async def mark_alert_accepted(
+        self,
+        alert_id: str,
+        *,
+        accepted_channel: str,
+        provider_message_id: str,
+        provider_status: str,
+        accepted_at_ms: int,
+        delivered_at_ms: int | None = None,
     ) -> None:
+        """Record provider acceptance without claiming handset delivery."""
+
         await self._run_write(
-            self._mark_alert_delivered_sync,
+            self._mark_alert_accepted_sync,
             alert_id,
-            delivered_ts_ms if delivered_ts_ms is not None else now_ms(),
+            accepted_channel,
+            provider_message_id,
+            provider_status,
+            accepted_at_ms,
+            delivered_at_ms,
         )
 
-    def _mark_alert_delivered_sync(self, alert_id: str, delivered_ts_ms: int) -> None:
+    def _mark_alert_accepted_sync(
+        self,
+        alert_id: str,
+        accepted_channel: str,
+        provider_message_id: str,
+        provider_status: str,
+        accepted_at_ms: int,
+        delivered_at_ms: int | None,
+    ) -> None:
         assert self._conn is not None
         self._conn.execute(
             """
             UPDATE alert_outbox
-            SET status = 'delivered',
-                last_attempt_ts = ?
-            WHERE alert_id = ?
+               SET status = 'accepted',
+                   accepted_channel = ?,
+                   provider_message_id = ?,
+                   provider_status = ?,
+                   accepted_at_ms = ?,
+                   delivered_at_ms = ?,
+                   last_attempt_ts = ?,
+                   last_status_at_ms = ?
+             WHERE alert_id = ?
             """,
-            (delivered_ts_ms, alert_id),
+            (
+                accepted_channel,
+                provider_message_id,
+                provider_status,
+                accepted_at_ms,
+                delivered_at_ms,
+                accepted_at_ms,
+                accepted_at_ms,
+                alert_id,
+            ),
         )
+        self._conn.commit()
+
+    async def get_alerts_awaiting_delivery_receipt(
+        self,
+        limit: int = 50,
+    ) -> list[dict]:
+        return await self._run_read(
+            self._get_alerts_awaiting_delivery_receipt_sync, limit
+        )
+
+    def _get_alerts_awaiting_delivery_receipt_sync(
+        self,
+        conn: sqlite3.Connection,
+        limit: int,
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT alert_id, accepted_channel, provider_message_id,
+                   provider_status, accepted_at_ms, action_tier, attempt_count
+              FROM alert_outbox
+             WHERE status = 'accepted'
+               AND delivered_at_ms IS NULL
+               AND provider_message_id != ''
+             ORDER BY accepted_at_ms ASC, id ASC
+             LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def record_alert_delivery_status(
+        self,
+        alert_id: str,
+        *,
+        provider_status: str,
+        observed_at_ms: int,
+        delivered_at_ms: int | None,
+        terminal_failure: bool,
+    ) -> None:
+        await self._run_write(
+            self._record_alert_delivery_status_sync,
+            alert_id,
+            provider_status,
+            observed_at_ms,
+            delivered_at_ms,
+            terminal_failure,
+        )
+
+    def _record_alert_delivery_status_sync(
+        self,
+        alert_id: str,
+        provider_status: str,
+        observed_at_ms: int,
+        delivered_at_ms: int | None,
+        terminal_failure: bool,
+    ) -> None:
+        assert self._conn is not None
+        if terminal_failure:
+            self._conn.execute(
+                """
+                UPDATE alert_outbox
+                   SET status = 'failed',
+                       provider_status = ?,
+                       last_status_at_ms = ?,
+                       attempt_count = attempt_count + 1
+                 WHERE alert_id = ? AND status = 'accepted'
+                """,
+                (provider_status, observed_at_ms, alert_id),
+            )
+        else:
+            self._conn.execute(
+                """
+                UPDATE alert_outbox
+                   SET provider_status = ?,
+                       last_status_at_ms = ?,
+                       delivered_at_ms = COALESCE(delivered_at_ms, ?)
+                 WHERE alert_id = ? AND status = 'accepted'
+                """,
+                (provider_status, observed_at_ms, delivered_at_ms, alert_id),
+            )
         self._conn.commit()
 
     async def mark_alert_attempt_failed(
