@@ -35,7 +35,7 @@ new_fixture() {
   local specs="${box}/specs" consumer="${box}/consumer"
   mkdir -p "${specs}" "${consumer}/scripts" "${consumer}/tests/vectors"
 
-  git -C "${specs}" init -q
+  git -C "${specs}" init -q -b main
   git -C "${specs}" config user.email t@example.com
   git -C "${specs}" config user.name t
   for d in evidence/vectors evidence-exchange/vectors evidence-exchange/vectors/receiver-state \
@@ -184,6 +184,51 @@ if grep -q '"v":3' "${box}/consumer/tests/vectors/commissioned_safety_binding/ve
   ok "the new bytes were copied, not just the pin"
 else
   bad "the new bytes were copied, not just the pin" "vendored content is stale"
+fi
+
+
+# ── 5. a supplied checkout that is not main must be refused ──────────────────
+#
+# ORI_SPECS_DIR points at a working tree, and the vectors are copied from it.
+# On an unmerged branch, --apply would vendor that branch's bytes and pin its
+# commit; every later run would then find the pin reachable and report success.
+# Case 2 does not cover this -- it puts an orphan pin in the manifest while the
+# checkout is back on main, so the copy path is never exercised off-main.
+
+box="$(new_fixture unmerged-branch)"
+vendor "${box}"
+git -C "${box}/specs" checkout -q -b feature/new-vectors
+printf '{"set":"commissioned-safety-binding","v":99}\n' \
+  > "${box}/specs/commissioned-safety-binding/vectors.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: not merged to main"
+branch_commit="$(git -C "${box}/specs" rev-parse HEAD)"
+
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "is not on refs/heads/main" <<< "${out}"; then
+  ok "check refuses a supplied checkout that is not on main"
+else
+  bad "check refuses a supplied checkout that is not on main" "exit ${code}: ${out}"
+fi
+
+vendor "${box}"
+if [ "$(pinned_commit "${box}")" = "${branch_commit}" ]; then
+  bad "apply refuses to vendor from an unmerged branch" "it pinned the branch commit"
+else
+  ok "apply refuses to vendor from an unmerged branch"
+fi
+if grep -q '"v":99' "${box}/consumer/tests/vectors/commissioned_safety_binding/vectors.json"; then
+  bad "apply did not copy the unmerged branch bytes" "branch bytes were vendored"
+else
+  ok "apply did not copy the unmerged branch bytes"
+fi
+
+git -C "${box}/specs" checkout -q main
+out="$(check "${box}")"; code=$?
+if [ "${code}" -eq 0 ]; then
+  ok "the same checkout passes once it is back on main"
+else
+  bad "the same checkout passes once it is back on main" "exit ${code}: ${out}"
 fi
 
 

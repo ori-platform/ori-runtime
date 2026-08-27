@@ -61,7 +61,41 @@ else
 fi
 trap '[ -n "${CLEANUP}" ] && rm -rf "${CLEANUP}"' EXIT
 
-COMMIT="$(git -C "${SPECS}" rev-parse HEAD)"
+# Provenance is defined against ori-specs main, so main is what the pin is
+# resolved and compared against -- never HEAD. A local checkout supplied
+# through ORI_SPECS_DIR can be on any branch, and an unmerged one would
+# otherwise let --apply vendor its vectors and pin its commit, which every
+# later ancestry check would then accept.
+MAIN_REF=""
+for candidate in refs/remotes/origin/main refs/heads/main refs/heads/master; do
+  if git -C "${SPECS}" rev-parse --verify --quiet "${candidate}" >/dev/null; then
+    MAIN_REF="${candidate}"
+    break
+  fi
+done
+if [ -z "${MAIN_REF}" ]; then
+  echo "no main branch found in ${SPECS}; cannot establish provenance" >&2
+  exit 1
+fi
+COMMIT="$(git -C "${SPECS}" rev-parse "${MAIN_REF}")"
+
+# Vectors are copied from the working tree, so the tree itself has to be main.
+# Comparing the pin against main while copying bytes from somewhere else would
+# record a provenance those files do not have.
+if [ -n "${ORI_SPECS_DIR:-}" ]; then
+  head_commit="$(git -C "${SPECS}" rev-parse HEAD)"
+  if [ "${head_commit}" != "${COMMIT}" ]; then
+    echo "ORI_SPECS_DIR is not on ${MAIN_REF}." >&2
+    echo "  checkout is at ${head_commit}" >&2
+    echo "  ${MAIN_REF} is at ${COMMIT}" >&2
+    echo "Vectors are copied from the working tree, so vendoring from an" >&2
+    echo "unmerged branch would pin a commit that is not on main." >&2
+    exit 1
+  fi
+  if [ -n "$(git -C "${SPECS}" status --porcelain 2>/dev/null)" ]; then
+    echo "note: ${SPECS} has uncommitted changes; vendoring from the working tree." >&2
+  fi
+fi
 overall_drift=0
 
 write_manifest() {
@@ -125,7 +159,7 @@ for entry in "${SETS[@]}"; do
   # commit is not an ancestor, so a rewritten or never-merged SHA fails here.
   reachable=0
   if [ -n "${PINNED}" ] && git -C "${SPECS}" merge-base --is-ancestor \
-      "${PINNED}" HEAD 2>/dev/null; then
+      "${PINNED}" "${COMMIT}" 2>/dev/null; then
     reachable=1
   fi
 
