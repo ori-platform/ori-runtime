@@ -232,6 +232,59 @@ else
 fi
 
 
+# ── 6. a dirty supplied checkout must be refused ─────────────────────────────
+#
+# The branch gate is not enough on its own. On a clean main with an uncommitted
+# vector edit, the script would copy the dirty working-tree bytes while pinning
+# the committed main SHA -- false provenance without ever leaving main, and a
+# second run over the same tree reports success because contents now match.
+
+box="$(new_fixture dirty-tree)"
+vendor "${box}"
+clean_pin="$(pinned_commit "${box}")"
+printf '{"set":"commissioned-safety-binding","v":66}\n' \
+  > "${box}/specs/commissioned-safety-binding/vectors.json"
+
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "uncommitted changes" <<< "${out}"; then
+  ok "check refuses a dirty supplied checkout"
+else
+  bad "check refuses a dirty supplied checkout" "exit ${code}: ${out}"
+fi
+
+vendor "${box}"
+if grep -q '"v":66' "${box}/consumer/tests/vectors/commissioned_safety_binding/vectors.json"; then
+  bad "apply does not copy uncommitted vector bytes" "dirty bytes were vendored"
+else
+  ok "apply does not copy uncommitted vector bytes"
+fi
+if [ "$(pinned_commit "${box}")" = "${clean_pin}" ]; then
+  ok "apply leaves the pin untouched for a dirty checkout"
+else
+  bad "apply leaves the pin untouched for a dirty checkout" "the pin moved"
+fi
+
+# An untracked file in a vendored directory is copied by the glob, so it counts
+# as dirt even though nothing tracked changed.
+box="$(new_fixture untracked-file)"
+vendor "${box}"
+printf '{"stray":true}\n' > "${box}/specs/commissioned-safety-binding/stray.json"
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "uncommitted changes" <<< "${out}"; then
+  ok "an untracked file in a vendored directory is refused"
+else
+  bad "an untracked file in a vendored directory is refused" "exit ${code}: ${out}"
+fi
+
+git -C "${box}/specs" clean -qfd
+out="$(check "${box}")"; code=$?
+if [ "${code}" -eq 0 ]; then
+  ok "the same checkout passes once it is clean"
+else
+  bad "the same checkout passes once it is clean" "exit ${code}: ${out}"
+fi
+
+
 echo
 printf '%d passed, %d failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" -eq 0 ]

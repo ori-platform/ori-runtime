@@ -92,8 +92,23 @@ if [ -n "${ORI_SPECS_DIR:-}" ]; then
     echo "unmerged branch would pin a commit that is not on main." >&2
     exit 1
   fi
+  # Refused, not warned. The vectors are copied from the working tree while the
+  # manifest is pinned to the committed main SHA, so a dirty checkout writes a
+  # pin that names a commit which did not produce the bytes beside it -- false
+  # provenance without ever leaving main, and a second run over the same dirty
+  # tree reports success. A warning cannot prevent that; only refusing can.
+  #
+  # The stronger form is to read the vectors from the resolved main commit
+  # rather than from the working tree, which removes the class instead of
+  # guarding it. That is a larger change than this rule needs.
   if [ -n "$(git -C "${SPECS}" status --porcelain 2>/dev/null)" ]; then
-    echo "note: ${SPECS} has uncommitted changes; vendoring from the working tree." >&2
+    echo "ORI_SPECS_DIR has uncommitted changes." >&2
+    git -C "${SPECS}" status --porcelain 2>/dev/null | sed 's/^/  /' >&2
+    echo "Vectors are copied from the working tree while the pin records the" >&2
+    echo "committed ${MAIN_REF}, so a dirty checkout would record provenance" >&2
+    echo "those bytes do not have. Commit or stash, or unset ORI_SPECS_DIR to" >&2
+    echo "vendor from a fresh clone of main." >&2
+    exit 1
   fi
 fi
 overall_drift=0
