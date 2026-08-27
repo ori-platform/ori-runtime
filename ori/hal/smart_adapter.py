@@ -216,7 +216,6 @@ class SmartAdapter(BaseAdapter):
         self._connected = False
         self._sensor_type: str = ""
         self._device: str = ""
-        self._poll_interval_ms: int = 0
         self._breaker: HardwareCircuitBreaker | None = None
 
     async def connect(self, config: dict) -> None:
@@ -235,7 +234,6 @@ class SmartAdapter(BaseAdapter):
 
         self._sensor_type = sensor_type
         self._device = device
-        self._poll_interval_ms = int(config.get("poll_interval_ms", 0))
         self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
         self._connected = True
 
