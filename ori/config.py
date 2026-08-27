@@ -15,6 +15,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from ori.hal.base import (
+    BAUD_RATE_KEY,
+    LEGACY_BAUD_RATE_KEY,
+    AdapterConnectionError,
+    resolve_baud_rate,
+)
 from ori.hal.protocol_registry import SUPPORTED_SENSOR_PROTOCOLS
 from ori.security.config_signatures import (
     CONFIG_REQUIRE_SIGNED_ENV,
@@ -32,6 +38,7 @@ from ori.utils.path_utils import path_is_relative_to
 logger = logging.getLogger(__name__)
 
 _VALID_ACTION_TIERS = {"A", "B", "C", "D"}
+_SERIAL_PROTOCOLS = {"serial", "usb_serial"}
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -672,6 +679,8 @@ def _parse_sensors(data: Any) -> list[SensorConfig]:
         metadata = {k: v for k, v in item.items() if k not in known}
         if protocol == "coap":
             _validate_coap_sensor_metadata(metadata, f"sensors[{i}]")
+        if protocol in _SERIAL_PROTOCOLS:
+            _normalise_serial_sensor_baud(metadata, f"sensors[{i}]")
 
         sensors.append(
             SensorConfig(
@@ -684,6 +693,35 @@ def _parse_sensors(data: Any) -> list[SensorConfig]:
             )
         )
     return sensors
+
+
+def _normalise_serial_sensor_baud(metadata: dict[str, Any], section: str) -> None:
+    """Refuse an ambiguous baud spelling, and rewrite the legacy one.
+
+    Refused here rather than only in the adapter because an adapter without
+    ``pyserial`` never reaches its own check, so on a developer machine the
+    ambiguity would load clean and surface on the Pi. Normalising to the
+    canonical key means the deprecation warning is emitted once, at load.
+    """
+    has_canonical = BAUD_RATE_KEY in metadata
+    has_legacy = LEGACY_BAUD_RATE_KEY in metadata
+    if not (has_canonical or has_legacy):
+        return
+
+    try:
+        resolved = resolve_baud_rate(
+            has_canonical=has_canonical,
+            canonical=metadata.get(BAUD_RATE_KEY),
+            has_legacy=has_legacy,
+            legacy=metadata.get(LEGACY_BAUD_RATE_KEY),
+            default=0,
+            adapter_name=section,
+        )
+    except AdapterConnectionError as exc:
+        raise ConfigValidationError(str(exc)) from exc
+
+    metadata.pop(LEGACY_BAUD_RATE_KEY, None)
+    metadata[BAUD_RATE_KEY] = resolved
 
 
 def _validate_coap_sensor_metadata(metadata: dict[str, Any], section: str) -> None:

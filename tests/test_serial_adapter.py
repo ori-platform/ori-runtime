@@ -33,7 +33,7 @@ skip_if_no_serial = pytest.mark.skipif(
 def _config(
     sensor_type: str = "voltage",
     port: str = "/dev/ttyUSB0",
-    baudrate: int = 9600,
+    baud_rate: int = 9600,
     slave_id: int = 1,
     timeout: float = 1.0,
     register: int | None = None,
@@ -41,7 +41,7 @@ def _config(
     cfg: dict = {
         "sensor_type": sensor_type,
         "port": port,
-        "baudrate": baudrate,
+        "baud_rate": baud_rate,
         "slave_id": slave_id,
         "timeout": timeout,
     }
@@ -188,7 +188,7 @@ class TestConnect:
             patch("ori.hal.serial_adapter.serial", create=True) as mock_serial_mod,
         ):
             mock_serial_mod.Serial.return_value = MagicMock(is_open=True)
-            await adapter.connect(_config(sensor_type="voltage", baudrate=9600))
+            await adapter.connect(_config(sensor_type="voltage", baud_rate=9600))
 
         assert adapter.is_connected is True
         assert adapter._sensor_type == "voltage"
@@ -486,7 +486,7 @@ class TestSerialIntegration:
             {
                 "sensor_type": "voltage",
                 "port": "/dev/ttyUSB0",
-                "baudrate": 9600,
+                "baud_rate": 9600,
                 "slave_id": 1,
             }
         )

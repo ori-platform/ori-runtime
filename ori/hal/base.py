@@ -6,6 +6,7 @@ import enum
 import logging
 import time
 from abc import ABC, abstractmethod
+from typing import Any
 
 from ori.network.events import SensorReading
 
@@ -154,6 +155,83 @@ class HardwareCircuitBreaker:
             return True
 
         return False
+
+
+BAUD_RATE_KEY = "baud_rate"
+LEGACY_BAUD_RATE_KEY = "baudrate"
+
+
+def coerce_baud_rate(value: Any, key: str, adapter_name: str) -> int:
+    """A baud rate is a positive whole number, or it is a refusal.
+
+    Never a fallback to the default. A rate the runtime could not read is not
+    evidence that the operator wanted 9600.
+    """
+    rate: int | None = None
+    if isinstance(value, bool):
+        rate = None
+    elif isinstance(value, int):
+        rate = value
+    elif isinstance(value, float) and value.is_integer():
+        rate = int(value)
+    elif isinstance(value, str):
+        try:
+            rate = int(value.strip())
+        except ValueError:
+            rate = None
+
+    if rate is None or rate <= 0:
+        raise AdapterConnectionError(
+            f"{adapter_name}: '{key}' must be a positive whole number of bits "
+            f"per second, got {value!r}."
+        )
+    return rate
+
+
+def resolve_baud_rate(
+    *,
+    has_canonical: bool,
+    canonical: Any,
+    has_legacy: bool,
+    legacy: Any,
+    default: int,
+    adapter_name: str,
+) -> int:
+    """Resolve the canonical ``baud_rate``, bridging the legacy ``baudrate``.
+
+    One setting had two spellings across two adapters, so a serial sensor
+    configured with the wrong one ran at the default with nothing logged and
+    nothing refused.
+
+    Presence and value are passed in rather than the config dict, so each
+    adapter keeps a literal ``config.get("baud_rate")`` where a reader can see
+    it — and where the configuration-surface extractor can too. A helper that
+    swallowed the dict would make both adapters appear to read nothing, and an
+    inventory built from that would omit the key entirely.
+    """
+    if has_canonical and has_legacy:
+        raise AdapterConnectionError(
+            f"{adapter_name}: sensor config sets both '{BAUD_RATE_KEY}' and "
+            f"'{LEGACY_BAUD_RATE_KEY}'. Refused even when the values agree — "
+            f"ambiguity must not establish configuration. Keep "
+            f"'{BAUD_RATE_KEY}'."
+        )
+
+    if has_canonical:
+        return coerce_baud_rate(canonical, BAUD_RATE_KEY, adapter_name)
+
+    if has_legacy:
+        logger.warning(
+            "%s: '%s' is deprecated; the canonical spelling is '%s'. The alias "
+            "is accepted for this configuration generation and is removed when "
+            "runtime-config/v2 becomes the accepted surface. Rename it now.",
+            adapter_name,
+            LEGACY_BAUD_RATE_KEY,
+            BAUD_RATE_KEY,
+        )
+        return coerce_baud_rate(legacy, LEGACY_BAUD_RATE_KEY, adapter_name)
+
+    return default
 
 
 class BaseAdapter(ABC):
