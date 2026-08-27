@@ -42,6 +42,7 @@ BINDING_KEYS = {
     "issued_at_ms",
     "signer_id",
     "signing_key",
+    "inventory_generation",
     "supersedes",
     "actor",
     "reason",
@@ -338,6 +339,10 @@ def st_parses(b, ctx):
     _whole(b["binding_seq"])
     _bad(b["binding_seq"] < 1)
     _whole(b["issued_at_ms"])
+    # At least one: a binding is commissioned against an inventory, and no
+    # device/site contract defines zero as a signed generation to name.
+    _whole(b["inventory_generation"])
+    _bad(b["inventory_generation"] < 1)
     _bad(
         b["supersedes"] is not None
         and not (isinstance(b["supersedes"], str) and DIGEST.match(b["supersedes"]))

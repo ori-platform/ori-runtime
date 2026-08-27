@@ -246,6 +246,7 @@ def base_binding(seq: int = 1, supersedes: Any = None) -> dict:
         "issued_at_ms": 1800000000000,
         "signer_id": "commissioning-lagos-ikeja",
         "signing_key": "ed25519:" + pub_b64(COMMISSIONING_SEED),
+        "inventory_generation": 7,
         "supersedes": supersedes,
         "actor": "installer:ade",
         "reason": "initial commissioning",
@@ -344,6 +345,36 @@ VERDICT_STAGE = {
     "unbound_actuator": "inventory",
     "undemonstrated_binding": "activation_posture",
 }
+
+
+def tampered(name, note, reason, fn, ctx=None, seed=COMMISSIONING_SEED):
+    """Sign the pristine document, then alter it.
+
+    The ordinary helper signs whatever it is handed, so a mutation there is a
+    differently-worded but validly signed document. Tampering is the opposite:
+    the signature covers what the signer wrote, and the bytes on the wire do
+    not match it.
+    """
+    pristine = base_binding()
+    signature = sign(pristine, seed)
+    altered = copy.deepcopy(pristine)
+    fn(altered)
+    envelope_bytes = {"binding": altered, "signature": signature}
+    reject_cases.append(
+        {
+            "name": name,
+            "note": note,
+            "binding": altered,
+            "verifier_context": ctx or context(),
+            "canonical_hex": canonical(altered).hex(),
+            "canonical_sha256": digest(altered),
+            "signature_b64": signature.removeprefix("ed25519:"),
+            "message_hex": canonical(envelope_bytes).hex(),
+            "reason": reason,
+            "stage": VERDICT_STAGE[reason],
+            "signature_valid": False,
+        }
+    )
 
 
 def reject(name, binding, note, reason, ctx, seed=COMMISSIONING_SEED, sig_valid=True):
@@ -639,10 +670,17 @@ _rej(
     "actuator_replaced_without_fresh_proof",
     "The revision moves the main contactor to a different GPIO pin and carries "
     "the previous proof unchanged. A new actuator does not inherit the mapping "
-    "the previous one was proven to have.",
+    "the previous one was proven to have. The declared hardware changed, so "
+    "`inventory_generation` advances to 8: reusing 7 for a different set of "
+    "actuators is exactly what the non-reuse rule forbids, and a corpus that "
+    "did so would contradict the contract it certifies. Advancing it changes "
+    "nothing about the verdict - the proof is stale either way - which is the "
+    "point: a correct generation does not rescue an actuator that was never "
+    "demonstrated.",
     "stale_proof",
     lambda b: (
         b.__setitem__("binding_seq", 2),
+        b.__setitem__("inventory_generation", 8),
         b.__setitem__("supersedes", digest(base_binding())),
         b["zones"][0]["actuator"]["identity"].__setitem__("gpio_pin", 19),
     )[0],
@@ -779,6 +817,69 @@ _rej(
     "the grammar, so this never reaches key selection.",
     "malformed",
     lambda b: b.__setitem__("signing_key", "ed25519:AAAA"),
+)
+
+_rej(
+    "inventory_generation_absent",
+    "Required, with no default. A binding that does not say which inventory it "
+    "was commissioned against cannot be shown to describe the hardware the "
+    "device currently declares.",
+    "malformed",
+    lambda b: b.pop("inventory_generation"),
+)
+
+_rej(
+    "inventory_generation_is_zero",
+    "A binding is commissioned against an inventory, so there must be one to "
+    "name. No device/site contract defines generation zero as a signed "
+    "inventory, which makes zero a binding to absence rather than an early "
+    "state.",
+    "malformed",
+    lambda b: b.__setitem__("inventory_generation", 0),
+)
+
+_rej(
+    "inventory_generation_is_negative",
+    "Below the floor by a different route than zero, and the case a verifier "
+    "clamping instead of refusing would silently admit.",
+    "malformed",
+    lambda b: b.__setitem__("inventory_generation", -1),
+)
+
+_rej(
+    "inventory_generation_is_a_float",
+    "Canonical bytes separate 7 from 7.0, and language runtimes disagree about "
+    "whether the second is integer-like: Go unmarshals both into float64, and "
+    "Python's 7.0 == 7 is true. A verifier deciding on numeric equality accepts "
+    "a spelling the contract does not define.",
+    "malformed",
+    lambda b: b.__setitem__("inventory_generation", 7.0),
+)
+
+_rej(
+    "inventory_generation_is_a_string",
+    "A quoted generation compares differently from an integer one, and the "
+    "comparison is what ties a binding to an inventory.",
+    "malformed",
+    lambda b: b.__setitem__("inventory_generation", "7"),
+)
+
+_rej(
+    "inventory_generation_is_a_boolean",
+    "JSON separates booleans from numbers and some languages do not: in Python "
+    "True is an instance of int, so a naive check reads this as generation 1.",
+    "malformed",
+    lambda b: b.__setitem__("inventory_generation", True),
+)
+
+tampered(
+    "inventory_generation_altered_without_resigning",
+    "The field sits inside the signed body precisely so this fails. An "
+    "intermediary raising the generation would let a stale binding claim "
+    "currency over hardware it was never commissioned against. The signature "
+    "here covers generation 7 and the document on the wire says 9.",
+    "bad_signature",
+    lambda b: b.__setitem__("inventory_generation", 9),
 )
 
 _rej(
