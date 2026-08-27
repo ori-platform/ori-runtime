@@ -208,3 +208,121 @@ def test_no_adapter_directly_reads_a_key_the_assembly_never_supplies() -> None:
     assert not unreachable, (
         f"adapters directly read keys the runtime never supplies: {unreachable}"
     )
+
+
+# ── The cadence itself, not the value handed to it ───────────────────────────
+#
+# Everything above asserts the interval the adapter stored. That is the input to
+# its sleep, not the rate anything actually refreshes at. The defect this PR
+# fixes is a cache refreshing on the adapter's default while the runtime read on
+# the operator's, so the claim worth proving is the sleep the loop performs.
+
+
+async def test_the_coap_poll_loop_sleeps_for_the_configured_interval() -> None:
+    """Capture the loop's own sleep rather than the attribute feeding it."""
+    import asyncio as _asyncio
+
+    from ori.hal import coap_adapter
+    from ori.hal.coap_adapter import CoapAdapter
+
+    class _FakeContext:
+        async def shutdown(self) -> None:
+            return None
+
+    async def _create_client_context() -> _FakeContext:
+        return _FakeContext()
+
+    fake_aiocoap = SimpleNamespace(
+        GET="GET",
+        Message=lambda code, uri, payload: SimpleNamespace(code=code),
+        Context=SimpleNamespace(
+            create_client_context=staticmethod(_create_client_context)
+        ),
+    )
+
+    slept: list[float] = []
+    failures: list[BaseException] = []
+    first_sleep = _asyncio.Event()
+
+    # Bind the real sleep before patching. `asyncio.sleep` is the same module
+    # attribute being replaced, so a fake that calls it recurses into itself --
+    # the delay is recorded first, so the assertion still passed while the poll
+    # loop died behind it.
+    real_sleep = _asyncio.sleep
+
+    async def _record_sleep(delay: float) -> None:
+        slept.append(delay)
+        first_sleep.set()
+        await real_sleep(0)
+
+    adapter = CoapAdapter()
+    cfg = adapter_connect_config(
+        _sensor(
+            "coap", 1500, uri="coap://host/r", json_path="v", allowed_hosts=["host"]
+        ),
+        _config(),
+    )
+    with (
+        patch("ori.hal.coap_adapter._AIOCOAP_AVAILABLE", True),
+        patch("ori.hal.coap_adapter._aiocoap", fake_aiocoap),
+        patch.object(coap_adapter.asyncio, "sleep", _record_sleep),
+    ):
+        try:
+            await adapter.connect(cfg)
+            assert adapter._poll_task is not None, "connect() must start the loop"
+            await _asyncio.wait_for(first_sleep.wait(), timeout=2.0)
+            task = adapter._poll_task
+        finally:
+            await adapter.close()
+        if task is not None and task.done() and not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                failures.append(exc)
+
+    assert slept, "the poll loop never slept, so nothing governs its cadence"
+    assert slept[0] == 1.5, f"loop slept {slept[0]}s, not the configured 1.5s"
+    assert not failures, f"the poll loop raised while being observed: {failures}"
+
+
+async def test_the_http_poll_loop_sleeps_for_the_configured_interval() -> None:
+    """Both adapters carried the defect, so both cadences are asserted."""
+    import asyncio as _asyncio
+
+    from ori.hal import http_adapter
+    from ori.hal.http_adapter import HttpAdapter
+
+    slept: list[float] = []
+    failures: list[BaseException] = []
+    first_sleep = _asyncio.Event()
+
+    # Bind the real sleep before patching. `asyncio.sleep` is the same module
+    # attribute being replaced, so a fake that calls it recurses into itself --
+    # the delay is recorded first, so the assertion still passed while the poll
+    # loop died behind it.
+    real_sleep = _asyncio.sleep
+
+    async def _record_sleep(delay: float) -> None:
+        slept.append(delay)
+        first_sleep.set()
+        await real_sleep(0)
+
+    adapter = HttpAdapter()
+    cfg = adapter_connect_config(
+        _sensor("http", 1500, url="https://host/r", json_path="v"), _config()
+    )
+    with patch.object(http_adapter.asyncio, "sleep", _record_sleep):
+        try:
+            await adapter.connect(cfg)
+            assert adapter._poll_task is not None, "connect() must start the loop"
+            await _asyncio.wait_for(first_sleep.wait(), timeout=2.0)
+            task = adapter._poll_task
+        finally:
+            await adapter.close()
+        if task is not None and task.done() and not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                failures.append(exc)
+
+    assert slept, "the poll loop never slept, so nothing governs its cadence"
+    assert slept[0] == 1.5, f"loop slept {slept[0]}s, not the configured 1.5s"
+    assert not failures, f"the poll loop raised while being observed: {failures}"
