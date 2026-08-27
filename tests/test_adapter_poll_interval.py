@@ -225,6 +225,8 @@ async def test_the_coap_poll_loop_sleeps_for_the_configured_interval() -> None:
     from ori.hal import coap_adapter
     from ori.hal.coap_adapter import CoapAdapter
 
+    poll_task_prefix = "coap-poll:"
+
     class _FakeContext:
         async def shutdown(self) -> None:
             return None
@@ -251,9 +253,22 @@ async def test_the_coap_poll_loop_sleeps_for_the_configured_interval() -> None:
     real_sleep = _asyncio.sleep
 
     async def _record_sleep(delay: float) -> None:
-        slept.append(delay)
-        first_sleep.set()
-        await real_sleep(0)
+        # Patching `asyncio.sleep` patches it for the whole loop, not just this
+        # adapter, so any concurrent task's sleep lands here too. Attribute each
+        # one to its task and keep only the adapter's: without this the first
+        # recorded delay could belong to somebody else, which is exactly how
+        # this test failed intermittently in a full-suite run while passing in
+        # isolation.
+        task = _asyncio.current_task()
+        if task is not None and (task.get_name() or "").startswith(poll_task_prefix):
+            slept.append(delay)
+            first_sleep.set()
+            await real_sleep(0)
+            return
+        # Any other task keeps its own timing. Collapsing every sleep to zero
+        # turns a concurrent sleeper into a busy loop that can starve the poll
+        # task this test is waiting on.
+        await real_sleep(delay)
 
     adapter = CoapAdapter()
     cfg = adapter_connect_config(
@@ -262,10 +277,15 @@ async def test_the_coap_poll_loop_sleeps_for_the_configured_interval() -> None:
         ),
         _config(),
     )
+
+    async def _no_network(self: object) -> None:
+        return None
+
     with (
         patch("ori.hal.coap_adapter._AIOCOAP_AVAILABLE", True),
         patch("ori.hal.coap_adapter._aiocoap", fake_aiocoap),
         patch.object(coap_adapter.asyncio, "sleep", _record_sleep),
+        patch.object(CoapAdapter, "_poll_once", _no_network),
     ):
         try:
             await adapter.connect(cfg)
@@ -280,7 +300,7 @@ async def test_the_coap_poll_loop_sleeps_for_the_configured_interval() -> None:
                 failures.append(exc)
 
     assert slept, "the poll loop never slept, so nothing governs its cadence"
-    assert slept[0] == 1.5, f"loop slept {slept[0]}s, not the configured 1.5s"
+    assert set(slept) == {1.5}, f"the poll loop slept {slept}, not 1.5s"
     assert not failures, f"the poll loop raised while being observed: {failures}"
 
 
@@ -290,6 +310,8 @@ async def test_the_http_poll_loop_sleeps_for_the_configured_interval() -> None:
 
     from ori.hal import http_adapter
     from ori.hal.http_adapter import HttpAdapter
+
+    poll_task_prefix = "http-poll:"
 
     slept: list[float] = []
     failures: list[BaseException] = []
@@ -302,15 +324,41 @@ async def test_the_http_poll_loop_sleeps_for_the_configured_interval() -> None:
     real_sleep = _asyncio.sleep
 
     async def _record_sleep(delay: float) -> None:
-        slept.append(delay)
-        first_sleep.set()
-        await real_sleep(0)
+        # Patching `asyncio.sleep` patches it for the whole loop, not just this
+        # adapter, so any concurrent task's sleep lands here too. Attribute each
+        # one to its task and keep only the adapter's: without this the first
+        # recorded delay could belong to somebody else, which is exactly how
+        # this test failed intermittently in a full-suite run while passing in
+        # isolation.
+        task = _asyncio.current_task()
+        if task is not None and (task.get_name() or "").startswith(poll_task_prefix):
+            slept.append(delay)
+            first_sleep.set()
+            await real_sleep(0)
+            return
+        # Any other task keeps its own timing. Collapsing every sleep to zero
+        # turns a concurrent sleeper into a busy loop that can starve the poll
+        # task this test is waiting on.
+        await real_sleep(delay)
 
     adapter = HttpAdapter()
     cfg = adapter_connect_config(
         _sensor("http", 1500, url="https://host/r", json_path="v"), _config()
     )
-    with patch.object(http_adapter.asyncio, "sleep", _record_sleep):
+
+    # The loop polls before it sleeps, and `_poll_once` makes a real request.
+    # Waiting on the first sleep therefore waited on DNS: fast here, but
+    # environment-dependent, and slow enough under load to exceed the timeout.
+    # That is what made this test fail intermittently in a full-suite run while
+    # passing in isolation — no patching race, an unmocked network call. The
+    # subject is the cadence, not the poll.
+    async def _no_network(self: object) -> None:
+        return None
+
+    with (
+        patch.object(http_adapter.asyncio, "sleep", _record_sleep),
+        patch.object(HttpAdapter, "_poll_once", _no_network),
+    ):
         try:
             await adapter.connect(cfg)
             assert adapter._poll_task is not None, "connect() must start the loop"
@@ -324,5 +372,69 @@ async def test_the_http_poll_loop_sleeps_for_the_configured_interval() -> None:
                 failures.append(exc)
 
     assert slept, "the poll loop never slept, so nothing governs its cadence"
-    assert slept[0] == 1.5, f"loop slept {slept[0]}s, not the configured 1.5s"
+    assert set(slept) == {1.5}, f"the poll loop slept {slept}, not 1.5s"
     assert not failures, f"the poll loop raised while being observed: {failures}"
+
+
+async def test_a_concurrent_task_sleeping_does_not_pollute_the_cadence_reading() -> (
+    None
+):
+    """The interference the task attribution exists to exclude.
+
+    Patching `asyncio.sleep` patches it for the whole event loop, so any other
+    task sleeping during the window is recorded too. That is how the HTTP
+    cadence test failed intermittently in a full-suite run while passing in
+    isolation: the first recorded delay belonged to somebody else.
+
+    Without a foreign sleeper, removing the attribution changes nothing and the
+    fix would be unproven — so this test supplies one.
+    """
+    import asyncio as _asyncio
+
+    from ori.hal import http_adapter
+    from ori.hal.http_adapter import HttpAdapter
+
+    recorded: list[float] = []
+    first_sleep = _asyncio.Event()
+    real_sleep = _asyncio.sleep
+    foreign_delay = 0.037
+
+    async def _record_sleep(delay: float) -> None:
+        task = _asyncio.current_task()
+        if task is not None and (task.get_name() or "").startswith("http-poll:"):
+            recorded.append(delay)
+            first_sleep.set()
+            await real_sleep(0)
+            return
+        await real_sleep(delay)
+
+    async def _foreign() -> None:
+        while True:
+            await _asyncio.sleep(foreign_delay)
+
+    adapter = HttpAdapter()
+    cfg = adapter_connect_config(
+        _sensor("http", 1500, url="https://host/r", json_path="v"), _config()
+    )
+
+    async def _no_network(self: object) -> None:
+        return None
+
+    with (
+        patch.object(http_adapter.asyncio, "sleep", _record_sleep),
+        patch.object(HttpAdapter, "_poll_once", _no_network),
+    ):
+        noise = _asyncio.create_task(_foreign(), name="foreign-sleeper")
+        try:
+            await adapter.connect(cfg)
+            await _asyncio.wait_for(first_sleep.wait(), timeout=2.0)
+        finally:
+            noise.cancel()
+            await _asyncio.gather(noise, return_exceptions=True)
+            await adapter.close()
+
+    assert recorded, "the adapter's own poll loop never slept"
+    assert foreign_delay not in recorded, (
+        f"a concurrent task's sleep was attributed to the adapter: {recorded}"
+    )
+    assert set(recorded) == {1.5}
