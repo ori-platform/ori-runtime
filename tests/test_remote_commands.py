@@ -6,6 +6,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from ori.actions.alert_delivery import (
+    AlertSendReceipt,
+    InboundWhatsAppMessage,
+)
 from ori.actions.sms import SMSAction
 from ori.actions.whatsapp import WhatsAppAction
 from ori.security.remote_command_lockout import (
@@ -131,13 +135,27 @@ class _InboxWhatsAppProvider:
         self.inbox = inbox
         self.sent: list[tuple[str, str]] = []
 
-    async def send(self, to: str, message: str) -> bool:
-        self.sent.append((to, message))
-        return True
+    async def send_template(self, to, template_id, variables):
+        raise AssertionError("remote-command feedback must be an in-window reply")
 
-    async def get_incoming(self, from_number: str, since_ms: int) -> list[str]:
+    async def send_session_reply(self, to: str, message: str) -> AlertSendReceipt:
+        self.sent.append((to, message))
+        return AlertSendReceipt.accepted_without_provider_receipt(channel="whatsapp")
+
+    async def get_incoming(self, from_number: str, since_ms: int):
         messages, self.inbox = self.inbox[:], []
-        return messages
+        return [
+            InboundWhatsAppMessage(
+                provider_message_id=f"SM{index:032x}",
+                from_number=from_number,
+                body=message,
+                received_at_ms=max(since_ms + 1, 1_780_000_000_000),
+            )
+            for index, message in enumerate(messages, start=1)
+        ]
+
+    async def get_delivery_receipt(self, provider_message_id):
+        return None
 
 
 class _RepeatingWhatsAppProvider:
@@ -147,15 +165,31 @@ class _RepeatingWhatsAppProvider:
         self.calls = 0
         self.sent: list[tuple[str, str]] = []
 
-    async def send(self, to: str, message: str) -> bool:
-        self.sent.append((to, message))
-        return True
+    async def send_template(self, to, template_id, variables):
+        raise AssertionError("remote-command feedback must be an in-window reply")
 
-    async def get_incoming(self, from_number: str, since_ms: int) -> list[str]:
+    async def send_session_reply(self, to: str, message: str) -> AlertSendReceipt:
+        self.sent.append((to, message))
+        return AlertSendReceipt.accepted_without_provider_receipt(channel="whatsapp")
+
+    async def get_incoming(self, from_number: str, since_ms: int):
         self.calls += 1
         if self.calls < 3:
-            return [self.repeated]
-        return [self.repeated, self.final]
+            messages = [self.repeated]
+        else:
+            messages = [self.repeated, self.final]
+        return [
+            InboundWhatsAppMessage(
+                provider_message_id=f"SM{index:032x}",
+                from_number=from_number,
+                body=message,
+                received_at_ms=max(since_ms + 1, 1_780_000_000_000),
+            )
+            for index, message in enumerate(messages, start=1)
+        ]
+
+    async def get_delivery_receipt(self, provider_message_id):
+        return None
 
 
 async def test_accepts_valid_hmac_command(store, fixed_now):

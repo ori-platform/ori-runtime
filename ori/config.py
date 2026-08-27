@@ -62,6 +62,13 @@ RESERVED_SENSOR_METADATA_KEYS = frozenset(
 )
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_TWILIO_CONTENT_SID_RE = re.compile(r"^HX[0-9a-fA-F]{32}$")
+_WHATSAPP_TEMPLATE_INTENTS = (
+    "startup",
+    "tier_a_alert",
+    "tier_c_approval",
+    "tier_c_escalation",
+)
 
 # BCM GPIO pins valid for relay use on Raspberry Pi 4 and CM4 (both BCM2711).
 # Mirrors ori/actions/relay.py::_VALID_BCM_PINS — kept here to avoid a
@@ -415,6 +422,20 @@ class Config:
                     "actions.whatsapp.TWILIO_WHATSAPP_FROM must start with 'whatsapp:+' "
                     "(example: 'whatsapp:+14155238886')."
                 )
+            templates = actions.whatsapp.get("templates")
+            if not isinstance(templates, dict):
+                raise ConfigValidationError(
+                    "actions.whatsapp.templates must configure approved Content SIDs "
+                    "for startup, tier_a_alert, tier_c_approval, and tier_c_escalation."
+                )
+            for intent in _WHATSAPP_TEMPLATE_INTENTS:
+                content_sid = str(templates.get(intent, "") or "").strip()
+                if not _TWILIO_CONTENT_SID_RE.fullmatch(content_sid):
+                    raise ConfigValidationError(
+                        f"actions.whatsapp.templates.{intent} must be an approved "
+                        "Twilio Content SID in the form HX followed by 32 hexadecimal "
+                        "characters."
+                    )
 
         sms_enabled = (
             str(actions.sms.get("enabled", "")).lower() == "true"
@@ -1522,6 +1543,13 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
             f"got: {primary!r}"
         )
 
+    whatsapp_raw = data.get("whatsapp") or {}
+    if not isinstance(whatsapp_raw, dict):
+        raise ConfigValidationError(
+            "'actions.whatsapp' must be a mapping when provided."
+        )
+    whatsapp = dict(whatsapp_raw)
+
     relay_raw: dict = data.get("relay") or {}
     relay: dict = dict(relay_raw)
 
@@ -1731,7 +1759,7 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
         operator_contact=str(data.get("operator_contact") or ""),
         secondary_contact=str(data.get("secondary_contact") or ""),
         approval_require_scoped_replies=approval_require_scoped_replies,
-        whatsapp=data.get("whatsapp") or {},
+        whatsapp=whatsapp,
         sms=data.get("sms") or {},
         relay=relay,
         coap=coap,

@@ -45,6 +45,10 @@ def _mock_env_vars_for_examples(monkeypatch):
     monkeypatch.setenv("TWILIO_ACCOUNT_SID", "mock_sid")
     monkeypatch.setenv("TWILIO_AUTH_TOKEN", "mock_token")
     monkeypatch.setenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+    monkeypatch.setenv("TWILIO_CONTENT_SID_STARTUP", "HX" + "1" * 32)
+    monkeypatch.setenv("TWILIO_CONTENT_SID_TIER_A_ALERT", "HX" + "2" * 32)
+    monkeypatch.setenv("TWILIO_CONTENT_SID_TIER_C_APPROVAL", "HX" + "3" * 32)
+    monkeypatch.setenv("TWILIO_CONTENT_SID_TIER_C_ESCALATION", "HX" + "4" * 32)
     monkeypatch.setenv("OWNER_WHATSAPP_NUMBER", "whatsapp:+2340000000000")
     monkeypatch.setenv("AT_API_KEY", "mock_key")
     monkeypatch.setenv("AT_USERNAME", "mock_user")
@@ -3607,6 +3611,16 @@ actions:
 {actions_block}
 """
 
+    @staticmethod
+    def _whatsapp_templates() -> str:
+        return (
+            "    templates:\n"
+            f"      startup: 'HX{'1' * 32}'\n"
+            f"      tier_a_alert: 'HX{'2' * 32}'\n"
+            f"      tier_c_approval: 'HX{'3' * 32}'\n"
+            f"      tier_c_escalation: 'HX{'4' * 32}'\n"
+        )
+
     def test_whatsapp_missing_critical_var_raises(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
@@ -3640,6 +3654,79 @@ actions:
         with pytest.raises(
             ConfigValidationError, match="must start with 'whatsapp:\\+'"
         ):
+            Config.load(yaml_path)
+
+    def test_whatsapp_requires_all_business_template_content_sids(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: whatsapp\n"
+                "  whatsapp:\n"
+                "    enabled: true\n"
+                "    TWILIO_ACCOUNT_SID: 'sid'\n"
+                "    TWILIO_AUTH_TOKEN: 'token'\n"
+                "    TWILIO_WHATSAPP_FROM: 'whatsapp:+14155238886'\n"
+            ),
+        )
+
+        with pytest.raises(
+            ConfigValidationError, match="actions.whatsapp.templates must configure"
+        ):
+            Config.load(yaml_path)
+
+    def test_whatsapp_rejects_malformed_business_template_content_sid(self, tmp_path):
+        templates = self._whatsapp_templates().replace(
+            f"HX{'2' * 32}", "not-a-content-sid"
+        )
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: whatsapp\n"
+                "  whatsapp:\n"
+                "    enabled: true\n"
+                "    TWILIO_ACCOUNT_SID: 'sid'\n"
+                "    TWILIO_AUTH_TOKEN: 'token'\n"
+                "    TWILIO_WHATSAPP_FROM: 'whatsapp:+14155238886'\n"
+                f"{templates}"
+            ),
+        )
+
+        with pytest.raises(
+            ConfigValidationError,
+            match="actions.whatsapp.templates.tier_a_alert",
+        ):
+            Config.load(yaml_path)
+
+    def test_whatsapp_accepts_complete_approved_template_configuration(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  primary_alert_channel: whatsapp\n"
+                "  whatsapp:\n"
+                "    enabled: true\n"
+                "    TWILIO_ACCOUNT_SID: 'sid'\n"
+                "    TWILIO_AUTH_TOKEN: 'token'\n"
+                "    TWILIO_WHATSAPP_FROM: 'whatsapp:+14155238886'\n"
+                f"{self._whatsapp_templates()}"
+            ),
+        )
+
+        config = Config.load(yaml_path)
+
+        assert config.actions.whatsapp["templates"] == {
+            "startup": "HX" + "1" * 32,
+            "tier_a_alert": "HX" + "2" * 32,
+            "tier_c_approval": "HX" + "3" * 32,
+            "tier_c_escalation": "HX" + "4" * 32,
+        }
+
+    def test_whatsapp_section_must_be_a_mapping(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            self._yaml("  primary_alert_channel: whatsapp\n  whatsapp: enabled\n"),
+        )
+
+        with pytest.raises(ConfigValidationError, match="actions.whatsapp"):
             Config.load(yaml_path)
 
     def test_sms_missing_critical_var_raises(self, tmp_path):
