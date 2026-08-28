@@ -96,7 +96,7 @@ class WhatsAppProvider(Protocol):
         variables: tuple[str, ...],
     ) -> AlertSendReceipt:
         """Submit one approved business template."""
-        ...
+        raise NotImplementedError
 
     async def send_session_reply(
         self,
@@ -104,7 +104,7 @@ class WhatsAppProvider(Protocol):
         message: str,
     ) -> AlertSendReceipt:
         """Submit free-form text inside a caller-proven reply window."""
-        ...
+        raise NotImplementedError
 
     async def get_incoming(
         self,
@@ -116,14 +116,14 @@ class WhatsAppProvider(Protocol):
         *since_ms* is a Unix timestamp in milliseconds (UTC).
         Returns an empty list when there are no matching messages.
         """
-        ...
+        raise NotImplementedError
 
     async def get_delivery_receipt(
         self,
         provider_message_id: str,
     ) -> AlertDeliveryReceipt | None:
         """Return the provider's latest status for an accepted message."""
-        ...
+        raise NotImplementedError
 
 
 # ── Twilio provider ───────────────────────────────────────────────────────────
