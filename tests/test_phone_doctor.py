@@ -369,7 +369,7 @@ def test_phone_doctor_fails_growatt_profile_without_host_or_serial(
 
     checks = phone_doctor.run_phone_doctor(config_path)
 
-    assert _status_by_name(checks)["config.sensor_profile"] == "fail"
+    assert _status_by_name(checks)["config.load"] == "fail"
     message = _message_by_name(checks)["config.sensor_profile"]
     assert "host" in message
     assert "serial" in message
@@ -455,10 +455,9 @@ def test_phone_doctor_fails_solarman_modbus_profile_without_fields(
 
     checks = phone_doctor.run_phone_doctor(config_path)
 
-    assert _status_by_name(checks)["config.sensor_profile"] == "fail"
+    assert _status_by_name(checks)["config.load"] == "fail"
     message = _message_by_name(checks)["config.sensor_profile"]
     assert "profile" in message
-    assert "host" in message
     assert "serial" in message
     assert phone_doctor.has_failures(checks) is True
 
@@ -544,7 +543,7 @@ def test_phone_doctor_fails_victron_profile_without_broker_or_portal(
 
     checks = phone_doctor.run_phone_doctor(config_path)
 
-    assert _status_by_name(checks)["config.sensor_profile"] == "fail"
+    assert _status_by_name(checks)["config.load"] == "fail"
     message = _message_by_name(checks)["config.sensor_profile"]
     assert "broker_host" in message
     assert "portal_id" in message

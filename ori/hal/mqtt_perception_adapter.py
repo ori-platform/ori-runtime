@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from ori.hal.base import AdapterConnectionError, AdapterReadError
-from ori.hal.mqtt_base import MqttCachedAdapter
+from ori.hal.mqtt_base import MQTT_CONNECTION_SCHEMA, MqttCachedAdapter
 from ori.network.events import SensorReading
 from ori.utils.time_utils import now_ms
 
@@ -17,6 +17,12 @@ _SUPPORTED_SENSOR_TYPES = frozenset(
         "ppe_vest_violation_score",
     }
 )
+
+CONFIG_SCHEMA = {
+    **MQTT_CONNECTION_SCHEMA,
+    "topic": {"type": "string", "required": True},
+}
+CALIBRATION_SCHEMAS: dict[str, dict] = {}
 
 
 def _clamp_quality(value: float) -> float:

@@ -37,6 +37,153 @@ _TLS_ALIASES: dict[str, tuple[str, ...]] = {
     "insecure": ("mqtt_tls_insecure", "tls_insecure"),
 }
 
+# Shared by MQTT-family adapter declarations.  The adapter modules expose their
+# own CONFIG_SCHEMA values by composing this mapping with protocol-specific
+# fields; keeping the common connection grammar beside the shared consumer
+# avoids MQTT aliases drifting between five adapters.
+MQTT_CONNECTION_SCHEMA: dict[str, dict[str, Any]] = {
+    "broker_host": {"type": "string", "required": True},
+    "port": {"type": "integer", "default": 1883, "minimum": 1, "maximum": 65535},
+    "mqtt": {
+        "type": "object",
+        "properties": {
+            "username": {"type": "string"},
+            "mqtt_username": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "username",
+            },
+            "password": {"type": "string"},
+            "mqtt_password": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "password",
+            },
+            "client_id": {"type": "string"},
+            "identifier": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "client_id",
+            },
+            "mqtt_client_id": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "client_id",
+            },
+            "keepalive": {"type": "integer", "minimum": 1},
+            "mqtt_keepalive_s": {
+                "type": "integer",
+                "deprecated": True,
+                "supersedes": "keepalive",
+            },
+            "clean_session": {"type": "boolean"},
+            "mqtt_clean_session": {
+                "type": "boolean",
+                "deprecated": True,
+                "supersedes": "clean_session",
+            },
+            "transport": {"type": "string", "enum": ["tcp", "websockets"]},
+            "mqtt_transport": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "transport",
+            },
+            "timeout": {"type": "number", "minimum": 0},
+            "mqtt_timeout_s": {
+                "type": "number",
+                "deprecated": True,
+                "supersedes": "timeout",
+            },
+            "tls": {
+                "type": "object",
+                "properties": {
+                    "enabled": {"type": "boolean", "default": False},
+                    "ca_certfile": {"type": "string"},
+                    "certfile": {"type": "string"},
+                    "keyfile": {"type": "string"},
+                    "keyfile_password": {"type": "string"},
+                    "insecure": {"type": "boolean", "default": False},
+                },
+            },
+        },
+    },
+    "mqtt_username": {
+        "type": "string",
+        "deprecated": True,
+        "supersedes": "mqtt.username",
+    },
+    "username": {"type": "string", "deprecated": True, "supersedes": "mqtt.username"},
+    "mqtt_password": {
+        "type": "string",
+        "deprecated": True,
+        "supersedes": "mqtt.password",
+    },
+    "password": {"type": "string", "deprecated": True, "supersedes": "mqtt.password"},
+    "mqtt_client_id": {
+        "type": "string",
+        "deprecated": True,
+        "supersedes": "mqtt.client_id",
+    },
+    "client_id": {
+        "type": "string",
+        "deprecated": True,
+        "supersedes": "mqtt.client_id",
+    },
+    "identifier": {
+        "type": "string",
+        "deprecated": True,
+        "supersedes": "mqtt.client_id",
+    },
+    "mqtt_keepalive_s": {
+        "type": "integer",
+        "deprecated": True,
+        "supersedes": "mqtt.keepalive",
+    },
+    "keepalive": {
+        "type": "integer",
+        "deprecated": True,
+        "supersedes": "mqtt.keepalive",
+    },
+    "mqtt_clean_session": {
+        "type": "boolean",
+        "deprecated": True,
+        "supersedes": "mqtt.clean_session",
+    },
+    "clean_session": {
+        "type": "boolean",
+        "deprecated": True,
+        "supersedes": "mqtt.clean_session",
+    },
+    "mqtt_transport": {
+        "type": "string",
+        "deprecated": True,
+        "supersedes": "mqtt.transport",
+    },
+    "transport": {"type": "string", "deprecated": True, "supersedes": "mqtt.transport"},
+    "mqtt_timeout_s": {
+        "type": "number",
+        "deprecated": True,
+        "supersedes": "mqtt.timeout",
+    },
+    "timeout": {"type": "number", "deprecated": True, "supersedes": "mqtt.timeout"},
+}
+for _canonical, _aliases in _TLS_ALIASES.items():
+    for _alias in _aliases:
+        MQTT_CONNECTION_SCHEMA[_alias] = {
+            "type": MQTT_CONNECTION_SCHEMA["mqtt"]["properties"]["tls"]["properties"][
+                _canonical
+            ]["type"],
+            "deprecated": True,
+            "supersedes": f"mqtt.tls.{_canonical}",
+        }
+        MQTT_CONNECTION_SCHEMA["mqtt"]["properties"][_alias] = {
+            "type": MQTT_CONNECTION_SCHEMA["mqtt"]["properties"]["tls"]["properties"][
+                _canonical
+            ]["type"],
+            "deprecated": True,
+            "supersedes": f"tls.{_canonical}",
+        }
+
 
 class MqttCachedAdapter(BaseAdapter):
     """Reusable base for MQTT adapters that subscribe and cache latest values."""
@@ -77,7 +224,13 @@ class MqttCachedAdapter(BaseAdapter):
         return default
 
     def _build_mqtt_client_kwargs(self, config: dict) -> dict[str, Any]:
-        """Build aiomqtt.Client kwargs from flat and nested mqtt config."""
+        """Build aiomqtt.Client kwargs from raw or loader-resolved MQTT config.
+
+        Production configuration reaches this method only after the loader has
+        canonicalised aliases. The compatibility branches remain for direct HAL
+        callers and older embedding integrations; their duplicate detection is
+        retained rather than making direct use silently choose a TLS setting.
+        """
         mqtt_cfg = config.get("mqtt")
         if not isinstance(mqtt_cfg, dict):
             mqtt_cfg = {}
@@ -120,8 +273,7 @@ class MqttCachedAdapter(BaseAdapter):
             tls_cfg = {}
 
         def _tls_setting(canonical: str) -> Any:
-            """Resolve one `mqtt.tls.*` setting, refusing a second spelling of it."""
-            # Presence is membership: a spelling written as `null` was written.
+            """Resolve one raw compatibility spelling, refusing duplicates."""
             supplied: list[tuple[str, Any]] = []
             if canonical in tls_cfg:
                 supplied.append((f"mqtt.tls.{canonical}", tls_cfg[canonical]))
@@ -130,7 +282,6 @@ class MqttCachedAdapter(BaseAdapter):
                     supplied.append((alias, config[alias]))
                 if alias in mqtt_cfg:
                     supplied.append((f"mqtt.{alias}", mqtt_cfg[alias]))
-
             if len(supplied) > 1:
                 names = ", ".join(repr(name) for name, _ in supplied)
                 raise AdapterConnectionError(

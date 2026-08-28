@@ -258,13 +258,6 @@ def adapter_connect_config(sensor_cfg: SensorConfig, config: Config) -> dict[str
         # unread beside the adapter's own default.
         "calibration": dict(sensor_cfg.calibration),
     }
-    if sensor_cfg.protocol == "coap":
-        coap_cfg = config.actions.coap if isinstance(config.actions.coap, dict) else {}
-        # setdefault, so a sensor may narrow its own host allowlist. It cannot
-        # widen it: the uri host is validated against actions.coap.allowed_hosts
-        # at config load, in a section sensor metadata cannot reach.
-        connect_cfg.setdefault("allowed_hosts", coap_cfg.get("allowed_hosts", []))
-        connect_cfg.setdefault("timeout_s", coap_cfg.get("timeout_s", 2.0))
     return connect_cfg
 
 

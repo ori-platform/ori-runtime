@@ -233,6 +233,36 @@ class SectionWalker(ast.NodeVisitor):
                     self.env[name] = element
         self.generic_visit(node)
 
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        """Record a finite key allowlist used to project a config mapping.
+
+        `_parse_sensors` projects its canonical envelope with
+        ``{key: item[key] for key in ("id", ...) if key in item}``.  The old
+        walker understood literal `.get()` calls only, so this real read became
+        invisible and the inventory lost four sensor fields.  The iterable is a
+        literal finite allowlist, not arbitrary data, so it is as auditable as
+        four written `.get()` calls and must be represented as such.
+        """
+        for generator in node.generators:
+            key_name = _receiver(generator.target)
+            if not key_name or not isinstance(generator.iter, ast.Tuple):
+                continue
+            keys = [_string(element) for element in generator.iter.elts]
+            if not all(keys):
+                continue
+            for child in ast.walk(node.value):
+                if not isinstance(child, ast.Subscript):
+                    continue
+                if _receiver(child.value) not in self.env:
+                    continue
+                if not isinstance(child.slice, ast.Name) or child.slice.id != key_name:
+                    continue
+                prefix = self.env[_receiver(child.value) or ""]
+                for key in keys:
+                    assert key is not None
+                    self.record(prefix, key, False, None)
+        self.generic_visit(node)
+
     def derives_from_config(self, node: ast.AST) -> bool:
         """Does any part of this expression read configuration?
 

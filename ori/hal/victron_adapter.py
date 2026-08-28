@@ -7,7 +7,7 @@ from ori.hal.base import (
     AdapterConnectionError,
     AdapterReadError,
 )
-from ori.hal.mqtt_base import MqttCachedAdapter
+from ori.hal.mqtt_base import MQTT_CONNECTION_SCHEMA, MqttCachedAdapter
 from ori.network.events import SensorReading
 
 _DEFAULT_PORT = 1883
@@ -22,6 +22,12 @@ _SENSOR_MAP: dict[str, tuple[str, str]] = {
     "victron_load_power": ("system/0/Ac/Loads/L1/Power", "watt"),
 }
 _SUPPORTED = frozenset(_SENSOR_MAP)
+
+CONFIG_SCHEMA = {
+    **MQTT_CONNECTION_SCHEMA,
+    "portal_id": {"type": "string", "required": True},
+}
+CALIBRATION_SCHEMAS: dict[str, dict] = {}
 
 
 class VictronAdapter(MqttCachedAdapter):

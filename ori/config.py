@@ -15,13 +15,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
-from ori.hal.base import (
-    BAUD_RATE_KEY,
-    LEGACY_BAUD_RATE_KEY,
-    AdapterConnectionError,
-    resolve_baud_rate,
+from ori.hal.config_schema import (
+    DocumentError,
+    SchemaError,
+    validate_document,
+    validate_schema,
 )
-from ori.hal.protocol_registry import SUPPORTED_SENSOR_PROTOCOLS
+from ori.hal.protocol_registry import SUPPORTED_SENSOR_PROTOCOLS, protocol_schemas
 from ori.security.config_signatures import (
     CONFIG_REQUIRE_SIGNED_ENV,
     DEFAULT_CONFIG_TRUST_ANCHOR_ENV,
@@ -38,7 +38,21 @@ from ori.utils.path_utils import path_is_relative_to
 logger = logging.getLogger(__name__)
 
 _VALID_ACTION_TIERS = {"A", "B", "C", "D"}
-_SERIAL_PROTOCOLS = {"serial", "usb_serial"}
+
+_SENSOR_ENVELOPE_SCHEMA = validate_schema(
+    {
+        "id": {"type": "string", "required": True},
+        "type": {"type": "string", "required": True},
+        "protocol": {"type": "string", "required": True},
+        "poll_interval_ms": {
+            "type": "integer",
+            "default": 1000,
+            "minimum": 100,
+            "maximum": 60_000,
+        },
+    },
+    name="sensors[] envelope",
+)
 
 # Supplied by runtime.py when it assembles an adapter's connect() config, and
 # therefore not settable on a sensor. `calibration` is absent because it is
@@ -322,12 +336,14 @@ class Config:
             )
 
         device = _parse_device(data.get("device", {}))
-        sensors = _parse_sensors(data.get("sensors", []))
+        actions = _parse_actions(data.get("actions", {}))
+        sensor_external = dict(data)
+        sensor_external["actions"] = {"coap": actions.coap}
+        sensors = _parse_sensors(data.get("sensors", []), external=sensor_external)
         skills = _parse_skills(data.get("skills", []))
         reasoning = _parse_reasoning(data.get("reasoning", {}))
         gateway = _parse_gateway(data.get("gateway", {}))
         telemetry_export = _parse_telemetry_export(data.get("telemetry_export"))
-        actions = _parse_actions(data.get("actions", {}))
         hal = _parse_hal(data.get("hal"))
         device_policy = _parse_device_policy(data.get("device_policy"))
         security = _parse_security(data.get("security"))
@@ -657,47 +673,104 @@ def _parse_device(data: Any) -> DeviceConfig:
     )
 
 
-def _parse_sensors(data: Any) -> list[SensorConfig]:
+def _parse_sensors(
+    data: Any, *, external: dict[str, Any] | None = None
+) -> list[SensorConfig]:
     if not isinstance(data, list):
         raise ConfigValidationError("'sensors' must be a list.")
 
     sensors = []
+    seen_ids: set[str] = set()
     for i, item in enumerate(data):
         if not isinstance(item, dict):
             raise ConfigValidationError(f"sensors[{i}] must be a mapping.")
 
-        sensor_id = _require_str(item, "id", f"sensors[{i}]")
-        protocol = _require_str(item, "protocol", f"sensors[{i}]")
-        poll_ms = int(item.get("poll_interval_ms", 1000))
+        section = f"sensors[{i}]"
+        canonical = {
+            key: item[key]
+            for key in ("id", "type", "protocol", "poll_interval_ms")
+            if key in item
+        }
+        try:
+            envelope = validate_document(
+                canonical, _SENSOR_ENVELOPE_SCHEMA, context=section
+            )
+        except DocumentError as exc:
+            raise ConfigValidationError(str(exc)) from exc
 
-        if not (100 <= poll_ms <= 60_000):
+        sensor_id = envelope["id"].strip()
+        sensor_type = envelope["type"].strip()
+        protocol = envelope["protocol"].strip()
+        poll_ms = envelope["poll_interval_ms"]
+        if not sensor_id:
             raise ConfigValidationError(
-                f"sensors[{i}] (id={sensor_id!r}): poll_interval_ms must be "
-                f"100–60000, got {poll_ms}."
+                f"{section}.id: must be non-empty after trimming."
+            )
+        if not sensor_type:
+            raise ConfigValidationError(
+                f"{section}.type: must be non-empty after trimming."
+            )
+        if not protocol:
+            raise ConfigValidationError(
+                f"{section}.protocol: must be non-empty after trimming."
             )
         if protocol not in SUPPORTED_SENSOR_PROTOCOLS:
             raise ConfigValidationError(
                 f"sensors[{i}] (id={sensor_id!r}): unknown protocol {protocol!r}. "
                 f"Supported protocols: {sorted(SUPPORTED_SENSOR_PROTOCOLS)}."
             )
+        if sensor_id in seen_ids:
+            raise ConfigValidationError(
+                f"{section}.id: {sensor_id!r} duplicates an earlier sensor id."
+            )
+        seen_ids.add(sensor_id)
 
-        # Fields not in the first-class set go into metadata
+        # Everything outside the canonical envelope is protocol configuration.
+        # It is closed by the declaration selected above; forwarding a key that
+        # no adapter claims is the configuration defect this boundary ends.
         known = {"id", "type", "protocol", "poll_interval_ms", "calibration"}
-        metadata = {k: v for k, v in item.items() if k not in known}
-        _refuse_reserved_sensor_metadata(metadata, f"sensors[{i}]", sensor_id)
-        if protocol == "coap":
-            _validate_coap_sensor_metadata(metadata, f"sensors[{i}]")
-        if protocol in _SERIAL_PROTOCOLS:
-            _normalise_serial_sensor_baud(metadata, f"sensors[{i}]")
+        protocol_config = {k: v for k, v in item.items() if k not in known}
+        _refuse_reserved_sensor_metadata(protocol_config, section, sensor_id)
+        try:
+            protocol_schema, calibration_schemas = protocol_schemas(protocol)
+            metadata = validate_document(
+                protocol_config,
+                protocol_schema,
+                context=f"{section} (protocol={protocol!r})",
+                external=external,
+            )
+            if protocol == "coap":
+                _validate_coap_sensor_metadata(metadata, section)
+            calibration = item.get("calibration", {})
+            if not isinstance(calibration, dict):
+                raise ConfigValidationError(
+                    f"{section}.calibration: expected object, got {type(calibration).__name__}."
+                )
+            calibration_schema = calibration_schemas.get(sensor_type)
+            if calibration_schema is None:
+                if calibration:
+                    raise ConfigValidationError(
+                        f"{section}.calibration: protocol {protocol!r} and type "
+                        f"{sensor_type!r} declare no calibration schema."
+                    )
+            else:
+                calibration = validate_document(
+                    calibration,
+                    calibration_schema,
+                    context=f"{section}.calibration (protocol={protocol!r}, type={sensor_type!r})",
+                    external=external,
+                )
+        except (DocumentError, SchemaError, ValueError) as exc:
+            raise ConfigValidationError(str(exc)) from exc
 
         sensors.append(
             SensorConfig(
                 id=sensor_id,
-                type=_require_str(item, "type", f"sensors[{i}]"),
+                type=sensor_type,
                 protocol=protocol,
                 poll_interval_ms=poll_ms,
                 metadata=metadata,
-                calibration=item.get("calibration") or {},
+                calibration=calibration,
             )
         )
     return sensors
@@ -733,79 +806,6 @@ def _refuse_reserved_sensor_metadata(
         )
 
 
-def _normalise_serial_sensor_baud(metadata: dict[str, Any], section: str) -> None:
-    """Refuse an ambiguous baud spelling, and rewrite the legacy one.
-
-    Refused here rather than only in the adapter because an adapter without
-    ``pyserial`` never reaches its own check, so on a developer machine the
-    ambiguity would load clean and surface on the Pi. Normalising to the
-    canonical key means the deprecation warning is emitted once, at load.
-    """
-    has_canonical = BAUD_RATE_KEY in metadata
-    has_legacy = LEGACY_BAUD_RATE_KEY in metadata
-    if not (has_canonical or has_legacy):
-        return
-
-    try:
-        resolved = resolve_baud_rate(
-            has_canonical=has_canonical,
-            canonical=metadata.get(BAUD_RATE_KEY),
-            has_legacy=has_legacy,
-            legacy=metadata.get(LEGACY_BAUD_RATE_KEY),
-            default=0,
-            adapter_name=section,
-        )
-    except AdapterConnectionError as exc:
-        raise ConfigValidationError(str(exc)) from exc
-
-    metadata.pop(LEGACY_BAUD_RATE_KEY, None)
-    metadata[BAUD_RATE_KEY] = resolved
-
-
-def _validate_coap_sensor_metadata(metadata: dict[str, Any], section: str) -> None:
-    uri = str(metadata.get("uri", "")).strip()
-    if not uri:
-        raise ConfigValidationError(f"{section}: coap sensors require 'uri'.")
-    parsed = urlparse(uri)
-    if parsed.scheme not in {"coap", "coaps"}:
-        raise ConfigValidationError(
-            f"{section}: coap sensor uri must start with coap:// or coaps://."
-        )
-    if not (parsed.hostname or "").strip():
-        raise ConfigValidationError(f"{section}: coap sensor uri host is required.")
-
-    json_path = str(metadata.get("json_path", "")).strip()
-    if not json_path:
-        raise ConfigValidationError(f"{section}: coap sensors require 'json_path'.")
-
-    method = str(metadata.get("method", "GET")).strip().upper()
-    if method not in {"GET", "POST", "PUT", "DELETE"}:
-        raise ConfigValidationError(
-            f"{section}: coap sensor method must be one of GET/POST/PUT/DELETE."
-        )
-
-    if "timeout_s" in metadata:
-        try:
-            timeout_s = float(metadata["timeout_s"])
-        except (TypeError, ValueError) as exc:
-            raise ConfigValidationError(
-                f"{section}: coap sensor timeout_s must be numeric."
-            ) from exc
-        if timeout_s <= 0:
-            raise ConfigValidationError(
-                f"{section}: coap sensor timeout_s must be > 0."
-            )
-
-    if "allowed_hosts" in metadata:
-        sensor_allow = metadata.get("allowed_hosts")
-        if not isinstance(sensor_allow, list) or not all(
-            isinstance(host, str) and host.strip() for host in sensor_allow
-        ):
-            raise ConfigValidationError(
-                f"{section}: coap sensor allowed_hosts must be a list of non-empty strings."
-            )
-
-
 def _validate_coap_sensor_allowlist(
     sensors: list[SensorConfig], coap_actions_cfg: dict[str, Any]
 ) -> None:
@@ -830,10 +830,33 @@ def _validate_coap_sensor_allowlist(
     for sensor in coap_sensors:
         uri = str(sensor.metadata.get("uri", "")).strip()
         host = (urlparse(uri).hostname or "").strip().lower()
-        if host and host not in global_allow_set:
+        if not host:
+            raise ConfigValidationError(
+                f"sensors[{sensor.id!r}]: coap uri must include a host."
+            )
+        if host not in global_allow_set:
             raise ConfigValidationError(
                 f"sensors[{sensor.id!r}]: coap uri host {host!r} is not listed in actions.coap.allowed_hosts."
             )
+
+
+def _validate_coap_sensor_metadata(metadata: dict[str, Any], section: str) -> None:
+    """Enforce URI semantics that the declarative grammar cannot express.
+
+    The schema owns field presence and scalar types.  URI scheme/host validity
+    and a strictly positive request timeout are security constraints: a value
+    accepted here reaches the CoAP allowlist and adapter unchanged.
+    """
+    uri = str(metadata.get("uri", "")).strip()
+    parsed = urlparse(uri)
+    if not parsed.hostname:
+        raise ConfigValidationError(f"{section}.uri: host is required.")
+    if parsed.scheme not in {"coap", "coaps"}:
+        raise ConfigValidationError(
+            f"{section}.uri: must start with coap:// or coaps://."
+        )
+    if float(metadata.get("timeout_s", 0)) <= 0:
+        raise ConfigValidationError(f"{section}.timeout_s: must be > 0.")
 
 
 def _parse_skills(data: Any) -> list[SkillConfig]:
@@ -1524,6 +1547,7 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
     if not isinstance(coap_raw, dict):
         raise ConfigValidationError("'actions.coap' must be a mapping when provided.")
     coap = dict(coap_raw)
+    coap.setdefault("timeout_s", 2.0)
 
     coap_enabled = (
         str(coap.get("enabled", "")).lower() == "true" or coap.get("enabled") is True

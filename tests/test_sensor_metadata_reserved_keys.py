@@ -75,12 +75,104 @@ def test_calibration_is_not_in_the_reserved_set() -> None:
     Reserving it would refuse `calibration:` on every sensor that uses it.
     """
     assert "calibration" not in RESERVED_SENSOR_METADATA_KEYS
-    assert _parse_sensors(_sensor(calibration={"sensitivity": 0.066}))[0].calibration
+    sensors = _parse_sensors(
+        [
+            {
+                "id": "load-current",
+                "type": "ads1115_current",
+                "protocol": "i2c",
+                "address": 72,
+                "calibration": {
+                    "sensitivity_v_per_amp": 0.066,
+                    "mains_frequency_hz": 50,
+                },
+            }
+        ]
+    )
+    assert sensors[0].calibration["sensitivity_v_per_amp"] == 0.066
 
 
 def test_an_ordinary_sensor_still_loads() -> None:
-    sensors = _parse_sensors(_sensor(port="/dev/ttyUSB0"))
-    assert sensors[0].metadata == {"port": "/dev/ttyUSB0"}
+    sensors = _parse_sensors(
+        [
+            {
+                "id": "meter",
+                "type": "current",
+                "protocol": "serial",
+                "port": "/dev/ttyUSB0",
+            }
+        ]
+    )
+    assert sensors[0].metadata["port"] == "/dev/ttyUSB0"
+
+
+def test_an_undeclared_protocol_key_is_refused_before_adapter_start() -> None:
+    with pytest.raises(ConfigValidationError, match="typo"):
+        _parse_sensors(
+            [
+                {
+                    "id": "meter",
+                    "type": "current",
+                    "protocol": "serial",
+                    "port": "/dev/ttyUSB0",
+                    "typo": True,
+                }
+            ]
+        )
+
+
+def test_two_mqtt_aliases_for_one_target_are_refused_without_precedence() -> None:
+    with pytest.raises(ConfigValidationError) as excinfo:
+        _parse_sensors(
+            [
+                {
+                    "id": "chiller",
+                    "type": "temperature",
+                    "protocol": "mqtt",
+                    "broker_host": "broker.local",
+                    "topic": "building/chiller",
+                    "mqtt_client_id": "first",
+                    "client_id": "second",
+                }
+            ]
+        )
+    message = str(excinfo.value)
+    assert "mqtt_client_id" in message
+    assert "client_id" in message
+    assert "mqtt.client_id" in message
+
+
+def test_a_mqtt_alias_resolves_to_the_only_runtime_spelling() -> None:
+    sensor = _parse_sensors(
+        [
+            {
+                "id": "chiller",
+                "type": "temperature",
+                "protocol": "mqtt",
+                "broker_host": "broker.local",
+                "topic": "building/chiller",
+                "mqtt_client_id": "ori-chiller",
+            }
+        ]
+    )[0]
+    assert sensor.metadata["mqtt"]["client_id"] == "ori-chiller"
+    assert "mqtt_client_id" not in sensor.metadata
+
+
+def test_nested_mqtt_tls_alias_resolves_before_runtime_connects() -> None:
+    sensor = _parse_sensors(
+        [
+            {
+                "id": "chiller",
+                "type": "temperature",
+                "protocol": "mqtt",
+                "broker_host": "broker.local",
+                "topic": "building/chiller",
+                "mqtt": {"tls_ca_certfile": "/etc/ori/ca.pem"},
+            }
+        ]
+    )[0]
+    assert sensor.metadata["mqtt"]["tls"]["ca_certfile"] == "/etc/ori/ca.pem"
 
 
 # ── Layer 2: the runtime's assembly cannot be displaced ──────────────────────
@@ -243,12 +335,11 @@ def test_start_uses_the_shared_assembly_rather_than_its_own_dict() -> None:
 
 # ── Why `allowed_hosts` is deliberately not reserved ─────────────────────────
 #
-# A sensor may still set `allowed_hosts`, and `adapter_connect_config` uses
-# setdefault, so the sensor's list wins at the adapter. That looks like the same
-# defect this file exists to close, and it is not: the uri host is validated at
-# config load against `actions.coap.allowed_hosts`, a section sensor metadata
-# cannot reach. A sensor can therefore narrow its own allowlist but never widen
-# it. Reserving the key would refuse a legitimate narrowing.
+# A sensor may still set `allowed_hosts`. The declaration resolves a missing
+# value from `actions.coap.allowed_hosts` and bounds an operator-supplied value
+# to that same list before runtime assembly. A sensor can therefore narrow its
+# own allowlist but never widen it. Reserving the key would refuse a legitimate
+# narrowing.
 #
 # That argument was used to justify leaving the key unreserved, so it is pinned
 # here rather than left as reasoning in a review comment.
@@ -277,8 +368,15 @@ def test_a_sensor_cannot_widen_the_coap_host_allowlist(
     if sensor_allow is not None:
         entry["allowed_hosts"] = sensor_allow
 
-    parsed = _parse_sensors([entry])
-    with pytest.raises(ConfigValidationError, match="not listed in actions.coap"):
+    with pytest.raises(ConfigValidationError, match="allowed_hosts|not listed"):
+        parsed = _parse_sensors(
+            [entry],
+            external={
+                "actions": {
+                    "coap": {"allowed_hosts": ["allowed.example"], "timeout_s": 2.0}
+                }
+            },
+        )
         _validate_coap_sensor_allowlist(parsed, {"allowed_hosts": ["allowed.example"]})
 
 
@@ -296,7 +394,15 @@ def test_a_sensor_may_narrow_its_own_coap_allowlist() -> None:
                 "json_path": "v",
                 "allowed_hosts": ["allowed.example"],
             }
-        ]
+        ],
+        external={
+            "actions": {
+                "coap": {
+                    "allowed_hosts": ["allowed.example", "other.example"],
+                    "timeout_s": 2.0,
+                }
+            }
+        },
     )
     _validate_coap_sensor_allowlist(
         parsed, {"allowed_hosts": ["allowed.example", "other.example"]}

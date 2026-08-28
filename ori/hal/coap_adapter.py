@@ -23,6 +23,30 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = {
+    "uri": {"type": "string", "required": True},
+    "method": {
+        "type": "string",
+        "default": "GET",
+        "enum": ["GET", "POST", "PUT", "DELETE"],
+    },
+    "json_path": {"type": "string", "required": True},
+    "unit": {"type": "string", "default": ""},
+    "timeout_s": {
+        "type": "number",
+        "fallback_from": "actions.coap.timeout_s",
+        "minimum": 0,
+    },
+    "payload": {"type": "string", "default": ""},
+    "allowed_hosts": {
+        "type": "array",
+        "items": {"type": "string"},
+        "fallback_from": "actions.coap.allowed_hosts",
+        "must_be_subset_of": "actions.coap.allowed_hosts",
+    },
+}
+CALIBRATION_SCHEMAS: dict[str, dict] = {}
+
 try:
     import aiocoap as _aiocoap  # type: ignore[import-untyped]
 
