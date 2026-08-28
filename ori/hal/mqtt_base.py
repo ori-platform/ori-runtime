@@ -27,6 +27,17 @@ except ImportError:
     _AIOMQTT_AVAILABLE = False
 
 
+# Deprecated spellings of each `mqtt.tls.*` setting, kept for migration.
+_TLS_ALIASES: dict[str, tuple[str, ...]] = {
+    "enabled": ("mqtt_tls_enabled",),
+    "ca_certfile": ("mqtt_tls_ca_certfile", "tls_ca_certfile"),
+    "certfile": ("mqtt_tls_certfile", "tls_certfile"),
+    "keyfile": ("mqtt_tls_keyfile", "tls_keyfile"),
+    "keyfile_password": ("mqtt_tls_keyfile_password", "tls_keyfile_password"),
+    "insecure": ("mqtt_tls_insecure", "tls_insecure"),
+}
+
+
 class MqttCachedAdapter(BaseAdapter):
     """Reusable base for MQTT adapters that subscribe and cache latest values."""
 
@@ -108,22 +119,34 @@ class MqttCachedAdapter(BaseAdapter):
         if not isinstance(tls_cfg, dict):
             tls_cfg = {}
 
-        tls_enabled = self._as_bool(
-            _first("mqtt_tls_enabled")
-            if _first("mqtt_tls_enabled") is not None
-            else tls_cfg.get("enabled"),
-            default=False,
-        )
+        def _tls_setting(canonical: str) -> Any:
+            """Resolve one `mqtt.tls.*` setting, refusing a second spelling of it."""
+            # Presence is membership: a spelling written as `null` was written.
+            supplied: list[tuple[str, Any]] = []
+            if canonical in tls_cfg:
+                supplied.append((f"mqtt.tls.{canonical}", tls_cfg[canonical]))
+            for alias in _TLS_ALIASES[canonical]:
+                if alias in config:
+                    supplied.append((alias, config[alias]))
+                if alias in mqtt_cfg:
+                    supplied.append((f"mqtt.{alias}", mqtt_cfg[alias]))
 
-        tls_ca_certfile = _first("mqtt_tls_ca_certfile", "tls_ca_certfile")
-        tls_certfile = _first("mqtt_tls_certfile", "tls_certfile")
-        tls_keyfile = _first("mqtt_tls_keyfile", "tls_keyfile")
-        tls_keyfile_password = _first(
-            "mqtt_tls_keyfile_password", "tls_keyfile_password"
-        )
-        tls_insecure = _first("mqtt_tls_insecure", "tls_insecure")
-        if tls_insecure is None:
-            tls_insecure = tls_cfg.get("insecure")
+            if len(supplied) > 1:
+                names = ", ".join(repr(name) for name, _ in supplied)
+                raise AdapterConnectionError(
+                    f"{self.adapter_name}: {names} all supply the TLS setting "
+                    f"'mqtt.tls.{canonical}'. Refused rather than resolved by "
+                    f"precedence, even where the values agree. Keep "
+                    f"'mqtt.tls.{canonical}' and remove the others."
+                )
+            return supplied[0][1] if supplied else None
+
+        tls_enabled = self._as_bool(_tls_setting("enabled"), default=False)
+        tls_ca_certfile = _tls_setting("ca_certfile")
+        tls_certfile = _tls_setting("certfile")
+        tls_keyfile = _tls_setting("keyfile")
+        tls_keyfile_password = _tls_setting("keyfile_password")
+        tls_insecure = _tls_setting("insecure")
 
         needs_tls_context = tls_enabled or any(
             v not in (None, "")
