@@ -11,12 +11,18 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from ori.actions.alert_delivery import AlertSendReceipt
 from ori.runtime import OriRuntime
 
 
 def _patch_external(monkeypatch):
     monkeypatch.setattr(
-        "ori.actions.whatsapp.TwilioProvider.send", AsyncMock(return_value=True)
+        "ori.actions.whatsapp.TwilioProvider.send_template",
+        AsyncMock(
+            return_value=AlertSendReceipt.accepted_without_provider_receipt(
+                channel="whatsapp"
+            )
+        ),
     )
     monkeypatch.setattr("ori.actions.sms.SMSAction.send", AsyncMock(return_value=True))
 

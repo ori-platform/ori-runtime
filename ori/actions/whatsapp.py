@@ -14,28 +14,31 @@ backend (e.g. Meta Cloud API) in Phase 2 requires only:
 
 Nothing in the approval workflow logic changes.
 
-Usage
------
-    provider = TwilioProvider()          # reads env vars at construction time
-    action   = WhatsAppAction(provider)
-
-    ok = await action.send("Hello", to_number="whatsapp:+234XXXXXXXXXX")
-
-    msg, delivered = await action.send_approval_request(result, "open_safety_circuit",
-                                                        timeout_seconds=300,
-                                                        to_number="whatsapp:+234XXXXXXXXXX")
-
-    reply = await action.listen_for_response("whatsapp:+234XXXXXXXXXX",
-                                             timeout_seconds=300)
+Business-initiated messages are accepted only as typed alerts and are sent
+through pre-approved provider templates.  Free-form text is restricted to a
+reply that is bound to a recorded inbound message inside the 24-hour session
+window.
 """
 
 import asyncio
+import datetime
+import json
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable
+import uuid
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol, runtime_checkable
 
+from ori.actions.alert_delivery import (
+    AlertDeliveryReceipt,
+    AlertIntent,
+    AlertSendReceipt,
+    InboundWhatsAppMessage,
+    OutboundAlert,
+    WhatsAppSessionReply,
+    build_outbound_alert,
+)
 from ori.network.events import ReasoningResult
 from ori.security.remote_command_responses import (
     format_remote_command_execution_response,
@@ -60,6 +63,7 @@ logger = logging.getLogger(__name__)
 _APPROVAL_TEMPLATE = """\
 ORI ALERT — Action Required
 Device: {device_id}
+Proposal ID: {proposal_id}
 Time: {timestamp}
 
 OBSERVATION:
@@ -70,8 +74,12 @@ PROPOSED ACTION:
 
 CONFIDENCE: {confidence}
 
-Reply YES to approve  |  Reply NO to cancel
+Reply YES-{proposal_id} to approve  |  Reply NO-{proposal_id} to cancel
 Auto-cancel in {timeout} seconds if no response."""
+
+_WHATSAPP_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000
+_DELIVERED_STATUSES = frozenset({"delivered", "read"})
+_TERMINAL_FAILURE_STATUSES = frozenset({"failed", "undelivered", "canceled"})
 
 
 # ── Provider protocol ─────────────────────────────────────────────────────────
@@ -81,17 +89,41 @@ Auto-cancel in {timeout} seconds if no response."""
 class WhatsAppProvider(Protocol):
     """Interface every WhatsApp backend must satisfy."""
 
-    async def send(self, to: str, message: str) -> bool:
-        """Send *message* to *to*.  Returns True on success."""
-        ...
+    async def send_template(
+        self,
+        to: str,
+        template_id: str,
+        variables: tuple[str, ...],
+    ) -> AlertSendReceipt:
+        """Submit one approved business template."""
+        raise NotImplementedError
 
-    async def get_incoming(self, from_number: str, since_ms: int) -> list[str]:
-        """Return message bodies received from *from_number* after *since_ms*.
+    async def send_session_reply(
+        self,
+        to: str,
+        message: str,
+    ) -> AlertSendReceipt:
+        """Submit free-form text inside a caller-proven reply window."""
+        raise NotImplementedError
+
+    async def get_incoming(
+        self,
+        from_number: str,
+        since_ms: int,
+    ) -> list[InboundWhatsAppMessage]:
+        """Return provider-backed messages received after *since_ms*.
 
         *since_ms* is a Unix timestamp in milliseconds (UTC).
         Returns an empty list when there are no matching messages.
         """
-        ...
+        raise NotImplementedError
+
+    async def get_delivery_receipt(
+        self,
+        provider_message_id: str,
+    ) -> AlertDeliveryReceipt | None:
+        """Return the provider's latest status for an accepted message."""
+        raise NotImplementedError
 
 
 # ── Twilio provider ───────────────────────────────────────────────────────────
@@ -142,18 +174,44 @@ class TwilioProvider:
     # WhatsAppProvider interface
     # ------------------------------------------------------------------
 
-    async def send(self, to: str, message: str) -> bool:
+    async def send_template(
+        self,
+        to: str,
+        template_id: str,
+        variables: tuple[str, ...],
+    ) -> AlertSendReceipt:
+        return await self._send(
+            to=to,
+            content_sid=template_id,
+            content_variables=json.dumps(
+                {str(index): value for index, value in enumerate(variables, start=1)},
+                separators=(",", ":"),
+            ),
+        )
+
+    async def send_session_reply(
+        self,
+        to: str,
+        message: str,
+    ) -> AlertSendReceipt:
+        return await self._send(to=to, body=message)
+
+    async def _send(self, *, to: str, **message_fields: str) -> AlertSendReceipt:
         if not self._ready:
             logger.warning(
-                "TwilioProvider.send: skipped (credentials not configured). to=%r", to
+                "TwilioProvider: skipped send (credentials not configured). to=%r", to
             )
-            return False
+            return AlertSendReceipt.refused(
+                channel="whatsapp", error="credentials_not_configured"
+            )
         if not str(to).lower().startswith("whatsapp:+"):
             logger.error(
-                "TwilioProvider.send: destination must start with 'whatsapp:+'; got %r",
+                "TwilioProvider: destination must start with 'whatsapp:+'; got %r",
                 to,
             )
-            return False
+            return AlertSendReceipt.refused(
+                channel="whatsapp", error="invalid_destination"
+            )
 
         try:
             from twilio.rest import Client
@@ -161,25 +219,56 @@ class TwilioProvider:
             client = Client(self._sid, self._token)
             # Twilio's Python SDK is synchronous — run in executor to avoid
             # blocking the event loop.
-            await asyncio.wait_for(
+            provider_message = await asyncio.wait_for(
                 asyncio.to_thread(
                     client.messages.create,
-                    body=message,
                     from_=self._from,
                     to=to,
+                    **message_fields,
                 ),
                 timeout=self._request_timeout_s,
             )
-            logger.info("TwilioProvider.send: message delivered to %r", to)
-            return True
+            provider_message_id = str(getattr(provider_message, "sid", "") or "")
+            provider_status = str(
+                getattr(provider_message, "status", "accepted") or "accepted"
+            ).lower()
+            accepted_at_ms = now_ms()
+            delivered_at_ms = None
+            if provider_status in _DELIVERED_STATUSES:
+                delivered_at_ms = (
+                    _provider_datetime_ms(
+                        getattr(provider_message, "date_updated", None)
+                    )
+                    or accepted_at_ms
+                )
+            logger.info(
+                "TwilioProvider: message accepted to=%r sid=%s status=%s",
+                to,
+                provider_message_id,
+                provider_status,
+            )
+            return AlertSendReceipt(
+                accepted=True,
+                channel="whatsapp",
+                provider_message_id=provider_message_id,
+                provider_status=provider_status,
+                accepted_at_ms=accepted_at_ms,
+                delivered_at_ms=delivered_at_ms,
+            )
         except Exception:
-            logger.exception("TwilioProvider.send: delivery failed to %r", to)
-            return False
+            logger.exception("TwilioProvider: message submission failed to %r", to)
+            return AlertSendReceipt.refused(
+                channel="whatsapp", error="provider_submission_failed"
+            )
 
-    async def get_incoming(self, from_number: str, since_ms: int) -> list[str]:
+    async def get_incoming(
+        self,
+        from_number: str,
+        since_ms: int,
+    ) -> list[InboundWhatsAppMessage]:
         """Poll Twilio for inbound messages from *from_number* after *since_ms*.
 
-        Returns message body strings in chronological order.
+        Returns typed provider records in chronological order.
         """
         if not self._ready:
             return []
@@ -219,7 +308,30 @@ class TwilioProvider:
                 ),
                 timeout=self._request_timeout_s,
             )
-            return [m.body for m in messages if m.body is not None]
+            inbound: list[InboundWhatsAppMessage] = []
+            for message in messages:
+                body = getattr(message, "body", None)
+                provider_message_id = str(getattr(message, "sid", "") or "")
+                received_at_ms = _provider_datetime_ms(
+                    getattr(message, "date_sent", None)
+                    or getattr(message, "date_created", None)
+                )
+                if body is None or not provider_message_id or received_at_ms is None:
+                    continue
+                inbound.append(
+                    InboundWhatsAppMessage(
+                        provider_message_id=provider_message_id,
+                        from_number=str(
+                            getattr(message, "from_", from_number) or from_number
+                        ),
+                        body=str(body),
+                        received_at_ms=received_at_ms,
+                    )
+                )
+            inbound.sort(
+                key=lambda item: (item.received_at_ms, item.provider_message_id)
+            )
+            return inbound
         except Exception as exc:
             status = getattr(exc, "status", None)
             code = getattr(exc, "code", None)
@@ -236,6 +348,46 @@ class TwilioProvider:
                 from_number,
             )
             return []
+
+    async def get_delivery_receipt(
+        self,
+        provider_message_id: str,
+    ) -> AlertDeliveryReceipt | None:
+        if not self._ready or not provider_message_id:
+            return None
+        try:
+            from twilio.rest import Client
+
+            client = Client(self._sid, self._token)
+            provider_message = await asyncio.wait_for(
+                asyncio.to_thread(client.messages(provider_message_id).fetch),
+                timeout=self._request_timeout_s,
+            )
+            status = str(getattr(provider_message, "status", "") or "").lower()
+            if not status:
+                return None
+            observed_at_ms = now_ms()
+            delivered_at_ms = None
+            if status in _DELIVERED_STATUSES:
+                delivered_at_ms = (
+                    _provider_datetime_ms(
+                        getattr(provider_message, "date_updated", None)
+                    )
+                    or observed_at_ms
+                )
+            return AlertDeliveryReceipt(
+                provider_message_id=provider_message_id,
+                provider_status=status,
+                observed_at_ms=observed_at_ms,
+                delivered_at_ms=delivered_at_ms,
+                terminal_failure=status in _TERMINAL_FAILURE_STATUSES,
+            )
+        except Exception:
+            logger.exception(
+                "TwilioProvider.get_delivery_receipt: failed for sid=%s",
+                provider_message_id,
+            )
+            return None
 
 
 # ── WhatsAppAction ────────────────────────────────────────────────────────────
@@ -263,6 +415,7 @@ class WhatsAppAction:
         self,
         provider: WhatsAppProvider | None = None,
         *,
+        templates: Mapping[str, str] | None = None,
         state_store: Any = None,
         remote_command_verifier: RemoteCommandVerifier | None = None,
         remote_command_handler: Callable[[RemoteCommand], Awaitable[Any]] | None = None,
@@ -272,6 +425,10 @@ class WhatsAppAction:
         | None = None,
     ) -> None:
         self._provider: WhatsAppProvider = provider or TwilioProvider()
+        self._templates = {
+            str(key).strip(): str(value).strip()
+            for key, value in (templates or {}).items()
+        }
         self._state_store = state_store
         self._remote_command_verifier = remote_command_verifier
         self._remote_command_handler = remote_command_handler
@@ -281,18 +438,80 @@ class WhatsAppAction:
     # Public API
     # ------------------------------------------------------------------
 
-    async def send(self, message: str, to_number: str) -> bool:
-        """Send *message* to *to_number*.
+    async def submit(
+        self,
+        alert: OutboundAlert,
+        to_number: str,
+    ) -> AlertSendReceipt:
+        """Submit a business-initiated alert through an approved template."""
 
-        Returns True on success, False on any failure.  Never raises.
-        """
+        template_id = self._templates.get(alert.intent.value, "")
+        if not template_id:
+            logger.error(
+                "WhatsAppAction.submit: no template configured for intent=%s",
+                alert.intent.value,
+            )
+            return AlertSendReceipt.refused(
+                channel="whatsapp", error="template_not_configured"
+            )
         try:
-            return await self._provider.send(to_number, message)
+            return await self._provider.send_template(
+                to_number,
+                template_id,
+                alert.template_variables,
+            )
         except Exception:
             logger.exception(
-                "WhatsAppAction.send: provider raised unexpectedly for to=%r", to_number
+                "WhatsAppAction.submit: provider raised unexpectedly for to=%r",
+                to_number,
+            )
+            return AlertSendReceipt.refused(channel="whatsapp", error="provider_raised")
+
+    async def send_reply(
+        self,
+        reply: WhatsAppSessionReply,
+        to_number: str,
+    ) -> bool:
+        """Send a free-form reply only when bound to a fresh inbound message."""
+
+        inbound = reply.in_reply_to
+        age_ms = now_ms() - int(inbound.received_at_ms)
+        if not inbound.provider_message_id:
+            logger.warning("WhatsAppAction.send_reply: inbound provider SID is missing")
+            return False
+        if _normalize_address(inbound.from_number) != _normalize_address(to_number):
+            logger.warning(
+                "WhatsAppAction.send_reply: destination is not the inbound sender"
             )
             return False
+        if age_ms < 0 or age_ms >= _WHATSAPP_REPLY_WINDOW_MS:
+            logger.warning(
+                "WhatsAppAction.send_reply: inbound reply window is not open sid=%s",
+                inbound.provider_message_id,
+            )
+            return False
+        try:
+            receipt = await self._provider.send_session_reply(to_number, reply.body)
+        except Exception:
+            logger.exception(
+                "WhatsAppAction.send_reply: provider raised unexpectedly for to=%r",
+                to_number,
+            )
+            return False
+        return bool(receipt.accepted)
+
+    async def get_delivery_receipt(
+        self,
+        provider_message_id: str,
+    ) -> AlertDeliveryReceipt | None:
+        try:
+            return await self._provider.get_delivery_receipt(provider_message_id)
+        except Exception:
+            logger.exception(
+                "WhatsAppAction.get_delivery_receipt: provider raised for sid=%s",
+                provider_message_id,
+            )
+            return None
 
     async def send_approval_request(
         self,
@@ -301,6 +520,7 @@ class WhatsAppAction:
         timeout_seconds: int,
         to_number: str,
         device_id: str = "ori-device",
+        proposal_id: str | None = None,
     ) -> tuple[str, bool]:
         """Format and send the canonical Tier C approval request.
 
@@ -315,24 +535,37 @@ class WhatsAppAction:
             device_id: Device identifier shown in the alert header.
 
         Returns:
-            ``(message, delivered)`` where ``message`` is the formatted string
-            (for audit trail) and ``delivered`` is the provider send status.
+            ``(message, accepted)`` where ``message`` is the detailed SMS/audit
+            form and ``accepted`` reports provider submission only.
         """
-        import datetime
-
         timestamp = datetime.datetime.now(tz=datetime.timezone.utc).strftime(
             "%Y-%m-%d %H:%M:%S UTC"
         )
+        resolved_proposal_id = (
+            str(proposal_id or "").strip().upper() or uuid.uuid4().hex[:8].upper()
+        )
         message = _APPROVAL_TEMPLATE.format(
             device_id=device_id,
+            proposal_id=resolved_proposal_id,
             timestamp=timestamp,
             observation=result.text,
             action_description=action,
             confidence=f"{result.confidence:.0%}",
             timeout=timeout_seconds,
         )
-        delivered = await self._provider.send(to_number, message)
-        return message, bool(delivered)
+        alert = build_outbound_alert(
+            intent=AlertIntent.TIER_C_APPROVAL,
+            sms_body=message,
+            template_variables=(
+                action,
+                device_id,
+                timestamp,
+                resolved_proposal_id,
+                timeout_seconds,
+            ),
+        )
+        receipt = await self.submit(alert, to_number)
+        return message, bool(receipt.accepted)
 
     async def listen_for_response(
         self,
@@ -364,7 +597,8 @@ class WhatsAppAction:
 
         while time.monotonic() < deadline:
             messages = await self._provider.get_incoming(from_number, since_ms)
-            for reply in messages:
+            for inbound in messages:
+                reply = inbound.body
                 command_payload = {"text": reply}
                 extracted_command = extract_remote_command_payload(
                     command_payload,
@@ -405,6 +639,7 @@ class WhatsAppAction:
                                 message=format_remote_command_execution_response(
                                     execution_result
                                 ),
+                                inbound=inbound,
                             )
                     else:
                         logger.warning(
@@ -424,6 +659,7 @@ class WhatsAppAction:
                             await self._send_remote_command_feedback(
                                 to_number=from_number,
                                 message=format_remote_command_rejection_response(),
+                                inbound=inbound,
                             )
                     continue
 
@@ -452,9 +688,13 @@ class WhatsAppAction:
         *,
         to_number: str,
         message: str,
+        inbound: InboundWhatsAppMessage,
     ) -> bool:
         try:
-            sent = await self.send(message, to_number)
+            sent = await self.send_reply(
+                WhatsAppSessionReply(body=message, in_reply_to=inbound),
+                to_number,
+            )
         except Exception:
             logger.exception(
                 "WhatsAppAction: remote command feedback send raised for to=%r",
@@ -478,3 +718,15 @@ class WhatsAppAction:
             await self._remote_command_incident_handler(decision)
         except Exception:
             logger.exception("WhatsAppAction: remote command incident handler failed")
+
+
+def _provider_datetime_ms(value: object) -> int | None:
+    if not isinstance(value, datetime.datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=datetime.timezone.utc)
+    return int(value.timestamp() * 1000)
+
+
+def _normalize_address(value: str) -> str:
+    return str(value or "").strip().lower()

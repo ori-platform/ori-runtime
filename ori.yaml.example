@@ -502,6 +502,14 @@ actions:
     TWILIO_ACCOUNT_SID: "${TWILIO_ACCOUNT_SID}"
     TWILIO_AUTH_TOKEN: "${TWILIO_AUTH_TOKEN}"
     TWILIO_WHATSAPP_FROM: "${TWILIO_WHATSAPP_FROM}"
+    # Approved WhatsApp business templates. All four are mandatory whenever
+    # WhatsApp is enabled; free-form text is reserved for a reply bound to a
+    # recorded inbound message and is never queued.
+    templates:
+      startup: "${TWILIO_CONTENT_SID_STARTUP}"
+      tier_a_alert: "${TWILIO_CONTENT_SID_TIER_A_ALERT}"
+      tier_c_approval: "${TWILIO_CONTENT_SID_TIER_C_APPROVAL}"
+      tier_c_escalation: "${TWILIO_CONTENT_SID_TIER_C_ESCALATION}"
 
   sms:
     enabled: true                    # SMS transport enabled

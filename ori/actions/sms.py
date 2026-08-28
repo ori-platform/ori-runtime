@@ -29,6 +29,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
+from ori.actions.alert_delivery import AlertSendReceipt, OutboundAlert
 from ori.security.remote_command_responses import (
     format_remote_command_execution_response,
     format_remote_command_rejection_response,
@@ -223,6 +224,20 @@ class SMSAction:
 
         return False
 
+    async def submit(
+        self,
+        alert: OutboundAlert,
+        to_number: str,
+    ) -> AlertSendReceipt:
+        """Submit the detailed SMS form and report provider acceptance only."""
+
+        accepted = await self.send(alert.sms_body, to_number)
+        if not accepted:
+            return AlertSendReceipt.refused(
+                channel="sms", error="provider_submission_failed"
+            )
+        return AlertSendReceipt.accepted_without_provider_receipt(channel="sms")
+
     def _resolve_transport_order(self) -> list[str]:
         if self._transport == "invalid":
             return []
@@ -268,13 +283,13 @@ class SMSAction:
                 status = recipients[0].get("status", "")
                 if status == "Success":
                     logger.info(
-                        "SMSAction._send_ip: message delivered to %r (status=%r)",
+                        "SMSAction._send_ip: provider accepted message to %r (status=%r)",
                         to_number,
                         status,
                     )
                     return True
                 logger.warning(
-                    "SMSAction._send_ip: delivery not confirmed for %r (status=%r)",
+                    "SMSAction._send_ip: provider did not accept message for %r (status=%r)",
                     to_number,
                     status,
                 )

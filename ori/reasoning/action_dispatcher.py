@@ -25,6 +25,11 @@ import secrets
 import string
 from typing import Any
 
+from ori.actions.alert_delivery import (
+    AlertIntent,
+    AlertSendReceipt,
+    build_outbound_alert,
+)
 from ori.actions.logger import LoggerAction
 from ori.network.events import ActionResult, ActionTier, ReasoningResult
 from ori.policy.device_policy import DevicePolicy
@@ -63,6 +68,32 @@ _INPUT_POSTURES = frozenset({"development", "sealed_flash", "hardware_key"})
 def _generate_proposal_id(length: int = 8) -> str:
     """Generate a short human-readable identifier for a Tier C proposal."""
     return "".join(secrets.choice(_PROPOSAL_ID_ALPHABET) for _ in range(length))
+
+
+def _coerce_alert_send_receipt(
+    value: object,
+    *,
+    fallback_channel: str,
+) -> AlertSendReceipt:
+    if isinstance(value, AlertSendReceipt):
+        return value
+    if value is True:
+        return AlertSendReceipt.accepted_without_provider_receipt(
+            channel=fallback_channel
+        )
+    return AlertSendReceipt.refused(channel=fallback_channel, error="sender_refused")
+
+
+def _receipt_audit_fields(receipt: AlertSendReceipt) -> dict[str, object]:
+    return {
+        "accepted": receipt.accepted,
+        "channel": receipt.channel,
+        "provider_message_id": receipt.provider_message_id,
+        "provider_status": receipt.provider_status,
+        "accepted_at_ms": receipt.accepted_at_ms,
+        "delivered_at_ms": receipt.delivered_at_ms,
+        "error": receipt.error,
+    }
 
 
 def _input_attestation_evidence(context: Any) -> tuple[str, str]:
@@ -968,13 +999,38 @@ class ActionDispatcher:
             device_timezone=self._config.get("device_timezone", "Africa/Lagos"),
             proposal_id=proposal_id,
         )
+        formatted_time = self._format_local_time(
+            context.event.timestamp if context.event else now_ms(),
+            self._config.get("device_timezone", "Africa/Lagos"),
+        )
+        approval_alert = build_outbound_alert(
+            intent=AlertIntent.TIER_C_APPROVAL,
+            sms_body=message,
+            template_variables=(
+                action,
+                self._config.get("device_location") or device_id,
+                formatted_time,
+                proposal_id,
+                approval_timeout_seconds,
+            ),
+        )
 
         # Send approval request (best-effort only when comms are available).
         operator_contact = self._config.get("operator_contact", "")
+        approval_receipt = AlertSendReceipt.refused(
+            channel=str(self._config.get("primary_alert_channel", "sms")),
+            error="approval_not_submitted",
+        )
         if has_comms and self._alert_sender is not None and operator_contact:
             try:
-                await self._alert_sender.send(
-                    message=message, to_number=operator_contact
+                approval_receipt = _coerce_alert_send_receipt(
+                    await self._alert_sender.send(
+                        alert=approval_alert,
+                        to_number=operator_contact,
+                    ),
+                    fallback_channel=str(
+                        self._config.get("primary_alert_channel", "sms")
+                    ),
                 )
             except Exception:
                 logger.exception(
@@ -1101,19 +1157,30 @@ class ActionDispatcher:
                             verify_result.reason,
                         )
 
+            escalation_receipt = AlertSendReceipt.refused(
+                channel=str(self._config.get("primary_alert_channel", "sms")),
+                error="escalation_not_required",
+            )
             if approved:
                 inner = await self._execute_immediately(action, tier, context)
                 action_taken = inner.action_taken
                 executed = inner.executed
             else:
                 # NO, None, or timeout → safe default
-                if timed_out:
-                    await self._escalate_to_secondary(action, context, result)
                 inner = await self._execute_immediately(
                     safe_default_action, tier, context
                 )
                 action_taken = inner.action_taken
                 executed = inner.executed
+                if timed_out:
+                    escalation_receipt = await self._escalate_to_secondary(
+                        action,
+                        context,
+                        result,
+                        proposal_id=proposal_id,
+                        safe_default_action=safe_default_action,
+                        safe_default_executed=executed,
+                    )
                 # Log operator rejection / timeout override to override_log
                 if store is not None and hasattr(store, "log_override"):
                     device_id = context.event.device_id if context.event else "unknown"
@@ -1159,6 +1226,8 @@ class ActionDispatcher:
                 approval_timeout_seconds=approval_timeout_seconds,
                 safe_default_action=safe_default_action,
                 safe_default_used=not bool(approved),
+                approval_receipt=approval_receipt,
+                escalation_receipt=escalation_receipt,
             )
             return action_result
         finally:
@@ -1179,6 +1248,8 @@ class ActionDispatcher:
         approval_timeout_seconds: int,
         safe_default_action: str,
         safe_default_used: bool,
+        approval_receipt: AlertSendReceipt,
+        escalation_receipt: AlertSendReceipt,
     ) -> None:
         """Persist the rich Tier C proposal/decision record if supported."""
         if store is None or not hasattr(store, "log_tier_c_decision"):
@@ -1244,6 +1315,8 @@ class ActionDispatcher:
                     "operator_response": action_result.operator_response,
                     "proposal_id": action_result.proposal_id,
                     "timestamp": action_result.timestamp,
+                    "approval_delivery": _receipt_audit_fields(approval_receipt),
+                    "escalation_delivery": _receipt_audit_fields(escalation_receipt),
                 },
                 proposal_id=action_result.proposal_id,
                 later_outcome=None,
@@ -1481,11 +1554,7 @@ class ActionDispatcher:
         Returns:
             Formatted approval message string matching the README template.
         """
-        from zoneinfo import ZoneInfo
-
-        tz = ZoneInfo(device_timezone or "Africa/Lagos")
-        dt = datetime.datetime.fromtimestamp(timestamp_ms / 1000, tz=tz)
-        formatted_time = dt.strftime("%A %H:%M")  # e.g. "Wednesday 14:32"
+        formatted_time = self._format_local_time(timestamp_ms, device_timezone)
 
         observation = result.text
         reasoning = result.reasoning if result.reasoning else result.text
@@ -1520,12 +1589,24 @@ class ActionDispatcher:
             f"Auto-cancel in {timeout_seconds} seconds if no response."
         )
 
+    @staticmethod
+    def _format_local_time(timestamp_ms: int, device_timezone: str) -> str:
+        from zoneinfo import ZoneInfo
+
+        timezone = ZoneInfo(device_timezone or "Africa/Lagos")
+        local = datetime.datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone)
+        return local.strftime("%A %H:%M")
+
     async def _escalate_to_secondary(
         self,
         action: str,
         context: SkillContext,
         result: ReasoningResult,
-    ) -> None:
+        *,
+        proposal_id: str,
+        safe_default_action: str,
+        safe_default_executed: bool,
+    ) -> AlertSendReceipt:
         """Notify the secondary contact when a Tier C approval times out.
 
         No-op if no secondary contact is configured or alert_sender is absent.
@@ -1537,20 +1618,47 @@ class ActionDispatcher:
         """
         secondary = self._config.get("secondary_contact", "")
         if not secondary or self._alert_sender is None:
-            return
+            return AlertSendReceipt.refused(
+                channel=str(self._config.get("primary_alert_channel", "sms")),
+                error="secondary_contact_unavailable",
+            )
         device_id = context.event.device_id if context.event else "unknown"
+        timestamp_ms = now_ms()
+        formatted_time = self._format_local_time(
+            timestamp_ms,
+            self._config.get("device_timezone", "Africa/Lagos"),
+        )
+        outcome = "completed" if safe_default_executed else "failed"
         message = (
             f"ORI ESCALATION — Tier C approval timed out\n"
             f"Device: {device_id}\n"
+            f"Proposal ID: {proposal_id}\n"
             f"Action: {action}\n"
-            f"Safe default was executed.\n"
+            f"Safe default: {safe_default_action} ({outcome}).\n"
             f"Observation: {result.text}"
         )
+        alert = build_outbound_alert(
+            intent=AlertIntent.TIER_C_ESCALATION,
+            sms_body=message,
+            template_variables=(
+                proposal_id,
+                self._config.get("device_location") or device_id,
+                formatted_time,
+                outcome,
+            ),
+        )
         try:
-            await self._alert_sender.send(message=message, to_number=secondary)
+            return _coerce_alert_send_receipt(
+                await self._alert_sender.send(alert=alert, to_number=secondary),
+                fallback_channel=str(self._config.get("primary_alert_channel", "sms")),
+            )
         except Exception:
             logger.exception(
                 "ActionDispatcher: failed to send escalation to secondary contact"
+            )
+            return AlertSendReceipt.refused(
+                channel=str(self._config.get("primary_alert_channel", "sms")),
+                error="sender_raised",
             )
 
     async def _emergency_sms(self, action: str, device_id: str) -> None:
