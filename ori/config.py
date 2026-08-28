@@ -680,7 +680,7 @@ def _parse_sensors(
         raise ConfigValidationError("'sensors' must be a list.")
 
     sensors = []
-    seen_ids: set[str] = set()
+    seen_ids: dict[str, int] = {}
     for i, item in enumerate(data):
         if not isinstance(item, dict):
             raise ConfigValidationError(f"sensors[{i}] must be a mapping.")
@@ -721,9 +721,11 @@ def _parse_sensors(
             )
         if sensor_id in seen_ids:
             raise ConfigValidationError(
-                f"{section}.id: {sensor_id!r} duplicates an earlier sensor id."
+                f"{section}.id: {sensor_id!r} is already used by "
+                f"sensors[{seen_ids[sensor_id]}]. Per-sensor state is keyed by "
+                f"id, so two entries sharing one do not produce two sensors."
             )
-        seen_ids.add(sensor_id)
+        seen_ids[sensor_id] = i
 
         # Everything outside the canonical envelope is protocol configuration.
         # It is closed by the declaration selected above; forwarding a key that
