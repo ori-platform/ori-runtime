@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
-import builtins
+import importlib
 import sys
 import textwrap
 import types
@@ -145,14 +145,26 @@ async def test_enabled_starts_loop(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_gpiozero_silent(monkeypatch):
+    """The loop returns rather than pulsing when gpiozero cannot be imported.
+
+    Patching `builtins.__import__` did not exercise this: the loop resolves the
+    module through `importlib.import_module`, which does not consult it. Where
+    gpiozero was genuinely absent the test passed for that reason instead, and
+    where it was present the loop ran until a shutdown event this test never
+    sets — so on a Pi it hung the whole suite. Absence is now injected through
+    the mechanism the loop actually uses.
+    """
     runtime = OriRuntime(config_path="ori.yaml")
 
-    real_import = builtins.__import__
+    real_import_module = importlib.import_module
 
-    def _import(name, *args, **kwargs):
+    def _import_module(name, *args, **kwargs):
         if name == "gpiozero":
             raise ImportError("gpiozero not installed")
-        return real_import(name, *args, **kwargs)
+        return real_import_module(name, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "__import__", _import)
-    await runtime._external_watchdog_loop(gpio_pin=17, ping_interval_s=0.01)
+    monkeypatch.setattr(importlib, "import_module", _import_module)
+    await asyncio.wait_for(
+        runtime._external_watchdog_loop(gpio_pin=17, ping_interval_s=0.01),
+        timeout=5.0,
+    )
