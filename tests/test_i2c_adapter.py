@@ -15,14 +15,35 @@ from ori.hal.base import (
     AdapterTimeoutError,
     HardwareCircuitBreaker,
 )
-from ori.hal.i2c_adapter import I2CAdapter, _window_spec
+from ori.hal.i2c_adapter import (
+    _ADS1115_AVAILABLE,
+    _BME280_AVAILABLE,
+    I2CAdapter,
+    _window_spec,
+)
 
 # ─── Pi guard ─────────────────────────────────────────────────────────────────
 
-skip_if_no_pi = pytest.mark.skipif(
-    not os.path.exists("/dev/i2c-1"),
-    reason="No I2C bus — not running on Pi",
-)
+_HAS_I2C_BUS = os.path.exists("/dev/i2c-1")
+
+
+def _needs_hardware(
+    available: bool, package: str, part: str, address: int, article: str = "a"
+):
+    """Skip naming what is absent, rather than failing as though broken.
+
+    An I2C bus node proves the host is a Pi. It does not prove a driver is
+    installed or that anything answers at the address, and these tests need
+    both. Reporting a missing driver as a failure reads as a defect in the
+    adapter, so a Pi run showed two red tests that said nothing about the code.
+    """
+    return pytest.mark.skipif(
+        not (_HAS_I2C_BUS and available),
+        reason=(
+            f"needs {article} {part} at I2C address 0x{address:02X} on bus 1 and the "
+            f"{package} package; install it on the bench to run this for real"
+        ),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -753,8 +774,10 @@ class TestReadTimeout:
 # ─── Pi-only integration tests ────────────────────────────────────────────────
 
 
-@skip_if_no_pi
 class TestPiIntegration:
+    """Real hardware. Skipped, with the reason named, when it is not present."""
+
+    @_needs_hardware(_BME280_AVAILABLE, "bme280", "BME280", 0x76)
     async def test_bme280_connect_and_read(self):
         adapter = I2CAdapter()
         await adapter.connect(
@@ -772,6 +795,13 @@ class TestPiIntegration:
         await adapter.close()
         assert not adapter.is_connected
 
+    @_needs_hardware(
+        _ADS1115_AVAILABLE,
+        "adafruit-circuitpython-ads1x15",
+        "ADS1115",
+        0x48,
+        article="an",
+    )
     async def test_ads1115_current_connect_and_read(self):
         adapter = I2CAdapter()
         await adapter.connect(
