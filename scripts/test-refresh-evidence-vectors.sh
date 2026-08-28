@@ -27,7 +27,7 @@ trap 'rm -rf "${WORK}"' EXIT
 ok()  { PASS=$((PASS + 1)); printf '  \033[32mPASS\033[0m  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  \033[31mFAIL\033[0m  %s\n' "$1"; [ -n "${2:-}" ] && printf '        %s\n' "$2"; }
 
-# A minimal ori-specs with one vendored set, plus a consumer that vendors it.
+# A minimal ori-specs with every vendored set, plus a consumer that vendors it.
 # The script iterates a fixed SETS list, so the fixture provides every path it
 # looks for; only commissioned-safety-binding carries content that matters here.
 new_fixture() {
@@ -39,7 +39,8 @@ new_fixture() {
   git -C "${specs}" config user.email t@example.com
   git -C "${specs}" config user.name t
   for d in evidence/vectors evidence-exchange/vectors evidence-exchange/vectors/receiver-state \
-           runtime-evidence-anchor/vectors gateway-api/vectors commissioned-safety-binding; do
+           runtime-evidence-anchor/vectors gateway-api/vectors commissioned-safety-binding \
+           sensor-configuration/vectors; do
     mkdir -p "${specs}/${d}"
     printf '{"set":"%s","v":1}\n' "${d}" > "${specs}/${d}/vectors.json"
   done
