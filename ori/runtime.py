@@ -580,7 +580,7 @@ class OriRuntime:
             try:
                 await relay_action.connect(
                     gpio_pin=gpio_pin,
-                    allow_simulation=not requires_production_posture(
+                    tolerate_missing_backend=not requires_production_posture(
                         device=config.device,
                         security=config.security,
                     ),

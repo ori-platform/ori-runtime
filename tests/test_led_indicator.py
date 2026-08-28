@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import sys
 
 import pytest
 
@@ -79,7 +80,14 @@ async def test_pattern_collision_fault_vs_policy_states():
 
 
 @pytest.mark.asyncio
-async def test_non_pi_noop_mode():
+async def test_noop_mode_without_gpiozero(monkeypatch):
+    """No-op is a consequence of gpiozero being absent, not of the host.
+
+    This was `test_non_pi_noop_mode` and asserted the host was not a Pi. On a Pi
+    it reached for real GPIO and failed on a busy pin, so the one platform the
+    behaviour matters on was the one platform it could not run.
+    """
+    monkeypatch.setitem(sys.modules, "gpiozero", None)
     indicator = LEDIndicator(StatusSignalingConfig())
     await indicator.connect()
     assert indicator.available is False
