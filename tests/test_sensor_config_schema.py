@@ -18,8 +18,10 @@ about which exists.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import random
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -32,6 +34,12 @@ from ori.hal.config_schema import (
     validate_schema,
 )
 
+VECTORS = Path(__file__).parent / "vectors" / "sensor_configuration"
+SCHEMA_LOAD_VECTORS = json.loads((VECTORS / "schema-load.json").read_text())["cases"]
+PROTOCOL_CONFIG_VECTORS = json.loads((VECTORS / "protocol-config.json").read_text())[
+    "cases"
+]
+
 
 def _ok(schema: dict) -> Any:
     """Validate a declaration and return the validated form.
@@ -39,6 +47,56 @@ def _ok(schema: dict) -> Any:
     `validate_document` accepts only that, never a raw mapping.
     """
     return validate_schema(schema, name="test")
+
+
+@pytest.mark.parametrize("case", SCHEMA_LOAD_VECTORS, ids=lambda case: case["name"])
+def test_schema_load_conforms_to_the_vendored_contract_vectors(case: dict) -> None:
+    """The hand-authored corpus, rather than a parallel runtime fixture, is authority."""
+    schema = case.get("schema")
+    if schema is None:
+        schema = json.loads(case["schema_text"])
+    if case["expect"] == "accepted":
+        assert isinstance(validate_schema(schema, name="vector"), ValidatedSchema)
+        return
+
+    with pytest.raises(SchemaError) as excinfo:
+        validate_schema(schema, name="vector")
+    message = str(excinfo.value)
+    for name in case["must_name"]:
+        assert name in message
+
+
+@pytest.mark.parametrize("case", PROTOCOL_CONFIG_VECTORS, ids=lambda case: case["name"])
+def test_protocol_config_conforms_to_the_vendored_contract_vectors(
+    case: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Accepted vectors also prove the exact mapping an adapter would receive."""
+    schema = validate_schema(case["schema"], name=case["protocol"])
+    with caplog.at_level(logging.WARNING):
+        if case["expect"] == "accepted":
+            assert (
+                validate_document(
+                    case["document"],
+                    schema,
+                    context=case["protocol"],
+                    external=case.get("external"),
+                )
+                == case["resolved"]
+            )
+            for name in case.get("warns", []):
+                assert name in caplog.text
+            return
+
+        with pytest.raises(DocumentError) as excinfo:
+            validate_document(
+                case["document"],
+                schema,
+                context=case["protocol"],
+                external=case.get("external"),
+            )
+    message = str(excinfo.value)
+    for name in case["must_name"]:
+        assert name in message
 
 
 # ── Schema load: the declaration is refused on its own terms ────────────────
@@ -319,6 +377,20 @@ def test_exactly_one_of_refuses_a_stray_from_the_unchosen_group() -> None:
         )
 
 
+def test_exactly_one_of_does_not_apply_defaults_from_the_unselected_group() -> None:
+    schema = _ok(
+        {
+            "host": {"type": "string"},
+            "port": {"type": "integer", "default": 8899},
+            "serial": {"type": "string"},
+            "exactly_one_of": [["host", "port"], ["serial"]],
+        }
+    )
+    assert validate_document({"serial": "/dev/ttyUSB0"}, schema, context="s") == {
+        "serial": "/dev/ttyUSB0"
+    }
+
+
 def test_at_least_one_of_permits_more_than_one() -> None:
     """It is the mechanism for 'any of these will do'."""
     schema = _ok(
@@ -357,7 +429,7 @@ def test_a_deprecated_alias_is_accepted_with_a_warning(
 ) -> None:
     with caplog.at_level(logging.WARNING):
         resolved = validate_document({"baudrate": 19200}, _with_alias(), context="s")
-    assert resolved["baudrate"] == 19200
+    assert resolved == {"baud_rate": 19200}
     assert "deprecated" in caplog.text
     assert "baud_rate" in caplog.text
 
@@ -367,6 +439,226 @@ def test_an_alias_and_its_replacement_together_are_refused() -> None:
     with pytest.raises(DocumentError, match="deprecated alias"):
         validate_document(
             {"baud_rate": 9600, "baudrate": 9600}, _with_alias(), context="s"
+        )
+
+
+def test_an_alias_resolves_across_an_object_boundary() -> None:
+    schema = _ok(
+        {
+            "mqtt": {
+                "type": "object",
+                "properties": {"username": {"type": "string"}},
+            },
+            "mqtt_username": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "mqtt.username",
+            },
+        }
+    )
+    assert validate_document({"mqtt_username": "operator"}, schema, context="s") == {
+        "mqtt": {"username": "operator"}
+    }
+
+
+def test_a_cross_path_alias_conflicts_with_a_written_canonical_value() -> None:
+    schema = _ok(
+        {
+            "mqtt": {
+                "type": "object",
+                "properties": {"username": {"type": "string"}},
+            },
+            "mqtt_username": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "mqtt.username",
+            },
+        }
+    )
+    with pytest.raises(DocumentError, match=r"mqtt\.username"):
+        validate_document(
+            {"mqtt": {"username": "canonical"}, "mqtt_username": "legacy"},
+            schema,
+            context="s",
+        )
+
+
+def test_two_aliases_for_one_target_are_refused_without_schema_order_precedence() -> (
+    None
+):
+    schema = _ok(
+        {
+            "mqtt": {
+                "type": "object",
+                "properties": {"client_id": {"type": "string"}},
+            },
+            "mqtt_client_id": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "mqtt.client_id",
+            },
+            "client_id": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "mqtt.client_id",
+            },
+        }
+    )
+    with pytest.raises(DocumentError) as excinfo:
+        validate_document(
+            {"mqtt_client_id": "first", "client_id": "second"}, schema, context="s"
+        )
+    message = str(excinfo.value)
+    assert "mqtt_client_id" in message
+    assert "client_id" in message
+    assert "mqtt.client_id" in message
+
+
+def test_an_object_alias_and_leaf_alias_name_the_written_aliases_on_conflict() -> None:
+    schema = _ok(
+        {
+            "mqtt": {
+                "type": "object",
+                "properties": {"username": {"type": "string"}},
+            },
+            "legacy_broker": {
+                "type": "object",
+                "deprecated": True,
+                "supersedes": "mqtt",
+            },
+            "mqtt_username": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "mqtt.username",
+            },
+        }
+    )
+    with pytest.raises(DocumentError) as excinfo:
+        validate_document(
+            {"legacy_broker": {"username": "first"}, "mqtt_username": "second"},
+            schema,
+            context="s",
+        )
+    message = str(excinfo.value)
+    assert "legacy_broker" in message
+    assert "mqtt_username" in message
+
+
+def test_alias_resolution_does_not_mutate_or_change_the_callers_document() -> None:
+    schema = _ok(
+        {
+            "mqtt": {
+                "type": "object",
+                "properties": {
+                    "username": {"type": "string"},
+                    "keepalive": {"type": "integer"},
+                },
+            },
+            "mqtt_username": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "mqtt.username",
+            },
+        }
+    )
+    document = {"mqtt_username": "operator", "mqtt": {"keepalive": 90}}
+    expected = {"mqtt": {"username": "operator", "keepalive": 90}}
+    assert validate_document(document, schema, context="s") == expected
+    assert document == {"mqtt_username": "operator", "mqtt": {"keepalive": 90}}
+    assert validate_document(document, schema, context="s") == expected
+
+
+def test_an_alias_path_cannot_descend_through_a_deprecated_object() -> None:
+    with pytest.raises(SchemaError, match="not an object"):
+        validate_schema(
+            {
+                "mqtt": {
+                    "type": "object",
+                    "properties": {"username": {"type": "string"}},
+                },
+                "broker": {
+                    "type": "object",
+                    "deprecated": True,
+                    "supersedes": "mqtt",
+                },
+                "legacy_username": {
+                    "type": "string",
+                    "deprecated": True,
+                    "supersedes": "broker.username",
+                },
+            },
+            name="test",
+        )
+
+
+@pytest.mark.parametrize(
+    "alias, target, fragment",
+    [
+        ("mqtt.username", {"type": "string"}, "not an object"),
+        (
+            "brokers.username",
+            {"type": "array", "items": {"type": "string"}},
+            "not an object",
+        ),
+    ],
+)
+def test_an_alias_path_must_descend_only_through_objects(
+    alias: str, target: dict, fragment: str
+) -> None:
+    with pytest.raises(SchemaError, match=fragment):
+        validate_schema(
+            {
+                alias.split(".")[0]: target,
+                "legacy": {"type": "string", "deprecated": True, "supersedes": alias},
+            },
+            name="test",
+        )
+
+
+@pytest.mark.parametrize("kind", ["array", "object"])
+def test_a_structural_alias_needs_no_duplicate_contents_declaration(kind: str) -> None:
+    target: dict[str, Any] = {"type": kind}
+    if kind == "array":
+        target["items"] = {"type": "string"}
+    else:
+        target["properties"] = {"value": {"type": "string"}}
+    assert isinstance(
+        validate_schema(
+            {
+                "canonical": target,
+                "legacy": {"type": kind, "deprecated": True, "supersedes": "canonical"},
+            },
+            name="test",
+        ),
+        ValidatedSchema,
+    )
+
+
+@pytest.mark.parametrize(
+    "property_name, value",
+    [
+        ("default", 1),
+        ("minimum", 1),
+        ("enum", [1]),
+        ("required", True),
+        ("fallback_from", "x"),
+    ],
+)
+def test_an_alias_cannot_declare_competing_value_semantics(
+    property_name: str, value: Any
+) -> None:
+    with pytest.raises(SchemaError, match=property_name):
+        validate_schema(
+            {
+                "canonical": {"type": "integer"},
+                "legacy": {
+                    "type": "integer",
+                    "deprecated": True,
+                    "supersedes": "canonical",
+                    property_name: value,
+                },
+            },
+            name="test",
         )
 
 

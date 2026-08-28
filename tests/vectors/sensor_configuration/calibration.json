@@ -1,0 +1,228 @@
+{
+  "contract": "sensor-configuration/v1 — calibration",
+  "phase": "configuration_load",
+  "note": "Selected by the pair (protocol, type), never by type alone. The same quantity over a different transport needs different calibration, or none: current through an ADS1115 needs the clamp's sensitivity, while current from a Modbus meter reporting amperes needs nothing.",
+  "refusal_note": "`calibration_schemas` is the adapter module's CALIBRATION_SCHEMAS for the case's protocol. An absent key means the pair has no schema.",
+  "cases": [
+    {
+      "name": "no_schema_for_the_pair_and_no_calibration_accepted",
+      "protocol": "serial",
+      "type": "current",
+      "calibration_schemas": {},
+      "calibration": {},
+      "expect": "accepted",
+      "resolved": {}
+    },
+    {
+      "name": "no_schema_for_the_pair_with_calibration_refused",
+      "protocol": "serial",
+      "type": "current",
+      "calibration_schemas": {},
+      "calibration": {
+        "sensitivity": 0.066
+      },
+      "expect": "refused",
+      "must_name": [
+        "serial",
+        "current"
+      ],
+      "why": "A calibration block nobody declared is the unknown-key defect where the consequence is a wrong measurement rather than a missing feature. A sensitivity that does not reach the adapter produces readings that look plausible and are wrong by a constant factor."
+    },
+    {
+      "name": "empty_calibration_schemas_is_a_statement_not_an_omission",
+      "protocol": "serial",
+      "type": "voltage",
+      "calibration_schemas": {},
+      "calibration": {},
+      "expect": "accepted",
+      "resolved": {},
+      "why": "An empty mapping states that the protocol calibrates nothing; an absent one states nothing at all."
+    },
+    {
+      "name": "declared_pair_accepted_with_defaults_applied",
+      "protocol": "i2c",
+      "type": "ads1115_current",
+      "calibration_schemas": {
+        "ads1115_current": {
+          "sensitivity": {
+            "type": "number",
+            "required": true,
+            "minimum": 0
+          },
+          "frequency_hz": {
+            "type": "integer",
+            "default": 50,
+            "enum": [
+              50,
+              60
+            ]
+          },
+          "gain": {
+            "type": "number",
+            "default": 1.0
+          }
+        }
+      },
+      "calibration": {
+        "sensitivity": 0.066
+      },
+      "expect": "accepted",
+      "resolved": {
+        "sensitivity": 0.066,
+        "frequency_hz": 50,
+        "gain": 1.0
+      }
+    },
+    {
+      "name": "undeclared_calibration_key_refused",
+      "protocol": "i2c",
+      "type": "ads1115_current",
+      "calibration_schemas": {
+        "ads1115_current": {
+          "sensitivity": {
+            "type": "number",
+            "required": true,
+            "minimum": 0
+          },
+          "frequency_hz": {
+            "type": "integer",
+            "default": 50,
+            "enum": [
+              50,
+              60
+            ]
+          },
+          "gain": {
+            "type": "number",
+            "default": 1.0
+          }
+        }
+      },
+      "calibration": {
+        "sensitivity": 0.066,
+        "sensitivty": 0.1
+      },
+      "expect": "refused",
+      "must_name": [
+        "sensitivty"
+      ],
+      "why": "The misspelling that made this contract necessary, one level down."
+    },
+    {
+      "name": "required_calibration_field_omitted_refused",
+      "protocol": "i2c",
+      "type": "ads1115_current",
+      "calibration_schemas": {
+        "ads1115_current": {
+          "sensitivity": {
+            "type": "number",
+            "required": true,
+            "minimum": 0
+          },
+          "frequency_hz": {
+            "type": "integer",
+            "default": 50,
+            "enum": [
+              50,
+              60
+            ]
+          },
+          "gain": {
+            "type": "number",
+            "default": 1.0
+          }
+        }
+      },
+      "calibration": {
+        "gain": 2.0
+      },
+      "expect": "refused",
+      "must_name": [
+        "sensitivity"
+      ]
+    },
+    {
+      "name": "calibration_value_out_of_bounds_refused",
+      "protocol": "i2c",
+      "type": "ads1115_current",
+      "calibration_schemas": {
+        "ads1115_current": {
+          "sensitivity": {
+            "type": "number",
+            "required": true,
+            "minimum": 0
+          },
+          "frequency_hz": {
+            "type": "integer",
+            "default": 50,
+            "enum": [
+              50,
+              60
+            ]
+          },
+          "gain": {
+            "type": "number",
+            "default": 1.0
+          }
+        }
+      },
+      "calibration": {
+        "sensitivity": -0.066
+      },
+      "expect": "refused",
+      "must_name": [
+        "sensitivity"
+      ]
+    },
+    {
+      "name": "calibration_is_selected_by_pair_not_by_type",
+      "protocol": "serial",
+      "type": "ads1115_current",
+      "calibration_schemas": {},
+      "calibration": {
+        "sensitivity": 0.066
+      },
+      "expect": "refused",
+      "must_name": [
+        "serial",
+        "ads1115_current"
+      ],
+      "why": "The same type over a transport that does not declare it has no schema, and inheriting one from another protocol is how a calibration reaches an adapter that ignores it."
+    },
+    {
+      "name": "calibration_is_not_flattened_into_protocol_configuration",
+      "protocol": "i2c",
+      "type": "ads1115_current",
+      "calibration_schemas": {
+        "ads1115_current": {
+          "sensitivity": {
+            "type": "number",
+            "required": true,
+            "minimum": 0
+          },
+          "frequency_hz": {
+            "type": "integer",
+            "default": 50,
+            "enum": [
+              50,
+              60
+            ]
+          },
+          "gain": {
+            "type": "number",
+            "default": 1.0
+          }
+        }
+      },
+      "calibration": {
+        "sensitivity": 0.066,
+        "address": 72
+      },
+      "expect": "refused",
+      "must_name": [
+        "address"
+      ],
+      "why": "`address` is protocol configuration. Flattening the two namespaces is what let a documented sensitivity sit unread beside an adapter's own default."
+    }
+  ]
+}

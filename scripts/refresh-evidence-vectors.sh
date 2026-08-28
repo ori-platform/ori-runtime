@@ -47,6 +47,10 @@ SETS=(
   # evidence carriage. It pins independently because it has no reason to move
   # when the evidence contracts do.
   "commissioned-safety-binding:tests/vectors/commissioned_safety_binding"
+  # Sensor configuration is its own contract and changes independently of the
+  # evidence sets. Its consumer is the loader, not the evidence subsystem, so
+  # it needs an independent provenance pin as well.
+  "sensor-configuration/vectors:tests/vectors/sensor_configuration"
 )
 
 if [ -n "${ORI_SPECS_DIR:-}" ]; then

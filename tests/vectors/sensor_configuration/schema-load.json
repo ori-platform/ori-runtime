@@ -1,0 +1,797 @@
+{
+  "contract": "sensor-configuration/v1 — schema load",
+  "phase": "schema_load",
+  "note": "Checked with no document in hand. A schema that has not itself been validated cannot be used to validate anything, so every case here is a defect in a declaration an adapter ships, not in anything an operator wrote.",
+  "refusal_note": "`must_name` lists identifiers a conforming refusal must contain — keys, paths, protocols and schema keywords, never English wording.",
+  "cases": [
+    {
+      "name": "object_without_properties",
+      "schema": {
+        "tls": {
+          "type": "object"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "tls",
+        "properties"
+      ],
+      "why": "An object that never says what may sit inside it admits anything."
+    },
+    {
+      "name": "array_without_items",
+      "schema": {
+        "allowed_hosts": {
+          "type": "array"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "allowed_hosts",
+        "items"
+      ]
+    },
+    {
+      "name": "default_its_own_descriptor_rejects",
+      "schema": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 0
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "port",
+        "default"
+      ]
+    },
+    {
+      "name": "default_of_the_wrong_type",
+      "schema": {
+        "port": {
+          "type": "integer",
+          "default": "1883"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "port",
+        "default"
+      ],
+      "why": "Checked, never coerced, at declaration time as much as at use."
+    },
+    {
+      "name": "fractional_bound_on_an_integer_field",
+      "schema": {
+        "port": {
+          "type": "integer",
+          "minimum": 1.5
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "port",
+        "minimum"
+      ]
+    },
+    {
+      "name": "infinite_bound",
+      "schema_text": "{\"timeout_s\": {\"type\": \"number\", \"maximum\": 1e999}}",
+      "expect": "refused",
+      "must_name": [
+        "timeout_s",
+        "maximum"
+      ],
+      "why": "A bound must be finite. An infinity admits every value while reading as a limit.",
+      "note": "Carried as source text, not as a value: `Infinity` is not JSON, and embedding it would make this file unparseable for a strict reader and take every other case down with it. A verifier whose parser refuses the literal satisfies this case at its own boundary; one that yields an infinity must refuse it at the bound check."
+    },
+    {
+      "name": "boolean_bound",
+      "schema": {
+        "port": {
+          "type": "integer",
+          "minimum": true
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "port",
+        "minimum"
+      ],
+      "why": "A boolean is an integer in some host languages and is not a bound in any of them."
+    },
+    {
+      "name": "minimum_above_maximum",
+      "schema": {
+        "port": {
+          "type": "integer",
+          "minimum": 9000,
+          "maximum": 80
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "port"
+      ]
+    },
+    {
+      "name": "group_naming_an_undeclared_field",
+      "schema": {
+        "host": {
+          "type": "string"
+        },
+        "exactly_one_of": [
+          [
+            "host"
+          ],
+          [
+            "serial"
+          ]
+        ]
+      },
+      "expect": "refused",
+      "must_name": [
+        "serial",
+        "exactly_one_of"
+      ]
+    },
+    {
+      "name": "empty_group",
+      "schema": {
+        "host": {
+          "type": "string"
+        },
+        "exactly_one_of": [
+          [
+            "host"
+          ],
+          []
+        ]
+      },
+      "expect": "refused",
+      "must_name": [
+        "exactly_one_of"
+      ],
+      "why": "Always satisfied or never satisfiable; neither is what anyone meant."
+    },
+    {
+      "name": "field_in_two_groups_of_one_constraint",
+      "schema": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "exactly_one_of": [
+          [
+            "host",
+            "port"
+          ],
+          [
+            "host"
+          ]
+        ]
+      },
+      "expect": "refused",
+      "must_name": [
+        "host",
+        "exactly_one_of"
+      ],
+      "why": "Makes `exactly one group` undecidable."
+    },
+    {
+      "name": "two_identical_groups",
+      "schema": {
+        "host": {
+          "type": "string"
+        },
+        "at_least_one_of": [
+          [
+            "host"
+          ],
+          [
+            "host"
+          ]
+        ]
+      },
+      "expect": "refused",
+      "must_name": [
+        "at_least_one_of"
+      ]
+    },
+    {
+      "name": "required_unless_naming_an_undeclared_field",
+      "schema": {
+        "device_path": {
+          "type": "string",
+          "required_unless": {
+            "auto_detect": true
+          }
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "device_path",
+        "auto_detect"
+      ],
+      "why": "An unenforceable condition fails silently: it simply never fires."
+    },
+    {
+      "name": "direct_conditional_cycle",
+      "schema": {
+        "a": {
+          "type": "string",
+          "required_unless": {
+            "b": true
+          }
+        },
+        "b": {
+          "type": "boolean",
+          "required_unless": {
+            "a": "x"
+          }
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "a",
+        "b"
+      ],
+      "why": "Each would need the other settled first, so there is no evaluation order."
+    },
+    {
+      "name": "indirect_conditional_cycle",
+      "schema": {
+        "a": {
+          "type": "string",
+          "required_unless": {
+            "b": true
+          }
+        },
+        "b": {
+          "type": "boolean",
+          "required_unless": {
+            "c": 1
+          }
+        },
+        "c": {
+          "type": "integer",
+          "required_unless": {
+            "a": "x"
+          }
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "a",
+        "b",
+        "c"
+      ],
+      "why": "Cycles are refused at any length, and the refusal names the cycle."
+    },
+    {
+      "name": "cycle_is_named_from_its_lowest_sorting_member",
+      "schema": {
+        "c": {
+          "type": "string",
+          "required_unless": {
+            "a": true
+          }
+        },
+        "a": {
+          "type": "boolean",
+          "required_unless": {
+            "b": 1
+          }
+        },
+        "b": {
+          "type": "integer",
+          "required_unless": {
+            "c": "x"
+          }
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "a",
+        "b",
+        "c"
+      ],
+      "why": "One defect must read the same way however the walk enters it."
+    },
+    {
+      "name": "deprecated_without_supersedes",
+      "schema": {
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "baudrate",
+        "supersedes"
+      ]
+    },
+    {
+      "name": "supersedes_naming_a_key_absent_from_the_schema",
+      "schema": {
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "baudrate",
+        "baud_rate"
+      ]
+    },
+    {
+      "name": "deprecated_key_declared_required",
+      "schema": {
+        "baud_rate": {
+          "type": "integer"
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate",
+          "required": true
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "baudrate",
+        "required"
+      ]
+    },
+    {
+      "name": "same_scope_alias_accepted",
+      "schema": {
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        }
+      },
+      "expect": "accepted"
+    },
+    {
+      "name": "alias_carrying_its_own_default",
+      "schema": {
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate",
+          "default": 19200
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "baudrate",
+        "default"
+      ],
+      "why": "The value moves to the target, so the alias's default would apply to a position no longer holding anything. Apply it, ignore it, or apply it after the target's — three readings of one declaration."
+    },
+    {
+      "name": "alias_carrying_its_own_bound",
+      "schema": {
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate",
+          "minimum": 1200
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "baudrate",
+        "minimum"
+      ],
+      "why": "A bound on the alias would let it admit what its target refuses."
+    },
+    {
+      "name": "alias_carrying_its_own_enum",
+      "schema": {
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate",
+          "enum": [
+            9600,
+            19200
+          ]
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "baudrate",
+        "enum"
+      ]
+    },
+    {
+      "name": "alias_carrying_a_nested_schema",
+      "schema": {
+        "mqtt": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            }
+          }
+        },
+        "legacy_mqtt": {
+          "type": "object",
+          "deprecated": true,
+          "supersedes": "mqtt",
+          "properties": {
+            "username": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "legacy_mqtt",
+        "properties"
+      ],
+      "why": "Two declarations of one object's contents, and the one a value is checked against stops being the one the adapter obeys."
+    },
+    {
+      "name": "alias_carrying_a_conditional",
+      "schema": {
+        "auto_detect_device_path": {
+          "type": "boolean",
+          "default": false
+        },
+        "device_path": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "deprecated": true,
+          "supersedes": "device_path",
+          "required_unless": {
+            "auto_detect_device_path": true
+          }
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "path",
+        "required_unless"
+      ],
+      "why": "A key being removed would become the thing another field's requirement is evaluated against."
+    },
+    {
+      "name": "alias_carrying_a_fallback",
+      "schema": {
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "timeout": {
+          "type": "number",
+          "deprecated": true,
+          "supersedes": "timeout_s",
+          "fallback_from": "actions.coap.timeout_s"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "timeout",
+        "fallback_from"
+      ]
+    },
+    {
+      "name": "alias_carrying_a_bound_on_another_section",
+      "schema": {
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hosts": {
+          "type": "array",
+          "deprecated": true,
+          "supersedes": "allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "hosts",
+        "must_be_subset_of"
+      ],
+      "why": "The security bound belongs to the canonical field, or it is escapable by writing the alias.",
+      "note": "The alias declares no `items`, which the exemption permits. Refusing it for that instead would report coverage of the alias rule that does not exist."
+    },
+    {
+      "name": "alias_carrying_only_structural_metadata_accepted",
+      "schema": {
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate",
+          "description": "Renamed to baud_rate in this generation."
+        }
+      },
+      "expect": "accepted",
+      "why": "`type` and `description` are not competing semantics: the type must already match the target's, and stating it keeps a declaration readable on its own."
+    },
+    {
+      "name": "an_array_alias_declares_no_items_and_is_accepted",
+      "schema": {
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "hosts": {
+          "type": "array",
+          "deprecated": true,
+          "supersedes": "allowed_hosts"
+        }
+      },
+      "expect": "accepted",
+      "why": "`items` is required of an array by the core and forbidden on an alias by this contract. Without the exemption an array alias could not be written at all."
+    },
+    {
+      "name": "an_object_alias_declares_no_properties_and_is_accepted",
+      "schema": {
+        "mqtt": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            }
+          }
+        },
+        "broker": {
+          "type": "object",
+          "deprecated": true,
+          "supersedes": "mqtt"
+        }
+      },
+      "expect": "accepted"
+    },
+    {
+      "name": "cross_path_alias_accepted",
+      "schema": {
+        "mqtt": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            }
+          }
+        },
+        "mqtt_username": {
+          "type": "string",
+          "deprecated": true,
+          "supersedes": "mqtt.username"
+        }
+      },
+      "expect": "accepted",
+      "why": "A rename that moves a setting into a nested object is the same migration as one within a scope."
+    },
+    {
+      "name": "alias_path_through_a_non_object",
+      "schema": {
+        "mqtt": {
+          "type": "string"
+        },
+        "mqtt_username": {
+          "type": "string",
+          "deprecated": true,
+          "supersedes": "mqtt.username"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "mqtt_username",
+        "mqtt.username"
+      ]
+    },
+    {
+      "name": "alias_path_descending_through_items",
+      "schema": {
+        "brokers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "username": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "mqtt_username": {
+          "type": "string",
+          "deprecated": true,
+          "supersedes": "brokers.username"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "mqtt_username",
+        "brokers.username"
+      ],
+      "why": "An array element has no stable identity for an alias to name."
+    },
+    {
+      "name": "alias_target_absent_from_the_nested_object",
+      "schema": {
+        "mqtt": {
+          "type": "object",
+          "properties": {
+            "password": {
+              "type": "string"
+            }
+          }
+        },
+        "mqtt_username": {
+          "type": "string",
+          "deprecated": true,
+          "supersedes": "mqtt.username"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "mqtt_username",
+        "mqtt.username"
+      ]
+    },
+    {
+      "name": "alias_of_an_alias",
+      "schema": {
+        "mqtt": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            }
+          }
+        },
+        "mqtt_username": {
+          "type": "string",
+          "deprecated": true,
+          "supersedes": "mqtt.username"
+        },
+        "username": {
+          "type": "string",
+          "deprecated": true,
+          "supersedes": "mqtt_username"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "username",
+        "mqtt_username"
+      ],
+      "why": "An alias of an alias has no single canonical spelling."
+    },
+    {
+      "name": "alias_type_differs_from_its_target",
+      "schema": {
+        "mqtt": {
+          "type": "object",
+          "properties": {
+            "keepalive": {
+              "type": "integer"
+            }
+          }
+        },
+        "mqtt_keepalive_s": {
+          "type": "string",
+          "deprecated": true,
+          "supersedes": "mqtt.keepalive"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "mqtt_keepalive_s",
+        "mqtt.keepalive"
+      ],
+      "why": "Two descriptors for one setting are two things to edit."
+    },
+    {
+      "name": "fallback_from_naming_a_path_inside_sensors",
+      "schema": {
+        "timeout_s": {
+          "type": "number",
+          "fallback_from": "sensors.0.timeout_s"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "timeout_s",
+        "sensors"
+      ],
+      "why": "A fallback a sensor could write is not a bound."
+    },
+    {
+      "name": "must_be_subset_of_naming_a_path_inside_sensors",
+      "schema": {
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "must_be_subset_of": "sensors.0.allowed_hosts"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "allowed_hosts",
+        "sensors"
+      ]
+    },
+    {
+      "name": "must_be_subset_of_on_a_non_array_field",
+      "schema": {
+        "host": {
+          "type": "string",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "host",
+        "must_be_subset_of"
+      ]
+    },
+    {
+      "name": "bounded_fallback_accepted",
+      "schema": {
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        }
+      },
+      "expect": "accepted"
+    }
+  ]
+}
