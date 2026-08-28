@@ -32,7 +32,7 @@ def skip_if_no_pi():
 async def relay() -> RelayAction:
     """A RelayAction already connected in simulation mode."""
     r = RelayAction()
-    await r.connect(gpio_pin=26, allow_simulation=True)
+    await r.connect(gpio_pin=26, tolerate_missing_backend=True)
     return r
 
 
@@ -43,7 +43,7 @@ async def relay() -> RelayAction:
 async def test_connect_sets_connected():
     r = RelayAction()
     assert not r._connected
-    await r.connect(gpio_pin=26, allow_simulation=True)
+    await r.connect(gpio_pin=26, tolerate_missing_backend=True)
     assert r._connected
 
 
@@ -52,7 +52,7 @@ async def test_connect_enters_simulation_mode_without_gpiozero(monkeypatch):
     """Remove gpiozero from sys.modules to force simulation mode."""
     monkeypatch.setitem(sys.modules, "gpiozero", None)
     r = RelayAction()
-    await r.connect(gpio_pin=26, allow_simulation=True)
+    await r.connect(gpio_pin=26, tolerate_missing_backend=True)
     assert r._simulated is True
     assert r._device is None
 
@@ -73,7 +73,7 @@ async def test_connect_is_fail_closed_by_default(monkeypatch):
 @pytest.mark.asyncio
 async def test_connect_stores_pin_and_active_high():
     r = RelayAction()
-    await r.connect(gpio_pin=17, active_high=False, allow_simulation=True)
+    await r.connect(gpio_pin=17, active_high=False, tolerate_missing_backend=True)
     assert r._pin == 17
     assert r._active_high is False
 

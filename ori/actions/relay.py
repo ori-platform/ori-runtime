@@ -173,7 +173,7 @@ class RelayAction:
         gpio_pin: int,
         active_high: bool = True,
         *,
-        allow_simulation: bool = False,
+        tolerate_missing_backend: bool = False,
     ) -> None:
         """Initialise *gpio_pin* as a relay output.
 
@@ -185,13 +185,15 @@ class RelayAction:
             active_high: ``True`` if the relay activates on a HIGH signal
                 (default).  Set ``False`` for opto-isolated relay boards
                 that trigger on LOW — verify the relay datasheet.
-            allow_simulation: Permit a no-op relay when gpiozero is unavailable.
-                This is fail-closed by default; runtime startup opts in only for
-                development posture.
+            tolerate_missing_backend: Permit a no-op relay when gpiozero cannot
+                be imported. Fail-closed by default; runtime startup opts in
+                only for development posture. It does **not** select simulation:
+                where gpiozero is importable a real device is built and a pin
+                moves, whatever this argument says.
 
         Note:
             When gpiozero is unavailable, simulation occurs only if
-            ``allow_simulation`` is explicitly true. Otherwise connection
+            ``tolerate_missing_backend`` is explicitly true. Otherwise connection
             raises and no hardware capability is reported.
         """
         if gpio_pin not in _VALID_BCM_PINS:
@@ -223,7 +225,7 @@ class RelayAction:
                 active_high,
             )
         except ImportError as exc:
-            if not allow_simulation:
+            if not tolerate_missing_backend:
                 self._device = None
                 self._simulated = False
                 self._connected = False

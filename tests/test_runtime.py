@@ -965,7 +965,7 @@ class TestRequiredRuntimeCapabilities:
         finally:
             await runtime.stop()
 
-        connect.assert_awaited_once_with(gpio_pin=26, allow_simulation=False)
+        connect.assert_awaited_once_with(gpio_pin=26, tolerate_missing_backend=False)
 
 
 class TestLocalSLMWiring:
@@ -1481,7 +1481,7 @@ class TestLifecycle:
 
         await close_gas_valve("close_gas_valve", SimpleNamespace())
 
-        connect.assert_awaited_once_with(gpio_pin=26, allow_simulation=True)
+        connect.assert_awaited_once_with(gpio_pin=26, tolerate_missing_backend=True)
         trigger.assert_awaited_once_with(duration_seconds=None)
 
 
