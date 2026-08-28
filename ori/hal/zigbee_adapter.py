@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from ori.hal.base import AdapterConnectionError, AdapterReadError
-from ori.hal.mqtt_base import MqttCachedAdapter
+from ori.hal.mqtt_base import MQTT_CONNECTION_SCHEMA, MqttCachedAdapter
 from ori.network.events import SensorReading
 from ori.utils.time_utils import now_ms
 
@@ -23,6 +23,15 @@ _SENSOR_MAP: dict[str, tuple[str, str]] = {
     "contact": ("contact", "ratio"),
     "water_leak": ("water_leak", "ratio"),
 }
+
+CONFIG_SCHEMA = {
+    **MQTT_CONNECTION_SCHEMA,
+    "topic": {"type": "string", "required": True},
+    "value_path": {"type": "string"},
+    "quality_path": {"type": "string", "default": ""},
+    "unit": {"type": "string"},
+}
+CALIBRATION_SCHEMAS: dict[str, dict] = {}
 
 
 def _clamp_quality(value: float) -> float:

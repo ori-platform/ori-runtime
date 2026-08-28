@@ -16,6 +16,14 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = {
+    "url": {"type": "string", "required": True},
+    "json_path": {"type": "string", "required": True},
+    "unit": {"type": "string", "default": ""},
+    "timeout_s": {"type": "number", "default": 5.0, "minimum": 0},
+}
+CALIBRATION_SCHEMAS: dict[str, dict] = {}
+
 try:
     import httpx as _httpx  # type: ignore[import-untyped]
 

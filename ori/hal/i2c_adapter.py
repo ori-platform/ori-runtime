@@ -26,6 +26,23 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = {
+    "address": {"type": "integer", "default": 0, "minimum": 0, "maximum": 127},
+    "bus": {"type": "integer", "default": 1, "minimum": 0},
+    "channel": {"type": "integer", "default": 0, "minimum": 0},
+}
+CALIBRATION_SCHEMAS = {
+    "ads1115_current": {
+        "sensitivity_v_per_amp": {"type": "number", "required": True, "minimum": 0},
+        "mains_frequency_hz": {"type": "integer", "required": True, "enum": [50, 60]},
+        "window_cycles": {"type": "integer", "default": 2, "minimum": 1},
+        "data_rate": {"type": "integer", "default": 860, "minimum": 1},
+        "gain": {"type": "number", "default": 1, "minimum": 0},
+        "overrun_tolerance": {"type": "number", "default": 1.5, "minimum": 0},
+        "clip_margin_volts": {"type": "number", "default": 0.05, "minimum": 0},
+    },
+}
+
 # Optional hardware libraries — guarded so the module imports cleanly on any host.
 try:
     import smbus2 as smbus  # type: ignore[import-untyped]

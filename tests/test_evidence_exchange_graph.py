@@ -441,6 +441,18 @@ VECTOR_CONSUMERS = {
         "test_sensor_config_schema.py"
         "::test_protocol_config_conforms_to_the_vendored_contract_vectors",
     ),
+    ("sensor_configuration", "sensor-entry"): (
+        "test_sensor_config_schema.py"
+        "::test_sensor_entry_conforms_to_the_vendored_contract_vectors",
+    ),
+    ("sensor_configuration", "calibration"): (
+        "test_sensor_config_schema.py"
+        "::test_calibration_conforms_to_the_vendored_contract_vectors",
+    ),
+    ("sensor_configuration", "protocol-definition"): (
+        "test_sensor_config_schema.py"
+        "::test_protocol_definition_conforms_to_the_vendored_contract_vectors",
+    ),
 }
 
 #: Vendored vectors this runtime cannot exercise yet.
@@ -491,37 +503,6 @@ VECTOR_EXEMPTIONS = {
             "would hand one over are still open. Vendored now so the drift "
             "check covers the bytes the producer must match, and exempt until a "
             "publisher exists to assert against them."
-        ),
-    },
-    ("sensor_configuration", "sensor-entry"): {
-        "owner": "the runtime",
-        "status": "proof_pending",
-        "tracking": "ori-specs#110",
-        "reason": (
-            "The canonical sensor envelope has no production consumer until "
-            "the atomic schema activation adds loader enforcement. The vector "
-            "is vendored and drift-checked now, but no runtime parser reads it."
-        ),
-    },
-    ("sensor_configuration", "calibration"): {
-        "owner": "the runtime",
-        "status": "proof_pending",
-        "tracking": "ori-specs#110",
-        "reason": (
-            "Calibration selection depends on adapter declarations and loader "
-            "enforcement, neither of which is activated yet. The vector is "
-            "vendored for drift checking but does not claim runtime conformance."
-        ),
-    },
-    ("sensor_configuration", "protocol-definition"): {
-        "owner": "the runtime",
-        "status": "proof_pending",
-        "tracking": "ori-specs#110",
-        "reason": (
-            "The registry still uses its pre-activation factory chain, so it "
-            "cannot exercise module declaration resolution without constructing "
-            "adapters. The vector remains explicitly unconsumed until that seam "
-            "is replaced."
         ),
     },
 }

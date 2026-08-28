@@ -145,14 +145,18 @@ class TestLoadExample:
         assert load_current.calibration == {
             "sensitivity_v_per_amp": 0.0333,
             "mains_frequency_hz": 50,
+            "window_cycles": 2,
+            "data_rate": 860,
+            "gain": 1,
+            "overrun_tolerance": 1.5,
+            "clip_margin_volts": 0.05,
         }
 
     def test_sensor_metadata_contains_extra_fields(self):
         cfg = Config.load(EXAMPLE_YAML)
         # address and channel are not first-class SensorConfig fields → metadata
         load_current = next(s for s in cfg.sensors if s.id == "load-current")
-        assert "address" in load_current.metadata
-        assert "channel" in load_current.metadata
+        assert load_current.metadata == {"address": 72, "bus": 1, "channel": 0}
 
     def test_skill_parsed(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -2545,6 +2549,23 @@ actions:
   primary_alert_channel: sms
 """
 
+    def _coap_sensor_yaml(self, uri: str, timeout_s: str = "") -> str:
+        return (
+            self._base_yaml(
+                "  - id: coap-temp-01\n"
+                "    type: temperature\n"
+                "    protocol: coap\n"
+                "    poll_interval_ms: 1000\n"
+                f"    uri: {uri}\n"
+                "    method: GET\n"
+                "    json_path: metrics.temp_c\n"
+                f"{timeout_s}"
+            )
+            + "  coap:\n"
+            + "    enabled: false\n"
+            + '    allowed_hosts: ["192.168.1.70"]\n'
+        )
+
     def test_rejects_poll_interval_too_low(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
@@ -2576,7 +2597,7 @@ actions:
             cfg = Config.load(yaml_path)
             assert cfg.sensors[0].poll_interval_ms == ms
 
-    def test_extra_fields_go_to_metadata(self, tmp_path):
+    def test_declared_protocol_fields_go_to_metadata(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
@@ -2586,7 +2607,7 @@ actions:
         )
         cfg = Config.load(yaml_path)
         # YAML parses hex literals like 0x48 as integers (72)
-        assert cfg.sensors[0].metadata == {"address": 0x48, "channel": 0}
+        assert cfg.sensors[0].metadata == {"address": 0x48, "bus": 1, "channel": 0}
 
     def test_missing_type_raises(self, tmp_path):
         yaml_path = _write_yaml(
@@ -2612,7 +2633,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: inverter-battery\n    type: growatt_battery_soc\n    protocol: growatt\n    poll_interval_ms: 5000"
+                "  - id: inverter-battery\n    type: growatt_battery_soc\n    protocol: growatt\n    host: 192.168.1.50\n    serial: '123'\n    poll_interval_ms: 5000"
             ),
         )
         cfg = Config.load(yaml_path)
@@ -2640,7 +2661,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: mains-power\n    type: usb_power\n    protocol: usb_serial\n    poll_interval_ms: 2000"
+                "  - id: mains-power\n    type: usb_power\n    protocol: usb_serial\n    device_path: /dev/ttyUSB0\n    poll_interval_ms: 2000"
             ),
         )
         cfg = Config.load(yaml_path)
@@ -2650,7 +2671,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: outdoor-temp\n    type: temperature\n    protocol: http\n    poll_interval_ms: 10000"
+                "  - id: outdoor-temp\n    type: temperature\n    protocol: http\n    url: http://sensor.local/metrics\n    json_path: temperature\n    poll_interval_ms: 10000"
             ),
         )
         cfg = Config.load(yaml_path)
@@ -2660,7 +2681,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: victron-battery\n    type: victron_battery_soc\n    protocol: victron\n    poll_interval_ms: 5000"
+                "  - id: victron-battery\n    type: victron_battery_soc\n    protocol: victron\n    broker_host: 192.168.1.50\n    portal_id: abc\n    poll_interval_ms: 5000"
             ),
         )
         cfg = Config.load(yaml_path)
@@ -2670,7 +2691,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: living-room-temp\n    type: temperature\n    protocol: zigbee\n    poll_interval_ms: 1000"
+                "  - id: living-room-temp\n    type: temperature\n    protocol: zigbee\n    broker_host: 192.168.1.50\n    topic: zigbee2mqtt/living-room\n    poll_interval_ms: 1000"
             ),
         )
         cfg = Config.load(yaml_path)
@@ -2680,7 +2701,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: field-temp\n    type: lorawan_temperature\n    protocol: lorawan\n    poll_interval_ms: 5000"
+                "  - id: field-temp\n    type: lorawan_temperature\n    protocol: lorawan\n    broker_host: 192.168.1.50\n    topic: v3/app/devices/up\n    poll_interval_ms: 5000"
             ),
         )
         cfg = Config.load(yaml_path)
@@ -2690,7 +2711,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: ppe-hardhat-cam-01\n    type: ppe_hardhat_violation_score\n    protocol: mqtt_perception\n    poll_interval_ms: 1000"
+                "  - id: ppe-hardhat-cam-01\n    type: ppe_hardhat_violation_score\n    protocol: mqtt_perception\n    broker_host: 192.168.1.50\n    topic: ori/perception/camera\n    poll_interval_ms: 1000"
             ),
         )
         cfg = Config.load(yaml_path)
@@ -2700,7 +2721,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: chiller-supply\n    type: temperature\n    protocol: mqtt\n    poll_interval_ms: 1000"
+                "  - id: chiller-supply\n    type: temperature\n    protocol: mqtt\n    broker_host: 192.168.1.50\n    topic: building/chiller/supply\n    poll_interval_ms: 1000"
             ),
         )
         cfg = Config.load(yaml_path)
@@ -2710,7 +2731,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: plc-temperature\n    type: temperature\n    protocol: opcua\n    poll_interval_ms: 1000"
+                "  - id: plc-temperature\n    type: temperature\n    protocol: opcua\n    url: opc.tcp://plc.local:4840\n    node_id: ns=2;i=42\n    poll_interval_ms: 1000"
             ),
         )
         cfg = Config.load(yaml_path)
@@ -2720,7 +2741,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: drive-health\n    type: drive_temp_celsius\n    protocol: smart\n    poll_interval_ms: 60000"
+                "  - id: drive-health\n    type: drive_temp_celsius\n    protocol: smart\n    device: /dev/disk0\n    poll_interval_ms: 60000"
             ),
         )
         cfg = Config.load(yaml_path)
@@ -2790,7 +2811,22 @@ actions:
     allowed_hosts: ["192.168.1.70"]
 """,
         )
-        with pytest.raises(ConfigValidationError, match="require 'uri'"):
+        with pytest.raises(ConfigValidationError, match="uri.*required"):
+            Config.load(yaml_path)
+
+    @pytest.mark.parametrize(
+        ("uri", "timeout_s", "message"),
+        [
+            ("http://192.168.1.70/x", "", "coap:// or coaps://"),
+            ("file:///etc/passwd", "", "host is required"),
+            ("coap://192.168.1.70/x", "    timeout_s: 0\n", "timeout_s: must be > 0"),
+        ],
+    )
+    def test_rejects_coap_sensor_uri_or_timeout_outside_security_contract(
+        self, tmp_path, uri, timeout_s, message
+    ):
+        yaml_path = _write_yaml(tmp_path, self._coap_sensor_yaml(uri, timeout_s))
+        with pytest.raises(ConfigValidationError, match=message):
             Config.load(yaml_path)
 
     def test_rejects_coap_sensor_when_host_not_in_global_allowlist(self, tmp_path):

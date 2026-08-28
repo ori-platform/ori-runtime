@@ -17,6 +17,12 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = {
+    "url": {"type": "string", "required": True},
+    "node_id": {"type": "string", "required": True},
+}
+CALIBRATION_SCHEMAS: dict[str, dict] = {}
+
 try:
     from asyncua import Client as _AsyncUaClient  # type: ignore[import-untyped]
 

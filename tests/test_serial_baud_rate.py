@@ -218,15 +218,22 @@ def test_config_load_covers_the_usb_serial_protocol() -> None:
 
 def test_config_load_does_not_invent_a_rate_where_none_was_set() -> None:
     sensors = _parse_sensors(_sensor())
-    assert "baud_rate" not in sensors[0].metadata
+    assert sensors[0].metadata["baud_rate"] == 9600
 
 
 def test_a_non_serial_protocol_is_left_untouched() -> None:
-    """The bridge is scoped to the protocols whose adapters read a baud rate."""
-    sensors = _parse_sensors(
-        [{"id": "cpu", "type": "cpu_percent", "protocol": "psutil", "baudrate": 123}]
-    )
-    assert sensors[0].metadata["baudrate"] == 123
+    """An unclaimed key is refused rather than forwarded to no consumer."""
+    with pytest.raises(ConfigValidationError, match="baudrate"):
+        _parse_sensors(
+            [
+                {
+                    "id": "cpu",
+                    "type": "cpu_percent",
+                    "protocol": "psutil",
+                    "baudrate": 123,
+                }
+            ]
+        )
 
 
 # ── The shipped examples ─────────────────────────────────────────────────────

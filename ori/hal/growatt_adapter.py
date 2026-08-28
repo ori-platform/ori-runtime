@@ -16,6 +16,13 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = {
+    "host": {"type": "string", "required": True},
+    "serial": {"type": "string", "required": True},
+    "port": {"type": "integer", "default": 8899, "minimum": 1, "maximum": 65535},
+}
+CALIBRATION_SCHEMAS: dict[str, dict] = {}
+
 try:
     from pysolarmanv5 import (
         PySolarmanV5 as _PySolarmanV5,  # type: ignore[import-untyped]

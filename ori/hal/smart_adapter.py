@@ -19,6 +19,9 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = {"device": {"type": "string", "required": True}}
+CALIBRATION_SCHEMAS: dict[str, dict] = {}
+
 try:
     from pySMART import Device as _PySmartDevice  # type: ignore[import-untyped]
 

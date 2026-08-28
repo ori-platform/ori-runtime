@@ -1,19 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the sensor configuration schema validator.
-
-Cases are taken from the vector list in
-`ori-specs/sensor-configuration/v1.md`, so coverage traces to the contract
-rather than to whatever the implementation happened to make easy. The corpus
-itself does not exist yet; when it does, these become the runtime's consumption
-of it rather than a parallel set.
-
-Schemas here are synthetic. No adapter declares one yet, and nothing in the
-runtime calls this validator — the behaviour change lands atomically with the
-declarations, so a validator and the surface it validates can never disagree
-about which exists.
-"""
+"""Contract tests for the activated sensor-configuration boundary."""
 
 from __future__ import annotations
 
@@ -22,10 +10,14 @@ import json
 import logging
 import random
 from pathlib import Path
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import pytest
 
+import ori.hal.protocol_registry as registry
+from ori.config import ConfigValidationError, _parse_sensors
+from ori.hal.base import BaseAdapter
 from ori.hal.config_schema import (
     DocumentError,
     SchemaError,
@@ -39,6 +31,11 @@ SCHEMA_LOAD_VECTORS = json.loads((VECTORS / "schema-load.json").read_text())["ca
 PROTOCOL_CONFIG_VECTORS = json.loads((VECTORS / "protocol-config.json").read_text())[
     "cases"
 ]
+SENSOR_ENTRY_VECTORS = json.loads((VECTORS / "sensor-entry.json").read_text())["cases"]
+CALIBRATION_VECTORS = json.loads((VECTORS / "calibration.json").read_text())["cases"]
+PROTOCOL_DEFINITION_VECTORS = json.loads(
+    (VECTORS / "protocol-definition.json").read_text()
+)["cases"]
 
 
 def _ok(schema: dict) -> Any:
@@ -97,6 +94,99 @@ def test_protocol_config_conforms_to_the_vendored_contract_vectors(
     message = str(excinfo.value)
     for name in case["must_name"]:
         assert name in message
+
+
+@pytest.mark.parametrize("case", SENSOR_ENTRY_VECTORS, ids=lambda case: case["name"])
+def test_sensor_entry_conforms_to_the_vendored_contract_vectors(case: dict) -> None:
+    """The production loader consumes the canonical-envelope vectors."""
+    if case["expect"] == "accepted":
+        sensors = _parse_sensors(case["sensors"])
+        assert [
+            {
+                "id": sensor.id,
+                "type": sensor.type,
+                "protocol": sensor.protocol,
+                "poll_interval_ms": sensor.poll_interval_ms,
+                "calibration": sensor.calibration,
+            }
+            for sensor in sensors
+        ] == case["resolved"]
+        return
+    with pytest.raises(ConfigValidationError) as excinfo:
+        _parse_sensors(case["sensors"])
+    for name in case["must_name"]:
+        assert name in str(excinfo.value)
+
+
+@pytest.mark.parametrize("case", CALIBRATION_VECTORS, ids=lambda case: case["name"])
+def test_calibration_conforms_to_the_vendored_contract_vectors(case: dict) -> None:
+    """The pair-selected calibration grammar consumes the corpus as data."""
+    schema_raw = case["calibration_schemas"].get(case["type"])
+    if schema_raw is None:
+        if case["expect"] == "accepted":
+            assert case["calibration"] == {}
+            return
+        message = f"{case['protocol']} {case['type']} has no calibration schema"
+        for name in case["must_name"]:
+            assert name in message
+        return
+    schema = validate_schema(schema_raw, name="calibration")
+    if case["expect"] == "accepted":
+        assert (
+            validate_document(case["calibration"], schema, context="calibration")
+            == case["resolved"]
+        )
+        return
+    with pytest.raises(DocumentError) as excinfo:
+        validate_document(case["calibration"], schema, context="calibration")
+    for name in case["must_name"]:
+        assert name in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "case", PROTOCOL_DEFINITION_VECTORS, ids=lambda case: case["name"]
+)
+def test_protocol_definition_conforms_to_the_vendored_contract_vectors(
+    case: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolution reads module mappings and never calls the adapter factory."""
+    if "protocol" not in case:
+        assert registry.SUPPORTED_SENSOR_PROTOCOLS == frozenset(
+            registry.PROTOCOL_DEFINITIONS
+        )
+        return
+
+    protocol = case.get("protocol", "serial")
+    module_name = case.get("module", "ori.hal.serial_adapter")
+    definitions = dict(registry.PROTOCOL_DEFINITIONS)
+    definitions[protocol] = registry.ProtocolDefinition(module_name, "SerialAdapter")
+    monkeypatch.setattr(registry, "PROTOCOL_DEFINITIONS", MappingProxyType(definitions))
+    exports = set(case.get("module_exports", []))
+
+    class AdapterMustNotBeConstructed:
+        def __new__(cls, *args: Any, **kwargs: Any) -> object:
+            raise AssertionError(
+                "protocol declaration resolution constructed an adapter"
+            )
+
+    module = SimpleNamespace(SerialAdapter=AdapterMustNotBeConstructed)
+    if "CONFIG_SCHEMA" in exports:
+        module.CONFIG_SCHEMA = {"port": {"type": "string"}}
+    if "CALIBRATION_SCHEMAS" in exports:
+        module.CALIBRATION_SCHEMAS = case.get("calibration_schemas", {})
+    monkeypatch.setattr(registry, "import_module", lambda _: module)
+
+    if case["expect"] == "accepted":
+        schema, calibrations = registry.protocol_schemas(protocol)
+        assert isinstance(schema, ValidatedSchema)
+        assert isinstance(calibrations, dict)
+        if "assert" in case:
+            assert case["assert"] == "adapter_not_instantiated"
+        return
+    with pytest.raises(ValueError) as excinfo:
+        registry.protocol_schemas(protocol)
+    for name in case["must_name"]:
+        assert name in str(excinfo.value)
 
 
 # ── Schema load: the declaration is refused on its own terms ────────────────
@@ -749,27 +839,28 @@ def test_a_bound_resolving_to_a_non_array_is_refused() -> None:
         )
 
 
-# ── The validator is not wired in yet ───────────────────────────────────────
+# ── Activation wiring ───────────────────────────────────────────────────────
 
 
-def test_nothing_in_the_runtime_calls_this_validator_yet() -> None:
-    """Asserts the scope this PR claims, so the claim cannot quietly lapse.
+def test_every_defined_protocol_loads_both_declarations_without_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbid_adapter_construction(
+        cls: type[BaseAdapter], *args: Any, **kwargs: Any
+    ) -> object:
+        raise AssertionError(f"schema resolution constructed {cls.__name__}")
 
-    Activation is atomic with the adapter declarations. If a loader starts
-    calling the validator before every protocol declares a schema, some
-    protocols would be validated and others not — an authority that exists for
-    part of the surface is worse than one that does not exist yet, because it
-    reads as complete.
-    """
-    import pathlib
+    def forbid_adapter_initialization(
+        self: BaseAdapter, *args: Any, **kwargs: Any
+    ) -> None:
+        raise AssertionError("schema resolution initialized an adapter")
 
-    root = pathlib.Path("ori")
-    callers = [
-        path
-        for path in root.rglob("*.py")
-        if path.name != "config_schema.py" and "config_schema" in path.read_text()
-    ]
-    assert not callers, f"unexpected callers before atomic activation: {callers}"
+    monkeypatch.setattr(BaseAdapter, "__new__", forbid_adapter_construction)
+    monkeypatch.setattr(BaseAdapter, "__init__", forbid_adapter_initialization)
+    for protocol in registry.PROTOCOL_DEFINITIONS:
+        config_schema, calibration_schemas = registry.protocol_schemas(protocol)
+        assert isinstance(config_schema, ValidatedSchema)
+        assert isinstance(calibration_schemas, dict)
 
 
 # ── Regressions found in review ─────────────────────────────────────────────

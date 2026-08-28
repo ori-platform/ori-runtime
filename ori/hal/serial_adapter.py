@@ -19,6 +19,19 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = {
+    "port": {"type": "string", "required": True},
+    "baud_rate": {"type": "integer", "default": 9600, "minimum": 1},
+    "baudrate": {"type": "integer", "deprecated": True, "supersedes": "baud_rate"},
+    "bytesize": {"type": "integer", "default": 8, "enum": [5, 6, 7, 8]},
+    "parity": {"type": "string", "default": "N", "enum": ["N", "E", "O"]},
+    "stopbits": {"type": "integer", "default": 1, "enum": [1, 2]},
+    "timeout": {"type": "number", "default": 1.0, "minimum": 0},
+    "slave_id": {"type": "integer", "default": 1, "minimum": 1, "maximum": 247},
+    "register": {"type": "integer", "minimum": 0},
+}
+CALIBRATION_SCHEMAS: dict[str, dict] = {}
+
 try:
     import serial  # type: ignore[import-untyped]
 

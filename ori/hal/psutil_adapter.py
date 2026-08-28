@@ -20,6 +20,11 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = {
+    "battery_source_sensor_id": {"type": "string", "default": "battery_percent"},
+}
+CALIBRATION_SCHEMAS: dict[str, dict] = {}
+
 # Sensor types handled by this adapter
 _SUPPORTED = frozenset(
     {
