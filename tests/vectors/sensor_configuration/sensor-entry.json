@@ -1,0 +1,277 @@
+{
+  "contract": "sensor-configuration/v1 — the sensor entry envelope",
+  "phase": "configuration_load",
+  "note": "The canonical fields every protocol schema sits inside. Stricter than the loader these vectors were written against, deliberately: an empty id, a duplicate id and a coerced typed field are all accepted today, and those are the defects this envelope closes.",
+  "refusal_note": "`must_name` lists identifiers a conforming refusal must contain — keys, paths, protocols and schema keywords, never English wording.",
+  "canonical_defaults": {
+    "poll_interval_ms": 1000,
+    "calibration": {}
+  },
+  "cases": [
+    {
+      "name": "minimal_entry_accepted",
+      "sensors": [
+        {
+          "id": "load-current",
+          "type": "current",
+          "protocol": "psutil"
+        }
+      ],
+      "expect": "accepted",
+      "resolved": [
+        {
+          "id": "load-current",
+          "type": "current",
+          "protocol": "psutil",
+          "poll_interval_ms": 1000,
+          "calibration": {}
+        }
+      ]
+    },
+    {
+      "name": "duplicate_id_refused",
+      "sensors": [
+        {
+          "id": "load",
+          "type": "current",
+          "protocol": "psutil"
+        },
+        {
+          "id": "load",
+          "type": "voltage",
+          "protocol": "psutil"
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "load"
+      ],
+      "why": "Per-sensor state is keyed by id, so duplicates do not produce two sensors. They produce one, silently, with readings from both arriving under a single identity."
+    },
+    {
+      "name": "empty_id_refused",
+      "sensors": [
+        {
+          "id": "",
+          "type": "current",
+          "protocol": "psutil"
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "id"
+      ]
+    },
+    {
+      "name": "whitespace_only_id_refused",
+      "sensors": [
+        {
+          "id": "   ",
+          "type": "current",
+          "protocol": "psutil"
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "id"
+      ],
+      "why": "Non-empty after trimming: a whitespace id is an empty one that survived a strip."
+    },
+    {
+      "name": "whitespace_only_type_refused",
+      "sensors": [
+        {
+          "id": "load",
+          "type": " ",
+          "protocol": "psutil"
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "type"
+      ]
+    },
+    {
+      "name": "numeric_id_refused_rather_than_coerced",
+      "sensors": [
+        {
+          "id": 123,
+          "type": "current",
+          "protocol": "psutil"
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "id"
+      ],
+      "why": "A number where a string is declared. Coercing it would key state by a value the operator did not write."
+    },
+    {
+      "name": "string_poll_interval_refused_rather_than_coerced",
+      "sensors": [
+        {
+          "id": "load",
+          "type": "current",
+          "protocol": "psutil",
+          "poll_interval_ms": "1500"
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "poll_interval_ms"
+      ]
+    },
+    {
+      "name": "float_poll_interval_refused",
+      "sensors": [
+        {
+          "id": "load",
+          "type": "current",
+          "protocol": "psutil",
+          "poll_interval_ms": 1500.0
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "poll_interval_ms"
+      ]
+    },
+    {
+      "name": "poll_interval_below_range_refused",
+      "sensors": [
+        {
+          "id": "load",
+          "type": "current",
+          "protocol": "psutil",
+          "poll_interval_ms": 99
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "poll_interval_ms"
+      ]
+    },
+    {
+      "name": "poll_interval_above_range_refused",
+      "sensors": [
+        {
+          "id": "load",
+          "type": "current",
+          "protocol": "psutil",
+          "poll_interval_ms": 60001
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "poll_interval_ms"
+      ]
+    },
+    {
+      "name": "poll_interval_at_the_bounds_accepted",
+      "sensors": [
+        {
+          "id": "fast",
+          "type": "current",
+          "protocol": "psutil",
+          "poll_interval_ms": 100
+        },
+        {
+          "id": "slow",
+          "type": "voltage",
+          "protocol": "psutil",
+          "poll_interval_ms": 60000
+        }
+      ],
+      "expect": "accepted",
+      "resolved": [
+        {
+          "id": "fast",
+          "type": "current",
+          "protocol": "psutil",
+          "poll_interval_ms": 100,
+          "calibration": {}
+        },
+        {
+          "id": "slow",
+          "type": "voltage",
+          "protocol": "psutil",
+          "poll_interval_ms": 60000,
+          "calibration": {}
+        }
+      ],
+      "why": "The range is inclusive at both ends."
+    },
+    {
+      "name": "canonical_fields_are_not_reserved_names",
+      "sensors": [
+        {
+          "id": "load",
+          "type": "current",
+          "protocol": "psutil",
+          "poll_interval_ms": 2000,
+          "calibration": {}
+        }
+      ],
+      "expect": "accepted",
+      "resolved": [
+        {
+          "id": "load",
+          "type": "current",
+          "protocol": "psutil",
+          "poll_interval_ms": 2000,
+          "calibration": {}
+        }
+      ],
+      "why": "An operator writes these and the runtime carries them across. Only the three names the runtime introduces are reserved."
+    },
+    {
+      "name": "missing_id_refused",
+      "sensors": [
+        {
+          "type": "current",
+          "protocol": "psutil"
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "id"
+      ]
+    },
+    {
+      "name": "missing_protocol_refused",
+      "sensors": [
+        {
+          "id": "load",
+          "type": "current"
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "protocol"
+      ]
+    },
+    {
+      "name": "undefined_protocol_refused",
+      "sensors": [
+        {
+          "id": "load",
+          "type": "current",
+          "protocol": "modbus_tcp"
+        }
+      ],
+      "expect": "refused",
+      "must_name": [
+        "modbus_tcp"
+      ],
+      "why": "`protocol` must name a defined protocol, and the refusal must say which are defined."
+    },
+    {
+      "name": "entry_is_not_a_mapping",
+      "sensors": [
+        "load-current"
+      ],
+      "expect": "refused",
+      "must_name": []
+    }
+  ]
+}

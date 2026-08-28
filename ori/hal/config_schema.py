@@ -59,6 +59,7 @@ _DESCRIPTOR_KEYS = {
     "description",
 }
 _SCHEMA_CONSTRAINTS = {"exactly_one_of", "at_least_one_of"}
+_ALIAS_DESCRIPTOR_KEYS = {"type", "deprecated", "supersedes", "description"}
 
 
 class SchemaError(Exception):
@@ -221,6 +222,36 @@ def _validate_descriptor(descriptor: Any, where: str) -> None:
             f"got {_show(kind)}"
         )
 
+    for prop, expected in (
+        ("required", bool),
+        ("deprecated", bool),
+        ("supersedes", str),
+        ("required_unless", dict),
+        ("description", str),
+    ):
+        if prop in descriptor and not isinstance(descriptor[prop], expected):
+            raise SchemaError(
+                f"{where}: '{prop}' must be {expected.__name__}, got "
+                f"{type(descriptor[prop]).__name__}"
+            )
+
+    if descriptor.get("deprecated") and not descriptor.get("supersedes"):
+        raise SchemaError(f"{where}: 'deprecated' requires 'supersedes'")
+    if descriptor.get("supersedes") and not descriptor.get("deprecated"):
+        raise SchemaError(f"{where}: 'supersedes' is only valid on a deprecated field")
+
+    if descriptor.get("deprecated") is True:
+        competing = sorted(set(descriptor) - _ALIAS_DESCRIPTOR_KEYS)
+        if competing:
+            raise SchemaError(
+                f"{where}: a deprecated alias may declare only "
+                f"{sorted(_ALIAS_DESCRIPTOR_KEYS)}, not {competing}"
+            )
+        # The target owns recursive closure and every value constraint. An
+        # alias holds no value after resolution, so an array/object alias must
+        # not duplicate the target's contents declaration.
+        return
+
     if descriptor.get("required") and "default" in descriptor:
         raise SchemaError(
             f"{where}: 'default' and 'required: true' are mutually exclusive — "
@@ -246,19 +277,6 @@ def _validate_descriptor(descriptor: Any, where: str) -> None:
         _validate_descriptor(items, f"{where}[]")
     elif "items" in descriptor:
         raise SchemaError(f"{where}: 'items' is only valid on 'type: array'")
-
-    for prop, expected in (
-        ("required", bool),
-        ("deprecated", bool),
-        ("supersedes", str),
-        ("required_unless", dict),
-        ("description", str),
-    ):
-        if prop in descriptor and not isinstance(descriptor[prop], expected):
-            raise SchemaError(
-                f"{where}: '{prop}' must be {expected.__name__}, got "
-                f"{type(descriptor[prop]).__name__}"
-            )
 
     for bound in ("minimum", "maximum"):
         if bound not in descriptor:
@@ -303,13 +321,6 @@ def _validate_descriptor(descriptor: Any, where: str) -> None:
             raise SchemaError(f"{where}: 'enum' must be a non-empty list")
         for value in values:
             _check_value(value, descriptor, f"{where} enum", schema_phase=True)
-
-    if descriptor.get("deprecated") and not descriptor.get("supersedes"):
-        raise SchemaError(f"{where}: 'deprecated' requires 'supersedes'")
-    if descriptor.get("supersedes") and not descriptor.get("deprecated"):
-        raise SchemaError(f"{where}: 'supersedes' is only valid on a deprecated field")
-    if descriptor.get("deprecated") and descriptor.get("required"):
-        raise SchemaError(f"{where}: a deprecated field must not be required")
 
     # A default the schema would reject is a defect that otherwise appears only
     # for the operator who omits the key.
@@ -424,14 +435,14 @@ def _validate_references_in(fields: dict[str, Any], where: str) -> None:
     `required_unless` or `supersedes` names a key in *that* mapping, and
     validating only the top level let a nested alias point at nothing.
     """
-    names = set(fields)
     _validate_conditional_cycles(fields, where)
     for key, descriptor in fields.items():
-        _validate_references(descriptor, names, _join(where, key), fields)
-        if descriptor.get("type") == "object":
+        _validate_references(descriptor, fields, _join(where, key))
+        if descriptor.get("type") == "object" and not descriptor.get("deprecated"):
             _validate_references_in(descriptor["properties"], _join(where, key))
         elif (
             descriptor.get("type") == "array"
+            and not descriptor.get("deprecated")
             and descriptor["items"].get("type") == "object"
         ):
             _validate_references_in(
@@ -439,16 +450,20 @@ def _validate_references_in(fields: dict[str, Any], where: str) -> None:
             )
 
 
-def _validate_references(
-    descriptor: dict, fields: set[str], where: str, fields_by_name: dict[str, Any]
-) -> None:
+def _validate_references(descriptor: dict, fields: dict[str, Any], where: str) -> None:
     replacement = descriptor.get("supersedes")
-    if replacement is not None and replacement not in fields:
-        raise SchemaError(
-            f"{where}: 'supersedes' names {_show(replacement)}, which the schema does not "
-            f"declare. An alias for a key that does not exist warns an operator "
-            f"towards nothing."
-        )
+    if replacement is not None:
+        target = _schema_path(fields, replacement, where)
+        if target.get("deprecated"):
+            raise SchemaError(
+                f"{where}: 'supersedes' names {replacement!r}, which is itself "
+                "deprecated. An alias of an alias has no canonical spelling."
+            )
+        if descriptor["type"] != target["type"]:
+            raise SchemaError(
+                f"{where}: alias type {descriptor['type']!r} differs from its target "
+                f"{replacement!r} ({target['type']!r})"
+            )
 
     condition = descriptor.get("required_unless")
     if condition is None:
@@ -468,6 +483,29 @@ def _validate_references(
             f"{where}: 'required_unless' names {key!r}, which the schema does not declare — "
             f"the condition could never fire"
         )
+
+
+def _schema_path(fields: dict[str, Any], path: str, where: str) -> dict[str, Any]:
+    """Resolve an alias target without permitting an unstable array path."""
+    node = fields
+    segments = path.split(".")
+    for index, segment in enumerate(segments):
+        if segment not in node:
+            raise SchemaError(
+                f"{where}: 'supersedes' names {path!r}, which the schema does not "
+                "declare. An alias for a key that does not exist warns an operator "
+                "towards nothing."
+            )
+        descriptor = node[segment]
+        if index == len(segments) - 1:
+            return descriptor
+        if descriptor.get("deprecated") or descriptor["type"] != "object":
+            raise SchemaError(
+                f"{where}: 'supersedes' names {path!r}, but {segment!r} is not an "
+                "object with properties"
+            )
+        node = descriptor["properties"]
+    raise AssertionError("a non-empty supersedes path always returns")
 
 
 # ── Value checking, shared by both phases ────────────────────────────────────
@@ -595,8 +633,9 @@ def validate_document(
         )
 
     _require_external(schema, context, external)
-    _check_groups(document, schema.groups, context)
-    return _resolve_mapping(document, schema.fields, context, external)
+    document = _resolve_aliases(document, schema.fields, context)
+    inactive = _check_groups(document, schema.groups, context)
+    return _resolve_mapping(document, schema.fields, context, external, inactive)
 
 
 def _require_external(
@@ -622,6 +661,7 @@ def _resolve_mapping(
     fields: dict[str, Any],
     context: str,
     external: dict | None,
+    inactive: frozenset[str] = frozenset(),
 ) -> dict:
     """Resolve one mapping level: unknown keys, conditionals, defaults, recursion.
 
@@ -642,10 +682,6 @@ def _resolve_mapping(
                 f"Declared keys: {sorted(fields)}"
             )
 
-    # Deprecation is checked at every level: a nested alias and its nested
-    # replacement together is the same ambiguity as at the top.
-    _check_deprecations(document, fields, context)
-
     # Pass one: resolve everything that can be resolved without knowing whether
     # a dependent field is required. Conditionals are evaluated afterwards
     # against these values, not against the raw document — otherwise a
@@ -653,6 +689,8 @@ def _resolve_mapping(
     # document that is in fact complete.
     resolved: dict[str, Any] = {}
     for key, descriptor in fields.items():
+        if key in inactive:
+            continue
         where = _join(context, key)
 
         if key in document:
@@ -677,6 +715,8 @@ def _resolve_mapping(
 
     # Pass two: requirements, now that every sibling has its effective value.
     for key, descriptor in fields.items():
+        if key in inactive:
+            continue
         if key in resolved:
             continue
         _check_conditional_requirement(key, descriptor, resolved, context)
@@ -684,6 +724,8 @@ def _resolve_mapping(
             raise DocumentError(f"{_join(context, key)}: required and missing")
 
     for key, descriptor in fields.items():
+        if key in inactive:
+            continue
         if "must_be_subset_of" in descriptor and key in resolved:
             _check_subset(
                 resolved[key],
@@ -701,23 +743,41 @@ def _resolve_value(
     """Check a value and return its resolved form, recursing into objects."""
     _check_value(value, descriptor, where, schema_phase=False)
     if descriptor["type"] == "object":
+        value = _resolve_aliases(value, descriptor["properties"], where)
         return _resolve_mapping(value, descriptor["properties"], where, external)
     if descriptor["type"] == "array" and descriptor["items"]["type"] == "object":
         return [
             _resolve_mapping(
-                item, descriptor["items"]["properties"], f"{where}[{i}]", external
+                _resolve_aliases(
+                    item, descriptor["items"]["properties"], f"{where}[{i}]"
+                ),
+                descriptor["items"]["properties"],
+                f"{where}[{i}]",
+                external,
             )
             for i, item in enumerate(value)
         ]
     return value
 
 
-def _check_deprecations(document: dict, fields: dict, context: str) -> None:
+def _resolve_aliases(document: dict, fields: dict, context: str) -> dict:
+    """Move written aliases into their canonical positions before resolution."""
+    resolved = dict(document)
+    alias_origins: dict[str, str] = {}
     for key, descriptor in fields.items():
         if not descriptor.get("deprecated") or key not in document:
             continue
         replacement = descriptor["supersedes"]
-        if replacement in document:
+        exists, _ = _path_value(resolved, replacement)
+        if exists:
+            first_alias = alias_origins.get(replacement)
+            if first_alias is not None:
+                raise DocumentError(
+                    f"{context}: sets both deprecated aliases {first_alias!r} and "
+                    f"{key!r} for {replacement!r}. Refused even when the values agree "
+                    "— a precedence rule is invisible in the file that carries it. "
+                    f"Keep {replacement!r}."
+                )
             raise DocumentError(
                 f"{context}: sets both {replacement!r} and its deprecated alias {key!r}. "
                 f"Refused even when the values agree — agreement today is not agreement "
@@ -730,6 +790,39 @@ def _check_deprecations(document: dict, fields: dict, context: str) -> None:
             key,
             replacement,
         )
+        _set_path(resolved, replacement, document[key], context)
+        alias_origins[replacement] = key
+        del resolved[key]
+    return resolved
+
+
+def _path_value(document: dict, path: str) -> tuple[bool, Any]:
+    node: Any = document
+    for segment in path.split("."):
+        if not isinstance(node, dict) or segment not in node:
+            return False, None
+        node = node[segment]
+    return True, node
+
+
+def _set_path(document: dict, path: str, value: Any, context: str) -> None:
+    node = document
+    segments = path.split(".")
+    for segment in segments[:-1]:
+        if segment not in node:
+            node[segment] = {}
+        elif not isinstance(node[segment], dict):
+            raise DocumentError(
+                f"{context}: cannot resolve deprecated alias into {path!r}; "
+                f"{segment!r} is not an object"
+            )
+        # `resolved` starts as a shallow top-level copy. Copy every existing
+        # intermediate mapping before writing through it, otherwise an alias
+        # leaks a canonical key into the caller's document and a second
+        # validation rejects the runtime's own previous write.
+        node[segment] = dict(node[segment])
+        node = node[segment]
+    node[segments[-1]] = value
 
 
 def _check_conditional_requirement(
@@ -746,15 +839,19 @@ def _check_conditional_requirement(
         )
 
 
-def _check_groups(document: dict, groups: dict[str, Any], context: str) -> None:
+def _check_groups(
+    document: dict, groups: dict[str, Any], context: str
+) -> frozenset[str]:
     present = set(document)
+    inactive: frozenset[str] = frozenset()
 
     if "exactly_one_of" in groups:
         alternatives = groups["exactly_one_of"]
         satisfied = [g for g in alternatives if set(g) <= present]
         if len(satisfied) != 1:
             raise DocumentError(
-                f"{context}: exactly one of {alternatives} must be fully present, "
+                f"{context}: 'exactly_one_of' requires exactly one of {alternatives} "
+                "to be fully present, "
                 f"{len(satisfied)} are"
             )
         # Naming a group is choosing it. A key from a rejected alternative
@@ -767,13 +864,18 @@ def _check_groups(document: dict, groups: dict[str, Any], context: str) -> None:
                 f"{context}: {strays} belong to an alternative that was not chosen. "
                 f"Configured ambiguously rather than twice."
             )
+        inactive = frozenset(
+            {field for group in alternatives for field in group} - chosen
+        )
 
     if "at_least_one_of" in groups:
         alternatives = groups["at_least_one_of"]
         if not any(set(g) <= present for g in alternatives):
             raise DocumentError(
-                f"{context}: at least one of {alternatives} must be fully present"
+                f"{context}: 'at_least_one_of' requires at least one of {alternatives} "
+                "to be fully present"
             )
+    return inactive
 
 
 def _resolve_path(path: str, external: dict | None, where: str, prop: str) -> Any:

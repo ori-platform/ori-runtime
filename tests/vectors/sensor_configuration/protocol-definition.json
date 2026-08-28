@@ -1,0 +1,112 @@
+{
+  "contract": "sensor-configuration/v1 — protocol definitions",
+  "phase": "schema_load",
+  "note": "A definition names the module that implements a protocol. The module owns the schemas, so these cases describe what a module exposes rather than a document. `module_exports` lists the module-level names present.",
+  "refusal_note": "A definition whose module is missing either mapping is refused at configuration load, naming the protocol, the module and which mapping is absent. Not warned, and not defaulted to an open schema: an adapter registered without a declaration is one whose accepted surface is unknown.",
+  "cases": [
+    {
+      "name": "both_mappings_present",
+      "protocol": "serial",
+      "module": "ori.hal.serial_adapter",
+      "module_exports": [
+        "SerialAdapter",
+        "CONFIG_SCHEMA",
+        "CALIBRATION_SCHEMAS"
+      ],
+      "expect": "accepted"
+    },
+    {
+      "name": "empty_calibration_schemas_accepted",
+      "protocol": "opcua",
+      "module": "ori.hal.opcua_adapter",
+      "module_exports": [
+        "OpcUaAdapter",
+        "CONFIG_SCHEMA",
+        "CALIBRATION_SCHEMAS"
+      ],
+      "calibration_schemas": {},
+      "expect": "accepted",
+      "why": "An empty mapping states that the protocol calibrates nothing."
+    },
+    {
+      "name": "config_schema_absent",
+      "protocol": "serial",
+      "module": "ori.hal.serial_adapter",
+      "module_exports": [
+        "SerialAdapter",
+        "CALIBRATION_SCHEMAS"
+      ],
+      "expect": "refused",
+      "must_name": [
+        "serial",
+        "ori.hal.serial_adapter",
+        "CONFIG_SCHEMA"
+      ]
+    },
+    {
+      "name": "calibration_schemas_absent",
+      "protocol": "serial",
+      "module": "ori.hal.serial_adapter",
+      "module_exports": [
+        "SerialAdapter",
+        "CONFIG_SCHEMA"
+      ],
+      "expect": "refused",
+      "must_name": [
+        "serial",
+        "ori.hal.serial_adapter",
+        "CALIBRATION_SCHEMAS"
+      ],
+      "why": "An absent mapping cannot be told apart from an adapter whose author never considered the question."
+    },
+    {
+      "name": "both_mappings_absent",
+      "protocol": "serial",
+      "module": "ori.hal.serial_adapter",
+      "module_exports": [
+        "SerialAdapter"
+      ],
+      "expect": "refused",
+      "must_name": [
+        "CONFIG_SCHEMA",
+        "CALIBRATION_SCHEMAS"
+      ]
+    },
+    {
+      "name": "calibration_schemas_is_not_a_mapping",
+      "protocol": "serial",
+      "module": "ori.hal.serial_adapter",
+      "module_exports": [
+        "SerialAdapter",
+        "CONFIG_SCHEMA",
+        "CALIBRATION_SCHEMAS"
+      ],
+      "calibration_schemas": [
+        "ads1115_current"
+      ],
+      "expect": "refused",
+      "must_name": [
+        "CALIBRATION_SCHEMAS"
+      ]
+    },
+    {
+      "name": "resolution_must_not_instantiate_an_adapter",
+      "protocol": "i2c",
+      "module": "ori.hal.i2c_adapter",
+      "module_exports": [
+        "I2CAdapter",
+        "CONFIG_SCHEMA",
+        "CALIBRATION_SCHEMAS"
+      ],
+      "expect": "accepted",
+      "assert": "adapter_not_instantiated",
+      "why": "Configuration is validated before any hardware is touched, so the path that answers `what does this protocol accept?` cannot be one that constructs adapters. Importing the module is permitted; construction is not."
+    },
+    {
+      "name": "supported_protocols_derive_from_the_definitions",
+      "expect": "accepted",
+      "assert": "supported_set_equals_definition_keys",
+      "why": "Two lists that must agree by hand are a defect waiting for the edit that updates one."
+    }
+  ]
+}

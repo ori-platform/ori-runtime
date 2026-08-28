@@ -1,0 +1,1637 @@
+{
+  "contract": "sensor-configuration/v1 — protocol configuration documents",
+  "phase": "configuration_load",
+  "note": "Each case carries its own schema, so a verifier needs no adapter. The schemas are shaped after real adapters but are not the runtime's declarations: `one accepted sensor per protocol` is a conformance check an implementation runs against its own fifteen, and cannot live in a corpus that ships beside the contract rather than beside the adapters.",
+  "refusal_note": "`must_name` lists identifiers a conforming refusal must contain — keys, paths, protocols and schema keywords, never English wording. `must_name_at_load` lists identifiers the surrounding configuration loader must add, which a validator checking a document against one schema cannot know: requiring them of the wrong layer makes a conforming implementation look otherwise. `warns` lists identifiers a deprecation warning must contain. `resolved` is the exact mapping the adapter must receive, with defaults, fallbacks and aliases applied.",
+  "external_note": "`external` is the rest of the device configuration, against which `fallback_from` and `must_be_subset_of` resolve.",
+  "cases": [
+    {
+      "name": "undeclared_key_refused_naming_key_and_protocol",
+      "protocol": "coap",
+      "schema": {
+        "uri": {
+          "type": "string",
+          "required": true
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "document": {
+        "uri": "coap://a.example/s",
+        "timout_s": 2.0
+      },
+      "expect": "refused",
+      "external": {
+        "actions": {
+          "coap": {
+            "allowed_hosts": [
+              "a.example",
+              "b.example"
+            ],
+            "timeout_s": 2.0
+          }
+        }
+      },
+      "must_name": [
+        "timout_s"
+      ],
+      "why": "A key the runtime accepts and discards reads, to whoever wrote it, as a setting that took effect.",
+      "must_name_at_load": [
+        "coap"
+      ]
+    },
+    {
+      "name": "undeclared_key_nested_in_a_declared_object_refused_by_full_path",
+      "protocol": "mqtt",
+      "schema": {
+        "broker_host": {
+          "type": "string",
+          "required": true
+        },
+        "mqtt": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            },
+            "tls": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "ca_certfile": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "document": {
+        "broker_host": "192.168.1.50",
+        "mqtt": {
+          "tls": {
+            "enabled": true,
+            "verify": false
+          }
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "mqtt.tls.verify"
+      ],
+      "why": "Naming the leaf alone does not say which of several objects carries it."
+    },
+    {
+      "name": "reserved_sensor_id_refused",
+      "protocol": "coap",
+      "schema": {
+        "uri": {
+          "type": "string",
+          "required": true
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "document": {
+        "uri": "coap://a.example/s",
+        "sensor_id": "impostor"
+      },
+      "expect": "refused",
+      "external": {
+        "actions": {
+          "coap": {
+            "allowed_hosts": [
+              "a.example",
+              "b.example"
+            ],
+            "timeout_s": 2.0
+          }
+        }
+      },
+      "must_name": [
+        "sensor_id"
+      ],
+      "why": "Refusal, not precedence: the operator meant something by it."
+    },
+    {
+      "name": "reserved_sensor_type_refused",
+      "protocol": "coap",
+      "schema": {
+        "uri": {
+          "type": "string",
+          "required": true
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "document": {
+        "uri": "coap://a.example/s",
+        "sensor_type": "temperature"
+      },
+      "expect": "refused",
+      "external": {
+        "actions": {
+          "coap": {
+            "allowed_hosts": [
+              "a.example",
+              "b.example"
+            ],
+            "timeout_s": 2.0
+          }
+        }
+      },
+      "must_name": [
+        "sensor_type"
+      ]
+    },
+    {
+      "name": "reserved_circuit_breaker_refused",
+      "protocol": "coap",
+      "schema": {
+        "uri": {
+          "type": "string",
+          "required": true
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "document": {
+        "uri": "coap://a.example/s",
+        "circuit_breaker": {
+          "failure_threshold": 99
+        }
+      },
+      "expect": "refused",
+      "external": {
+        "actions": {
+          "coap": {
+            "allowed_hosts": [
+              "a.example",
+              "b.example"
+            ],
+            "timeout_s": 2.0
+          }
+        }
+      },
+      "must_name": [
+        "circuit_breaker"
+      ],
+      "why": "Would make hardware recovery settable per sensor, and on a sensor feeding a safety condition that removes the input the protection path depends on."
+    },
+    {
+      "name": "missing_required_field",
+      "protocol": "coap",
+      "schema": {
+        "uri": {
+          "type": "string",
+          "required": true
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "document": {
+        "method": "GET"
+      },
+      "expect": "refused",
+      "external": {
+        "actions": {
+          "coap": {
+            "allowed_hosts": [
+              "a.example",
+              "b.example"
+            ],
+            "timeout_s": 2.0
+          }
+        }
+      },
+      "must_name": [
+        "uri"
+      ]
+    },
+    {
+      "name": "required_unless_unsatisfied",
+      "protocol": "usb_serial",
+      "schema": {
+        "auto_detect_device_path": {
+          "type": "boolean",
+          "default": false
+        },
+        "device_path": {
+          "type": "string",
+          "required_unless": {
+            "auto_detect_device_path": true
+          }
+        }
+      },
+      "document": {},
+      "expect": "refused",
+      "must_name": [
+        "device_path",
+        "auto_detect_device_path"
+      ],
+      "why": "`auto_detect_device_path` resolves to its declared default of false, so a path is required."
+    },
+    {
+      "name": "required_unless_satisfied_by_the_siblings_written_value",
+      "protocol": "usb_serial",
+      "schema": {
+        "auto_detect_device_path": {
+          "type": "boolean",
+          "default": false
+        },
+        "device_path": {
+          "type": "string",
+          "required_unless": {
+            "auto_detect_device_path": true
+          }
+        }
+      },
+      "document": {
+        "auto_detect_device_path": true
+      },
+      "expect": "accepted",
+      "resolved": {
+        "auto_detect_device_path": true
+      }
+    },
+    {
+      "name": "required_unless_satisfied_by_a_written_path",
+      "protocol": "usb_serial",
+      "schema": {
+        "auto_detect_device_path": {
+          "type": "boolean",
+          "default": false
+        },
+        "device_path": {
+          "type": "string",
+          "required_unless": {
+            "auto_detect_device_path": true
+          }
+        }
+      },
+      "document": {
+        "device_path": "/dev/ttyUSB0"
+      },
+      "expect": "accepted",
+      "resolved": {
+        "auto_detect_device_path": false,
+        "device_path": "/dev/ttyUSB0"
+      }
+    },
+    {
+      "name": "required_unless_satisfied_by_the_siblings_default",
+      "protocol": "coap",
+      "schema": {
+        "mode": {
+          "type": "string",
+          "default": "auto"
+        },
+        "path": {
+          "type": "string",
+          "required_unless": {
+            "mode": "auto"
+          }
+        }
+      },
+      "document": {},
+      "expect": "accepted",
+      "resolved": {
+        "mode": "auto"
+      },
+      "why": "A condition reading the raw entry would see nothing where `mode` should be and refuse a complete document."
+    },
+    {
+      "name": "required_unless_satisfied_by_a_fallback",
+      "protocol": "coap",
+      "schema": {
+        "mode": {
+          "type": "string",
+          "fallback_from": "actions.coap.mode"
+        },
+        "path": {
+          "type": "string",
+          "required_unless": {
+            "mode": "auto"
+          }
+        }
+      },
+      "document": {},
+      "expect": "accepted",
+      "external": {
+        "actions": {
+          "coap": {
+            "mode": "auto"
+          }
+        }
+      },
+      "resolved": {
+        "mode": "auto"
+      },
+      "why": "A condition reads the sibling's settled value, inherited as much as defaulted."
+    },
+    {
+      "name": "required_unless_in_a_nested_object_resolves_in_its_own_scope",
+      "protocol": "coap",
+      "schema": {
+        "tls": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "default": "auto"
+            },
+            "certfile": {
+              "type": "string",
+              "required_unless": {
+                "mode": "auto"
+              }
+            }
+          }
+        },
+        "mode": {
+          "type": "string",
+          "default": "manual"
+        }
+      },
+      "document": {
+        "mode": "manual",
+        "tls": {}
+      },
+      "expect": "accepted",
+      "resolved": {
+        "mode": "manual",
+        "tls": {
+          "mode": "auto"
+        }
+      },
+      "why": "The nested `mode` defaults to `auto` and satisfies the nested condition. Reading the parent's `mode` of `manual` would refuse a complete document; scopes do not see each other."
+    },
+    {
+      "name": "nested_required_unless_unsatisfied_in_its_own_scope",
+      "protocol": "coap",
+      "schema": {
+        "tls": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "default": "auto"
+            },
+            "certfile": {
+              "type": "string",
+              "required_unless": {
+                "mode": "auto"
+              }
+            }
+          }
+        },
+        "mode": {
+          "type": "string",
+          "default": "manual"
+        }
+      },
+      "document": {
+        "tls": {
+          "mode": "manual"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "tls.certfile",
+        "mode"
+      ]
+    },
+    {
+      "name": "exactly_one_of_none_present",
+      "protocol": "solarman_modbus",
+      "schema": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "default": 8899
+        },
+        "serial": {
+          "type": "string"
+        },
+        "exactly_one_of": [
+          [
+            "host",
+            "port"
+          ],
+          [
+            "serial"
+          ]
+        ]
+      },
+      "document": {},
+      "expect": "refused",
+      "must_name": [
+        "exactly_one_of"
+      ]
+    },
+    {
+      "name": "exactly_one_of_group_selected",
+      "protocol": "solarman_modbus",
+      "schema": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "default": 8899
+        },
+        "serial": {
+          "type": "string"
+        },
+        "exactly_one_of": [
+          [
+            "host",
+            "port"
+          ],
+          [
+            "serial"
+          ]
+        ]
+      },
+      "document": {
+        "serial": "1234567890"
+      },
+      "expect": "accepted",
+      "resolved": {
+        "serial": "1234567890"
+      },
+      "why": "`port` has a default but belongs to the group that was not selected, so it is not applied."
+    },
+    {
+      "name": "exactly_one_of_stray_member_of_an_unselected_group",
+      "protocol": "solarman_modbus",
+      "schema": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "default": 8899
+        },
+        "serial": {
+          "type": "string"
+        },
+        "exactly_one_of": [
+          [
+            "host",
+            "port"
+          ],
+          [
+            "serial"
+          ]
+        ]
+      },
+      "document": {
+        "serial": "1234567890",
+        "host": "192.168.1.70"
+      },
+      "expect": "refused",
+      "must_name": [
+        "host"
+      ],
+      "why": "A sensor declaring both is not configured twice; it is configured ambiguously."
+    },
+    {
+      "name": "at_least_one_of_none_present",
+      "protocol": "coap",
+      "schema": {
+        "topic": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "at_least_one_of": [
+          [
+            "topic"
+          ],
+          [
+            "node_id"
+          ]
+        ]
+      },
+      "document": {},
+      "expect": "refused",
+      "must_name": [
+        "at_least_one_of"
+      ]
+    },
+    {
+      "name": "at_least_one_of_extra_group_is_not_refused",
+      "protocol": "coap",
+      "schema": {
+        "topic": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "at_least_one_of": [
+          [
+            "topic"
+          ],
+          [
+            "node_id"
+          ]
+        ]
+      },
+      "document": {
+        "topic": "t",
+        "node_id": "n"
+      },
+      "expect": "accepted",
+      "resolved": {
+        "topic": "t",
+        "node_id": "n"
+      },
+      "why": "`at_least_one_of` is the mechanism for `any of these will do`."
+    },
+    {
+      "name": "same_scope_alias_accepted_with_a_warning",
+      "protocol": "serial",
+      "schema": {
+        "port": {
+          "type": "string",
+          "required": true
+        },
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        },
+        "parity": {
+          "type": "string",
+          "default": "N",
+          "enum": [
+            "N",
+            "E",
+            "O"
+          ]
+        },
+        "slave_id": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 247
+        }
+      },
+      "document": {
+        "port": "/dev/ttyS0",
+        "baudrate": 19200
+      },
+      "expect": "accepted",
+      "resolved": {
+        "port": "/dev/ttyS0",
+        "baud_rate": 19200,
+        "parity": "N",
+        "slave_id": 1
+      },
+      "warns": [
+        "baudrate",
+        "baud_rate"
+      ]
+    },
+    {
+      "name": "alias_and_replacement_together_refused",
+      "protocol": "serial",
+      "schema": {
+        "port": {
+          "type": "string",
+          "required": true
+        },
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        },
+        "parity": {
+          "type": "string",
+          "default": "N",
+          "enum": [
+            "N",
+            "E",
+            "O"
+          ]
+        },
+        "slave_id": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 247
+        }
+      },
+      "document": {
+        "port": "/dev/ttyS0",
+        "baud_rate": 9600,
+        "baudrate": 9600
+      },
+      "expect": "refused",
+      "must_name": [
+        "baudrate",
+        "baud_rate"
+      ],
+      "why": "Refused even though the values agree: agreement today is not agreement after the next edit."
+    },
+    {
+      "name": "cross_path_alias_resolves_into_the_targets_position",
+      "protocol": "mqtt",
+      "schema": {
+        "broker_host": {
+          "type": "string",
+          "required": true
+        },
+        "mqtt": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            },
+            "keepalive": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tls": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "ca_certfile": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "mqtt_username": {
+          "type": "string",
+          "deprecated": true,
+          "supersedes": "mqtt.username"
+        }
+      },
+      "document": {
+        "broker_host": "192.168.1.50",
+        "mqtt_username": "operator"
+      },
+      "expect": "accepted",
+      "resolved": {
+        "broker_host": "192.168.1.50",
+        "mqtt": {
+          "username": "operator"
+        }
+      },
+      "warns": [
+        "mqtt_username",
+        "mqtt.username"
+      ],
+      "why": "What reaches the adapter is the canonical shape, whichever spelling was written."
+    },
+    {
+      "name": "cross_path_alias_and_its_nested_target_together_refused",
+      "protocol": "mqtt",
+      "schema": {
+        "broker_host": {
+          "type": "string",
+          "required": true
+        },
+        "mqtt": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            },
+            "keepalive": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tls": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "ca_certfile": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "mqtt_username": {
+          "type": "string",
+          "deprecated": true,
+          "supersedes": "mqtt.username"
+        }
+      },
+      "document": {
+        "broker_host": "192.168.1.50",
+        "mqtt_username": "operator",
+        "mqtt": {
+          "username": "operator"
+        }
+      },
+      "expect": "refused",
+      "must_name": [
+        "mqtt_username",
+        "mqtt.username"
+      ],
+      "why": "The refusal names the full path: `username` does not say which of three places to write it."
+    },
+    {
+      "name": "cross_path_alias_beside_an_unrelated_sibling_accepted",
+      "protocol": "mqtt",
+      "schema": {
+        "broker_host": {
+          "type": "string",
+          "required": true
+        },
+        "mqtt": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string"
+            },
+            "keepalive": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tls": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "ca_certfile": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "mqtt_username": {
+          "type": "string",
+          "deprecated": true,
+          "supersedes": "mqtt.username"
+        }
+      },
+      "document": {
+        "broker_host": "192.168.1.50",
+        "mqtt_username": "operator",
+        "mqtt": {
+          "keepalive": 90
+        }
+      },
+      "expect": "accepted",
+      "resolved": {
+        "broker_host": "192.168.1.50",
+        "mqtt": {
+          "username": "operator",
+          "keepalive": 90
+        }
+      },
+      "warns": [
+        "mqtt_username",
+        "mqtt.username"
+      ],
+      "why": "Presence is judged on the target itself, not on the object that contains it."
+    },
+    {
+      "name": "protocol_default_applied_where_the_sensor_is_silent",
+      "protocol": "serial",
+      "schema": {
+        "port": {
+          "type": "string",
+          "required": true
+        },
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        },
+        "parity": {
+          "type": "string",
+          "default": "N",
+          "enum": [
+            "N",
+            "E",
+            "O"
+          ]
+        },
+        "slave_id": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 247
+        }
+      },
+      "document": {
+        "port": "/dev/ttyS0"
+      },
+      "expect": "accepted",
+      "resolved": {
+        "port": "/dev/ttyS0",
+        "baud_rate": 9600,
+        "parity": "N",
+        "slave_id": 1
+      }
+    },
+    {
+      "name": "protocol_default_not_applied_where_the_sensor_speaks",
+      "protocol": "serial",
+      "schema": {
+        "port": {
+          "type": "string",
+          "required": true
+        },
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        },
+        "parity": {
+          "type": "string",
+          "default": "N",
+          "enum": [
+            "N",
+            "E",
+            "O"
+          ]
+        },
+        "slave_id": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 247
+        }
+      },
+      "document": {
+        "port": "/dev/ttyS0",
+        "parity": "E"
+      },
+      "expect": "accepted",
+      "resolved": {
+        "port": "/dev/ttyS0",
+        "baud_rate": 9600,
+        "parity": "E",
+        "slave_id": 1
+      }
+    },
+    {
+      "name": "fallback_applied_where_the_sensor_is_silent",
+      "protocol": "coap",
+      "schema": {
+        "uri": {
+          "type": "string",
+          "required": true
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "document": {
+        "uri": "coap://a.example/s"
+      },
+      "expect": "accepted",
+      "external": {
+        "actions": {
+          "coap": {
+            "allowed_hosts": [
+              "a.example",
+              "b.example"
+            ],
+            "timeout_s": 2.0
+          }
+        }
+      },
+      "resolved": {
+        "uri": "coap://a.example/s",
+        "method": "GET",
+        "unit": "",
+        "timeout_s": 2.0,
+        "allowed_hosts": [
+          "a.example",
+          "b.example"
+        ]
+      }
+    },
+    {
+      "name": "allowlist_narrowing_accepted",
+      "protocol": "coap",
+      "schema": {
+        "uri": {
+          "type": "string",
+          "required": true
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "document": {
+        "uri": "coap://a.example/s",
+        "allowed_hosts": [
+          "a.example"
+        ]
+      },
+      "expect": "accepted",
+      "external": {
+        "actions": {
+          "coap": {
+            "allowed_hosts": [
+              "a.example",
+              "b.example"
+            ],
+            "timeout_s": 2.0
+          }
+        }
+      },
+      "resolved": {
+        "uri": "coap://a.example/s",
+        "method": "GET",
+        "unit": "",
+        "timeout_s": 2.0,
+        "allowed_hosts": [
+          "a.example"
+        ]
+      },
+      "why": "The operator's value wins where they wrote one."
+    },
+    {
+      "name": "allowlist_widening_refused",
+      "protocol": "coap",
+      "schema": {
+        "uri": {
+          "type": "string",
+          "required": true
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "document": {
+        "uri": "coap://a.example/s",
+        "allowed_hosts": [
+          "a.example",
+          "evil.example"
+        ]
+      },
+      "expect": "refused",
+      "external": {
+        "actions": {
+          "coap": {
+            "allowed_hosts": [
+              "a.example",
+              "b.example"
+            ],
+            "timeout_s": 2.0
+          }
+        }
+      },
+      "must_name": [
+        "allowed_hosts",
+        "evil.example"
+      ],
+      "why": "Refusing the widening is what makes the fallback safe to offer at all."
+    },
+    {
+      "name": "fallback_naming_a_field_the_configuration_does_not_contain",
+      "protocol": "coap",
+      "schema": {
+        "uri": {
+          "type": "string",
+          "required": true
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "document": {
+        "uri": "coap://a.example/s"
+      },
+      "expect": "refused",
+      "external": {
+        "actions": {
+          "coap": {
+            "allowed_hosts": [
+              "a.example"
+            ]
+          }
+        }
+      },
+      "must_name": [
+        "timeout_s",
+        "actions.coap.timeout_s"
+      ],
+      "why": "Refused, not treated as absent."
+    },
+    {
+      "name": "inherited_value_the_fields_own_descriptor_rejects",
+      "protocol": "coap",
+      "schema": {
+        "uri": {
+          "type": "string",
+          "required": true
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "document": {
+        "uri": "coap://a.example/s"
+      },
+      "expect": "refused",
+      "external": {
+        "actions": {
+          "coap": {
+            "allowed_hosts": [
+              "a.example"
+            ],
+            "timeout_s": -1
+          }
+        }
+      },
+      "must_name": [
+        "timeout_s"
+      ],
+      "why": "A value must not reach an adapter unchecked because it arrived by inheritance."
+    },
+    {
+      "name": "must_be_subset_of_resolving_to_a_non_array",
+      "protocol": "coap",
+      "schema": {
+        "uri": {
+          "type": "string",
+          "required": true
+        },
+        "method": {
+          "type": "string",
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT"
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "default": ""
+        },
+        "timeout_s": {
+          "type": "number",
+          "minimum": 0,
+          "fallback_from": "actions.coap.timeout_s"
+        },
+        "allowed_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "fallback_from": "actions.coap.allowed_hosts",
+          "must_be_subset_of": "actions.coap.allowed_hosts"
+        }
+      },
+      "document": {
+        "uri": "coap://a.example/s",
+        "allowed_hosts": [
+          "a.example"
+        ]
+      },
+      "expect": "refused",
+      "external": {
+        "actions": {
+          "coap": {
+            "allowed_hosts": "a.example",
+            "timeout_s": 2.0
+          }
+        }
+      },
+      "must_name": [
+        "allowed_hosts"
+      ]
+    },
+    {
+      "name": "value_out_of_bounds",
+      "protocol": "serial",
+      "schema": {
+        "port": {
+          "type": "string",
+          "required": true
+        },
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        },
+        "parity": {
+          "type": "string",
+          "default": "N",
+          "enum": [
+            "N",
+            "E",
+            "O"
+          ]
+        },
+        "slave_id": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 247
+        }
+      },
+      "document": {
+        "port": "/dev/ttyS0",
+        "slave_id": 999
+      },
+      "expect": "refused",
+      "must_name": [
+        "slave_id"
+      ]
+    },
+    {
+      "name": "value_outside_the_enumeration",
+      "protocol": "serial",
+      "schema": {
+        "port": {
+          "type": "string",
+          "required": true
+        },
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        },
+        "parity": {
+          "type": "string",
+          "default": "N",
+          "enum": [
+            "N",
+            "E",
+            "O"
+          ]
+        },
+        "slave_id": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 247
+        }
+      },
+      "document": {
+        "port": "/dev/ttyS0",
+        "parity": "X"
+      },
+      "expect": "refused",
+      "must_name": [
+        "parity"
+      ]
+    },
+    {
+      "name": "wrong_type",
+      "protocol": "serial",
+      "schema": {
+        "port": {
+          "type": "string",
+          "required": true
+        },
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        },
+        "parity": {
+          "type": "string",
+          "default": "N",
+          "enum": [
+            "N",
+            "E",
+            "O"
+          ]
+        },
+        "slave_id": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 247
+        }
+      },
+      "document": {
+        "port": 9600,
+        "baud_rate": 9600
+      },
+      "expect": "refused",
+      "must_name": [
+        "port"
+      ]
+    },
+    {
+      "name": "float_where_an_integer_is_declared",
+      "protocol": "serial",
+      "schema": {
+        "port": {
+          "type": "string",
+          "required": true
+        },
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        },
+        "parity": {
+          "type": "string",
+          "default": "N",
+          "enum": [
+            "N",
+            "E",
+            "O"
+          ]
+        },
+        "slave_id": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 247
+        }
+      },
+      "document": {
+        "port": "/dev/ttyS0",
+        "baud_rate": 9600.0
+      },
+      "expect": "refused",
+      "must_name": [
+        "baud_rate"
+      ],
+      "why": "7.0 is not 7. A coerced value turns a malformed document into a working one whose author believes something else."
+    },
+    {
+      "name": "boolean_where_an_integer_is_declared",
+      "protocol": "serial",
+      "schema": {
+        "port": {
+          "type": "string",
+          "required": true
+        },
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        },
+        "parity": {
+          "type": "string",
+          "default": "N",
+          "enum": [
+            "N",
+            "E",
+            "O"
+          ]
+        },
+        "slave_id": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 247
+        }
+      },
+      "document": {
+        "port": "/dev/ttyS0",
+        "baud_rate": true
+      },
+      "expect": "refused",
+      "must_name": [
+        "baud_rate"
+      ],
+      "why": "A boolean is not an integer whatever the host language says."
+    },
+    {
+      "name": "non_object_document",
+      "protocol": "serial",
+      "schema": {
+        "port": {
+          "type": "string",
+          "required": true
+        },
+        "baud_rate": {
+          "type": "integer",
+          "default": 9600,
+          "minimum": 1
+        },
+        "baudrate": {
+          "type": "integer",
+          "deprecated": true,
+          "supersedes": "baud_rate"
+        },
+        "parity": {
+          "type": "string",
+          "default": "N",
+          "enum": [
+            "N",
+            "E",
+            "O"
+          ]
+        },
+        "slave_id": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 247
+        }
+      },
+      "document": "port=/dev/ttyS0",
+      "expect": "refused",
+      "must_name": [],
+      "why": "Checked at the boundary: a string iterated into a group verdict blames the operator for a missing field rather than for the shape of the document.",
+      "expect_names_nothing": true
+    }
+  ]
+}

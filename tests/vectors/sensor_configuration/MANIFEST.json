@@ -1,0 +1,13 @@
+{
+  "source_repository": "ori-platform/ori-specs",
+  "source_path": "sensor-configuration/vectors",
+  "source_commit": "b92eaf0a85c504e2b7eec7744320583d9be79470",
+  "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
+  "files": {
+    "calibration.json": "70ecdfcfdc26ca84570af8e89208c9e77a46b7d98db1d1bea013cbedf966e343",
+    "protocol-config.json": "d2634a9b3c080091c94fcd907f48c225865c37ec79a474c36d0033612e2bf0ed",
+    "protocol-definition.json": "6ed690eaca05cb113e5d24cebd6becf0426cd41ec23bbc108ba9c3ca5760711a",
+    "schema-load.json": "72601b71f2c636ec23ae9a37bbbbe2f3b34462d89c3b107baaa40f399b5b2d63",
+    "sensor-entry.json": "7b3773e3dd5c70ebc1466008868f6470cac7386e3d7646ac35887d6a5358c108"
+  }
+}
