@@ -770,7 +770,7 @@ def _resolve_aliases(document: dict, fields: dict, context: str) -> dict:
         replacement = descriptor["supersedes"]
         exists, _ = _path_value(resolved, replacement)
         if exists:
-            first_alias = alias_origins.get(replacement)
+            first_alias = _alias_origin_for_path(alias_origins, replacement)
             if first_alias is not None:
                 raise DocumentError(
                     f"{context}: sets both deprecated aliases {first_alias!r} and "
@@ -794,6 +794,16 @@ def _resolve_aliases(document: dict, fields: dict, context: str) -> dict:
         alias_origins[replacement] = key
         del resolved[key]
     return resolved
+
+
+def _alias_origin_for_path(alias_origins: dict[str, str], path: str) -> str | None:
+    """Return the alias that already supplied ``path`` or one of its parents."""
+    segments = path.split(".")
+    for length in range(len(segments), 0, -1):
+        origin = alias_origins.get(".".join(segments[:length]))
+        if origin is not None:
+            return origin
+    return None
 
 
 def _path_value(document: dict, path: str) -> tuple[bool, Any]:

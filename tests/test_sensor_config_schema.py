@@ -514,6 +514,36 @@ def test_two_aliases_for_one_target_are_refused_without_schema_order_precedence(
     assert "mqtt.client_id" in message
 
 
+def test_an_object_alias_and_leaf_alias_name_the_written_aliases_on_conflict() -> None:
+    schema = _ok(
+        {
+            "mqtt": {
+                "type": "object",
+                "properties": {"username": {"type": "string"}},
+            },
+            "legacy_broker": {
+                "type": "object",
+                "deprecated": True,
+                "supersedes": "mqtt",
+            },
+            "mqtt_username": {
+                "type": "string",
+                "deprecated": True,
+                "supersedes": "mqtt.username",
+            },
+        }
+    )
+    with pytest.raises(DocumentError) as excinfo:
+        validate_document(
+            {"legacy_broker": {"username": "first"}, "mqtt_username": "second"},
+            schema,
+            context="s",
+        )
+    message = str(excinfo.value)
+    assert "legacy_broker" in message
+    assert "mqtt_username" in message
+
+
 def test_alias_resolution_does_not_mutate_or_change_the_callers_document() -> None:
     schema = _ok(
         {
