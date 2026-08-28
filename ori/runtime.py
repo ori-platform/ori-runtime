@@ -3580,9 +3580,6 @@ class OriRuntime:
                 )
                 return True
 
-        receipt = AlertSendReceipt.refused(
-            channel=channel, error="submission_not_attempted"
-        )
         try:
             if allow_failover:
                 receipt = _coerce_alert_send_receipt(
