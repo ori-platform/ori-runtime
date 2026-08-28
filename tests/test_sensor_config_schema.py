@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+import ori.hal.protocol_registry as registry
 from ori.config import ConfigValidationError, _parse_sensors
 from ori.hal.base import BaseAdapter
 from ori.hal.config_schema import (
@@ -23,11 +24,6 @@ from ori.hal.config_schema import (
     ValidatedSchema,
     validate_document,
     validate_schema,
-)
-from ori.hal.protocol_registry import (
-    PROTOCOL_DEFINITIONS,
-    ProtocolDefinition,
-    protocol_schemas,
 )
 
 VECTORS = Path(__file__).parent / "vectors" / "sensor_configuration"
@@ -154,8 +150,6 @@ def test_protocol_definition_conforms_to_the_vendored_contract_vectors(
     case: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Resolution reads module mappings and never calls the adapter factory."""
-    import ori.hal.protocol_registry as registry
-
     if "protocol" not in case:
         assert registry.SUPPORTED_SENSOR_PROTOCOLS == frozenset(
             registry.PROTOCOL_DEFINITIONS
@@ -165,7 +159,7 @@ def test_protocol_definition_conforms_to_the_vendored_contract_vectors(
     protocol = case.get("protocol", "serial")
     module_name = case.get("module", "ori.hal.serial_adapter")
     definitions = dict(registry.PROTOCOL_DEFINITIONS)
-    definitions[protocol] = ProtocolDefinition(module_name, "SerialAdapter")
+    definitions[protocol] = registry.ProtocolDefinition(module_name, "SerialAdapter")
     monkeypatch.setattr(registry, "PROTOCOL_DEFINITIONS", MappingProxyType(definitions))
     exports = set(case.get("module_exports", []))
 
@@ -863,8 +857,8 @@ def test_every_defined_protocol_loads_both_declarations_without_construction(
 
     monkeypatch.setattr(BaseAdapter, "__new__", forbid_adapter_construction)
     monkeypatch.setattr(BaseAdapter, "__init__", forbid_adapter_initialization)
-    for protocol in PROTOCOL_DEFINITIONS:
-        config_schema, calibration_schemas = protocol_schemas(protocol)
+    for protocol in registry.PROTOCOL_DEFINITIONS:
+        config_schema, calibration_schemas = registry.protocol_schemas(protocol)
         assert isinstance(config_schema, ValidatedSchema)
         assert isinstance(calibration_schemas, dict)
 

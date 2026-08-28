@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -252,7 +253,7 @@ def _check_phone_config(config: Config) -> list[DoctorCheck]:
         _relay_check(config),
         _gateway_check(config),
         _config_signature_check(config),
-        _sensor_check(config),
+        _sensor_check(config.sensors),
         _profile_dependency_check(config),
         _telemetry_check(config),
         _health_socket_check(config),
@@ -295,7 +296,7 @@ def _phone_profile_hints_from_invalid_config(config_path: str) -> list[DoctorChe
             sensors.append(sensor)
     if not sensors:
         return []
-    return [_sensor_check(SimpleNamespace(sensors=sensors))]
+    return [_sensor_check(sensors)]
 
 
 def _deployment_type_check(config: Config) -> DoctorCheck:
@@ -398,9 +399,15 @@ def _config_signature_check(config: Config) -> DoctorCheck:
     )
 
 
-def _sensor_check(config: Config) -> DoctorCheck:
+def _sensor_check(sensors: Sequence[Any]) -> DoctorCheck:
+    """Report phone sensor profile completeness.
+
+    Takes the sensor list rather than a `Config` because it also runs on
+    stand-ins built from a document config loading refused, which is the case
+    an operator most needs a diagnosis for.
+    """
     phone_sensors = [
-        sensor for sensor in config.sensors if _phone_sensor_profile(sensor) is not None
+        sensor for sensor in sensors if _phone_sensor_profile(sensor) is not None
     ]
     if not phone_sensors:
         return DoctorCheck(
