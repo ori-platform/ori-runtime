@@ -488,6 +488,11 @@ async def _until(predicate, timeout_s: float = 2.0) -> None:
         await asyncio.sleep(0.01)
 
 
+async def _stop(shutdown: asyncio.Event, task: asyncio.Task[None]) -> None:
+    shutdown.set()
+    await asyncio.wait_for(task, 2.0)
+
+
 def _carried(client: _FakeClient) -> list[dict[str, Any]]:
     return [
         json.loads(p) for topic, p, _ in client.published if topic.endswith("/outbound")
@@ -521,8 +526,7 @@ async def test_retained_artifacts_are_carried_as_exact_bytes_at_qos_1(rig):
         retained = rig.artifact(checkpoint["artifact_digest"])
         assert retained is not None and retained["retired_at_ms"] is None
     finally:
-        shutdown.set()
-        await task
+        await _stop(shutdown, task)
 
 
 async def test_nothing_is_carried_once_the_broker_drops_the_session(rig):
@@ -540,8 +544,7 @@ async def test_nothing_is_carried_once_the_broker_drops_the_session(rig):
         assert await publisher.flush(1.0) == 0
         assert len(_carried(client)) == 1
     finally:
-        shutdown.set()
-        await task
+        await _stop(shutdown, task)
 
 
 async def test_nothing_is_published_until_the_broker_grants_the_ack_subscription(rig):
@@ -555,8 +558,7 @@ async def test_nothing_is_published_until_the_broker_grants_the_ack_subscription
         assert _carried(client) == []
         assert not publisher.connected
     finally:
-        shutdown.set()
-        await task
+        await _stop(shutdown, task)
 
 
 async def test_puback_retires_nothing_and_the_envelope_is_republished_after_backoff(
@@ -578,8 +580,7 @@ async def test_puback_retires_nothing_and_the_envelope_is_republished_after_back
         assert rig.envelope(int(sealed["local_seq"]))["attempts"] == 2
         assert rig.envelope(int(sealed["local_seq"]))["custody_state"] == "none"
     finally:
-        shutdown.set()
-        await task
+        await _stop(shutdown, task)
 
 
 async def test_a_queued_acknowledgement_arriving_on_the_route_retires_the_checkpoint(
@@ -603,8 +604,7 @@ async def test_a_queued_acknowledgement_arriving_on_the_route_retires_the_checkp
         await asyncio.sleep(0.2)
         assert len(_carried(client)) == 1, "a retired checkpoint was republished"
     finally:
-        shutdown.set()
-        await task
+        await _stop(shutdown, task)
 
 
 async def test_a_publish_failure_is_recorded_and_the_drain_stops(rig):
@@ -620,8 +620,7 @@ async def test_a_publish_failure_is_recorded_and_the_drain_stops(rig):
         assert rig.envelope(2)["attempts"] == 0
         assert _carried(client) == []
     finally:
-        shutdown.set()
-        await task
+        await _stop(shutdown, task)
 
 
 async def test_flush_carries_what_is_due_and_returns_the_count(rig):
@@ -641,8 +640,7 @@ async def test_flush_carries_what_is_due_and_returns_the_count(rig):
         rig.seal(2)
         assert await publisher.flush(1.0) == 1
     finally:
-        shutdown.set()
-        await task
+        await _stop(shutdown, task)
     assert await publisher.flush(1.0) == 0, "nothing is carried once disconnected"
 
 
@@ -793,7 +791,7 @@ async def test_shutdown_retains_the_checkpoint_even_without_a_route():
 
 
 async def test_the_checkpoint_loop_issues_on_the_release_owned_interval(monkeypatch):
-    import ori.runtime as runtime_module
+    from ori import runtime as runtime_module
 
     monkeypatch.setattr(runtime_module, "DEFAULT_CHECKPOINT_INTERVAL_S", 0.02)
     attestor = _RecordingAttestor()

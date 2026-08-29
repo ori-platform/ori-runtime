@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import logging
@@ -366,13 +367,11 @@ class MqttEvidenceOutboundPublisher:
         while not shutdown_event.is_set() and not lost.is_set():
             wake.clear()
             await self.drain()
-            try:
+            with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(
                     _wait_first(shutdown_event, lost, wake),
                     timeout=self._retry_interval_s,
                 )
-            except asyncio.TimeoutError:
-                pass
         if not shutdown_event.is_set():
             raise ConnectionError("subscription lost")
 
