@@ -36,7 +36,7 @@ as the signature. What is reproduced is installation behaviour.
 - **No existing Ori installation.** `/opt/ori` absent, no `ori-runtime.service`
   known to systemd, no `/usr/local/bin/ori`. The harness refuses otherwise
   rather than install over one.
-- The interpreter the target names, on `PATH` (`python3.11` or `python3.12`),
+- The interpreter the target names, on `PATH` (`python3.11`, `python3.12` or `python3.13`),
   plus a `python3` of 3.9 or newer for the harness itself
 - `git`, `tar`, `openssl`, and `sudo`
 - A clean checkout of the commit under test — the builder archives from the
