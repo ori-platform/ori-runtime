@@ -42,7 +42,7 @@
 # workflow and are proven only by a real tag.
 set -euo pipefail
 
-HARNESS_REVISION="13"
+HARNESS_REVISION="14"
 PHASE="${1:?usage: harness-systemd-host.sh <install|persist|rollback|uninstall> ...}"
 BLOCKED=0
 UNIT="ori-runtime.service"
@@ -95,6 +95,7 @@ record_host() {
         "$(python3 -V 2>&1 | cut -d' ' -f2)" "$(command -v python3)"
     printf '  base interpreter  %s\n' \
         "$(python3 -c 'import sys; print(sys._base_executable)')"
+    printf '  boot id           %s\n' "$(evidence boot-id 2>/dev/null || echo unavailable)"
 }
 
 assert_exit() {
@@ -115,10 +116,13 @@ assert_contains() {
 }
 
 # A JSON field regardless of whether the emitter spaces after the colon: the
-# installer prints compact JSON, the doctor prints indented JSON.
+# installer prints compact JSON, the doctor prints indented JSON. The value is
+# matched literally, and only as a whole field: followed by a comma, a closing
+# brace, or the end of its line.
 assert_field() {
     local label="$1" key="$2" value="$3" text="$4"
-    if grep -Eq "\"$key\": ?\"?$value\"?[,}]" <<<"$text"; then
+    local literal; literal="$(printf '%s' "$value" | sed 's/[][\.*^$|?+(){}]/\\&/g')"
+    if grep -Eq "\"$key\": ?\"?$literal\"?([,}]|\$)" <<<"$text"; then
         pass "$label"
     else
         fail "$label" "expected \"$key\": \"$value\" in: $(head -3 <<<"$text")"
@@ -357,6 +361,10 @@ phase_rollback() {
     local status=$?
     set -e
     local output; output="$(cat "$WORKSPACE/rollback.json")"
+    # The installer's own account of the refusal, so the record can quote the
+    # log rather than the workspace file this phase discards.
+    printf '  installer reported     %s\n' \
+        "$(grep -oE '"code": ?"[a-z_]+", ?"detail": ?"[^"]*"' <<<"$output" | head -1)"
 
     # The exact stable code, not "some nonzero exit": an argument error, a
     # signature rejection or a target mismatch all exit nonzero without ever

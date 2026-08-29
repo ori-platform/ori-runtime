@@ -402,6 +402,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     persisted.add_argument("--path", type=Path, required=True)
     persisted.add_argument("--version", required=True)
 
+    sub.add_parser("boot-id", help="print the current boot id")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "select-python":
@@ -428,6 +430,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "require-reboot":
             found = require_reboot_since(args.path, expected_version=args.version)
             print(f"rebooted since {found.boot_id}")
+        elif args.command == "boot-id":
+            print(current_boot_id())
     except EvidenceError as exc:
         print(str(exc), file=sys.stderr)
         return 1
