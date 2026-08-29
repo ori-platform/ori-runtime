@@ -328,6 +328,16 @@ phase_rollback() {
     local previous; previous="$(readlink -f "$SYSTEM_ROOT/current" 2>/dev/null || echo none)"
     [ "$previous" != "none" ] || fail "an installation to roll back from" "no active release"
     printf '  active release before  %s\n' "$previous"
+    # The identity the installation already carries. An upgrade keeps it and
+    # refuses a differing --device-id before touching anything, so the failing
+    # candidate is installed the way an operator would upgrade: without
+    # identity flags. That also lets this phase run against any installation,
+    # not only one the install phase created.
+    local installed_device
+    installed_device="$("$SYSTEM_ROOT/current/venv/bin/ori" doctor --scope system --json \
+        | python3 -c 'import json, sys; print(json.load(sys.stdin)["identity"]["device_id"])')" \
+        || fail "the installed identity is readable" "doctor did not report a device id"
+    printf '  installed device       %s\n' "$installed_device"
 
     # Rollback needs a failure *after* activation. A tampered or mis-signed
     # artifact cannot produce one: verification refuses it before anything is
@@ -356,8 +366,7 @@ phase_rollback() {
         --scope system --unattended \
         --bundle "$bundle" --signature "$signature" \
         --expected-version "$version" \
-        --device-id "$EVIDENCE_DEVICE_ID" --name "$EVIDENCE_NAME" \
-        --location "$EVIDENCE_LOCATION" --json >"$WORKSPACE/rollback.json" 2>&1
+        --json >"$WORKSPACE/rollback.json" 2>&1
     local status=$?
     set -e
     local output; output="$(cat "$WORKSPACE/rollback.json")"
@@ -391,6 +400,7 @@ phase_rollback() {
     local restored; restored="$(basename "$previous")"
     assert_contains "doctor reports the restored release" \
         "\"version\": \"$restored\"" "$LAST_OUTPUT"
+    assert_field "rollback kept the installed identity" device_id "$installed_device" "$LAST_OUTPUT"
 
     # The launcher resolves the active release at execution time; it is what an
     # operator runs, so it has to reach the restored release, not the removed one.

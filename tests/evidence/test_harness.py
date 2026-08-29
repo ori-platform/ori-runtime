@@ -956,3 +956,16 @@ def test_the_extracted_bundle_is_found_by_name() -> None:
     harness = _host_harness()
     assert harness.count("-type d -name 'ori-runtime-*' | head -1") == 2
     assert "-type d | head -1" not in harness
+
+
+def test_the_rollback_phase_upgrades_without_identity_flags() -> None:
+    """An upgrade keeps the installed identity and refuses a differing
+    --device-id before activation; passing the evidence identity would make
+    the phase fail early against any installation that is not the harness's
+    own, and never reach the rollback it exists to prove."""
+    rollback = _phase("rollback")
+    install_call = rollback[rollback.index('ori-install-linux" install') :]
+    install_call = install_call[: install_call.index("rollback.json")]
+    assert "--device-id" not in install_call
+    assert "--name" not in install_call
+    assert 'assert_field "rollback kept the installed identity" device_id' in rollback
