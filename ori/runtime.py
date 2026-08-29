@@ -328,6 +328,7 @@ class OriRuntime:
         self._evidence_attestor: FirstPartyEvidenceAttestor | None = None
         self._evidence_inbound_subscriber: MqttEvidenceInboundSubscriber | None = None
         self._evidence_outbound_publisher: MqttEvidenceOutboundPublisher | None = None
+        self._evidence_posture_problems: list[str] = []
         self._firmware_confirmation_coordinator: (
             FirmwareConfirmationCoordinator | None
         ) = None
@@ -642,10 +643,29 @@ class OriRuntime:
         evidence_attestor = _build_evidence_attestor(config)
         if evidence_attestor is not None:
             await evidence_attestor.start()
-            if requires_production_posture(
-                device=config.device, security=config.security
-            ):
-                _require_evidence_posture(config, evidence_attestor)
+            # Evidence trust that cannot be established fails closed for
+            # evidence — ingest refuses, health reports the posture — and
+            # never for the runtime: Tier D is never gated on evidence, so the
+            # deterministic safety path starts regardless of profile.
+            self._evidence_posture_problems = _evidence_posture_problems(
+                config, evidence_attestor
+            )
+            for problem in self._evidence_posture_problems:
+                if requires_production_posture(
+                    device=config.device, security=config.security
+                ):
+                    logger.error(
+                        "[evidence] hardened posture cannot establish evidence "
+                        "trust (%s); evidence is recorded locally and reported "
+                        "degraded, and Tier C/D actions are unaffected",
+                        problem,
+                    )
+                else:
+                    logger.warning(
+                        "[evidence] evidence trust is not established (%s); "
+                        "receipts and custody will be refused until it is",
+                        problem,
+                    )
         self._evidence_attestor = evidence_attestor
 
         # The confirmation coordinator reconciles a locally-approved anchor
@@ -2460,6 +2480,9 @@ class OriRuntime:
             # refused receipt is distinguishable from one that never arrived.
             "ingest_refusal_count": None,
             "last_ingest_refusal": None,
+            # Why evidence trust is not established, from a closed vocabulary;
+            # empty when it is. Signing can be available while trust is not.
+            "posture_problems": list(getattr(self, "_evidence_posture_problems", ())),
         }
         if attestor is not None and attestor.available:
             health["chain_head_hash"] = await attestor.chain_head_hash()
@@ -2623,6 +2646,10 @@ class OriRuntime:
             # runtime looks healthy. Contributed rather than assigned, so this
             # never clears a critical condition another subsystem has raised.
             snapshot["critical"] = True
+            snapshot["status"] = "degraded"
+        if getattr(self, "_evidence_posture_problems", ()):
+            # Evidence trust not established is degraded, not critical: the
+            # safety path is unaffected, and what is at risk is the record.
             snapshot["status"] = "degraded"
 
         # Named reasons for the site view. The rich diagnostics above stay
@@ -4519,35 +4546,32 @@ def _build_evidence_attestor(config: Config) -> FirstPartyEvidenceAttestor | Non
     )
 
 
-def _require_evidence_posture(
-    config: Config, attestor: FirstPartyEvidenceAttestor
-) -> None:
-    """Refuse to start a hardened runtime whose evidence posture cannot be established.
+#: Closed vocabulary for `evidence.posture_problems` in runtime health.
+EVIDENCE_POSTURE_SIGNING_UNAVAILABLE = "signing_unavailable"
+EVIDENCE_POSTURE_AUTHORITY_KEYS_MISSING = "authority_keys_missing"
+EVIDENCE_POSTURE_CUSTODY_UNCONFIGURED = "custody_unconfigured"
 
-    Only what is local and knowable: the ledger and device key opened, the
-    signed release shipped an authority-key registry, and custody can be
-    verified when a gateway carries evidence. A runtime that started without
-    these would report evidence as enabled while no receipt or custody could
-    ever verify, which is the honest-posture rule the hardened profiles exist
-    to enforce.
+
+def _evidence_posture_problems(
+    config: Config, attestor: FirstPartyEvidenceAttestor
+) -> list[str]:
+    """What stops evidence trust being established, from local, knowable facts.
+
+    The ledger and device key opened, the signed release shipped an
+    authority-key registry, and custody can be verified when a gateway carries
+    evidence. Each missing piece is reported, never used to refuse startup:
+    evidence records what happened and must not decide whether the runtime may
+    run. With any of these missing, ingest refuses what it cannot verify and
+    health says why.
     """
+    problems: list[str] = []
     if not attestor.available:
-        raise ConfigValidationError(
-            "production posture requires the evidence ledger and device signing key "
-            "to open; evidence is enabled but signing is unavailable"
-        )
+        problems.append(EVIDENCE_POSTURE_SIGNING_UNAVAILABLE)
     if attestor.authority_key_count == 0:
-        raise ConfigValidationError(
-            "production posture requires an authority-key registry in the signed "
-            "release when evidence is enabled; this release ships none, so no "
-            "receipt or epoch confirmation could ever verify"
-        )
+        problems.append(EVIDENCE_POSTURE_AUTHORITY_KEYS_MISSING)
     if bool(config.gateway.enabled) and not attestor.custody_configured:
-        raise ConfigValidationError(
-            "production posture requires gateway.custody.secret_env when evidence "
-            "is enabled with a gateway; without it no custody acknowledgement can "
-            "verify and delivery would stall at the first hop"
-        )
+        problems.append(EVIDENCE_POSTURE_CUSTODY_UNCONFIGURED)
+    return problems
 
 
 def _load_authority_keys() -> dict:

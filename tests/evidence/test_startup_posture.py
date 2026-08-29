@@ -1,20 +1,17 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
-"""What a hardened runtime must be able to establish locally before it starts.
-
-Only local, knowable facts: the ledger and key opened, the signed release
-shipped authority keys, and custody can be verified when a gateway carries
-evidence. Nothing here reaches off the device.
-"""
+"""What a runtime can establish locally about evidence trust, and reports."""
 
 from __future__ import annotations
 
 from typing import Any, cast
 
-import pytest
-
-from ori.config import ConfigValidationError
-from ori.runtime import _require_evidence_posture
+from ori.runtime import (
+    EVIDENCE_POSTURE_AUTHORITY_KEYS_MISSING,
+    EVIDENCE_POSTURE_CUSTODY_UNCONFIGURED,
+    EVIDENCE_POSTURE_SIGNING_UNAVAILABLE,
+    _evidence_posture_problems,
+)
 
 
 class _Gateway:
@@ -36,39 +33,33 @@ class _Attestor:
         self.custody_configured = custody
 
 
-def test_an_established_posture_passes():
-    _require_evidence_posture(cast(Any, _Cfg()), cast(Any, _Attestor()))
+def _problems(cfg: _Cfg, attestor: _Attestor) -> list[str]:
+    return _evidence_posture_problems(cast(Any, cfg), cast(Any, attestor))
 
 
-def test_signing_that_did_not_open_refuses_startup():
-    with pytest.raises(ConfigValidationError, match="signing is unavailable"):
-        _require_evidence_posture(
-            cast(Any, _Cfg()), cast(Any, _Attestor(available=False))
-        )
+def test_an_established_posture_reports_nothing():
+    assert _problems(_Cfg(), _Attestor()) == []
 
 
-def test_a_release_without_authority_keys_refuses_startup():
-    with pytest.raises(ConfigValidationError, match="authority-key registry"):
-        _require_evidence_posture(cast(Any, _Cfg()), cast(Any, _Attestor(keys=0)))
+def test_each_missing_piece_is_named():
+    assert _problems(_Cfg(), _Attestor(available=False)) == [
+        EVIDENCE_POSTURE_SIGNING_UNAVAILABLE
+    ]
+    assert _problems(_Cfg(), _Attestor(keys=0)) == [
+        EVIDENCE_POSTURE_AUTHORITY_KEYS_MISSING
+    ]
+    assert _problems(_Cfg(), _Attestor(custody=False)) == [
+        EVIDENCE_POSTURE_CUSTODY_UNCONFIGURED
+    ]
 
 
-def test_a_gateway_without_custody_refuses_startup():
-    with pytest.raises(ConfigValidationError, match="gateway.custody.secret_env"):
-        _require_evidence_posture(
-            cast(Any, _Cfg()), cast(Any, _Attestor(custody=False))
-        )
+def test_every_problem_is_reported_not_only_the_first():
+    assert _problems(_Cfg(), _Attestor(available=False, keys=0, custody=False)) == [
+        EVIDENCE_POSTURE_SIGNING_UNAVAILABLE,
+        EVIDENCE_POSTURE_AUTHORITY_KEYS_MISSING,
+        EVIDENCE_POSTURE_CUSTODY_UNCONFIGURED,
+    ]
 
 
 def test_custody_is_not_required_without_a_gateway():
-    _require_evidence_posture(
-        cast(Any, _Cfg(gateway_enabled=False)), cast(Any, _Attestor(custody=False))
-    )
-
-
-def test_the_checks_are_ordered_from_the_inside_out():
-    """An unopened ledger is reported before anything that depends on it."""
-    with pytest.raises(ConfigValidationError, match="signing is unavailable"):
-        _require_evidence_posture(
-            cast(Any, _Cfg()),
-            cast(Any, _Attestor(available=False, keys=0, custody=False)),
-        )
+    assert _problems(_Cfg(gateway_enabled=False), _Attestor(custody=False)) == []
