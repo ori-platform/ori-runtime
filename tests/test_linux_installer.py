@@ -3784,3 +3784,71 @@ def test_uninstall_leaves_the_service_account_in_place(tmp_path: Path) -> None:
 
     assert account_commands == []
     assert not layout.releases.exists()
+
+
+def _relocatable_bin(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A staged venv bin as pip leaves it after installing a wheel with scripts."""
+    staging = tmp_path / ".staging"
+    destination = tmp_path / "release"
+    bin_dir = destination / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    interpreter = f"#!{staging / 'venv' / 'bin' / 'python'}\n"
+    for name in ("ori-runtime", "i2cscan.py"):
+        script = bin_dir / name
+        script.write_text(interpreter + "print('hi')\n", encoding="utf-8")
+        script.chmod(0o755)
+    (bin_dir / "python").symlink_to("/usr/bin/python3")
+    return staging, destination, bin_dir
+
+
+def test_script_bytecode_pip_left_in_bin_is_discarded_not_refused(
+    tmp_path: Path,
+) -> None:
+    """pyftdi installs .py scripts into bin and pip byte-compiles them there."""
+    from ori.installer.linux import _repair_relocated_shebangs
+
+    staging, destination, bin_dir = _relocatable_bin(tmp_path)
+    cache = bin_dir / "__pycache__"
+    cache.mkdir()
+    (cache / "i2cscan.cpython-313.pyc").write_bytes(
+        b"\x00pyc" + str(staging / "venv" / "bin" / "i2cscan.py").encode()
+    )
+
+    _repair_relocated_shebangs(staging, destination)
+
+    assert not cache.exists()
+    expected = f"#!{destination / 'venv' / 'bin' / 'python'}"
+    for name in ("ori-runtime", "i2cscan.py"):
+        first = (bin_dir / name).read_text(encoding="utf-8").splitlines()[0]
+        assert first == expected, name
+    assert sorted(p.name for p in bin_dir.iterdir()) == [
+        "i2cscan.py",
+        "ori-runtime",
+        "python",
+    ]
+
+
+def test_a_bytecode_cache_that_is_not_a_directory_is_refused(tmp_path: Path) -> None:
+    from ori.installer.linux import _repair_relocated_shebangs
+
+    staging, destination, bin_dir = _relocatable_bin(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (bin_dir / "__pycache__").symlink_to(elsewhere)
+
+    with pytest.raises(LinuxInstallError) as excinfo:
+        _repair_relocated_shebangs(staging, destination)
+    assert excinfo.value.code == "offline_install_failed"
+    assert "__pycache__" in str(excinfo.value)
+    assert elsewhere.exists(), "a refused link must never be followed or removed"
+
+
+def test_other_directories_in_bin_are_still_refused(tmp_path: Path) -> None:
+    from ori.installer.linux import _repair_relocated_shebangs
+
+    staging, destination, bin_dir = _relocatable_bin(tmp_path)
+    (bin_dir / "plugins").mkdir()
+
+    with pytest.raises(LinuxInstallError) as excinfo:
+        _repair_relocated_shebangs(staging, destination)
+    assert "plugins" in str(excinfo.value)
