@@ -3772,6 +3772,18 @@ class TestRemoteDevicePolicy:
             await runtime._state_store.close()
 
 
+async def _until_started(runtime: OriRuntime, timeout_s: float = 30.0) -> None:
+    """Wait for start() to have built the action path and the evidence stack.
+
+    A fixed sleep raced start() on a loaded, coverage-instrumented CI runner.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while runtime._dispatcher is None or runtime._evidence_attestor is None:
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("the runtime did not come up in time")
+        await asyncio.sleep(0.05)
+
+
 class TestEvidencePostureNeverGatesStartup:
     """Tier D is never gated on evidence, not by availability and not by trust.
 
@@ -3804,7 +3816,7 @@ class TestEvidencePostureNeverGatesStartup:
         observed: dict[str, Any] = {}
 
         async def _observe_then_stop():
-            await asyncio.sleep(0.2)
+            await _until_started(runtime)
             observed["dispatcher"] = runtime._dispatcher
             attestor = runtime._evidence_attestor
             observed["signing_available"] = attestor is not None and attestor.available
@@ -3846,7 +3858,7 @@ class TestEvidencePostureNeverGatesStartup:
         observed: dict[str, Any] = {}
 
         async def _observe_then_stop():
-            await asyncio.sleep(0.2)
+            await _until_started(runtime)
             observed["health"] = await runtime._build_health_snapshot()
             await runtime.stop()
 
