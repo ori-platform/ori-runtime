@@ -236,7 +236,7 @@ module = [
     "ori.reasoning.capability_posture",
     "ori.reasoning.escalation_policy",
     "ori.security.gateway_messages",
-    "ori.security.remote_commands",
+    "ori.security.remote_commands.commands",
 ]
 disallow_untyped_defs = true
 

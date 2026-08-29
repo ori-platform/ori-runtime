@@ -29,18 +29,18 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
-from ori.security.remote_command_responses import (
-    format_remote_command_execution_response,
-    format_remote_command_rejection_response,
-)
-from ori.security.remote_command_throttle import (
-    RemoteCommandThrottleDecision,
-    evaluate_rejection_feedback,
-)
-from ori.security.remote_commands import (
+from ori.security.remote_commands.commands import (
     RemoteCommand,
     RemoteCommandVerifier,
     verify_inbound_remote_command,
+)
+from ori.security.remote_commands.responses import (
+    format_remote_command_execution_response,
+    format_remote_command_rejection_response,
+)
+from ori.security.remote_commands.throttle import (
+    RemoteCommandThrottleDecision,
+    evaluate_rejection_feedback,
 )
 from ori.utils.bool_utils import is_truthy
 from ori.utils.time_utils import now_ms

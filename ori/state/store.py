@@ -922,10 +922,10 @@ class StateStore:
         promotable anchor. Anything else becomes `pending`, because it was
         never trusted for acceptance.
         """
-        from ori.security.firmware_telemetry import (
+        from ori.security.firmware.telemetry import (
             anchor_epoch_id as _anchor_epoch_id,
         )
-        from ori.security.firmware_telemetry import (
+        from ori.security.firmware.telemetry import (
             key_epoch_id as _key_epoch_id,
         )
 
@@ -3189,10 +3189,10 @@ class StateStore:
         provisioned_at_ms: int,
     ) -> str:
         assert self._conn is not None
-        from ori.security.firmware_telemetry import (
+        from ori.security.firmware.telemetry import (
             anchor_epoch_id as _anchor_epoch_id,
         )
-        from ori.security.firmware_telemetry import (
+        from ori.security.firmware.telemetry import (
             key_epoch_id as _key_epoch_id,
         )
 
@@ -4241,10 +4241,10 @@ class StateStore:
     ) -> str:
         assert self._conn is not None
         _require_attribution("re-provisioning", actor, reason)
-        from ori.security.firmware_telemetry import (
+        from ori.security.firmware.telemetry import (
             anchor_epoch_id as _anchor_epoch_id,
         )
-        from ori.security.firmware_telemetry import (
+        from ori.security.firmware.telemetry import (
             key_epoch_id as _key_epoch_id,
         )
 

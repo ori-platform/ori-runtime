@@ -22,7 +22,7 @@ fi
   ori/integration/rule_evaluation.py \
   ori/security/gateway_messages.py \
   ori/security/webhook_signatures.py \
-  ori/security/remote_commands.py \
+  ori/security/remote_commands/commands.py \
   ori/security/release_bundles.py \
   ori/security/aws_kms_release_signer.py \
   ori/installer/linux.py \

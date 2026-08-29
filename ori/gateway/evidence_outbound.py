@@ -30,8 +30,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
-from ori.security.evidence_bound import BoundOutboundQueue
-from ori.security.evidence_ledger import (
+from ori.security.evidence.bound import BoundOutboundQueue
+from ori.security.evidence.ledger import (
     OUTBOX_ARTIFACT_TYPES,
     RETIRE_QUEUED,
     RETIRE_REFUSED,

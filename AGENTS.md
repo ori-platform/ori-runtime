@@ -672,7 +672,7 @@ Violating them creates vulnerabilities that affect physical hardware.
     A valid signature from an unapproved sender must be rejected and audited as
     `sender_not_allowed`.
     Verification does not imply execution permission. Authenticated remote commands
-    must pass through `ori.security.remote_command_policy` before any runtime side
+    must pass through `ori.security.remote_commands.policy` before any runtime side
     effect is allowed.
     `SET_THRESHOLD` must never make a Tier D trigger less sensitive than the
     value configured in `ori.yaml`. For upper-bound conditions such as

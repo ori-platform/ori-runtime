@@ -99,32 +99,32 @@ from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfi
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM, local_llm_backend_available
 from ori.runtime_health_socket import RuntimeHealthSocketServer
-from ori.security.custody_keys import (
+from ori.security.evidence.authority_keys import load_authority_key_registry
+from ori.security.evidence.chain import SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION
+from ori.security.evidence.custody_keys import (
     CustodyKeyRegistry,
     CustodyKeyRegistryError,
 )
-from ori.security.evidence_authority_keys import load_authority_key_registry
-from ori.security.evidence_chain import SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION
-from ori.security.evidence_first_party import FirstPartyEvidenceAttestor
-from ori.security.evidence_ledger import DEFAULT_CHECKPOINT_INTERVAL_S
-from ori.security.firmware_confirmation import (
+from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
+from ori.security.evidence.ledger import DEFAULT_CHECKPOINT_INTERVAL_S
+from ori.security.firmware.confirmation import (
     CONFIRMED as _FIRMWARE_CONFIRMED,
 )
-from ori.security.firmware_confirmation import (
+from ori.security.firmware.confirmation import (
     FirmwareConfirmationCoordinator,
 )
-from ori.security.firmware_ingest import FirmwareTelemetryGate
-from ori.security.firmware_liveness import (
+from ori.security.firmware.ingest import FirmwareTelemetryGate
+from ori.security.firmware.liveness import (
     LIVENESS_PUBLISH_INTERVAL_S,
     FirmwareLivenessSupervisor,
 )
-from ori.security.firmware_mqtt_certificate import FirmwareMqttCertificateAuthority
-from ori.security.firmware_mqtt_provisioning import FirmwareMqttProvisioningService
-from ori.security.firmware_mqtt_workflow import FirmwareMqttProvisioningWorkflow
-from ori.security.firmware_reconciliation import (
+from ori.security.firmware.mqtt_certificate import FirmwareMqttCertificateAuthority
+from ori.security.firmware.mqtt_provisioning import FirmwareMqttProvisioningService
+from ori.security.firmware.mqtt_workflow import FirmwareMqttProvisioningWorkflow
+from ori.security.firmware.reconciliation import (
     DEFAULT_INTERVAL_S as CONFIRMATION_RETRY_INTERVAL_S,
 )
-from ori.security.firmware_reconciliation import (
+from ori.security.firmware.reconciliation import (
     FirmwareConfirmationReconciler,
 )
 from ori.security.gateway_messages import (
@@ -135,12 +135,13 @@ from ori.security.gateway_messages import (
     GatewayReplayCache,
 )
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
-from ori.security.remote_command_lockout import (
+from ori.security.remote_commands.commands import RemoteCommand, RemoteCommandVerifier
+from ori.security.remote_commands.lockout import (
     default_remote_command_lockout_config,
     evaluate_remote_command_lockout,
     remote_command_sender_key,
 )
-from ori.security.remote_command_policy import (
+from ori.security.remote_commands.policy import (
     STATUS_AUDIT_ONLY,
     STATUS_DRY_RUN,
     STATUS_EXECUTED,
@@ -152,8 +153,7 @@ from ori.security.remote_command_policy import (
     command_requests_dry_run,
     command_result,
 )
-from ori.security.remote_command_throttle import RemoteCommandThrottleDecision
-from ori.security.remote_commands import RemoteCommand, RemoteCommandVerifier
+from ori.security.remote_commands.throttle import RemoteCommandThrottleDecision
 from ori.security.threshold_guard import (
     all_trigger_condition_refs,
     check_tier_d_condition_suppression,

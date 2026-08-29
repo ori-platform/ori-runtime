@@ -17,7 +17,7 @@ firmware bring-up because the output was believed:
 
 These tests assert the corrected behaviour rather than the wording, so a
 future rephrasing does not silently reopen any of them. Defect 2 is covered
-by command-level tests in tests/test_firmware_provisioner.py.
+by command-level tests in tests/firmware/test_provisioner.py.
 """
 
 from __future__ import annotations
@@ -171,7 +171,7 @@ def test_disabled_gateway_tolerates_unexpanded_variable(tmp_path, monkeypatch):
 
 
 # Command-level coverage for the provisioner lives in
-# tests/test_firmware_provisioner.py, next to the `bench` fixture that builds
+# tests/firmware/test_provisioner.py, next to the `bench` fixture that builds
 # a keyed registry. Help text was never the thing that lied, so asserting on
 # it here would have proved nothing about what the command prints.
 

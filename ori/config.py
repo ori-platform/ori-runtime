@@ -29,8 +29,8 @@ from ori.security.config_signatures import (
     config_signature_policy_from_raw_config,
     verify_config_signature_if_needed,
 )
-from ori.security.remote_command_lockout import normalize_remote_command_lockout_config
-from ori.security.remote_commands import normalize_remote_command_sender
+from ori.security.remote_commands.commands import normalize_remote_command_sender
+from ori.security.remote_commands.lockout import normalize_remote_command_lockout_config
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
 from ori.utils.path_utils import path_is_relative_to
@@ -1153,7 +1153,7 @@ def _parse_gateway(data: Any) -> GatewayConfig:
     # first delay would already exceed the maximum the backoff is allowed to
     # reach, so there is nothing to back off to and the documented ceiling
     # would be a false claim for that configuration.
-    from ori.security.firmware_reconciliation import (
+    from ori.security.firmware.reconciliation import (
         DEFAULT_INTERVAL_S,
         DEFAULT_MAX_INTERVAL_S,
     )
@@ -1189,7 +1189,7 @@ def _parse_gateway(data: Any) -> GatewayConfig:
     # a different secret for a different purpose. Folding them into `auth`
     # would invite reuse of the envelope secret, which is the confusion this
     # section exists to end.
-    from ori.security.custody_keys import is_well_formed_key_id
+    from ori.security.evidence.custody_keys import is_well_formed_key_id
 
     custody_raw = data.get("custody") or {}
     if not isinstance(custody_raw, dict):

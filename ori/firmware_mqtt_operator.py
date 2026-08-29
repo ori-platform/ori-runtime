@@ -20,15 +20,15 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from ori.security.firmware_mqtt_certificate import FirmwareMqttCertificateError
-from ori.security.firmware_mqtt_provisioning import (
+from ori.security.firmware.mqtt_certificate import FirmwareMqttCertificateError
+from ori.security.firmware.mqtt_provisioning import (
     FirmwareMqttProvisioningError,
     FirmwareMqttResponseValidationError,
     SignedProvisioningRequest,
     validate_broker_uri,
     validate_time_server,
 )
-from ori.security.firmware_mqtt_workflow import FirmwareMqttProvisioningWorkflow
+from ori.security.firmware.mqtt_workflow import FirmwareMqttProvisioningWorkflow
 from ori.utils.time_utils import now_ms
 
 _CONTRACT = "ori.runtime.firmware-mqtt-operator"

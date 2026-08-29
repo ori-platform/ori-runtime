@@ -36,9 +36,9 @@ from ori.reasoning.action_registry import (
 )
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
-from ori.security.evidence_policy import tier_requires_attestation
+from ori.security.evidence.policy import tier_requires_attestation
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
-from ori.security.remote_commands import extract_remote_command_payload
+from ori.security.remote_commands.commands import extract_remote_command_payload
 from ori.utils.bool_utils import is_truthy
 from ori.utils.time_utils import now_ms
 

@@ -58,7 +58,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
 )
-from ori.security.remote_command_throttle import RemoteCommandThrottleDecision
+from ori.security.remote_commands.throttle import RemoteCommandThrottleDecision
 from ori.skills.signing import canonical_signed_payload
 from ori.state.store import StateStore
 

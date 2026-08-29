@@ -46,7 +46,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from ori.security.firmware_liveness import (
+from ori.security.firmware.liveness import (
     LIVENESS_EXPIRY_WINDOW_S,
     LIVENESS_PUBLISH_INTERVAL_S,
     MAX_LIVENESS_PUBLISH_INTERVAL_S,
