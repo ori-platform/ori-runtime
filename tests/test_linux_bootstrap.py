@@ -710,3 +710,47 @@ def test_the_preamble_always_hands_off_before_python_begins() -> None:
     # Every other way out is an explicit failure, so no path reaches Python.
     for statement in ("exit 2", "exec "):
         assert statement in preamble, f"the preamble never uses {statement!r}"
+
+
+def test_bootstrap_keeps_stdout_for_the_installer_document(
+    bootstrap: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--json` promises one document on stdout. pip's progress from the
+    bootstrap's own environment preparation must go to stderr, and the
+    installer's stdout must be left alone so the document reaches the caller."""
+    root = tmp_path / "verified"
+    wheelhouse = root / "wheelhouse"
+    wheelhouse.mkdir(parents=True)
+    (wheelhouse / "requirements.txt").write_text("locked", encoding="utf-8")
+    (wheelhouse / "ori_runtime-2.3.0-py3-none-any.whl").write_bytes(b"wheel")
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    module_globals = bootstrap["bootstrap_install"].__globals__
+    monkeypatch.setitem(
+        module_globals,
+        "subprocess",
+        SimpleNamespace(
+            run=run,
+            DEVNULL=subprocess.DEVNULL,
+            SubprocessError=subprocess.SubprocessError,
+        ),
+    )
+    assert (
+        bootstrap["bootstrap_install"](
+            root,
+            tmp_path / "bundle",
+            tmp_path / "signature",
+            "2.3.0",
+            ["--unattended", "--scope", "system", "--json"],
+        )
+        == 0
+    )
+    preparation, installer = calls[:3], calls[3]
+    for command, kwargs in preparation:
+        assert kwargs.get("stdout") is module_globals["sys"].stderr, command
+    assert "stdout" not in installer[1]
+    assert installer[0][1] == "install"
