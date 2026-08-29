@@ -2365,6 +2365,7 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
     old_bin = f"{staging}/venv/bin/".encode()
     new_bin = f"{destination}/venv/bin/".encode()
     staging_reference = str(staging).encode()
+    _discard_script_bytecode(bin_dir)
     try:
         entries = sorted(bin_dir.iterdir())
     except OSError as exc:
@@ -2428,6 +2429,40 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
 
     _assert_no_staging_references(bin_dir, staging_reference)
     _fsync_directory(bin_dir)
+
+
+def _discard_script_bytecode(bin_dir: Path) -> None:
+    """Remove the bytecode cache pip leaves beside ``.py`` scripts in ``bin``.
+
+    A wheel may install plain ``.py`` scripts into ``bin`` (pyftdi does), and
+    pip byte-compiles them at install time into ``bin/__pycache__``. That cache
+    is the one directory a correct venv can carry there: it embeds the staging
+    path in every ``.pyc``, is regenerated on demand, and is never executed as
+    an entry point. Removing it keeps the rule that nothing but regular files
+    and the interpreter symlinks live in ``bin``, and lets the staging-reference
+    scan stay strict. Anything else at that name is refused, because a symlink
+    or a file called ``__pycache__`` was not written by pip.
+    """
+    cache = bin_dir / "__pycache__"
+    try:
+        info = os.lstat(cache)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise LinuxInstallError(
+            "offline_install_failed", "cannot inspect release venv bin bytecode cache"
+        ) from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise LinuxInstallError(
+            "offline_install_failed",
+            "unexpected special file in release venv bin: __pycache__",
+        )
+    try:
+        shutil.rmtree(cache)
+    except OSError as exc:
+        raise LinuxInstallError(
+            "offline_install_failed", "cannot remove release venv bin bytecode cache"
+        ) from exc
 
 
 def _rewrite_preserving_mode(path: Path, content: bytes, mode: int) -> None:
