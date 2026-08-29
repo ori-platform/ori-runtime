@@ -1,10 +1,11 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "evidence-exchange/vectors/receiver-state",
-  "source_commit": "3da7a7a9e4b80382cc45b14098424e51c402b57f",
+  "source_commit": "47e092281f63c8d47c2c5b5957570938254a1592",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {
     "anchor-quarantine.json": "ec5922987116b8487d1f49cb29bb53cd0cb44ef6cc8872f4a7b9ada8e8714bbd",
+    "commissioning-resolution.json": "c980e18f5a56d473b41d01e2bd4260d88d88fe7c82e77b5f39a92f117a3bb9bf",
     "custody-key-purpose.json": "575f53cd678cc3801e7268bbb55feab1d54226eee37b4426c67839cae839fbc6"
   }
 }
