@@ -1,0 +1,141 @@
+{
+  "secret": "published-test-reasoning-envelope-secret",
+  "signed_at_ms": 1700000000000,
+  "device_id": "site-a",
+  "cases": [
+    {
+      "name": "below_agreement_zone_rounds_to_zero",
+      "request_id": "interop-1",
+      "provider_confidence": 0.000042,
+      "emitted_confidence": 0,
+      "response": {
+        "request_id": "interop-1",
+        "device_id": "site-a",
+        "text": "Ikẹjà ✓ 電力 — below_agreement_zone_rounds_to_zero",
+        "model": "fake-model",
+        "tokens_used": 3,
+        "latency_ms": 4,
+        "confidence": 0,
+        "action_tier": "C",
+        "proposed_action": null,
+        "auth": {
+          "scheme": "hmac-sha256",
+          "signed_at_ms": 1700000000000,
+          "signature": "hmac-sha256:7c3469e2b055ef86a45c0d40eed42be92798961373db33f8c11585b75017fb22"
+        }
+      }
+    },
+    {
+      "name": "half_unit_rounds_up",
+      "request_id": "interop-2",
+      "provider_confidence": 0.00005,
+      "emitted_confidence": 0.0001,
+      "response": {
+        "request_id": "interop-2",
+        "device_id": "site-a",
+        "text": "Ikẹjà ✓ 電力 — half_unit_rounds_up",
+        "model": "fake-model",
+        "tokens_used": 3,
+        "latency_ms": 4,
+        "confidence": 0.0001,
+        "action_tier": "C",
+        "proposed_action": null,
+        "auth": {
+          "scheme": "hmac-sha256",
+          "signed_at_ms": 1700000000000,
+          "signature": "hmac-sha256:ba3598a7e072583af0c99fdee29a511e4c9eab1369e893e857f6bc65ad5fb1ac"
+        }
+      }
+    },
+    {
+      "name": "ordinary_confidence",
+      "request_id": "interop-3",
+      "provider_confidence": 0.93,
+      "emitted_confidence": 0.93,
+      "response": {
+        "request_id": "interop-3",
+        "device_id": "site-a",
+        "text": "Ikẹjà ✓ 電力 — ordinary_confidence",
+        "model": "fake-model",
+        "tokens_used": 3,
+        "latency_ms": 4,
+        "confidence": 0.93,
+        "action_tier": "C",
+        "proposed_action": null,
+        "auth": {
+          "scheme": "hmac-sha256",
+          "signed_at_ms": 1700000000000,
+          "signature": "hmac-sha256:8c2bbf54cf366a2bbee6c76b7b719981210638f69f625da1b4bdeccb3db02b3c"
+        }
+      }
+    },
+    {
+      "name": "five_decimals_round_to_four",
+      "request_id": "interop-4",
+      "provider_confidence": 0.123456,
+      "emitted_confidence": 0.1235,
+      "response": {
+        "request_id": "interop-4",
+        "device_id": "site-a",
+        "text": "Ikẹjà ✓ 電力 — five_decimals_round_to_four",
+        "model": "fake-model",
+        "tokens_used": 3,
+        "latency_ms": 4,
+        "confidence": 0.1235,
+        "action_tier": "C",
+        "proposed_action": null,
+        "auth": {
+          "scheme": "hmac-sha256",
+          "signed_at_ms": 1700000000000,
+          "signature": "hmac-sha256:7d2282d2e0e392194784639062298833e67adaeb04e71297091795458a55e08c"
+        }
+      }
+    },
+    {
+      "name": "unit_confidence",
+      "request_id": "interop-5",
+      "provider_confidence": 1,
+      "emitted_confidence": 1,
+      "response": {
+        "request_id": "interop-5",
+        "device_id": "site-a",
+        "text": "Ikẹjà ✓ 電力 — unit_confidence",
+        "model": "fake-model",
+        "tokens_used": 3,
+        "latency_ms": 4,
+        "confidence": 1,
+        "action_tier": "C",
+        "proposed_action": null,
+        "auth": {
+          "scheme": "hmac-sha256",
+          "signed_at_ms": 1700000000000,
+          "signature": "hmac-sha256:4f9a0c2d2e4abf200c37c06f9ca2ae436e9a95c30d77b6678bac8eac385fb8ef"
+        }
+      }
+    },
+    {
+      "name": "error_response",
+      "request_id": "interop-6",
+      "provider_confidence": 0,
+      "emitted_confidence": 0,
+      "provider_error": "provider unavailable",
+      "response": {
+        "request_id": "interop-6",
+        "device_id": "site-a",
+        "text": "",
+        "model": "gateway",
+        "tokens_used": 0,
+        "latency_ms": 0,
+        "confidence": 0,
+        "action_tier": "C",
+        "proposed_action": null,
+        "error": "provider error",
+        "auth": {
+          "scheme": "hmac-sha256",
+          "signed_at_ms": 1700000000000,
+          "signature": "hmac-sha256:3c153b54325603ba82f71f66b423ecb78486163dfd6321bace5b79f0e31eb492"
+        }
+      }
+    }
+  ]
+}
