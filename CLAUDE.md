@@ -362,7 +362,10 @@ ori/
 │   │
 │   ├── security/
 │   │   ├── __init__.py
-│   │   └── offline_tokens.py
+│   │   ├── offline_tokens.py
+│   │   ├── evidence/          ← chain, ledger, exchange artifacts, custody keys
+│   │   ├── firmware/          ← telemetry, commands, liveness, provisioning
+│   │   └── remote_commands/   ← verification, policy, throttle, lockout
 │   │
 │   ├── skills/                ← Skills loader (Layer 5)
 │   │   ├── __init__.py

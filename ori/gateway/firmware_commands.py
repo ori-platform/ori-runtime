@@ -3,7 +3,7 @@
 
 """MQTT egress for signed firmware approvals and commands.
 
-The cryptographic grammar lives in :mod:`ori.security.firmware_commands`.
+The cryptographic grammar lives in :mod:`ori.security.firmware.commands`.
 This module owns only the transport binding from
 ``ori-specs/firmware-commands/v1.md``:
 
@@ -25,12 +25,12 @@ import re
 from typing import Any, Callable, cast
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
-from ori.security.firmware_commands import (
+from ori.security.firmware.commands import (
     FirmwareCommandError,
     FirmwareCommandSigner,
     build_provisioning_approval_bytes,
 )
-from ori.security.firmware_liveness import (
+from ori.security.firmware.liveness import (
     FirmwareLivenessSigner,
     FirmwareLivenessSupervisor,
     SupervisedDevice,

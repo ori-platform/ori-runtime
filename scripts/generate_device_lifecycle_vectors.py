@@ -39,7 +39,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ori.security.firmware_telemetry import (
+from ori.security.firmware.telemetry import (
     anchor_epoch_id,
     canonical_json_bytes,
     key_epoch_id,

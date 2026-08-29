@@ -65,8 +65,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ori.security.firmware_commands import build_provisioning_approval_bytes
-from ori.security.firmware_telemetry import FirmwareVerificationError
+from ori.security.firmware.commands import build_provisioning_approval_bytes
+from ori.security.firmware.telemetry import FirmwareVerificationError
 
 # The shared corpus that ties these bytes to the C verifier in
 # ori-edge-firmware; the same bytes its test_provisioning.c accepts.
@@ -228,7 +228,7 @@ def _load_manifest_message(path: str) -> dict[str, Any]:
 
 
 async def _register(db_path: str, manifest_path: str) -> tuple[str, str]:
-    from ori.security.firmware_ingest import FirmwareTelemetryGate
+    from ori.security.firmware.ingest import FirmwareTelemetryGate
 
     message = _load_manifest_message(manifest_path)
     manifest = message["manifest"]
@@ -282,7 +282,7 @@ def cmd_register(args: argparse.Namespace) -> int:
 async def _approve(
     db_path: str, device_id: str, confirmed_key: str, actor: str, reason: str
 ) -> None:
-    from ori.security.firmware_ingest import FirmwareTelemetryGate
+    from ori.security.firmware.ingest import FirmwareTelemetryGate
 
     store = await _open_store(db_path)
     try:
@@ -352,7 +352,7 @@ async def _publish(
         FirmwareCommandError,
         FirmwareCommandService,
     )
-    from ori.security.firmware_liveness import FirmwareLivenessSupervisor
+    from ori.security.firmware.liveness import FirmwareLivenessSupervisor
 
     store = await _open_store(db_path)
 
@@ -447,7 +447,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 
 async def _reinstate(db_path: str, device_id: str, actor: str, reason: str) -> None:
-    from ori.security.firmware_ingest import FirmwareTelemetryGate
+    from ori.security.firmware.ingest import FirmwareTelemetryGate
 
     store = await _open_store(db_path)
     try:
@@ -482,7 +482,7 @@ async def _reprovision(
     actor: str,
     reason: str,
 ) -> str:
-    from ori.security.firmware_ingest import FirmwareTelemetryGate
+    from ori.security.firmware.ingest import FirmwareTelemetryGate
 
     message = _load_manifest_message(manifest_path)
     manifest = message["manifest"]

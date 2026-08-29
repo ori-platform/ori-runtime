@@ -5,7 +5,7 @@
 
 Firmware nodes publish signed Layer 1 telemetry and fault events on
 ``ori/fw/<device_id>/telemetry``. This subscriber is transport glue only:
-verification remains in :mod:`ori.security.firmware_ingest`; accepted
+verification remains in :mod:`ori.security.firmware.ingest`; accepted
 readings are converted to normal runtime events, while signed faults are
 recorded as evidence and never enter reasoning or action dispatch.
 """
@@ -22,8 +22,8 @@ from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_ur
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, compute_fingerprint
-from ori.security.firmware_ingest import FirmwareTelemetryGate
-from ori.security.firmware_liveness import FirmwareLivenessSupervisor
+from ori.security.firmware.ingest import FirmwareTelemetryGate
+from ori.security.firmware.liveness import FirmwareLivenessSupervisor
 from ori.state.store import StateStore
 
 # Annotated Any so the fallback assignment needs no ignore, which would be

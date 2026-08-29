@@ -340,7 +340,7 @@ jobs:
           # check that reads the denylist but happens to carry neither word in
           # its name.
           ORI_DISCLOSURE_DENYLIST="${terms}" python -m pytest \
-            tests/test_evidence_disclosure.py -m disclosure_release -q
+            tests/evidence/test_disclosure.py -m disclosure_release -q
 
       - name: Confirm the bundle matches the matrix target
         run: |

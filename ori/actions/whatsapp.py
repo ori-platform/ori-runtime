@@ -37,19 +37,19 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
 
 from ori.network.events import ReasoningResult
-from ori.security.remote_command_responses import (
-    format_remote_command_execution_response,
-    format_remote_command_rejection_response,
-)
-from ori.security.remote_command_throttle import (
-    RemoteCommandThrottleDecision,
-    evaluate_rejection_feedback,
-)
-from ori.security.remote_commands import (
+from ori.security.remote_commands.commands import (
     RemoteCommand,
     RemoteCommandVerifier,
     extract_remote_command_payload,
     verify_extracted_remote_command,
+)
+from ori.security.remote_commands.responses import (
+    format_remote_command_execution_response,
+    format_remote_command_rejection_response,
+)
+from ori.security.remote_commands.throttle import (
+    RemoteCommandThrottleDecision,
+    evaluate_rejection_feedback,
 )
 from ori.utils.time_utils import now_ms
 

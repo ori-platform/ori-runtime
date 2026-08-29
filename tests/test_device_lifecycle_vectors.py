@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from ori.security.firmware_telemetry import anchor_epoch_id, key_epoch_id
+from ori.security.firmware.telemetry import anchor_epoch_id, key_epoch_id
 from ori.state.store import StateStore
 
 FIXTURE = Path(__file__).parent / "fixtures" / "device_lifecycle_vectors.json"

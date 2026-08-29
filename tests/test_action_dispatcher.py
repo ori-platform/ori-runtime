@@ -2005,7 +2005,7 @@ class TestWhichTiersReachEvidence:
 
     async def test_the_attested_tier_matrix_is_exactly_c_and_d(self):
         """The matrix itself, independent of any dispatch."""
-        from ori.security.evidence_policy import tier_requires_attestation
+        from ori.security.evidence.policy import tier_requires_attestation
 
         assert tier_requires_attestation("C") is True
         assert tier_requires_attestation("D") is True
