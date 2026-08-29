@@ -42,7 +42,7 @@
 # workflow and are proven only by a real tag.
 set -euo pipefail
 
-HARNESS_REVISION="12"
+HARNESS_REVISION="13"
 PHASE="${1:?usage: harness-systemd-host.sh <install|persist|rollback|uninstall> ...}"
 BLOCKED=0
 UNIT="ori-runtime.service"
@@ -112,6 +112,17 @@ assert_contains() {
         *"$2"*) pass "$1" ;;
         *) fail "$1" "expected '$2' in: $(head -3 <<<"$3")" ;;
     esac
+}
+
+# A JSON field regardless of whether the emitter spaces after the colon: the
+# installer prints compact JSON, the doctor prints indented JSON.
+assert_field() {
+    local label="$1" key="$2" value="$3" text="$4"
+    if grep -Eq "\"$key\": ?\"?$value\"?[,}]" <<<"$text"; then
+        pass "$label"
+    else
+        fail "$label" "expected \"$key\": \"$value\" in: $(head -3 <<<"$text")"
+    fi
 }
 
 finish() {
@@ -202,7 +213,7 @@ phase_install() {
     echo "=== INSTALL (system scope) ==="
     tar -C "$WORKSPACE" -xf "$bundle"
     local extracted
-    extracted="$(find "$WORKSPACE" -maxdepth 1 -mindepth 1 -type d | head -1)"
+    extracted="$(find "$WORKSPACE" -maxdepth 1 -mindepth 1 -type d -name 'ori-runtime-*' | head -1)"
     install_release_tooling "$extracted" "$WORKSPACE/venv"
 
     assert_exit "install completes" 0 \
@@ -215,21 +226,19 @@ phase_install() {
             --location "$EVIDENCE_LOCATION" \
             --json
     local report="$LAST_OUTPUT"
-    assert_contains "install reports healthy" '"status": "healthy"' "$report"
-    assert_contains "install reports system scope" '"scope": "system"' "$report"
-    assert_contains "install reports the requested version" "\"version\": \"$version\"" "$report"
-    assert_contains "install reports the evidence device" \
-        "\"device_id\": \"$EVIDENCE_DEVICE_ID\"" "$report"
+    assert_field "install reports healthy" status healthy "$report"
+    assert_field "install reports system scope" scope system "$report"
+    assert_field "install reports the requested version" version "$version" "$report"
+    assert_field "install reports the evidence device" device_id "$EVIDENCE_DEVICE_ID" "$report"
 
     echo "=== LAUNCHER ==="
     # A launcher conflict is deliberately non-fatal, so an installation can
     # report healthy having installed no `ori` command at all. Diagnosing
     # through the absolute venv path would never notice.
-    assert_contains "launcher was installed" '"launcher_installed": true' "$report"
+    assert_field "launcher was installed" launcher_installed true "$report"
     local launcher="/usr/local/bin/ori"
     [ -x "$launcher" ] || fail "launcher is executable" "$launcher"
-    assert_contains "install reports the expected launcher path" \
-        "\"launcher_path\": \"$launcher\"" "$report"
+    assert_field "install reports the expected launcher path" launcher_path "$launcher" "$report"
     assert_exit "doctor runs through the launcher" 0 \
         "$launcher" doctor --scope system --json
     assert_contains "the launcher diagnosed this installation" \
@@ -335,7 +344,7 @@ phase_rollback() {
     select_tooling_interpreter "$signature"
     tar -C "$WORKSPACE" -xf "$bundle"
     local extracted
-    extracted="$(find "$WORKSPACE" -maxdepth 1 -mindepth 1 -type d | head -1)"
+    extracted="$(find "$WORKSPACE" -maxdepth 1 -mindepth 1 -type d -name 'ori-runtime-*' | head -1)"
     install_release_tooling "$extracted" "$WORKSPACE/venv"
 
     set +e
@@ -371,6 +380,23 @@ phase_rollback() {
     assert_exit "service still active after rollback" 0 systemctl is-active --quiet "$UNIT"
     assert_exit "doctor still healthy after rollback" 0 \
         "$SYSTEM_ROOT/current/venv/bin/ori" doctor --scope system --json
+    local restored; restored="$(basename "$previous")"
+    assert_contains "doctor reports the restored release" \
+        "\"version\": \"$restored\"" "$LAST_OUTPUT"
+
+    # The launcher resolves the active release at execution time; it is what an
+    # operator runs, so it has to reach the restored release, not the removed one.
+    assert_exit "launcher resolves the restored release" 0 \
+        /usr/local/bin/ori doctor --scope system --json
+    assert_contains "launcher reports the restored release" \
+        "\"version\": \"$restored\"" "$LAST_OUTPUT"
+
+    # Re-record this boot against the restored release so a later `persist`
+    # phase proves the host came back on it after a reboot that followed the
+    # rolled-back upgrade — not merely after the original install.
+    evidence record --path "$STATE_FILE" --version "$restored" >/dev/null \
+        || fail "the rollback was recorded" "could not write $STATE_FILE"
+    pass "rollback boot recorded, after every rollback assertion passed"
     finish
 }
 

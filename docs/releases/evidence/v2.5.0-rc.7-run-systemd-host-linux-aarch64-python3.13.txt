@@ -1,0 +1,173 @@
+=== BUILD (on the host under test; last lines of the builder output as captured) ===
+   pip 25.3 will enforce this behaviour change. A possible replacement is to rename the wheel to use a correctly normalised name (this may require updating the version in the project metadata). Discussion can be found at https://github.com/pypa/pip/issues/12938
+  DEPRECATION: Wheel filename 'pytz-2011e-py3-none-any.whl' is not correctly normalised. Future versions of pip will raise the following error:
+  Invalid wheel filename (invalid version): 'pytz-2011e-py3-none-any'
+   pip 25.3 will enforce this behaviour change. A possible replacement is to rename the wheel to use a correctly normalised name (this may require updating the version in the project metadata). Discussion can be found at https://github.com/pypa/pip/issues/12938
+  DEPRECATION: Wheel filename 'pytz-2011d-py3-none-any.whl' is not correctly normalised. Future versions of pip will raise the following error:
+  Invalid wheel filename (invalid version): 'pytz-2011d-py3-none-any'
+   pip 25.3 will enforce this behaviour change. A possible replacement is to rename the wheel to use a correctly normalised name (this may require updating the version in the project metadata). Discussion can be found at https://github.com/pypa/pip/issues/12938
+sha256:c8e6cc26ab6929d521f1f5687bf62ba2ae8f407bbfbedf102d2d9da07fb31aae
+=== LOCAL ARTIFACT ===
+  source commit     a4fd74fe58ac72835d52c45631e714caab0e0fd7
+  archive sha256    d0569661f4ce321db1189bc43de6f0979ec44f942a6a323d2f66295a240c0f01
+  release version   2.5.0-rc.7
+  target            linux-aarch64-python3.13
+  build interpreter /usr/bin/python3.13 (3.13 on aarch64)
+  artifact          /home/ori/ori-evidence/out-rc7/ori-runtime-2.5.0-rc.7-linux-aarch64-python3.13.tar.gz
+  artifact sha256   ab8dec48574ff889b7aeb0bf9e06349d1794afbb42c5f618c40fb376a03b96da
+  signature         /home/ori/ori-evidence/out-rc7/ori-runtime-2.5.0-rc.7-linux-aarch64-python3.13.tar.gz.signature.json
+  dev key           sha256:c8e6cc26ab6929d521f1f5687bf62ba2ae8f407bbfbedf102d2d9da07fb31aae  (ephemeral, discarded with this run)
+  reproduce with    git archive --format=tar a4fd74fe58ac72835d52c45631e714caab0e0fd7 | sha256sum
+  This artifact is development-signed. It proves nothing about KMS custody,
+  the production trust root, publication, or authenticated download.
+rc7-build-exit=0
+   pip 25.3 will enforce this behaviour change. A possible replacement is to rename the wheel to use a correctly normalised name (this may require updating the version in the project metadata). Discussion can be found at https://github.com/pypa/pip/issues/12938
+  DEPRECATION: Wheel filename 'pytz-2011e-py3-none-any.whl' is not correctly normalised. Future versions of pip will raise the following error:
+  Invalid wheel filename (invalid version): 'pytz-2011e-py3-none-any'
+   pip 25.3 will enforce this behaviour change. A possible replacement is to rename the wheel to use a correctly normalised name (this may require updating the version in the project metadata). Discussion can be found at https://github.com/pypa/pip/issues/12938
+  DEPRECATION: Wheel filename 'pytz-2011d-py3-none-any.whl' is not correctly normalised. Future versions of pip will raise the following error:
+  Invalid wheel filename (invalid version): 'pytz-2011d-py3-none-any'
+   pip 25.3 will enforce this behaviour change. A possible replacement is to rename the wheel to use a correctly normalised name (this may require updating the version in the project metadata). Discussion can be found at https://github.com/pypa/pip/issues/12938
+sha256:5ece3180ad75230974f96ae9fecd9cb44aa4ddcc864e93f0f41a93f4a4dd35fc
+=== LOCAL ARTIFACT ===
+  source commit     9ff1c40f9bc38113cb0e6ba62542a5e79d946676
+  archive sha256    5264f4a8f735d90dddf1323bf1add68a128893261c839ce3f7110c3c542c1913
+  release version   2.5.0-rc.99
+  target            linux-aarch64-python3.13
+  build interpreter /usr/bin/python3.13 (3.13 on aarch64)
+  artifact          /home/ori/ori-evidence/out-probe/ori-runtime-2.5.0-rc.99-linux-aarch64-python3.13.tar.gz
+  artifact sha256   f241c97531f67b1baa7987c1c923e2d70e28b1da662cbf8319f394282ecd8bb8
+  signature         /home/ori/ori-evidence/out-probe/ori-runtime-2.5.0-rc.99-linux-aarch64-python3.13.tar.gz.signature.json
+  dev key           sha256:5ece3180ad75230974f96ae9fecd9cb44aa4ddcc864e93f0f41a93f4a4dd35fc  (ephemeral, discarded with this run)
+  reproduce with    git archive --format=tar 9ff1c40f9bc38113cb0e6ba62542a5e79d946676 | sha256sum
+  This artifact is development-signed. It proves nothing about KMS custody,
+  the production trust root, publication, or authenticated download.
+probe-build-exit=0
+
+##### phase: install
+=== HOST ===
+  harness revision  13 (phase install)
+  distribution      Debian GNU/Linux 13 (trixie)
+  kernel            Linux 6.18.34+rpt-rpi-v8
+  architecture      aarch64
+  systemd           systemd 257 (257.13-1~deb13u1)
+  python3           3.13.5 (/usr/bin/python3)
+  base interpreter  /usr/bin/python3
+=== VERIFY (before extraction) ===
+  verified before extraction: ori-runtime-2.5.0-rc.7-linux-aarch64-python3.13.tar.gz verified against ori-runtime-release-2026-01 PASS
+  tooling interpreter /usr/bin/python3.13 matches the artifact target PASS
+=== CLEAN STATE ===
+  no prior system installation                             PASS
+=== INSTALL (system scope) ===
+  install completes                                        PASS
+  install reports healthy                                  PASS
+  install reports system scope                             PASS
+  install reports the requested version                    PASS
+  install reports the evidence device                      PASS
+=== LAUNCHER ===
+  launcher was installed                                   PASS
+  install reports the expected launcher path               PASS
+  doctor runs through the launcher                         PASS
+  the launcher diagnosed this installation                 PASS
+=== CONFIG ===
+  config carries the evidence device id                    PASS
+  config carries the evidence location                     PASS
+=== SERVICE ===
+  unit is active                                           PASS
+  unit is enabled for boot                                 PASS
+  unit runs as ori-runtime                                 PASS
+=== HEALTH SOCKET ===
+  health socket exists                                     PASS
+=== INSTALLED DOCTOR ===
+  installed doctor reports no blocking failure             PASS
+  doctor diagnosed this installation                       PASS
+  doctor reports the requested version                     PASS
+  doctor reports the evidence device                       PASS
+  code integrity passes on a real venv                     PASS
+  install boot recorded, after every install assertion passed PASS
+
+  every required claim proven for phase install
+
+##### phase: persist
+=== HOST ===
+  harness revision  13 (phase persist)
+  distribution      Debian GNU/Linux 13 (trixie)
+  kernel            Linux 6.18.34+rpt-rpi-v8
+  architecture      aarch64
+  systemd           systemd 257 (257.13-1~deb13u1)
+  python3           3.13.5 (/usr/bin/python3)
+  base interpreter  /usr/bin/python3
+=== REBOOT PERSISTENCE ===
+  the host rebooted since this release was installed (rebooted since 9221c50c-3504-4c31-94de-68d2dc9a15f5) PASS
+  unit is active after reboot                              PASS
+  unit is still enabled                                    PASS
+  doctor is healthy after reboot                           PASS
+  doctor still reports the release under test              PASS
+
+  every required claim proven for phase persist
+
+##### phase: rollback
+=== HOST ===
+  harness revision  13 (phase rollback)
+  distribution      Debian GNU/Linux 13 (trixie)
+  kernel            Linux 6.18.34+rpt-rpi-v8
+  architecture      aarch64
+  systemd           systemd 257 (257.13-1~deb13u1)
+  python3           3.13.5 (/usr/bin/python3)
+  base interpreter  /usr/bin/python3
+=== ROLLBACK ===
+  active release before  /opt/ori/releases/2.5.0-rc.7
+  verified before extraction: ori-runtime-2.5.0-rc.99-linux-aarch64-python3.13.tar.gz verified against ori-runtime-release-2026-01 PASS
+  tooling interpreter /usr/bin/python3.13 matches the artifact target PASS
+  the candidate failed after activation                    PASS
+  active release after   /opt/ori/releases/2.5.0-rc.7
+  rollback restored the previous release                   PASS
+  the failed candidate was removed                         PASS
+  service still active after rollback                      PASS
+  doctor still healthy after rollback                      PASS
+  doctor reports the restored release                      PASS
+  launcher resolves the restored release                   PASS
+  launcher reports the restored release                    PASS
+  rollback boot recorded, after every rollback assertion passed PASS
+
+  every required claim proven for phase rollback
+
+##### phase: persist-after-rollback
+=== HOST ===
+  harness revision  13 (phase persist)
+  distribution      Debian GNU/Linux 13 (trixie)
+  kernel            Linux 6.18.34+rpt-rpi-v8
+  architecture      aarch64
+  systemd           systemd 257 (257.13-1~deb13u1)
+  python3           3.13.5 (/usr/bin/python3)
+  base interpreter  /usr/bin/python3
+=== REBOOT PERSISTENCE ===
+  the host rebooted since this release was installed (rebooted since 1f996e01-12a4-4f02-8a7c-fc43f19397fc) PASS
+  unit is active after reboot                              PASS
+  unit is still enabled                                    PASS
+  doctor is healthy after reboot                           PASS
+  doctor still reports the release under test              PASS
+
+  every required claim proven for phase persist
+
+##### phase: uninstall
+=== HOST ===
+  harness revision  13 (phase uninstall)
+  distribution      Debian GNU/Linux 13 (trixie)
+  kernel            Linux 6.18.34+rpt-rpi-v8
+  architecture      aarch64
+  systemd           systemd 257 (257.13-1~deb13u1)
+  python3           3.13.5 (/usr/bin/python3)
+  base interpreter  /usr/bin/python3
+=== UNINSTALL ===
+  uninstall completes                                      PASS
+  unit removed                                             PASS
+  no release, data or active symlink remains               PASS
+  service account retained, as designed                    PASS
+  evidence state removed (/var/lib/ori-evidence-state)     PASS
+  install root removed; a further run starts clean         PASS
+
+  retained on this host: the ori-runtime service account
+  remove it deliberately if you want it gone: userdel ori-runtime
+
+  every required claim proven for phase uninstall

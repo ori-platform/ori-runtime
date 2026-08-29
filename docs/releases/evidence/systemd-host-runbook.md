@@ -36,7 +36,7 @@ as the signature. What is reproduced is installation behaviour.
 - **No existing Ori installation.** `/opt/ori` absent, no `ori-runtime.service`
   known to systemd, no `/usr/local/bin/ori`. The harness refuses otherwise
   rather than install over one.
-- The interpreter the target names, on `PATH` (`python3.11` or `python3.12`),
+- The interpreter the target names, on `PATH` (`python3.11`, `python3.12` or `python3.13`),
   plus a `python3` of 3.9 or newer for the harness itself
 - `git`, `tar`, `openssl`, and `sudo`
 - A clean checkout of the commit under test — the builder archives from the
@@ -50,7 +50,7 @@ set -o pipefail                     # see the note below — this is not optiona
 cd /path/to/ori                     # the checkout under test
 COMMIT=$(git rev-parse HEAD)        # must be the exact merged commit
 VERSION=<the version this commit declares>   # e.g. 2.4.0-rc.5
-TARGET=linux-$(uname -m)-python3.12          # or python3.11
+TARGET=linux-$(uname -m)-python3.13          # or python3.12, python3.11
 OUT=$HOME/ori-evidence
 mkdir -p "$OUT"
 ```
@@ -152,6 +152,29 @@ The phase requires the exact `post_install_health_failed` code. "Some nonzero
 exit" is satisfied by an argument error or a signature rejection, neither of
 which ever activates anything — indistinguishable from a successful rollback
 unless the code is checked.
+
+It then proves the restored release through the launcher, since that resolves
+the active release at execution time, and re-records the boot against the
+restored release. Reboot again and run `persist` with the *restored* version,
+so the claim that a rolled-back upgrade comes back on the previous release
+rests on a boot that followed the rollback:
+
+```bash
+sudo reboot
+```
+
+```bash
+set -o pipefail
+cd /path/to/ori
+sudo ./docs/releases/evidence/harness-systemd-host.sh persist "$VERSION" 2>&1 \
+    | tee "$OUT/persist-after-rollback.log"
+echo "persist exit $?"
+```
+
+The failing candidate is built from a scratch commit whose only change is to
+report critical health unconditionally, under a version no release will ever
+carry. Record its commit and version with the run so it cannot be mistaken for
+a candidate.
 
 ## 5. Uninstall
 

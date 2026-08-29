@@ -61,7 +61,7 @@ cd "$SOURCE"
 TUPLE_ARCH="$(printf '%s' "$TARGET" | cut -d- -f2)"
 TUPLE_PYTHON="$(printf '%s' "$TARGET" | sed 's/.*python//')"
 case "$TARGET" in
-    linux-x86_64-python3.1[12]|linux-aarch64-python3.1[12]) ;;
+    linux-x86_64-python3.1[123]|linux-aarch64-python3.1[123]) ;;
     *) echo "unsupported target tuple: $TARGET" >&2; exit 1 ;;
 esac
 
