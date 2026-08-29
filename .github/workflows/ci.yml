@@ -164,7 +164,7 @@ jobs:
       # half. A ratchet only holds if the clean half is enforced.
       - name: Type check production code (pyright)
         if: matrix.python-version == '3.12'
-        run: npx --yes pyright@latest ori/
+        run: pyright ori/
 
       - name: Pre-commit (lint + format + hygiene)
         env:

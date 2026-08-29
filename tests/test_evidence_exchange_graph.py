@@ -476,6 +476,21 @@ VECTOR_EXEMPTIONS = {
             "anchor, so there is no code path here to drive."
         ),
     },
+    ("evidence_exchange_receiver_state", "commissioning-resolution"): {
+        "owner": "the evidence authority",
+        "status": "proof_pending",
+        "tracking": "ori-specs#130",
+        "reason": (
+            "Authority-side. Its receiver_state is the set of commissioning "
+            "authorisations the evidence authority holds, delivered to it "
+            "through the commissioning path the device never sees, and the "
+            "outcome is that authority resolving a registration's "
+            "commissioning_digest against them. This runtime holds no "
+            "authorisation -- it holds only the digest as a reference -- so "
+            "there is no resolution here to drive. Vendored so the drift check "
+            "covers the bytes the authority must match."
+        ),
+    },
     ("commissioned_safety_binding", "binding-vectors-v1"): {
         "owner": "the runtime",
         "status": "proof_pending",
