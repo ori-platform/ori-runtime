@@ -538,8 +538,12 @@ def bootstrap_install(
         ],
     ]
     try:
+        # Environment preparation is progress, not output: with --json the
+        # installer's document must be the only thing on stdout.
         for command in commands:
-            subprocess.run(command, check=True, stdin=subprocess.DEVNULL)
+            subprocess.run(
+                command, check=True, stdin=subprocess.DEVNULL, stdout=sys.stderr
+            )
         command = [
             str(environment / "bin" / "ori-install-linux"),
             "install",
