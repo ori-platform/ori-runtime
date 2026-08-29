@@ -1,8 +1,10 @@
 # SMS Webhook Security
 
 Ori can receive inbound SMS webhooks for Tier C approvals and authenticated
-remote commands. This path is security-sensitive because a forged inbound
-message can look like an operator reply if deployment controls are weak.
+remote commands, and Africa's Talking delivery reports for outbound-message
+reconciliation. This path is security-sensitive because a forged inbound
+message can look like an operator reply, and a forged report can invent handset
+delivery or trigger retry, if deployment controls are weak.
 
 The runtime implements application-layer controls, but it cannot prove carrier
 identity or provider network posture by itself. Public webhook deployments must
@@ -88,6 +90,12 @@ actions:
 
 The bridge signs the raw body with `ORI_SMS_WEBHOOK_HMAC_SECRET`. The runtime
 verifies HMAC before decoding JSON or form data.
+
+Configure Africa's Talking **Incoming Messages** and **Delivery Reports** URLs
+to reach this bridge. The bridge must preserve the form or JSON fields and sign
+the exact body it forwards. Delivery reports are matched only to a uniquely
+accepted SMS by their provider `id`; unknown or ambiguous IDs cannot mutate the
+outbox.
 
 ### 3. Direct Public Runtime Webhook
 

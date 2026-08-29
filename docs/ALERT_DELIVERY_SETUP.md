@@ -63,6 +63,13 @@ production deliverability.
 4. Once approved, set `AT_USERNAME` to the live application username and
    `AT_SENDER_ID` to the approved sender.
 
+Configure both the **Incoming Messages** and **Delivery Reports** callback URLs
+in the live application. They may target the same signing bridge and runtime
+path: inbound messages contain `from` and `text`, while delivery reports contain
+`id` and `status`, and the runtime dispatches them by shape. The bridge must
+apply the production controls in `SMS_WEBHOOK_SECURITY.md`; a raw provider
+callback cannot generate Ori's HMAC headers itself.
+
 **Plan the freeze around step 3.** If the sender ID is not approved in time, the
 demo can still run on sandbox or on a numeric sender, but the message will not
 carry the brand identity. Decide which of those is acceptable rather than
@@ -113,6 +120,24 @@ restart, a missed inbound poll, or a second device.
 | `tier_a_alert` | configured-risk category (64), site (80), timestamp (32) |
 | `tier_c_approval` | proposed action (64), site (80), timestamp (32), proposal ID (16), timeout seconds (8) |
 | `tier_c_escalation` | proposal ID (16), site (80), timestamp (32), safe-default outcome (16) |
+
+Submit these four exact English (`en`) utility templates. The names are
+recommended stable deployment names; the body text and placeholder order are
+the contract the runtime currently emits:
+
+| Template name | Exact body |
+| --- | --- |
+| `ori_runtime_startup_v1` | `Ori is online at {{1}}: {{2}} sensors connected and {{3}} rules active. Ori will notify you when it detects a configured risk. No safety cutoff is commissioned, so Ori can warn but cannot intervene.` |
+| `ori_tier_a_alert_v1` | `Ori detected configured risk: {{1}} at {{2}} on {{3}}. Check the dashboard or SMS alert for details.` |
+| `ori_tier_c_approval_v1` | `Ori proposes {{1}} at {{2}} on {{3}}. Reply YES-{{4}} to approve or NO-{{4}} to reject within {{5}} seconds. If no valid reply arrives, Ori will use the configured safe default.` |
+| `ori_tier_c_escalation_v1` | `Ori Tier C proposal {{1}} at {{2}} timed out on {{3}}. Safe-default execution {{4}}.` |
+
+Use representative samples when Twilio asks for placeholder examples: `Ikeja
+Office`, `4`, `3`; `overcurrent`, `Ikeja Office`, `2026-08-29 17:00 WAT`;
+`open safety circuit`, `Ikeja Office`, `2026-08-29 17:00 WAT`, `AB12CD34`,
+`300`; and `AB12CD34`, `Ikeja Office`, `2026-08-29 17:05 WAT`, `completed`.
+Do not change wording after approval without versioning the template name and
+reviewing the matching runtime intent.
 
 Template wording must be purpose-specific and fixed around those fields. Do not
 submit a template such as `ORI ALERT — {{1}}`: carrying arbitrary model output
@@ -196,9 +221,18 @@ arrived. The proof is a handset.
 5. The failover path is exercised deliberately: break the primary channel's
    credentials and confirm the secondary carries the alert.
 6. For each WhatsApp send, retain the provider message identifier and initial
-   acceptance status, then a later `delivered` or `read` observation. Provider
-   acceptance alone proves only that Twilio took custody, not that a handset
-   received the message.
+   acceptance status, then a later `delivered` or `read` observation.
+7. For each SMS send, retain the Africa's Talking `messageId` and initial
+   `Success` acceptance, then the authenticated delivery report for that same
+   ID with final `Success`, `Failed`, or `Rejected` status.
+8. Send a real inbound WhatsApp reply and retain the provider inbound message
+   ID, sender, receipt time, and the runtime response bound to that recorded
+   session. A reply accepted only because a mock or stale 24-hour assumption
+   was used does not count.
+9. Send a real inbound SMS through the signing bridge, confirm its HMAC and
+   replay controls accept it once, and use `YES-<proposal_id>` to approve a
+   deliberately scoped Tier C test action. Use a non-energising test executor
+   unless the physical channel has separately completed commissioning.
 
 Item 5 matters more than it looks. `AlertFailoverSender` is the component that
 decides an operator hears anything at all when a provider is down, and it has
@@ -207,6 +241,22 @@ never been exercised against two real providers failing for real reasons.
 Redact recipient numbers and message content from retained evidence. Keep the
 intent, provider message identifier, provider status, and observation times so
 the acceptance-to-delivery transition remains reproducible.
+
+For every run, retain one redacted record with these fields:
+
+| Field | Required evidence |
+| --- | --- |
+| build | deployed commit SHA and runtime version |
+| configuration | deployment profile, primary channel, redacted Content SID suffixes, sender identities, and webhook mode |
+| submission | intent, channel, provider message ID, acceptance status, and acceptance time |
+| receipt | same provider message ID, terminal status, observation time, and redacted provider callback/export |
+| handset | timestamped screenshot or operator observation tied to the provider message ID and test case |
+| failover | refused primary attempt, accepted secondary attempt, and proof that only one handset message arrived |
+| inbound | provider inbound ID, authenticated webhook/poll observation, sender binding, proposal ID where applicable, and runtime outcome |
+
+Record each case as pass or fail; do not replace a failed attempt with a later
+successful screenshot. The failed record is needed to prove retry and
+deduplication behaviour.
 
 ---
 
