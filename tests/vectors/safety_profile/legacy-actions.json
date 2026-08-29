@@ -1,0 +1,37 @@
+{
+  "contract": "safety-profile/v1",
+  "version": 1,
+  "comment": "The three actuator-specific executor names the runtime registers, each mapped to exactly one protected-circuit outcome, with the contexts that may command it. release_relay restores the load and is never a profile outcome: it is what local arm and local reset do.",
+  "cases": [
+    {
+      "legacy_action": "trip_relay",
+      "note": "Isolates the load. A profile trip commands it through the zone's mapping; a Tier C approved action may also reach it.",
+      "outcome": "open_protected_circuit",
+      "permitted_as_profile_outcome": true,
+      "permitted_from": [
+        "profile_trip",
+        "tier_c_approved"
+      ]
+    },
+    {
+      "legacy_action": "close_gas_valve",
+      "note": "Isolates the supply. Registered today as the same executor as trip_relay; the word close describes the valve, not the outcome.",
+      "outcome": "open_protected_circuit",
+      "permitted_as_profile_outcome": true,
+      "permitted_from": [
+        "profile_trip",
+        "tier_c_approved"
+      ]
+    },
+    {
+      "legacy_action": "release_relay",
+      "note": "Restores the load. Never a profile outcome, never remote: only local arm and local reset perform it, under the trip-state rules.",
+      "outcome": "close_protected_circuit",
+      "permitted_as_profile_outcome": false,
+      "permitted_from": [
+        "local_arm",
+        "local_reset"
+      ]
+    }
+  ]
+}

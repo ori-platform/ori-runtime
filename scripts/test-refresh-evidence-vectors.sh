@@ -40,7 +40,7 @@ new_fixture() {
   git -C "${specs}" config user.name t
   for d in evidence/vectors evidence-exchange/vectors evidence-exchange/vectors/receiver-state \
            runtime-evidence-anchor/vectors gateway-api/vectors commissioned-safety-binding \
-           sensor-configuration/vectors; do
+           safety-profile/vectors sensor-configuration/vectors; do
     mkdir -p "${specs}/${d}"
     printf '{"set":"%s","v":1}\n' "${d}" > "${specs}/${d}/vectors.json"
   done

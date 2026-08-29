@@ -4647,3 +4647,31 @@ actions:
                     ),
                 )
             )
+
+
+def test_relay_polarity_is_refused_from_the_provisioning_document(tmp_path):
+    """Polarity is a commissioned fact; `active_high` in ori.yaml is a foreign field."""
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        device:
+          id: bench-01
+          name: Bench
+          location: Lagos
+        sensors: []
+        skills: []
+        reasoning:
+          default_tier: rule
+        gateway:
+          enabled: false
+          broker_url: mqtt://localhost
+        actions:
+          primary_alert_channel: sms
+          relay:
+            enabled: false
+            gpio_pin: 26
+            active_high: false
+        """,
+    )
+    with pytest.raises(ConfigValidationError, match="active_high"):
+        Config.load(yaml_path)

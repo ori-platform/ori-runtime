@@ -552,7 +552,9 @@ actions:
                                      # enabled gates Tier B/C; a gpio_pin also
                                      # declares the always-available Tier D path
     # gpio_pin: 26                   # uncomment only when relay IN is wired
-    active_high: true
+    # Input polarity and the coil mapping are commissioned facts: they come
+    # from the signed binding at <data_path>/commissioning/binding.json, and
+    # `active_high` here is refused at startup.
 
   # CoAP command transport (optional; constrained-device actuation path)
   # CoAP commands are executed through `coap_command` actions in skills.

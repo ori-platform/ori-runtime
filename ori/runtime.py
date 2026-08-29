@@ -14,6 +14,8 @@ Or via the CLI entry point::
 """
 
 import asyncio
+import base64
+import binascii
 import datetime as dt
 import hashlib
 import hmac
@@ -99,6 +101,21 @@ from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfi
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM, local_llm_backend_available
 from ori.runtime_health_socket import RuntimeHealthSocketServer
+from ori.security.commissioning.anchors import (
+    AnchorError,
+    CommissioningAnchors,
+    anchor_collision,
+    load_commissioning_anchors,
+)
+from ori.security.commissioning.loader import (
+    CommissioningState,
+    DeclaredInventory,
+    load_commissioning_state,
+)
+from ori.security.commissioning.profiles import (
+    ProfileSetError,
+    load_shipped_profile_set,
+)
 from ori.security.evidence.authority_keys import load_authority_key_registry
 from ori.security.evidence.chain import SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION
 from ori.security.evidence.custody_keys import (
@@ -329,6 +346,7 @@ class OriRuntime:
         self._evidence_inbound_subscriber: MqttEvidenceInboundSubscriber | None = None
         self._evidence_outbound_publisher: MqttEvidenceOutboundPublisher | None = None
         self._evidence_posture_problems: list[str] = []
+        self._commissioning_state: CommissioningState | None = None
         self._firmware_confirmation_coordinator: (
             FirmwareConfirmationCoordinator | None
         ) = None
@@ -468,6 +486,23 @@ class OriRuntime:
             logger.exception("[runtime] config validation failed — aborting")
             raise
         self._config = config
+        # Anchors are compared as key material at configuration load, before
+        # any binding is seen: if a commissioning anchor is the provisioning
+        # anchor, the separation the binding contract rests on does not exist.
+        try:
+            commissioning_anchors = load_commissioning_anchors()
+        except AnchorError as exc:
+            logger.error("[commissioning] %s — aborting", exc)
+            raise ConfigValidationError(f"commissioning anchors: {exc}") from exc
+        if anchor_collision(commissioning_anchors, _provisioning_anchor_bytes(config)):
+            logger.error(
+                "[commissioning] anchor_collision: a commissioning anchor is the "
+                "provisioning anchor — aborting"
+            )
+            raise ConfigValidationError(
+                "anchor_collision: a commissioning anchor and the provisioning "
+                "anchor are the same key material"
+            )
 
         from logging.handlers import RotatingFileHandler
 
@@ -848,6 +883,11 @@ class OriRuntime:
             )
 
         dispatcher.register_executor("log_to_dashboard", _exec_log_to_dashboard)
+
+        # The commissioned binding is loaded once the actuator backend has been
+        # proven available: a hardened host that cannot drive its relay refuses
+        # for that reason, and a host that can is then held to the binding.
+        await self._load_commissioning(config, commissioning_anchors)
 
         # Relay-backed safety executors — only if relay successfully connected.
         # Semantic safety actions such as close_gas_valve still resolve through
@@ -2427,6 +2467,86 @@ class OriRuntime:
             return False
         return status == _FIRMWARE_CONFIRMED
 
+    def _commissioning_health(self) -> dict[str, Any]:
+        state = self._commissioning_state
+        if state is None:
+            return {
+                "binding_seq": 0,
+                "binding_hash": None,
+                "anchors_configured": False,
+                "zones": [],
+                "last_verdict": None,
+                "actuation_licensed": False,
+            }
+        return state.health()
+
+    async def _load_commissioning(
+        self, config: Config, anchors: CommissioningAnchors
+    ) -> None:
+        """Load the binding in force and decide what startup may claim.
+
+        The profile set ships with the release and is refused in every posture
+        when it cannot load. Declared actuating hardware with no accepted
+        binding refuses a hardened start and degrades a development one; it
+        never licenses actuation through the commissioned seam either way.
+        """
+        assert self._state_store is not None
+        try:
+            profiles = load_shipped_profile_set()
+        except ProfileSetError as exc:
+            logger.error("[commissioning] %s — aborting", exc)
+            raise ConfigValidationError(str(exc)) from exc
+        hardened = requires_production_posture(
+            device=config.device, security=config.security
+        )
+        relay_pin = config.actions.relay.get("gpio_pin")
+        inventory = DeclaredInventory.from_config(
+            [str(sensor.id) for sensor in config.sensors],
+            int(relay_pin) if relay_pin is not None else None,
+        )
+        state = await load_commissioning_state(
+            data_path=Path(self._config_path).resolve().parent,
+            device_id=str(config.device.id),
+            anchors=anchors,
+            provisioning_anchor=_provisioning_anchor_bytes(config),
+            inventory=inventory,
+            posture="production" if hardened else "development",
+            profiles=profiles,
+            store=self._state_store,
+        )
+        self._commissioning_state = state
+        if inventory.actuators and not state.actuation_licensed:
+            detail = (
+                f"binding verdict {state.last_verdict.stage}:{state.last_verdict.reason}"
+                if state.last_verdict is not None
+                else "no binding presented"
+            )
+            if hardened:
+                logger.error(
+                    "[commissioning] declared actuating hardware has no accepted "
+                    "commissioned binding (%s) — aborting under hardened posture",
+                    detail,
+                )
+                raise ConfigValidationError(
+                    "commissioning: declared actuating hardware has no accepted "
+                    f"binding ({detail}); a hardened runtime does not start unprotected"
+                )
+            if "binding_missing" not in state.problems:
+                state.problems.append("binding_missing")
+            logger.warning(
+                "[commissioning] declared actuating hardware has no accepted "
+                "commissioned binding (%s); starting degraded with no protection "
+                "claim and no actuation through the commissioned seam",
+                detail,
+            )
+        elif state.in_force is not None:
+            logger.info(
+                "[commissioning] binding %d in force: %d zone(s), actuation %s",
+                state.in_force.binding_seq,
+                len(state.in_force.zones),
+                "licensed" if state.actuation_licensed else "withheld",
+            )
+
     async def _evidence_health(self) -> dict[str, Any]:
         attestor = self._evidence_attestor
         enabled = bool(
@@ -2637,6 +2757,7 @@ class OriRuntime:
                 "senders": remote_command_lockout_senders,
             },
             "evidence": await self._evidence_health(),
+            "commissioning": self._commissioning_health(),
             "firmware_liveness": firmware_liveness_health,
         }
         if firmware_liveness_health["degraded"]:
@@ -2649,6 +2770,11 @@ class OriRuntime:
         if getattr(self, "_evidence_posture_problems", ()):
             # Evidence trust not established is degraded, not critical: the
             # safety path is unaffected, and what is at risk is the record.
+            snapshot["status"] = "degraded"
+        commissioning = getattr(self, "_commissioning_state", None)
+        if commissioning is not None and commissioning.problems:
+            # Declared actuating hardware with no accepted binding is a device
+            # that cannot claim protection; it must not read as healthy.
             snapshot["status"] = "degraded"
 
         # Named reasons for the site view. The rich diagnostics above stay
@@ -4991,6 +5117,21 @@ def _build_firmware_command_service(
         logger.exception("[runtime] invalid firmware command egress configuration")
         raise
     return publisher, service
+
+
+def _provisioning_anchor_bytes(config: Config) -> bytes | None:
+    """The provisioning anchor as raw key material, from the environment it names."""
+    env_name = str(
+        (config.security.get("config_signature") or {}).get("trust_anchor_env") or ""
+    ).strip()
+    text = os.environ.get(env_name, "").strip() if env_name else ""
+    if not text:
+        return None
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return raw if len(raw) == 32 else None
 
 
 def _degradation_reasons(*, firmware_liveness_degraded: bool) -> list[str]:
