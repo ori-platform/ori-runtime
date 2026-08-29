@@ -3770,3 +3770,86 @@ class TestRemoteDevicePolicy:
             assert row["attempt_count"] == 10
         finally:
             await runtime._state_store.close()
+
+
+class TestEvidencePostureNeverGatesStartup:
+    """Tier D is never gated on evidence, not by availability and not by trust.
+
+    A hardened runtime whose release ships no authority-key registry cannot
+    establish evidence trust. It must still start, still hold its dispatcher,
+    and say so in health — never construct a trust claim it cannot back, and
+    never withhold the deterministic safety path because the record is at
+    risk.
+    """
+
+    @pytest.mark.parametrize("profile", ["production", "development"])
+    async def test_a_runtime_without_evidence_trust_still_starts_and_reports_it(
+        self, minimal_config, monkeypatch, tmp_path, profile
+    ):
+        _patch_external(monkeypatch)
+        _treat_scratch_skills_as_packaged(monkeypatch)
+        monkeypatch.setenv("ORI_EVIDENCE_DEVICE_SECRET", "install-secret-for-test")
+        config = Config.load(str(minimal_config))
+        config.device.deployment_profile = profile
+        config.reasoning.default_tier = "rule"
+        config.reasoning.local_model = ""
+        config.reasoning.model_path = ""
+        config.evidence.enabled = True
+        config.evidence.db_path = str(tmp_path / "evidence.db")
+        config.evidence.key_path = str(tmp_path / "evidence.key")
+        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+        # The release under test ships no authority-key registry.
+        monkeypatch.setattr("ori.runtime._load_authority_keys", lambda: {})
+        runtime = OriRuntime(config_path=str(minimal_config))
+        observed: dict[str, Any] = {}
+
+        async def _observe_then_stop():
+            await asyncio.sleep(0.2)
+            observed["dispatcher"] = runtime._dispatcher
+            attestor = runtime._evidence_attestor
+            observed["signing_available"] = attestor is not None and attestor.available
+            observed["health"] = await runtime._build_health_snapshot()
+            await runtime.stop()
+
+        await asyncio.gather(runtime.start(), _observe_then_stop())
+
+        assert observed["dispatcher"] is not None, "the action path did not come up"
+        assert observed["signing_available"], (
+            "signing is local and must be available even when trust is not"
+        )
+        health = observed["health"]
+        assert health["evidence"]["available"] is True
+        assert health["evidence"]["posture_problems"] == ["authority_keys_missing"]
+        assert health["status"] == "degraded"
+        assert health.get("critical") is not True
+
+    async def test_a_runtime_with_evidence_trust_reports_no_posture_problems(
+        self, minimal_config, monkeypatch, tmp_path
+    ):
+        _patch_external(monkeypatch)
+        _treat_scratch_skills_as_packaged(monkeypatch)
+        monkeypatch.setenv("ORI_EVIDENCE_DEVICE_SECRET", "install-secret-for-test")
+        config = Config.load(str(minimal_config))
+        config.device.deployment_profile = "production"
+        config.reasoning.default_tier = "rule"
+        config.reasoning.local_model = ""
+        config.reasoning.model_path = ""
+        config.evidence.enabled = True
+        config.evidence.db_path = str(tmp_path / "evidence.db")
+        config.evidence.key_path = str(tmp_path / "evidence.key")
+        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+        monkeypatch.setattr(
+            "ori.runtime._load_authority_keys",
+            lambda: {("evidence_authority_receipt", "auth-receipt-1"): object()},
+        )
+        runtime = OriRuntime(config_path=str(minimal_config))
+        observed: dict[str, Any] = {}
+
+        async def _observe_then_stop():
+            await asyncio.sleep(0.2)
+            observed["health"] = await runtime._build_health_snapshot()
+            await runtime.stop()
+
+        await asyncio.gather(runtime.start(), _observe_then_stop())
+        assert observed["health"]["evidence"]["posture_problems"] == []
+        assert observed["health"].get("status") != "degraded"

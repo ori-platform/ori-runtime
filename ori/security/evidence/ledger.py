@@ -321,7 +321,38 @@ WHEN OLD.retired_at_ms IS NOT NULL
 BEGIN
     SELECT RAISE(ABORT, 'a retired artifact cannot be requeued or restated');
 END;
+
+-- Authority artifacts ingest refused, kept so a refused receipt is
+-- distinguishable from one that never arrived after a restart. Bounded: the
+-- newest rows are what an operator diagnoses from, and an attacker who can
+-- publish rubbish on the inbound topic must not be able to grow a device's
+-- database without limit. Rows are never rewritten.
+CREATE TABLE IF NOT EXISTS evidence_ingest_refusals (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_type  TEXT    NOT NULL,
+    reason         TEXT    NOT NULL,
+    detail         TEXT    NOT NULL,
+    observed_at_ms INTEGER NOT NULL,
+    CHECK (length(artifact_type) BETWEEN 1 AND 64),
+    CHECK (length(reason) BETWEEN 1 AND 64),
+    CHECK (length(detail) <= 256)
+);
+
+CREATE TRIGGER IF NOT EXISTS evidence_ingest_refusals_no_update
+BEFORE UPDATE ON evidence_ingest_refusals
+BEGIN
+    SELECT RAISE(ABORT, 'ingest refusals are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_ingest_refusals_bounded
+AFTER INSERT ON evidence_ingest_refusals
+BEGIN
+    DELETE FROM evidence_ingest_refusals WHERE id <= NEW.id - 200;
+END;
 """
+
+#: Rows the refusal history keeps; older rows are dropped by trigger.
+INGEST_REFUSAL_RETENTION = 200
 
 #: Closed outbox vocabulary; the delivery envelope has its own table.
 OUTBOX_CHECKPOINT = "checkpoint"
@@ -618,6 +649,44 @@ class EvidenceDeliveryLedger:
             (int(at_ms), outcome, str(artifact_digest)),
         )
         return cursor.rowcount == 1
+
+    # -- ingest refusals -------------------------------------------------
+
+    def record_ingest_refusal(
+        self, *, artifact_type: str, reason: str, detail: str, observed_at_ms: int
+    ) -> None:
+        """Retain one refused authority artifact for the operator's diagnosis."""
+        self._connection.execute(
+            """
+            INSERT INTO evidence_ingest_refusals
+                (artifact_type, reason, detail, observed_at_ms)
+            VALUES (?, ?, ?, ?)
+            """,
+            (str(artifact_type), str(reason), str(detail)[:256], int(observed_at_ms)),
+        )
+
+    def ingest_refusals(
+        self, limit: int = INGEST_REFUSAL_RETENTION
+    ) -> list[sqlite3.Row]:
+        """Retained refusals, oldest first."""
+        return list(
+            self._connection.execute(
+                "SELECT * FROM evidence_ingest_refusals ORDER BY id LIMIT ?",
+                (int(limit),),
+            )
+        )
+
+    def ingest_refusal_summary(self) -> tuple[int, sqlite3.Row | None]:
+        """How many refusals are retained, and the most recent one."""
+        count = int(
+            self._connection.execute(
+                "SELECT COUNT(*) AS n FROM evidence_ingest_refusals"
+            ).fetchone()["n"]
+        )
+        last: sqlite3.Row | None = self._connection.execute(
+            "SELECT * FROM evidence_ingest_refusals ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return count, last
 
     def close(self) -> None:
         self._connection.close()

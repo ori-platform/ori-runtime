@@ -236,6 +236,14 @@ REVIEWED_OPERATOR_MESSAGES = frozenset(
         # or anything about who receives evidence.
         "[evidence] chain head read failed (%s)",
         "[evidence] pending count read failed (%s)",
+        "[evidence] refusal summary read failed (%s)",
+        # Reviewed: a closed posture token and a statement about this device's
+        # own behaviour. Names no authority, registry location, or party.
+        "[evidence] hardened posture cannot establish evidence "
+        "trust (%s); evidence is recorded locally and reported "
+        "degraded, and Tier C/D actions are unaffected",
+        "[evidence] evidence trust is not established (%s); "
+        "receipts and custody will be refused until it is",
         # Reviewed: says only that this device's own high-water mark was not
         # advanced, and that it will retry. Nothing about who receives a
         # checkpoint, or that anyone does.
@@ -447,6 +455,9 @@ EVIDENCE_HEALTH_KEYS = {
     "last_attested_action_id",
     "attestation_gap_count",
     "status_counts",
+    "ingest_refusal_count",
+    "last_ingest_refusal",
+    "posture_problems",
 }
 
 EVIDENCE_HEARTBEAT_KEYS = {
