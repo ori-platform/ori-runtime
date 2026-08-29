@@ -23,12 +23,14 @@ import json
 import logging
 import secrets
 import string
+from collections.abc import Callable
 from typing import Any
 
 from ori.actions.logger import LoggerAction
 from ori.network.events import ActionResult, ActionTier, ReasoningResult
 from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.action_registry import (
+    ACTION_REGISTRY,
     capability,
     enforce_minimum_tier,
     is_safe_default_eligible,
@@ -238,8 +240,13 @@ class ActionDispatcher:
         status_indicator: Any = None,
         config: dict | None = None,
         evidence_attestor: Any = None,
+        binding_seq_in_force: Callable[[], int | None] | None = None,
     ) -> None:
         self._state_store = state_store
+        # The commissioned binding in force when a physical action is logged,
+        # looked up at the moment of logging so a revision between two actions
+        # attributes each to the arrangement it was taken under.
+        self._binding_seq_in_force = binding_seq_in_force
         self._alert_sender = alert_sender
         self._emergency_sms_sender = emergency_sms_sender
         self._offline_token_verifier = offline_token_verifier
@@ -1691,6 +1698,20 @@ class ActionDispatcher:
             if firmware_registration is not None
             else ""
         )
+        binding_seq: int | None = None
+        capability = ACTION_REGISTRY.get(action_result.action_name)
+        if (
+            capability is not None
+            and capability.physical
+            and self._binding_seq_in_force is not None
+        ):
+            try:
+                binding_seq = self._binding_seq_in_force()
+            except Exception:
+                logger.exception(
+                    "ActionDispatcher: binding lookup failed while logging action=%r",
+                    action_result.action_name,
+                )
         try:
             if hasattr(store, "log_action_for_event"):
                 reading = context.event.reading if context.event else None
@@ -1708,6 +1729,7 @@ class ActionDispatcher:
                     input_firmware_seq=input_firmware_seq,
                     input_firmware_registration=firmware_registration_json,
                     attestation_pending=attest,
+                    binding_seq=binding_seq,
                 )
             else:
                 action_row_id = await store.log_action(

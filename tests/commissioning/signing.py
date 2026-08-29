@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import base64
 import copy
+import json
+from pathlib import Path
 from typing import Any
 
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+from ori.security.commissioning.anchors import COMMISSIONING_ANCHOR_ENV
 from ori.security.commissioning.binding import canonical_bytes
 
 
@@ -143,3 +147,34 @@ def local_gpio_binding(
             }
         ],
     }
+
+
+def commission_relay(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    device_id: str,
+    sensor_id: str,
+    gpio_pin: int = 26,
+    active_high: bool = False,
+    seed_hex: str = "7" * 64,
+    **overrides: Any,
+) -> Path:
+    """Write an accepted binding beside *config_path* and configure its anchor.
+
+    The shortest route to a runtime whose relay is commissioned: the test
+    controls the signing key, the anchor is that key, and the binding names
+    the config's device, sensor and pin.
+    """
+    binding = local_gpio_binding(
+        device_id=device_id,
+        sensor_id=sensor_id,
+        gpio_pin=gpio_pin,
+        active_high=active_high,
+        **overrides,
+    )
+    target = Path(config_path).resolve().parent / "commissioning" / "binding.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(sign_envelope(binding, seed_hex)))
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(seed_hex))
+    return target

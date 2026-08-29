@@ -848,6 +848,7 @@ class StateStore:
             ("sensor_type", "TEXT    NOT NULL DEFAULT ''"),
             ("input_attestation_grade", "TEXT    NOT NULL DEFAULT 'unattested'"),
             ("input_posture", "TEXT    NOT NULL DEFAULT ''"),
+            ("binding_seq", "INTEGER"),
             ("input_firmware_device_id", "TEXT    NOT NULL DEFAULT ''"),
             ("input_firmware_boot_id", "INTEGER NOT NULL DEFAULT 0"),
             ("input_firmware_seq", "INTEGER NOT NULL DEFAULT 0"),
@@ -1976,6 +1977,7 @@ class StateStore:
         input_firmware_seq: int = 0,
         input_firmware_registration: str = "",
         attestation_pending: bool = False,
+        binding_seq: int | None = None,
     ) -> int:
         """Persist action result with sensor/device context for reporting.
 
@@ -1999,6 +2001,7 @@ class StateStore:
                 "input_firmware_seq": input_firmware_seq,
                 "input_firmware_registration": input_firmware_registration,
                 "attestation_pending": attestation_pending,
+                "binding_seq": binding_seq,
             },
         )
 
@@ -2028,8 +2031,9 @@ class StateStore:
                  sensor_id, sensor_type, input_attestation_grade, input_posture,
                  input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
                  input_firmware_registration,
-                 correlation_id, trigger_name, timestamp, attestation_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 correlation_id, trigger_name, timestamp, attestation_status,
+                 binding_seq)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.action_name,
@@ -2053,6 +2057,11 @@ class StateStore:
                 trigger_name,
                 result.timestamp,
                 attestation_status,
+                (
+                    int(context_fields["binding_seq"])
+                    if context_fields.get("binding_seq") is not None
+                    else None
+                ),
             ),
         )
         self._conn.commit()

@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 
 from ori.actions.alert_failover import AlertFailoverSender
 from ori.actions.coap import CoAPAction, coap_backend_available
+from ori.actions.commissioned_actuator import CommissionedActuator
 from ori.actions.logger import LoggerAction
 from ori.actions.process_manager import ProcessManagerAction
 from ori.actions.relay import (
@@ -347,6 +348,7 @@ class OriRuntime:
         self._evidence_outbound_publisher: MqttEvidenceOutboundPublisher | None = None
         self._evidence_posture_problems: list[str] = []
         self._commissioning_state: CommissioningState | None = None
+        self._commissioned_actuator: CommissionedActuator | None = None
         self._firmware_confirmation_coordinator: (
             FirmwareConfirmationCoordinator | None
         ) = None
@@ -617,18 +619,48 @@ class OriRuntime:
             # because no GPIO relay executor is initialized on this target.
             relay_enabled = False
 
-        if has_relay_config:
+        # The binding is loaded before any pin is driven: the pin's polarity
+        # and what its coil states do are commissioned facts, and the relay is
+        # connected only under an accepted zone for its pin.
+        await self._load_commissioning(config, commissioning_anchors)
+        commissioning_state = self._commissioning_state
+        zone = (
+            commissioning_state.zone_for_local_gpio(
+                int(config.actions.relay["gpio_pin"])
+            )
+            if has_relay_config
+            and commissioning_state is not None
+            and commissioning_state.actuation_licensed
+            else None
+        )
+        if has_relay_config and zone is None:
+            logger.warning(
+                "[runtime] relay on GPIO pin %s is declared but has no accepted "
+                "commissioned zone; the pin is not driven and relay actions are refused",
+                config.actions.relay.get("gpio_pin"),
+            )
+            has_relay_config = False
+        if has_relay_config and zone is not None and commissioning_state is not None:
             relay_action = RelayAction()
             gpio_pin: int = config.actions.relay["gpio_pin"]
             try:
                 await relay_action.connect(
                     gpio_pin=gpio_pin,
+                    active_high=bool(zone.identity["active_high"]),
                     tolerate_missing_backend=not requires_production_posture(
                         device=config.device,
                         security=config.security,
                     ),
                 )
-                logger.info("[runtime] relay connected on GPIO pin %d", gpio_pin)
+                logger.info(
+                    "[runtime] relay connected on GPIO pin %d (active_high=%s, zone %s, binding %d)",
+                    gpio_pin,
+                    bool(zone.identity["active_high"]),
+                    zone.zone_id,
+                    commissioning_state.in_force.binding_seq
+                    if commissioning_state.in_force
+                    else 0,
+                )
             except Exception as exc:
                 logger.exception(
                     "[runtime] relay connect failed on pin %d",
@@ -643,6 +675,21 @@ class OriRuntime:
                         f"to initialise successfully on pin {gpio_pin}: {exc}"
                     ) from exc
                 relay_action = None
+        if (
+            relay_action is not None
+            and zone is not None
+            and commissioning_state is not None
+        ):
+            assert commissioning_state.in_force is not None
+            actuator = CommissionedActuator(
+                driver=relay_action,
+                zone=zone,
+                binding_seq=commissioning_state.in_force.binding_seq,
+            )
+            # Startup commands the coil, it does not assume it: de_energised
+            # through the commissioned polarity, whatever the platform default.
+            await actuator.command_coil("de_energised", reason="startup")
+            self._commissioned_actuator = actuator
 
         # operator_contact is a first-class config field, not assembled from sub-dicts
         _operator_contact: str = config.actions.operator_contact or ""
@@ -749,6 +796,7 @@ class OriRuntime:
             offline_token_verifier=_build_offline_token_verifier(config.actions),
             status_indicator=status_indicator,
             evidence_attestor=evidence_attestor,
+            binding_seq_in_force=self._binding_seq_in_force,
             config={
                 "operator_contact": _operator_contact,
                 "secondary_contact": _secondary_contact,
@@ -884,27 +932,28 @@ class OriRuntime:
 
         dispatcher.register_executor("log_to_dashboard", _exec_log_to_dashboard)
 
-        # The commissioned binding is loaded once the actuator backend has been
-        # proven available: a hardened host that cannot drive its relay refuses
-        # for that reason, and a host that can is then held to the binding.
-        await self._load_commissioning(config, commissioning_anchors)
-
         # Relay-backed safety executors — only if relay successfully connected.
         # Semantic safety actions such as close_gas_valve still resolve through
         # the physical relay path; commissioning must wire the relay output to
         # the named fail-safe valve/contactor before that semantic action is
         # safety-creditable.
-        if relay_action is not None:
+        actuator_in_force = self._commissioned_actuator
+        if relay_action is not None and actuator_in_force is not None:
+            actuator_bound = actuator_in_force
 
-            async def _exec_trip_relay(*_: Any) -> None:
-                await relay_action.trigger(duration_seconds=None)
+            async def _exec_trip_relay(*_: Any) -> bool:
+                # `trip_relay` and `close_gas_valve` name one outcome: isolate
+                # the load. The zone's mapping decides the coil state.
+                executed = await actuator_bound.command("open_protected_circuit")
                 if status_indicator is not None:
-                    status_indicator.set_relay_energized(True)
+                    status_indicator.set_relay_energized(actuator_bound.coil_energised)
+                return executed
 
-            async def _exec_release_relay(*_: Any) -> None:
-                await relay_action.release()
+            async def _exec_release_relay(*_: Any) -> bool:
+                executed = await actuator_bound.command("close_protected_circuit")
                 if status_indicator is not None:
-                    status_indicator.set_relay_energized(False)
+                    status_indicator.set_relay_energized(actuator_bound.coil_energised)
+                return executed
 
             dispatcher.register_executor("trip_relay", _exec_trip_relay)
             dispatcher.register_executor("release_relay", _exec_release_relay)
@@ -2467,10 +2516,16 @@ class OriRuntime:
             return False
         return status == _FIRMWARE_CONFIRMED
 
+    def _binding_seq_in_force(self) -> int | None:
+        state = self._commissioning_state
+        if state is None or state.in_force is None:
+            return None
+        return state.in_force.binding_seq
+
     def _commissioning_health(self) -> dict[str, Any]:
         state = self._commissioning_state
         if state is None:
-            return {
+            health: dict[str, Any] = {
                 "binding_seq": 0,
                 "binding_hash": None,
                 "anchors_configured": False,
@@ -2478,7 +2533,11 @@ class OriRuntime:
                 "last_verdict": None,
                 "actuation_licensed": False,
             }
-        return state.health()
+        else:
+            health = state.health()
+        actuator = self._commissioned_actuator
+        health["actuator"] = actuator.health() if actuator is not None else None
+        return health
 
     async def _load_commissioning(
         self, config: Config, anchors: CommissioningAnchors

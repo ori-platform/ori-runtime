@@ -61,6 +61,7 @@ from ori.security.gateway_messages import (
 from ori.security.remote_commands.throttle import RemoteCommandThrottleDecision
 from ori.skills.signing import canonical_signed_payload
 from ori.state.store import StateStore
+from tests.commissioning.signing import commission_relay
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -729,6 +730,8 @@ def minimal_config(tmp_path: Path) -> Path:
                 enabled: false
 
             skills_dir: {str(tmp_path / "skills")}
+            database:
+              path: {str(tmp_path / "ori_state.db")}
         """),
         encoding="utf-8",
     )
@@ -947,6 +950,16 @@ class TestRequiredRuntimeCapabilities:
         config.reasoning.local_model = ""
         config.reasoning.model_path = ""
         config.actions.relay = {"enabled": True, "gpio_pin": 26}
+        config.raw["database"] = {"path": str(Path(minimal_config).parent / "state.db")}
+        # A hardened relay must be commissioned before it is driven, so the
+        # binding is in place and the refusal under test is the backend's.
+        commission_relay(
+            minimal_config,
+            monkeypatch,
+            device_id="test-device-01",
+            sensor_id="cpu-sensor",
+            proof_method="actuate_and_observe",
+        )
         monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
         monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: True)
         # The posture check now also asks which factory resolved, so reaching
@@ -965,7 +978,9 @@ class TestRequiredRuntimeCapabilities:
         finally:
             await runtime.stop()
 
-        connect.assert_awaited_once_with(gpio_pin=26, tolerate_missing_backend=False)
+        connect.assert_awaited_once_with(
+            gpio_pin=26, active_high=False, tolerate_missing_backend=False
+        )
 
 
 class TestLocalSLMWiring:
@@ -1458,8 +1473,19 @@ class TestLifecycle:
             config_text.replace(
                 relay_disabled,
                 "  relay:\n    enabled: true\n    gpio_pin: 26\n",
-            ),
+            )
+            + f"database:\n  path: {cfg_path.parent / 'ori_state.db'}\n",
             encoding="utf-8",
+        )
+        # Commissioned so that isolating the load energises the coil: the test
+        # then observes the outcome reaching the relay as `trigger`.
+        commission_relay(
+            cfg_path,
+            monkeypatch,
+            device_id="test-device-01",
+            sensor_id="cpu-sensor",
+            open_outcome="energised",
+            terminal_state="closed",
         )
         connect = AsyncMock(return_value=None)
         trigger = AsyncMock(return_value=True)
@@ -1481,7 +1507,9 @@ class TestLifecycle:
 
         await close_gas_valve("close_gas_valve", SimpleNamespace())
 
-        connect.assert_awaited_once_with(gpio_pin=26, tolerate_missing_backend=True)
+        connect.assert_awaited_once_with(
+            gpio_pin=26, active_high=False, tolerate_missing_backend=True
+        )
         trigger.assert_awaited_once_with(duration_seconds=None)
 
 
