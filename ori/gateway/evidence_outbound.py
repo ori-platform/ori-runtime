@@ -106,7 +106,7 @@ def retry_due(attempts: int, last_attempt_ms: int | None, *, at_ms: int) -> bool
     """Whether an artifact's next attempt is due under exponential backoff."""
     if attempts <= 0 or last_attempt_ms is None:
         return True
-    delay_s = min(RETRY_INTERVAL_S * (2 ** (attempts - 1)), RETRY_BACKOFF_MAX_S)
+    delay_s = min(RETRY_INTERVAL_S * 2.0 ** (attempts - 1), RETRY_BACKOFF_MAX_S)
     return at_ms - int(last_attempt_ms) >= delay_s * 1000.0
 
 
