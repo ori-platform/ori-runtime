@@ -1525,6 +1525,19 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
     relay_raw: dict = data.get("relay") or {}
     relay: dict = dict(relay_raw)
 
+    # Polarity is a commissioned fact about the driver stage. It reaches the
+    # actuator from the signed commissioned binding, never from this document:
+    # a provisioning-signed value here would let one authority set what another
+    # was required to prove (commissioned-safety-binding/v1, runtime-config/v2
+    # `foreign_field`).
+    if "active_high" in relay:
+        raise ConfigValidationError(
+            "actions.relay.active_high is not a configuration value: input "
+            "polarity is a commissioned fact and is read from the signed "
+            "commissioned binding beside the config, never from ori.yaml. "
+            "Remove the key."
+        )
+
     relay_enabled = (
         str(relay.get("enabled", "")).lower() == "true" or relay.get("enabled") is True
     )

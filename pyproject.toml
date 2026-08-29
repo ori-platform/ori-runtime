@@ -173,7 +173,7 @@ where = ["."]
 include = ["ori*"]
 
 [tool.setuptools.package-data]
-ori = ["py.typed", "hal/inverter_profiles/*.yaml", "installer/release-keys.json"]
+ori = ["py.typed", "hal/inverter_profiles/*.yaml", "installer/release-keys.json", "security/commissioning/profiles.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

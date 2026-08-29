@@ -1,0 +1,50 @@
+{
+  "contract": "safety-profile/v1",
+  "version": 1,
+  "comment": "The v1 profile set. Release-owned and normative: a consumer vendors this file byte-for-byte, pins its digest, and populates its safety registry from nothing else. Every number is a release decision; the site supplies only the commissioned zone.",
+  "profiles": [
+    {
+      "v": 1,
+      "id": "electrical.overcurrent.v1",
+      "status": "candidate",
+      "observes": {
+        "quantity": "current",
+        "unit": "ampere"
+      },
+      "condition": {
+        "kind": "upper_capacity_multiplier",
+        "capacity_parameter": "rated_capacity_amps",
+        "multiplier": 2.0
+      },
+      "outcome": "open_protected_circuit"
+    },
+    {
+      "v": 1,
+      "id": "electrical.overvoltage.v1",
+      "status": "candidate",
+      "observes": {
+        "quantity": "voltage",
+        "unit": "volt"
+      },
+      "condition": {
+        "kind": "upper_bound",
+        "threshold": 260.0
+      },
+      "outcome": "open_protected_circuit"
+    },
+    {
+      "v": 1,
+      "id": "gas.concentration.v1",
+      "status": "candidate",
+      "observes": {
+        "quantity": "gas_concentration",
+        "unit": "ppm"
+      },
+      "condition": {
+        "kind": "upper_bound",
+        "threshold": 400.0
+      },
+      "outcome": "open_protected_circuit"
+    }
+  ]
+}

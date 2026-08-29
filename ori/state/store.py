@@ -630,6 +630,24 @@ CREATE TABLE IF NOT EXISTS firmware_fault_events (
     fault_json        TEXT    NOT NULL,
     UNIQUE(device_id, boot_id, seq)
 );
+
+-- Commissioned safety bindings, retained whole. Every accepted document stays
+-- so the binding in force at any past time can be produced for audit; the
+-- one with no retired_at_ms is in force.
+CREATE TABLE IF NOT EXISTS commissioned_binding (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    binding_seq          INTEGER NOT NULL UNIQUE,
+    canonical_hash       TEXT    NOT NULL UNIQUE,
+    device_id            TEXT    NOT NULL,
+    inventory_generation INTEGER NOT NULL,
+    signer_id            TEXT    NOT NULL,
+    supersedes           TEXT,
+    canonical_json       TEXT    NOT NULL,
+    signature            TEXT    NOT NULL,
+    zones_json           TEXT    NOT NULL,
+    accepted_at_ms       INTEGER NOT NULL,
+    retired_at_ms        INTEGER
+);
 """
 
 
@@ -4976,6 +4994,135 @@ class StateStore:
         return cur.rowcount > 0
 
     # ─── device_policy_cache ─────────────────────────────────────────────────
+
+    async def retain_commissioned_binding(
+        self,
+        *,
+        binding_seq: int,
+        canonical_hash: str,
+        device_id: str,
+        inventory_generation: int,
+        signer_id: str,
+        supersedes: str | None,
+        canonical_json: str,
+        signature: str,
+        zones_json: str,
+        accepted_at_ms: int | None = None,
+    ) -> None:
+        """Retain an accepted binding and retire the one it supersedes."""
+        await self._run_write(
+            self._retain_commissioned_binding_sync,
+            binding_seq,
+            canonical_hash,
+            device_id,
+            inventory_generation,
+            signer_id,
+            supersedes,
+            canonical_json,
+            signature,
+            zones_json,
+            accepted_at_ms if accepted_at_ms is not None else now_ms(),
+        )
+
+    def _retain_commissioned_binding_sync(
+        self,
+        binding_seq: int,
+        canonical_hash: str,
+        device_id: str,
+        inventory_generation: int,
+        signer_id: str,
+        supersedes: str | None,
+        canonical_json: str,
+        signature: str,
+        zones_json: str,
+        accepted_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE commissioned_binding SET retired_at_ms = ?
+             WHERE retired_at_ms IS NULL
+            """,
+            (int(accepted_at_ms),),
+        )
+        self._conn.execute(
+            """
+            INSERT INTO commissioned_binding
+                (binding_seq, canonical_hash, device_id, inventory_generation,
+                 signer_id, supersedes, canonical_json, signature, zones_json,
+                 accepted_at_ms, retired_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                int(binding_seq),
+                canonical_hash,
+                device_id,
+                int(inventory_generation),
+                signer_id,
+                supersedes,
+                canonical_json,
+                signature,
+                zones_json,
+                int(accepted_at_ms),
+            ),
+        )
+        self._conn.commit()
+
+    async def get_commissioned_binding_in_force(self) -> dict | None:
+        return await self._run_read(self._get_commissioned_binding_in_force_sync)
+
+    def _get_commissioned_binding_in_force_sync(
+        self, conn: sqlite3.Connection
+    ) -> dict | None:
+        row = conn.execute(
+            """
+            SELECT binding_seq, canonical_hash, device_id, inventory_generation,
+                   signer_id, supersedes, canonical_json, signature, zones_json,
+                   accepted_at_ms
+              FROM commissioned_binding
+             WHERE retired_at_ms IS NULL
+             ORDER BY binding_seq DESC
+             LIMIT 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        keys = (
+            "binding_seq",
+            "canonical_hash",
+            "device_id",
+            "inventory_generation",
+            "signer_id",
+            "supersedes",
+            "canonical_json",
+            "signature",
+            "zones_json",
+            "accepted_at_ms",
+        )
+        return dict(zip(keys, row, strict=True))
+
+    async def commissioned_binding_history(self) -> list[dict]:
+        return await self._run_read(self._commissioned_binding_history_sync)
+
+    def _commissioned_binding_history_sync(
+        self, conn: sqlite3.Connection
+    ) -> list[dict]:
+        rows = conn.execute(
+            """
+            SELECT binding_seq, canonical_hash, accepted_at_ms, retired_at_ms
+              FROM commissioned_binding
+             ORDER BY binding_seq ASC
+            """
+        ).fetchall()
+        return [
+            {
+                "binding_seq": int(r[0]),
+                "canonical_hash": r[1],
+                "accepted_at_ms": int(r[2]),
+                "retired_at_ms": r[3],
+            }
+            for r in rows
+        ]
 
     async def upsert_device_policy_cache(
         self,

@@ -870,10 +870,13 @@ de-energise the coil, observe what the load actually does, record it.
 That observation is the only thing that licenses calling any state safe.
 
 **The runtime's startup polarity is not trustworthy today.**
-`actions.relay.active_high` is documented in `ori.yaml` and never
-reaches `RelayAction`, so on an active-low board the logical inactive
-output energises the coil. The runtime also consumes no commissioned
-mapping. Until #397 lands, an installation is fail-safe only because its
+`actions.relay.active_high` is refused from `ori.yaml`: polarity is a
+commissioned fact that arrives in the signed binding at
+`commissioning/binding.json` (`docs/COMMISSIONING.md`), which the runtime
+verifies, retains and reports. Nothing yet drives the pin through that
+mapping — `RelayAction` still uses gpiozero's default polarity, so on an
+active-low board the logical inactive output energises the coil. Until the
+actuation seam (#397) lands, an installation is fail-safe only because its
 wiring was proven by test and its board polarity happens to match the
 default — the software guarantees neither.
 

@@ -16,8 +16,8 @@ is that it came from the contract rather than from us.
     python tests/golden/generate_commissioned_binding_vectors.py --check CORPUS
     python tests/golden/generate_commissioned_binding_vectors.py --output PATH
 
-`verify_commissioned_binding_vectors.py` is written from the contract text and
-shares no code with the generator. It implements the closed grammar, the
+`verify_commissioned_binding_vectors.py` drives the runtime's verifier, written
+from the contract text, which shares no code with the generator. It implements the closed grammar, the
 key-selection and authority split either side of signature verification, the
 proof rules, and the bounds, disambiguation and posture checks, and it asserts
 that each reject case is refused at exactly its declared stage having passed
@@ -27,9 +27,9 @@ is not evidence that the named check exists. The suite drives it through
 
     python tests/golden/verify_commissioned_binding_vectors.py CORPUS
 
-It is a reference verifier, not the runtime's. The runtime has no consumer for
-a binding yet, so the corpus is accounted for as `proof_pending` in
-`tests/test_evidence_exchange_graph.py` against ori-runtime#324.
+It is a thin driver now: the verifier it exercises is the runtime's own,
+`ori/security/commissioning/binding.py`, which is the first consumer of the
+contract. The generator still shares no code with it.
 
 Both tools are Python, so this is reproduction without language independence.
 It demonstrates internal consistency and catches design errors; it does not

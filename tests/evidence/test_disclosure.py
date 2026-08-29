@@ -1213,6 +1213,7 @@ PASSAGE_AUDITS = {
     "docs/linux-setup.md": 0,
     "docs/android-phone-install.md": 1,
     "docs/releases/evidence/systemd-host-runbook.md": 1,
+    "docs/COMMISSIONING.md": 0,
     "docs/RELEASE_SIGNING.md": 1,
     "docs/releases/v2.4.0.md": 1,
     "docs/releases/v2.5.0.md": 1,
