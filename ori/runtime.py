@@ -2639,6 +2639,10 @@ class OriRuntime:
             "evidence": await self._evidence_health(),
             "firmware_liveness": firmware_liveness_health,
         }
+        # ROLLBACK PROBE — this build exists only to fail its own post-install
+        # health verification after activation. It must never be released.
+        snapshot["critical"] = True
+        snapshot["status"] = "degraded"
         if firmware_liveness_health["degraded"]:
             # A stopped or stalled liveness loop puts timely publication at
             # risk for one or more supervised devices while the rest of the
