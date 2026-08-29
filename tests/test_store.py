@@ -927,6 +927,55 @@ class TestAlertOutbox:
         assert retryable[0]["status"] == "failed"
         assert retryable[0]["attempt_count"] == 1
 
+    async def test_provider_callback_reconciles_by_channel_and_message_id(self, store):
+        await store.enqueue_alert(
+            alert_id="sms-receipt-1",
+            channel="sms",
+            recipient="+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+        await store.mark_alert_accepted(
+            "sms-receipt-1",
+            accepted_channel="sms",
+            provider_message_id="ATXid-123",
+            provider_status="success",
+            accepted_at_ms=2000,
+        )
+
+        updated = await store.record_alert_delivery_status_by_provider_id(
+            channel="sms",
+            provider_message_id="ATXid-123",
+            provider_status="delivered",
+            observed_at_ms=3000,
+            delivered_at_ms=3000,
+            terminal_failure=False,
+        )
+
+        assert updated is True
+        row = store._conn.execute(
+            "SELECT provider_status, delivered_at_ms FROM alert_outbox "
+            "WHERE alert_id = 'sms-receipt-1'"
+        ).fetchone()
+        assert dict(row) == {
+            "provider_status": "delivered",
+            "delivered_at_ms": 3000,
+        }
+
+    async def test_provider_callback_refuses_unknown_message_id(self, store):
+        updated = await store.record_alert_delivery_status_by_provider_id(
+            channel="sms",
+            provider_message_id="ATXid-unknown",
+            provider_status="delivered",
+            observed_at_ms=3000,
+            delivered_at_ms=3000,
+            terminal_failure=False,
+        )
+
+        assert updated is False
+
     async def test_migration_relabels_legacy_delivered_as_accepted(self, tmp_path):
         db_path = tmp_path / "legacy-alert.db"
         conn = sqlite3.connect(db_path)

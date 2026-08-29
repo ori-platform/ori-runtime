@@ -3303,6 +3303,63 @@ class StateStore:
             terminal_failure,
         )
 
+    async def record_alert_delivery_status_by_provider_id(
+        self,
+        *,
+        channel: str,
+        provider_message_id: str,
+        provider_status: str,
+        observed_at_ms: int,
+        delivered_at_ms: int | None,
+        terminal_failure: bool,
+    ) -> bool:
+        """Apply a provider callback only to its uniquely accepted alert."""
+
+        return bool(
+            await self._run_write(
+                self._record_alert_delivery_status_by_provider_id_sync,
+                channel,
+                provider_message_id,
+                provider_status,
+                observed_at_ms,
+                delivered_at_ms,
+                terminal_failure,
+            )
+        )
+
+    def _record_alert_delivery_status_by_provider_id_sync(
+        self,
+        channel: str,
+        provider_message_id: str,
+        provider_status: str,
+        observed_at_ms: int,
+        delivered_at_ms: int | None,
+        terminal_failure: bool,
+    ) -> bool:
+        assert self._conn is not None
+        rows = self._conn.execute(
+            """
+            SELECT alert_id
+              FROM alert_outbox
+             WHERE status = 'accepted'
+               AND accepted_channel = ?
+               AND provider_message_id = ?
+             ORDER BY id ASC
+             LIMIT 2
+            """,
+            (channel, provider_message_id),
+        ).fetchall()
+        if len(rows) != 1:
+            return False
+        self._record_alert_delivery_status_sync(
+            str(rows[0]["alert_id"]),
+            provider_status,
+            observed_at_ms,
+            delivered_at_ms,
+            terminal_failure,
+        )
+        return True
+
     def _record_alert_delivery_status_sync(
         self,
         alert_id: str,

@@ -48,6 +48,9 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+_DELIVERED_REPORT_STATUSES = frozenset({"delivered", "success"})
+_TERMINAL_FAILURE_REPORT_STATUSES = frozenset({"failed", "rejected", "undelivered"})
+
 try:
     import serial as _serial_module
 
@@ -231,12 +234,19 @@ class SMSAction:
     ) -> AlertSendReceipt:
         """Submit the detailed SMS form and report provider acceptance only."""
 
-        accepted = await self.send(alert.sms_body, to_number)
-        if not accepted:
-            return AlertSendReceipt.refused(
-                channel="sms", error="provider_submission_failed"
-            )
-        return AlertSendReceipt.accepted_without_provider_receipt(channel="sms")
+        for transport in self._resolve_transport_order():
+            if transport == "ip":
+                receipt = await self._submit_ip(alert.sms_body, to_number)
+                if receipt.accepted:
+                    return receipt
+                continue
+            if transport == "gsm" and await self._send_gsm(alert.sms_body, to_number):
+                return AlertSendReceipt.accepted_without_provider_receipt(
+                    channel="sms", provider_status="accepted_by_modem"
+                )
+        return AlertSendReceipt.refused(
+            channel="sms", error="provider_submission_failed"
+        )
 
     def _resolve_transport_order(self) -> list[str]:
         if self._transport == "invalid":
@@ -261,8 +271,12 @@ class SMSAction:
 
     async def _send_ip(self, message: str, to_number: str) -> bool:
         """Send through Africa's Talking (synchronous SDK offloaded to thread)."""
+        return (await self._submit_ip(message, to_number)).accepted
+
+    async def _submit_ip(self, message: str, to_number: str) -> AlertSendReceipt:
+        """Submit through Africa's Talking and retain its reconciliation ID."""
         if not self._ip_ready:
-            return False
+            return AlertSendReceipt.refused(channel="sms", error="provider_not_ready")
 
         try:
             import africastalking
@@ -280,32 +294,101 @@ class SMSAction:
             # a "Recipients" list.  Each recipient has a "status" field.
             recipients = response.get("SMSMessageData", {}).get("Recipients") or []
             if recipients:
-                status = recipients[0].get("status", "")
+                recipient = recipients[0]
+                status = str(recipient.get("status", "") or "")
                 if status == "Success":
+                    provider_message_id = str(
+                        recipient.get("messageId")
+                        or recipient.get("message_id")
+                        or recipient.get("id")
+                        or ""
+                    ).strip()
+                    if not provider_message_id:
+                        logger.warning(
+                            "SMSAction._submit_ip: provider accepted message without "
+                            "a messageId; delivery cannot be reconciled to=%r",
+                            to_number,
+                        )
                     logger.info(
                         "SMSAction._send_ip: provider accepted message to %r (status=%r)",
                         to_number,
                         status,
                     )
-                    return True
+                    return AlertSendReceipt(
+                        accepted=True,
+                        channel="sms",
+                        provider_message_id=provider_message_id,
+                        provider_status=status.lower(),
+                        accepted_at_ms=now_ms(),
+                    )
                 logger.warning(
                     "SMSAction._send_ip: provider did not accept message for %r (status=%r)",
                     to_number,
                     status,
                 )
-                return False
+                return AlertSendReceipt.refused(
+                    channel="sms", error=f"provider_status:{status or 'unknown'}"
+                )
 
             logger.warning(
                 "SMSAction._send_ip: empty recipients list in AT response for %r",
                 to_number,
             )
-            return False
+            return AlertSendReceipt.refused(
+                channel="sms", error="provider_empty_recipients"
+            )
 
         except Exception:
             logger.exception(
                 "SMSAction._send_ip: unexpected error sending to %r", to_number
             )
+            return AlertSendReceipt.refused(channel="sms", error="provider_raised")
+
+    async def ingest_delivery_report(self, payload: dict[str, Any]) -> bool:
+        """Apply one authenticated provider delivery report to the alert outbox."""
+
+        if self._state_store is None:
+            logger.warning("SMSAction.ingest_delivery_report: no StateStore configured")
             return False
+        provider_message_id = str(
+            payload.get("id")
+            or payload.get("messageId")
+            or payload.get("message_id")
+            or ""
+        ).strip()
+        provider_status = str(payload.get("status") or "").strip().lower()
+        if not provider_message_id or not provider_status:
+            logger.warning(
+                "SMSAction.ingest_delivery_report: missing provider id/status"
+            )
+            return False
+        delivered_at_ms = (
+            now_ms() if provider_status in _DELIVERED_REPORT_STATUSES else None
+        )
+        terminal_failure = provider_status in _TERMINAL_FAILURE_REPORT_STATUSES
+        try:
+            updated = (
+                await self._state_store.record_alert_delivery_status_by_provider_id(
+                    channel="sms",
+                    provider_message_id=provider_message_id,
+                    provider_status=provider_status,
+                    observed_at_ms=now_ms(),
+                    delivered_at_ms=delivered_at_ms,
+                    terminal_failure=terminal_failure,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "SMSAction.ingest_delivery_report: failed to persist sid=%s",
+                provider_message_id,
+            )
+            return False
+        if not updated:
+            logger.warning(
+                "SMSAction.ingest_delivery_report: unknown provider id=%s",
+                provider_message_id,
+            )
+        return bool(updated)
 
     async def _send_gsm(self, message: str, to_number: str) -> bool:
         """Send through GSM modem AT commands (all serial I/O offloaded)."""
@@ -438,9 +521,9 @@ class SMSAction:
         return None
 
     async def ingest_incoming_webhook(self, payload: dict[str, Any]) -> bool:
-        """Store one inbound Africa's Talking webhook message in StateStore.
+        """Apply one authenticated Africa's Talking callback in StateStore.
 
-        Expected payload keys:
+        Delivery reports carry ``id`` and ``status``. Inbound messages carry:
             - ``from`` (or ``from_number``)
             - ``text`` (or ``message``)
 
@@ -451,6 +534,13 @@ class SMSAction:
                 "SMSAction.ingest_incoming_webhook: no StateStore configured"
             )
             return False
+
+        if (
+            (payload.get("id") or payload.get("messageId") or payload.get("message_id"))
+            and payload.get("status")
+            and not (payload.get("text") or payload.get("message"))
+        ):
+            return await self.ingest_delivery_report(payload)
 
         raw_from = str(payload.get("from") or payload.get("from_number") or "")
         raw_text = str(payload.get("text") or payload.get("message") or "")
