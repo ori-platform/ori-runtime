@@ -241,6 +241,9 @@ REVIEWED_OPERATOR_MESSAGES = frozenset(
         # checkpoint, or that anyone does.
         "[evidence] could not issue a checkpoint (%s); the high-water "
         "mark is unchanged and the next interval will retry",
+        # Reviewed: says only that a local callback raised. Names no route,
+        # no topic, no party, and carries no exception detail.
+        "[evidence] sealed listener failed",
         "[confirmation] startup drain: %d of %d devices confirmed",
         "[confirmation] reconciled %d of %d outstanding obligations",
         "[evidence] failed to sign action_log id=%s tier=%s",

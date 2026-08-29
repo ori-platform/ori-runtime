@@ -55,6 +55,10 @@ from ori.gateway.evidence_inbound import (
     EvidenceInboundRouter,
     MqttEvidenceInboundSubscriber,
 )
+from ori.gateway.evidence_outbound import (
+    EvidenceOutboundAckRouter,
+    MqttEvidenceOutboundPublisher,
+)
 from ori.gateway.export import GatewayExportResponder, MqttGatewayExportServer
 from ori.gateway.firmware_commands import (
     FirmwareCommandService,
@@ -102,6 +106,7 @@ from ori.security.custody_keys import (
 from ori.security.evidence_authority_keys import load_authority_key_registry
 from ori.security.evidence_chain import SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION
 from ori.security.evidence_first_party import FirstPartyEvidenceAttestor
+from ori.security.evidence_ledger import DEFAULT_CHECKPOINT_INTERVAL_S
 from ori.security.firmware_confirmation import (
     CONFIRMED as _FIRMWARE_CONFIRMED,
 )
@@ -181,6 +186,7 @@ WATCHDOG_TIMEOUT = 60  # seconds — kernel reboots if no ping within this windo
 EXTERNAL_WATCHDOG_GPIO = 17  # BCM pin for optional external watchdog heartbeat
 EXTERNAL_WATCHDOG_PING_S = 30  # heartbeat interval for external watchdog devices
 TIER_D_DRAIN_TIMEOUT = 5.0  # seconds — wait for in-flight Tier D tasks on shutdown
+EVIDENCE_SHUTDOWN_FLUSH_TIMEOUT_S = 5.0
 ALERT_OUTBOX_RETRY_INTERVAL_S = 30.0
 ALERT_OUTBOX_BATCH_SIZE = 50
 ALERT_OUTBOX_MAX_ATTEMPTS_NON_TIER_D = 10
@@ -321,6 +327,7 @@ class OriRuntime:
         self._telemetry_exporter: HttpTelemetryExporter | None = None
         self._evidence_attestor: FirstPartyEvidenceAttestor | None = None
         self._evidence_inbound_subscriber: MqttEvidenceInboundSubscriber | None = None
+        self._evidence_outbound_publisher: MqttEvidenceOutboundPublisher | None = None
         self._firmware_confirmation_coordinator: (
             FirmwareConfirmationCoordinator | None
         ) = None
@@ -636,12 +643,6 @@ class OriRuntime:
         if evidence_attestor is not None:
             await evidence_attestor.start()
         self._evidence_attestor = evidence_attestor
-
-        # Checkpoint scheduling is deliberately not started yet. issue_checkpoint
-        # signs an artifact, and nothing durably retains it or hands it to the
-        # courier, so scheduling one would produce a signed record that is
-        # discarded -- and describing that as an obligation on the authority
-        # would be false. It starts when the outbound outbox exists.
 
         # The confirmation coordinator reconciles a locally-approved anchor
         # with the evidence store before its authority is treated as
@@ -1194,6 +1195,25 @@ class OriRuntime:
                 )
             )
 
+        evidence_outbound_publisher = _build_evidence_outbound_publisher(
+            config, evidence_attestor
+        )
+        self._evidence_outbound_publisher = evidence_outbound_publisher
+        if evidence_outbound_publisher is not None and evidence_attestor is not None:
+            evidence_attestor.set_sealed_listener(evidence_outbound_publisher.nudge)
+            self._background_tasks.append(
+                asyncio.create_task(
+                    evidence_outbound_publisher.serve_until(self._shutdown_event),
+                    name="evidence-outbound",
+                )
+            )
+            self._background_tasks.append(
+                asyncio.create_task(
+                    self._evidence_checkpoint_loop(evidence_attestor),
+                    name="evidence-checkpoint",
+                )
+            )
+
         (
             self._firmware_liveness_supervisor,
             firmware_telemetry_subscriber,
@@ -1310,6 +1330,12 @@ class OriRuntime:
             )
             await asyncio.wait(tier_d_tasks, timeout=TIER_D_DRAIN_TIMEOUT)
 
+        # 1b. Retain a shutdown checkpoint and hand the courier what it can
+        #     take before the route is cancelled, so an orderly stop is
+        #     distinguishable from a crash. Retention is durable; the flush is
+        #     best effort and whatever it misses goes out at the next start.
+        await self._issue_shutdown_checkpoint()
+
         # 2. Cancel tracked background tasks only — never cancel the task
         #    running start() itself, which returns naturally once the shutdown
         #    event is set.
@@ -1365,12 +1391,10 @@ class OriRuntime:
             self._firmware_mqtt_operator_server = None
             self._firmware_mqtt_operator_socket_path = ""
 
-        # 2g. Issue a final checkpoint, then stop the evidence executor.
+        # 2g. Stop the evidence executor; the shutdown checkpoint is already
+        #     retained (1b).
         if self._evidence_attestor is not None:
-            # A shutdown checkpoint is not issued here yet. It would be signed
-            # and dropped, since nothing retains it, and an orderly stop would
-            # still be indistinguishable from a crash to the authority. Issuing
-            # it without retaining it would look like the problem was solved.
+            self._evidence_attestor.set_sealed_listener(None)
             try:
                 self._evidence_attestor.close()
             except Exception:
@@ -2224,6 +2248,29 @@ class OriRuntime:
         self._alert_outbox_tier_d_critical_threshold = int(
             cfg.get("tier_d_critical_warning_threshold", 3)
         )
+
+    async def _evidence_checkpoint_loop(
+        self, attestor: FirstPartyEvidenceAttestor
+    ) -> None:
+        """Retain a signed checkpoint every interval. The cadence is release-owned."""
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=DEFAULT_CHECKPOINT_INTERVAL_S
+                )
+                return
+            except asyncio.TimeoutError:
+                pass
+            await attestor.issue_checkpoint()
+
+    async def _issue_shutdown_checkpoint(self) -> None:
+        attestor = self._evidence_attestor
+        if attestor is None or not attestor.available:
+            return
+        await attestor.issue_checkpoint()
+        publisher = self._evidence_outbound_publisher
+        if publisher is not None:
+            await publisher.flush(EVIDENCE_SHUTDOWN_FLUSH_TIMEOUT_S)
 
     async def _reconcile_pending_attestations(self) -> None:
         """Repair evidence gaps left by crashes or signing outages.
@@ -4740,6 +4787,58 @@ def _build_evidence_inbound_subscriber(
         "enabled" if auth_enabled else "disabled",
     )
     return subscriber
+
+
+def _build_evidence_outbound_publisher(
+    config: Config,
+    attestor: FirstPartyEvidenceAttestor | None,
+) -> MqttEvidenceOutboundPublisher | None:
+    """Instantiate the outbound carriage route when configured.
+
+    Requires a gateway and a started attestor: without a ledger there is
+    nothing to carry. Envelope authentication covers the courier's
+    acknowledgements only; the artifacts themselves are device-signed end to
+    end, so an unauthenticated development gateway degrades what a queued
+    acknowledgement is worth rather than what the courier receives.
+    """
+    if not bool(config.gateway.enabled):
+        return None
+    if attestor is None or not attestor.available:
+        return None
+    outbox = attestor.outbound
+    if outbox is None:
+        return None
+    auth_cfg = getattr(config.gateway, "auth", {}) or {}
+    auth_enabled = bool(auth_cfg.get("enabled", False))
+    if not auth_enabled:
+        logger.warning(
+            "[evidence-outbound] gateway.auth.enabled is false — courier "
+            "acknowledgements are applied without envelope verification, so "
+            "anything on the site network can retire a queued checkpoint. "
+            "Enable gateway.auth for all production deployments."
+        )
+    try:
+        router = EvidenceOutboundAckRouter(
+            device_id=config.device.id,
+            outbox=outbox,
+            message_auth=_build_gateway_message_auth(config),
+        )
+        publisher = MqttEvidenceOutboundPublisher(
+            broker_url=config.gateway.broker_url,
+            router=router,
+            device_id=config.device.id,
+            outbox=outbox,
+            tls_config=getattr(config.gateway, "tls", {}),
+        )
+    except Exception:
+        logger.exception("[runtime] invalid outbound evidence route configuration")
+        return None
+    logger.info(
+        "[runtime] outbound evidence route enabled on %s (envelope auth=%s)",
+        publisher.topic,
+        "enabled" if auth_enabled else "disabled",
+    )
+    return publisher
 
 
 def _build_firmware_telemetry_subscriber(

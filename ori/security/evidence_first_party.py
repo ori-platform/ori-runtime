@@ -24,6 +24,7 @@ so a chain that will not open can never become the reason a relay failed.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from ori.security.custody_keys import CustodyKeyRegistry
 from ori.security.evidence_anchor import RuntimeAnchor, derive_runtime_anchor
 from ori.security.evidence_bound import (
     BoundIngestService,
+    BoundOutboundQueue,
     ExecutorBoundConfirmationBackend,
 )
 from ori.security.evidence_chain import (
@@ -114,6 +116,8 @@ class FirstPartyEvidenceAttestor:
         self._chain: EvidenceChain | None = None
         self._ledger: EvidenceDeliveryLedger | None = None
         self._ingest: BoundIngestService | None = None
+        self._outbound: BoundOutboundQueue | None = None
+        self._sealed_listener: Callable[[], None] | None = None
         self._public_key_hex = ""
 
     @property
@@ -162,6 +166,24 @@ class FirstPartyEvidenceAttestor:
         """Inbound authority artifacts, marshalled onto the evidence thread."""
         return self._ingest
 
+    @property
+    def outbound(self) -> BoundOutboundQueue | None:
+        """What the courier still has to carry, marshalled onto the evidence thread."""
+        return self._outbound
+
+    def set_sealed_listener(self, listener: Callable[[], None] | None) -> None:
+        """Called on the event loop after each envelope or checkpoint is retained."""
+        self._sealed_listener = listener
+
+    def _notify_sealed(self) -> None:
+        listener = self._sealed_listener
+        if listener is None:
+            return
+        try:
+            listener()
+        except Exception:
+            logger.warning("[evidence] sealed listener failed")
+
     async def start(self) -> bool:
         """Open the key, chain and ledger on the evidence thread.
 
@@ -183,6 +205,7 @@ class FirstPartyEvidenceAttestor:
             self._chain = None
             self._ledger = None
             self._ingest = None
+            self._outbound = None
             return False
         return True
 
@@ -212,6 +235,7 @@ class FirstPartyEvidenceAttestor:
         self._chain = chain
         self._ledger = ledger
         self._ingest = BoundIngestService(self._executor, service)
+        self._outbound = BoundOutboundQueue(self._executor, ledger)
         self._public_key_hex = key.public_key_hex
 
     def attestation_event_id(self, action_log_id: int) -> str:
@@ -248,7 +272,6 @@ class FirstPartyEvidenceAttestor:
             row = await self._executor.run_async(
                 self._append_and_seal_sync, event_id, emitted_at_ms, payload
             )
-            return int(row["seq"])
         except Exception:
             logger.warning(
                 "[evidence] failed to sign action_log id=%s tier=%s",
@@ -256,6 +279,8 @@ class FirstPartyEvidenceAttestor:
                 action_row.get("tier"),
             )
             return None
+        self._notify_sealed()
+        return int(row["seq"])
 
     def _append_and_seal_sync(
         self, event_id: str, emitted_at_ms: int, payload: dict[str, Any]
@@ -331,7 +356,7 @@ class FirstPartyEvidenceAttestor:
         return self._ledger.awaiting_custody_count()
 
     async def issue_checkpoint(self) -> dict[str, Any] | None:
-        """Sign a checkpoint for the current high-water mark.
+        """Sign a checkpoint for the current high-water mark and retain it.
 
         A checkpoint turns unexplained silence into a missed obligation: without
         one, a stalled courier and an idle device look the same to the
@@ -342,7 +367,7 @@ class FirstPartyEvidenceAttestor:
         if self._ledger is None:
             return None
         try:
-            return await self._executor.run_async(self._checkpoint_sync, now_ms())
+            queued = await self._executor.run_async(self._checkpoint_sync, now_ms())
         except Exception as exc:
             logger.warning(
                 "[evidence] could not issue a checkpoint (%s); the high-water "
@@ -351,9 +376,12 @@ class FirstPartyEvidenceAttestor:
             )
             return None
 
+        self._notify_sealed()
+        return queued
+
     def _checkpoint_sync(self, issued_at_ms: int) -> dict[str, Any]:
         assert self._ledger is not None
-        return self._ledger.checkpoint(issued_at_ms=issued_at_ms)
+        return dict(self._ledger.issue_checkpoint(issued_at_ms=issued_at_ms))
 
     def confirmation_backend(self) -> ExecutorBoundConfirmationBackend | None:
         """The confirmation coordinator's bound view of evidence state."""
