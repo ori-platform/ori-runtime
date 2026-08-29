@@ -479,7 +479,7 @@ def test_the_install_phase_proves_the_launcher_works() -> None:
     no `ori` command at all — invisible to a doctor run by absolute path."""
     install = _phase("install")
 
-    assert '"launcher_installed": true' in install
+    assert 'assert_field "launcher was installed" launcher_installed true' in install
     assert "doctor runs through the launcher" in install
     assert '"$launcher" doctor' in install
 
@@ -565,7 +565,7 @@ def test_the_host_harness_revision_is_current() -> None:
     The container harness carries this pin already. Without the same one here,
     a record naming revision 6 could describe any of several scripts.
     """
-    assert 'HARNESS_REVISION="12"' in _host_harness()
+    assert 'HARNESS_REVISION="13"' in _host_harness()
 
 
 def _uninstall_commands() -> str:
@@ -864,3 +864,52 @@ def test_the_host_scripts_are_valid_shell() -> None:
             ["bash", "-n", str(script)], capture_output=True, text=True, check=False
         )
         assert completed.returncode == 0, f"{script}: {completed.stderr}"
+
+
+def test_field_assertions_accept_compact_and_indented_json(tmp_path: Path) -> None:
+    """The installer prints compact JSON and the doctor indented JSON; a claim
+    about either must not depend on the emitter's spacing."""
+    harness = _host_harness()
+    start = harness.index("assert_field() {")
+    end = harness.index("\n}\n", start) + 3
+    script = tmp_path / "probe.sh"
+    script.write_text(
+        'pass() { echo PASS; }\nfail() { echo "FAIL $2"; exit 1; }\n'
+        + harness[start:end]
+        + 'assert_field a status healthy \'{"status":"healthy","x":1}\'\n'
+        + "assert_field b launcher_installed true '{\"launcher_installed\": true}'\n"
+        + 'assert_field c version 2.5.0-rc.7 \'{"version": "2.5.0-rc.7"}\'\n'
+        + 'assert_field d status healthy \'{"status":"unhealthy"}\'\n'
+    )
+    result = subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 1
+    assert result.stdout.splitlines() == [
+        "PASS",
+        "PASS",
+        "PASS",
+        'FAIL expected "status": "healthy" in: {"status":"unhealthy"}',
+    ]
+
+
+def test_the_rollback_phase_proves_the_launcher_and_records_the_boot() -> None:
+    """Issue #335 asks for two things beyond restoration: the launcher, which
+    resolves at execution time, must reach the restored release, and a later
+    reboot must be provable against the rollback rather than the install."""
+    rollback = _phase("rollback")
+
+    assert "/usr/local/bin/ori doctor --scope system --json" in rollback
+    assert 'assert_contains "launcher reports the restored release"' in rollback
+    assert 'evidence record --path "$STATE_FILE" --version "$restored"' in rollback
+    assert rollback.index("launcher resolves the restored release") < rollback.index(
+        "rollback boot recorded"
+    )
+
+
+def test_the_extracted_bundle_is_found_by_name() -> None:
+    """The verify step leaves its own directory in the workspace; picking the
+    first directory `find` returns installed tooling from the wrong tree."""
+    harness = _host_harness()
+    assert harness.count("-type d -name 'ori-runtime-*' | head -1") == 2
+    assert "-type d | head -1" not in harness

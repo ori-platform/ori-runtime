@@ -153,6 +153,29 @@ exit" is satisfied by an argument error or a signature rejection, neither of
 which ever activates anything — indistinguishable from a successful rollback
 unless the code is checked.
 
+It then proves the restored release through the launcher, since that resolves
+the active release at execution time, and re-records the boot against the
+restored release. Reboot again and run `persist` with the *restored* version,
+so the claim that a rolled-back upgrade comes back on the previous release
+rests on a boot that followed the rollback:
+
+```bash
+sudo reboot
+```
+
+```bash
+set -o pipefail
+cd /path/to/ori
+sudo ./docs/releases/evidence/harness-systemd-host.sh persist "$VERSION" 2>&1 \
+    | tee "$OUT/persist-after-rollback.log"
+echo "persist exit $?"
+```
+
+The failing candidate is built from a scratch commit whose only change is to
+report critical health unconditionally, under a version no release will ever
+carry. Record its commit and version with the run so it cannot be mistaken for
+a candidate.
+
 ## 5. Uninstall
 
 ```bash
