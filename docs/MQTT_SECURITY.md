@@ -149,6 +149,12 @@ For a runtime with `device_id=dev-01`, the gateway integration uses:
 | Export response | runtime | gateway | `ori/dev-01/export/response/+` |
 | Gateway heartbeat | gateway | all runtimes | `ori/gateway/health` |
 | Runtime node heartbeat | runtime | gateway | `ori/dev-01/runtime/heartbeat` |
+| Tier C enrichment request | runtime | gateway | `ori/dev-01/tier_c/enrichment/request` |
+| Tier C enrichment response | gateway | runtime | `ori/dev-01/tier_c/enrichment/response` |
+| Evidence outbound carriage | runtime | gateway | `ori/dev-01/evidence/outbound` |
+| Evidence outbound acknowledgement | gateway | runtime | `ori/dev-01/evidence/outbound/ack` |
+| Evidence inbound delivery | gateway | runtime | `ori/dev-01/evidence/inbound` |
+| Evidence inbound acknowledgement | runtime | gateway | `ori/dev-01/evidence/inbound/ack` |
 
 `ori/gateway/health` is a site-wide broadcast topic (not device-scoped).  All
 runtimes at the site subscribe to it.  The gateway publishes to it every 30 s
@@ -165,6 +171,21 @@ signal to the gateway. It is not sensor data and must not be routed through the
 runtime EventBus. When `gateway.auth.enabled: true`, the runtime signs the
 payload with the regular device-bound HMAC envelope using message type
 `runtime.heartbeat`.
+
+The Tier C enrichment topics carry the runtime-gateway HMAC envelope in both
+directions when `gateway.auth.enabled: true` (`tier_c_enrichment_request`,
+`tier_c_enrichment_response`); the gateway drops an unauthenticated request
+before it reaches a provider, and a verified response remains advisory.
+
+The evidence topics are different. The carriage payload on
+`evidence/outbound` deliberately carries no HMAC envelope: every artifact in it
+is already signed end to end by the device, so a carriage HMAC would prove
+nothing a gateway holding that key could not forge. The two acknowledgement
+topics and the inbound delivery topic do carry the envelope
+(`evidence_outbound_ack`, `evidence_inbound`, `evidence_inbound_ack`), and
+both sides use persistent MQTT sessions so a message published during a
+restart is not lost. Broker ACLs are defence in depth on these topics, never
+the authentication: each artifact is verified under its own key material.
 
 Do not grant normal clients broad `#` wildcard access. Use exact topics where
 possible and `+` only where the protocol requires a request ID segment.
@@ -185,6 +206,16 @@ Publishers must set `retain=false` for:
 - `ori/{device_id}/export/response/{request_id}`
 - `ori/gateway/health`
 - `ori/{device_id}/runtime/heartbeat`
+- `ori/{device_id}/tier_c/enrichment/request`
+- `ori/{device_id}/tier_c/enrichment/response`
+- `ori/{device_id}/evidence/outbound`
+- `ori/{device_id}/evidence/outbound/ack`
+- `ori/{device_id}/evidence/inbound`
+- `ori/{device_id}/evidence/inbound/ack`
+
+A retained enrichment response would present stale advisory text against a
+later Tier C proposal, and a retained evidence artifact is a statement about a
+moment replayed to a reconnecting client as a current one.
 
 A retained `ori/gateway/health` message would make a freshly-connected runtime
 believe the gateway is alive based on a stale heartbeat, defeating the TTL-based
@@ -195,8 +226,8 @@ is alive after it has disconnected.
 The runtime already publishes gateway reasoning requests with `retain=false`,
 and export responses use the MQTT library default (`retain=false`). Gateway
 implementations must do the same. If the broker supports policy plugins that
-deny retained publishes on `ori/+/reasoning/#` and `ori/+/export/#`, enable that
-policy in production.
+deny retained publishes on `ori/+/reasoning/#`, `ori/+/export/#`,
+`ori/+/tier_c/#` and `ori/+/evidence/#`, enable that policy in production.
 
 ## Mosquitto Example
 
@@ -232,6 +263,12 @@ topic read  ori/dev-01/export/request
 topic write ori/dev-01/export/response/+
 topic read  ori/gateway/health
 topic write ori/dev-01/runtime/heartbeat
+topic write ori/dev-01/tier_c/enrichment/request
+topic read  ori/dev-01/tier_c/enrichment/response
+topic write ori/dev-01/evidence/outbound
+topic read  ori/dev-01/evidence/outbound/ack
+topic read  ori/dev-01/evidence/inbound
+topic write ori/dev-01/evidence/inbound/ack
 
 # Gateway for the same site/device.
 user ori-gateway-site-a
@@ -241,6 +278,12 @@ topic write ori/dev-01/export/request
 topic read  ori/dev-01/export/response/+
 topic write ori/gateway/health
 topic read  ori/dev-01/runtime/heartbeat
+topic read  ori/dev-01/tier_c/enrichment/request
+topic write ori/dev-01/tier_c/enrichment/response
+topic read  ori/dev-01/evidence/outbound
+topic write ori/dev-01/evidence/outbound/ack
+topic write ori/dev-01/evidence/inbound
+topic read  ori/dev-01/evidence/inbound/ack
 ```
 
 For a multi-device site, repeat the runtime block for each device and grant the
@@ -280,6 +323,9 @@ gateway reasoning/export transport also supports `mqtts://` broker URLs and the
       `topic write ori/{device_id}/runtime/heartbeat`; gateway ACL includes
       `topic write ori/gateway/health` and
       `topic read ori/{device_id}/runtime/heartbeat`.
+- [ ] Where Tier C enrichment or evidence is enabled, each side's ACL covers
+      exactly its direction on `ori/{device_id}/tier_c/enrichment/*` and
+      `ori/{device_id}/evidence/*` as listed above, and nothing wider.
 - [ ] Retained publishes are forbidden by client policy or broker policy on
       `ori/{device_id}/reasoning/*`, `ori/{device_id}/export/*`, and
       heartbeat topics.
