@@ -51,15 +51,29 @@ accepted `zones` with their actuator identity, commissioned mapping and proof
 method, the `last_verdict` (`stage`, `reason`, the presented `binding_seq`),
 and `actuation_licensed`.
 
+## Actuation through the binding
+
+A local GPIO relay is connected only under the accepted zone that names its
+pin, with that zone's `active_high`. At startup the coil is commanded
+`de_energised` through that polarity — commanded, not assumed, so the level on
+the wire is the one the commissioning observed for a released coil. The
+runtime's relay actions resolve through the zone's mapping at the moment of
+actuation: `trip_relay` and `close_gas_valve` command `open_protected_circuit`,
+`release_relay` commands `close_protected_circuit`, and the mapping decides
+whether that energises or releases the coil. A declared pin with no accepted
+zone is never driven and its relay actions are not registered. Every logged
+physical action records the `binding_seq` in force (`action_log.binding_seq`),
+and health reports the actuator's coil state and last command under
+`commissioning.actuator`.
+
 ## What this release does and does not do
 
 - Verifies, retains and reports the binding; refuses `active_high` from the
-  provisioning document.
-- Does **not** yet resolve an outcome through the mapping at actuation, arm a
-  zone, or activate a safety profile. The relay executor still drives the pin
-  under gpiozero's default polarity, as documented in `docs/RASPBERRY_PI_SUPPORT.md`.
-  The commissioned actuation seam is the next change; profile activation and
-  trip state land with the safety registry.
+  provisioning document; drives the relay only through the binding.
+- Does **not** yet arm a zone, activate a safety profile, latch a trip, or
+  migrate the packaged Tier D triggers to profile outcomes. Those land with
+  the safety registry. What the coil does when the controller is lost is a
+  property of the wiring the commissioning observed, not of this software.
 
 ## Producing a binding
 

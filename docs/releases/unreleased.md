@@ -15,6 +15,13 @@ candidate or release is cut.
   refuses a hardened start and degrades a development one. The safety profile
   set ships with the release and is loaded under its closed grammar.
   `actions.relay.active_high` is refused from `ori.yaml`: polarity is a
-  commissioned fact. Nothing actuates through the mapping yet; that seam is
-  the next change.
+  commissioned fact.
+- The relay is driven only through the commissioned binding. It is connected
+  under the zone's polarity, startup commands the coil `de_energised` through
+  it, and `trip_relay`, `close_gas_valve` and `release_relay` resolve to
+  `open_protected_circuit` / `close_protected_circuit` through the zone's
+  mapping at the moment of actuation. A declared pin with no accepted zone is
+  not driven and registers no relay action. Every logged physical action
+  records the `binding_seq` in force, and health reports the actuator's coil
+  state and last command.
 

@@ -235,8 +235,10 @@ profile that refuses to pretend:
 3. Wire the relay and declare its `gpio_pin`. Do not pick NC or NO by
    convention — contact type establishes nothing about the protected circuit.
    Commission the channel: de-energise the coil, observe what the load actually
-   does, and record it. Note that this release refuses `active_high` in `ori.yaml`
-and does not yet drive the pin through the commissioned binding's polarity, so on an
+   does, and record it. This release refuses `active_high` in `ori.yaml` and drives
+the pin only through the commissioned binding's polarity and mapping
+(`docs/COMMISSIONING.md`); before that binding is accepted the pin is not
+driven at all. On an
    active-low board the runtime's startup output energises the coil; verify the
    resting state on the bench rather than assuming it.
 4. Move `deployment_profile` off `development`. A hardened profile fails

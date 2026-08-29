@@ -279,3 +279,90 @@ async def test_hardened_posture_starts_with_an_accepted_demonstrated_binding(
         assert state.actuation_licensed
     finally:
         await store.close()
+
+
+async def test_the_relay_is_driven_only_through_the_commissioned_seam(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Startup commands de_energised through the zone's polarity, and the
+    legacy relay names resolve to outcomes through the mapping: on a zone
+    whose open outcome is de_energised, `trip_relay` releases the coil."""
+    _patch_external(monkeypatch)
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(SEED))
+    _write_binding(tmp_path)
+    runtime = OriRuntime(config_path=str(_write_config(tmp_path)))
+    observed: dict[str, Any] = {}
+
+    async def _observe() -> None:
+        deadline = asyncio.get_running_loop().time() + 30.0
+        while runtime._dispatcher is None:
+            if asyncio.get_running_loop().time() > deadline:
+                raise AssertionError("the runtime did not come up in time")
+            await asyncio.sleep(0.05)
+        actuator = runtime._commissioned_actuator
+        assert actuator is not None
+        observed["startup"] = actuator.health()
+        executors = runtime._dispatcher._executors
+        observed["registered"] = sorted(
+            n
+            for n in ("trip_relay", "release_relay", "close_gas_valve")
+            if n in executors
+        )
+        await executors["trip_relay"]("trip_relay", None)
+        observed["after_trip"] = actuator.health()
+        await executors["release_relay"]("release_relay", None)
+        observed["after_release"] = actuator.health()
+        observed["health"] = await runtime._build_health_snapshot()
+        await runtime.stop()
+
+    await asyncio.gather(runtime.start(), _observe())
+    startup = observed["startup"]
+    assert startup["active_high"] is False and startup["gpio_pin"] == 26
+    assert startup["last_command"]["outcome"] == "startup"
+    assert startup["last_command"]["coil_state"] == "de_energised"
+    assert startup["last_command"]["level"] == "high"
+    assert startup["coil"] == "de_energised"
+    assert observed["registered"] == ["close_gas_valve", "release_relay", "trip_relay"]
+    after_trip = observed["after_trip"]["last_command"]
+    assert after_trip == {
+        "outcome": "open_protected_circuit",
+        "coil_state": "de_energised",
+        "level": "high",
+        "executed": True,
+    }
+    after_release = observed["after_release"]["last_command"]
+    assert (
+        after_release["outcome"],
+        after_release["coil_state"],
+        after_release["level"],
+    ) == (
+        "close_protected_circuit",
+        "energised",
+        "low",
+    )
+    assert observed["health"]["commissioning"]["actuator"]["binding_seq"] == 1
+
+
+async def test_without_an_accepted_zone_the_pin_is_not_driven_and_relay_actions_are_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_external(monkeypatch)
+    monkeypatch.delenv(COMMISSIONING_ANCHOR_ENV, raising=False)
+    connect = AsyncMock(return_value=None)
+    monkeypatch.setattr("ori.actions.relay.RelayAction.connect", connect)
+    runtime = OriRuntime(config_path=str(_write_config(tmp_path)))
+    observed: dict[str, Any] = {}
+
+    async def _observe() -> None:
+        observed["health"] = await _started_health(runtime)
+        observed["executors"] = (
+            set(runtime._dispatcher._executors) if runtime._dispatcher else set()
+        )
+
+    await asyncio.gather(runtime.start(), _observe())
+    connect.assert_not_awaited()
+    assert runtime._commissioned_actuator is None
+    assert (
+        not {"trip_relay", "release_relay", "close_gas_valve"} & observed["executors"]
+    )
+    assert observed["health"]["commissioning"]["actuator"] is None

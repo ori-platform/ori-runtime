@@ -869,16 +869,18 @@ to the protected circuit is established per channel by commissioning:
 de-energise the coil, observe what the load actually does, record it.
 That observation is the only thing that licenses calling any state safe.
 
-**The runtime's startup polarity is not trustworthy today.**
+**The relay is driven only through the commissioned binding.**
 `actions.relay.active_high` is refused from `ori.yaml`: polarity is a
 commissioned fact that arrives in the signed binding at
 `commissioning/binding.json` (`docs/COMMISSIONING.md`), which the runtime
-verifies, retains and reports. Nothing yet drives the pin through that
-mapping — `RelayAction` still uses gpiozero's default polarity, so on an
-active-low board the logical inactive output energises the coil. Until the
-actuation seam (#397) lands, an installation is fail-safe only because its
-wiring was proven by test and its board polarity happens to match the
-default — the software guarantees neither.
+verifies, retains and reports. The relay is connected under the zone's
+polarity, startup commands the coil `de_energised` through it rather than
+assuming the platform default, and `trip_relay`, `close_gas_valve` and
+`release_relay` resolve to `open_protected_circuit` / `close_protected_circuit`
+through the zone's mapping, never through a convention about contact type. A
+declared pin with no accepted zone is not driven and its relay actions are not
+registered. What the coil does on controller loss is still whatever the
+wiring does — observe it at commissioning and record it.
 
 ---
 
