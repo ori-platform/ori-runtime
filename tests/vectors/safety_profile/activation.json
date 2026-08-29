@@ -1,0 +1,769 @@
+{
+  "contract": "safety-profile/v1",
+  "version": 1,
+  "comment": "Activation cases. Every zone here has already passed all twelve stages of the commissioned binding contract; the fields carried are the ones activation reads and no others. installed_skills is present so that a consumer can prove it is not an input: it never changes an expectation.",
+  "fixtures_comment": "Ratified fixture profiles that exist only in this file. Every shipped profile is a candidate and cannot be activated, so the cases run against these; they carry the shipped numbers so a consumer's evaluator is exercised at the values it will meet.",
+  "fixtures": [
+    {
+      "v": 1,
+      "id": "fixture.overcurrent.v1",
+      "status": "ratified",
+      "observes": {
+        "quantity": "current",
+        "unit": "ampere"
+      },
+      "condition": {
+        "kind": "upper_capacity_multiplier",
+        "capacity_parameter": "rated_capacity_amps",
+        "multiplier": 2.0
+      },
+      "outcome": "open_protected_circuit"
+    },
+    {
+      "v": 1,
+      "id": "fixture.overvoltage.v1",
+      "status": "ratified",
+      "observes": {
+        "quantity": "voltage",
+        "unit": "volt"
+      },
+      "condition": {
+        "kind": "upper_bound",
+        "threshold": 260.0
+      },
+      "outcome": "open_protected_circuit"
+    },
+    {
+      "v": 1,
+      "id": "fixture.gas.v1",
+      "status": "ratified",
+      "observes": {
+        "quantity": "gas_concentration",
+        "unit": "ppm"
+      },
+      "condition": {
+        "kind": "upper_bound",
+        "threshold": 400.0
+      },
+      "outcome": "open_protected_circuit"
+    }
+  ],
+  "activation_order": [
+    "pending_ratification",
+    "unit_mismatch",
+    "direction_unsupported",
+    "parameter_mismatch",
+    "trip_point_unobservable",
+    "undemonstrated_binding"
+  ],
+  "cases": [
+    {
+      "name": "two_zone_site_activates_overcurrent_on_both",
+      "note": "The binding corpus's reference site. Two current zones with different capacities activate the same profile at different trip points.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 30.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        },
+        {
+          "zone_id": "borehole-pump",
+          "sensor": {
+            "sensor_id": "load-current-pump",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 100.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 4.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "fixture.overcurrent.v1",
+            "trip_point": 20.0
+          },
+          {
+            "zone_id": "borehole-pump",
+            "profile": "fixture.overcurrent.v1",
+            "trip_point": 8.0
+          }
+        ],
+        "refused": [],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "start"
+      }
+    },
+    {
+      "name": "activation_with_no_skills_installed",
+      "note": "Coverage does not depend on the catalogue. No skill is installed and the profile still activates.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 30.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "fixture.overcurrent.v1",
+            "trip_point": 20.0
+          }
+        ],
+        "refused": [],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "start"
+      }
+    },
+    {
+      "name": "skill_declaring_tier_d_on_the_same_quantity_changes_nothing",
+      "note": "An installed skill carries a Tier D trigger on current at a different threshold. Activation is identical to the case with no skills; the skill's trigger is governed by skills-package rules, not by this contract.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [
+        {
+          "name": "energy-anomaly-detector",
+          "first_party": true,
+          "tier_d_triggers": [
+            {
+              "name": "dangerous_overcurrent",
+              "condition": "value > 999.0"
+            }
+          ]
+        }
+      ],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 30.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "fixture.overcurrent.v1",
+            "trip_point": 20.0
+          }
+        ],
+        "refused": [],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "start"
+      }
+    },
+    {
+      "name": "voltage_and_gas_zones_activate_fixed_threshold_profiles",
+      "note": "Fixed-threshold kinds take no capacity. The trip point is the release-owned threshold.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "grid-main",
+          "sensor": {
+            "sensor_id": "grid-main_voltage",
+            "quantity": "voltage",
+            "unit": "volt",
+            "range_min": 0.0,
+            "range_max": 300.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        },
+        {
+          "zone_id": "plant-room",
+          "sensor": {
+            "sensor_id": "plant-gas",
+            "quantity": "gas_concentration",
+            "unit": "ppm",
+            "range_min": 0.0,
+            "range_max": 1000.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [
+          {
+            "zone_id": "grid-main",
+            "profile": "fixture.overvoltage.v1",
+            "trip_point": 260.0
+          },
+          {
+            "zone_id": "plant-room",
+            "profile": "fixture.gas.v1",
+            "trip_point": 400.0
+          }
+        ],
+        "refused": [],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "start"
+      }
+    },
+    {
+      "name": "zone_with_no_matching_profile_is_uncovered_not_refused",
+      "note": "A commissioned temperature zone matches no v1 profile. That is a coverage fact for the health surface, not a refusal, and it does not block startup.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "boiler",
+          "sensor": {
+            "sensor_id": "boiler-temp",
+            "quantity": "temperature",
+            "unit": "celsius",
+            "range_min": -20.0,
+            "range_max": 150.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [],
+        "refused": [],
+        "pending_ratification": [],
+        "uncovered_zones": [
+          "boiler"
+        ],
+        "startup": "start"
+      }
+    },
+    {
+      "name": "unit_mismatch_refused",
+      "note": "A current zone commissioned in milliamperes. The quantity matches, so the zone is a candidate, and the unit check refuses it before anything numeric is compared.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "milliampere",
+            "range_min": 0.0,
+            "range_max": 30000.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10000.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [],
+        "refused": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "fixture.overcurrent.v1",
+            "reason": "unit_mismatch"
+          }
+        ],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "refuse"
+      }
+    },
+    {
+      "name": "direction_unsupported_refused",
+      "note": "The commissioning record says the clamp reads load draw as a fall in magnitude. An upper-bound evaluator on that sign would never fire, so the zone is refused rather than evaluated.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 30.0,
+            "direction": "positive_is_supply"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [],
+        "refused": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "fixture.overcurrent.v1",
+            "reason": "direction_unsupported"
+          }
+        ],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "refuse"
+      }
+    },
+    {
+      "name": "parameter_mismatch_refused",
+      "note": "The zone's rated capacity is recorded under a parameter name the profile does not consume. A capacity the profile cannot name is not a capacity it may multiply.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 30.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "breaker_rating_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [],
+        "refused": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "fixture.overcurrent.v1",
+            "reason": "parameter_mismatch"
+          }
+        ],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "refuse"
+      }
+    },
+    {
+      "name": "trip_point_beyond_full_scale_refused",
+      "note": "A 25 A capacity on a 30 A clamp. Every value is individually reasonable and the product, 50 A, is beyond what the sensor can report. A binding verifier that consults the profile set refuses this at its bounds stage; activation refuses it again on its own.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 30.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 25.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [],
+        "refused": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "fixture.overcurrent.v1",
+            "reason": "trip_point_unobservable"
+          }
+        ],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "refuse"
+      }
+    },
+    {
+      "name": "fixed_threshold_beyond_full_scale_refused",
+      "note": "A gas sensor commissioned with a 300 ppm full scale under a 400 ppm profile. The capacity bound in the binding contract does not cover fixed-threshold kinds, so this check is the only one that catches it.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "plant-room",
+          "sensor": {
+            "sensor_id": "plant-gas",
+            "quantity": "gas_concentration",
+            "unit": "ppm",
+            "range_min": 0.0,
+            "range_max": 300.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [],
+        "refused": [
+          {
+            "zone_id": "plant-room",
+            "profile": "fixture.gas.v1",
+            "reason": "trip_point_unobservable"
+          }
+        ],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "refuse"
+      }
+    },
+    {
+      "name": "trip_point_at_full_scale_is_observable",
+      "note": "A 15 A capacity on a 30 A clamp puts the trip point exactly at full scale. The bound is inclusive: a reading at full scale is a reading the sensor can report.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 30.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 15.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "fixture.overcurrent.v1",
+            "trip_point": 30.0
+          }
+        ],
+        "refused": [],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "start"
+      }
+    },
+    {
+      "name": "undemonstrated_zone_refused_under_hardened_posture",
+      "note": "The zone's proof method is undemonstrated. The binding contract forbids activating an actuating profile on it; under production posture that is a startup refusal.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 30.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "undemonstrated"
+        }
+      ],
+      "expect": {
+        "activated": [],
+        "refused": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "fixture.overcurrent.v1",
+            "reason": "undemonstrated_binding"
+          }
+        ],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "refuse"
+      }
+    },
+    {
+      "name": "development_posture_starts_degraded_with_the_zone_inactive",
+      "note": "The same undemonstrated zone in development posture. The runtime starts, the profile is inactive on that zone, and health is degraded; no protection is claimed for it.",
+      "posture": "development",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 30.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "undemonstrated"
+        }
+      ],
+      "expect": {
+        "activated": [],
+        "refused": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "fixture.overcurrent.v1",
+            "reason": "undemonstrated_binding"
+          }
+        ],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "start_degraded"
+      }
+    },
+    {
+      "name": "one_refused_zone_refuses_the_whole_startup",
+      "note": "A healthy zone beside a refused one. Under hardened posture the device does not start with partial protection; the healthy zone's activation is recorded so a consumer proves it evaluated every zone rather than stopping at the first refusal.",
+      "posture": "production",
+      "profile_set": "fixtures",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 30.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        },
+        {
+          "zone_id": "borehole-pump",
+          "sensor": {
+            "sensor_id": "load-current-pump",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 100.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 4.0
+          },
+          "proof_method": "undemonstrated"
+        }
+      ],
+      "expect": {
+        "activated": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "fixture.overcurrent.v1",
+            "trip_point": 20.0
+          }
+        ],
+        "refused": [
+          {
+            "zone_id": "borehole-pump",
+            "profile": "fixture.overcurrent.v1",
+            "reason": "undemonstrated_binding"
+          }
+        ],
+        "pending_ratification": [],
+        "uncovered_zones": [],
+        "startup": "refuse"
+      }
+    },
+    {
+      "name": "shipped_candidate_profile_is_pending_not_active",
+      "note": "The shipped set against the reference zone. electrical.overcurrent.v1 is a candidate: the zone is a candidate for it, nothing is activated, nothing is refused, startup proceeds, and the zone is reported by profile id as pending ratification.",
+      "posture": "production",
+      "profile_set": "shipped",
+      "installed_skills": [],
+      "zones": [
+        {
+          "zone_id": "main-distribution",
+          "sensor": {
+            "sensor_id": "load-current-main",
+            "quantity": "current",
+            "unit": "ampere",
+            "range_min": 0.0,
+            "range_max": 30.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [],
+        "refused": [],
+        "pending_ratification": [
+          {
+            "zone_id": "main-distribution",
+            "profile": "electrical.overcurrent.v1"
+          }
+        ],
+        "uncovered_zones": [],
+        "startup": "start"
+      }
+    },
+    {
+      "name": "shipped_set_activates_nothing_on_any_zone",
+      "note": "Every shipped profile is a candidate. Voltage and gas zones are pending too, and a skill declaring Tier D on the same quantities changes nothing.",
+      "posture": "production",
+      "profile_set": "shipped",
+      "installed_skills": [
+        {
+          "name": "energy-anomaly-detector",
+          "first_party": true,
+          "tier_d_triggers": [
+            {
+              "name": "voltage_overvoltage",
+              "condition": "value > 260.0"
+            }
+          ]
+        }
+      ],
+      "zones": [
+        {
+          "zone_id": "grid-main",
+          "sensor": {
+            "sensor_id": "grid-main_voltage",
+            "quantity": "voltage",
+            "unit": "volt",
+            "range_min": 0.0,
+            "range_max": 300.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        },
+        {
+          "zone_id": "plant-room",
+          "sensor": {
+            "sensor_id": "plant-gas",
+            "quantity": "gas_concentration",
+            "unit": "ppm",
+            "range_min": 0.0,
+            "range_max": 1000.0,
+            "direction": "positive_is_load_draw"
+          },
+          "rated_capacity": {
+            "parameter": "rated_capacity_amps",
+            "value": 10.0
+          },
+          "proof_method": "actuate_and_observe"
+        }
+      ],
+      "expect": {
+        "activated": [],
+        "refused": [],
+        "pending_ratification": [
+          {
+            "zone_id": "grid-main",
+            "profile": "electrical.overvoltage.v1"
+          },
+          {
+            "zone_id": "plant-room",
+            "profile": "gas.concentration.v1"
+          }
+        ],
+        "uncovered_zones": [],
+        "startup": "start"
+      }
+    }
+  ]
+}

@@ -1,0 +1,620 @@
+{
+  "contract": "safety-profile/v1",
+  "version": 1,
+  "comment": "Lifecycle cases: a sequence of events applied to one zone with one active profile, and the trip state after each. startup carries the durable state the consumer finds on disk. Every event names the state expected afterwards; an event that executes an outcome names it, and an event that is refused names the refusal. Readings here are credible unless a case says otherwise.",
+  "fixtures_comment": "Ratified fixture profiles that exist only in this file. Every shipped profile is a candidate and cannot be activated, so the cases run against these; they carry the shipped numbers so a consumer's evaluator is exercised at the values it will meet.",
+  "fixtures": [
+    {
+      "v": 1,
+      "id": "fixture.overcurrent.v1",
+      "status": "ratified",
+      "observes": {
+        "quantity": "current",
+        "unit": "ampere"
+      },
+      "condition": {
+        "kind": "upper_capacity_multiplier",
+        "capacity_parameter": "rated_capacity_amps",
+        "multiplier": 2.0
+      },
+      "outcome": "open_protected_circuit"
+    },
+    {
+      "v": 1,
+      "id": "fixture.overvoltage.v1",
+      "status": "ratified",
+      "observes": {
+        "quantity": "voltage",
+        "unit": "volt"
+      },
+      "condition": {
+        "kind": "upper_bound",
+        "threshold": 260.0
+      },
+      "outcome": "open_protected_circuit"
+    },
+    {
+      "v": 1,
+      "id": "fixture.gas.v1",
+      "status": "ratified",
+      "observes": {
+        "quantity": "gas_concentration",
+        "unit": "ppm"
+      },
+      "condition": {
+        "kind": "upper_bound",
+        "threshold": 400.0
+      },
+      "outcome": "open_protected_circuit"
+    }
+  ],
+  "states": [
+    "inactive",
+    "armed",
+    "tripped"
+  ],
+  "arm_refusals": [
+    "tripped",
+    "safety_path_unconfirmed",
+    "no_credible_reading"
+  ],
+  "reset_refusals": [
+    "not_tripped",
+    "no_credible_reading",
+    "condition_active"
+  ],
+  "external_refusal": "no_authority",
+  "cases": [
+    {
+      "name": "arm_trip_latch_restart_reset",
+      "note": "The reference sequence: a clean start arms, a hazard trips and latches, a restart does not close the circuit, a reset is refused while the hazard persists and succeeds once it clears.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "inactive",
+          "expect_refusal": "no_credible_reading"
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_state": "inactive"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "armed",
+          "expect_outcome": "close_protected_circuit"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit"
+        },
+        {
+          "event": "reading",
+          "value": 3.0,
+          "expect_state": "tripped"
+        },
+        {
+          "event": "restart",
+          "durable_state": "tripped",
+          "expect_state": "tripped"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "tripped"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "tripped",
+          "expect_refusal": "tripped"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "expect_state": "tripped"
+        },
+        {
+          "event": "reset_attempt",
+          "expect_state": "tripped",
+          "expect_refusal": "condition_active"
+        },
+        {
+          "event": "reading",
+          "value": 3.0,
+          "expect_state": "tripped"
+        },
+        {
+          "event": "reset_attempt",
+          "expect_state": "armed",
+          "expect_outcome": "close_protected_circuit"
+        }
+      ]
+    },
+    {
+      "name": "arm_requires_safety_path",
+      "note": "A credible reading alone does not arm. The safety path must be confirmed first, because arming closes the circuit the runtime must then be able to open.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_state": "inactive"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "inactive",
+          "expect_refusal": "safety_path_unconfirmed"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "armed",
+          "expect_outcome": "close_protected_circuit"
+        }
+      ]
+    },
+    {
+      "name": "arm_refused_while_tripped",
+      "note": "A hazard reading trips the zone before it was ever armed. Arming from tripped is not a transition: only a reset leaves tripped, so a reading that satisfies the condition can never be the most recent credible reading of a zone that is merely inactive.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "tripped",
+          "expect_refusal": "tripped"
+        }
+      ]
+    },
+    {
+      "name": "trip_from_inactive_executes_the_outcome",
+      "note": "A zone whose de-energised terminal state is closed carries load while inactive. A hazard reading before arming still commands the outcome; inactive means unarmed, not unprotected.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit"
+        }
+      ]
+    },
+    {
+      "name": "crash_before_trip_record_is_recovered_by_the_arming_rule",
+      "note": "The trip executed but the process died before recording it. On restart nothing is on disk, the hazard persists, and the first credible reading takes the zone to tripped before any arm attempt could close the circuit.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_state": "inactive"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "armed",
+          "expect_outcome": "close_protected_circuit"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit"
+        },
+        {
+          "event": "restart",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "inactive",
+          "expect_refusal": "no_credible_reading"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit"
+        }
+      ]
+    },
+    {
+      "name": "restart_from_armed_returns_to_inactive",
+      "note": "Armed is not durable across a restart. The safety path has to be confirmed again before the circuit is closed.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_state": "inactive"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "armed",
+          "expect_outcome": "close_protected_circuit"
+        },
+        {
+          "event": "restart",
+          "durable_state": "armed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "inactive",
+          "expect_refusal": "safety_path_unconfirmed"
+        }
+      ]
+    },
+    {
+      "name": "reset_refused_when_not_tripped",
+      "note": "Reset is a transition out of tripped and nothing else.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reset_attempt",
+          "expect_state": "inactive",
+          "expect_refusal": "not_tripped"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_state": "inactive"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "armed",
+          "expect_outcome": "close_protected_circuit"
+        },
+        {
+          "event": "reset_attempt",
+          "expect_state": "armed",
+          "expect_refusal": "not_tripped"
+        }
+      ]
+    },
+    {
+      "name": "reset_requires_a_credible_reading",
+      "note": "After a restart into tripped, no reading has been seen. A reset cannot know whether the hazard cleared and is refused.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "tripped",
+          "expect_state": "tripped"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "tripped"
+        },
+        {
+          "event": "reset_attempt",
+          "expect_state": "tripped",
+          "expect_refusal": "no_credible_reading"
+        },
+        {
+          "event": "reading",
+          "value": 3.0,
+          "expect_state": "tripped"
+        },
+        {
+          "event": "reset_attempt",
+          "expect_state": "armed",
+          "expect_outcome": "close_protected_circuit"
+        }
+      ]
+    },
+    {
+      "name": "rejected_input_does_not_move_the_state",
+      "note": "A rejected reading is alerted and otherwise inert: it neither trips nor counts as the credible reading arming and reset require.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": {
+            "non_finite": "nan"
+          },
+          "expect_state": "inactive",
+          "expect_rejected": "non_finite"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "inactive",
+          "expect_refusal": "no_credible_reading"
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_state": "inactive"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "armed",
+          "expect_outcome": "close_protected_circuit"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "quality": 0.0,
+          "expect_state": "armed",
+          "expect_rejected": "zero_quality"
+        }
+      ]
+    },
+    {
+      "name": "no_external_input_moves_the_state",
+      "note": "Once tripped, a remote command, a skill, a configuration value, a policy document and a binding revision each attempt to clear the trip. None has authority.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "tripped",
+          "expect_state": "tripped"
+        },
+        {
+          "event": "external",
+          "source": "remote_command",
+          "expect_state": "tripped",
+          "expect_refusal": "no_authority"
+        },
+        {
+          "event": "external",
+          "source": "skill",
+          "expect_state": "tripped",
+          "expect_refusal": "no_authority"
+        },
+        {
+          "event": "external",
+          "source": "configuration",
+          "expect_state": "tripped",
+          "expect_refusal": "no_authority"
+        },
+        {
+          "event": "external",
+          "source": "device_policy",
+          "expect_state": "tripped",
+          "expect_refusal": "no_authority"
+        },
+        {
+          "event": "external",
+          "source": "binding_revision",
+          "expect_state": "tripped",
+          "expect_refusal": "no_authority"
+        }
+      ]
+    },
+    {
+      "name": "external_input_cannot_arm_either",
+      "note": "The same sources against an inactive zone. Arming is a runtime decision made from the safety path and a credible reading, not something a document or command performs.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "external",
+          "source": "remote_command",
+          "expect_state": "inactive",
+          "expect_refusal": "no_authority"
+        },
+        {
+          "event": "external",
+          "source": "configuration",
+          "expect_state": "inactive",
+          "expect_refusal": "no_authority"
+        }
+      ]
+    }
+  ]
+}

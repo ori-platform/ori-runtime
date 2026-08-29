@@ -1,0 +1,1227 @@
+{
+  "contract": "safety-profile/v1",
+  "version": 1,
+  "comment": "Profile-load cases: a complete profile set in, loaded or malformed_profile out. A consumer applies the closed grammar to the set it ships and refuses to start in every posture on a refusal. Each malformed case carries exactly one defect, and must_name lists identifiers the refusal must contain.",
+  "cases": [
+    {
+      "name": "v1_set_loads",
+      "note": "The shipped v1 set.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "loaded"
+    },
+    {
+      "name": "undeclared_profile_key_refused",
+      "note": "A key the profile grammar does not admit. Ignoring it would let a stale or misspelt declaration appear to have taken effect.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit",
+          "enabled": true
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "enabled"
+      ]
+    },
+    {
+      "name": "missing_outcome_refused",
+      "note": "A profile with no outcome commands nothing.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          }
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "outcome"
+      ]
+    },
+    {
+      "name": "unknown_outcome_refused",
+      "note": "close_protected_circuit is never a safety outcome.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "close_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "close_protected_circuit"
+      ]
+    },
+    {
+      "name": "missing_status_refused",
+      "note": "A profile with no status has no authority statement; absence is not ratification.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "status"
+      ]
+    },
+    {
+      "name": "unknown_status_refused",
+      "note": "approved is not a status. The vocabulary is ratified or candidate, and a value outside it is refused rather than read as either.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "approved",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "approved"
+      ]
+    },
+    {
+      "name": "ratified_profile_loads",
+      "note": "A ratified profile is grammatically identical to a candidate; status decides activation, not load.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "ratified",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "loaded"
+    },
+    {
+      "name": "version_as_float_refused",
+      "note": "1.0 is not 1.",
+      "profiles": [
+        {
+          "v": 1.0,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "v"
+      ]
+    },
+    {
+      "name": "version_as_boolean_refused",
+      "note": "true is not 1, whatever the language says.",
+      "profiles": [
+        {
+          "v": true,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "v"
+      ]
+    },
+    {
+      "name": "id_without_version_suffix_refused",
+      "note": "The id grammar requires a .vN suffix so that a changed condition is a new identity.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "electrical.overcurrent"
+      ]
+    },
+    {
+      "name": "duplicate_id_refused",
+      "note": "Two profiles with one id.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "electrical.overcurrent.v1"
+      ]
+    },
+    {
+      "name": "undeclared_observes_key_refused",
+      "note": "observes admits exactly quantity and unit.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere",
+            "sensor_type": "current_clamp"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "observes"
+      ]
+    },
+    {
+      "name": "unknown_condition_kind_refused",
+      "note": "An unrecognised kind is refused, never treated as the nearest known one.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiple",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "upper_capacity_multiple"
+      ]
+    },
+    {
+      "name": "expression_condition_refused",
+      "note": "A condition carrying an expression string. There is no expression evaluation on the Tier D path.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "expression",
+            "expression": "value > 260"
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "expression"
+      ]
+    },
+    {
+      "name": "multiplier_missing_refused",
+      "note": "upper_capacity_multiplier without its multiplier.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps"
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "multiplier"
+      ]
+    },
+    {
+      "name": "threshold_on_capacity_kind_refused",
+      "note": "A field from another kind. The condition grammar is closed per kind.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0,
+            "threshold": 20.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "threshold"
+      ]
+    },
+    {
+      "name": "multiplier_at_one_refused",
+      "note": "A multiplier of 1.0 makes the trip point the rated capacity itself; the bound is strictly greater than one.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 1.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "1.0"
+      ]
+    },
+    {
+      "name": "multiplier_above_hundred_refused",
+      "note": "The upper bound on the multiplier.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 100.5
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "100.5"
+      ]
+    },
+    {
+      "name": "multiplier_as_boolean_refused",
+      "note": "true is not a number.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": true
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "multiplier"
+      ]
+    },
+    {
+      "name": "multiplier_as_string_refused",
+      "note": "A numeric string is not a number.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": "2.0"
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "multiplier"
+      ]
+    },
+    {
+      "name": "threshold_as_string_refused",
+      "note": "A numeric string is not a number.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": "260"
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "threshold"
+      ]
+    },
+    {
+      "name": "threshold_outside_agreement_zone_refused",
+      "note": "1e-5 is below the D-011 agreement zone and would not serialise identically across implementations.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "rated_capacity_amps",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 1e-05
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "threshold"
+      ]
+    },
+    {
+      "name": "capacity_parameter_empty_refused",
+      "note": "A capacity the profile cannot name is not one it may multiply.",
+      "profiles": [
+        {
+          "v": 1,
+          "id": "electrical.overcurrent.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "current",
+            "unit": "ampere"
+          },
+          "condition": {
+            "kind": "upper_capacity_multiplier",
+            "capacity_parameter": "",
+            "multiplier": 2.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "electrical.overvoltage.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "voltage",
+            "unit": "volt"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 260.0
+          },
+          "outcome": "open_protected_circuit"
+        },
+        {
+          "v": 1,
+          "id": "gas.concentration.v1",
+          "status": "candidate",
+          "observes": {
+            "quantity": "gas_concentration",
+            "unit": "ppm"
+          },
+          "condition": {
+            "kind": "upper_bound",
+            "threshold": 400.0
+          },
+          "outcome": "open_protected_circuit"
+        }
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "capacity_parameter"
+      ]
+    },
+    {
+      "name": "empty_set_refused",
+      "note": "A release with no profiles has no safety conditions to state.",
+      "profiles": [],
+      "expect": "malformed_profile",
+      "must_name": [
+        "profiles"
+      ]
+    },
+    {
+      "name": "profile_as_array_refused",
+      "note": "A hostile shape where an object is required must be refused, not crash the loader.",
+      "profiles": [
+        []
+      ],
+      "expect": "malformed_profile",
+      "must_name": [
+        "object"
+      ]
+    }
+  ]
+}

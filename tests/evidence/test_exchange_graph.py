@@ -371,6 +371,17 @@ EXEMPTION_OWNERS = frozenset(
 #: a comment, a dead helper, or a `json.load` with no assertions all read as
 #: consumption, which is the false green this accounting exists to refuse.
 VECTOR_CONSUMERS = {
+    ("commissioned_safety_binding", "binding-vectors-v1"): (
+        "test_commissioned_binding_vectors.py::test_accept_cases_pass_every_stage",
+        "test_commissioned_binding_vectors.py"
+        "::test_reject_cases_refuse_at_their_declared_stage",
+    ),
+    ("safety_profile", "profiles"): (
+        "commissioning/test_profiles.py::test_the_shipped_profile_set_is_the_vendored_one",
+    ),
+    ("safety_profile", "profile-load"): (
+        "commissioning/test_profiles.py::test_profile_load_cases_agree_with_the_contract",
+    ),
     ("evidence_exchange", "anchor-registration"): (
         "evidence/test_registration.py"
         "::test_the_registration_reproduces_the_contract_vector_byte_for_byte",
@@ -496,20 +507,37 @@ VECTOR_EXEMPTIONS = {
             "covers the bytes the authority must match."
         ),
     },
-    ("commissioned_safety_binding", "binding-vectors-v1"): {
+    ("safety_profile", "activation"): {
         "owner": "the runtime",
         "status": "proof_pending",
         "tracking": "ori-runtime#324",
         "reason": (
-            "The runtime holds no commissioned binding and has no verifier for "
-            "one: the safety registry that would read a binding, and the "
-            "actuation seam that would resolve an outcome through it, are both "
-            "still open. `tests/test_commissioned_binding_vectors.py` drives a "
-            "reference verifier written from the contract over these cases, "
-            "which establishes that the corpus is internally coherent and says "
-            "nothing about runtime behaviour, because no runtime code reads a "
-            "binding. Vendored now so the drift check covers the bytes a "
-            "consumer will have to match."
+            "Profile activation on accepted zones is the safety registry, not "
+            "yet built. The binding verifier consumes the profile set for its "
+            "trip-point bound; activation, evaluation and trip state do not "
+            "exist in the runtime, so nothing here can drive these cases."
+        ),
+    },
+    ("safety_profile", "evaluation"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#324",
+        "reason": "Profile evaluation is the safety registry, not yet built.",
+    },
+    ("safety_profile", "lifecycle"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#324",
+        "reason": "Trip state and its transitions are the safety registry, not yet built.",
+    },
+    ("safety_profile", "legacy-actions"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#324",
+        "reason": (
+            "The migration of the three actuator-specific names to outcomes "
+            "lands with the safety registry; the actuation seam resolves "
+            "outcomes but the legacy names are not yet retired."
         ),
     },
 }

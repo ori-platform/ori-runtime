@@ -1,0 +1,704 @@
+{
+  "contract": "safety-profile/v1",
+  "version": 1,
+  "comment": "Evaluation cases: one active profile, the zone facts it consumes, one reading, one verdict. A reading value is a JSON number, a JSON string (non_numeric), a JSON boolean (boolean), or an object {\"non_finite\": \"nan\" | \"+inf\" | \"-inf\"} that the consumer converts to the IEEE value before evaluating, because JSON cannot carry those values directly.",
+  "fixtures_comment": "Ratified fixture profiles that exist only in this file. Every shipped profile is a candidate and cannot be activated, so the cases run against these; they carry the shipped numbers so a consumer's evaluator is exercised at the values it will meet.",
+  "fixtures": [
+    {
+      "v": 1,
+      "id": "fixture.overcurrent.v1",
+      "status": "ratified",
+      "observes": {
+        "quantity": "current",
+        "unit": "ampere"
+      },
+      "condition": {
+        "kind": "upper_capacity_multiplier",
+        "capacity_parameter": "rated_capacity_amps",
+        "multiplier": 2.0
+      },
+      "outcome": "open_protected_circuit"
+    },
+    {
+      "v": 1,
+      "id": "fixture.overvoltage.v1",
+      "status": "ratified",
+      "observes": {
+        "quantity": "voltage",
+        "unit": "volt"
+      },
+      "condition": {
+        "kind": "upper_bound",
+        "threshold": 260.0
+      },
+      "outcome": "open_protected_circuit"
+    },
+    {
+      "v": 1,
+      "id": "fixture.gas.v1",
+      "status": "ratified",
+      "observes": {
+        "quantity": "gas_concentration",
+        "unit": "ppm"
+      },
+      "condition": {
+        "kind": "upper_bound",
+        "threshold": 400.0
+      },
+      "outcome": "open_protected_circuit"
+    }
+  ],
+  "rejection_reason_order": [
+    "boolean",
+    "non_numeric",
+    "non_finite",
+    "unit_mismatch",
+    "zero_quality",
+    "out_of_range"
+  ],
+  "cases": [
+    {
+      "name": "overcurrent_above_trip_point_trips",
+      "note": "25 A against a 20 A trip point.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": 25.0,
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "trip"
+      }
+    },
+    {
+      "name": "overcurrent_at_trip_point_does_not_trip",
+      "note": "The comparison is strict: exactly the trip point is not above it.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": 20.0,
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "no_trip"
+      }
+    },
+    {
+      "name": "overcurrent_just_above_trip_point_trips",
+      "note": "The smallest representable step above the trip point that the agreement zone admits.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": 20.0001,
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "trip"
+      }
+    },
+    {
+      "name": "overcurrent_normal_load_does_not_trip",
+      "note": "6.4 A on a 20 A trip point.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": 6.4,
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "no_trip"
+      }
+    },
+    {
+      "name": "overcurrent_at_zero_does_not_trip",
+      "note": "Zero is within the declared range and below the trip point.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": 0.0,
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "no_trip"
+      }
+    },
+    {
+      "name": "overcurrent_saturated_reading_trips",
+      "note": "31 A from a sensor whose full scale is 30 A. The comparison is decided first: a value beyond full scale on the hazard side is more than the trip point, and the range is never consulted.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": 31.0,
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "trip"
+      }
+    },
+    {
+      "name": "overcurrent_negative_reading_rejected",
+      "note": "-0.5 A with positive_is_load_draw. The condition does not hold, and the value is below range_min, so it is a reading the sensor cannot have produced.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": -0.5,
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "rejected_input",
+        "reason": "out_of_range"
+      }
+    },
+    {
+      "name": "overcurrent_nan_rejected",
+      "note": "NaN compares false against everything; it must be refused as input, not evaluated as no_trip.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": {
+          "non_finite": "nan"
+        },
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "rejected_input",
+        "reason": "non_finite"
+      }
+    },
+    {
+      "name": "overcurrent_positive_infinity_rejected",
+      "note": "+inf would satisfy the comparison. It is refused before the comparison is reached: an infinite reading is not a measurement.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": {
+          "non_finite": "+inf"
+        },
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "rejected_input",
+        "reason": "non_finite"
+      }
+    },
+    {
+      "name": "overcurrent_negative_infinity_rejected",
+      "note": "-inf is refused for the same reason as +inf.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": {
+          "non_finite": "-inf"
+        },
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "rejected_input",
+        "reason": "non_finite"
+      }
+    },
+    {
+      "name": "overcurrent_string_value_rejected",
+      "note": "A string where a number is required.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": "25.0",
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "rejected_input",
+        "reason": "non_numeric"
+      }
+    },
+    {
+      "name": "overcurrent_boolean_value_rejected",
+      "note": "true is not 1.0. A language in which booleans are integers would otherwise evaluate it.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": true,
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "rejected_input",
+        "reason": "boolean"
+      }
+    },
+    {
+      "name": "overcurrent_wrong_unit_rejected",
+      "note": "A credible number in the wrong unit. 25 milliamperes is not 25 amperes, and the comparison is never made.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": 25.0,
+        "unit": "milliampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "rejected_input",
+        "reason": "unit_mismatch"
+      }
+    },
+    {
+      "name": "overcurrent_zero_quality_rejected",
+      "note": "A value above the trip point at quality 0. The adapter has said this reading is not usable; it is refused, alerted, and not evaluated.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": 25.0,
+        "unit": "ampere",
+        "quality": 0.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "rejected_input",
+        "reason": "zero_quality"
+      }
+    },
+    {
+      "name": "overcurrent_missing_quality_rejected",
+      "note": "Quality absent is not quality one.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": 25.0,
+        "unit": "ampere"
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "rejected_input",
+        "reason": "zero_quality"
+      }
+    },
+    {
+      "name": "overcurrent_low_but_positive_quality_evaluates",
+      "note": "Quality 0.2 is greater than zero; the reading is credible and trips.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": 25.0,
+        "unit": "ampere",
+        "quality": 0.2
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "trip"
+      }
+    },
+    {
+      "name": "overcurrent_reason_order_boolean_before_unit",
+      "note": "A boolean value in the wrong unit reports boolean, the first applicable reason.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": true,
+        "unit": "milliampere",
+        "quality": 1.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "rejected_input",
+        "reason": "boolean"
+      },
+      "tests_order": true
+    },
+    {
+      "name": "overcurrent_reason_order_unit_before_quality",
+      "note": "Wrong unit at zero quality reports unit_mismatch.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        }
+      },
+      "reading": {
+        "value": 25.0,
+        "unit": "milliampere",
+        "quality": 0.0
+      },
+      "trip_point": 20.0,
+      "expect": {
+        "verdict": "rejected_input",
+        "reason": "unit_mismatch"
+      },
+      "tests_order": true
+    },
+    {
+      "name": "overcurrent_pump_zone_trip_point_from_its_own_capacity",
+      "note": "The same profile on a 4 A zone trips at 8 A.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 4.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 100.0
+        }
+      },
+      "reading": {
+        "value": 8.5,
+        "unit": "ampere",
+        "quality": 1.0
+      },
+      "trip_point": 8.0,
+      "expect": {
+        "verdict": "trip"
+      }
+    },
+    {
+      "name": "overvoltage_above_threshold_trips",
+      "note": "265 V against 260 V.",
+      "profile": "fixture.overvoltage.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "volt",
+          "range_min": 0.0,
+          "range_max": 300.0
+        }
+      },
+      "reading": {
+        "value": 265.0,
+        "unit": "volt",
+        "quality": 1.0
+      },
+      "trip_point": 260.0,
+      "expect": {
+        "verdict": "trip"
+      }
+    },
+    {
+      "name": "overvoltage_at_threshold_does_not_trip",
+      "note": "Strict comparison at the fixed threshold.",
+      "profile": "fixture.overvoltage.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "volt",
+          "range_min": 0.0,
+          "range_max": 300.0
+        }
+      },
+      "reading": {
+        "value": 260.0,
+        "unit": "volt",
+        "quality": 1.0
+      },
+      "trip_point": 260.0,
+      "expect": {
+        "verdict": "no_trip"
+      }
+    },
+    {
+      "name": "overvoltage_nominal_does_not_trip",
+      "note": "230 V nominal.",
+      "profile": "fixture.overvoltage.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "volt",
+          "range_min": 0.0,
+          "range_max": 300.0
+        }
+      },
+      "reading": {
+        "value": 230.0,
+        "unit": "volt",
+        "quality": 1.0
+      },
+      "trip_point": 260.0,
+      "expect": {
+        "verdict": "no_trip"
+      }
+    },
+    {
+      "name": "gas_above_threshold_trips",
+      "note": "450 ppm against 400 ppm.",
+      "profile": "fixture.gas.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ppm",
+          "range_min": 0.0,
+          "range_max": 1000.0
+        }
+      },
+      "reading": {
+        "value": 450.0,
+        "unit": "ppm",
+        "quality": 1.0
+      },
+      "trip_point": 400.0,
+      "expect": {
+        "verdict": "trip"
+      }
+    },
+    {
+      "name": "gas_warning_level_does_not_trip",
+      "note": "200 ppm is the skill's warning level, not the profile's trip point.",
+      "profile": "fixture.gas.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ppm",
+          "range_min": 0.0,
+          "range_max": 1000.0
+        }
+      },
+      "reading": {
+        "value": 200.0,
+        "unit": "ppm",
+        "quality": 1.0
+      },
+      "trip_point": 400.0,
+      "expect": {
+        "verdict": "no_trip"
+      }
+    },
+    {
+      "name": "gas_above_full_scale_trips",
+      "note": "1200 ppm from a 1000 ppm sensor still exceeds 400 ppm.",
+      "profile": "fixture.gas.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ppm",
+          "range_min": 0.0,
+          "range_max": 1000.0
+        }
+      },
+      "reading": {
+        "value": 1200.0,
+        "unit": "ppm",
+        "quality": 1.0
+      },
+      "trip_point": 400.0,
+      "expect": {
+        "verdict": "trip"
+      }
+    }
+  ]
+}
