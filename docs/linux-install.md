@@ -27,9 +27,9 @@ interpreter version:
 
 | Platform | Architecture | Python | Status |
 | --- | --- | --- | --- |
-| Raspberry Pi OS Bookworm | `aarch64` | 3.11 (stock) | Production-supported |
+| Raspberry Pi OS Trixie (64-bit) | `aarch64` | 3.13 (stock) | Production-supported — the Raspberry Pi target, see `docs/RASPBERRY_PI_SUPPORT.md` |
 | Ubuntu 24.04 | `x86_64` | 3.12 (stock) | Production-supported |
-| Raspberry Pi OS Trixie | `aarch64` | 3.13 (stock) | Bundle published, hardware validation pending |
+| Raspberry Pi OS Bookworm | `aarch64` | 3.11 (stock) | Bundle published, not a certified target: the GPIO pin factory the runtime stages is Trixie's |
 | Other published bundles | `x86_64`, `aarch64` | 3.11, 3.12, 3.13 | Community compatibility |
 
 Every tuple above uses the interpreter its distribution ships, so no manual
@@ -80,8 +80,8 @@ hash-locked wheelhouse cannot pin. The runtime refuses to open its state store
 below 3.39, because the sensor-history averages use a `HAVING` clause on an
 aggregate query with no `GROUP BY` and older libraries reject that form.
 
-The three stock distribution rows above ship newer libraries already — Bookworm
-3.40.1, Ubuntu 24.04 3.45.1, Trixie 3.46.1. "Other published bundles" makes no
+The stock distribution rows above ship newer libraries already — Trixie
+3.46.1, Ubuntu 24.04 3.45.1, Bookworm 3.40.1. "Other published bundles" makes no
 claim here, because a bundle carries no SQLite. And clearing the Python
 requirement does not imply clearing this one: an interpreter installed at a
 trusted path on an older distribution satisfies the first while the host library
