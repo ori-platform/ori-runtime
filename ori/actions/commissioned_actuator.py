@@ -30,12 +30,18 @@ OUTCOMES: frozenset[str] = frozenset(
 class CoilDriver(Protocol):
     """What the seam needs from a relay: energise, de-energise, and say which."""
 
-    async def trigger(self, duration_seconds: float | None = None) -> bool: ...
+    async def trigger(self, duration_seconds: float | None = None) -> bool:
+        """Energise the coil; True when the driver did."""
+        raise NotImplementedError
 
-    async def release(self) -> bool: ...
+    async def release(self) -> bool:
+        """De-energise the coil; True when the driver did."""
+        raise NotImplementedError
 
     @property
-    def is_active(self) -> bool: ...
+    def is_active(self) -> bool:
+        """Whether the coil is energised, as the driver reads it."""
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
