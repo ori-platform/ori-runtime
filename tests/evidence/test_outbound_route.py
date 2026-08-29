@@ -14,6 +14,7 @@ import base64
 import hashlib
 import json
 import pathlib
+import threading
 from typing import Any, cast
 
 import pytest
@@ -808,3 +809,90 @@ async def test_the_checkpoint_loop_issues_nothing_when_shut_down_first():
     runtime._shutdown_event.set()
     await asyncio.wait_for(runtime._evidence_checkpoint_loop(cast(Any, attestor)), 1.0)
     assert attestor.checkpoints == 0
+
+
+async def test_shutdown_drains_what_was_retained_before_closing(rig):
+    client = _FakeClient()
+    publisher = _publisher(rig, client, retry_interval_s=60.0)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(publisher.serve_until(shutdown))
+    try:
+        await _until(lambda: publisher.connected)
+        checkpoint = rig.queue_checkpoint()
+        assert _carried(client) == []
+    finally:
+        shutdown.set()
+        await asyncio.wait_for(task, 2.0)
+    carried = _carried(client)
+    assert [c["artifact_type"] for c in carried] == ["checkpoint"]
+    assert (
+        base64.b64decode(carried[0]["artifact_b64"])
+        == checkpoint["artifact_json"].encode()
+    )
+    assert client.disconnected == 1, "the route was closed after the final drain"
+
+
+async def test_a_flush_overlapping_a_nudged_drain_carries_each_artifact_once(rig):
+    release = threading.Event()
+    in_flight = threading.Event()
+
+    class _SlowClient(_FakeClient):
+        def publish(self, topic, payload, qos=0, retain=False):
+            in_flight.set()
+            release.wait(2.0)
+            return super().publish(topic, payload, qos, retain)
+
+    client = _SlowClient()
+    publisher = _publisher(rig, client, retry_interval_s=60.0)
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(publisher.serve_until(shutdown))
+    try:
+        await _until(lambda: publisher.connected)
+        rig.queue_checkpoint()
+        publisher.nudge()
+        await asyncio.to_thread(in_flight.wait, 2.0)
+        flush = asyncio.create_task(publisher.flush(2.0))
+        await asyncio.sleep(0.05)
+        release.set()
+        assert await flush == 0
+    finally:
+        shutdown.set()
+        await asyncio.wait_for(task, 2.0)
+    assert [c["artifact_type"] for c in _carried(client)] == ["checkpoint"]
+    (row,) = rig.executor.run(rig.ledger.pending_artifacts, 10)
+    assert int(row["attempts"]) == 1
+
+
+async def test_stop_flushes_the_shutdown_checkpoint_while_routes_are_up():
+    """The shutdown event tears the routes down, so the flush precedes it."""
+    from ori.runtime import OriRuntime
+
+    runtime = OriRuntime(config_path="/unused/ori.yaml")
+    seen: dict[str, Any] = {}
+
+    class _Attestor:
+        available = True
+
+        async def issue_checkpoint(self):
+            seen["issued_while_shutting_down"] = runtime._shutdown_event.is_set()
+            return {"artifact_type": "checkpoint"}
+
+        def set_sealed_listener(self, listener):
+            pass
+
+        def close(self):
+            pass
+
+    class _Publisher:
+        async def flush(self, timeout_s: float) -> int:
+            seen["flushed_while_shutting_down"] = runtime._shutdown_event.is_set()
+            return 1
+
+    runtime._evidence_attestor = cast(Any, _Attestor())
+    runtime._evidence_outbound_publisher = cast(Any, _Publisher())
+    await runtime.stop()
+    assert seen == {
+        "issued_while_shutting_down": False,
+        "flushed_while_shutting_down": False,
+    }
+    assert runtime._shutdown_event.is_set()

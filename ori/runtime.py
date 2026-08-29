@@ -1327,6 +1327,11 @@ class OriRuntime:
         if self._shutdown_event.is_set():
             return
         logger.info("[runtime] shutdown initiated")
+        # Retain a shutdown checkpoint and hand the courier what it can take
+        # while the routes are still up: setting the shutdown event is what
+        # tears them down, so this has to come first or the flush finds a
+        # closed route and the checkpoint waits for the next start.
+        await self._issue_shutdown_checkpoint()
         self._shutdown_event.set()
         if self._status_indicator is not None:
             self._status_indicator.set_runtime_state(RuntimeHealthState.DEGRADED)
@@ -1353,12 +1358,6 @@ class OriRuntime:
                 len(tier_d_tasks),
             )
             await asyncio.wait(tier_d_tasks, timeout=TIER_D_DRAIN_TIMEOUT)
-
-        # 1b. Retain a shutdown checkpoint and hand the courier what it can
-        #     take before the route is cancelled, so an orderly stop is
-        #     distinguishable from a crash. Retention is durable; the flush is
-        #     best effort and whatever it misses goes out at the next start.
-        await self._issue_shutdown_checkpoint()
 
         # 2. Cancel tracked background tasks only — never cancel the task
         #    running start() itself, which returns naturally once the shutdown

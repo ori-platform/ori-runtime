@@ -291,6 +291,7 @@ class MqttEvidenceOutboundPublisher:
         self._lost: asyncio.Event | None = None
         self._granted: asyncio.Event | None = None
         self._wake: asyncio.Event | None = None
+        self._drain_lock = asyncio.Lock()
 
     @property
     def topic(self) -> str:
@@ -374,9 +375,18 @@ class MqttEvidenceOutboundPublisher:
                 )
         if not shutdown_event.is_set():
             raise ConnectionError("subscription lost")
+        # Shutting down with the session still granted: carry what was retained
+        # since the last drain before the route is closed.
+        await self.drain()
 
     async def drain(self) -> int:
         """Publish every retained artifact whose retry is due. Returns the count."""
+        # One drain at a time: a nudge and a shutdown flush that overlap would
+        # both read the same undue rows and carry each artifact twice.
+        async with self._drain_lock:
+            return await self._drain()
+
+    async def _drain(self) -> int:
         if not self._connected or self._client is None:
             return 0
         published = 0
