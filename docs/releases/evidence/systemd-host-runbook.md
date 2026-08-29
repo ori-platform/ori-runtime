@@ -50,7 +50,7 @@ set -o pipefail                     # see the note below — this is not optiona
 cd /path/to/ori                     # the checkout under test
 COMMIT=$(git rev-parse HEAD)        # must be the exact merged commit
 VERSION=<the version this commit declares>   # e.g. 2.4.0-rc.5
-TARGET=linux-$(uname -m)-python3.12          # or python3.11
+TARGET=linux-$(uname -m)-python3.13          # or python3.12, python3.11
 OUT=$HOME/ori-evidence
 mkdir -p "$OUT"
 ```

@@ -1,4 +1,4 @@
-=== BUILD (on the host under test) ===
+=== BUILD (on the host under test; last lines of the builder output as captured) ===
    pip 25.3 will enforce this behaviour change. A possible replacement is to rename the wheel to use a correctly normalised name (this may require updating the version in the project metadata). Discussion can be found at https://github.com/pypa/pip/issues/12938
   DEPRECATION: Wheel filename 'pytz-2011e-py3-none-any.whl' is not correctly normalised. Future versions of pip will raise the following error:
   Invalid wheel filename (invalid version): 'pytz-2011e-py3-none-any'
