@@ -51,9 +51,11 @@ class BindingStore(Protocol):
         signature: str,
         zones_json: str,
         accepted_at_ms: int | None = None,
-    ) -> None: ...
+    ) -> None:
+        """Retain an accepted binding and retire the one in force."""
 
-    async def get_commissioned_binding_in_force(self) -> dict | None: ...
+    async def get_commissioned_binding_in_force(self) -> dict | None:
+        """The retained row with no retired_at_ms, or None."""
 
 
 @dataclass(frozen=True)
