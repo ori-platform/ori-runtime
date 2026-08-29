@@ -1,0 +1,52 @@
+=== INSTALL (published bundle, verified bootstrap: install-linux.sh --version 2.5.0-rc.7 -- --scope system --unattended --json) ===
+  status healthy | version 2.5.0-rc.7 | device_id ori-runtime-firmware-demo | active_release /opt/ori/releases/2.5.0-rc.7
+  diagnostics: install.identity=PASS, prerequisite.systemctl=PASS, prerequisite.openssl=PASS, config.valid=PASS, service.active=PASS, service.boot_persistence=PASS, runtime.health=PASS, runtime.identity=PASS, capabilities.optional=WARN, permissions.identity=PASS, permissions.traverse=PASS, permissions.config=PASS, permissions.interpreter=PASS, permissions.data=PASS, permissions.code=PASS
+
+##### phase: rollback
+=== HOST ===
+  harness revision  14 (phase rollback)
+  distribution      Debian GNU/Linux 13 (trixie)
+  kernel            Linux 6.18.34+rpt-rpi-v8
+  architecture      aarch64
+  systemd           systemd 257 (257.13-1~deb13u1)
+  python3           3.13.5 (/usr/bin/python3)
+  base interpreter  /usr/bin/python3
+  boot id           9c61e4d4-c2be-4bd5-81ba-f7d010031f5c
+=== ROLLBACK ===
+  active release before  /opt/ori/releases/2.5.0-rc.7
+  installed device       ori-runtime-firmware-demo
+  verified before extraction: ori-runtime-2.5.0-rc.99-linux-aarch64-python3.13.tar.gz verified against ori-runtime-release-2026-01 PASS
+  tooling interpreter /usr/bin/python3.13 matches the artifact target PASS
+  installer reported     "code":"post_install_health_failed","detail":"runtime reported unhealthy status"
+  the candidate failed after activation                    PASS
+  active release after   /opt/ori/releases/2.5.0-rc.7
+  rollback restored the previous release                   PASS
+  the failed candidate was removed                         PASS
+  service still active after rollback                      PASS
+  doctor still healthy after rollback                      PASS
+  doctor reports the restored release                      PASS
+  rollback kept the installed identity                     PASS
+  launcher resolves the restored release                   PASS
+  launcher reports the restored release                    PASS
+  rollback boot recorded, after every rollback assertion passed PASS
+
+  every required claim proven for phase rollback
+
+##### phase: persist-after-rollback
+=== HOST ===
+  harness revision  14 (phase persist)
+  distribution      Debian GNU/Linux 13 (trixie)
+  kernel            Linux 6.18.34+rpt-rpi-v8
+  architecture      aarch64
+  systemd           systemd 257 (257.13-1~deb13u1)
+  python3           3.13.5 (/usr/bin/python3)
+  base interpreter  /usr/bin/python3
+  boot id           3aebe4b3-057a-4a36-97ad-4b43ec7d3457
+=== REBOOT PERSISTENCE ===
+  the host rebooted since this release was installed (rebooted since 9c61e4d4-c2be-4bd5-81ba-f7d010031f5c) PASS
+  unit is active after reboot                              PASS
+  unit is still enabled                                    PASS
+  doctor is healthy after reboot                           PASS
+  doctor still reports the release under test              PASS
+
+  every required claim proven for phase persist
