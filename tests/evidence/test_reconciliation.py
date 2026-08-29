@@ -39,6 +39,11 @@ class _Attestor:
         self.calls.append((int(row["id"]), reconciled))
         return self._seq
 
+    refusals: dict[str, Any] | None = {"count": 0, "last": None}
+
+    async def ingest_refusal_summary(self):
+        return self.refusals
+
     async def chain_head_hash(self):
         return self.head
 
@@ -247,6 +252,32 @@ class TestEvidenceHealth:
         assert health["available"] is True
         assert health["chain_head_hash"] == "ef" * 32
         assert health["pending_export_count"] == 4
+
+    async def test_health_projects_retained_ingest_refusals(self) -> None:
+        """A refused receipt must not read like one that never arrived."""
+        attestor = _Attestor()
+        attestor.refusals = {
+            "count": 3,
+            "last": {
+                "artifact_type": "delivery_receipt",
+                "reason": "unknown_key",
+                "observed_at_ms": 1787000005000,
+            },
+        }
+        health = await self._health(_Runtime(attestor=attestor, store=_store([])))
+        assert health["ingest_refusal_count"] == 3
+        assert health["last_ingest_refusal"] == {
+            "artifact_type": "delivery_receipt",
+            "reason": "unknown_key",
+            "observed_at_ms": 1787000005000,
+        }
+
+    async def test_a_failed_refusal_read_leaves_the_fields_null(self) -> None:
+        attestor = _Attestor()
+        attestor.refusals = None
+        health = await self._health(_Runtime(attestor=attestor, store=_store([])))
+        assert health["ingest_refusal_count"] is None
+        assert health["last_ingest_refusal"] is None
 
     async def test_health_reports_whether_inbound_evidence_can_arrive(self) -> None:
         """A stalled inbound route is invisible everywhere else.

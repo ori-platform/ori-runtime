@@ -236,6 +236,7 @@ REVIEWED_OPERATOR_MESSAGES = frozenset(
         # or anything about who receives evidence.
         "[evidence] chain head read failed (%s)",
         "[evidence] pending count read failed (%s)",
+        "[evidence] refusal summary read failed (%s)",
         # Reviewed: says only that this device's own high-water mark was not
         # advanced, and that it will retry. Nothing about who receives a
         # checkpoint, or that anyone does.
@@ -447,6 +448,8 @@ EVIDENCE_HEALTH_KEYS = {
     "last_attested_action_id",
     "attestation_gap_count",
     "status_counts",
+    "ingest_refusal_count",
+    "last_ingest_refusal",
 }
 
 EVIDENCE_HEARTBEAT_KEYS = {

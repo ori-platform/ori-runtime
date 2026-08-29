@@ -642,6 +642,10 @@ class OriRuntime:
         evidence_attestor = _build_evidence_attestor(config)
         if evidence_attestor is not None:
             await evidence_attestor.start()
+            if requires_production_posture(
+                device=config.device, security=config.security
+            ):
+                _require_evidence_posture(config, evidence_attestor)
         self._evidence_attestor = evidence_attestor
 
         # The confirmation coordinator reconciles a locally-approved anchor
@@ -2452,10 +2456,18 @@ class OriRuntime:
             "last_attested_action_id": None,
             "attestation_gap_count": 0,
             "status_counts": {},
+            # Authority artifacts ingest refused, retained by the ledger so a
+            # refused receipt is distinguishable from one that never arrived.
+            "ingest_refusal_count": None,
+            "last_ingest_refusal": None,
         }
         if attestor is not None and attestor.available:
             health["chain_head_hash"] = await attestor.chain_head_hash()
             health["pending_export_count"] = await attestor.pending_export_count()
+            refusals = await attestor.ingest_refusal_summary()
+            if refusals is not None:
+                health["ingest_refusal_count"] = refusals["count"]
+                health["last_ingest_refusal"] = refusals["last"]
         if (
             enabled
             and self._state_store is not None
@@ -4505,6 +4517,37 @@ def _build_evidence_attestor(config: Config) -> FirstPartyEvidenceAttestor | Non
         custody_keys=_custody_key_registry(config),
         authority_keys=_load_authority_keys(),
     )
+
+
+def _require_evidence_posture(
+    config: Config, attestor: FirstPartyEvidenceAttestor
+) -> None:
+    """Refuse to start a hardened runtime whose evidence posture cannot be established.
+
+    Only what is local and knowable: the ledger and device key opened, the
+    signed release shipped an authority-key registry, and custody can be
+    verified when a gateway carries evidence. A runtime that started without
+    these would report evidence as enabled while no receipt or custody could
+    ever verify, which is the honest-posture rule the hardened profiles exist
+    to enforce.
+    """
+    if not attestor.available:
+        raise ConfigValidationError(
+            "production posture requires the evidence ledger and device signing key "
+            "to open; evidence is enabled but signing is unavailable"
+        )
+    if attestor.authority_key_count == 0:
+        raise ConfigValidationError(
+            "production posture requires an authority-key registry in the signed "
+            "release when evidence is enabled; this release ships none, so no "
+            "receipt or epoch confirmation could ever verify"
+        )
+    if bool(config.gateway.enabled) and not attestor.custody_configured:
+        raise ConfigValidationError(
+            "production posture requires gateway.custody.secret_env when evidence "
+            "is enabled with a gateway; without it no custody acknowledgement can "
+            "verify and delivery would stall at the first hop"
+        )
 
 
 def _load_authority_keys() -> dict:

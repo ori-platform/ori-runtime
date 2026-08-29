@@ -167,6 +167,42 @@ class FirstPartyEvidenceAttestor:
         return self._ingest
 
     @property
+    def authority_key_count(self) -> int:
+        """Authority keys the signed release shipped; zero means no receipt can verify."""
+        return len(self._authority_keys)
+
+    @property
+    def custody_configured(self) -> bool:
+        """Whether custody acknowledgements can be verified at all."""
+        return self._custody_keys is not None
+
+    async def ingest_refusal_summary(self) -> dict[str, Any] | None:
+        """Retained refusal count and the latest refusal; None when unavailable."""
+        if self._ledger is None:
+            return None
+        try:
+            return await self._executor.run_async(self._refusal_summary_sync)
+        except Exception as exc:
+            logger.warning(
+                "[evidence] refusal summary read failed (%s)", safe_failure_reason(exc)
+            )
+            return None
+
+    def _refusal_summary_sync(self) -> dict[str, Any]:
+        assert self._ledger is not None
+        count, last = self._ledger.ingest_refusal_summary()
+        return {
+            "count": count,
+            "last": None
+            if last is None
+            else {
+                "artifact_type": str(last["artifact_type"]),
+                "reason": str(last["reason"]),
+                "observed_at_ms": int(last["observed_at_ms"]),
+            },
+        }
+
+    @property
     def outbound(self) -> BoundOutboundQueue | None:
         """What the courier still has to carry, marshalled onto the evidence thread."""
         return self._outbound

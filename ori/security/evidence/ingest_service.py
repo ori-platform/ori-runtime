@@ -29,6 +29,7 @@ from ori.security.evidence.ingest import (
     verify_epoch_confirmation,
 )
 from ori.security.evidence.ledger import EvidenceDeliveryLedger
+from ori.utils.time_utils import now_ms
 
 ACCEPTED = "accepted"
 REJECTED = "rejected"
@@ -70,18 +71,30 @@ class EvidenceIngestService:
         # secret and invited exactly the wrong value at the call site -- and
         # got it.
         self._custody_keys = custody_keys
-        self._rejections: list[IngestOutcome] = []
 
     @property
     def rejections(self) -> tuple[IngestOutcome, ...]:
-        """Every artifact refused since this service was constructed."""
-        return tuple(self._rejections)
+        """Refused artifacts the ledger retains, oldest first, across restarts."""
+        return tuple(
+            IngestOutcome(
+                artifact=str(row["artifact_type"]),
+                state=REJECTED,
+                reason=str(row["reason"]),
+                detail=str(row["detail"]),
+            )
+            for row in self._ledger.ingest_refusals()
+        )
 
     def _refuse(self, artifact: str, exc: IngestRejectedError) -> IngestOutcome:
         outcome = IngestOutcome(
             artifact=artifact, state=REJECTED, reason=exc.reason, detail=exc.detail
         )
-        self._rejections.append(outcome)
+        self._ledger.record_ingest_refusal(
+            artifact_type=artifact,
+            reason=exc.reason,
+            detail=exc.detail,
+            observed_at_ms=now_ms(),
+        )
         return outcome
 
     def accept_custody(self, artifact: object) -> IngestOutcome:
