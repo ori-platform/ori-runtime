@@ -18,7 +18,7 @@ rather than documented and hoped for.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from ori.security.evidence_executor import EvidenceExecutor
 from ori.security.evidence_ingest_service import IngestOutcome
@@ -82,6 +82,110 @@ class BoundIngestService:
     @property
     def rejections(self) -> tuple[IngestOutcome, ...]:
         return self._executor.run(lambda: self._service.rejections)
+
+
+class OutboundLedger(Protocol):
+    """What the outbound façade needs. Implemented by EvidenceDeliveryLedger."""
+
+    def awaiting_custody(self, limit: int = 100) -> list[Any]:
+        raise NotImplementedError
+
+    def pending_artifacts(self, limit: int = 100) -> list[Any]:
+        raise NotImplementedError
+
+    def find_by_envelope_digest(self, envelope_digest: str) -> Any:
+        raise NotImplementedError
+
+    def find_artifact(self, artifact_digest: str) -> Any:
+        raise NotImplementedError
+
+    def record_attempt(
+        self, local_seq: int, *, at_ms: int, failure: str | None
+    ) -> None:
+        raise NotImplementedError
+
+    def record_delivery_failure(
+        self, local_seq: int, *, reason: str, observed_at_ms: int
+    ) -> None:
+        raise NotImplementedError
+
+    def note_artifact_attempt(self, artifact_digest: str, *, at_ms: int) -> None:
+        raise NotImplementedError
+
+    def retire_artifact(
+        self, artifact_digest: str, *, outcome: str, at_ms: int
+    ) -> bool:
+        raise NotImplementedError
+
+
+def _rows(rows: list[Any]) -> list[dict[str, Any]]:
+    return [dict(row) for row in rows]
+
+
+def _row(row: Any) -> dict[str, Any] | None:
+    return None if row is None else dict(row)
+
+
+class BoundOutboundQueue:
+    """The courier-facing view of the ledger, read and updated on its thread.
+
+    Rows come back as plain dicts: the publisher runs on the event loop and an
+    acknowledgement arrives on an MQTT thread, and neither may hold a cursor
+    the evidence thread owns.
+    """
+
+    def __init__(self, executor: EvidenceExecutor, ledger: OutboundLedger) -> None:
+        self._executor = executor
+        self._ledger = ledger
+
+    async def awaiting_custody(self, limit: int = 100) -> list[dict[str, Any]]:
+        return await self._executor.run_async(
+            lambda: _rows(self._ledger.awaiting_custody(limit))
+        )
+
+    async def pending_artifacts(self, limit: int = 100) -> list[dict[str, Any]]:
+        return await self._executor.run_async(
+            lambda: _rows(self._ledger.pending_artifacts(limit))
+        )
+
+    async def find_envelope(self, envelope_digest: str) -> dict[str, Any] | None:
+        return await self._executor.run_async(
+            lambda: _row(self._ledger.find_by_envelope_digest(envelope_digest))
+        )
+
+    async def find_artifact(self, artifact_digest: str) -> dict[str, Any] | None:
+        return await self._executor.run_async(
+            lambda: _row(self._ledger.find_artifact(artifact_digest))
+        )
+
+    async def record_attempt(
+        self, local_seq: int, *, at_ms: int, failure: str | None
+    ) -> None:
+        await self._executor.run_async(
+            self._ledger.record_attempt, local_seq, at_ms=at_ms, failure=failure
+        )
+
+    async def record_delivery_failure(
+        self, local_seq: int, *, reason: str, observed_at_ms: int
+    ) -> None:
+        await self._executor.run_async(
+            self._ledger.record_delivery_failure,
+            local_seq,
+            reason=reason,
+            observed_at_ms=observed_at_ms,
+        )
+
+    async def note_artifact_attempt(self, artifact_digest: str, *, at_ms: int) -> None:
+        await self._executor.run_async(
+            self._ledger.note_artifact_attempt, artifact_digest, at_ms=at_ms
+        )
+
+    async def retire_artifact(
+        self, artifact_digest: str, *, outcome: str, at_ms: int
+    ) -> bool:
+        return await self._executor.run_async(
+            self._ledger.retire_artifact, artifact_digest, outcome=outcome, at_ms=at_ms
+        )
 
 
 class ExecutorBoundConfirmationBackend:

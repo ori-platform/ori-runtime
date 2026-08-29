@@ -611,3 +611,45 @@ class TestFailureContainment:
             assert await second.attest_action(_action_row(7)) == seq
         finally:
             second.close()
+
+
+class TestOutboundRetention:
+    async def test_sealing_and_checkpointing_notify_the_listener(self, attestor):
+        calls: list[str] = []
+        attestor.set_sealed_listener(lambda: calls.append("sealed"))
+        assert await attestor.attest_action(_action_row(1)) is not None
+        assert calls == ["sealed"]
+        assert await attestor.issue_checkpoint() is not None
+        assert calls == ["sealed", "sealed"]
+        attestor.set_sealed_listener(None)
+        await attestor.attest_action(_action_row(2))
+        assert calls == ["sealed", "sealed"]
+
+    async def test_a_checkpoint_is_retained_for_the_courier(self, attestor):
+        await attestor.attest_action(_action_row(1))
+        queued = await attestor.issue_checkpoint()
+        assert queued is not None and queued["artifact_type"] == "checkpoint"
+        outbound = attestor.outbound
+        assert outbound is not None
+        pending = await outbound.pending_artifacts()
+        assert [p["artifact_digest"] for p in pending] == [queued["artifact_digest"]]
+        assert [e["chain_seq"] for e in await outbound.awaiting_custody()] == [1]
+
+    async def test_a_failing_listener_does_not_undo_the_seal(self, attestor):
+        def boom() -> None:
+            raise RuntimeError("listener broke")
+
+        attestor.set_sealed_listener(boom)
+        assert await attestor.attest_action(_action_row(1)) == 1
+        outbound = attestor.outbound
+        assert outbound is not None
+        assert len(await outbound.awaiting_custody()) == 1
+
+    def test_outbound_is_absent_until_started(self, tmp_path):
+        a = FirstPartyEvidenceAttestor(
+            db_path=str(tmp_path / "e.db"),
+            key_path=str(tmp_path / "k"),
+            device_secret=SECRET,
+            device_id=DEVICE,
+        )
+        assert a.outbound is None

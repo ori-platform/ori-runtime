@@ -425,6 +425,11 @@ VECTOR_CONSUMERS = {
         "test_evidence_v2_vectors.py::test_rotation_proof_uses_the_neutral_context",
         "test_evidence_v2_vectors.py::test_rotation_is_dual_signed",
     ),
+    ("gateway_api", "outbound-evidence"): (
+        "test_evidence_outbound_route.py::test_the_carriage_reproduces_the_published_fixture",
+        "test_evidence_outbound_route.py"
+        "::test_the_published_acknowledgement_retires_the_published_checkpoint",
+    ),
     ("gateway_api", "inbound-evidence"): (
         "test_evidence_inbound_route.py::test_the_runtime_verifies_the_published_inbound_fixture",
         "test_evidence_inbound_route.py"
@@ -505,19 +510,6 @@ VECTOR_EXEMPTIONS = {
             "nothing about runtime behaviour, because no runtime code reads a "
             "binding. Vendored now so the drift check covers the bytes a "
             "consumer will have to match."
-        ),
-    },
-    ("gateway_api", "outbound-evidence"): {
-        "owner": "the runtime",
-        "status": "proof_pending",
-        "tracking": "ori-runtime#326",
-        "reason": (
-            "Outbound carriage is this runtime's own half of gateway-api/v1, so "
-            "no other repository can establish it. Nothing here publishes an "
-            "artifact to the courier yet: the producer and delivery ledger that "
-            "would hand one over are still open. Vendored now so the drift "
-            "check covers the bytes the producer must match, and exempt until a "
-            "publisher exists to assert against them."
         ),
     },
 }

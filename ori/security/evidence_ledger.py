@@ -274,7 +274,61 @@ BEFORE UPDATE ON evidence_delivery_gaps
 BEGIN
     SELECT RAISE(ABORT, 'observed delivery failures are immutable');
 END;
+
+-- Device-signed artifacts that are not envelopes -- checkpoints and anchor
+-- registrations -- retained until the courier's authenticated acknowledgement
+-- says its durable queue owns retry. The bytes are the exact signed wire, so a
+-- republish after a lost acknowledgement carries the same digest and the
+-- gateway's idempotent queue recovers the same entry.
+CREATE TABLE IF NOT EXISTS evidence_outbox (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_type   TEXT    NOT NULL,
+    artifact_json   TEXT    NOT NULL,
+    artifact_digest TEXT    NOT NULL UNIQUE,
+    created_at_ms   INTEGER NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_attempt_ms INTEGER,
+    retired_at_ms   INTEGER,
+    retire_outcome  TEXT,
+    CHECK (artifact_type IN ('checkpoint', 'anchor_registration')),
+    CHECK (
+        (retired_at_ms IS NULL AND retire_outcome IS NULL)
+     OR (retired_at_ms IS NOT NULL AND retire_outcome IN ('queued', 'refused'))
+    )
+);
+
+CREATE TRIGGER IF NOT EXISTS evidence_outbox_no_delete
+BEFORE DELETE ON evidence_outbox
+BEGIN
+    SELECT RAISE(ABORT, 'queued evidence artifacts are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_outbox_no_artifact_update
+BEFORE UPDATE ON evidence_outbox
+WHEN OLD.artifact_type   IS NOT NEW.artifact_type
+  OR OLD.artifact_json   IS NOT NEW.artifact_json
+  OR OLD.artifact_digest IS NOT NEW.artifact_digest
+  OR OLD.created_at_ms   IS NOT NEW.created_at_ms
+BEGIN
+    SELECT RAISE(ABORT, 'a queued artifact cannot be rewritten');
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_outbox_retirement_is_final
+BEFORE UPDATE ON evidence_outbox
+WHEN OLD.retired_at_ms IS NOT NULL
+ AND (NEW.retired_at_ms IS NOT OLD.retired_at_ms
+   OR NEW.retire_outcome IS NOT OLD.retire_outcome)
+BEGIN
+    SELECT RAISE(ABORT, 'a retired artifact cannot be requeued or restated');
+END;
 """
+
+#: Closed outbox vocabulary; the delivery envelope has its own table.
+OUTBOX_CHECKPOINT = "checkpoint"
+OUTBOX_ANCHOR_REGISTRATION = "anchor_registration"
+OUTBOX_ARTIFACT_TYPES = frozenset({OUTBOX_CHECKPOINT, OUTBOX_ANCHOR_REGISTRATION})
+RETIRE_QUEUED = "queued"
+RETIRE_REFUSED = "refused"
 
 # The chain row's immutable columns, exactly as evidence/v2 defines them.
 # These are what travel, and therefore what "the same evidence" means.
@@ -469,6 +523,101 @@ class EvidenceDeliveryLedger:
             "ascii"
         )
         return checkpoint
+
+    def issue_checkpoint(self, *, issued_at_ms: int) -> sqlite3.Row:
+        """Sign a checkpoint and retain it for the courier, durably.
+
+        Signing without retaining would produce an obligation the authority
+        never hears of, and a shutdown checkpoint that is signed and dropped
+        makes an orderly stop indistinguishable from a crash.
+        """
+        checkpoint = self.checkpoint(issued_at_ms=issued_at_ms)
+        return self.queue_artifact(
+            OUTBOX_CHECKPOINT, canonical_json(checkpoint), created_at_ms=issued_at_ms
+        )
+
+    # -- outbox ----------------------------------------------------------
+
+    def queue_artifact(
+        self, artifact_type: str, wire: bytes, *, created_at_ms: int
+    ) -> sqlite3.Row:
+        """Retain one signed artifact's exact bytes for carriage. Idempotent."""
+        if artifact_type not in OUTBOX_ARTIFACT_TYPES:
+            raise DeliveryLedgerError(
+                f"{artifact_type!r} is not an artifact this outbox carries"
+            )
+        try:
+            decoded = json.loads(wire)
+        except ValueError as exc:
+            raise DeliveryLedgerError("a queued artifact must be JSON") from exc
+        if not isinstance(decoded, dict) or decoded.get("device_id") != self._device_id:
+            raise DeliveryLedgerError(
+                "a queued artifact must name the device this ledger is bound to"
+            )
+        digest = "sha256:" + hashlib.sha256(wire).hexdigest()
+        self._connection.execute(
+            """
+            INSERT OR IGNORE INTO evidence_outbox (
+                artifact_type, artifact_json, artifact_digest, created_at_ms
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (artifact_type, wire.decode("utf-8"), digest, int(created_at_ms)),
+        )
+        row = self.find_artifact(digest)
+        if row is None:  # pragma: no cover - the insert committed
+            raise DeliveryLedgerError("the queued artifact could not be read back")
+        return row
+
+    def find_artifact(self, artifact_digest: str) -> sqlite3.Row | None:
+        row: sqlite3.Row | None = self._connection.execute(
+            "SELECT * FROM evidence_outbox WHERE artifact_digest = ?",
+            (str(artifact_digest),),
+        ).fetchone()
+        return row
+
+    def pending_artifacts(self, limit: int = 100) -> list[sqlite3.Row]:
+        """Queued artifacts no acknowledgement has retired, oldest first."""
+        return list(
+            self._connection.execute(
+                """
+                SELECT * FROM evidence_outbox
+                 WHERE retired_at_ms IS NULL
+                 ORDER BY id
+                 LIMIT ?
+                """,
+                (int(limit),),
+            )
+        )
+
+    def note_artifact_attempt(self, artifact_digest: str, *, at_ms: int) -> None:
+        self._connection.execute(
+            """
+            UPDATE evidence_outbox
+               SET attempts = attempts + 1, last_attempt_ms = ?
+             WHERE artifact_digest = ?
+            """,
+            (int(at_ms), str(artifact_digest)),
+        )
+
+    def retire_artifact(
+        self, artifact_digest: str, *, outcome: str, at_ms: int
+    ) -> bool:
+        """Release an artifact the courier's queue now owns, or has refused.
+
+        Returns False when nothing was retired: an unknown digest, or one
+        already retired, which is what a re-delivered acknowledgement produces.
+        """
+        if outcome not in (RETIRE_QUEUED, RETIRE_REFUSED):
+            raise DeliveryLedgerError(f"{outcome!r} is not a retirement outcome")
+        cursor = self._connection.execute(
+            """
+            UPDATE evidence_outbox
+               SET retired_at_ms = ?, retire_outcome = ?
+             WHERE artifact_digest = ? AND retired_at_ms IS NULL
+            """,
+            (int(at_ms), outcome, str(artifact_digest)),
+        )
+        return cursor.rowcount == 1
 
     def close(self) -> None:
         self._connection.close()
@@ -917,6 +1066,32 @@ class EvidenceDeliveryLedger:
             "SELECT * FROM evidence_delivery_ledger WHERE event_id = ?", (event_id,)
         ).fetchone()
         return row
+
+    def find_by_envelope_digest(self, envelope_digest: str) -> sqlite3.Row | None:
+        row: sqlite3.Row | None = self._connection.execute(
+            "SELECT * FROM evidence_delivery_ledger WHERE envelope_digest = ?",
+            (str(envelope_digest),),
+        ).fetchone()
+        return row
+
+    def awaiting_custody(self, limit: int = 100) -> list[sqlite3.Row]:
+        """Sealed envelopes no courier has acknowledged holding, oldest first.
+
+        What the publisher carries. Retained until a verified custody
+        acknowledgement arrives through ingest: a `queued` transport
+        acknowledgement does not release an envelope, per gateway-api/v1.
+        """
+        return list(
+            self._connection.execute(
+                """
+                SELECT * FROM evidence_delivery_ledger
+                 WHERE custody_state = ?
+                 ORDER BY local_seq
+                 LIMIT ?
+                """,
+                (CUSTODY_NONE, int(limit)),
+            )
+        )
 
     def find_by_local_seq(self, local_seq: int) -> sqlite3.Row | None:
         row: sqlite3.Row | None = self._connection.execute(
