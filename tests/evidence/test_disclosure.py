@@ -1253,6 +1253,11 @@ PATTERN_AUDIT_EXEMPT = {
         "custody and artifact URLs are the deliberately public provenance of "
         "a signed release."
     ),
+    "docs/releases/evidence/v2.5.0-rc.7-rollback-published-linux-aarch64-python3.13.md": (
+        "Installer rollback evidence against the published candidate, not "
+        "evidence-chain evidence; its digests and tag commit are public "
+        "release provenance."
+    ),
     "docs/releases/evidence/v2.5.0-rc.7-systemd-host-linux-aarch64-python3.13.md": (
         "Installer rollback evidence, not evidence-chain evidence. Its commits, "
         "digests and ephemeral key fingerprints are the deliberately public "

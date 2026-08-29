@@ -666,3 +666,15 @@ def test_the_cli_records_and_then_requires_a_reboot(tmp_path: Path) -> None:
     assert same_boot.returncode == 1
     assert "reboot before" in same_boot.stderr
     assert os.stat(path).st_mode & 0o777 == 0o600
+
+
+def test_the_boot_id_command_prints_the_module_s_own_reading(
+    monkeypatch, capsys
+) -> None:
+    """The harness prints the boot id through the module rather than reading
+    /proc in shell, so one reader decides what a boot id is."""
+    import evidence_host
+
+    monkeypatch.setattr(evidence_host, "current_boot_id", lambda: "boot-0001")
+    assert evidence_host.main(["boot-id"]) == 0
+    assert capsys.readouterr().out == "boot-0001\n"

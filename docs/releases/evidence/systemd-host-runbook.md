@@ -153,6 +153,11 @@ exit" is satisfied by an argument error or a signature rejection, neither of
 which ever activates anything — indistinguishable from a successful rollback
 unless the code is checked.
 
+The failing candidate is installed without identity flags, the way an
+operator upgrades, so this phase can also run against an existing installation
+rather than only the one step 2 created; it asserts that the installation's
+identity survives the rollback.
+
 It then proves the restored release through the launcher, since that resolves
 the active release at execution time, and re-records the boot against the
 restored release. Reboot again and run `persist` with the *restored* version,

@@ -42,7 +42,7 @@
 # workflow and are proven only by a real tag.
 set -euo pipefail
 
-HARNESS_REVISION="13"
+HARNESS_REVISION="14"
 PHASE="${1:?usage: harness-systemd-host.sh <install|persist|rollback|uninstall> ...}"
 BLOCKED=0
 UNIT="ori-runtime.service"
@@ -95,6 +95,7 @@ record_host() {
         "$(python3 -V 2>&1 | cut -d' ' -f2)" "$(command -v python3)"
     printf '  base interpreter  %s\n' \
         "$(python3 -c 'import sys; print(sys._base_executable)')"
+    printf '  boot id           %s\n' "$(evidence boot-id 2>/dev/null || echo unavailable)"
 }
 
 assert_exit() {
@@ -115,10 +116,13 @@ assert_contains() {
 }
 
 # A JSON field regardless of whether the emitter spaces after the colon: the
-# installer prints compact JSON, the doctor prints indented JSON.
+# installer prints compact JSON, the doctor prints indented JSON. The value is
+# matched literally, and only as a whole field: followed by a comma, a closing
+# brace, or the end of its line.
 assert_field() {
     local label="$1" key="$2" value="$3" text="$4"
-    if grep -Eq "\"$key\": ?\"?$value\"?[,}]" <<<"$text"; then
+    local literal; literal="$(printf '%s' "$value" | sed 's/[][\.*^$|?+(){}]/\\&/g')"
+    if grep -Eq "\"$key\": ?\"?$literal\"?([,}]|\$)" <<<"$text"; then
         pass "$label"
     else
         fail "$label" "expected \"$key\": \"$value\" in: $(head -3 <<<"$text")"
@@ -324,6 +328,16 @@ phase_rollback() {
     local previous; previous="$(readlink -f "$SYSTEM_ROOT/current" 2>/dev/null || echo none)"
     [ "$previous" != "none" ] || fail "an installation to roll back from" "no active release"
     printf '  active release before  %s\n' "$previous"
+    # The identity the installation already carries. An upgrade keeps it and
+    # refuses a differing --device-id before touching anything, so the failing
+    # candidate is installed the way an operator would upgrade: without
+    # identity flags. That also lets this phase run against any installation,
+    # not only one the install phase created.
+    local installed_device
+    installed_device="$("$SYSTEM_ROOT/current/venv/bin/ori" doctor --scope system --json \
+        | python3 -c 'import json, sys; print(json.load(sys.stdin)["identity"]["device_id"])')" \
+        || fail "the installed identity is readable" "doctor did not report a device id"
+    printf '  installed device       %s\n' "$installed_device"
 
     # Rollback needs a failure *after* activation. A tampered or mis-signed
     # artifact cannot produce one: verification refuses it before anything is
@@ -352,11 +366,14 @@ phase_rollback() {
         --scope system --unattended \
         --bundle "$bundle" --signature "$signature" \
         --expected-version "$version" \
-        --device-id "$EVIDENCE_DEVICE_ID" --name "$EVIDENCE_NAME" \
-        --location "$EVIDENCE_LOCATION" --json >"$WORKSPACE/rollback.json" 2>&1
+        --json >"$WORKSPACE/rollback.json" 2>&1
     local status=$?
     set -e
     local output; output="$(cat "$WORKSPACE/rollback.json")"
+    # The installer's own account of the refusal, so the record can quote the
+    # log rather than the workspace file this phase discards.
+    printf '  installer reported     %s\n' \
+        "$(grep -oE '"code": ?"[a-z_]+", ?"detail": ?"[^"]*"' <<<"$output" | head -1)"
 
     # The exact stable code, not "some nonzero exit": an argument error, a
     # signature rejection or a target mismatch all exit nonzero without ever
@@ -383,6 +400,7 @@ phase_rollback() {
     local restored; restored="$(basename "$previous")"
     assert_contains "doctor reports the restored release" \
         "\"version\": \"$restored\"" "$LAST_OUTPUT"
+    assert_field "rollback kept the installed identity" device_id "$installed_device" "$LAST_OUTPUT"
 
     # The launcher resolves the active release at execution time; it is what an
     # operator runs, so it has to reach the restored release, not the removed one.

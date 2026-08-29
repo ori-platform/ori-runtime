@@ -565,7 +565,7 @@ def test_the_host_harness_revision_is_current() -> None:
     The container harness carries this pin already. Without the same one here,
     a record naming revision 6 could describe any of several scripts.
     """
-    assert 'HARNESS_REVISION="13"' in _host_harness()
+    assert 'HARNESS_REVISION="14"' in _host_harness()
 
 
 def _uninstall_commands() -> str:
@@ -880,7 +880,8 @@ def test_field_assertions_accept_compact_and_indented_json(tmp_path: Path) -> No
         + "assert_field b launcher_installed true '{\"launcher_installed\": true}'\n"
         + 'assert_field c version 2.5.0-rc.7 \'{"version": "2.5.0-rc.7"}\'\n'
         + 'assert_field e version 2.5.0-rc.7 \'{"version":"2.5.0-rc.7","x":1}\'\n'
-        + 'assert_field d version 2.5.0-rc.7 \'{"version":"2.5.0-rc.71"}\'\n'
+        + 'assert_field f version 2.5.0-rc.7 $\'{\\n  "version": "2.5.0-rc.7"\\n}\'\n'
+        + 'assert_field g version 2.5.0-rc.7 \'{"version":"2.5.0-rc.71"}\'\n'
     )
     result = subprocess.run(
         ["bash", str(script)], capture_output=True, text=True, check=False
@@ -891,8 +892,48 @@ def test_field_assertions_accept_compact_and_indented_json(tmp_path: Path) -> No
         "PASS",
         "PASS",
         "PASS",
+        "PASS",
         'FAIL expected "version": "2.5.0-rc.7" in: {"version":"2.5.0-rc.71"}',
     ]
+
+
+def test_field_assertions_match_the_value_literally(tmp_path: Path) -> None:
+    """A version is full of regex metacharacters; `2.5.0-rc.7` must not match
+    `2x5x0-rcx7`, and a bare `true` must not match the string `"true"`."""
+    harness = _host_harness()
+    start = harness.index("assert_field() {")
+    end = harness.index("\n}\n", start) + 3
+    script = tmp_path / "probe.sh"
+    script.write_text(
+        'pass() { echo PASS; }\nfail() { echo "FAIL $2"; exit 1; }\n'
+        + harness[start:end]
+        + 'assert_field a version 2.5.0-rc.7 \'{"version":"2x5x0-rcx7"}\'\n'
+    )
+    result = subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 1
+    assert result.stdout.splitlines() == [
+        'FAIL expected "version": "2.5.0-rc.7" in: {"version":"2x5x0-rcx7"}'
+    ]
+
+
+def test_the_rollback_phase_prints_the_installer_refusal() -> None:
+    """The record must be able to quote the refusal from the log, not from the
+    workspace file the phase deletes."""
+    rollback = _phase("rollback")
+    assert "installer reported" in rollback
+    assert rollback.index("installer reported") < rollback.index(
+        "the candidate failed after activation"
+    )
+
+
+def test_the_host_block_prints_the_boot_id() -> None:
+    """Each phase's boot id belongs in the log, so a persist claim can be
+    read against the boot it followed rather than inferred."""
+    harness = _host_harness()
+    assert "evidence boot-id" in harness
+    assert harness.index("boot id") < harness.index("assert_exit() {")
 
 
 def test_the_rollback_phase_proves_the_launcher_and_records_the_boot() -> None:
@@ -915,3 +956,16 @@ def test_the_extracted_bundle_is_found_by_name() -> None:
     harness = _host_harness()
     assert harness.count("-type d -name 'ori-runtime-*' | head -1") == 2
     assert "-type d | head -1" not in harness
+
+
+def test_the_rollback_phase_upgrades_without_identity_flags() -> None:
+    """An upgrade keeps the installed identity and refuses a differing
+    --device-id before activation; passing the evidence identity would make
+    the phase fail early against any installation that is not the harness's
+    own, and never reach the rollback it exists to prove."""
+    rollback = _phase("rollback")
+    install_call = rollback[rollback.index('ori-install-linux" install') :]
+    install_call = install_call[: install_call.index("rollback.json")]
+    assert "--device-id" not in install_call
+    assert "--name" not in install_call
+    assert 'assert_field "rollback kept the installed identity" device_id' in rollback
