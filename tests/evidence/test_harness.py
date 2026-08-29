@@ -879,7 +879,8 @@ def test_field_assertions_accept_compact_and_indented_json(tmp_path: Path) -> No
         + 'assert_field a status healthy \'{"status":"healthy","x":1}\'\n'
         + "assert_field b launcher_installed true '{\"launcher_installed\": true}'\n"
         + 'assert_field c version 2.5.0-rc.7 \'{"version": "2.5.0-rc.7"}\'\n'
-        + 'assert_field d status healthy \'{"status":"unhealthy"}\'\n'
+        + 'assert_field e version 2.5.0-rc.7 \'{"version":"2.5.0-rc.7","x":1}\'\n'
+        + 'assert_field d version 2.5.0-rc.7 \'{"version":"2.5.0-rc.71"}\'\n'
     )
     result = subprocess.run(
         ["bash", str(script)], capture_output=True, text=True, check=False
@@ -889,7 +890,8 @@ def test_field_assertions_accept_compact_and_indented_json(tmp_path: Path) -> No
         "PASS",
         "PASS",
         "PASS",
-        'FAIL expected "status": "healthy" in: {"status":"unhealthy"}',
+        "PASS",
+        'FAIL expected "version": "2.5.0-rc.7" in: {"version":"2.5.0-rc.71"}',
     ]
 
 
