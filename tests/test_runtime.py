@@ -1495,7 +1495,21 @@ class TestLifecycle:
         runtime = OriRuntime(config_path=str(cfg_path))
 
         async def _stop():
-            await asyncio.sleep(0.1)
+            # Wait for the executor this test drives rather than for a fixed
+            # interval. Startup retains the commissioned binding through the
+            # state store, so a stop that lands first closes the store out from
+            # under it and the failure surfaces as an assertion deep inside
+            # `retain_commissioned_binding`, nowhere near this test.
+            deadline = asyncio.get_running_loop().time() + 15.0
+            while (
+                runtime._dispatcher is None
+                or "close_gas_valve" not in runtime._dispatcher._executors
+            ):
+                if asyncio.get_running_loop().time() > deadline:
+                    raise AssertionError(
+                        "the relay executors were not registered in time"
+                    )
+                await asyncio.sleep(0.02)
             await runtime.stop()
 
         await asyncio.gather(runtime.start(), _stop())
