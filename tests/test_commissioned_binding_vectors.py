@@ -36,6 +36,7 @@ from tests.golden.verify_commissioned_binding_vectors import (
     run_envelope,
     run_profile,
     run_profile_envelope,
+    run_raw,
 )
 
 VECTOR_DIR = Path(__file__).parent / "vectors" / "commissioned_safety_binding"
@@ -586,3 +587,42 @@ def test_nesting_past_the_recursion_limit_is_malformed_not_a_crash(place: Any) -
     with pytest.raises(RefusedError) as excinfo:
         parse_document("[" * (sys.getrecursionlimit() * 4))
     assert (excinfo.value.stage, excinfo.value.reason) == ("parses", "malformed")
+
+
+# --------------------------------------------------------------------------
+# Raw reject cases
+# --------------------------------------------------------------------------
+#
+# Wire bytes rather than decoded objects, for the rules decoding destroys. Each
+# is the pristine signed envelope with one byte-level alteration, so the
+# signature still covers the document a re-canonicalising verifier would
+# reconstruct: such a verifier accepts every one of them.
+
+RAW_REJECT_CASES = VECTORS["raw_reject_cases"]
+
+
+@pytest.mark.parametrize("case", RAW_REJECT_CASES, ids=lambda c: c["name"])
+def test_raw_reject_cases_are_refused_from_bytes(case: dict) -> None:
+    with pytest.raises(RefusedError) as excinfo:
+        run_raw(bytes.fromhex(case["envelope_hex"]), case["verifier_context"])
+    assert excinfo.value.reason == case["reason"]
+    assert excinfo.value.stage == case["stage"]
+
+
+@pytest.mark.parametrize("case", RAW_REJECT_CASES, ids=lambda c: c["name"])
+def test_raw_cases_carry_what_a_decoded_case_cannot(case: dict) -> None:
+    """A raw case earns its section only by being unrepresentable as a decoded one.
+
+    If its bytes are already the canonical form of what they decode to, an
+    ordinary case would have covered it and this one proves nothing extra.
+    """
+    raw = bytes.fromhex(case["envelope_hex"])
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+        reserialised = cbytes(decoded)
+    except (UnicodeDecodeError, ValueError, RefusedError):
+        return  # undecodable, or not canonically serialisable: raw by construction
+    assert reserialised != raw, (
+        f"{case['name']}: the bytes are already canonical, so nothing is lost "
+        "by decoding and an ordinary reject case would cover this"
+    )
