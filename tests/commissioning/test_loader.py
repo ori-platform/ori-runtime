@@ -315,3 +315,53 @@ async def test_a_duplicate_key_is_refused_before_anything_is_read(
     )
     assert state.in_force is not None
     assert state.in_force.canonical_hash == accepted.in_force.canonical_hash
+
+
+async def test_a_file_nested_past_the_recursion_limit_is_a_parse_refusal(
+    tmp_path: Path, store: StateStore
+) -> None:
+    """json.loads raises RecursionError here, and that is not a ValueError."""
+    _write(tmp_path, _envelope())
+    accepted = await _load(tmp_path, store)
+    _write_text(tmp_path, "[" * 200_000)
+    state = await _load(tmp_path, store)
+    assert state.last_verdict is not None
+    assert (state.last_verdict.stage, state.last_verdict.reason) == (
+        "parses",
+        "malformed",
+    )
+    assert state.in_force is not None and accepted.in_force is not None
+    assert state.in_force.canonical_hash == accepted.in_force.canonical_hash
+
+
+async def test_a_verifier_error_leaves_the_binding_in_force_and_is_reported(
+    tmp_path: Path, store: StateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A verifier defect degrades one document, never the runtime.
+
+    The contract's verdict for input that breaks the verifier is malformed and
+    the binding in force is unchanged; the problem marker keeps it visible that
+    no grammar check decided this.
+    """
+    _write(tmp_path, _envelope())
+    accepted = await _load(tmp_path, store)
+    revised = _envelope()
+    revised["binding"]["binding_seq"] = 2
+    _write(tmp_path, revised)
+
+    def _broken(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("verifier defect")
+
+    monkeypatch.setattr(
+        "ori.security.commissioning.loader.verify_binding_envelope", _broken
+    )
+    state = await _load(tmp_path, store)
+    assert state.last_verdict is not None
+    assert (state.last_verdict.stage, state.last_verdict.reason) == (
+        "parses",
+        "malformed",
+    )
+    assert state.last_verdict.binding_seq == 2
+    assert "binding_verifier_error" in state.problems
+    assert state.in_force is not None and accepted.in_force is not None
+    assert state.in_force.canonical_hash == accepted.in_force.canonical_hash

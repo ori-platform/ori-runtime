@@ -279,7 +279,16 @@ def canonical_bytes(value: Any) -> bytes:
     """Canonical bytes, refusing rather than raising on what cannot be encoded."""
     try:
         return canonical_json(value)
-    except (CanonicalisationError, UnicodeEncodeError, ValueError, TypeError):
+    except (
+        CanonicalisationError,
+        UnicodeEncodeError,
+        ValueError,
+        TypeError,
+        RecursionError,
+    ):
+        # RecursionError: the loader canonicalises an unverified document to
+        # ask whether it is the one already in force, before any grammar has
+        # bounded its depth. A document that deep is malformed, not a crash.
         raise BindingRefusedError("parses", "malformed") from None
 
 
@@ -308,7 +317,9 @@ def parse_document(text: str) -> Any:
     """
     try:
         return json.loads(text, object_pairs_hook=_pairs_without_duplicates)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # json.loads itself recurses per nesting level and raises past the
+        # interpreter's limit; that is input, and the verdict is malformed.
         raise BindingRefusedError("parses", "malformed") from None
 
 
@@ -456,33 +467,44 @@ def _parse_proof(proof: Any, kind: str) -> None:
         _bad(("sensor_before" in observation) != ("sensor_after" in observation))
 
 
+def _walk(node: Any) -> Any:
+    """Every value in the tree, keys included, without recursion.
+
+    The walkers run over the document before the grammar has bounded its
+    shape, so a value nested past the interpreter's recursion limit reached
+    them first. An explicit stack has no such limit, and the grammar then
+    refuses the nesting at whichever leaf it fails to type.
+    """
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        if isinstance(current, dict):
+            stack.extend(current.keys())
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+
+
 def _encodable_tree(node: Any) -> None:
-    if isinstance(node, str):
-        _encodable(node)
-    elif isinstance(node, dict):
-        for key, value in node.items():
-            if isinstance(key, str):
-                _encodable(key)
-            _encodable_tree(value)
-    elif isinstance(node, list):
-        for value in node:
-            _encodable_tree(value)
+    for value in _walk(node):
+        if isinstance(value, str):
+            _encodable(value)
 
 
 def _numbers_in_zone(node: Any) -> None:
-    """The D-011 agreement zone, recursively."""
-    if isinstance(node, bool):
-        return
-    if isinstance(node, int) and abs(node) > 9007199254740991:
-        raise BindingRefusedError("parses", "malformed")
-    if isinstance(node, float) and node != 0.0 and not (1e-4 <= abs(node) < 1e16):
-        raise BindingRefusedError("parses", "malformed")
-    if isinstance(node, dict):
-        for value in node.values():
-            _numbers_in_zone(value)
-    elif isinstance(node, list):
-        for value in node:
-            _numbers_in_zone(value)
+    """The D-011 agreement zone, at every depth."""
+    for value in _walk(node):
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and abs(value) > 9007199254740991:
+            raise BindingRefusedError("parses", "malformed")
+        if (
+            isinstance(value, float)
+            and value != 0.0
+            and not (1e-4 <= abs(value) < 1e16)
+        ):
+            raise BindingRefusedError("parses", "malformed")
 
 
 # ── stages ────────────────────────────────────────────────────────────────

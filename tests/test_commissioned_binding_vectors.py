@@ -22,6 +22,7 @@ import base64
 import copy
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -542,3 +543,46 @@ def test_a_wire_document_with_a_repeated_key_is_malformed() -> None:
         assert (excinfo.value.stage, excinfo.value.reason) == ("parses", "malformed")
     with pytest.raises(RefusedError):
         parse_document("{not json")
+
+
+def _nested(depth: int) -> list:
+    """A list nested `depth` deep, built without recursion."""
+    value: list = []
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+@pytest.mark.parametrize(
+    "place",
+    [
+        lambda b, v: b.update({"supersedes": v}),
+        lambda b, v: b["zones"][0].update({"zone_id": v}),
+        lambda b, v: b["zones"][0]["actuator"]["identity"].update({"gpio_pin": v}),
+        lambda b, v: b["zones"][0]["proof"]["observations"][0].update(
+            {"instrument": v}
+        ),
+        lambda b, v: b["zones"].append(v),
+    ],
+    ids=["supersedes", "zone_id", "gpio_pin", "instrument", "zone"],
+)
+def test_nesting_past_the_recursion_limit_is_malformed_not_a_crash(place: Any) -> None:
+    """The grammar bounds the document's shape; nothing before it may recurse.
+
+    Built past the interpreter's limit so that any recursive walk over the
+    unchecked tree raises instead of refusing. The canonical form is checked
+    the same way, because the loader canonicalises an unverified document to
+    ask whether it is the one already in force.
+    """
+    from ori.security.commissioning.binding import canonical_bytes, parse_document
+
+    deep = _nested(sys.getrecursionlimit() * 4)
+    case = _mutated(lambda b: place(b, deep))
+    with pytest.raises(RefusedError) as excinfo:
+        run(case["binding"], case["verifier_context"], case["signature_b64"])
+    assert (excinfo.value.stage, excinfo.value.reason) == ("parses", "malformed")
+    with pytest.raises(RefusedError):
+        canonical_bytes(case["binding"])
+    with pytest.raises(RefusedError) as excinfo:
+        parse_document("[" * (sys.getrecursionlimit() * 4))
+    assert (excinfo.value.stage, excinfo.value.reason) == ("parses", "malformed")
