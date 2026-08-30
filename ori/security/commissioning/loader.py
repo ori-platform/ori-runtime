@@ -282,6 +282,22 @@ async def load_commissioning_state(
             refusal.reason,
         )
         return state
+    except Exception:  # noqa: BLE001 - a verifier defect must not stop the runtime
+        # The contract's rule for input that breaks the verifier rather than a
+        # check is a malformed verdict, and its rule for a document failing any
+        # stage is that the binding in force is unchanged. Letting the error
+        # propagate would abort startup, Tier D protection included, over a
+        # file that should have been refused. The problem marker keeps the
+        # distinction visible: this was not a grammar refusal.
+        state.last_verdict = Verdict("parses", "malformed", presented_seq, now_ms())
+        if "binding_verifier_error" not in state.problems:
+            state.problems.append("binding_verifier_error")
+        logger.exception(
+            "[commissioning] binding at %s could not be verified; binding in force "
+            "unchanged",
+            path,
+        )
+        return state
 
     await store.retain_commissioned_binding(
         binding_seq=accepted.binding_seq,
