@@ -379,11 +379,18 @@ def mutate(fn) -> dict:
 def expected_state(binding: dict) -> str:
     """Verification is not authority: a proven circuit leg is not permission.
 
-    A binding is in force only when every zone's control leg is proven, and
-    only a local_gpio zone can prove one today. Anything else is provisional --
-    retained and reported, never connected, never commanded.
+    A binding is in force only when **both** legs are proven for every zone,
+    and only a local_gpio zone can prove a control leg today. Anything else is
+    provisional -- retained and reported, never connected, never commanded.
+
+    Neither leg substitutes for the other. A proven control leg over an
+    undemonstrated circuit leg means the pin is known to move the coil and
+    nothing is known about which circuit that coil switches, so commanding it
+    opens an unidentified one.
     """
     for zone in binding.get("zones", []):
+        if zone.get("proof", {}).get("method") == "undemonstrated":
+            return "provisional"
         leg = zone.get("proof", {}).get("control_path")
         if not isinstance(leg, dict) or leg.get("method") != "commanded_and_observed":
             return "provisional"
@@ -511,6 +518,29 @@ accept_cases += [
         "authority. The document is retained provisionally, and the coil is "
         "never commanded on the polarity it asserts.",
         context(),
+    ),
+    case(
+        "control_leg_proven_over_an_undemonstrated_circuit_leg_is_provisional",
+        (
+            lambda b: (
+                b["zones"][0]["proof"].__setitem__("method", "undemonstrated"),
+                b["zones"][0]["proof"].__setitem__("observations", []),
+                b["zones"][0]["proof"].__setitem__(
+                    "reason", "load could not be interrupted at commissioning"
+                ),
+                b["zones"][0]["proof"].__setitem__("control_path", control_path()),
+                b,
+            )[-1]
+        )(gpio_only_binding(proven=False)),
+        "The pin is known to move the coil and nothing is known about which "
+        "circuit that coil switches. Commanding it would open an unidentified "
+        "circuit -- the transposition hazard this contract exists for, reached "
+        "by a route that looks well proven. Neither leg substitutes for the "
+        "other, so this is provisional however good the control proof is.",
+        context(
+            declared_inventory=GPIO_ONLY_INVENTORY,
+            deployment_posture="development",
+        ),
     ),
     case(
         "a_provisional_record_does_not_advance_the_chain",
