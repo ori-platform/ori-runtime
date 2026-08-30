@@ -142,6 +142,7 @@ async def _seed_state_store(path: Path) -> None:
 def test_cli_bridge_config_validate_reports_signed_phone_posture(
     tmp_path, monkeypatch, capsys
 ):
+    assert monkeypatch is not None, "a hardened config needs monkeypatch for its anchor"
     private_key, public_key_b64 = _ed25519_keypair()
     monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
     config_path = _write_config(
@@ -676,3 +677,547 @@ def test_config_show_names_the_secret_variable_but_never_its_value(
     assert gateway["shared_secret_env"] == "GATEWAY_SHARED_SECRET"
     assert "shared_secret_env_set" not in gateway
     assert "super-secret-value" not in raw
+
+
+# --------------------------------------------------------------------------
+# Commissioned safety binding ceremony
+# --------------------------------------------------------------------------
+#
+# The bridge exists here because CLI-7 stops the CLI reading `ori.yaml` and
+# CLI-9 stops it driving a contactor. What it must not do is form a second
+# opinion: `deliver` runs the runtime's own verifier over the context the
+# loader builds at startup, so a document accepted here is the one accepted
+# then.
+
+
+def _commissioning_config(
+    tmp_path: Path,
+    *,
+    hardened: bool = False,
+    monkeypatch: pytest.MonkeyPatch | None = None,
+) -> Path:
+    """A config the runtime would load, in the posture the test needs.
+
+    Hardened posture is reached the way a deployment reaches it, not by
+    mutating a loaded object: the whole chain the loader enforces has to be
+    satisfied, config signature included, because the config the bridge reads
+    is the config the runtime reads.
+    """
+    body = textwrap.dedent(f"""\
+        device:
+          id: bench-01
+          name: Bench
+          location: Test Lab
+          deployment_profile: development
+        sensors:
+          - id: load-current
+            type: cpu_percent
+            protocol: psutil
+            poll_interval_ms: 1000
+        skills: []
+        reasoning:
+          default_tier: rule
+        actions:
+          relay:
+            enabled: false
+            gpio_pin: 26
+        database:
+          path: {tmp_path / "ori_state.db"}
+        logging:
+          level: INFO
+          file: {tmp_path / "ori.log"}
+        """)
+    config_path = tmp_path / "ori.yaml"
+    if not hardened:
+        config_path.write_text(body, encoding="utf-8")
+        return config_path
+
+    assert monkeypatch is not None, "a hardened config needs monkeypatch for its anchor"
+    private_key, public_key_b64 = _ed25519_keypair()
+    monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+    body += textwrap.dedent(f"""\
+        security:
+          enforce_production_posture: true
+          skills:
+            require_signed: true
+          config_signature:
+            require_signed: true
+            trust_anchor_env: ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64
+        state:
+          encryption:
+            mode: filesystem_required
+            encrypted_path_prefixes: ["{tmp_path}"]
+        """)
+    config_path.write_text(_sign_config_yaml(body, private_key), encoding="utf-8")
+    return config_path
+
+
+def _bench_envelope(**overrides):
+    from tests.commissioning.signing import local_gpio_binding, sign_envelope
+
+    binding = local_gpio_binding(
+        device_id="bench-01",
+        sensor_id="load-current",
+        gpio_pin=26,
+        active_high=False,
+        **overrides,
+    )
+    return sign_envelope(binding, "7" * 64)
+
+
+def _anchor(monkeypatch, seed: str = "7" * 64) -> None:
+    from ori.security.commissioning.anchors import COMMISSIONING_ANCHOR_ENV
+    from tests.commissioning.signing import public_key_b64
+
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(seed))
+
+
+def test_cli_bridge_commissioning_inventory_reports_the_candidate_set(tmp_path, capsys):
+    config_path = _commissioning_config(tmp_path)
+
+    rc = cli_bridge.main(["commissioning", "inventory", "--path", str(config_path)])
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 0
+    result = payload["result"]
+    assert result["device_id"] == "bench-01"
+    assert result["sensor_ids"] == ["load-current"]
+    assert result["actuators"] == [{"kind": "local_gpio", "identity": {"gpio_pin": 26}}]
+    assert result["deployment_posture"] == "development"
+    assert result["accepted_binding_seq"] == 0
+    assert result["accepted_binding_hash"] is None
+
+
+def test_cli_bridge_commissioning_inventory_omits_polarity(tmp_path, capsys):
+    """Polarity is the question the ceremony asks, not one the device answers."""
+    config_path = _commissioning_config(tmp_path)
+
+    cli_bridge.main(["commissioning", "inventory", "--path", str(config_path)])
+
+    result = _read_stdout_json(capsys)["result"]
+    identity = result["actuators"][0]["identity"]
+    assert identity == {"gpio_pin": 26}
+    assert "active_high" not in identity
+    # Nor a generation the runtime does not have to compare against.
+    assert "inventory_generation" not in result
+
+
+def test_cli_bridge_commissioning_inventory_reports_hardened_posture(
+    tmp_path, monkeypatch, capsys
+):
+    config_path = _commissioning_config(
+        tmp_path, hardened=True, monkeypatch=monkeypatch
+    )
+
+    cli_bridge.main(["commissioning", "inventory", "--path", str(config_path)])
+
+    assert _read_stdout_json(capsys)["result"]["deployment_posture"] == "production"
+
+
+def test_cli_bridge_commissioning_deliver_stages_an_accepted_binding(
+    tmp_path, monkeypatch, capsys
+):
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    config_path = _commissioning_config(tmp_path)
+    _anchor(monkeypatch)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 0
+    result = payload["result"]
+    assert result["accepted"] is True
+    assert result["installed"] is True
+    assert result["binding_seq"] == 1
+    # Staged, not live: the runtime reads it when it next starts.
+    assert "next starts" in result["message"]
+    staged = tmp_path / BINDING_RELATIVE_PATH
+    assert json.loads(staged.read_text()) == json.loads(source.read_text())
+
+
+def test_cli_bridge_commissioning_deliver_refuses_by_stage_and_writes_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    config_path = _commissioning_config(tmp_path)
+    # The anchor configured is not the key that signed the document.
+    _anchor(monkeypatch, seed="6" * 64)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    payload = _read_stdout_json(capsys)
+    # A refused document is answered the way `config validate` answers an
+    # invalid one: ok false, exit 2, and the verdict typed in the error.
+    assert rc == 2
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "unknown_signer"
+    assert payload["error"]["stage"] == "key_selection"
+    assert not (tmp_path / BINDING_RELATIVE_PATH).exists()
+
+
+def test_cli_bridge_commissioning_deliver_refuses_an_undemonstrated_zone_when_hardened(
+    tmp_path, monkeypatch, capsys
+):
+    """The posture `inventory` reported is the posture `deliver` applies."""
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    config_path = _commissioning_config(
+        tmp_path, hardened=True, monkeypatch=monkeypatch
+    )
+    _anchor(monkeypatch)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    assert rc == 2
+    error = _read_stdout_json(capsys)["error"]
+    assert error["code"] == "undemonstrated_binding"
+    assert error["stage"] == "activation_posture"
+    assert not (tmp_path / BINDING_RELATIVE_PATH).exists()
+
+
+def test_cli_bridge_commissioning_deliver_refuses_a_repeated_key_from_the_wire(
+    tmp_path, monkeypatch, capsys
+):
+    """The bytes are read through the runtime's parser, not a lenient one."""
+    config_path = _commissioning_config(tmp_path)
+    _anchor(monkeypatch)
+    source = tmp_path / "binding.json"
+    text = json.dumps(_bench_envelope(), indent=1)
+    assert '"binding_seq": 1' in text
+    source.write_text(
+        text.replace('"binding_seq": 1', '"binding_seq": 5, "binding_seq": 1', 1),
+        encoding="utf-8",
+    )
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    assert rc == 2
+    error = _read_stdout_json(capsys)["error"]
+    assert (error["code"], error["stage"]) == ("malformed", "parses")
+
+
+def test_cli_bridge_commissioning_deliver_will_not_replace_a_staged_document(
+    tmp_path, monkeypatch, capsys
+):
+    """One installer does not silently discard another's staged binding."""
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    config_path = _commissioning_config(tmp_path)
+    _anchor(monkeypatch)
+    staged = tmp_path / BINDING_RELATIVE_PATH
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_text(json.dumps(_bench_envelope(binding_seq=9)), encoding="utf-8")
+    before = staged.read_bytes()
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 2
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "binding_already_staged"
+    assert staged.read_bytes() == before
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+            "--force",
+        ]
+    )
+    assert rc == 0
+    assert staged.read_bytes() != before
+
+
+async def _retain_foreign_binding(config_path: Path) -> None:
+    """Put a binding for a different device into this device's store."""
+    from ori.config import Config
+
+    config = Config.load(str(config_path))
+    store = cli_bridge._commissioning_store(config)
+    await store.open()
+    try:
+        await store.retain_commissioned_binding(
+            binding_seq=7,
+            canonical_hash="sha256:" + "a" * 64,
+            device_id="some-other-device",
+            inventory_generation=1,
+            signer_id="commissioning-test",
+            supersedes=None,
+            canonical_json="{}",
+            signature="ed25519:" + base64.b64encode(b"\x00" * 64).decode(),
+            zones_json="[]",
+        )
+    finally:
+        await store.close()
+
+
+def test_cli_bridge_commissioning_reads_no_binding_held_for_another_device(
+    tmp_path, monkeypatch, capsys
+):
+    """A retained binding for another device is not this device's baseline.
+
+    Reporting its sequence would let a producer chain a revision onto a
+    document this device never accepted, and `deliver` would then judge
+    freshness against a hash it does not hold. The loader reads it the same
+    way, which is why the two agree at startup.
+    """
+    config_path = _commissioning_config(tmp_path)
+    asyncio.run(_retain_foreign_binding(config_path))
+
+    cli_bridge.main(["commissioning", "inventory", "--path", str(config_path)])
+    result = _read_stdout_json(capsys)["result"]
+    assert result["accepted_binding_seq"] == 0
+    assert result["accepted_binding_hash"] is None
+
+    # And the first binding for this device is accepted against that baseline,
+    # rather than refused as stale behind the foreign sequence of 7.
+    _anchor(monkeypatch)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+    delivered = _read_stdout_json(capsys)["result"]
+    assert rc == 0
+    assert delivered["accepted"] is True
+    assert delivered["binding_seq"] == 1
+
+
+def test_cli_bridge_commissioning_deliver_agrees_with_the_loader_at_startup(
+    tmp_path, monkeypatch, capsys
+):
+    """The verdict `deliver` gives is the verdict the runtime will give.
+
+    This is the whole claim the command makes. It is checked by staging a
+    document through the bridge and then running the loader over the same
+    installation, which is what the runtime does at its next start: the
+    binding that comes into force must be the one that was delivered.
+    """
+    from ori.config import Config
+    from ori.security.commissioning.anchors import load_commissioning_anchors
+    from ori.security.commissioning.loader import (
+        DeclaredInventory,
+        load_commissioning_state,
+    )
+    from ori.security.commissioning.profiles import load_shipped_profile_set
+
+    config_path = _commissioning_config(tmp_path)
+    _anchor(monkeypatch)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+    delivered = _read_stdout_json(capsys)["result"]
+    assert rc == 0 and delivered["accepted"] is True
+
+    async def _load():
+        config = Config.load(str(config_path))
+        store = cli_bridge._commissioning_store(config)
+        await store.open()
+        try:
+            return await load_commissioning_state(
+                data_path=config_path.resolve().parent,
+                device_id=str(config.device.id),
+                anchors=load_commissioning_anchors(),
+                provisioning_anchor=None,
+                inventory=DeclaredInventory.from_config(["load-current"], 26),
+                posture="development",
+                profiles=load_shipped_profile_set(),
+                store=store,
+            )
+        finally:
+            await store.close()
+
+    state = asyncio.run(_load())
+    assert state.in_force is not None
+    assert state.in_force.binding_seq == delivered["binding_seq"]
+    assert state.in_force.canonical_hash == delivered["binding_hash"]
+    assert state.actuation_licensed is True
+    # Narrowed rather than assumed: a `None` verdict here would otherwise fail
+    # as an AttributeError deep in the assertion instead of saying that the
+    # loader recorded nothing for the document the bridge staged.
+    assert state.last_verdict is not None
+    assert (state.last_verdict.stage, state.last_verdict.reason) == (
+        "accepted",
+        "accepted",
+    )
+
+
+def test_cli_bridge_commissioning_reads_create_no_state_database(tmp_path, capsys):
+    """Asking a device a question must not build its durable state.
+
+    Opening the store applies the DDL, so a read that opened it would leave a
+    fully-formed database owned by whoever ran the query. On a system install
+    that is the installer, not the service account, and the runtime would then
+    be unable to open its own store — with nothing to connect the failure back
+    to an inventory command run days earlier.
+    """
+    config_path = _commissioning_config(tmp_path)
+    db_path = tmp_path / "ori_state.db"
+    assert not db_path.exists()
+
+    rc = cli_bridge.main(["commissioning", "inventory", "--path", str(config_path)])
+
+    result = _read_stdout_json(capsys)["result"]
+    assert rc == 0
+    assert result["accepted_binding_seq"] == 0
+    assert result["accepted_binding_hash"] is None
+    assert not db_path.exists(), "the read created the state database"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["ori.yaml"]
+
+
+def test_cli_bridge_commissioning_deliver_works_before_the_first_start(
+    tmp_path, monkeypatch, capsys
+):
+    """The first commissioning happens before the runtime has ever run."""
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    config_path = _commissioning_config(tmp_path)
+    _anchor(monkeypatch)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    result = _read_stdout_json(capsys)["result"]
+    assert rc == 0 and result["accepted"] is True
+    assert (tmp_path / BINDING_RELATIVE_PATH).is_file()
+    assert not (tmp_path / "ori_state.db").exists()
+
+
+def test_cli_bridge_commissioning_deliver_reports_a_non_utf8_file_as_malformed(
+    tmp_path, monkeypatch, capsys
+):
+    """A document that is not UTF-8 is malformed by the grammar, not a tool fault.
+
+    Reading it through the generic error path would report the same class of
+    defect as every other malformed document under a different name, and an
+    operator could not tell a bad file from a broken tool.
+    """
+    config_path = _commissioning_config(tmp_path)
+    _anchor(monkeypatch)
+    source = tmp_path / "binding.json"
+    source.write_bytes(b'{"binding":"\xff","signature":"x"}')
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 2
+    assert (payload["error"]["code"], payload["error"]["stage"]) == (
+        "malformed",
+        "parses",
+    )
+
+
+def test_cli_bridge_errors_without_a_verdict_carry_no_stage(tmp_path, capsys):
+    """Only a verdict has a stage; an unreadable file is not one."""
+    config_path = _commissioning_config(tmp_path)
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(tmp_path / "absent.json"),
+        ]
+    )
+
+    error = _read_stdout_json(capsys)["error"]
+    assert rc == 2
+    assert error["code"] == "binding_unreadable"
+    assert "stage" not in error

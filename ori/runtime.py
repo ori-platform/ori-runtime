@@ -14,8 +14,6 @@ Or via the CLI entry point::
 """
 
 import asyncio
-import base64
-import binascii
 import datetime as dt
 import hashlib
 import hmac
@@ -107,6 +105,7 @@ from ori.security.commissioning.anchors import (
     CommissioningAnchors,
     anchor_collision,
     load_commissioning_anchors,
+    provisioning_anchor,
 )
 from ori.security.commissioning.loader import (
     CommissioningState,
@@ -5179,18 +5178,13 @@ def _build_firmware_command_service(
 
 
 def _provisioning_anchor_bytes(config: Config) -> bytes | None:
-    """The provisioning anchor as raw key material, from the environment it names."""
-    env_name = str(
-        (config.security.get("config_signature") or {}).get("trust_anchor_env") or ""
-    ).strip()
-    text = os.environ.get(env_name, "").strip() if env_name else ""
-    if not text:
-        return None
-    try:
-        raw = base64.b64decode(text, validate=True)
-    except (binascii.Error, ValueError):
-        return None
-    return raw if len(raw) == 32 else None
+    """The provisioning anchor as raw key material, from the environment it names.
+
+    The reading lives with the other anchors so the CLI bridge resolves the
+    same value from the same document; two readings of one anchor is one
+    reading too many.
+    """
+    return provisioning_anchor(config.security)
 
 
 def _degradation_reasons(*, firmware_liveness_degraded: bool) -> list[str]:
