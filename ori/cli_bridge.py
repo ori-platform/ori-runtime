@@ -16,7 +16,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlparse
 
 import yaml
@@ -91,9 +91,16 @@ _SENSITIVE_KEY_FRAGMENTS = (
 
 
 class BridgeError(Exception):
-    """Bridge command error that should be returned as structured JSON."""
+    """Bridge command error that should be returned as structured JSON.
 
-    def __init__(self, code: str, detail: str) -> None:
+    `stage` is carried only by verdicts that have one. A commissioned binding
+    is refused *at* a stage, and a refusal only proves a check ran if every
+    earlier stage passed, so losing the stage would reduce a typed verdict to
+    a sentence.
+    """
+
+    def __init__(self, code: str, detail: str, stage: str | None = None) -> None:
+        self.stage = stage
         super().__init__(detail)
         self.code = code
         self.detail = detail
@@ -168,6 +175,7 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
             command=public_command,
             code=exc.code,
             detail=exc.detail,
+            stage=exc.stage,
         )
     except ConfigValidationError as exc:
         return 2, _error(
@@ -781,6 +789,16 @@ async def _in_force_binding(config: Config) -> AcceptedBinding | None:
     loader reads it; reporting it here would let a producer chain a revision
     onto a document this device never accepted.
     """
+    db_path = Path(
+        str(config.raw.get("database", {}).get("path", _DEFAULT_STATE_DB_PATH))
+    )
+    if not db_path.is_file():
+        # A device that has never started has no store, and asking it a
+        # question must not build one. Opening the store applies the DDL, so
+        # this read would otherwise materialise the runtime's whole durable
+        # state owned by whoever ran an inventory query -- on a system install
+        # that is root, and the service account could then never open it.
+        return None
     store = _commissioning_store(config)
     await store.open()
     try:
@@ -820,9 +838,15 @@ async def _commissioning_deliver(
     config = Config.load(config_path)
     device_id = str(config.device.id)
     try:
-        text = Path(binding_path).read_text(encoding="utf-8")
+        text = Path(binding_path).read_bytes().decode("utf-8")
     except OSError as exc:
         raise BridgeError("binding_unreadable", str(exc)) from exc
+    except UnicodeDecodeError:
+        # A document that is not UTF-8 is malformed by the contract's own
+        # grammar. Letting it reach the generic handler would report the same
+        # class of defect as every other malformed document under a different
+        # name, and an operator cannot tell a bad file from a broken tool.
+        raise _refused("parses", "malformed") from None
 
     try:
         anchors = load_commissioning_anchors()
@@ -835,16 +859,15 @@ async def _commissioning_deliver(
 
     prov = provisioning_anchor(config.security)
     in_force = await _in_force_binding(config)
-    refused = _refusal_result(device_id, in_force)
 
     if anchor_collision(anchors, prov):
         # Decided before any document is read, exactly as at configuration load.
-        return refused("key_selection", "anchor_collision")
+        raise _refused("key_selection", "anchor_collision")
 
     try:
         document = parse_document(text)
     except BindingRefusedError as refusal:
-        return refused(refusal.stage, refusal.reason)
+        raise _refused(refusal.stage, refusal.reason) from None
 
     if in_force is not None and is_the_binding_in_force(document, in_force):
         return {
@@ -876,7 +899,7 @@ async def _commissioning_deliver(
     try:
         accepted = verify_binding_envelope(document, context)
     except BindingRefusedError as refusal:
-        return refused(refusal.stage, refusal.reason)
+        raise _refused(refusal.stage, refusal.reason) from None
 
     target = Path(config_path).resolve().parent / BINDING_RELATIVE_PATH
     payload = text.encode("utf-8")
@@ -907,27 +930,23 @@ def _declared_gpio_pin(config: Config) -> int | None:
     return int(pin) if pin is not None else None
 
 
-def _refusal_result(
-    device_id: str, in_force: AcceptedBinding | None
-) -> Callable[[str, str], dict[str, Any]]:
-    """A refusal names the stage it was decided at, as health reports it."""
+def _refused(stage: str, reason: str) -> BridgeError:
+    """A refused binding, reported the way this bridge reports a rejected document.
 
-    def build(stage: str, reason: str) -> dict[str, Any]:
-        return {
-            "device_id": device_id,
-            "accepted": False,
-            "installed": False,
-            "already_in_force": False,
-            "stage": stage,
-            "reason": reason,
-            "binding_seq_in_force": in_force.binding_seq if in_force else 0,
-            "message": (
-                f"binding refused at {stage}: {reason}; "
-                "the binding in force is unchanged and nothing was written"
-            ),
-        }
-
-    return build
+    `config validate` already answers an invalid document with `ok: false` and
+    exit 2, and a binding the runtime refuses is the same kind of answer: the
+    operator handed the tool something the contract does not accept. The code
+    is the contract's reason and the stage rides alongside it, because a
+    refusal only proves a check ran if every earlier stage passed.
+    """
+    return BridgeError(
+        code=reason,
+        detail=(
+            f"binding refused at {stage}; the binding in force is unchanged "
+            "and nothing was written"
+        ),
+        stage=stage,
+    )
 
 
 def _write_staged_binding(target: Path, payload: bytes) -> None:
@@ -1013,15 +1032,17 @@ def _write_json_response(payload: dict[str, Any]) -> None:
     sys.stdout.buffer.write(encoded + b"\n")
 
 
-def _error(*, command: str, code: str, detail: str) -> dict[str, Any]:
+def _error(
+    *, command: str, code: str, detail: str, stage: str | None = None
+) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "detail": detail}
+    if stage is not None:
+        error["stage"] = stage
     return {
         "schema_version": _SCHEMA_VERSION,
         "ok": False,
         "command": command or None,
-        "error": {
-            "code": code,
-            "detail": detail,
-        },
+        "error": error,
     }
 
 

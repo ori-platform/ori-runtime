@@ -142,6 +142,7 @@ async def _seed_state_store(path: Path) -> None:
 def test_cli_bridge_config_validate_reports_signed_phone_posture(
     tmp_path, monkeypatch, capsys
 ):
+    assert monkeypatch is not None, "a hardened config needs monkeypatch for its anchor"
     private_key, public_key_b64 = _ed25519_keypair()
     monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
     config_path = _write_config(
@@ -690,7 +691,10 @@ def test_config_show_names_the_secret_variable_but_never_its_value(
 
 
 def _commissioning_config(
-    tmp_path: Path, *, hardened: bool = False, monkeypatch=None
+    tmp_path: Path,
+    *,
+    hardened: bool = False,
+    monkeypatch: pytest.MonkeyPatch | None = None,
 ) -> Path:
     """A config the runtime would load, in the posture the test needs.
 
@@ -728,6 +732,7 @@ def _commissioning_config(
         config_path.write_text(body, encoding="utf-8")
         return config_path
 
+    assert monkeypatch is not None, "a hardened config needs monkeypatch for its anchor"
     private_key, public_key_b64 = _ed25519_keypair()
     monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
     body += textwrap.dedent(f"""\
@@ -864,10 +869,13 @@ def test_cli_bridge_commissioning_deliver_refuses_by_stage_and_writes_nothing(
         ]
     )
 
-    result = _read_stdout_json(capsys)["result"]
-    assert rc == 0
-    assert result["accepted"] is False
-    assert (result["stage"], result["reason"]) == ("key_selection", "unknown_signer")
+    payload = _read_stdout_json(capsys)
+    # A refused document is answered the way `config validate` answers an
+    # invalid one: ok false, exit 2, and the verdict typed in the error.
+    assert rc == 2
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "unknown_signer"
+    assert payload["error"]["stage"] == "key_selection"
     assert not (tmp_path / BINDING_RELATIVE_PATH).exists()
 
 
@@ -884,7 +892,7 @@ def test_cli_bridge_commissioning_deliver_refuses_an_undemonstrated_zone_when_ha
     source = tmp_path / "binding.json"
     source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
 
-    cli_bridge.main(
+    rc = cli_bridge.main(
         [
             "commissioning",
             "deliver",
@@ -895,12 +903,10 @@ def test_cli_bridge_commissioning_deliver_refuses_an_undemonstrated_zone_when_ha
         ]
     )
 
-    result = _read_stdout_json(capsys)["result"]
-    assert result["accepted"] is False
-    assert (result["stage"], result["reason"]) == (
-        "activation_posture",
-        "undemonstrated_binding",
-    )
+    assert rc == 2
+    error = _read_stdout_json(capsys)["error"]
+    assert error["code"] == "undemonstrated_binding"
+    assert error["stage"] == "activation_posture"
     assert not (tmp_path / BINDING_RELATIVE_PATH).exists()
 
 
@@ -918,7 +924,7 @@ def test_cli_bridge_commissioning_deliver_refuses_a_repeated_key_from_the_wire(
         encoding="utf-8",
     )
 
-    cli_bridge.main(
+    rc = cli_bridge.main(
         [
             "commissioning",
             "deliver",
@@ -929,12 +935,9 @@ def test_cli_bridge_commissioning_deliver_refuses_a_repeated_key_from_the_wire(
         ]
     )
 
-    result = _read_stdout_json(capsys)["result"]
-    assert (result["accepted"], result["stage"], result["reason"]) == (
-        False,
-        "parses",
-        "malformed",
-    )
+    assert rc == 2
+    error = _read_stdout_json(capsys)["error"]
+    assert (error["code"], error["stage"]) == ("malformed", "parses")
 
 
 def test_cli_bridge_commissioning_deliver_will_not_replace_a_staged_document(
@@ -1105,7 +1108,116 @@ def test_cli_bridge_commissioning_deliver_agrees_with_the_loader_at_startup(
     assert state.in_force.binding_seq == delivered["binding_seq"]
     assert state.in_force.canonical_hash == delivered["binding_hash"]
     assert state.actuation_licensed is True
+    # Narrowed rather than assumed: a `None` verdict here would otherwise fail
+    # as an AttributeError deep in the assertion instead of saying that the
+    # loader recorded nothing for the document the bridge staged.
+    assert state.last_verdict is not None
     assert (state.last_verdict.stage, state.last_verdict.reason) == (
         "accepted",
         "accepted",
     )
+
+
+def test_cli_bridge_commissioning_reads_create_no_state_database(tmp_path, capsys):
+    """Asking a device a question must not build its durable state.
+
+    Opening the store applies the DDL, so a read that opened it would leave a
+    fully-formed database owned by whoever ran the query. On a system install
+    that is the installer, not the service account, and the runtime would then
+    be unable to open its own store — with nothing to connect the failure back
+    to an inventory command run days earlier.
+    """
+    config_path = _commissioning_config(tmp_path)
+    db_path = tmp_path / "ori_state.db"
+    assert not db_path.exists()
+
+    rc = cli_bridge.main(["commissioning", "inventory", "--path", str(config_path)])
+
+    result = _read_stdout_json(capsys)["result"]
+    assert rc == 0
+    assert result["accepted_binding_seq"] == 0
+    assert result["accepted_binding_hash"] is None
+    assert not db_path.exists(), "the read created the state database"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["ori.yaml"]
+
+
+def test_cli_bridge_commissioning_deliver_works_before_the_first_start(
+    tmp_path, monkeypatch, capsys
+):
+    """The first commissioning happens before the runtime has ever run."""
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    config_path = _commissioning_config(tmp_path)
+    _anchor(monkeypatch)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    result = _read_stdout_json(capsys)["result"]
+    assert rc == 0 and result["accepted"] is True
+    assert (tmp_path / BINDING_RELATIVE_PATH).is_file()
+    assert not (tmp_path / "ori_state.db").exists()
+
+
+def test_cli_bridge_commissioning_deliver_reports_a_non_utf8_file_as_malformed(
+    tmp_path, monkeypatch, capsys
+):
+    """A document that is not UTF-8 is malformed by the grammar, not a tool fault.
+
+    Reading it through the generic error path would report the same class of
+    defect as every other malformed document under a different name, and an
+    operator could not tell a bad file from a broken tool.
+    """
+    config_path = _commissioning_config(tmp_path)
+    _anchor(monkeypatch)
+    source = tmp_path / "binding.json"
+    source.write_bytes(b'{"binding":"\xff","signature":"x"}')
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 2
+    assert (payload["error"]["code"], payload["error"]["stage"]) == (
+        "malformed",
+        "parses",
+    )
+
+
+def test_cli_bridge_errors_without_a_verdict_carry_no_stage(tmp_path, capsys):
+    """Only a verdict has a stage; an unreadable file is not one."""
+    config_path = _commissioning_config(tmp_path)
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(tmp_path / "absent.json"),
+        ]
+    )
+
+    error = _read_stdout_json(capsys)["error"]
+    assert rc == 2
+    assert error["code"] == "binding_unreadable"
+    assert "stage" not in error
