@@ -294,10 +294,16 @@ async def test_the_relay_is_driven_only_through_the_commissioned_seam(
     observed: dict[str, Any] = {}
 
     async def _observe() -> None:
+        # The dispatcher exists before the relay executors are registered on
+        # it, and device policy is awaited in between; waiting for the
+        # dispatcher alone can observe it with no `trip_relay` yet.
         deadline = asyncio.get_running_loop().time() + 30.0
-        while runtime._dispatcher is None:
+        while (
+            runtime._dispatcher is None
+            or "trip_relay" not in runtime._dispatcher._executors
+        ):
             if asyncio.get_running_loop().time() > deadline:
-                raise AssertionError("the runtime did not come up in time")
+                raise AssertionError("the relay executors were not registered in time")
             await asyncio.sleep(0.05)
         actuator = runtime._commissioned_actuator
         assert actuator is not None
