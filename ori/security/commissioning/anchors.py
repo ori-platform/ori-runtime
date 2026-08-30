@@ -14,7 +14,7 @@ import base64
 import binascii
 import os
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Any, Mapping
 
 COMMISSIONING_ANCHOR_ENV = "ORI_COMMISSIONING_ANCHOR_PUBLIC_KEY_B64"
 COMMISSIONING_ANCHOR_PREVIOUS_ENV = "ORI_COMMISSIONING_ANCHOR_PREVIOUS_PUBLIC_KEY_B64"
@@ -73,6 +73,32 @@ def load_commissioning_anchors(
             "demotes a key, it does not duplicate it"
         )
     return CommissioningAnchors(current=current, previous=previous)
+
+
+def provisioning_anchor(
+    security: Mapping[str, Any], environ: Mapping[str, str] | None = None
+) -> bytes | None:
+    """The provisioning anchor as raw key material, from the environment it names.
+
+    Material that is missing or not a 32-byte key reads as absent rather than
+    raising. This value exists here only to be compared against the
+    commissioning anchors, and something that is not a key cannot collide with
+    one; whether a malformed provisioning anchor is itself an error belongs to
+    the config-signing path that actually verifies with it.
+    """
+    env = os.environ if environ is None else environ
+    signature = security.get("config_signature") or {}
+    if not isinstance(signature, Mapping):
+        return None
+    name = str(signature.get("trust_anchor_env") or "").strip()
+    text = (env.get(name) or "").strip() if name else ""
+    if not text:
+        return None
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return raw if len(raw) == 32 else None
 
 
 def anchor_collision(

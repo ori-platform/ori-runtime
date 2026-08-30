@@ -136,7 +136,7 @@ class CommissioningState:
         }
 
 
-def _accepted_from_row(row: dict[str, Any]) -> AcceptedBinding:
+def accepted_from_row(row: dict[str, Any]) -> AcceptedBinding:
     zones = tuple(AcceptedZone(**zone) for zone in json.loads(row["zones_json"]))
     return AcceptedBinding(
         binding_seq=int(row["binding_seq"]),
@@ -156,7 +156,7 @@ def _zones_json(binding: AcceptedBinding) -> str:
     return json.dumps([asdict(zone) for zone in binding.zones], sort_keys=True)
 
 
-def _context(
+def verifier_context(
     *,
     device_id: str,
     anchors: CommissioningAnchors,
@@ -229,7 +229,7 @@ async def load_commissioning_state(
     state = CommissioningState(anchors=anchors, inventory=inventory)
     row = await store.get_commissioned_binding_in_force()
     if row is not None:
-        state.in_force = _accepted_from_row(row)
+        state.in_force = accepted_from_row(row)
         if state.in_force.device_id != device_id:
             state.problems.append("retained_binding_for_another_device")
             state.in_force = None
@@ -251,15 +251,13 @@ async def load_commissioning_state(
         return state
 
     presented_seq = _presented_seq(document)
-    if state.in_force is not None and _is_the_binding_in_force(
-        document, state.in_force
-    ):
+    if state.in_force is not None and is_the_binding_in_force(document, state.in_force):
         # The file is the document already in force, byte for byte; there is
         # nothing to re-decide and nothing to retain twice.
         state.last_verdict = Verdict("accepted", "accepted", presented_seq, now_ms())
         return state
 
-    context = _context(
+    context = verifier_context(
         device_id=device_id,
         anchors=anchors,
         provisioning_anchor=provisioning_anchor,
@@ -322,7 +320,7 @@ async def load_commissioning_state(
     return state
 
 
-def _is_the_binding_in_force(document: Any, in_force: AcceptedBinding) -> bool:
+def is_the_binding_in_force(document: Any, in_force: AcceptedBinding) -> bool:
     """Same signed bytes and same signature as the retained document."""
     if not isinstance(document, dict) or set(document) != {"binding", "signature"}:
         return False

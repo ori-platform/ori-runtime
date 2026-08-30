@@ -13,16 +13,45 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import yaml
 
-from ori.config import Config, ConfigValidationError, SensorConfig
+from ori.config import (
+    Config,
+    ConfigValidationError,
+    SensorConfig,
+    requires_production_posture,
+)
 from ori.gateway.mqtt_security import parse_gateway_broker_endpoint
 from ori.network.events import SensorReading
+from ori.security.commissioning.anchors import (
+    AnchorError,
+    anchor_collision,
+    load_commissioning_anchors,
+    provisioning_anchor,
+)
+from ori.security.commissioning.binding import (
+    AcceptedBinding,
+    BindingRefusedError,
+    parse_document,
+    verify_binding_envelope,
+)
+from ori.security.commissioning.loader import (
+    BINDING_RELATIVE_PATH,
+    DeclaredInventory,
+    accepted_from_row,
+    is_the_binding_in_force,
+    verifier_context,
+)
+from ori.security.commissioning.profiles import (
+    ProfileSetError,
+    load_shipped_profile_set,
+)
 from ori.skills.loader import Skill, SkillLoader, SkillValidationError
 from ori.skills.sandbox import SkillSecurityError
 from ori.state.store import StateStore
@@ -48,6 +77,8 @@ _PUBLIC_COMMANDS = {
     ("health", "snapshot"): "health-snapshot",
     ("state", "action-log"): "state-action-log",
     ("state", "history"): "state-history",
+    ("commissioning", "inventory"): "commissioning-inventory",
+    ("commissioning", "deliver"): "commissioning-deliver",
 }
 _SENSITIVE_KEY_FRAGMENTS = (
     "authorization",
@@ -116,6 +147,17 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
             result = asyncio.run(_read_state_action_log(args))
         elif command == "state-history":
             result = asyncio.run(_read_state_history(args))
+        elif command == "commissioning-inventory":
+            path = _required_option(args, "--path", command)
+            result = asyncio.run(_commissioning_inventory(path))
+        elif command == "commissioning-deliver":
+            path = _required_option(args, "--path", command)
+            binding_path = _required_option(args, "--binding", command)
+            result = asyncio.run(
+                _commissioning_deliver(
+                    path, binding_path, force=_flag_present(args, "--force")
+                )
+            )
         else:
             raise BridgeError(
                 "unknown_command",
@@ -702,6 +744,206 @@ def _state_limit(raw: str | None, *, default: int) -> int:
             f"limit must be between 1 and {_MAX_STATE_LIMIT}",
         )
     return limit
+
+
+def _commissioning_store(config: Config) -> StateStore:
+    """The store the runtime itself opens, resolved the way the runtime does."""
+    db_path = str(config.raw.get("database", {}).get("path", _DEFAULT_STATE_DB_PATH))
+    return StateStore(db_path=db_path)
+
+
+def _declared_actuators(config: Config) -> list[dict[str, Any]]:
+    """Actuating hardware the configuration declares, by identity.
+
+    A local-GPIO actuator is named by its pin alone. Polarity is a commissioned
+    fact, not an inventory one, so reporting `active_high` here would answer
+    the question the ceremony exists to ask. A declared pin counts whether or
+    not `enabled` is set: the pin is what declares the physical path.
+    """
+    pin = config.actions.relay.get("gpio_pin")
+    if pin is None:
+        return []
+    return [{"kind": "local_gpio", "identity": {"gpio_pin": int(pin)}}]
+
+
+def _commissioning_posture(config: Config) -> str:
+    """The posture the runtime's own verifier will apply, and only those two."""
+    hardened = requires_production_posture(
+        device=config.device, security=config.security
+    )
+    return "production" if hardened else "development"
+
+
+async def _in_force_binding(config: Config) -> AcceptedBinding | None:
+    """The accepted binding this device holds, or None.
+
+    A retained binding for another device is not in force, which is how the
+    loader reads it; reporting it here would let a producer chain a revision
+    onto a document this device never accepted.
+    """
+    store = _commissioning_store(config)
+    await store.open()
+    try:
+        row = await store.get_commissioned_binding_in_force()
+    finally:
+        await store.close()
+    if row is None or str(row.get("device_id")) != str(config.device.id):
+        return None
+    return accepted_from_row(row)
+
+
+async def _commissioning_inventory(config_path: str) -> dict[str, Any]:
+    """The candidate set a binding may name: hardware, posture, and where the chain is."""
+    config = Config.load(config_path)
+    in_force = await _in_force_binding(config)
+    return {
+        "device_id": str(config.device.id),
+        "sensor_ids": sorted(str(sensor.id) for sensor in config.sensors),
+        "actuators": _declared_actuators(config),
+        "deployment_posture": _commissioning_posture(config),
+        "accepted_binding_seq": in_force.binding_seq if in_force else 0,
+        "accepted_binding_hash": in_force.canonical_hash if in_force else None,
+    }
+
+
+async def _commissioning_deliver(
+    config_path: str, binding_path: str, *, force: bool
+) -> dict[str, Any]:
+    """Verify a signed envelope against this device, then install it if it passed.
+
+    The verdict is the runtime's own: the same verifier, over the same context
+    the loader builds at startup, so a document accepted here is the document
+    that will be accepted then. Nothing is written until every stage has
+    passed, and this does not make the binding live -- the runtime reads the
+    file when it next starts.
+    """
+    config = Config.load(config_path)
+    device_id = str(config.device.id)
+    try:
+        text = Path(binding_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise BridgeError("binding_unreadable", str(exc)) from exc
+
+    try:
+        anchors = load_commissioning_anchors()
+    except AnchorError as exc:
+        raise BridgeError("anchor_error", str(exc)) from exc
+    try:
+        profiles = load_shipped_profile_set()
+    except ProfileSetError as exc:
+        raise BridgeError("profile_set_error", str(exc)) from exc
+
+    prov = provisioning_anchor(config.security)
+    in_force = await _in_force_binding(config)
+    refused = _refusal_result(device_id, in_force)
+
+    if anchor_collision(anchors, prov):
+        # Decided before any document is read, exactly as at configuration load.
+        return refused("key_selection", "anchor_collision")
+
+    try:
+        document = parse_document(text)
+    except BindingRefusedError as refusal:
+        return refused(refusal.stage, refusal.reason)
+
+    if in_force is not None and is_the_binding_in_force(document, in_force):
+        return {
+            "device_id": device_id,
+            "accepted": True,
+            "installed": False,
+            "already_in_force": True,
+            "binding_seq": in_force.binding_seq,
+            "binding_hash": in_force.canonical_hash,
+            "binding_seq_in_force": in_force.binding_seq,
+            "message": (
+                "this document is already the binding in force; nothing to install"
+            ),
+        }
+
+    context = verifier_context(
+        device_id=device_id,
+        anchors=anchors,
+        provisioning_anchor=prov,
+        in_force=in_force,
+        inventory=DeclaredInventory.from_config(
+            [str(sensor.id) for sensor in config.sensors],
+            _declared_gpio_pin(config),
+        ),
+        posture=_commissioning_posture(config),  # type: ignore[arg-type]
+        profiles=profiles,
+        document=document,
+    )
+    try:
+        accepted = verify_binding_envelope(document, context)
+    except BindingRefusedError as refusal:
+        return refused(refusal.stage, refusal.reason)
+
+    target = Path(config_path).resolve().parent / BINDING_RELATIVE_PATH
+    payload = text.encode("utf-8")
+    if target.exists() and target.read_bytes() != payload and not force:
+        raise BridgeError(
+            "binding_already_staged",
+            f"a different document is already staged at {target}; "
+            "pass --force to replace it",
+        )
+    _write_staged_binding(target, payload)
+
+    return {
+        "device_id": device_id,
+        "accepted": True,
+        "installed": True,
+        "already_in_force": False,
+        "binding_seq": accepted.binding_seq,
+        "binding_hash": accepted.canonical_hash,
+        "binding_seq_in_force": in_force.binding_seq if in_force else 0,
+        "message": (
+            "binding verified and staged; the runtime reads it when it next starts"
+        ),
+    }
+
+
+def _declared_gpio_pin(config: Config) -> int | None:
+    pin = config.actions.relay.get("gpio_pin")
+    return int(pin) if pin is not None else None
+
+
+def _refusal_result(
+    device_id: str, in_force: AcceptedBinding | None
+) -> Callable[[str, str], dict[str, Any]]:
+    """A refusal names the stage it was decided at, as health reports it."""
+
+    def build(stage: str, reason: str) -> dict[str, Any]:
+        return {
+            "device_id": device_id,
+            "accepted": False,
+            "installed": False,
+            "already_in_force": False,
+            "stage": stage,
+            "reason": reason,
+            "binding_seq_in_force": in_force.binding_seq if in_force else 0,
+            "message": (
+                f"binding refused at {stage}: {reason}; "
+                "the binding in force is unchanged and nothing was written"
+            ),
+        }
+
+    return build
+
+
+def _write_staged_binding(target: Path, payload: bytes) -> None:
+    """Write the document whole or not at all.
+
+    A half-written binding at the contract's path is a document the runtime
+    would refuse at `parses` on its next start, which is safe but indis-
+    tinguishable from a tampered one.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(target.name + ".tmp")
+    try:
+        temporary.write_bytes(payload)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _state_store_from_default_path() -> StateStore:
