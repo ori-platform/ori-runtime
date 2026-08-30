@@ -105,6 +105,23 @@ PROFILE_KEYS = frozenset(
 
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
+# The field-type table decides a number's spelling. An `integer` field carries
+# no fractional part; a `number` field carries one. Both are checked against
+# the shortest form that round-trips, so one value has exactly one spelling.
+INTEGER_SPELLED = frozenset(
+    {
+        "v",
+        "binding_seq",
+        "issued_at_ms",
+        "inventory_generation",
+        "performed_at_ms",
+        "gpio_pin",
+    }
+)
+NUMBER_SPELLED = frozenset(
+    {"value", "range_min", "range_max", "noise_floor", "sensor_before", "sensor_after"}
+)
+
 ORDER: tuple[str, ...] = (
     "parses",
     "device_id",
@@ -296,11 +313,56 @@ def canonical_hash(value: Any) -> str:
     return "sha256:" + hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+class _Spelled:
+    """A number with the spelling it arrived with.
+
+    It exists only between the decoder and the object hook below, which checks
+    the spelling against the field's declared type and then unwraps it. Nothing
+    downstream sees one, so canonical bytes are unaffected.
+    """
+
+    __slots__ = ("raw", "value")
+
+    def __init__(self, raw: str, value: Any) -> None:
+        self.raw = raw
+        self.value = value
+
+
+def _spelled_int(raw: str) -> _Spelled:
+    return _Spelled(raw, int(raw))
+
+
+def _spelled_float(raw: str) -> _Spelled:
+    return _Spelled(raw, float(raw))
+
+
+def _check_spelling(key: str, number: _Spelled) -> None:
+    """A number is spelled as its field's declared type requires.
+
+    The rule is over the declared type and not the value, because JSON does not
+    distinguish them and only the schema knows which was meant: a capacity of
+    ten is `10.0` because the field is a capacity, and a sequence of ten is
+    `10` because the field is a count.
+    """
+    raw = number.raw
+    fractional = "." in raw
+    exponent = "e" in raw or "E" in raw
+    if key in INTEGER_SPELLED:
+        if fractional or exponent or raw != str(int(raw)):
+            raise ValueError(f"{key}: {raw!r} is not an integer's canonical spelling")
+    elif key in NUMBER_SPELLED:
+        if exponent or not fractional or raw != repr(float(raw)):
+            raise ValueError(f"{key}: {raw!r} is not a number's canonical spelling")
+
+
 def _pairs_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     obj: dict[str, Any] = {}
     for key, value in pairs:
         if key in obj:
             raise ValueError(f"duplicate object key {key!r}")
+        if isinstance(value, _Spelled):
+            _check_spelling(key, value)
+            value = value.value
         obj[key] = value
     return obj
 
@@ -316,7 +378,16 @@ def parse_document(text: str) -> Any:
     here rather than repaired.
     """
     try:
-        return json.loads(text, object_pairs_hook=_pairs_without_duplicates)
+        decoded = json.loads(
+            text,
+            object_pairs_hook=_pairs_without_duplicates,
+            parse_int=_spelled_int,
+            parse_float=_spelled_float,
+        )
+        # Every number in this contract sits under a key, so the hook above has
+        # already unwrapped them. A bare number document has not been through
+        # it and is not a document anyway.
+        return decoded.value if isinstance(decoded, _Spelled) else decoded
     except (ValueError, RecursionError):
         # json.loads itself recurses per nesting level and raises past the
         # interpreter's limit; that is input, and the verdict is malformed.
@@ -355,7 +426,16 @@ def _text(value: Any) -> None:
 
 
 def _number(value: Any) -> None:
-    _bad(isinstance(value, bool) or not isinstance(value, (int, float)))
+    """A `number` field, which is spelled with a fractional part.
+
+    Every field this contract types `number` reaches here, so requiring a float
+    is the decoded half of the spelling rule: `10` and `10.0` are one value and
+    two signing inputs, and an integer arriving where a capacity belongs is the
+    spelling the schema did not mean. The byte-level half — exponent notation
+    and non-shortest forms, which decode to a float either way — is checked
+    where the spelling still exists, in `parse_document`.
+    """
+    _bad(isinstance(value, bool) or not isinstance(value, float))
 
 
 def _flag(value: Any) -> None:

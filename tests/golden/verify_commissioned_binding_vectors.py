@@ -26,6 +26,7 @@ from ori.security.commissioning.binding import (
     ProfileContext,
     VerifierContext,
     canonical_bytes,
+    parse_document,
     parse_envelope,
     verify_binding,
     verify_firmware_profile,
@@ -39,6 +40,7 @@ __all__ = [
     "RefusedError",
     "cbytes",
     "run",
+    "run_raw",
     "run_envelope",
     "run_profile",
     "run_profile_envelope",
@@ -61,6 +63,16 @@ def run_envelope(envelope: Any, ctx: dict[str, Any]) -> None:
 def run_profile_envelope(envelope: Any, ctx: dict[str, Any]) -> None:
     profile, sig_b64 = parse_envelope(envelope, "firmware_profile")
     run_profile(profile, ctx, sig_b64)
+
+
+def run_raw(envelope_bytes: bytes, ctx: dict[str, Any]) -> None:
+    """The bytes entry point, which is the one a device uses.
+
+    A raw case says nothing when fed through a decoded-object entry point: the
+    decode is the step under test.
+    """
+    document = parse_document(envelope_bytes.decode("utf-8"))
+    run_envelope(document, ctx)
 
 
 def main(path: str) -> int:
@@ -163,6 +175,22 @@ def main(path: str) -> int:
         else:
             failures.append(f"{c['name']}: envelope reject case was ACCEPTED")
 
+    for c in corpus.get("raw_reject_cases", []):
+        try:
+            run_raw(bytes.fromhex(c["envelope_hex"]), c["verifier_context"])
+        except RefusedError as r:
+            if r.reason != c["reason"] or r.stage != c["stage"]:
+                failures.append(
+                    f"{c['name']}: refused {r.reason!r}@{r.stage}, declared "
+                    f"{c['reason']!r}@{c['stage']}"
+                )
+        except Exception as exc:  # noqa: BLE001 - the property under test
+            failures.append(
+                f"{c['name']}: raised {type(exc).__name__} instead of a verdict"
+            )
+        else:
+            failures.append(f"{c['name']}: raw reject case was ACCEPTED")
+
     for failure in failures:
         print("FAIL", failure)
     print(
@@ -170,6 +198,7 @@ def main(path: str) -> int:
         f"{len(corpus.get('firmware_profile_cases', []))} profile accept, "
         f"{len(corpus.get('firmware_profile_reject_cases', []))} profile reject, "
         f"{len(corpus.get('envelope_reject_cases', []))} envelope reject, "
+        f"{len(corpus.get('raw_reject_cases', []))} raw reject, "
         f"{len(failures)} failures"
     )
     return 1 if failures else 0

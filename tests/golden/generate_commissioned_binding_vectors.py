@@ -554,6 +554,33 @@ _rej(
 )
 
 _rej(
+    "proof_open_observed_without_the_load_it_interrupted",
+    "The recorded current falls well past the noise floor, and the instrument "
+    "reports no load present on either side of the open command. Only the "
+    "instrument's classification contradicts the command here, so a verifier "
+    "that reads the sensor values and skips the booleans accepts it. The "
+    "readings are evidence; the instrument decides.",
+    "proof_contradiction",
+    lambda b: b["zones"][0]["proof"]["observations"][0].update(
+        {"load_present_before": False, "load_present_after": False}
+    ),
+)
+
+_rej(
+    "proof_close_observed_with_no_readings_and_the_load_already_present",
+    "A close command on a circuit the instrument already reports energised "
+    "establishes nothing, and this observation carries no readings at all, so "
+    "the noise-floor rule cannot reach it. Without the classifier there is no "
+    "rule left to refuse it.",
+    "proof_contradiction",
+    lambda b: (
+        b["zones"][0]["proof"]["observations"][1].update({"load_present_before": True}),
+        b["zones"][0]["proof"]["observations"][1].pop("sensor_before"),
+        b["zones"][0]["proof"]["observations"][1].pop("sensor_after"),
+    ),
+)
+
+_rej(
     "polarity_mismatch",
     "`active_high` is false, so a de-energised coil is driven by a high GPIO "
     "level. The observation records a low level for the de-energised command, "
@@ -854,6 +881,34 @@ _rej(
     "a spelling the contract does not define.",
     "malformed",
     lambda b: b.__setitem__("inventory_generation", 7.0),
+)
+
+_rej(
+    "capacity_spelled_as_an_integer",
+    "A capacity is a `number`, and this contract fixes a number's spelling by "
+    "the field's declared type rather than by its value: 10.0 and 10 are "
+    "different signing inputs for one capacity, and nothing in the value says "
+    "which the schema meant. Both verifiers accepted this before the rule was "
+    "written, so the corpus could not see the divergence it allowed.",
+    "malformed",
+    lambda b: b["zones"][0]["rated_capacity"].update({"value": 10}),
+)
+
+_rej(
+    "v_is_a_boolean",
+    "In Python True == 1, so a version check written as an inequality against "
+    "1 admits a boolean. The canonical bytes then carry `true` where every "
+    "other consumer expects `1`.",
+    "malformed",
+    lambda b: b.__setitem__("v", True),
+)
+
+_rej(
+    "v_is_a_float",
+    "The version is an integer, and 1.0 is not 1 on the wire however the two "
+    "compare in a given language.",
+    "malformed",
+    lambda b: b.__setitem__("v", 1.0),
 )
 
 _rej(
@@ -1319,6 +1374,104 @@ envelope_reject_cases += [
     ),
 ]
 
+# ── raw reject cases ─────────────────────────────────────────────────────────
+#
+# Three rules cannot be expressed by a decoded document, because decoding is
+# what destroys the evidence for them: a number's spelling, a repeated key, and
+# an unpaired surrogate all survive only in the bytes. Each case here is the
+# pristine signed envelope with one byte-level alteration, so the signature
+# still covers the document a re-canonicalising verifier would reconstruct --
+# which is the point. A verifier that decodes and re-emits accepts every one of
+# them; a verifier that reads bytes refuses them at `parses`.
+
+_RAW_ENVELOPE = canonical(envelope(base_binding()))
+
+
+def _swap(original: bytes, old: bytes, new: bytes) -> bytes:
+    """One substitution, and it must have somewhere to land."""
+    if original.count(old) != 1:
+        raise AssertionError(f"{old!r} appears {original.count(old)} times, expected 1")
+    return original.replace(old, new, 1)
+
+
+def raw_case(name: str, note: str, old: bytes, new: bytes, ctx=None) -> dict:
+    altered = _swap(_RAW_ENVELOPE, old, new)
+    return {
+        "name": name,
+        "note": note,
+        "envelope_hex": altered.hex(),
+        "verifier_context": ctx if ctx is not None else context(),
+        "reason": "malformed",
+        "stage": "parses",
+    }
+
+
+raw_reject_cases = [
+    raw_case(
+        "capacity_in_exponent_notation",
+        "The same capacity, spelled the one way the agreement zone excludes. "
+        "Decode it and re-emit and the signature verifies, so a verifier that "
+        "re-canonicalises before comparing accepts a document a byte-comparing "
+        "consumer refuses. Exponent notation never appears on the wire.",
+        b'"value":10.0',
+        b'"value":1E1',
+    ),
+    raw_case(
+        "capacity_with_a_trailing_zero",
+        "10.00 and 10.0 are the same number and different bytes. The shortest "
+        "round-tripping form is the only one this contract defines, for the "
+        "reason strict base64 was not enough for a key: more than one spelling "
+        "means more than one signing input for one value.",
+        b'"value":10.0',
+        b'"value":10.00',
+    ),
+    raw_case(
+        "timestamp_spelled_with_a_negative_zero",
+        "The other half of the spelling rule, on an integer field. -0 and 0 are "
+        "one value and two signing inputs, and no check on the decoded number "
+        "can see the difference: both arrive as 0. Only the shortest-form rule "
+        "reaches it.",
+        b'"issued_at_ms":1800000000000',
+        b'"issued_at_ms":-0',
+    ),
+    raw_case(
+        "duplicate_key_in_the_binding",
+        "A last-wins parser reads binding_seq 1 and verifies the signature over "
+        "it; a first-wins parser reads 5 from the same file. Which occurrence "
+        "survives is a property of the parser, so the canonical form of the "
+        "object is undefined and the bytes are refused rather than resolved.",
+        b'"binding_seq":1,',
+        b'"binding_seq":5,"binding_seq":1,',
+    ),
+    raw_case(
+        "duplicate_key_with_equal_values",
+        "The harmless-looking case, refused for the same reason: telling it "
+        "from the dangerous one requires decoding both occurrences, which is "
+        "the step the rule exists to make unnecessary.",
+        b'"v":1,',
+        b'"v":1,"v":1,',
+    ),
+    raw_case(
+        "duplicate_signature_in_the_envelope",
+        "The wrapper is closed, and closing it means the key set as written "
+        "rather than the key set as decoded. A second signature beside the "
+        "first is unauthenticated by construction whichever one a parser keeps.",
+        b',"signature":"ed25519:',
+        b',"signature":"ed25519:AAAA","signature":"ed25519:',
+    ),
+    raw_case(
+        "unpaired_surrogate_in_a_string",
+        "The document is valid UTF-8 on disk and carries a lone surrogate only "
+        "after decoding, where CPython raises on re-encoding and Go silently "
+        "substitutes U+FFFD. Two verifiers then disagree about the bytes a "
+        "signature covers over a document neither calls malformed, so it is "
+        "refused before canonicalisation and before any signature is checked.",
+        b'"reason":"initial commissioning"',
+        b'"reason":"\\ud800"',
+    ),
+]
+
+
 corpus = {
     "contract": "ori-specs/commissioned-safety-binding/v1.md",
     "version": 1,
@@ -1381,9 +1534,21 @@ corpus = {
         "unknown field beside the signature is outside the signed bytes and "
         "therefore unauthenticated by construction."
     ),
+    "raw_comment": (
+        "Wire bytes rather than decoded objects, for the rules decoding "
+        "destroys: a number's spelling, a repeated key, and an unpaired "
+        "surrogate. Each entry is the pristine signed envelope with one "
+        "byte-level alteration, so the signature still covers the document a "
+        "re-canonicalising verifier would reconstruct - a verifier that "
+        "decodes and re-emits accepts every one of them. They MUST be fed "
+        "through the entry point that takes bytes, which is the one a device "
+        "uses; feeding them through a decoded-object entry point tests "
+        "nothing, because the decode is the step under test."
+    ),
     "cases": accept_cases,
     "reject_cases": reject_cases,
     "envelope_reject_cases": envelope_reject_cases,
+    "raw_reject_cases": raw_reject_cases,
     "firmware_profile_cases": firmware_profile_cases,
     "firmware_profile_reject_cases": firmware_profile_reject_cases,
 }
