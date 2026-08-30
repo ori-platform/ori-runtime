@@ -2,12 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """The runtime's mirror of the commissioned-safety-binding golden corpus.
 
-The runtime is a **consumer** of this contract and has no verifier of its own
-yet — that arrives with the safety registry in #324 and the actuation seam in
-#397. So this file makes a deliberately narrow claim, and the narrowness is the
-point: it checks that the published corpus is internally coherent under a
-verifier written from the contract text, and it does **not** show that any
-runtime code behaves correctly, because none of it reads a binding.
+The verifier under test is the runtime's own, `ori.security.commissioning.binding`,
+driven through the thin `tests/golden` module. The corpus holds it to every
+published accept and reject case at its declared stage; the mutation tables
+below hold it to the neighbouring shapes the corpus does not enumerate, and to
+returning a verdict rather than raising on input chosen to break a decoder.
 
 Provenance and drift live where the other vendored sets keep them: the
 `MANIFEST.json` beside the corpus pins the ori-specs commit it came from and
@@ -268,6 +267,11 @@ GRAMMAR_MUTATIONS: dict[str, Callable[[dict], Any]] = {
     "calibration_ref_empty": lambda b: b["zones"][0]["sensor"].update(
         {"calibration_ref": ""}
     ),
+    # `v` is an integer, exactly 1. `True == 1` and `1.0 == 1` in Python, so a
+    # check written as `!= 1` accepts both; each spells different signing bytes.
+    "v_as_a_boolean": lambda b: b.update({"v": True}),
+    "v_as_a_float": lambda b: b.update({"v": 1.0}),
+    "v_of_another_version": lambda b: b.update({"v": 2}),
 }
 
 B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -463,3 +467,46 @@ def test_neither_envelope_form_raises_on_hostile_input() -> None:
                 )
             else:
                 pytest.fail(f"{form}[{index}] was accepted")
+
+
+@pytest.mark.parametrize("name", sorted(GRAMMAR_MUTATIONS), ids=str)
+def test_grammar_mutations_are_malformed(name: str) -> None:
+    """Every neighbouring shape the corpus does not enumerate is `malformed`."""
+    case = _mutated(GRAMMAR_MUTATIONS[name])
+    with pytest.raises(RefusedError) as excinfo:
+        run(case["binding"], case["verifier_context"], case["signature_b64"])
+    assert excinfo.value.reason == "malformed", name
+    assert excinfo.value.stage == "parses", name
+
+
+@pytest.mark.parametrize("version", [True, 1.0], ids=["boolean", "float"])
+def test_a_signed_non_integer_version_is_refused(version: Any) -> None:
+    """Signed by the commissioning key, so only the grammar can refuse it.
+
+    A verifier that compared `v` by value accepted these: the canonical bytes
+    carry `true` or `1.0`, the signature covers them, and a byte-strict
+    consumer refuses the same document.
+    """
+    from tests.commissioning.signing import sign_envelope
+
+    binding = copy.deepcopy(BASE["binding"])
+    binding["v"] = version
+    envelope = sign_envelope(binding, VECTORS["commissioning_test_seed_hex"])
+    with pytest.raises(RefusedError) as excinfo:
+        run_envelope(envelope, BASE["verifier_context"])
+    assert (excinfo.value.stage, excinfo.value.reason) == ("parses", "malformed")
+
+
+@pytest.mark.parametrize(
+    "version", [True, 1.0, "1"], ids=["boolean", "float", "string"]
+)
+def test_a_profile_with_a_non_integer_version_is_refused(version: Any) -> None:
+    profile = copy.deepcopy(PROFILE_CASES[0]["firmware_profile"])
+    profile["v"] = version
+    with pytest.raises(RefusedError) as excinfo:
+        run_profile(
+            profile,
+            PROFILE_CASES[0]["verifier_context"],
+            PROFILE_CASES[0]["signature_b64"],
+        )
+    assert (excinfo.value.stage, excinfo.value.reason) == ("parses", "malformed")

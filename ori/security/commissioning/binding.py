@@ -464,6 +464,9 @@ def _numbers_in_zone(node: Any) -> None:
 
 def st_parses(b: Any, ctx: VerifierContext) -> None:
     _closed(b, BINDING_KEYS)
+    # Integer first: True == 1 and 1.0 == 1 in Python, and both spell
+    # different signing bytes.
+    _whole(b["v"])
     _bad(b["v"] != 1)
     _encodable_tree(b)
     for name in ("device_id", "signer_id", "actor", "reason"):
@@ -751,6 +754,7 @@ class ProfileContext:
 def verify_firmware_profile(pr: Any, ctx: ProfileContext, sig_b64: str) -> None:
     """Same authority discipline as a binding, then the binding-match checks."""
     _closed(pr, PROFILE_KEYS)
+    _whole(pr["v"])
     _bad(pr["v"] != 1)
     _encodable_tree(pr)
     for name in ("device_id", "firmware_device_id", "channel"):
