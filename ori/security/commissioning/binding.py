@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -278,12 +279,48 @@ def canonical_bytes(value: Any) -> bytes:
     """Canonical bytes, refusing rather than raising on what cannot be encoded."""
     try:
         return canonical_json(value)
-    except (CanonicalisationError, UnicodeEncodeError, ValueError, TypeError):
+    except (
+        CanonicalisationError,
+        UnicodeEncodeError,
+        ValueError,
+        TypeError,
+        RecursionError,
+    ):
+        # RecursionError: the loader canonicalises an unverified document to
+        # ask whether it is the one already in force, before any grammar has
+        # bounded its depth. A document that deep is malformed, not a crash.
         raise BindingRefusedError("parses", "malformed") from None
 
 
 def canonical_hash(value: Any) -> str:
     return "sha256:" + hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def _pairs_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    obj: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError(f"duplicate object key {key!r}")
+        obj[key] = value
+    return obj
+
+
+def parse_document(text: str) -> Any:
+    """Decode a wire document, refusing what a decoded object can no longer show.
+
+    A repeated key collapses before any grammar check can see it, and which
+    occurrence survives depends on the parser: this one keeps the last, a
+    first-wins parser on a device reads the other, and the signature verifies
+    over whichever this side kept. evidence/v2 requires a verifier parsing
+    bytes to reject the duplicate during parsing, so the wire form is refused
+    here rather than repaired.
+    """
+    try:
+        return json.loads(text, object_pairs_hook=_pairs_without_duplicates)
+    except (ValueError, RecursionError):
+        # json.loads itself recurses per nesting level and raises past the
+        # interpreter's limit; that is input, and the verdict is malformed.
+        raise BindingRefusedError("parses", "malformed") from None
 
 
 # ── grammar ───────────────────────────────────────────────────────────────
@@ -430,33 +467,44 @@ def _parse_proof(proof: Any, kind: str) -> None:
         _bad(("sensor_before" in observation) != ("sensor_after" in observation))
 
 
+def _walk(node: Any) -> Any:
+    """Every value in the tree, keys included, without recursion.
+
+    The walkers run over the document before the grammar has bounded its
+    shape, so a value nested past the interpreter's recursion limit reached
+    them first. An explicit stack has no such limit, and the grammar then
+    refuses the nesting at whichever leaf it fails to type.
+    """
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        if isinstance(current, dict):
+            stack.extend(current.keys())
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+
+
 def _encodable_tree(node: Any) -> None:
-    if isinstance(node, str):
-        _encodable(node)
-    elif isinstance(node, dict):
-        for key, value in node.items():
-            if isinstance(key, str):
-                _encodable(key)
-            _encodable_tree(value)
-    elif isinstance(node, list):
-        for value in node:
-            _encodable_tree(value)
+    for value in _walk(node):
+        if isinstance(value, str):
+            _encodable(value)
 
 
 def _numbers_in_zone(node: Any) -> None:
-    """The D-011 agreement zone, recursively."""
-    if isinstance(node, bool):
-        return
-    if isinstance(node, int) and abs(node) > 9007199254740991:
-        raise BindingRefusedError("parses", "malformed")
-    if isinstance(node, float) and node != 0.0 and not (1e-4 <= abs(node) < 1e16):
-        raise BindingRefusedError("parses", "malformed")
-    if isinstance(node, dict):
-        for value in node.values():
-            _numbers_in_zone(value)
-    elif isinstance(node, list):
-        for value in node:
-            _numbers_in_zone(value)
+    """The D-011 agreement zone, at every depth."""
+    for value in _walk(node):
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and abs(value) > 9007199254740991:
+            raise BindingRefusedError("parses", "malformed")
+        if (
+            isinstance(value, float)
+            and value != 0.0
+            and not (1e-4 <= abs(value) < 1e16)
+        ):
+            raise BindingRefusedError("parses", "malformed")
 
 
 # ── stages ────────────────────────────────────────────────────────────────

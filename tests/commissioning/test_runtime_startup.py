@@ -372,3 +372,31 @@ async def test_without_an_accepted_zone_the_pin_is_not_driven_and_relay_actions_
         not {"trip_relay", "release_relay", "close_gas_valve"} & observed["executors"]
     )
     assert observed["health"]["commissioning"]["actuator"] is None
+
+
+async def test_a_binding_file_that_breaks_the_decoder_does_not_stop_the_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file the verifier must refuse must not abort startup instead.
+
+    Nested past the interpreter's recursion limit, the file raised out of
+    json.loads and then out of start(); the runtime, Tier D included, did not
+    come up. It now starts degraded with the refusal reported.
+    """
+    _patch_external(monkeypatch)
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(SEED))
+    target = tmp_path / BINDING_RELATIVE_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("[" * 200_000)
+    runtime = OriRuntime(config_path=str(_write_config(tmp_path)))
+    observed: dict[str, Any] = {}
+
+    async def _observe() -> None:
+        observed["health"] = await _started_health(runtime)
+
+    await asyncio.gather(runtime.start(), _observe())
+    block = observed["health"]["commissioning"]
+    assert block["last_verdict"]["stage"] == "parses"
+    assert block["last_verdict"]["reason"] == "malformed"
+    assert block["actuation_licensed"] is False
+    assert observed["health"]["status"] == "degraded"

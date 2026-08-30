@@ -271,3 +271,97 @@ async def test_undemonstrated_zones_are_refused_under_hardened_posture_only(
     assert hardened.last_verdict.reason == "undemonstrated_binding"
     development = await _load(tmp_path, store, posture="development", **common)
     assert development.in_force is not None
+
+
+def _write_text(data_path: Path, text: str) -> Path:
+    target = data_path / BINDING_RELATIVE_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text)
+    return target
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    [
+        ('"binding_seq": 1', '"binding_seq": 5, "binding_seq": 1'),
+        ('"v": 1', '"v": 1, "v": 1'),
+        ('"gpio_pin": 26', '"gpio_pin": 27, "gpio_pin": 26'),
+        ('"signature": "ed25519:', '"signature": "x", "signature": "ed25519:'),
+    ],
+    ids=["different_values", "equal_values", "nested", "envelope"],
+)
+async def test_a_duplicate_key_is_refused_before_anything_is_read(
+    tmp_path: Path, store: StateStore, duplicate: tuple[str, str]
+) -> None:
+    """A last-wins decoder would verify the signature over the surviving value.
+
+    The file with `"binding_seq": 5, "binding_seq": 1` decodes to the accepted
+    document and verifies against its signature; a first-wins parser on a
+    device reads 5 from the same bytes. So the wire form is refused during
+    parsing, whichever value survives and even when both are equal.
+    """
+    _write(tmp_path, _envelope())
+    accepted = await _load(tmp_path, store)
+    assert accepted.in_force is not None
+    text = json.dumps(_envelope(), indent=1)
+    old, new = duplicate
+    assert old in text
+    _write_text(tmp_path, text.replace(old, new, 1))
+    state = await _load(tmp_path, store)
+    assert state.last_verdict is not None
+    assert (state.last_verdict.stage, state.last_verdict.reason) == (
+        "parses",
+        "malformed",
+    )
+    assert state.in_force is not None
+    assert state.in_force.canonical_hash == accepted.in_force.canonical_hash
+
+
+async def test_a_file_nested_past_the_recursion_limit_is_a_parse_refusal(
+    tmp_path: Path, store: StateStore
+) -> None:
+    """json.loads raises RecursionError here, and that is not a ValueError."""
+    _write(tmp_path, _envelope())
+    accepted = await _load(tmp_path, store)
+    _write_text(tmp_path, "[" * 200_000)
+    state = await _load(tmp_path, store)
+    assert state.last_verdict is not None
+    assert (state.last_verdict.stage, state.last_verdict.reason) == (
+        "parses",
+        "malformed",
+    )
+    assert state.in_force is not None and accepted.in_force is not None
+    assert state.in_force.canonical_hash == accepted.in_force.canonical_hash
+
+
+async def test_a_verifier_error_leaves_the_binding_in_force_and_is_reported(
+    tmp_path: Path, store: StateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A verifier defect degrades one document, never the runtime.
+
+    The contract's verdict for input that breaks the verifier is malformed and
+    the binding in force is unchanged; the problem marker keeps it visible that
+    no grammar check decided this.
+    """
+    _write(tmp_path, _envelope())
+    accepted = await _load(tmp_path, store)
+    revised = _envelope()
+    revised["binding"]["binding_seq"] = 2
+    _write(tmp_path, revised)
+
+    def _broken(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("verifier defect")
+
+    monkeypatch.setattr(
+        "ori.security.commissioning.loader.verify_binding_envelope", _broken
+    )
+    state = await _load(tmp_path, store)
+    assert state.last_verdict is not None
+    assert (state.last_verdict.stage, state.last_verdict.reason) == (
+        "parses",
+        "malformed",
+    )
+    assert state.last_verdict.binding_seq == 2
+    assert "binding_verifier_error" in state.problems
+    assert state.in_force is not None and accepted.in_force is not None
+    assert state.in_force.canonical_hash == accepted.in_force.canonical_hash
