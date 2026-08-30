@@ -27,6 +27,7 @@ from ori.security.commissioning.binding import (
     ZoneState,
     actuator_identity,
     canonical_bytes,
+    parse_document,
     verify_binding_envelope,
 )
 from ori.security.commissioning.profiles import ProfileSet
@@ -240,11 +241,12 @@ async def load_commissioning_state(
         return state
 
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        document = parse_document(path.read_text(encoding="utf-8"))
+    except (OSError, BindingRefusedError):
         state.last_verdict = Verdict("parses", "malformed", None, now_ms())
         logger.warning(
-            "[commissioning] %s is not readable JSON; binding in force unchanged", path
+            "[commissioning] %s is not a readable document; binding in force unchanged",
+            path,
         )
         return state
 

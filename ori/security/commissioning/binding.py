@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -284,6 +285,31 @@ def canonical_bytes(value: Any) -> bytes:
 
 def canonical_hash(value: Any) -> str:
     return "sha256:" + hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def _pairs_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    obj: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError(f"duplicate object key {key!r}")
+        obj[key] = value
+    return obj
+
+
+def parse_document(text: str) -> Any:
+    """Decode a wire document, refusing what a decoded object can no longer show.
+
+    A repeated key collapses before any grammar check can see it, and which
+    occurrence survives depends on the parser: this one keeps the last, a
+    first-wins parser on a device reads the other, and the signature verifies
+    over whichever this side kept. evidence/v2 requires a verifier parsing
+    bytes to reject the duplicate during parsing, so the wire form is refused
+    here rather than repaired.
+    """
+    try:
+        return json.loads(text, object_pairs_hook=_pairs_without_duplicates)
+    except ValueError:
+        raise BindingRefusedError("parses", "malformed") from None
 
 
 # ── grammar ───────────────────────────────────────────────────────────────
