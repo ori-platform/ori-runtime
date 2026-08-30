@@ -510,3 +510,35 @@ def test_a_profile_with_a_non_integer_version_is_refused(version: Any) -> None:
             PROFILE_CASES[0]["signature_b64"],
         )
     assert (excinfo.value.stage, excinfo.value.reason) == ("parses", "malformed")
+
+
+# --------------------------------------------------------------------------
+# The wire form
+# --------------------------------------------------------------------------
+#
+# The corpus stores decoded objects, so it cannot carry what only bytes can
+# express. A repeated key is the case evidence/v2 names: it collapses before
+# any grammar check sees it, and which occurrence survives depends on the
+# parser.
+
+
+def test_a_wire_document_with_a_repeated_key_is_malformed() -> None:
+    from ori.security.commissioning.binding import parse_document
+
+    text = json.dumps(
+        {"binding": BASE["binding"], "signature": "ed25519:" + BASE["signature_b64"]},
+        indent=1,
+    )
+    assert parse_document(text) == json.loads(text)
+    for old, new in (
+        ('"binding_seq": 1', '"binding_seq": 5, "binding_seq": 1'),
+        ('"v": 1', '"v": 1, "v": 1'),
+        ('"gpio_pin": 26', '"gpio_pin": 27, "gpio_pin": 26'),
+        ('"signature": "ed25519:', '"signature": "x", "signature": "ed25519:'),
+    ):
+        assert old in text
+        with pytest.raises(RefusedError) as excinfo:
+            parse_document(text.replace(old, new, 1))
+        assert (excinfo.value.stage, excinfo.value.reason) == ("parses", "malformed")
+    with pytest.raises(RefusedError):
+        parse_document("{not json")
