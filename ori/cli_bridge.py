@@ -807,7 +807,8 @@ async def _in_force_binding(config: Config) -> AcceptedBinding | None:
         await store.close()
     if row is None or str(row.get("device_id")) != str(config.device.id):
         return None
-    return accepted_from_row(row)
+    binding = accepted_from_row(row)
+    return binding if binding.in_force_eligible else None
 
 
 async def _commissioning_inventory(config_path: str) -> dict[str, Any]:
@@ -878,6 +879,7 @@ async def _commissioning_deliver(
             "binding_seq": in_force.binding_seq,
             "binding_hash": in_force.canonical_hash,
             "binding_seq_in_force": in_force.binding_seq,
+            "state": "in_force",
             "message": (
                 "this document is already the binding in force; nothing to install"
             ),
@@ -911,6 +913,10 @@ async def _commissioning_deliver(
         )
     _write_staged_binding(target, payload)
 
+    # Verification is not authority: a document missing either proof leg is
+    # provisional, and saying only that it verified would let an installer read
+    # a staged document as a commissioned relay.
+    provisional = not accepted.in_force_eligible
     return {
         "device_id": device_id,
         "accepted": True,
@@ -919,8 +925,16 @@ async def _commissioning_deliver(
         "binding_seq": accepted.binding_seq,
         "binding_hash": accepted.canonical_hash,
         "binding_seq_in_force": in_force.binding_seq if in_force else 0,
+        "state": "provisional" if provisional else "in_force",
+        "unproven_zones": sorted(
+            zone.zone_id for zone in accepted.zones if not zone.in_force_eligible
+        ),
         "message": (
-            "binding verified and staged; the runtime reads it when it next starts"
+            "binding verified and staged, and provisional: a proof leg is "
+            "unproven, so the runtime will not connect the actuator or command "
+            "its coil"
+            if provisional
+            else "binding verified and staged; the runtime reads it when it next starts"
         ),
     }
 

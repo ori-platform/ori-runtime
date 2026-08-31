@@ -45,6 +45,38 @@ def sign_envelope(binding: dict[str, Any], seed_hex: str) -> dict[str, Any]:
     }
 
 
+def _observations(mapping: dict[str, str], active_high: bool) -> list[dict[str, Any]]:
+    """Both outcomes commanded and observed, with the level each one drives."""
+    energised = "high" if active_high else "low"
+    released = "low" if active_high else "high"
+
+    def level(outcome: str) -> str:
+        return energised if mapping[outcome] == "energised" else released
+
+    return [
+        {
+            "commanded": "open_protected_circuit",
+            "coil_state": mapping["open_protected_circuit"],
+            "gpio_level": level("open_protected_circuit"),
+            "load_present_before": True,
+            "load_present_after": False,
+            "sensor_before": 6.4,
+            "sensor_after": 0.02,
+            "terminal_state_observed": "open",
+        },
+        {
+            "commanded": "close_protected_circuit",
+            "coil_state": mapping["close_protected_circuit"],
+            "gpio_level": level("close_protected_circuit"),
+            "load_present_before": False,
+            "load_present_after": True,
+            "sensor_before": 0.02,
+            "sensor_after": 6.4,
+            "terminal_state_observed": "closed",
+        },
+    ]
+
+
 def local_gpio_binding(
     *,
     device_id: str,
@@ -55,16 +87,22 @@ def local_gpio_binding(
     supersedes: str | None = None,
     inventory_generation: int = 1,
     proof_method: str = "undemonstrated",
+    control_proof_method: str | None = None,
     open_outcome: str = "de_energised",
     terminal_state: str = "open",
 ) -> dict[str, Any]:
-    """One zone: a current clamp protecting a circuit through a local GPIO relay."""
+    """One zone: a current clamp protecting a circuit through a local GPIO relay.
+
+    `control_proof_method` defaults to None, which is the contract's absent leg
+    and therefore a provisional zone.
+    """
     close_outcome = "energised" if open_outcome == "de_energised" else "de_energised"
     mapping = {
         "open_protected_circuit": open_outcome,
         "close_protected_circuit": close_outcome,
         "de_energised_terminal_state": terminal_state,
     }
+    observations = _observations(mapping, active_high)
     if proof_method == "undemonstrated":
         proof: dict[str, Any] = {
             "method": "undemonstrated",
@@ -73,41 +111,25 @@ def local_gpio_binding(
             "observations": [],
         }
     else:
-        energised_level = "high" if active_high else "low"
-        released_level = "low" if active_high else "high"
         proof = {
             "method": proof_method,
             "performed_at_ms": 1800000000000,
-            "observations": [
-                {
-                    "commanded": "open_protected_circuit",
-                    "coil_state": mapping["open_protected_circuit"],
-                    "gpio_level": (
-                        energised_level
-                        if mapping["open_protected_circuit"] == "energised"
-                        else released_level
-                    ),
-                    "load_present_before": True,
-                    "load_present_after": False,
-                    "sensor_before": 6.4,
-                    "sensor_after": 0.02,
-                    "terminal_state_observed": "open",
-                },
-                {
-                    "commanded": "close_protected_circuit",
-                    "coil_state": mapping["close_protected_circuit"],
-                    "gpio_level": (
-                        energised_level
-                        if mapping["close_protected_circuit"] == "energised"
-                        else released_level
-                    ),
-                    "load_present_before": False,
-                    "load_present_after": True,
-                    "sensor_before": 0.02,
-                    "sensor_after": 6.4,
-                    "terminal_state_observed": "closed",
-                },
-            ],
+            "observations": observations,
+        }
+    if control_proof_method == "commanded_and_observed":
+        proof["control_path"] = {
+            "method": "commanded_and_observed",
+            "performed_at_ms": 1800000600000,
+            # Its own copy: sharing the list would let a test that mutates one
+            # leg be refused by the other.
+            "observations": copy.deepcopy(observations),
+        }
+    elif control_proof_method == "undemonstrated":
+        proof["control_path"] = {
+            "method": "undemonstrated",
+            "performed_at_ms": 1800000600000,
+            "reason": "bench: the panel was not available to command",
+            "observations": [],
         }
     return {
         "v": 1,
@@ -164,8 +186,12 @@ def commission_relay(
 
     The shortest route to a runtime whose relay is commissioned: the test
     controls the signing key, the anchor is that key, and the binding names
-    the config's device, sensor and pin.
+    the config's device, sensor and pin. Both proof legs are proven unless a
+    caller overrides one, because a relay is driven only from a binding in
+    force.
     """
+    overrides.setdefault("proof_method", "actuate_and_observe")
+    overrides.setdefault("control_proof_method", "commanded_and_observed")
     binding = local_gpio_binding(
         device_id=device_id,
         sensor_id=sensor_id,
