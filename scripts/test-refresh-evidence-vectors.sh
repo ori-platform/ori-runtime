@@ -68,6 +68,13 @@ pinned_commit() {
     "$1/consumer/tests/vectors/commissioned_safety_binding/MANIFEST.json"
 }
 
+repin() {   # repin <box> <commit> [vendored set, default the binding one]
+  python3 -c 'import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]) / "consumer/tests/vectors" / sys.argv[3] / "MANIFEST.json"
+d = json.loads(p.read_text()); d["source_commit"] = sys.argv[2]
+p.write_text(json.dumps(d, indent=2) + "\n")' "$1" "$2" "${3:-commissioned_safety_binding}"
+}
+
 # ── 1. a later documentation-only specs commit must pass ─────────────────────
 #
 # This is the case that made the previous rule unusable: main moves, no vector
@@ -97,6 +104,11 @@ if grep -q "an ancestor of" <<< "${out}"; then
 else
   bad "the report says the pin is an ancestor rather than claiming equality" "${out}"
 fi
+if grep -q "STALE PIN" <<< "${out}"; then
+  bad "a correct pin behind main is not called stale" "${out}"
+else
+  ok "a correct pin behind main is not called stale"
+fi
 
 # ── 2. a pin not reachable from main must fail ───────────────────────────────
 #
@@ -111,18 +123,25 @@ git -C "${box}/specs" add -A >/dev/null
 git -C "${box}/specs" commit -qm "never merged"
 orphan="$(git -C "${box}/specs" rev-parse HEAD)"
 git -C "${box}/specs" checkout -q -
-python3 - "${box}" "${orphan}" <<'PY'
-import json, pathlib, sys
-p = pathlib.Path(sys.argv[1]) / "consumer/tests/vectors/commissioned_safety_binding/MANIFEST.json"
-d = json.loads(p.read_text()); d["source_commit"] = sys.argv[2]
-p.write_text(json.dumps(d, indent=2) + "\n")
-PY
+repin "${box}" "${orphan}"
 
 out="$(check "${box}")"; code=$?
 if [ "${code}" -ne 0 ] && grep -q "not an ancestor" <<< "${out}"; then
   ok "a pin that never landed on main fails"
 else
   bad "a pin that never landed on main fails" "exit ${code}: ${out}"
+fi
+# The bytes match main, so telling the operator the vectors differ would send
+# them to read a vector diff that does not exist.
+if grep -q "Vendored vectors differ from ori-specs" <<< "${out}"; then
+  bad "an unresolvable pin is not reported as content drift" "${out}"
+else
+  ok "an unresolvable pin is not reported as content drift"
+fi
+if grep -q "does not name a commit this check can resolve" <<< "${out}"; then
+  ok "an unresolvable pin is reported as a pin problem"
+else
+  bad "an unresolvable pin is reported as a pin problem" "${out}"
 fi
 
 # ── 3. changed vector bytes must fail even when the pin is reachable ─────────
@@ -285,6 +304,223 @@ else
   bad "the same checkout passes once it is clean" "exit ${code}: ${out}"
 fi
 
+
+# ── 7. a reachable pin that carries different bytes must fail ────────────────
+#
+# Reachability answers "did that commit land?", not "did these bytes come from
+# it". A vendored file brought up to main out of band matches every byte
+# upstream while the manifest still names the commit from before it moved, and
+# contents go on matching, so the false provenance would report success forever.
+
+box="$(new_fixture stale-pin)"
+vendor "${box}"
+stale_pin="$(pinned_commit "${box}")"
+printf '{"set":"commissioned-safety-binding","v":7}\n' \
+  > "${box}/specs/commissioned-safety-binding/vectors.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: a contract change"
+# The out-of-band copy: the bytes are brought up to main, the manifest is not.
+cp "${box}/specs/commissioned-safety-binding/vectors.json" \
+   "${box}/consumer/tests/vectors/commissioned_safety_binding/vectors.json"
+
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "STALE PIN" <<< "${out}"; then
+  ok "bytes matching main under a pin carrying different bytes fails"
+else
+  bad "bytes matching main under a pin carrying different bytes fails" "exit ${code}: ${out}"
+fi
+if git -C "${box}/specs" merge-base --is-ancestor "${stale_pin}" HEAD; then
+  ok "precondition: the stale pin really is reachable from main"
+else
+  bad "precondition: the stale pin really is reachable from main" "fixture is wrong"
+fi
+if grep -q "CHANGED" <<< "${out}"; then
+  bad "precondition: the contents check cannot see this" "contents differ, so this is not the case under test"
+else
+  ok "precondition: the contents check cannot see this"
+fi
+if grep -q "Vendored vectors differ from ori-specs" <<< "${out}"; then
+  bad "a stale pin is not reported as a content difference" "${out}"
+else
+  ok "a stale pin is not reported as a content difference"
+fi
+
+vendor "${box}"
+if [ "$(pinned_commit "${box}")" = "$(git -C "${box}/specs" rev-parse HEAD)" ]; then
+  ok "--apply repairs a stale pin"
+else
+  bad "--apply repairs a stale pin" "pin is still $(pinned_commit "${box}")"
+fi
+out="$(check "${box}")"; code=$?
+if [ "${code}" -eq 0 ]; then
+  ok "the repaired set passes"
+else
+  bad "the repaired set passes" "exit ${code}: ${out}"
+fi
+
+# ── 8. the pinned commit must carry the same set of files ────────────────────
+#
+# The same false provenance arrives through additions and deletions, not only
+# through edited bytes: a set that gained or lost a vector out of band still
+# matches main file for file while the pin names a commit with a different set.
+
+box="$(new_fixture pin-lacks-a-file)"
+vendor "${box}"
+printf '{"extra":true}\n' > "${box}/specs/commissioned-safety-binding/extra.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: a second file"
+cp "${box}/specs/commissioned-safety-binding/extra.json" \
+   "${box}/consumer/tests/vectors/commissioned_safety_binding/extra.json"
+
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "extra.json: vendored here but not at" <<< "${out}"; then
+  ok "a vector the pinned commit never carried fails"
+else
+  bad "a vector the pinned commit never carried fails" "exit ${code}: ${out}"
+fi
+
+box="$(new_fixture pin-carries-a-file)"
+printf '{"extra":true}\n' > "${box}/specs/commissioned-safety-binding/extra.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: a second file"
+vendor "${box}"
+git -C "${box}/specs" rm -q "${box}/specs/commissioned-safety-binding/extra.json"
+git -C "${box}/specs" commit -qm "vectors: drop the second file"
+rm -f "${box}/consumer/tests/vectors/commissioned_safety_binding/extra.json"
+
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "extra.json: at .* but not vendored here" <<< "${out}"; then
+  ok "a vector dropped out of band that the pin still carries fails"
+else
+  bad "a vector dropped out of band that the pin still carries fails" "exit ${code}: ${out}"
+fi
+
+
+# ── 9. a pin that is not a full commit object name must fail ─────────────────
+#
+# Both of these pass an ancestry test while carrying no provenance: a branch
+# resolves to whatever it points at whenever the check runs, so it can never be
+# found stale, and an abbreviation names a commit today and turns ambiguous as
+# history grows.
+
+box="$(new_fixture branch-pin)"
+vendor "${box}"
+repin "${box}" main
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "not a full commit object name" <<< "${out}"; then
+  ok "a manifest pinning a branch name fails"
+else
+  bad "a manifest pinning a branch name fails" "exit ${code}: ${out}"
+fi
+if grep -q "Vendored vectors differ from ori-specs" <<< "${out}"; then
+  bad "a branch pin is not reported as content drift" "${out}"
+else
+  ok "a branch pin is not reported as content drift"
+fi
+
+box="$(new_fixture abbreviated-pin)"
+vendor "${box}"
+repin "${box}" "$(git -C "${box}/specs" rev-parse --short HEAD)"
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "not a full commit object name" <<< "${out}"; then
+  ok "a manifest pinning an abbreviated commit fails"
+else
+  bad "a manifest pinning an abbreviated commit fails" "exit ${code}: ${out}"
+fi
+if grep -q "Vendored vectors differ from ori-specs" <<< "${out}"; then
+  bad "an abbreviated pin is not reported as content drift" "${out}"
+else
+  ok "an abbreviated pin is not reported as content drift"
+fi
+if grep -q "only the pin moves" <<< "${out}"; then
+  ok "the remedy offered is a pin repair, not a vector review"
+else
+  bad "the remedy offered is a pin repair, not a vector review" "${out}"
+fi
+
+# The remedy has to be true: applying moves the pin and leaves the bytes alone.
+vendored="${box}/consumer/tests/vectors/commissioned_safety_binding/vectors.json"
+before="$(cat "${vendored}")"
+vendor "${box}"
+if [ "$(cat "${vendored}")" = "${before}" ] \
+   && [ "$(pinned_commit "${box}")" = "$(git -C "${box}/specs" rev-parse HEAD)" ]; then
+  ok "--apply repairs a malformed pin without touching the bytes"
+else
+  bad "--apply repairs a malformed pin without touching the bytes" \
+      "pin $(pinned_commit "${box}")"
+fi
+
+# A manifest with no source commit at all is the third way a pin fails to
+# resolve, and it must not claim a commit that never landed.
+box="$(new_fixture no-pin)"
+vendor "${box}"
+repin "${box}" ""
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "records no source" <<< "${out}"; then
+  ok "a manifest with no source commit says so"
+else
+  bad "a manifest with no source commit says so" "exit ${code}: ${out}"
+fi
+if grep -q "Vendored vectors differ from ori-specs" <<< "${out}"; then
+  bad "a missing pin is not reported as content drift" "${out}"
+else
+  ok "a missing pin is not reported as content drift"
+fi
+
+# The rule must reject the shape, not merely fail to resolve it: the full SHA
+# of the very same commit passes.
+repin "${box}" "$(git -C "${box}/specs" rev-parse HEAD)"
+out="$(check "${box}")"; code=$?
+if [ "${code}" -eq 0 ]; then
+  ok "the same commit spelled in full passes"
+else
+  bad "the same commit spelled in full passes" "exit ${code}: ${out}"
+fi
+
+# ── 10. two sets failing differently must each be named ──────────────────────
+#
+# The buckets are per set, so a run that finds drifted bytes in one and an
+# unresolvable pin in another has to report both. Collapsing to whichever came
+# first would either send the operator to read a vector diff that does not
+# exist, or hide one that does.
+
+box="$(new_fixture two-failures)"
+vendor "${box}"
+printf '{"set":"commissioned-safety-binding","v":10}\n' \
+  > "${box}/specs/commissioned-safety-binding/vectors.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: a contract change"
+repin "${box}" main safety_profile
+
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] \
+   && grep -q "Vendored vectors differ from ori-specs" <<< "${out}" \
+   && grep -q "does not name a commit this check can resolve" <<< "${out}"; then
+  ok "drifted bytes in one set and a bad pin in another are both reported"
+else
+  bad "drifted bytes in one set and a bad pin in another are both reported" "exit ${code}: ${out}"
+fi
+
+box="$(new_fixture drift-and-stale)"
+vendor "${box}"
+printf '{"set":"commissioned-safety-binding","v":11}\n' \
+  > "${box}/specs/commissioned-safety-binding/vectors.json"
+printf '{"set":"safety-profile/vectors","v":11}\n' \
+  > "${box}/specs/safety-profile/vectors/vectors.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: change two sets"
+# One set is left behind, the other is brought up to main without its pin.
+cp "${box}/specs/safety-profile/vectors/vectors.json" \
+   "${box}/consumer/tests/vectors/safety_profile/vectors.json"
+
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] \
+   && grep -q "Vendored vectors differ from ori-specs" <<< "${out}" \
+   && grep -q "does not carry the bytes vendored beside" <<< "${out}"; then
+  ok "drifted bytes in one set and a stale pin in another are both reported"
+else
+  bad "drifted bytes in one set and a stale pin in another are both reported" "exit ${code}: ${out}"
+fi
 
 echo
 printf '%d passed, %d failed\n' "${PASS}" "${FAIL}"

@@ -120,6 +120,13 @@ if [ -n "${ORI_SPECS_DIR:-}" ]; then
   fi
 fi
 overall_drift=0
+# Three failures with three remedies, and the summary must not report one as
+# another: vendored bytes that differ from main, bytes that match main under a
+# pin naming different bytes, and a pin this check cannot resolve at all. Only
+# the first is a vector diff to review.
+overall_content=0
+overall_stale=0
+overall_pin=0
 
 write_manifest() {
   python3 - "$1" "$2" "$3" <<'PY'
@@ -178,15 +185,64 @@ for entry in "${SETS[@]}"; do
       "${DEST}/MANIFEST.json" 2>/dev/null || echo "")"
   fi
 
+  # Before it can be resolved, a pin has to be the kind of thing that names one
+  # commit and goes on naming it. A branch or tag resolves to whatever it points
+  # at whenever the check runs, so it is never found stale and never identifies
+  # a contract change; an abbreviation names a commit today and turns ambiguous
+  # as history grows. Both pass an ancestry test while carrying no provenance.
+  malformed_pin=0
+  if [ -n "${PINNED}" ] && ! [[ "${PINNED}" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    malformed_pin=1
+  fi
+
   # A pin is live when the commit it names is an ancestor of main. An unknown
   # commit is not an ancestor, so a rewritten or never-merged SHA fails here.
   reachable=0
-  if [ -n "${PINNED}" ] && git -C "${SPECS}" merge-base --is-ancestor \
+  if [ -n "${PINNED}" ] && [ "${malformed_pin}" -eq 0 ] && \
+      git -C "${SPECS}" merge-base --is-ancestor \
       "${PINNED}" "${COMMIT}" 2>/dev/null; then
     reachable=1
   fi
 
+  # Reachability answers "did that commit land?", never "did these bytes come
+  # from it". A vendored file updated out of band -- hand-copied while a
+  # contract change is still in review, say -- matches main while the manifest
+  # still names the commit from before the bytes moved. Contents go on matching
+  # on every later run, so that false provenance is reported as success
+  # indefinitely, and a reader following the pin lands on the wrong diff.
+  #
+  # So the pin is compared against what it actually names, in both directions.
+  # A file whose bytes differ there, one absent there, and one present there but
+  # not here all mean the same thing: these are not that commit's bytes. Only
+  # .json entries are compared, because only those are vendored -- a pinned path
+  # can also hold prose and subdirectories.
+  stale=0
   if [ "${drift}" -eq 0 ] && [ "${reachable}" -eq 1 ]; then
+    while IFS= read -r -d '' name; do
+      case "${name}" in *.json) ;; *) continue ;; esac
+      if [ ! -f "${DEST}/${name}" ]; then
+        echo "STALE PIN ${label}/${name}: at ${PINNED} but not vendored here"
+        stale=1
+        continue
+      fi
+      if ! git -C "${SPECS}" cat-file blob "${PINNED}:${label}/${name}" 2>/dev/null \
+          | cmp -s - "${DEST}/${name}"; then
+        echo "STALE PIN ${label}/${name}: these bytes are not the bytes at ${PINNED}"
+        stale=1
+      fi
+    done < <(git -C "${SPECS}" ls-tree -z --name-only "${PINNED}:${label}" 2>/dev/null || true)
+
+    for file in "${DEST}"/*.json; do
+      name="$(basename "${file}")"
+      [ "${name}" = "MANIFEST.json" ] && continue
+      if ! git -C "${SPECS}" cat-file -e "${PINNED}:${label}/${name}" 2>/dev/null; then
+        echo "STALE PIN ${label}/${name}: vendored here but not at ${PINNED}"
+        stale=1
+      fi
+    done
+  fi
+
+  if [ "${drift}" -eq 0 ] && [ "${reachable}" -eq 1 ] && [ "${stale}" -eq 0 ]; then
     if [ "${PINNED}" = "${COMMIT}" ]; then
       echo "${label}: vectors match ori-specs at ${COMMIT}"
     else
@@ -196,10 +252,31 @@ for entry in "${SETS[@]}"; do
   fi
 
   if [ "${APPLY}" != "1" ]; then
-    if [ "${drift}" -eq 0 ]; then
-      echo "${label}: contents match, but the manifest pins ${PINNED:-<none>}," >&2
-      echo "  which is not an ancestor of ori-specs main at ${COMMIT}." >&2
-      echo "  That commit never landed on main, so the pin names nothing." >&2
+    if [ "${drift}" -eq 0 ] && [ "${reachable}" -eq 0 ]; then
+      if [ -z "${PINNED}" ]; then
+        echo "${label}: contents match, but the manifest records no source" >&2
+        echo "  commit, so nothing says where these bytes came from." >&2
+      elif [ "${malformed_pin}" -eq 1 ]; then
+        echo "${label}: contents match, but the manifest pins ${PINNED}," >&2
+        echo "  which is not a full commit object name. A branch or tag resolves" >&2
+        echo "  to whatever it points at when this runs, and an abbreviation" >&2
+        echo "  becomes ambiguous as history grows; neither is provenance." >&2
+      else
+        echo "${label}: contents match, but the manifest pins ${PINNED}," >&2
+        echo "  which is not an ancestor of ori-specs main at ${COMMIT}." >&2
+        echo "  That commit never landed on main, so the pin names nothing." >&2
+      fi
+    fi
+    # Which of the three this set failed for. Content drift comes first because
+    # a set whose bytes are wrong needs its vector diff read whatever its pin
+    # says, and applying rewrites the pin anyway. The remaining two both have
+    # correct bytes, and differ in whether the pin resolves at all.
+    if [ "${drift}" -eq 1 ]; then
+      overall_content=1
+    elif [ "${stale}" -eq 1 ]; then
+      overall_stale=1
+    else
+      overall_pin=1
     fi
     overall_drift=1
     continue
@@ -220,8 +297,24 @@ done
 
 if [ "${overall_drift}" -ne 0 ]; then
   echo >&2
-  echo "Vendored vectors differ from ori-specs at ${COMMIT}." >&2
-  echo "Re-run with ORI_VECTORS_APPLY=1 to update, then review the diff:" >&2
-  echo "  a vector change is a contract change, not a refresh." >&2
+  if [ "${overall_content}" -ne 0 ]; then
+    echo "Vendored vectors differ from ori-specs at ${COMMIT}." >&2
+  fi
+  if [ "${overall_stale}" -ne 0 ]; then
+    echo "A manifest names a commit that does not carry the bytes vendored beside" >&2
+    echo "it. The bytes are current; the provenance trail is not, so a reader" >&2
+    echo "following the pin lands on a different contract change." >&2
+  fi
+  if [ "${overall_pin}" -ne 0 ]; then
+    echo "A manifest does not name a commit this check can resolve on ori-specs" >&2
+    echo "main. The bytes are current; nothing records where they came from." >&2
+  fi
+  if [ "${overall_content}" -ne 0 ]; then
+    echo "Re-run with ORI_VECTORS_APPLY=1 to update, then review the diff:" >&2
+    echo "  a vector change is a contract change, not a refresh." >&2
+  else
+    echo "Re-run with ORI_VECTORS_APPLY=1 to repair the manifest: the vendored" >&2
+    echo "  bytes already match main, so only the pin moves." >&2
+  fi
   exit 1
 fi
