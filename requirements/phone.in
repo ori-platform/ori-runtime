@@ -8,6 +8,6 @@ pyyaml>=6.0
 pyserial>=3.5
 tzdata>=2025.2
 httpx>=0.28
-cryptography>=48.0.1
+cryptography>=50.0.1
 twilio>=9.11.0
 africastalking>=2.0.3
