@@ -14,6 +14,7 @@ import asyncio
 import base64
 import json
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -26,7 +27,10 @@ from ori.security.commissioning.anchors import (
     COMMISSIONING_ANCHOR_ENV,
     CommissioningAnchors,
 )
-from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+from ori.security.commissioning.loader import (
+    BINDING_RELATIVE_PATH,
+    CommissioningState,
+)
 from ori.state.store import StateStore
 from tests.commissioning.signing import (
     local_gpio_binding,
@@ -79,6 +83,9 @@ def _write_config(tmp_path: Path) -> Path:
 
 
 def _write_binding(tmp_path: Path, **overrides: Any) -> None:
+    """A binding with both proof legs unless a test overrides one."""
+    overrides.setdefault("proof_method", "actuate_and_observe")
+    overrides.setdefault("control_proof_method", "commanded_and_observed")
     binding = local_gpio_binding(
         device_id=DEVICE, sensor_id=SENSOR, gpio_pin=26, active_high=False, **overrides
     )
@@ -163,7 +170,9 @@ async def test_an_accepted_binding_beside_the_config_licenses_and_is_reported(
         "identity": {"gpio_pin": 26, "active_high": False},
     }
     assert zone["commissioned_mapping"]["open_protected_circuit"] == "de_energised"
-    assert zone["proof_method"] == "undemonstrated"
+    assert zone["circuit_proof"]["method"] == "actuate_and_observe"
+    assert zone["control_path_proof"]["method"] == "commanded_and_observed"
+    assert zone["state"] == "in_force" and zone["availability"] == "available"
     # Not degraded: status is only stamped when something is.
     assert observed["health"].get("status", "healthy") == "healthy"
     # Retained: a second start with the file gone still holds it.
@@ -236,7 +245,7 @@ async def test_hardened_posture_refuses_declared_hardware_without_a_binding(
     await store.open()
     runtime._state_store = store
     try:
-        with pytest.raises(ConfigValidationError, match="no accepted binding"):
+        with pytest.raises(ConfigValidationError, match="no binding in force"):
             await runtime._load_commissioning(
                 config, CommissioningAnchors(current=None, previous=None)
             )
@@ -268,7 +277,10 @@ async def test_hardened_posture_starts_with_an_accepted_demonstrated_binding(
         # refused document never withdraws what was accepted.
         assert state.in_force is not None
         _write_binding(
-            tmp_path, binding_seq=2, supersedes=state.in_force.canonical_hash
+            tmp_path,
+            binding_seq=2,
+            supersedes=state.in_force.canonical_hash,
+            proof_method="undemonstrated",
         )
         await runtime._load_commissioning(config, anchors)
         state = runtime._commissioning_state
@@ -367,6 +379,226 @@ async def test_without_an_accepted_zone_the_pin_is_not_driven_and_relay_actions_
 
     await asyncio.gather(runtime.start(), _observe())
     connect.assert_not_awaited()
+    assert runtime._commissioned_actuator is None
+    assert (
+        not {"trip_relay", "release_relay", "close_gas_valve"} & observed["executors"]
+    )
+    assert observed["health"]["commissioning"]["actuator"] is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"control_proof_method": None},
+        {"control_proof_method": "undemonstrated"},
+        {"proof_method": "undemonstrated", "control_proof_method": None},
+        {"proof_method": "undemonstrated"},
+    ],
+    ids=[
+        "control_leg_absent",
+        "control_leg_undemonstrated",
+        "neither_leg",
+        "circuit_leg_undemonstrated",
+    ],
+)
+async def test_a_provisional_zone_is_never_connected_and_never_commanded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any]
+) -> None:
+    """A coil command derives from `active_high`, which only the control leg proves."""
+    _patch_external(monkeypatch)
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(SEED))
+    connect = AsyncMock(return_value=None)
+    trigger = AsyncMock(return_value=True)
+    release = AsyncMock(return_value=True)
+    monkeypatch.setattr("ori.actions.relay.RelayAction.connect", connect)
+    monkeypatch.setattr("ori.actions.relay.RelayAction.trigger", trigger)
+    monkeypatch.setattr("ori.actions.relay.RelayAction.release", release)
+    _write_binding(tmp_path, **overrides)
+    runtime = OriRuntime(config_path=str(_write_config(tmp_path)))
+    observed: dict[str, Any] = {}
+
+    async def _observe() -> None:
+        observed["health"] = await _started_health(runtime)
+        observed["executors"] = (
+            set(runtime._dispatcher._executors) if runtime._dispatcher else set()
+        )
+
+    await asyncio.gather(runtime.start(), _observe())
+    connect.assert_not_awaited()
+    trigger.assert_not_awaited()
+    release.assert_not_awaited()
+    assert runtime._commissioned_actuator is None
+    assert (
+        not {"trip_relay", "release_relay", "close_gas_valve"} & observed["executors"]
+    )
+    block = observed["health"]["commissioning"]
+    assert block["actuator"] is None
+    assert block["actuation_licensed"] is False
+    assert block["binding_seq"] == 0 and block["binding_hash"] is None
+    assert block["last_verdict"]["reason"] == "accepted"
+    (zone,) = block["zones"]
+    assert zone["state"] == "provisional"
+    assert zone["availability"] == "unavailable"
+
+
+async def test_a_provisional_binding_is_retained_apart_from_the_one_in_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A verified but unproven document never enters the in-force succession."""
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(SEED))
+    _write_binding(tmp_path, control_proof_method="undemonstrated")
+    config = Config.load(str(_write_config(tmp_path)))
+    runtime = OriRuntime(config_path=str(tmp_path / "ori.yaml"))
+    store = StateStore(db_path=str(tmp_path / "state.db"))
+    await store.open()
+    runtime._state_store = store
+    try:
+        anchors = CommissioningAnchors(
+            current=base64.b64decode(public_key_b64(SEED)), previous=None
+        )
+        await runtime._load_commissioning(config, anchors)
+        state = runtime._commissioning_state
+        assert state is not None
+        assert state.in_force is None and state.provisional is not None
+        assert state.provisional.binding_seq == 1
+        assert not state.actuation_licensed
+        assert state.zone_for_local_gpio(26) is None
+        assert await store.get_commissioned_binding_in_force() is None
+        assert await store.commissioned_binding_history() == []
+        held = await store.get_provisional_binding()
+        assert held is not None and held["binding_seq"] == 1
+
+        # Proving the leg is a new document, and it is what comes into force.
+        _write_binding(tmp_path, binding_seq=2)
+        await runtime._load_commissioning(config, anchors)
+        state = runtime._commissioning_state
+        assert state is not None and state.in_force is not None
+        assert state.in_force.binding_seq == 2
+        assert state.provisional is None
+        assert state.actuation_licensed
+        assert await store.get_provisional_binding() is None
+    finally:
+        await store.close()
+
+
+async def test_a_retained_binding_with_an_unproven_leg_is_retired_on_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row retained before the leg existed proves half a chain, so it is not in force."""
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(SEED))
+    config = Config.load(str(_write_config(tmp_path)))
+    runtime = OriRuntime(config_path=str(tmp_path / "ori.yaml"))
+    store = StateStore(db_path=str(tmp_path / "state.db"))
+    await store.open()
+    runtime._state_store = store
+    try:
+        await store._run_write(
+            lambda: (
+                store._conn.execute(
+                    "INSERT INTO commissioned_binding (binding_seq, canonical_hash, "
+                    "device_id, inventory_generation, signer_id, supersedes, "
+                    "canonical_json, signature, zones_json, accepted_at_ms, "
+                    "retired_at_ms) VALUES (9, ?, ?, 1, 's', NULL, '{}', 'ed25519:x', "
+                    "?, 1000, NULL)",
+                    (
+                        "sha256:" + "c" * 64,
+                        DEVICE,
+                        json.dumps(
+                            [
+                                {
+                                    "zone_id": "bench",
+                                    "sensor_id": SENSOR,
+                                    "quantity": "current",
+                                    "unit": "ampere",
+                                    "direction": "positive_is_load_draw",
+                                    "range_min": 0.0,
+                                    "range_max": 100.0,
+                                    "noise_floor": 0.05,
+                                    "calibration_ref": "bench",
+                                    "rated_capacity_parameter": "rated_capacity_amps",
+                                    "rated_capacity_value": 10.0,
+                                    "kind": "local_gpio",
+                                    "identity": {
+                                        "gpio_pin": 26,
+                                        "active_high": False,
+                                    },
+                                    "mapping": {
+                                        "open_protected_circuit": "de_energised",
+                                        "close_protected_circuit": "energised",
+                                        "de_energised_terminal_state": "open",
+                                    },
+                                    "proof_method": "actuate_and_observe",
+                                    "proof_performed_at_ms": 1800000000000,
+                                }
+                            ]
+                        ),
+                    ),
+                ),
+                store._conn.commit(),
+            )
+        )
+        await runtime._load_commissioning(
+            config,
+            CommissioningAnchors(
+                current=base64.b64decode(public_key_b64(SEED)), previous=None
+            ),
+        )
+        state = runtime._commissioning_state
+        assert state is not None
+        assert state.in_force is None
+        assert not state.actuation_licensed
+        assert "retained_binding_not_in_force" in state.problems
+        assert await store.get_commissioned_binding_in_force() is None
+    finally:
+        await store.close()
+
+
+async def test_the_runtime_refuses_an_ineligible_zone_a_state_still_licensed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The runtime asks the zone, not only whether the state licensed it.
+
+    Routing keeps an unproven document out of `in_force`, so this gate is
+    unreachable through the loader; a state that licensed one anyway is what
+    the runtime must still refuse, because a check that holds only because an
+    earlier check held is not a boundary.
+    """
+    _patch_external(monkeypatch)
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(SEED))
+    connect = AsyncMock(return_value=None)
+    trigger = AsyncMock(return_value=True)
+    release = AsyncMock(return_value=True)
+    monkeypatch.setattr("ori.actions.relay.RelayAction.connect", connect)
+    monkeypatch.setattr("ori.actions.relay.RelayAction.trigger", trigger)
+    monkeypatch.setattr("ori.actions.relay.RelayAction.release", release)
+    _write_binding(tmp_path)
+
+    real_zone = CommissioningState.zone_for_local_gpio
+
+    def unproven(self: CommissioningState, gpio_pin: int):
+        zone = real_zone(self, gpio_pin)
+        if zone is None:
+            return None
+        return replace(zone, control_proof_method=None)
+
+    monkeypatch.setattr(CommissioningState, "zone_for_local_gpio", unproven)
+    monkeypatch.setattr(
+        CommissioningState, "actuation_licensed", property(lambda self: True)
+    )
+
+    runtime = OriRuntime(config_path=str(_write_config(tmp_path)))
+    observed: dict[str, Any] = {}
+
+    async def _observe() -> None:
+        observed["health"] = await _started_health(runtime)
+        observed["executors"] = (
+            set(runtime._dispatcher._executors) if runtime._dispatcher else set()
+        )
+
+    await asyncio.gather(runtime.start(), _observe())
+    connect.assert_not_awaited()
+    trigger.assert_not_awaited()
+    release.assert_not_awaited()
     assert runtime._commissioned_actuator is None
     assert (
         not {"trip_relay", "release_relay", "close_gas_valve"} & observed["executors"]

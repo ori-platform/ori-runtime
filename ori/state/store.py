@@ -648,6 +648,23 @@ CREATE TABLE IF NOT EXISTS commissioned_binding (
     accepted_at_ms       INTEGER NOT NULL,
     retired_at_ms        INTEGER
 );
+
+-- A provisional binding: verified, retained and reported, never in force. It
+-- is a separate table rather than a column so no read of the table above can
+-- return one, and it is a single row because it is not a succession.
+CREATE TABLE IF NOT EXISTS commissioned_binding_provisional (
+    id                   INTEGER PRIMARY KEY CHECK (id = 1),
+    binding_seq          INTEGER NOT NULL,
+    canonical_hash       TEXT    NOT NULL,
+    device_id            TEXT    NOT NULL,
+    inventory_generation INTEGER NOT NULL,
+    signer_id            TEXT    NOT NULL,
+    supersedes           TEXT,
+    canonical_json       TEXT    NOT NULL,
+    signature            TEXT    NOT NULL,
+    zones_json           TEXT    NOT NULL,
+    verified_at_ms       INTEGER NOT NULL
+);
 """
 
 
@@ -5046,7 +5063,22 @@ class StateStore:
         zones_json: str,
         accepted_at_ms: int,
     ) -> None:
+        from ori.security.commissioning.binding import zone_row_in_force_eligible
+
         assert self._conn is not None
+        try:
+            zones = json.loads(zones_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"zones_json is not a JSON document: {exc}") from exc
+        if (
+            not isinstance(zones, list)
+            or not zones
+            or not all(zone_row_in_force_eligible(z) for z in zones)
+        ):
+            raise ValueError(
+                "a binding with an unproven proof leg is provisional and cannot "
+                "be retained as the binding in force"
+            )
         self._conn.execute(
             """
             UPDATE commissioned_binding SET retired_at_ms = ?
@@ -5109,6 +5141,123 @@ class StateStore:
             "accepted_at_ms",
         )
         return dict(zip(keys, row, strict=True))
+
+    async def retain_provisional_binding(
+        self,
+        *,
+        binding_seq: int,
+        canonical_hash: str,
+        device_id: str,
+        inventory_generation: int,
+        signer_id: str,
+        supersedes: str | None,
+        canonical_json: str,
+        signature: str,
+        zones_json: str,
+        verified_at_ms: int | None = None,
+    ) -> None:
+        """Retain the current provisional binding, replacing any earlier one."""
+        await self._run_write(
+            self._retain_provisional_binding_sync,
+            binding_seq,
+            canonical_hash,
+            device_id,
+            inventory_generation,
+            signer_id,
+            supersedes,
+            canonical_json,
+            signature,
+            zones_json,
+            verified_at_ms if verified_at_ms is not None else now_ms(),
+        )
+
+    def _retain_provisional_binding_sync(
+        self,
+        binding_seq: int,
+        canonical_hash: str,
+        device_id: str,
+        inventory_generation: int,
+        signer_id: str,
+        supersedes: str | None,
+        canonical_json: str,
+        signature: str,
+        zones_json: str,
+        verified_at_ms: int,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO commissioned_binding_provisional
+                (id, binding_seq, canonical_hash, device_id, inventory_generation,
+                 signer_id, supersedes, canonical_json, signature, zones_json,
+                 verified_at_ms)
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(binding_seq),
+                canonical_hash,
+                device_id,
+                int(inventory_generation),
+                signer_id,
+                supersedes,
+                canonical_json,
+                signature,
+                zones_json,
+                int(verified_at_ms),
+            ),
+        )
+        self._conn.commit()
+
+    async def get_provisional_binding(self) -> dict | None:
+        return await self._run_read(self._get_provisional_binding_sync)
+
+    def _get_provisional_binding_sync(self, conn: sqlite3.Connection) -> dict | None:
+        row = conn.execute(
+            """
+            SELECT binding_seq, canonical_hash, device_id, inventory_generation,
+                   signer_id, supersedes, canonical_json, signature, zones_json,
+                   verified_at_ms
+              FROM commissioned_binding_provisional
+             WHERE id = 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        keys = (
+            "binding_seq",
+            "canonical_hash",
+            "device_id",
+            "inventory_generation",
+            "signer_id",
+            "supersedes",
+            "canonical_json",
+            "signature",
+            "zones_json",
+            "verified_at_ms",
+        )
+        return dict(zip(keys, row, strict=True))
+
+    async def clear_provisional_binding(self) -> None:
+        """Drop the provisional record; a binding that came into force replaces it."""
+        await self._run_write(self._clear_provisional_binding_sync)
+
+    def _clear_provisional_binding_sync(self) -> None:
+        assert self._conn is not None
+        self._conn.execute("DELETE FROM commissioned_binding_provisional")
+        self._conn.commit()
+
+    async def retire_commissioned_binding_in_force(self) -> None:
+        """Retire whatever is in force, keeping it for audit."""
+        await self._run_write(self._retire_commissioned_binding_in_force_sync)
+
+    def _retire_commissioned_binding_in_force_sync(self) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            "UPDATE commissioned_binding SET retired_at_ms = ? "
+            "WHERE retired_at_ms IS NULL",
+            (now_ms(),),
+        )
+        self._conn.commit()
 
     async def commissioned_binding_history(self) -> list[dict]:
         return await self._run_read(self._commissioned_binding_history_sync)

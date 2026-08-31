@@ -632,10 +632,13 @@ class OriRuntime:
             and commissioning_state.actuation_licensed
             else None
         )
+        if has_relay_config and zone is not None and not zone.in_force_eligible:
+            zone = None
         if has_relay_config and zone is None:
             logger.warning(
-                "[runtime] relay on GPIO pin %s is declared but has no accepted "
-                "commissioned zone; the pin is not driven and relay actions are refused",
+                "[runtime] relay on GPIO pin %s is declared but has no zone in force "
+                "with both proof legs; the pin is not driven, relay actions are "
+                "refused, and the zone is reported unprotected",
                 config.actions.relay.get("gpio_pin"),
             )
             has_relay_config = False
@@ -677,9 +680,10 @@ class OriRuntime:
         if (
             relay_action is not None
             and zone is not None
+            and zone.in_force_eligible
             and commissioning_state is not None
+            and commissioning_state.in_force is not None
         ):
-            assert commissioning_state.in_force is not None
             actuator = CommissionedActuator(
                 driver=relay_action,
                 zone=zone,
@@ -2574,27 +2578,35 @@ class OriRuntime:
         )
         self._commissioning_state = state
         if inventory.actuators and not state.actuation_licensed:
-            detail = (
-                f"binding verdict {state.last_verdict.stage}:{state.last_verdict.reason}"
-                if state.last_verdict is not None
-                else "no binding presented"
-            )
+            if state.provisional is not None:
+                detail = (
+                    f"binding {state.provisional.binding_seq} is provisional: "
+                    "a proof leg is unproven"
+                )
+            elif state.last_verdict is not None:
+                detail = (
+                    f"binding verdict {state.last_verdict.stage}:"
+                    f"{state.last_verdict.reason}"
+                )
+            else:
+                detail = "no binding presented"
             if hardened:
                 logger.error(
-                    "[commissioning] declared actuating hardware has no accepted "
-                    "commissioned binding (%s) — aborting under hardened posture",
+                    "[commissioning] declared actuating hardware has no binding in "
+                    "force (%s) — aborting under hardened posture",
                     detail,
                 )
                 raise ConfigValidationError(
-                    "commissioning: declared actuating hardware has no accepted "
-                    f"binding ({detail}); a hardened runtime does not start unprotected"
+                    "commissioning: declared actuating hardware has no binding in "
+                    f"force ({detail}); a hardened runtime does not start "
+                    "unprotected, and commissioning precedes hardening"
                 )
             if "binding_missing" not in state.problems:
                 state.problems.append("binding_missing")
             logger.warning(
-                "[commissioning] declared actuating hardware has no accepted "
-                "commissioned binding (%s); starting degraded with no protection "
-                "claim and no actuation through the commissioned seam",
+                "[commissioning] declared actuating hardware has no binding in force "
+                "(%s); starting degraded with no protection claim, no actuation "
+                "through the commissioned seam, and no coil command",
                 detail,
             )
         elif state.in_force is not None:

@@ -269,6 +269,74 @@ INVENTORY = {
 }
 
 
+# ── the control-path leg ─────────────────────────────────────────────────────
+#
+# The circuit leg is proven at the panel by whatever means is to hand and says
+# nothing about whether the runtime's own output reaches that coil. This leg
+# is the one that does, so `gpio_level` is required on every observation rather
+# than optional: the level actually driven is the evidence.
+
+
+def control_path(active_high: bool = False, mapping: dict | None = None) -> dict:
+    """A proven control leg for a local_gpio zone."""
+    m = mapping or ZONE_MAIN["actuator"]["commissioned_mapping"]
+    energised = "high" if active_high else "low"
+    released = "low" if active_high else "high"
+
+    def level(coil: str) -> str:
+        return energised if coil == "energised" else released
+
+    return {
+        "method": "commanded_and_observed",
+        "performed_at_ms": 1800000600000,
+        "observations": [
+            {
+                "commanded": "open_protected_circuit",
+                "coil_state": m["open_protected_circuit"],
+                "gpio_level": level(m["open_protected_circuit"]),
+                "load_present_before": True,
+                "load_present_after": False,
+                "sensor_before": 6.4,
+                "sensor_after": 0.02,
+                "terminal_state_observed": "open",
+            },
+            {
+                "commanded": "close_protected_circuit",
+                "coil_state": m["close_protected_circuit"],
+                "gpio_level": level(m["close_protected_circuit"]),
+                "load_present_before": False,
+                "load_present_after": True,
+                "sensor_before": 0.02,
+                "sensor_after": 6.4,
+                "terminal_state_observed": "closed",
+            },
+        ],
+    }
+
+
+def gpio_only_binding(
+    seq: int = 1, supersedes: Any = None, proven: bool = True
+) -> dict:
+    """One local_gpio zone, the only shape that can reach `in_force`.
+
+    A firmware zone's control leg has no design yet, so any binding carrying
+    one is provisional however well its circuit leg is proven.
+    """
+    b = base_binding(seq=seq, supersedes=supersedes)
+    b["zones"] = [copy.deepcopy(ZONE_MAIN)]
+    if proven:
+        b["zones"][0]["proof"]["control_path"] = control_path()
+    return b
+
+
+GPIO_ONLY_INVENTORY = {
+    "sensor_ids": ["load-current-main"],
+    "actuators": [
+        {"kind": "local_gpio", "identity": {"gpio_pin": 26, "active_high": False}},
+    ],
+}
+
+
 def context(**overrides: Any) -> dict:
     ctx = {
         "device_id": DEVICE_ID,
@@ -291,21 +359,50 @@ def accepted_zone_state(binding: dict) -> dict:
     Retention is already required for audit; a revision is checked against it
     so a changed actuator cannot inherit the proof of the one it replaced.
     """
-    return {
-        z["zone_id"]: {
+    retained = {}
+    for z in binding["zones"]:
+        row = {
             "identity": z["actuator"]["identity"],
             "mapping": z["actuator"]["commissioned_mapping"],
             "calibration_ref": z["sensor"]["calibration_ref"],
             "proof_at_ms": z["proof"]["performed_at_ms"],
         }
-        for z in binding["zones"]
-    }
+        leg = z["proof"].get("control_path")
+        # Only when the retained document carried one: a record with no control
+        # proof has nothing a revision could inherit.
+        if isinstance(leg, dict):
+            row["control_proof_at_ms"] = leg["performed_at_ms"]
+        retained[z["zone_id"]] = row
+    return retained
 
 
 def mutate(fn) -> dict:
     b = base_binding()
     fn(b)
     return b
+
+
+def expected_state(binding: dict) -> str:
+    """Verification is not authority: a proven circuit leg is not permission.
+
+    A binding is in force only when **both** legs are proven for every zone,
+    and only a local_gpio zone can prove a control leg today. Anything else is
+    provisional -- retained and reported, never connected, never commanded.
+
+    Neither leg substitutes for the other. A proven control leg over an
+    undemonstrated circuit leg means the pin is known to move the coil and
+    nothing is known about which circuit that coil switches, so commanding it
+    opens an unidentified one.
+    """
+    for zone in binding.get("zones", []):
+        if zone.get("proof", {}).get("method") == "undemonstrated":
+            return "provisional"
+        leg = zone.get("proof", {}).get("control_path")
+        if not isinstance(leg, dict) or leg.get("method") != "commanded_and_observed":
+            return "provisional"
+        if zone.get("actuator", {}).get("kind") != "local_gpio":
+            return "provisional"
+    return "in_force"
 
 
 def case(
@@ -316,6 +413,7 @@ def case(
         "name": name,
         "note": note,
         "binding": binding,
+        "expected_state": expected_state(binding),
         "verifier_context": ctx,
         "canonical_hex": canonical(binding).hex(),
         "canonical_sha256": digest(binding),
@@ -396,6 +494,72 @@ accept_cases = [
         "verifier that derives one from a convention rather than reading it "
         "fails exactly one of them.",
         context(),
+    ),
+]
+
+accept_cases += [
+    case(
+        "local_gpio_control_path_proven_is_in_force",
+        gpio_only_binding(),
+        "The only shape that reaches in force: one local_gpio zone with both "
+        "legs proven. The control leg records the level actually driven, which "
+        "is what ties this pin at this polarity to this coil -- the thing the "
+        "circuit leg cannot establish however carefully it was measured.",
+        context(declared_inventory=GPIO_ONLY_INVENTORY),
+    ),
+    case(
+        "control_path_undemonstrated_is_provisional",
+        mutate(
+            lambda b: b["zones"][0]["proof"].__setitem__(
+                "control_path",
+                {
+                    "method": "undemonstrated",
+                    "performed_at_ms": 1800000600000,
+                    "reason": "no consented window at commissioning",
+                    "observations": [],
+                },
+            )
+        ),
+        "Saying the control leg was not proven is accepted and is not "
+        "authority. The document is retained provisionally, and the coil is "
+        "never commanded on the polarity it asserts.",
+        context(),
+    ),
+    case(
+        "control_leg_proven_over_an_undemonstrated_circuit_leg_is_provisional",
+        (
+            lambda b: (
+                b["zones"][0]["proof"].__setitem__("method", "undemonstrated"),
+                b["zones"][0]["proof"].__setitem__("observations", []),
+                b["zones"][0]["proof"].__setitem__(
+                    "reason", "load could not be interrupted at commissioning"
+                ),
+                b["zones"][0]["proof"].__setitem__("control_path", control_path()),
+                b,
+            )[-1]
+        )(gpio_only_binding(proven=False)),
+        "The pin is known to move the coil and nothing is known about which "
+        "circuit that coil switches. Commanding it would open an unidentified "
+        "circuit -- the transposition hazard this contract exists for, reached "
+        "by a route that looks well proven. Neither leg substitutes for the "
+        "other, so this is provisional however good the control proof is.",
+        context(
+            declared_inventory=GPIO_ONLY_INVENTORY,
+            deployment_posture="development",
+        ),
+    ),
+    case(
+        "a_provisional_record_does_not_advance_the_chain",
+        gpio_only_binding(seq=1),
+        "A provisional binding was already held at binding_seq 1 and nothing "
+        "was ever in force, so the freshness floor is still 0 and this "
+        "document at seq 1 is accepted. Entering provisional records into the "
+        "succession would strand the chain behind a document that never "
+        "carried authority.",
+        context(
+            declared_inventory=GPIO_ONLY_INVENTORY,
+            provisional_binding_seq=1,
+        ),
     ),
 ]
 
@@ -494,6 +658,49 @@ accept_cases.append(
             accepted_binding_hash=digest(_first),
             accepted_zone_state=accepted_zone_state(_first),
         ),
+    )
+)
+
+_PROVEN_GPIO = gpio_only_binding()
+
+
+def _polarity_revision(control_at_ms: int) -> dict:
+    """A revision that flips `active_high`, carrying a fresh circuit leg.
+
+    Polarity is not declared hardware -- `actuator_identity` reads the pin
+    alone -- so the inventory generation does not move. What moves is the
+    thing the control leg was proven against.
+    """
+    b = gpio_only_binding(seq=2, supersedes=digest(_PROVEN_GPIO))
+    b["reason"] = "driver board replaced; the stage inverts"
+    zone = b["zones"][0]
+    zone["actuator"]["identity"]["active_high"] = True
+    zone["proof"]["performed_at_ms"] = 1800000900000
+    for ob in zone["proof"]["observations"]:
+        ob["gpio_level"] = "low" if ob["gpio_level"] == "high" else "high"
+    leg = control_path(active_high=True)
+    leg["performed_at_ms"] = control_at_ms
+    zone["proof"]["control_path"] = leg
+    return b
+
+
+_POLARITY_CTX = context(
+    accepted_binding_seq=1,
+    accepted_binding_hash=digest(_PROVEN_GPIO),
+    accepted_zone_state=accepted_zone_state(_PROVEN_GPIO),
+    declared_inventory=GPIO_ONLY_INVENTORY,
+)
+
+accept_cases.append(
+    case(
+        "polarity_revision_with_both_legs_fresh_is_in_force",
+        _polarity_revision(1800001200000),
+        "A driver board that inverts the stage changes `active_high`, so "
+        "neither leg of the old proof survives it: the circuit leg is redone "
+        "and the control leg is redone against the new polarity. Both are "
+        "performed after the retained document, so the revision reaches in "
+        "force.",
+        _POLARITY_CTX,
     )
 )
 
@@ -691,6 +898,26 @@ _rej(
         b.__setitem__("supersedes", "sha256:" + "0" * 64),
     )[0],
     ctx=context(accepted_binding_seq=1, accepted_binding_hash=digest(base_binding())),
+)
+
+reject_cases.append(
+    reject(
+        "polarity_revised_without_a_fresh_control_proof",
+        _polarity_revision(1800000600000),
+        "The revision inverts the driver stage and redoes the circuit leg, but "
+        "carries the control proof performed against the old polarity. That "
+        "proof recorded which level drove which coil state on the previous "
+        "stage; under the new one it asserts the opposite. Accepting it would "
+        "bring the zone into force with the polarity established by a "
+        "measurement taken on the wiring it replaced -- the unproven-polarity "
+        "actuation the control leg exists to close, reached through a revision "
+        "rather than a first commissioning. The circuit leg is fresh, so the "
+        "verdict is decided by the control leg alone.",
+        "stale_proof",
+        _POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
 )
 
 _rej(
@@ -925,6 +1152,94 @@ _rej(
     "True is an instance of int, so a naive check reads this as generation 1.",
     "malformed",
     lambda b: b.__setitem__("inventory_generation", True),
+)
+
+# ── control-path leg refusals ────────────────────────────────────────────────
+
+_rej(
+    "control_path_without_a_gpio_level",
+    "The level driven is the whole evidence of this leg. Without it the "
+    "observation records that a command was issued and says nothing about "
+    "which pin state accompanied it, which is what the circuit leg already "
+    "failed to establish.",
+    "malformed",
+    lambda b: b["zones"][0]["proof"].__setitem__(
+        "control_path",
+        {
+            **control_path(),
+            "observations": [
+                {k: v for k, v in o.items() if k != "gpio_level"}
+                for o in control_path()["observations"]
+            ],
+        },
+    ),
+)
+
+_rej(
+    "control_path_gpio_level_contradicts_the_polarity",
+    "active_high is false, so an energised coil is driven low. A leg claiming "
+    "it was driven high has not proven this driver stage; it has recorded a "
+    "document that disagrees with itself about the one fact it exists to "
+    "settle.",
+    "proof_contradiction",
+    lambda b: b["zones"][0]["proof"].__setitem__(
+        "control_path",
+        {
+            **control_path(),
+            "observations": [
+                {**o, "gpio_level": "high" if o["gpio_level"] == "low" else "low"}
+                for o in control_path()["observations"]
+            ],
+        },
+    ),
+)
+
+_rej(
+    "control_path_carries_an_unknown_field",
+    "Closed like every other object here. A field a consumer silently drops "
+    "turns a misspelt claim about the control path into one that appears to "
+    "its author to have taken effect.",
+    "malformed",
+    lambda b: b["zones"][0]["proof"].__setitem__(
+        "control_path", {**control_path(), "operator": "ade"}
+    ),
+)
+
+_rej(
+    "control_path_undemonstrated_carrying_observations",
+    "An unproven leg claiming observations is claiming a proof it also says "
+    "it does not have.",
+    "malformed",
+    lambda b: b["zones"][0]["proof"].__setitem__(
+        "control_path",
+        {
+            "method": "undemonstrated",
+            "performed_at_ms": 1800000600000,
+            "reason": "none available",
+            "observations": control_path()["observations"],
+        },
+    ),
+)
+
+_rej(
+    "firmware_channel_claiming_a_commanded_control_path",
+    "The method names an operation that exists for a pin and does not yet "
+    "exist for a channel: firmware holds its mapping before it can actuate, "
+    "so there is no designed way to command one through the path under test. "
+    "Admitting it would bring a firmware zone into force on a proof no design "
+    "defines, which is worse than having no method at all.",
+    "malformed",
+    lambda b: b["zones"][1]["proof"].__setitem__(
+        "control_path",
+        {
+            "method": "commanded_and_observed",
+            "performed_at_ms": 1800000600000,
+            "observations": [
+                {k: v for k, v in o.items() if k != "gpio_level"}
+                for o in control_path()["observations"]
+            ],
+        },
+    ),
 )
 
 tampered(

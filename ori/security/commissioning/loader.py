@@ -58,6 +58,31 @@ class BindingStore(Protocol):
     async def get_commissioned_binding_in_force(self) -> dict | None:
         """The retained row with no retired_at_ms, or None."""
 
+    async def retire_commissioned_binding_in_force(self) -> None:
+        """Retire whatever is in force, keeping it for audit."""
+
+    async def retain_provisional_binding(
+        self,
+        *,
+        binding_seq: int,
+        canonical_hash: str,
+        device_id: str,
+        inventory_generation: int,
+        signer_id: str,
+        supersedes: str | None,
+        canonical_json: str,
+        signature: str,
+        zones_json: str,
+        verified_at_ms: int | None = None,
+    ) -> None:
+        """Retain the current provisional binding, replacing any earlier one."""
+
+    async def get_provisional_binding(self) -> dict | None:
+        """The retained provisional row, or None."""
+
+    async def clear_provisional_binding(self) -> None:
+        """Drop the provisional record."""
+
 
 @dataclass(frozen=True)
 class DeclaredInventory:
@@ -96,44 +121,73 @@ class CommissioningState:
     anchors: CommissioningAnchors
     inventory: DeclaredInventory
     in_force: AcceptedBinding | None = None
+    provisional: AcceptedBinding | None = None
     last_verdict: Verdict | None = None
     problems: list[str] = field(default_factory=list)
 
     @property
     def actuation_licensed(self) -> bool:
-        """Every declared actuator is bound by the binding in force."""
+        """Every declared actuator is bound by a zone carrying both proof legs."""
         if self.in_force is None:
             return not self.inventory.actuators
-        bound = {zone.identity_key for zone in self.in_force.zones}
+        bound = {
+            zone.identity_key for zone in self.in_force.zones if zone.in_force_eligible
+        }
         return set(self.inventory.actuators) <= bound
 
     def zone_for_local_gpio(self, gpio_pin: int) -> AcceptedZone | None:
+        """The zone that licenses driving this pin. A provisional zone never does."""
         if self.in_force is None:
             return None
-        return self.in_force.zone_for_actuator(
+        zone = self.in_force.zone_for_actuator(
             "local_gpio", {"gpio_pin": int(gpio_pin)}
         )
+        return zone if zone is not None and zone.in_force_eligible else None
 
     def health(self) -> dict[str, Any]:
         binding = self.in_force
+        zones = [
+            _zone_health(zone, "in_force")
+            for zone in (binding.zones if binding else ())
+        ] + [
+            _zone_health(zone, "provisional")
+            for zone in (self.provisional.zones if self.provisional else ())
+        ]
         return {
             "binding_seq": binding.binding_seq if binding else 0,
             "binding_hash": binding.canonical_hash if binding else None,
             "anchors_configured": self.anchors.configured,
-            "zones": [
-                {
-                    "zone_id": zone.zone_id,
-                    "sensor_id": zone.sensor_id,
-                    "actuator": {"kind": zone.kind, "identity": dict(zone.identity)},
-                    "commissioned_mapping": dict(zone.mapping),
-                    "proof_method": zone.proof_method,
-                    "proof_performed_at_ms": zone.proof_performed_at_ms,
-                }
-                for zone in (binding.zones if binding else ())
-            ],
+            "zones": zones,
             "last_verdict": self.last_verdict.as_dict() if self.last_verdict else None,
             "actuation_licensed": self.actuation_licensed,
         }
+
+
+def _zone_health(zone: AcceptedZone, state: str) -> dict[str, Any]:
+    return {
+        "zone_id": zone.zone_id,
+        "sensor_id": zone.sensor_id,
+        "actuator": {"kind": zone.kind, "identity": dict(zone.identity)},
+        "commissioned_mapping": dict(zone.mapping),
+        "circuit_proof": {
+            "method": zone.proof_method,
+            "performed_at_ms": zone.proof_performed_at_ms,
+        },
+        "control_path_proof": (
+            {
+                "method": zone.control_proof_method,
+                "performed_at_ms": zone.control_proof_performed_at_ms,
+            }
+            if zone.control_proof_method is not None
+            else None
+        ),
+        "state": state,
+        "availability": (
+            "available"
+            if state == "in_force" and zone.in_force_eligible
+            else "unavailable"
+        ),
+    }
 
 
 def accepted_from_row(row: dict[str, Any]) -> AcceptedBinding:
@@ -208,10 +262,80 @@ def verifier_context(
                 mapping=dict(zone.mapping),
                 calibration_ref=zone.calibration_ref,
                 proof_at_ms=zone.proof_performed_at_ms,
+                control_proof_at_ms=zone.control_proof_performed_at_ms,
             )
             for zone in (in_force.zones if in_force else ())
         },
     )
+
+
+async def _retire_ineligible(
+    store: BindingStore,
+    state: CommissioningState,
+    retained: AcceptedBinding,
+    *,
+    slot_occupied: bool,
+) -> None:
+    """A retained binding that proves half a chain stops being in force.
+
+    It is migrated into the provisional record only when that slot is free —
+    free meaning no readable record at all, not merely none this device may
+    adopt. One already there was verified under the current rules with both
+    legs assessed, where this document was accepted under rules that no longer
+    suffice, and it survives as a retired row in the in-force table either way.
+    Migrating before retiring means a crash between the two leaves the document
+    in both tables, which the next load resolves; the reverse order would lose
+    it.
+    """
+    if not slot_occupied:
+        await store.retain_provisional_binding(
+            binding_seq=retained.binding_seq,
+            canonical_hash=retained.canonical_hash,
+            device_id=retained.device_id,
+            inventory_generation=retained.inventory_generation,
+            signer_id=retained.signer_id,
+            supersedes=retained.supersedes,
+            canonical_json=retained.canonical_bytes.decode("utf-8"),
+            signature=retained.signature,
+            zones_json=_zones_json(retained),
+        )
+        state.provisional = retained
+    await store.retire_commissioned_binding_in_force()
+    state.problems.append("retained_binding_not_in_force")
+    logger.warning(
+        "[commissioning] retained binding %d has an unproven proof leg and is no "
+        "longer in force; the provisional record was %s",
+        retained.binding_seq,
+        "kept" if slot_occupied else "taken from it",
+    )
+
+
+def _readable(
+    row: dict[str, Any] | None, state: CommissioningState, which: str
+) -> AcceptedBinding | None:
+    """A retained row the runtime cannot decode holds nothing, and stops nothing.
+
+    Letting it raise would abort startup over a stored record, taking Tier D
+    protection with it, which is the outcome the record exists to support.
+    """
+    if row is None:
+        return None
+    try:
+        binding = accepted_from_row(row)
+        # Constructing the row is not enough: identity is compared against the
+        # declared inventory later, where a shape it cannot form would raise.
+        for zone in binding.zones:
+            zone.identity_key
+        return binding
+    except Exception:  # noqa: BLE001 - a corrupt row is not a reason to not start
+        if "retained_binding_unreadable" not in state.problems:
+            state.problems.append("retained_binding_unreadable")
+        logger.exception(
+            "[commissioning] the retained %s binding could not be read; the device "
+            "holds no binding of that kind",
+            which,
+        )
+        return None
 
 
 async def load_commissioning_state(
@@ -228,11 +352,31 @@ async def load_commissioning_state(
     """Reload the binding in force, then present the file beside the config if any."""
     state = CommissioningState(anchors=anchors, inventory=inventory)
     row = await store.get_commissioned_binding_in_force()
-    if row is not None:
-        state.in_force = accepted_from_row(row)
-        if state.in_force.device_id != device_id:
+    retained = _readable(row, state, "in force")
+
+    # The provisional slot holds one record, so it is read before anything can
+    # be written into it.
+    provisional_row = await store.get_provisional_binding()
+    provisional = _readable(provisional_row, state, "provisional")
+    # Whether the slot holds a record is a separate fact from whether this
+    # device may adopt it. A record for another device is unusable here and is
+    # still a record.
+    slot_occupied = provisional is not None
+    if provisional is not None:
+        if provisional.device_id == device_id:
+            state.provisional = provisional
+        else:
             state.problems.append("retained_binding_for_another_device")
-            state.in_force = None
+
+    if retained is not None:
+        if retained.device_id != device_id:
+            state.problems.append("retained_binding_for_another_device")
+        elif not retained.in_force_eligible:
+            await _retire_ineligible(
+                store, state, retained, slot_occupied=slot_occupied
+            )
+        else:
+            state.in_force = retained
 
     path = data_path / BINDING_RELATIVE_PATH
     if not path.is_file():
@@ -297,6 +441,28 @@ async def load_commissioning_state(
         )
         return state
 
+    state.last_verdict = Verdict("accepted", "accepted", accepted.binding_seq, now_ms())
+    if not accepted.in_force_eligible:
+        await store.retain_provisional_binding(
+            binding_seq=accepted.binding_seq,
+            canonical_hash=accepted.canonical_hash,
+            device_id=accepted.device_id,
+            inventory_generation=accepted.inventory_generation,
+            signer_id=accepted.signer_id,
+            supersedes=accepted.supersedes,
+            canonical_json=accepted.canonical_bytes.decode("utf-8"),
+            signature=accepted.signature,
+            zones_json=_zones_json(accepted),
+        )
+        state.provisional = accepted
+        logger.warning(
+            "[commissioning] binding %d verified but provisional (%s): a proof leg "
+            "is unproven, so no actuator is connected and no coil is commanded",
+            accepted.binding_seq,
+            accepted.canonical_hash,
+        )
+        return state
+
     await store.retain_commissioned_binding(
         binding_seq=accepted.binding_seq,
         canonical_hash=accepted.canonical_hash,
@@ -308,11 +474,12 @@ async def load_commissioning_state(
         signature=accepted.signature,
         zones_json=_zones_json(accepted),
     )
+    await store.clear_provisional_binding()
     state.in_force = accepted
-    state.last_verdict = Verdict("accepted", "accepted", accepted.binding_seq, now_ms())
+    state.provisional = None
     state.problems = [p for p in state.problems if p != "binding_missing"]
     logger.info(
-        "[commissioning] binding %d accepted (%s) with %d zone(s)",
+        "[commissioning] binding %d in force (%s) with %d zone(s)",
         accepted.binding_seq,
         accepted.canonical_hash,
         len(accepted.zones),

@@ -78,6 +78,13 @@ PROOF_KEYS: dict[str, frozenset[str]] = {
         {"method", "performed_at_ms", "reason", "observations"}
     ),
 }
+CONTROL_METHODS = frozenset({"commanded_and_observed", "undemonstrated"})
+CONTROL_PATH_KEYS: dict[str, frozenset[str]] = {
+    "commanded_and_observed": frozenset({"method", "performed_at_ms", "observations"}),
+    "undemonstrated": frozenset(
+        {"method", "performed_at_ms", "reason", "observations"}
+    ),
+}
 OBSERVATION_REQUIRED = frozenset(
     {
         "commanded",
@@ -166,6 +173,7 @@ class ZoneState:
     mapping: dict[str, str]
     calibration_ref: str
     proof_at_ms: int
+    control_proof_at_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -216,6 +224,11 @@ class VerifierContext:
                     mapping=dict(was["mapping"]),
                     calibration_ref=str(was["calibration_ref"]),
                     proof_at_ms=int(was["proof_at_ms"]),
+                    control_proof_at_ms=(
+                        None
+                        if was.get("control_proof_at_ms") is None
+                        else int(was["control_proof_at_ms"])
+                    ),
                 )
                 for zone_id, was in prior.items()
             },
@@ -240,10 +253,22 @@ class AcceptedZone:
     mapping: dict[str, str]
     proof_method: str
     proof_performed_at_ms: int
+    control_proof_method: str | None = None
+    control_proof_performed_at_ms: int | None = None
 
     @property
     def identity_key(self) -> tuple[str, str]:
         return actuator_identity(self.kind, self.identity)
+
+    @property
+    def in_force_eligible(self) -> bool:
+        return zone_row_in_force_eligible(
+            {
+                "kind": self.kind,
+                "proof_method": self.proof_method,
+                "control_proof_method": self.control_proof_method,
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -261,6 +286,11 @@ class AcceptedBinding:
     canonical_bytes: bytes
     signature: str
 
+    @property
+    def in_force_eligible(self) -> bool:
+        """Every zone carries both legs. One zone short leaves the whole document provisional."""
+        return all(zone.in_force_eligible for zone in self.zones)
+
     def zone_for_actuator(
         self, kind: str, identity: dict[str, Any]
     ) -> AcceptedZone | None:
@@ -269,6 +299,31 @@ class AcceptedBinding:
             if zone.identity_key == wanted:
                 return zone
         return None
+
+
+def zone_row_in_force_eligible(zone: Any) -> bool:
+    """Both legs proven for one zone. Absence denies; a firmware channel has no leg yet.
+
+    The retained-row shape is the primary form so the store and the verifier
+    decide this once, not twice.
+    """
+    if not isinstance(zone, dict):
+        return False
+    return (
+        zone.get("kind") == "local_gpio"
+        and zone.get("proof_method") in ("actuate_and_observe", "pre_energisation")
+        and zone.get("control_proof_method") == "commanded_and_observed"
+    )
+
+
+def _leg_method(proof: dict[str, Any]) -> str | None:
+    leg = proof.get("control_path")
+    return str(leg["method"]) if isinstance(leg, dict) else None
+
+
+def _leg_at_ms(proof: dict[str, Any]) -> int | None:
+    leg = proof.get("control_path")
+    return int(leg["performed_at_ms"]) if isinstance(leg, dict) else None
 
 
 def actuator_identity(kind: str, identity: dict[str, Any]) -> tuple[str, str]:
@@ -514,19 +569,9 @@ def _parse_actuator(actuator: Any) -> None:
     _vocab(mapping["de_energised_terminal_state"], CIRCUIT)
 
 
-def _parse_proof(proof: Any, kind: str) -> None:
-    _bad(not isinstance(proof, dict))
-    method = proof.get("method")
-    _vocab(method, METHODS)
-    _closed(proof, PROOF_KEYS[method])
-    _whole(proof["performed_at_ms"])
-    _bad(not isinstance(proof["observations"], list))
-    if method == "undemonstrated":
-        _text(proof["reason"])
-        _bad(proof["observations"] != [])
-        return
-    _bad(not proof["observations"])
-    for observation in proof["observations"]:
+def _parse_observations(observations: Any, kind: str, *, level_required: bool) -> None:
+    _bad(not observations)
+    for observation in observations:
         _bad(not isinstance(observation, dict))
         present = set(observation)
         _bad(not OBSERVATION_REQUIRED <= present)
@@ -536,6 +581,7 @@ def _parse_proof(proof: Any, kind: str) -> None:
         _vocab(observation["terminal_state_observed"], CIRCUIT)
         _flag(observation["load_present_before"])
         _flag(observation["load_present_after"])
+        _bad(level_required and "gpio_level" not in observation)
         if "gpio_level" in observation:
             _bad(kind != "local_gpio")
             _vocab(observation["gpio_level"], GPIO_LEVELS)
@@ -545,6 +591,39 @@ def _parse_proof(proof: Any, kind: str) -> None:
         if "instrument" in observation:
             _text(observation["instrument"])
         _bad(("sensor_before" in observation) != ("sensor_after" in observation))
+
+
+def _parse_control_path(leg: Any, kind: str) -> None:
+    """The control leg: closed over its own methods, commanded proof local-GPIO only."""
+    _bad(not isinstance(leg, dict))
+    method = leg.get("method")
+    _vocab(method, CONTROL_METHODS)
+    _closed(leg, CONTROL_PATH_KEYS[method])
+    _whole(leg["performed_at_ms"])
+    _bad(not isinstance(leg["observations"], list))
+    if method == "undemonstrated":
+        _text(leg["reason"])
+        _bad(leg["observations"] != [])
+        return
+    _bad(kind != "local_gpio")
+    _parse_observations(leg["observations"], kind, level_required=True)
+
+
+def _parse_proof(proof: Any, kind: str) -> None:
+    _bad(not isinstance(proof, dict))
+    method = proof.get("method")
+    _vocab(method, METHODS)
+    body = {key: value for key, value in proof.items() if key != "control_path"}
+    _closed(body, PROOF_KEYS[method])
+    _whole(proof["performed_at_ms"])
+    _bad(not isinstance(proof["observations"], list))
+    if "control_path" in proof:
+        _parse_control_path(proof["control_path"], kind)
+    if method == "undemonstrated":
+        _text(proof["reason"])
+        _bad(proof["observations"] != [])
+        return
+    _parse_observations(proof["observations"], kind, level_required=False)
 
 
 def _walk(node: Any) -> Any:
@@ -695,40 +774,44 @@ def st_mapping_self_consistency(b: dict[str, Any], ctx: VerifierContext) -> None
             )
 
 
+def _check_observations(zone: dict[str, Any], observations: list[Any]) -> None:
+    """Observations must agree with the mapping they claim to establish."""
+    mapping = zone["actuator"]["commissioned_mapping"]
+    noise_floor = zone["sensor"]["noise_floor"]
+    seen: set[str] = set()
+    for ob in observations:
+        outcome = ob["commanded"]
+        seen.add(outcome)
+        if ob["coil_state"] != mapping[outcome]:
+            raise BindingRefusedError("proof_consistency", "proof_contradiction")
+        opening = outcome == "open_protected_circuit"
+        if ob["terminal_state_observed"] != ("open" if opening else "closed"):
+            raise BindingRefusedError("proof_consistency", "proof_contradiction")
+        # The instrument classifies load presence; the reading is evidence.
+        before, after = ob["load_present_before"], ob["load_present_after"]
+        if (before, after) != ((True, False) if opening else (False, True)):
+            raise BindingRefusedError("proof_consistency", "proof_contradiction")
+        if "sensor_before" in ob and "sensor_after" in ob:
+            delta = ob["sensor_after"] - ob["sensor_before"]
+            if abs(delta) <= noise_floor or (delta > 0) != after:
+                raise BindingRefusedError("proof_consistency", "proof_contradiction")
+        if "gpio_level" in ob:
+            active_high = zone["actuator"]["identity"]["active_high"]
+            energised = ob["coil_state"] == "energised"
+            if ob["gpio_level"] != ("high" if energised == active_high else "low"):
+                raise BindingRefusedError("proof_consistency", "proof_contradiction")
+    if seen != set(OUTCOMES):
+        raise BindingRefusedError("proof_consistency", "proof_contradiction")
+
+
 def st_proof_consistency(b: dict[str, Any], ctx: VerifierContext) -> None:
     for zone in b["zones"]:
-        proof, mapping = zone["proof"], zone["actuator"]["commissioned_mapping"]
-        if proof["method"] == "undemonstrated":
-            continue
-        noise_floor = zone["sensor"]["noise_floor"]
-        seen: set[str] = set()
-        for ob in proof["observations"]:
-            outcome = ob["commanded"]
-            seen.add(outcome)
-            if ob["coil_state"] != mapping[outcome]:
-                raise BindingRefusedError("proof_consistency", "proof_contradiction")
-            opening = outcome == "open_protected_circuit"
-            if ob["terminal_state_observed"] != ("open" if opening else "closed"):
-                raise BindingRefusedError("proof_consistency", "proof_contradiction")
-            # The instrument classifies load presence; the reading is evidence.
-            before, after = ob["load_present_before"], ob["load_present_after"]
-            if (before, after) != ((True, False) if opening else (False, True)):
-                raise BindingRefusedError("proof_consistency", "proof_contradiction")
-            if "sensor_before" in ob and "sensor_after" in ob:
-                delta = ob["sensor_after"] - ob["sensor_before"]
-                if abs(delta) <= noise_floor or (delta > 0) != after:
-                    raise BindingRefusedError(
-                        "proof_consistency", "proof_contradiction"
-                    )
-            if "gpio_level" in ob:
-                active_high = zone["actuator"]["identity"]["active_high"]
-                energised = ob["coil_state"] == "energised"
-                if ob["gpio_level"] != ("high" if energised == active_high else "low"):
-                    raise BindingRefusedError(
-                        "proof_consistency", "proof_contradiction"
-                    )
-        if seen != set(OUTCOMES):
-            raise BindingRefusedError("proof_consistency", "proof_contradiction")
+        proof = zone["proof"]
+        if proof["method"] != "undemonstrated":
+            _check_observations(zone, proof["observations"])
+        leg = proof.get("control_path")
+        if isinstance(leg, dict) and leg["method"] != "undemonstrated":
+            _check_observations(zone, leg["observations"])
     # A revision changing actuator identity, mapping or calibration needs a
     # proof performed after the accepted document.
     for zone in b["zones"]:
@@ -740,7 +823,19 @@ def st_proof_consistency(b: dict[str, Any], ctx: VerifierContext) -> None:
             or was.mapping != zone["actuator"]["commissioned_mapping"]
             or was.calibration_ref != zone["sensor"]["calibration_ref"]
         )
-        if changed and zone["proof"]["performed_at_ms"] <= was.proof_at_ms:
+        if not changed:
+            continue
+        if zone["proof"]["performed_at_ms"] <= was.proof_at_ms:
+            raise BindingRefusedError("proof_consistency", "stale_proof")
+        # A changed pin or polarity invalidates the control proof too: it was
+        # performed on the wiring this revision replaces.
+        leg = zone["proof"].get("control_path")
+        if (
+            isinstance(leg, dict)
+            and leg["method"] == "commanded_and_observed"
+            and was.control_proof_at_ms is not None
+            and leg["performed_at_ms"] <= was.control_proof_at_ms
+        ):
             raise BindingRefusedError("proof_consistency", "stale_proof")
 
 
@@ -833,6 +928,8 @@ def verify_binding(b: Any, ctx: VerifierContext, sig_b64: str) -> AcceptedBindin
                 mapping=dict(zone["actuator"]["commissioned_mapping"]),
                 proof_method=str(zone["proof"]["method"]),
                 proof_performed_at_ms=int(zone["proof"]["performed_at_ms"]),
+                control_proof_method=_leg_method(zone["proof"]),
+                control_proof_performed_at_ms=_leg_at_ms(zone["proof"]),
             )
             for zone in b["zones"]
         ),
