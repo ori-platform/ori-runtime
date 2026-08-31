@@ -359,15 +359,21 @@ def accepted_zone_state(binding: dict) -> dict:
     Retention is already required for audit; a revision is checked against it
     so a changed actuator cannot inherit the proof of the one it replaced.
     """
-    return {
-        z["zone_id"]: {
+    retained = {}
+    for z in binding["zones"]:
+        row = {
             "identity": z["actuator"]["identity"],
             "mapping": z["actuator"]["commissioned_mapping"],
             "calibration_ref": z["sensor"]["calibration_ref"],
             "proof_at_ms": z["proof"]["performed_at_ms"],
         }
-        for z in binding["zones"]
-    }
+        leg = z["proof"].get("control_path")
+        # Only when the retained document carried one: a record with no control
+        # proof has nothing a revision could inherit.
+        if isinstance(leg, dict):
+            row["control_proof_at_ms"] = leg["performed_at_ms"]
+        retained[z["zone_id"]] = row
+    return retained
 
 
 def mutate(fn) -> dict:
@@ -655,6 +661,49 @@ accept_cases.append(
     )
 )
 
+_PROVEN_GPIO = gpio_only_binding()
+
+
+def _polarity_revision(control_at_ms: int) -> dict:
+    """A revision that flips `active_high`, carrying a fresh circuit leg.
+
+    Polarity is not declared hardware -- `actuator_identity` reads the pin
+    alone -- so the inventory generation does not move. What moves is the
+    thing the control leg was proven against.
+    """
+    b = gpio_only_binding(seq=2, supersedes=digest(_PROVEN_GPIO))
+    b["reason"] = "driver board replaced; the stage inverts"
+    zone = b["zones"][0]
+    zone["actuator"]["identity"]["active_high"] = True
+    zone["proof"]["performed_at_ms"] = 1800000900000
+    for ob in zone["proof"]["observations"]:
+        ob["gpio_level"] = "low" if ob["gpio_level"] == "high" else "high"
+    leg = control_path(active_high=True)
+    leg["performed_at_ms"] = control_at_ms
+    zone["proof"]["control_path"] = leg
+    return b
+
+
+_POLARITY_CTX = context(
+    accepted_binding_seq=1,
+    accepted_binding_hash=digest(_PROVEN_GPIO),
+    accepted_zone_state=accepted_zone_state(_PROVEN_GPIO),
+    declared_inventory=GPIO_ONLY_INVENTORY,
+)
+
+accept_cases.append(
+    case(
+        "polarity_revision_with_both_legs_fresh_is_in_force",
+        _polarity_revision(1800001200000),
+        "A driver board that inverts the stage changes `active_high`, so "
+        "neither leg of the old proof survives it: the circuit leg is redone "
+        "and the control leg is redone against the new polarity. Both are "
+        "performed after the retained document, so the revision reaches in "
+        "force.",
+        _POLARITY_CTX,
+    )
+)
+
 # ── reject cases ─────────────────────────────────────────────────────────────
 
 reject_cases = []
@@ -849,6 +898,26 @@ _rej(
         b.__setitem__("supersedes", "sha256:" + "0" * 64),
     )[0],
     ctx=context(accepted_binding_seq=1, accepted_binding_hash=digest(base_binding())),
+)
+
+reject_cases.append(
+    reject(
+        "polarity_revised_without_a_fresh_control_proof",
+        _polarity_revision(1800000600000),
+        "The revision inverts the driver stage and redoes the circuit leg, but "
+        "carries the control proof performed against the old polarity. That "
+        "proof recorded which level drove which coil state on the previous "
+        "stage; under the new one it asserts the opposite. Accepting it would "
+        "bring the zone into force with the polarity established by a "
+        "measurement taken on the wiring it replaced -- the unproven-polarity "
+        "actuation the control leg exists to close, reached through a revision "
+        "rather than a first commissioning. The circuit leg is fresh, so the "
+        "verdict is decided by the control leg alone.",
+        "stale_proof",
+        _POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
 )
 
 _rej(

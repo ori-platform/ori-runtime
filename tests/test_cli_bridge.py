@@ -753,8 +753,11 @@ def _commissioning_config(
 
 
 def _bench_envelope(**overrides):
+    """A binding with both proof legs unless a test overrides one."""
     from tests.commissioning.signing import local_gpio_binding, sign_envelope
 
+    overrides.setdefault("proof_method", "actuate_and_observe")
+    overrides.setdefault("control_proof_method", "commanded_and_observed")
     binding = local_gpio_binding(
         device_id="bench-01",
         sensor_id="load-current",
@@ -843,6 +846,7 @@ def test_cli_bridge_commissioning_deliver_stages_an_accepted_binding(
     assert result["binding_seq"] == 1
     # Staged, not live: the runtime reads it when it next starts.
     assert "next starts" in result["message"]
+    assert result["state"] == "in_force" and result["unproven_zones"] == []
     staged = tmp_path / BINDING_RELATIVE_PATH
     assert json.loads(staged.read_text()) == json.loads(source.read_text())
 
@@ -890,7 +894,9 @@ def test_cli_bridge_commissioning_deliver_refuses_an_undemonstrated_zone_when_ha
     )
     _anchor(monkeypatch)
     source = tmp_path / "binding.json"
-    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+    source.write_text(
+        json.dumps(_bench_envelope(proof_method="undemonstrated")), encoding="utf-8"
+    )
 
     rc = cli_bridge.main(
         [
@@ -908,6 +914,45 @@ def test_cli_bridge_commissioning_deliver_refuses_an_undemonstrated_zone_when_ha
     assert error["code"] == "undemonstrated_binding"
     assert error["stage"] == "activation_posture"
     assert not (tmp_path / BINDING_RELATIVE_PATH).exists()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"control_proof_method": None},
+        {"control_proof_method": "undemonstrated"},
+    ],
+    ids=["control_leg_absent", "control_leg_undemonstrated"],
+)
+def test_cli_bridge_commissioning_deliver_names_a_provisional_document(
+    tmp_path, monkeypatch, capsys, overrides
+):
+    """Verification is not authority, and the installer is told which they got."""
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    config_path = _commissioning_config(tmp_path)
+    _anchor(monkeypatch)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope(**overrides)), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    result = _read_stdout_json(capsys)["result"]
+    assert rc == 0
+    assert result["accepted"] is True and result["installed"] is True
+    assert result["state"] == "provisional"
+    assert result["unproven_zones"] == ["bench"]
+    assert "will not connect the actuator" in result["message"]
+    assert (tmp_path / BINDING_RELATIVE_PATH).exists()
 
 
 def test_cli_bridge_commissioning_deliver_refuses_a_repeated_key_from_the_wire(
@@ -1004,10 +1049,91 @@ async def _retain_foreign_binding(config_path: Path) -> None:
             supersedes=None,
             canonical_json="{}",
             signature="ed25519:" + base64.b64encode(b"\x00" * 64).decode(),
-            zones_json="[]",
+            zones_json=json.dumps(
+                [
+                    {
+                        "kind": "local_gpio",
+                        "proof_method": "actuate_and_observe",
+                        "control_proof_method": "commanded_and_observed",
+                    }
+                ]
+            ),
         )
     finally:
         await store.close()
+
+
+def _legacy_zone() -> dict:
+    """The retained shape before the control leg existed: no leg fields at all."""
+    return {
+        "zone_id": "bench",
+        "sensor_id": "load-current",
+        "quantity": "current",
+        "unit": "ampere",
+        "direction": "positive_is_load_draw",
+        "range_min": 0.0,
+        "range_max": 100.0,
+        "noise_floor": 0.05,
+        "calibration_ref": "bench",
+        "rated_capacity_parameter": "rated_capacity_amps",
+        "rated_capacity_value": 10.0,
+        "kind": "local_gpio",
+        "identity": {"gpio_pin": 26, "active_high": False},
+        "mapping": {
+            "open_protected_circuit": "de_energised",
+            "close_protected_circuit": "energised",
+            "de_energised_terminal_state": "open",
+        },
+        "proof_method": "actuate_and_observe",
+        "proof_performed_at_ms": 1800000000000,
+    }
+
+
+async def _retain_legacy_binding(config_path: Path) -> None:
+    """A row written before the control leg existed, bypassing the store's guard."""
+    from ori.config import Config
+
+    config = Config.load(str(config_path))
+    store = cli_bridge._commissioning_store(config)
+    await store.open()
+    try:
+        await store._run_write(
+            lambda: (
+                store._conn.execute(
+                    "INSERT INTO commissioned_binding (binding_seq, canonical_hash, "
+                    "device_id, inventory_generation, signer_id, supersedes, "
+                    "canonical_json, signature, zones_json, accepted_at_ms, "
+                    "retired_at_ms) VALUES (5, ?, ?, 1, 's', NULL, '{}', "
+                    "'ed25519:x', ?, 1000, NULL)",
+                    (
+                        "sha256:" + "d" * 64,
+                        "bench-01",
+                        json.dumps([_legacy_zone()]),
+                    ),
+                ),
+                store._conn.commit(),
+            )
+        )
+    finally:
+        await store.close()
+
+
+def test_cli_bridge_commissioning_reads_no_binding_whose_control_leg_is_unproven(
+    tmp_path, capsys
+):
+    """A row the store's guard predates is still not a baseline to chain onto.
+
+    The bridge reads the store before the runtime's next start, so it can see a
+    row the loader has not yet retired, and reporting it would let a producer
+    chain a revision onto a document that licenses nothing.
+    """
+    config_path = _commissioning_config(tmp_path)
+    asyncio.run(_retain_legacy_binding(config_path))
+
+    cli_bridge.main(["commissioning", "inventory", "--path", str(config_path)])
+    result = _read_stdout_json(capsys)["result"]
+    assert result["accepted_binding_seq"] == 0
+    assert result["accepted_binding_hash"] is None
 
 
 def test_cli_bridge_commissioning_reads_no_binding_held_for_another_device(

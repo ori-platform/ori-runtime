@@ -22,6 +22,7 @@ from typing import Any
 from ori.security.commissioning.binding import (
     ORDER,
     PROFILE_ORDER,
+    AcceptedBinding,
     BindingRefusedError,
     ProfileContext,
     VerifierContext,
@@ -47,17 +48,17 @@ __all__ = [
 ]
 
 
-def run(b: Any, ctx: dict[str, Any], sig_b64: str) -> None:
-    verify_binding(b, VerifierContext.from_corpus(ctx), sig_b64)
+def run(b: Any, ctx: dict[str, Any], sig_b64: str) -> AcceptedBinding:
+    return verify_binding(b, VerifierContext.from_corpus(ctx), sig_b64)
 
 
 def run_profile(pr: Any, ctx: dict[str, Any], sig_b64: str) -> None:
     verify_firmware_profile(pr, ProfileContext.from_corpus(ctx), sig_b64)
 
 
-def run_envelope(envelope: Any, ctx: dict[str, Any]) -> None:
+def run_envelope(envelope: Any, ctx: dict[str, Any]) -> AcceptedBinding:
     binding, sig_b64 = parse_envelope(envelope, "binding")
-    run(binding, ctx, sig_b64)
+    return run(binding, ctx, sig_b64)
 
 
 def run_profile_envelope(envelope: Any, ctx: dict[str, Any]) -> None:

@@ -84,6 +84,19 @@ def test_accept_cases_pass_every_stage(case: dict) -> None:
     run(case["binding"], case["verifier_context"], case["signature_b64"])
 
 
+@pytest.mark.parametrize("case", CASES, ids=lambda c: c["name"])
+def test_accept_cases_reach_their_declared_state(case: dict) -> None:
+    """Passing every stage is verification; the state is what it authorises."""
+    accepted = run(case["binding"], case["verifier_context"], case["signature_b64"])
+    reached = "in_force" if accepted.in_force_eligible else "provisional"
+    assert reached == case["expected_state"]
+
+
+def test_the_corpus_exercises_both_states() -> None:
+    states = {case["expected_state"] for case in CASES}
+    assert states == {"in_force", "provisional"}
+
+
 @pytest.mark.parametrize("case", REJECT_CASES, ids=lambda c: c["name"])
 def test_reject_cases_refuse_at_their_declared_stage(case: dict) -> None:
     """Right reason at the wrong stage is not evidence the check exists.
