@@ -1194,6 +1194,92 @@ _rej(
     ),
 )
 
+
+def _one_sided(which: str) -> dict:
+    """Only the closing observation survives, so the opening direction is unproven."""
+    b = gpio_only_binding()
+    leg = b["zones"][0]["proof"]
+    if which == "control":
+        leg = leg["control_path"]
+    leg["observations"] = [
+        o for o in leg["observations"] if o["commanded"] == "close_protected_circuit"
+    ]
+    return b
+
+
+def _coil_mismatch(which: str) -> dict:
+    """Contradict the mapping on the coil state alone.
+
+    `gpio_level` moves with the coil state actually recorded, so the polarity
+    rule cannot decide the verdict first and the coil comparison is what is
+    left to refuse it.
+    """
+    b = gpio_only_binding()
+    zone = b["zones"][0]
+    leg = zone["proof"]["control_path"] if which == "control" else zone["proof"]
+    active_high = zone["actuator"]["identity"]["active_high"]
+    mapping = zone["actuator"]["commissioned_mapping"]
+    ob = leg["observations"][0]
+    other = (
+        "energised" if mapping[ob["commanded"]] == "de_energised" else "de_energised"
+    )
+    ob["coil_state"] = other
+    ob["gpio_level"] = "high" if (other == "energised") == active_high else "low"
+    return b
+
+
+def _per_leg_rej(name: str, binding: dict, note: str) -> None:
+    """A per-leg coverage vector. Reject cases reach no state, so the field is dropped."""
+    c = reject(
+        name,
+        binding,
+        note,
+        "proof_contradiction",
+        context(declared_inventory=GPIO_ONLY_INVENTORY),
+    )
+    del c["expected_state"]
+    reject_cases.append(c)
+
+
+# The contract binds the control leg with "checked by the same rules", so each
+# rule needs a vector in each leg: coverage of one holds no consumer to the
+# other, and a separate code path per leg is where they diverge.
+_per_leg_rej(
+    "one_sided_circuit_proof",
+    _one_sided("circuit"),
+    "The circuit leg observes only the closing outcome, so the direction it "
+    "leaves undemonstrated is the one a cutoff exists for. Its control leg is "
+    "complete, so the one-sided leg is what decides the verdict.",
+)
+
+_per_leg_rej(
+    "one_sided_control_path_proof",
+    _one_sided("control"),
+    "The control leg observes only the closing outcome while the circuit leg "
+    "is complete. A consumer tallying outcomes once across both legs, rather "
+    "than per leg, lets the circuit leg's observations complete this one and "
+    "accepts the document to in force.",
+)
+
+_per_leg_rej(
+    "coil_state_contradicts_the_mapping",
+    _coil_mismatch("circuit"),
+    "One circuit-leg observation records the coil in the state the mapping "
+    "assigns to the other outcome. `gpio_level` agrees with the coil state "
+    "recorded and every other fact agrees with the command, so the coil "
+    "comparison alone decides it -- the join where the mapping and the "
+    "evidence must agree.",
+)
+
+_per_leg_rej(
+    "control_path_coil_state_contradicts_the_mapping",
+    _coil_mismatch("control"),
+    "The same contradiction in the control leg. A consumer enforcing the coil "
+    "comparison for `proof` and omitting it for `proof.control_path` -- the "
+    "shape a separate code path per leg produces -- refuses the three vectors "
+    "above and accepts this one to in force.",
+)
+
 _rej(
     "control_path_carries_an_unknown_field",
     "Closed like every other object here. A field a consumer silently drops "
