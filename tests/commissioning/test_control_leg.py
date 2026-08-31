@@ -71,6 +71,26 @@ def _leg(binding: dict[str, Any]) -> dict[str, Any]:
     return binding["zones"][0]["proof"]["control_path"]
 
 
+def _coil_contradiction(b: dict[str, Any]) -> None:
+    """Contradict the mapping on the coil state, and nothing else.
+
+    Flipping `coil_state` alone also breaks that observation's agreement
+    between `gpio_level` and `active_high`, so the polarity rule refuses the
+    document first and the coil comparison never decides it — the reason this
+    case passed while the rule it names was deletable. The level moves with the
+    coil state so the coil comparison is what is left to refuse it.
+    """
+    zone = b["zones"][0]
+    active_high = zone["actuator"]["identity"]["active_high"]
+    mapping = zone["actuator"]["commissioned_mapping"]
+    ob = _leg(b)["observations"][0]
+    other = (
+        "energised" if mapping[ob["commanded"]] == "de_energised" else "de_energised"
+    )
+    ob["coil_state"] = other
+    ob["gpio_level"] = "high" if (other == "energised") == active_high else "low"
+
+
 def test_a_re_signed_proven_binding_is_in_force() -> None:
     """The baseline every case below mutates, so a refusal is the mutation's."""
     accepted = _verdict(lambda b: None)
@@ -88,7 +108,7 @@ def test_a_re_signed_proven_binding_is_in_force() -> None:
             id="level_contradicts_the_polarity",
         ),
         pytest.param(
-            lambda b: _leg(b)["observations"][0].__setitem__("coil_state", "energised"),
+            _coil_contradiction,
             id="coil_contradicts_the_mapping",
         ),
         pytest.param(

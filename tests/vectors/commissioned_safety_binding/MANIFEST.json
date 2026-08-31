@@ -1,9 +1,9 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "commissioned-safety-binding",
-  "source_commit": "20b09432685b0c9876c194814f6e56737b6f0831",
+  "source_commit": "8f7ef9d6ff8a356075d26425d85fd85a301c9161",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {
-    "binding-vectors-v1.json": "5380f2f3428f33d1e0e2a08e92deb1c9ce67890222a90a15bce957b8e3a31d84"
+    "binding-vectors-v1.json": "89260e00e6476fbe9798ac6596c87011cf49194aadc1285c467e3ff5bfd72afc"
   }
 }
