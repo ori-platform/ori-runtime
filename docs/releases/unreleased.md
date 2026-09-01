@@ -50,7 +50,7 @@ candidate or release is cut.
   and a terminating signal is turned into a cancellation so the release runs. The runtime never
   observes the coil, so `effect_verified` is always false and the response
   separates `command_issued` from `operator_attestation`. The pin is released to
-  an undriven input on every exit, never parked in a chosen state, because
+  an undriven input on every exit where the operation's own code runs, never parked in a chosen state, because
   choosing one would derive it from the polarity under test; releasing it is not
   by itself the zone's controller-loss condition, which has to be observed at
   the panel for process death and loss of power separately. Consent and
@@ -82,4 +82,3 @@ candidate or release is cut.
   not driven and registers no relay action. Every logged physical action
   records the `binding_seq` in force, and health reports the actuator's coil
   state and last command.
-

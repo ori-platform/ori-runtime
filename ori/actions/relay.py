@@ -21,17 +21,23 @@ Used for Tier B (soft physical) and Tier D (safety-critical) actions.
       decides whether a de-energised coil isolates or reconnects the
       load.  Commission the channel instead — de-energise the coil,
       observe what the load actually does, and record it.
-    - Losing the controller physically de-energises the coil.  What
-      that does to the protected circuit is whatever commissioning
-      observed, and nothing else.
+    - Controller loss is not one condition.  Losing coil power
+      de-energises the coil; what that does to the protected circuit is
+      whatever commissioning observed, and nothing else.  A process
+      killed outright runs no cleanup, and the platform may leave the
+      output driving its last commanded state — measured to do exactly
+      that on a Pi 4 (see docs/evidence/).  Only observation, per mode,
+      licenses a claim about either.
     - **Polarity arrives from the commissioned binding, not from ori.yaml**,
       which refuses ``actions.relay.active_high`` as a foreign field. Taking
       the line always drives it, so the coil state is chosen at acquisition:
       ``de_energised`` for startup, or the state a caller is deliberately
       taking the line at.
-    - **Crash and power-loss state remain unproven.** A released line is not
-      the zone's commissioned controller-loss condition; each mode has to be
-      observed at the panel and recorded (#397).
+    - **A released line is not the zone's controller-loss condition.**
+      The modes were measured apart on the bench Pi 4 (2026-09-01):
+      power loss and reset de-energise; abrupt process loss leaves the
+      pad driving.  A different platform must be observed, not assumed
+      (#397).
     - Test with the load de-energised before connecting live circuits.
     - Never operate a relay above its rated duty cycle.
 
@@ -412,10 +418,12 @@ class RelayAction:
         the pin an output. This surrenders the line; what the coil then does is
         whatever the wiring does with the line undriven.
 
-        That is not the same as the zone's controller-loss condition, and this
-        does not establish one. The pull the platform leaves on a freed line is
-        not read back, and process death and loss of power are separate modes
-        this cannot reproduce. Each has to be observed at commissioning.
+        That is not the zone's controller-loss condition, and this does not
+        establish one. Those are two conditions, and on a Pi 4 they were
+        measured to differ: losing power de-energises the coil, while a process
+        killed outright leaves the pad driving and the coil commanded, because
+        releasing a line needs code to run and SIGKILL is defined by code not
+        running. No release written here can cover that mode.
         """
         device, self._device = self._device, None
         self._connected = False

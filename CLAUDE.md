@@ -864,10 +864,14 @@ de-energised coil isolates or reconnects the load. Do not write code,
 config, or documentation that derives a coil state, or a circuit
 outcome, from a contact type.
 
-Losing the controller physically de-energises the coil. What that does
-to the protected circuit is established per channel by commissioning:
-de-energise the coil, observe what the load actually does, record it.
-That observation is the only thing that licenses calling any state safe.
+Controller loss is not one condition, and only one of its modes de-energises
+the coil by physics. Losing coil power does; what that does to the protected
+circuit is established per channel by commissioning — de-energise the coil,
+observe what the load actually does, record it. A process killed outright runs
+no cleanup, and the platform may leave the output driving its last commanded
+state: measured to do exactly that on a Pi 4 (docs/evidence/), where power
+loss and reset de-energised. That observation, per mode, is the only thing
+that licenses calling any state safe.
 
 **The relay is driven only through the commissioned binding.**
 `actions.relay.active_high` is refused from `ori.yaml`: polarity is a
