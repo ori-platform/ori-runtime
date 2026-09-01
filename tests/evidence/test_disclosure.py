@@ -1273,6 +1273,12 @@ PATTERN_AUDIT_EXEMPT = {
         "Capability reference for contributors. It describes the evidence "
         "capability in implementation terms on purpose."
     ),
+    "docs/evidence/2026-09-01-pi4-gpio-controller-loss.md": (
+        "Bench measurement record for GPIO controller-loss behaviour, not "
+        "evidence-chain evidence; its wiring, kernel, library versions and "
+        "raw pin readings are the deliberately public provenance of a "
+        "hardware observation."
+    ),
     "docs/INVERTER_CONTROL_LADDER.md": (
         "Inverter control reference written in Modbus register vocabulary."
     ),
