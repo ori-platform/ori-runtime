@@ -183,8 +183,9 @@ active-low stage is *energised*. Measured on a Pi 4 with gpiozero 2.0.1 at
 `active_high=False`: `None` drives the line low, `False` drives it high. The pin is
 therefore taken at the *requested* coil state, which makes the acquisition itself
 the single consented command -- taking it at de-energised and then commanding the
-outcome would issue two physical acts for one authorisation, and on a closing
-outcome would momentarily open the circuit. Nothing follows the acquisition, and
+outcome would issue two physical acts for one authorisation, briefly commanding
+the zone's de-energised terminal state -- whatever commissioning recorded that
+to be -- rather than the outcome the operator authorised. Nothing follows the acquisition, and
 the consent prompt says so before the operator authorises. Ordinary runtime
 startup keeps its explicit de-energised command, which is a different guarantee.
 It is released to an undriven input on every exit: success, refusal, driver

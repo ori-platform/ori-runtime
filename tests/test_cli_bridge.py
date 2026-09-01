@@ -1357,8 +1357,6 @@ def test_a_cancelled_command_still_emits_one_json_object(
     Without a handler for it the operator gets a traceback where every other
     path emits the single JSON object the bridge contract promises.
     """
-    import asyncio
-
     from ori import cli_bridge
 
     async def cancelled(*args: object, **kwargs: object) -> dict:

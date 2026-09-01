@@ -30,7 +30,9 @@ candidate or release is cut.
   has no high-impedance output -- so the pin is taken at the **requested** coil
   state, which makes the acquisition the one physical act. Taking it at
   de-energised and then commanding the outcome would issue two acts for one
-  authorisation, and on a closing outcome would momentarily open the circuit.
+  authorisation, briefly commanding the zone's de-energised terminal state --
+  whatever commissioning recorded that to be -- rather than the outcome the
+  operator authorised.
   Nothing follows the acquisition, and the consent prompt says so. The commanded
   level is **held while the operator answers** -- at least a release-owned one
   second however fast they are, and at most sixty. The hold and the answer

@@ -166,7 +166,7 @@ class FakeDriver:
         self._active = False
         self.is_simulated = simulated
 
-    async def connect(self, **kwargs: Any) -> None:
+    async def acquire_at(self, **kwargs: Any) -> None:
         self.connect_kwargs = kwargs
         self.calls.append("connect")
         if self._fail_on == "connect":
@@ -447,7 +447,7 @@ async def test_the_pin_is_released_when_the_command_is_cancelled(
     store: StateStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class Cancelling(FakeDriver):
-        async def connect(self, **kwargs: Any) -> None:
+        async def acquire_at(self, **kwargs: Any) -> None:
             self.connect_kwargs = kwargs
             self.calls.append("connect")
             raise asyncio.CancelledError
@@ -486,7 +486,7 @@ async def test_a_command_is_never_more_than_one_outcome(
         )
         await _run(op, outcome=outcome)
         assert driver.calls == ["connect", "disconnect"], (outcome, active_high)
-        assert driver.connect_kwargs["initial_coil_state"] == coil
+        assert driver.connect_kwargs["coil_state"] == coil
         assert driver.connect_kwargs["active_high"] is active_high
 
 
@@ -906,7 +906,7 @@ async def test_only_the_proof_operation_moves_a_pin_through_the_bridge(
     moved: list[str] = []
 
     class Recording:
-        async def connect(self, **kwargs: Any) -> None:
+        async def acquire_at(self, **kwargs: Any) -> None:
             moved.append("connect")
 
         async def disconnect(self) -> None:
@@ -1216,7 +1216,7 @@ async def test_a_driver_that_cannot_say_whether_it_drove_is_not_believed(
             self.calls: list[str] = []
             self.connect_kwargs: dict[str, Any] = {}
 
-        async def connect(self, **kwargs: Any) -> None:
+        async def acquire_at(self, **kwargs: Any) -> None:
             self.connect_kwargs = kwargs
             self.calls.append("connect")
 
@@ -1381,3 +1381,72 @@ async def test_the_hold_waits_for_the_operator_and_never_undercuts_the_floor(
     assert quick["held_ms"] < cap * 1000 * 0.9, quick["held_ms"]
     assert quick["hold_floor_seconds"] == floor
     assert quick["observation_window_seconds"] == cap
+
+
+def test_only_the_commissioned_seam_can_take_a_line_energised() -> None:
+    """Acquiring at a chosen coil state is not a general relay capability.
+
+    `connect` keeps the guarantee it has always had — it takes the line
+    de-energised — so a caller cannot reach an energised acquisition without
+    naming `acquire_at` at the call site, and there is one such call site.
+    """
+    import ast
+    import inspect
+
+    from ori.actions import relay
+
+    # `connect` accepts no coil state: an energised acquisition is unreachable
+    # through the entry point every other caller uses.
+    assert (
+        "initial_coil_state"
+        not in inspect.signature(relay.RelayAction.connect).parameters
+    )
+    source = inspect.getsource(relay.RelayAction.connect)
+    assert '"de_energised"' in source
+
+    callers: list[str] = []
+    for path in Path("ori").rglob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "acquire_at"
+            ):
+                callers.append(str(path))
+    assert callers == ["ori/actions/commissioned_actuator.py"], callers
+
+
+def test_the_terminal_is_never_acquired_only_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Opening a tty device must not make it this process's controlling one.
+
+    Without `O_NOCTTY`, a session leader that has no controlling terminal
+    acquires the one it opens, and its process group then takes SIGHUP when the
+    other end closes. Consent must come from a terminal the operator already
+    holds, not one this process adopted on the way to asking.
+    """
+    import os
+    import pty
+
+    opened: list[int] = []
+    real_open = os.open
+
+    def recording(path: str, flags: int, *args: object) -> int:
+        if path == proof_operation.TTY_PATH:
+            opened.append(flags)
+        return real_open(path, flags, *args)
+
+    master, slave = pty.openpty()
+    monkeypatch.setattr(proof_operation, "TTY_PATH", os.ttyname(slave))
+    monkeypatch.setattr(os, "open", recording)
+    term = proof_operation.ControllingTerminal()
+    try:
+        assert len(opened) == 2, "both handles must go through os.open"
+        for flags in opened:
+            assert flags & os.O_NOCTTY, "a handle would acquire the terminal"
+    finally:
+        term.close()
+        os.close(master)
+        os.close(slave)

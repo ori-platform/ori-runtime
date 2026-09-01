@@ -30,15 +30,15 @@ OUTCOMES: frozenset[str] = frozenset(
 class CoilDriver(Protocol):
     """What the seam needs from a relay: energise, de-energise, and say which."""
 
-    async def connect(
+    async def acquire_at(
         self,
         gpio_pin: int,
-        active_high: bool = True,
+        active_high: bool,
         *,
+        coil_state: str,
         tolerate_missing_backend: bool = False,
-        initial_coil_state: str = "de_energised",
     ) -> None:
-        """Take the line as an output, at the given coil state."""
+        """Take the line already at *coil_state*."""
         raise NotImplementedError
 
     async def trigger(self, duration_seconds: float | None = None) -> bool:
@@ -161,10 +161,10 @@ class CommissionedActuator:
         assuming the platform default is it.
         """
         coil_state = self.coil_state_for(outcome)
-        await self._driver.connect(
+        await self._driver.acquire_at(
             gpio_pin=int(self._zone.identity["gpio_pin"]),
             active_high=self.active_high,
-            initial_coil_state=coil_state,
+            coil_state=coil_state,
         )
         # A driver that took no real line commanded nothing, whatever the
         # connect returned. Reported, never assumed.
