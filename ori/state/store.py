@@ -665,6 +665,36 @@ CREATE TABLE IF NOT EXISTS commissioned_binding_provisional (
     zones_json           TEXT    NOT NULL,
     verified_at_ms       INTEGER NOT NULL
 );
+
+-- What the commissioning proof operation did, one row per command. The consent
+-- and the actuation it permitted are the same record: the contract requires
+-- them audited together, and a consent stored apart from its command is a
+-- credential rather than an attestation. A row is opened when consent is given
+-- and completed once the command has been issued, so a store failure cannot
+-- leave a commanded coil unrecorded; a row whose commanded_at_ms is 0 records a
+-- consent whose command never completed, which is itself the honest outcome.
+CREATE TABLE IF NOT EXISTS commissioning_proof_observation (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    binding_hash         TEXT    NOT NULL,
+    zone_id              TEXT    NOT NULL,
+    gpio_pin             INTEGER NOT NULL,
+    active_high          INTEGER NOT NULL,
+    outcome              TEXT    NOT NULL,
+    coil_state_commanded TEXT    NOT NULL,
+    level_driven         TEXT    NOT NULL,
+    consent_nonce        TEXT    NOT NULL,
+    consented_at_ms      INTEGER NOT NULL,
+    commanded_at_ms      INTEGER NOT NULL,
+    command_issued       INTEGER NOT NULL,
+    -- The runtime does not observe the coil, so nothing it records may say the
+    -- commanded effect occurred. Enforced here rather than by convention.
+    effect_verified      INTEGER NOT NULL DEFAULT 0 CHECK (effect_verified = 0),
+    operator_attestation TEXT,
+    release_requested    INTEGER NOT NULL,
+    held_ms              INTEGER NOT NULL DEFAULT 0,
+    observation_json     TEXT,
+    outcome_note         TEXT
+);
 """
 
 
@@ -858,6 +888,52 @@ class StateStore:
             "proposal_id",
             "TEXT    NOT NULL DEFAULT ''",
         )
+        # A bench device commissioned on an earlier build of this branch holds
+        # the proof table with `executed` and none of the facts that replaced
+        # it. `CREATE TABLE IF NOT EXISTS` leaves such a row set untouched, and
+        # adding the new columns is not enough on its own: the legacy
+        # `executed` is NOT NULL with no default, so every later insert fails.
+        # The table is rebuilt instead, carrying the recorded commands across.
+        legacy = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(commissioning_proof_observation)"
+            )
+        }
+        if "executed" in legacy:
+            conn.execute(
+                "ALTER TABLE commissioning_proof_observation RENAME TO "
+                "_commissioning_proof_observation_legacy"
+            )
+            conn.executescript(_DDL)
+            conn.execute(
+                """
+                INSERT INTO commissioning_proof_observation
+                    (id, binding_hash, zone_id, gpio_pin, active_high, outcome,
+                     coil_state_commanded, level_driven, consent_nonce,
+                     consented_at_ms, commanded_at_ms, command_issued,
+                     effect_verified, operator_attestation, release_requested,
+                     held_ms, observation_json, outcome_note)
+                SELECT id, binding_hash, zone_id, gpio_pin, active_high, outcome,
+                       coil_state_commanded, level_driven, consent_nonce,
+                       consented_at_ms, commanded_at_ms, executed,
+                       0, NULL, 0, 0, observation_json, outcome_note
+                  FROM _commissioning_proof_observation_legacy
+                """
+            )
+            conn.execute("DROP TABLE _commissioning_proof_observation_legacy")
+            conn.commit()
+        else:
+            for col, typedef in (
+                ("command_issued", "INTEGER NOT NULL DEFAULT 0"),
+                ("effect_verified", "INTEGER NOT NULL DEFAULT 0"),
+                ("operator_attestation", "TEXT"),
+                ("release_requested", "INTEGER NOT NULL DEFAULT 0"),
+                ("held_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                self._add_column_if_missing_on_conn(
+                    conn, "commissioning_proof_observation", col, typedef
+                )
         for col, typedef in (
             ("safe_default_used", "INTEGER NOT NULL DEFAULT 0"),
             ("device_id", "TEXT    NOT NULL DEFAULT ''"),
@@ -5258,6 +5334,193 @@ class StateStore:
             (now_ms(),),
         )
         self._conn.commit()
+
+    async def record_commissioning_proof_observation(
+        self,
+        *,
+        binding_hash: str,
+        zone_id: str,
+        gpio_pin: int,
+        active_high: bool,
+        outcome: str,
+        coil_state_commanded: str,
+        level_driven: str,
+        consent_nonce: str,
+        consented_at_ms: int,
+        commanded_at_ms: int,
+        command_issued: bool,
+        held_ms: int,
+        observation_json: str | None,
+        outcome_note: str | None,
+    ) -> int:
+        """Append the consent and the intent, returning the row to complete.
+
+        Written before the coil moves: a record made afterwards can fail after
+        the actuation, leaving a commanded coil with nothing recording it.
+        """
+        return await self._run_write(
+            self._record_commissioning_proof_observation_sync,
+            binding_hash,
+            zone_id,
+            gpio_pin,
+            active_high,
+            outcome,
+            coil_state_commanded,
+            level_driven,
+            consent_nonce,
+            consented_at_ms,
+            commanded_at_ms,
+            command_issued,
+            held_ms,
+            observation_json,
+            outcome_note,
+        )
+
+    def _record_commissioning_proof_observation_sync(
+        self,
+        binding_hash: str,
+        zone_id: str,
+        gpio_pin: int,
+        active_high: bool,
+        outcome: str,
+        coil_state_commanded: str,
+        level_driven: str,
+        consent_nonce: str,
+        consented_at_ms: int,
+        commanded_at_ms: int,
+        command_issued: bool,
+        held_ms: int,
+        observation_json: str | None,
+        outcome_note: str | None,
+    ) -> int:
+        assert self._conn is not None
+        cursor = self._conn.execute(
+            """
+            INSERT INTO commissioning_proof_observation
+                (binding_hash, zone_id, gpio_pin, active_high, outcome,
+                 coil_state_commanded, level_driven, consent_nonce,
+                 consented_at_ms, commanded_at_ms, command_issued,
+                 effect_verified, operator_attestation, release_requested,
+                 held_ms, observation_json, outcome_note)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, ?, ?, ?)
+            """,
+            (
+                binding_hash,
+                zone_id,
+                int(gpio_pin),
+                1 if active_high else 0,
+                outcome,
+                coil_state_commanded,
+                level_driven,
+                consent_nonce,
+                int(consented_at_ms),
+                int(commanded_at_ms),
+                1 if command_issued else 0,
+                int(held_ms),
+                observation_json,
+                outcome_note,
+            ),
+        )
+        self._conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    async def complete_commissioning_proof_observation(
+        self,
+        *,
+        row_id: int,
+        commanded_at_ms: int,
+        command_issued: bool,
+        operator_attestation: str | None,
+        release_requested: bool,
+        held_ms: int,
+        observation_json: str | None,
+        outcome_note: str | None,
+    ) -> None:
+        """Complete the row the consent opened, once the command has been issued.
+
+        `effect_verified` is never set here and has no parameter. The runtime
+        does not observe the coil, so nothing it records may assert that the
+        commanded effect occurred.
+        """
+        await self._run_write(
+            self._complete_commissioning_proof_observation_sync,
+            row_id,
+            commanded_at_ms,
+            command_issued,
+            operator_attestation,
+            release_requested,
+            held_ms,
+            observation_json,
+            outcome_note,
+        )
+
+    def _complete_commissioning_proof_observation_sync(
+        self,
+        row_id: int,
+        commanded_at_ms: int,
+        command_issued: bool,
+        operator_attestation: str | None,
+        release_requested: bool,
+        held_ms: int,
+        observation_json: str | None,
+        outcome_note: str | None,
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE commissioning_proof_observation
+               SET commanded_at_ms = ?, command_issued = ?,
+                   operator_attestation = ?, release_requested = ?,
+                   held_ms = ?, observation_json = ?, outcome_note = ?
+             WHERE id = ?
+            """,
+            (
+                int(commanded_at_ms),
+                1 if command_issued else 0,
+                operator_attestation,
+                1 if release_requested else 0,
+                int(held_ms),
+                observation_json,
+                outcome_note,
+                int(row_id),
+            ),
+        )
+        self._conn.commit()
+
+    async def commissioning_proof_observations(self, binding_hash: str) -> list[dict]:
+        """Every recorded command for one provisional binding, oldest first."""
+        return await self._run_read(
+            self._commissioning_proof_observations_sync, binding_hash
+        )
+
+    def _commissioning_proof_observations_sync(
+        self, conn: sqlite3.Connection, binding_hash: str
+    ) -> list[dict]:
+        keys = (
+            "binding_hash",
+            "zone_id",
+            "gpio_pin",
+            "active_high",
+            "outcome",
+            "coil_state_commanded",
+            "level_driven",
+            "consent_nonce",
+            "consented_at_ms",
+            "commanded_at_ms",
+            "command_issued",
+            "effect_verified",
+            "operator_attestation",
+            "release_requested",
+            "held_ms",
+            "observation_json",
+            "outcome_note",
+        )
+        rows = conn.execute(
+            f"SELECT {', '.join(keys)} FROM commissioning_proof_observation "
+            "WHERE binding_hash = ? ORDER BY id ASC",
+            (binding_hash,),
+        ).fetchall()
+        return [dict(zip(keys, r, strict=True)) for r in rows]
 
     async def commissioned_binding_history(self) -> list[dict]:
         return await self._run_read(self._commissioned_binding_history_sync)

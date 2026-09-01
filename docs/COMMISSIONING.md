@@ -141,10 +141,72 @@ and health reports the actuator's coil state and last command under
   migrate the packaged Tier D triggers to profile outcomes. Those land with
   the safety registry. What the coil does when the controller is lost is a
   property of the wiring the commissioning observed, not of this software.
-- Does **not** offer the commissioning proof operation that closes the control
-  leg. Until it exists, a control leg is proven only by a producer that
-  performed the operation itself, so a runtime commissioned by the bench
-  tooling holds a provisional binding and drives nothing.
+- Offers the commissioning proof operation that closes the control leg. It is
+  runtime-owned code that a local tool invokes and does not perform: a tool
+  that built the actuator and drove the pin would prove what the tool did
+  rather than what `commanded_and_observed` attests.
+- Does **not** yet carry the producer half. `ori-cli` assembles the new signed
+  document from the exported observations, and until it does, a proven control
+  leg has to be signed by hand from `commissioning proof-export`.
+
+## The commissioning proof operation
+
+The control leg cannot be proven without moving the coil once through the path
+under test, and that command necessarily acts on a polarity that is still an
+assertion. The contract calls this a bounded commissioning hazard, and the
+runtime constrains it accordingly.
+
+`commissioning prove-command` issues exactly one coil command against one
+provisional zone. It refuses first, by name: no provisional binding, a zone
+already in force, hardened posture, a zone that is not `local_gpio`, an
+outcome outside the vocabulary, or no GPIO backend. There is no degraded path
+— a simulated command proves nothing, so the operation drives the declared pin
+or it refuses.
+
+Consent is taken interactively from `/dev/tty`, which the operation opens
+itself. Before each command it states the binding hash, the zone, the pin and
+its asserted polarity, the outcome, the coil state expected, the level to be
+driven, and what losing the controller does to this zone. One authorisation
+permits one command. It cannot be given by a pipe, a flag, an environment
+variable or a cached token, and it is recorded in the same row as the actuation
+it permitted.
+
+**A terminal does not prove presence.** Interactive consent establishes that an
+operator attested to this command, not that anyone is standing at the panel.
+Physical presence is a requirement of the commissioning procedure, and the
+runtime does not report it as something it verified.
+
+The pin is held for the command and no longer. Taking a GPIO line as an output
+drives it -- there is no high-impedance output, and gpiozero's `initial_value=None`
+only declines to choose a state, leaving whatever the register holds, which on an
+active-low stage is *energised*. Measured on a Pi 4 with gpiozero 2.0.1 at
+`active_high=False`: `None` drives the line low, `False` drives it high. The pin is
+therefore taken at the *requested* coil state, which makes the acquisition itself
+the single consented command -- taking it at de-energised and then commanding the
+outcome would issue two physical acts for one authorisation, and on a closing
+outcome would momentarily open the circuit. Nothing follows the acquisition, and
+the consent prompt says so before the operator authorises. Ordinary runtime
+startup keeps its explicit de-energised command, which is a different guarantee.
+It is released to an undriven input on every exit: success, refusal, driver
+error, cancellation, and a terminating signal, which is turned into a
+cancellation so the release still runs. It is never parked in a
+chosen state on the way out, because choosing one derives it from `active_high`.
+Releasing the pin leaves the line undriven. That is not by itself the zone's
+commissioned controller-loss condition: the operation does not read back the
+pull the platform leaves, and neither process death nor loss of power is
+reproduced by a released line. Each of those modes has to be observed at the
+panel and recorded. What the release does establish is that the operation holds
+the output only for the command and the operator's observation of it.
+
+`commissioning deliver` stages the verified document beside `ori.yaml`; the
+provisional record appears when the runtime next starts. So a freshly delivered
+binding needs one runtime start before `commissioning prove-command` can see it,
+and until then the operation answers `no_provisional_binding`.
+
+`commissioning proof-export` returns what was recorded, and is read-only: it
+accepts no observation, no consent, no pin value and no claimed outcome.
+Completion is a new signed document carrying both legs; the provisional record
+is never promoted in place.
 
 ## Producing a binding
 

@@ -24,11 +24,14 @@ Used for Tier B (soft physical) and Tier D (safety-critical) actions.
     - Losing the controller physically de-energises the coil.  What
       that does to the protected circuit is whatever commissioning
       observed, and nothing else.
-    - **Startup polarity is not trustworthy in this release.**
-      ``active_high`` is documented in ori.yaml and never reaches this
-      module, so on an active-low board the runtime's logical inactive
-      output energises the coil.  Do not rely on startup or crash state
-      to leave a load isolated until that is fixed (#397).
+    - **Polarity arrives from the commissioned binding, not from ori.yaml**,
+      which refuses ``actions.relay.active_high`` as a foreign field. Taking
+      the line always drives it, so the coil state is chosen at acquisition:
+      ``de_energised`` for startup, or the state a caller is deliberately
+      taking the line at.
+    - **Crash and power-loss state remain unproven.** A released line is not
+      the zone's commissioned controller-loss condition; each mode has to be
+      observed at the panel and recorded (#397).
     - Test with the load de-energised before connecting live circuits.
     - Never operate a relay above its rated duty cycle.
 
@@ -81,6 +84,9 @@ class _RelayDevice(Protocol):
 
     def off(self) -> None:
         """De-energise the pin."""
+
+    def close(self) -> None:
+        """Release the pin, returning it to an undriven input."""
 
 
 # Valid BCM GPIO pin numbers on Raspberry Pi 4 (pins 0–1 are reserved for
@@ -174,6 +180,7 @@ class RelayAction:
         active_high: bool = True,
         *,
         tolerate_missing_backend: bool = False,
+        initial_coil_state: str = "de_energised",
     ) -> None:
         """Initialise *gpio_pin* as a relay output.
 
@@ -185,6 +192,12 @@ class RelayAction:
             active_high: ``True`` if the relay activates on a HIGH signal
                 (default).  Set ``False`` for opto-isolated relay boards
                 that trigger on LOW — verify the relay datasheet.
+            initial_coil_state: The coil state the line is taken at. Defaults
+                to ``de_energised``, which is what runtime startup wants: the
+                lesser act, and the one predictable from the declared polarity.
+                The commissioning proof path passes the state it is proving, so
+                that taking the pin *is* the single consented command rather
+                than the first of two.
             tolerate_missing_backend: Permit a no-op relay when gpiozero cannot
                 be imported. Fail-closed by default; runtime startup opts in
                 only for development posture. It does **not** select simulation:
@@ -204,6 +217,13 @@ class RelayAction:
                 f"a safety action."
             )
 
+        if initial_coil_state not in ("energised", "de_energised"):
+            raise ValueError(
+                f"RelayAction: initial_coil_state={initial_coil_state!r} is not "
+                "a coil state; taking a line at an unrecognised state would "
+                "drive whichever level the default happens to be."
+            )
+
         self._pin = gpio_pin
         self._active_high = active_high
 
@@ -212,17 +232,23 @@ class RelayAction:
                 OutputDevice,
             )
 
-            # initial_value=False → relay starts de-energised
+            # Taking a pin as an output drives it; gpiozero offers no hi-Z, and
+            # `initial_value=None` only skips choosing a state, leaving whatever
+            # the output register holds — level 0 on every factory, which is
+            # *energised* on an active-low stage. The initial value is therefore
+            # always chosen, never defaulted: `de_energised` for startup, or the
+            # state a caller is deliberately taking the line at.
             self._device = OutputDevice(
                 gpio_pin,
                 active_high=active_high,
-                initial_value=False,
+                initial_value=(initial_coil_state == "energised"),
             )
             self._simulated = False
             logger.info(
-                "RelayAction: connected to GPIO pin %d (active_high=%s)",
+                "RelayAction: connected to GPIO pin %d (active_high=%s), coil taken %s",
                 gpio_pin,
                 active_high,
+                initial_coil_state,
             )
         except ImportError as exc:
             if not tolerate_missing_backend:
@@ -343,6 +369,31 @@ class RelayAction:
             logger.exception("RelayAction.release: error on GPIO pin %d", self._pin)
             return False
 
+    async def disconnect(self) -> None:
+        """Release the pin, returning it to an undriven input.
+
+        Distinct from `release`, which drives the coil de-energised and leaves
+        the pin an output. This surrenders the line; what the coil then does is
+        whatever the wiring does with the line undriven.
+
+        That is not the same as the zone's controller-loss condition, and this
+        does not establish one. The pull the platform leaves on a freed line is
+        not read back, and process death and loss of power are separate modes
+        this cannot reproduce. Each has to be observed at commissioning.
+        """
+        device, self._device = self._device, None
+        self._connected = False
+        self._simulated = False
+        if device is None:
+            return
+        try:
+            await asyncio.to_thread(device.close)
+        except Exception:  # noqa: BLE001 - a failed release must not mask the caller's error
+            logger.exception(
+                "RelayAction: releasing GPIO pin %s failed; the line may still be held",
+                self._pin,
+            )
+
     def _require_device(self) -> _RelayDevice:
         """Return the GPIO handle, or fail loudly.
 
@@ -361,6 +412,11 @@ class RelayAction:
         return device
 
     # ── State ─────────────────────────────────────────────────────────────────
+
+    @property
+    def is_simulated(self) -> bool:
+        """True when no hardware line was taken, so nothing was commanded."""
+        return self._simulated
 
     @property
     def is_active(self) -> bool:

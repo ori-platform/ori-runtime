@@ -1347,3 +1347,42 @@ def test_cli_bridge_errors_without_a_verdict_carry_no_stage(tmp_path, capsys):
     assert rc == 2
     assert error["code"] == "binding_unreadable"
     assert "stage" not in error
+
+
+def test_a_cancelled_command_still_emits_one_json_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ctrl-C reaches an asyncio runner as CancelledError, not an Exception.
+
+    Without a handler for it the operator gets a traceback where every other
+    path emits the single JSON object the bridge contract promises.
+    """
+    import asyncio
+
+    from ori import cli_bridge
+
+    async def cancelled(*args: object, **kwargs: object) -> dict:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(cli_bridge, "_commissioning_inventory", cancelled)
+    rc, payload = cli_bridge.run_bridge(
+        ["commissioning", "inventory", "--path", "ori.yaml"]
+    )
+    assert rc == 2
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "cancelled"
+    assert "CancelledError" in payload["error"]["detail"]
+
+
+def test_an_exiting_command_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`SystemExit` carries its own status and must not become an envelope."""
+    from ori import cli_bridge
+
+    async def exiting(*args: object, **kwargs: object) -> dict:
+        raise SystemExit(3)
+
+    monkeypatch.setattr(cli_bridge, "_commissioning_inventory", exiting)
+    with pytest.raises(SystemExit):
+        cli_bridge.run_bridge(["commissioning", "inventory", "--path", "ori.yaml"])
