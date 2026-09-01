@@ -127,19 +127,31 @@ class CoilDriver(Protocol):
         *,
         tolerate_missing_backend: bool = False,
         initial_coil_state: str = "de_energised",
-    ) -> None: ...
+    ) -> None:
+        """Take the line as an output, at the given coil state."""
+        raise NotImplementedError
 
-    async def disconnect(self) -> None: ...
+    async def disconnect(self) -> None:
+        """Release the line to an undriven input."""
+        raise NotImplementedError
 
-    async def trigger(self, duration_seconds: float | None = None) -> bool: ...
+    async def trigger(self, duration_seconds: float | None = None) -> bool:
+        """Energise the coil; True when the driver did."""
+        raise NotImplementedError
 
-    async def release(self) -> bool: ...
+    async def release(self) -> bool:
+        """De-energise the coil; True when the driver did."""
+        raise NotImplementedError
 
     @property
-    def is_simulated(self) -> bool: ...
+    def is_simulated(self) -> bool:
+        """True when no hardware line was taken, so nothing was commanded."""
+        raise NotImplementedError
 
     @property
-    def is_active(self) -> bool: ...
+    def is_active(self) -> bool:
+        """True when the driver reports the coil energised."""
+        raise NotImplementedError
 
 
 class ProofStore(Protocol):
@@ -162,7 +174,9 @@ class ProofStore(Protocol):
         held_ms: int,
         observation_json: str | None,
         outcome_note: str | None,
-    ) -> int: ...
+    ) -> int:
+        """Open the audit row at consent, returning its id."""
+        raise NotImplementedError
 
     async def complete_commissioning_proof_observation(
         self,
@@ -175,11 +189,13 @@ class ProofStore(Protocol):
         held_ms: int,
         observation_json: str | None,
         outcome_note: str | None,
-    ) -> None: ...
+    ) -> None:
+        """Close the row once the command has been issued."""
+        raise NotImplementedError
 
-    async def commissioning_proof_observations(
-        self, binding_hash: str
-    ) -> list[dict]: ...
+    async def commissioning_proof_observations(self, binding_hash: str) -> list[dict]:
+        """Every recorded command for one binding, oldest first."""
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -248,15 +264,25 @@ def attestation_for(observation: Observation) -> str:
 class Terminal(Protocol):
     """The controlling terminal, opened and owned by this module."""
 
-    def write(self, text: str) -> None: ...
+    def write(self, text: str) -> None:
+        """Put text on the terminal."""
+        raise NotImplementedError
 
-    def poll_line(self) -> str | None: ...
+    def poll_line(self) -> str | None:
+        """One complete line if one has arrived, else None. Never blocks."""
+        raise NotImplementedError
 
-    def at_eof(self) -> bool: ...
+    def at_eof(self) -> bool:
+        """The terminal has gone away; no further line can arrive."""
+        raise NotImplementedError
 
-    def flush_input(self) -> None: ...
+    def flush_input(self) -> None:
+        """Discard anything typed before now."""
+        raise NotImplementedError
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Release both handles."""
+        raise NotImplementedError
 
 
 class ControllingTerminal:
