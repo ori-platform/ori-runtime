@@ -120,15 +120,15 @@ class ProofRefusedError(Exception):
 
 
 class CoilDriver(Protocol):
-    async def connect(
+    async def acquire_at(
         self,
         gpio_pin: int,
-        active_high: bool = True,
+        active_high: bool,
         *,
+        coil_state: str,
         tolerate_missing_backend: bool = False,
-        initial_coil_state: str = "de_energised",
     ) -> None:
-        """Take the line as an output, at the given coil state."""
+        """Take the line already at *coil_state*."""
         raise NotImplementedError
 
     async def disconnect(self) -> None:
@@ -203,9 +203,12 @@ class Observation:
     """One contract-shaped observation of a commanded outcome.
 
     `commanded`, `coil_state` and `gpio_level` are the runtime's: it issued
-    them. The rest is the operator's, taken on the terminal. Sensor readings
-    and the instrument are absent unless someone supplied them, because an
-    unmeasured value is not zero.
+    them. The rest is the operator's, taken on the terminal.
+
+    Sensor readings and the instrument are carried but never populated here:
+    this command asks for no measurement, so every observation it produces is
+    without them. They are not optional in the sense of being available on
+    request -- a leg that needs a reading has to obtain it another way.
     """
 
     commanded: str
@@ -306,8 +309,21 @@ class ControllingTerminal:
         self._buffer = ""
         self._eof = False
         try:
-            self._read_fd = os.open(TTY_PATH, os.O_RDONLY | os.O_NONBLOCK)
-            self._out = open(TTY_PATH, "w", buffering=1, encoding="utf-8")
+            # O_NOCTTY: use the controlling terminal, never become one.
+            # Opening a tty device without it, from a session leader that has
+            # none, acquires it -- and the process group then takes SIGHUP when
+            # the other end closes. Consent must come from a terminal the
+            # operator already holds, not one this process just adopted.
+            self._read_fd = os.open(TTY_PATH, os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY)
+            # Both handles, for the same reason: `open()` passes no O_NOCTTY,
+            # so the write side would acquire the terminal the read side just
+            # declined to.
+            self._out = os.fdopen(
+                os.open(TTY_PATH, os.O_WRONLY | os.O_NOCTTY),
+                "w",
+                buffering=1,
+                encoding="utf-8",
+            )
         except OSError as exc:
             self.close()
             raise ProofRefusedError(

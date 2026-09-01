@@ -180,7 +180,6 @@ class RelayAction:
         active_high: bool = True,
         *,
         tolerate_missing_backend: bool = False,
-        initial_coil_state: str = "de_energised",
     ) -> None:
         """Initialise *gpio_pin* as a relay output.
 
@@ -192,12 +191,6 @@ class RelayAction:
             active_high: ``True`` if the relay activates on a HIGH signal
                 (default).  Set ``False`` for opto-isolated relay boards
                 that trigger on LOW — verify the relay datasheet.
-            initial_coil_state: The coil state the line is taken at. Defaults
-                to ``de_energised``, which is what runtime startup wants: the
-                lesser act, and the one predictable from the declared polarity.
-                The commissioning proof path passes the state it is proving, so
-                that taking the pin *is* the single consented command rather
-                than the first of two.
             tolerate_missing_backend: Permit a no-op relay when gpiozero cannot
                 be imported. Fail-closed by default; runtime startup opts in
                 only for development posture. It does **not** select simulation:
@@ -217,6 +210,49 @@ class RelayAction:
                 f"a safety action."
             )
 
+        await self._take_line(
+            gpio_pin,
+            active_high,
+            tolerate_missing_backend=tolerate_missing_backend,
+            initial_coil_state="de_energised",
+        )
+
+    async def acquire_at(
+        self,
+        gpio_pin: int,
+        active_high: bool,
+        *,
+        coil_state: str,
+        tolerate_missing_backend: bool = False,
+    ) -> None:
+        """Take the line already at *coil_state*, rather than at de-energised.
+
+        Taking a GPIO line as an output drives it, so acquiring at one state and
+        then commanding another is two physical acts. Where the acquisition is
+        the act being authorised -- the commissioning proof, which holds one
+        consent for one command -- the coil state belongs in the acquisition.
+
+        This is the only way to take a line already energised, and it exists for
+        that one caller. `connect` keeps the guarantee it always had, so nothing
+        reaches an energised acquisition without naming this method at the call
+        site. It is not an actuation path: it grants no tier, and the
+        commissioned seam is still what resolves an outcome to a coil state.
+        """
+        await self._take_line(
+            gpio_pin,
+            active_high,
+            tolerate_missing_backend=tolerate_missing_backend,
+            initial_coil_state=coil_state,
+        )
+
+    async def _take_line(
+        self,
+        gpio_pin: int,
+        active_high: bool,
+        *,
+        tolerate_missing_backend: bool,
+        initial_coil_state: str,
+    ) -> None:
         if initial_coil_state not in ("energised", "de_energised"):
             raise ValueError(
                 f"RelayAction: initial_coil_state={initial_coil_state!r} is not "
