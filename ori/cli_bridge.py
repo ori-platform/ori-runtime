@@ -209,10 +209,11 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
             code="internal_error",
             detail=str(exc),
         )
-    except BaseException as exc:
+    except (asyncio.CancelledError, KeyboardInterrupt) as exc:
         # Ctrl-C reaches an asyncio runner as CancelledError, which is not an
         # Exception: without this the operator gets a traceback instead of the
-        # single JSON object every other path emits.
+        # single JSON object every other path emits. `SystemExit` is deliberately
+        # not caught -- an exit already carries a status.
         return 2, _error(
             command=public_command,
             code="cancelled",

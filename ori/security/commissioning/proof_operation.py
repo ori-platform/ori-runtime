@@ -364,23 +364,17 @@ class ControllingTerminal:
         self._buffer = ""
         if self._read_fd is None:
             return
-        try:
+        with contextlib.suppress(OSError, ValueError):
             termios.tcflush(self._read_fd, termios.TCIFLUSH)
-        except (OSError, ValueError):
-            pass
 
     def close(self) -> None:
         if self._read_fd is not None:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(self._read_fd)
-            except OSError:
-                pass
             self._read_fd = None
         if self._out is not None:
-            try:
+            with contextlib.suppress(OSError):
                 self._out.close()
-            except OSError:
-                pass
             self._out = None
 
 

@@ -881,9 +881,11 @@ def test_only_a_matched_attestation_is_reported_as_a_success(
 
 
 class _NullStore:
-    async def open(self) -> None: ...
+    async def open(self) -> None:
+        pass
 
-    async def close(self) -> None: ...
+    async def close(self) -> None:
+        pass
 
 
 class _NullConfig:
@@ -959,7 +961,8 @@ class _NullProofStore:
     async def record_commissioning_proof_observation(self, **kwargs: Any) -> int:
         return 1
 
-    async def complete_commissioning_proof_observation(self, **kwargs: Any) -> None: ...
+    async def complete_commissioning_proof_observation(self, **kwargs: Any) -> None:
+        pass
 
     async def commissioning_proof_observations(self, binding_hash: str) -> list[dict]:
         return []
