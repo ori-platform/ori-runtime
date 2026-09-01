@@ -79,6 +79,8 @@ _PUBLIC_COMMANDS = {
     ("state", "history"): "state-history",
     ("commissioning", "inventory"): "commissioning-inventory",
     ("commissioning", "deliver"): "commissioning-deliver",
+    ("commissioning", "prove-command"): "commissioning-prove-command",
+    ("commissioning", "proof-export"): "commissioning-proof-export",
 }
 _SENSITIVE_KEY_FRAGMENTS = (
     "authorization",
@@ -165,6 +167,18 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
                     path, binding_path, force=_flag_present(args, "--force")
                 )
             )
+        elif command == "commissioning-prove-command":
+            path = _required_option(args, "--path", command)
+            outcome = _required_option(args, "--outcome", command)
+            _refuse_observation_flags(args)
+            result = asyncio.run(
+                _commissioning_prove_command(
+                    path, outcome=outcome, zone_id=_option(args, "--zone")
+                )
+            )
+        elif command == "commissioning-proof-export":
+            path = _required_option(args, "--path", command)
+            result = asyncio.run(_commissioning_proof_export(path))
         else:
             raise BridgeError(
                 "unknown_command",
@@ -194,6 +208,15 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
             command=public_command,
             code="internal_error",
             detail=str(exc),
+        )
+    except BaseException as exc:
+        # Ctrl-C reaches an asyncio runner as CancelledError, which is not an
+        # Exception: without this the operator gets a traceback instead of the
+        # single JSON object every other path emits.
+        return 2, _error(
+            command=public_command,
+            code="cancelled",
+            detail=f"the command was interrupted: {type(exc).__name__}",
         )
 
     return 0, {
@@ -265,6 +288,53 @@ def _required_option(args: list[str], name: str, command: str) -> str:
             f"{command} requires a non-empty value after {name}",
         )
     return value
+
+
+def _option(args: list[str], name: str) -> str | None:
+    """An optional `--flag value`, absent rather than empty when not given."""
+    try:
+        index = args.index(name)
+    except ValueError:
+        return None
+    try:
+        value = args[index + 1]
+    except IndexError as exc:
+        raise BridgeError("invalid_arguments", f"a value must follow {name}") from exc
+    if not value.strip() or value.startswith("--"):
+        raise BridgeError("invalid_arguments", f"a non-empty value must follow {name}")
+    return value
+
+
+#: Flags that once carried the operator's observation. The attestation is now
+#: taken on the terminal during the dwell, so any of these arriving is refused
+#: rather than ignored: silently dropping one would let an operator believe
+#: they had recorded something the runtime never saw.
+_OBSERVATION_FLAGS = (
+    "--observed-circuit",
+    "--load-before",
+    "--load-after",
+    "--sensor-before",
+    "--sensor-after",
+    "--instrument",
+)
+
+
+def _refuse_observation_flags(args: list[str]) -> None:
+    """An observation may not arrive as an argument."""
+    present = [
+        f
+        for f in _OBSERVATION_FLAGS
+        if f in args or any(a.startswith(f + "=") for a in args)
+    ]
+    if not present:
+        return
+    raise BridgeError(
+        "invalid_arguments",
+        f"{', '.join(present)} cannot be supplied: the observation is an "
+        "operator attestation taken on the terminal while the coil is held, "
+        "and a value passed before the command would report an effect that "
+        "has not happened yet.",
+    )
 
 
 def _optional_int_option(
@@ -937,6 +1007,130 @@ async def _commissioning_deliver(
             else "binding verified and staged; the runtime reads it when it next starts"
         ),
     }
+
+
+async def _proof_state(config: Config):
+    """The provisional and in-force bindings this device holds, and its posture."""
+    db_path = Path(
+        str(config.raw.get("database", {}).get("path", _DEFAULT_STATE_DB_PATH))
+    )
+    if not db_path.is_file():
+        return None, None, None
+    store = _commissioning_store(config)
+    await store.open()
+    try:
+        provisional_row = await store.get_provisional_binding()
+        in_force_row = await store.get_commissioned_binding_in_force()
+    finally:
+        await store.close()
+
+    def held(row: Any):
+        if row is None or str(row.get("device_id")) != str(config.device.id):
+            return None
+        return accepted_from_row(row)
+
+    return held(provisional_row), held(in_force_row), db_path
+
+
+async def _commissioning_prove_command(
+    config_path: str,
+    *,
+    outcome: str,
+    zone_id: str | None,
+) -> dict[str, Any]:
+    """Invoke the runtime's proof operation. This function performs none of it.
+
+    It parses arguments and hands them over. Validation, consent, the command,
+    the audit record and the pin's release all belong to `ProofOperation`,
+    which is runtime-owned code: a tool that built the actuator here and drove
+    the pin would prove what the tool did, not what the contract's
+    `commanded_and_observed` attests.
+    """
+    from ori.actions.relay import RelayAction, gpio_backend_arbitrated
+    from ori.security.commissioning.proof_operation import (
+        ProofOperation,
+        ProofRefusedError,
+    )
+
+    config = Config.load(config_path)
+    provisional, in_force, db_path = await _proof_state(config)
+    if db_path is None:
+        raise BridgeError(
+            "no_provisional_binding",
+            "this device has no state store, so it holds no provisional binding.",
+        )
+    store = _commissioning_store(config)
+    await store.open()
+    try:
+        operation = ProofOperation(
+            store=store,
+            driver=RelayAction(),
+            provisional=provisional,
+            in_force=in_force,
+            hardened=requires_production_posture(
+                device=config.device, security=config.security
+            ),
+            # Arbitrated, not merely importable: an unarbitrated factory drives
+            # the line without claiming it, so the kernel refuses no second
+            # writer -- which the runtime already refuses to start on.
+            gpio_backend_available=gpio_backend_arbitrated(),
+        )
+        try:
+            result = await operation.command(outcome=outcome, zone_id=zone_id)
+        except ProofRefusedError as refusal:
+            raise BridgeError(refusal.reason, refusal.detail) from None
+        attestation = result["operator_attestation"]
+        if attestation != "matched":
+            # Each negative gets its own code: a producer keying on `ok` alone
+            # would read them as a proof, and one keying on a shared code would
+            # record a timeout for an observation the operator completed.
+            code = {
+                "mismatched": "attestation_mismatched",
+                "inconclusive": "attestation_inconclusive",
+                "timeout": "observation_timeout",
+            }.get(attestation)
+            if code is None:
+                raise BridgeError(
+                    "internal_error",
+                    f"the operation returned an attestation this bridge does "
+                    f"not know how to report: {attestation!r}.",
+                )
+            raise BridgeError(
+                code,
+                f"the command was issued but no proof follows from it: "
+                f"operator attestation was {attestation!r}.",
+            )
+        return result
+    finally:
+        await store.close()
+
+
+async def _commissioning_proof_export(config_path: str) -> dict[str, Any]:
+    """Everything the runtime recorded against the provisional binding.
+
+    Read-only: it accepts no observation, no consent, no pin value and no
+    claimed outcome, so nothing a caller asserts can enter the record.
+    """
+    from ori.security.commissioning.proof_operation import (
+        ProofRefusedError,
+        export_observations,
+    )
+
+    config = Config.load(config_path)
+    provisional, _, db_path = await _proof_state(config)
+    if db_path is None:
+        raise BridgeError(
+            "no_provisional_binding",
+            "this device has no state store, so it holds no provisional binding.",
+        )
+    store = _commissioning_store(config)
+    await store.open()
+    try:
+        return await export_observations(store=store, provisional=provisional)
+    except ProofRefusedError as refusal:
+        raise BridgeError(refusal.reason, refusal.detail) from None
+    finally:
+        await store.close()
 
 
 def _declared_gpio_pin(config: Config) -> int | None:

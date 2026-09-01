@@ -30,12 +30,28 @@ OUTCOMES: frozenset[str] = frozenset(
 class CoilDriver(Protocol):
     """What the seam needs from a relay: energise, de-energise, and say which."""
 
+    async def connect(
+        self,
+        gpio_pin: int,
+        active_high: bool = True,
+        *,
+        tolerate_missing_backend: bool = False,
+        initial_coil_state: str = "de_energised",
+    ) -> None:
+        """Take the line as an output, at the given coil state."""
+        raise NotImplementedError
+
     async def trigger(self, duration_seconds: float | None = None) -> bool:
         """Energise the coil; True when the driver did."""
         raise NotImplementedError
 
     async def release(self) -> bool:
         """De-energise the coil; True when the driver did."""
+        raise NotImplementedError
+
+    @property
+    def is_simulated(self) -> bool:
+        """True when no hardware line was taken, so nothing was commanded."""
         raise NotImplementedError
 
     @property
@@ -128,6 +144,47 @@ class CommissionedActuator:
         """Execute a protected-circuit outcome through the commissioned mapping."""
         coil_state = self.coil_state_for(outcome)
         return await self.command_coil(coil_state, reason=outcome)
+
+    async def acquire_commanding(self, outcome: str) -> bool:
+        """Take the pin *at* an outcome's coil state, as the single command.
+
+        Taking a line as an output drives it, so a path that connects and then
+        commands issues two physical acts for one authorisation: de-energise,
+        then the outcome. Where the acquisition is the act being authorised --
+        the commissioning proof, which holds one consent for one command -- the
+        coil state belongs in the acquisition itself.
+
+        The caller must not follow this with `command`, `command_coil`,
+        `trigger` or `release`: the line is already at the commanded state.
+        Ordinary runtime startup keeps its explicit `command_coil` path, which
+        is a different guarantee -- it commands `de_energised` rather than
+        assuming the platform default is it.
+        """
+        coil_state = self.coil_state_for(outcome)
+        await self._driver.connect(
+            gpio_pin=int(self._zone.identity["gpio_pin"]),
+            active_high=self.active_high,
+            initial_coil_state=coil_state,
+        )
+        # A driver that took no real line commanded nothing, whatever the
+        # connect returned. Reported, never assumed.
+        executed = not self._driver.is_simulated
+        self._last = Actuation(
+            outcome=outcome,
+            coil_state=coil_state,
+            level=self.level_for(coil_state),
+            binding_seq=self._binding_seq,
+            executed=executed,
+        )
+        logger.info(
+            "[actuator] %s: line taken at coil %s (pin %s) under binding %d%s",
+            outcome,
+            coil_state,
+            self.level_for(coil_state),
+            self._binding_seq,
+            "" if executed else " — no hardware line was taken",
+        )
+        return executed
 
     @property
     def coil_energised(self) -> bool:
