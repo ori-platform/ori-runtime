@@ -1279,6 +1279,12 @@ PATTERN_AUDIT_EXEMPT = {
         "raw pin readings are the deliberately public provenance of a "
         "hardware observation."
     ),
+    "docs/evidence/2026-09-01-pi4-circuit-leg-observations.md": (
+        "Bench measurement record for protected-circuit behaviour at a wired "
+        "load, not evidence-chain evidence; its wiring, scripts and raw pin "
+        "readings are the deliberately public provenance of a hardware "
+        "observation."
+    ),
     "docs/INVERTER_CONTROL_LADDER.md": (
         "Inverter control reference written in Modbus register vocabulary."
     ),
