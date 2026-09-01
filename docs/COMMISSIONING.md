@@ -188,10 +188,47 @@ the zone's de-energised terminal state -- whatever commissioning recorded that
 to be -- rather than the outcome the operator authorised. Nothing follows the acquisition, and
 the consent prompt says so before the operator authorises. Ordinary runtime
 startup keeps its explicit de-energised command, which is a different guarantee.
-It is released to an undriven input on every exit: success, refusal, driver
-error, cancellation, and a terminating signal, which is turned into a
-cancellation so the release still runs. It is never parked in a
+It is released to an undriven input on every exit **where the operation's own
+code runs**: success, refusal, driver error, cancellation, and a terminating
+signal, which is turned into a cancellation so the release still runs. A process
+killed outright runs none of it — see below. It is never parked in a
 chosen state on the way out, because choosing one derives it from `active_high`.
+### Controller loss is not one condition — the contract names five; this bench measured four
+
+Observed on the bench Pi 4 (2026-09-01), board on its own supply so that
+removing the Pi's power left it running. The full record — platform, wiring,
+method, raw outputs and the limits of what it establishes — is
+[docs/evidence/2026-09-01-pi4-gpio-controller-loss.md](evidence/2026-09-01-pi4-gpio-controller-loss.md):
+
+| Mode | Coil | GPIO pad |
+|---|---|---|
+| Loss of power | **de-energises** | unpowered, cannot drive |
+| Process killed outright (`SIGKILL`) | **stays energised** | still an output, still driving |
+
+An orderly exit releases the line; `pinctrl` then reports it an input. After a
+`SIGKILL` the same pin reported `op -- pn | hi` at 0.2 s and again at 2 s, with
+the process confirmed dead and nothing holding the chip. The kernel did not
+reset the pad.
+
+**No release written in software can cover that mode**, because releasing a line
+requires code to run and `SIGKILL` is defined by code not running. The same
+logic covers an OOM kill and a kernel panic, though only the process-kill case
+was induced here: kernel failure was not tested, and the reset row covers one
+reset class (`sysrq-b`), not a genuine watchdog expiry.
+
+A zone whose hazardous state is the energised one therefore needs a hardware
+fail-safe that removes coil power when the controller stops — **and removing
+coil power is only a fail-safe where commissioning has established that the
+resulting terminal state is acceptable.** On a zone whose de-energised state is
+the hazardous one, the same mechanism creates the hazard it exists to prevent.
+The site-specific safety design decides, not the coil terminology; the
+remaining option is accepting that a crashed controller leaves the coil where
+it was commanded.
+
+This is why a binding's `de_energised_terminal_state` describes what the circuit
+does when the **coil loses power**, and not what it does when the controller
+dies. The two were discussed together before they were measured apart.
+
 Releasing the pin leaves the line undriven. That is not by itself the zone's
 commissioned controller-loss condition: the operation does not read back the
 pull the platform leaves, and neither process death nor loss of power is

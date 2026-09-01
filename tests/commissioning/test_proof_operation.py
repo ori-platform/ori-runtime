@@ -330,7 +330,15 @@ async def test_consent_states_every_fact_the_contract_requires(
     assert "open_protected_circuit" in shown
     assert "de_energised" in shown
     # what losing the controller does to this zone
-    assert "on controller loss" in shown
+    # Two conditions, not one, and they were measured to differ on a Pi 4:
+    # losing power de-energises the coil, a killed process leaves it commanded.
+    # An operator told only "on controller loss" would read one guarantee.
+    assert "on loss of coil power" in shown
+    # One Pi measurement does not license a universal per-zone fact. The prompt
+    # states what is logically certain (no cleanup runs when killed outright)
+    # and what is guaranteed (nothing), not what one platform happened to do.
+    assert "may leave this output commanded" in shown
+    assert "no software-guaranteed process-loss state" in shown
 
 
 async def test_refused_consent_commands_nothing(
