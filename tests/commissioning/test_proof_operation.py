@@ -446,8 +446,6 @@ async def test_the_pin_is_released_when_the_driver_fails(
 async def test_the_pin_is_released_when_the_command_is_cancelled(
     store: StateStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import asyncio
-
     class Cancelling(FakeDriver):
         async def connect(self, **kwargs: Any) -> None:
             self.connect_kwargs = kwargs
@@ -937,7 +935,7 @@ async def test_only_the_proof_operation_moves_a_pin_through_the_bridge(
         real_init(self, **kwargs)
 
     monkeypatch.setattr(proof_operation.ProofOperation, "__init__", spy)
-    monkeypatch.setattr(proof_operation, "_TERMINAL_FACTORY", lambda: FakeTerminal())
+    monkeypatch.setattr(proof_operation, "_TERMINAL_FACTORY", FakeTerminal)
 
     # The bridge hands a driver over rather than driving anything itself: no
     # pin has moved at the point the operation is constructed.
