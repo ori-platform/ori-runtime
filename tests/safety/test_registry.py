@@ -509,3 +509,135 @@ async def test_outcome_retry_never_crosses_an_unsettled_intent(
     await asyncio.sleep(1.2)
     assert await registry.retry_pending_once() == 1
     assert len(commander.outcome_calls) == 2
+
+
+class FakeSink:
+    def __init__(self) -> None:
+        self.notices: list[tuple[str, str]] = []
+
+    async def send(self, *, kind, zone_id, profile_id, message) -> bool:
+        self.notices.append((kind, zone_id))
+        return True
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1_756_684_800_000
+
+    def __call__(self) -> int:
+        return self.now
+
+
+def build_watched(store: StateStore, **over):
+    commander = FakeCommander()
+    sink = FakeSink()
+    clock = FakeClock()
+    registry = SafetyRegistry(
+        RATIFIED,
+        (zone(),),
+        TripJournal(store),
+        commander,
+        binding_seq=4,
+        alert_sink=sink,
+        poll_intervals_ms=over.pop(
+            "poll_intervals_ms", {"main-distribution-current": 1000}
+        ),
+        clock=clock,
+    )
+    return registry, commander, sink, clock
+
+
+async def test_rejected_reading_alerts_once_under_suppression(
+    store: StateStore,
+) -> None:
+    """An immediate Tier A notice, bounded so a persistent fault is not a
+    flood, resending only after the suppression window."""
+    registry, _, sink, clock = build_watched(store)
+    await registry.start()
+    for _ in range(3):
+        await registry.observe_reading("main-distribution-current", 5.0, "volt", 1.0)
+    assert sink.notices == [("rejected_input", "main-distribution")]
+    assert registry.health_snapshot()["suppressed_alerts"] == 2
+    pair_view = registry.health_snapshot()["pairs"][
+        "main-distribution/fixture.overcurrent.v1"
+    ]
+    assert pair_view["rejected_input_active"] is True
+    clock.now += 301_000
+    await registry.observe_reading("main-distribution-current", 5.0, "volt", 1.0)
+    assert len(sink.notices) == 2
+    await registry.observe_reading("main-distribution-current", 5.0, "ampere", 1.0)
+    assert (
+        registry.health_snapshot()["pairs"]["main-distribution/fixture.overcurrent.v1"][
+            "rejected_input_active"
+        ]
+        is False
+    )
+
+
+async def test_measurement_loss_degrades_alerts_and_holds_the_state(
+    store: StateStore,
+) -> None:
+    """No credible reading past the documented bound — the 60 s floor for a
+    fast poller: degraded, one notice, trip state held, and a credible
+    reading recovers it."""
+    registry, commander, sink, clock = build_watched(store)
+    await registry.start()
+    await registry.observe_reading("main-distribution-current", 25.0, "ampere", 1.0)
+    assert commander.outcome_calls  # tripped and latched
+
+    def _degraded() -> bool:
+        return registry.health_snapshot()["pairs"][
+            "main-distribution/fixture.overcurrent.v1"
+        ]["measurement_degraded"]
+
+    # A 1 s poller must not degrade at five intervals: the 60 s floor is a
+    # floor, not five-times-interval. Well past five intervals, still silent.
+    clock.now += 30_000
+    await registry.watch_measurement_loss()
+    assert not _degraded() and sink.notices == []
+    clock.now += 29_999
+    await registry.watch_measurement_loss()
+    assert not _degraded() and sink.notices == []
+    clock.now += 2
+    await registry.watch_measurement_loss()
+    assert _degraded()
+    assert ("measurement_loss", "main-distribution") in sink.notices
+    view = registry.health_snapshot()["pairs"][
+        "main-distribution/fixture.overcurrent.v1"
+    ]
+    assert view["measurement_degraded"] is True
+    assert view["state"] == "tripped"  # loss never moves the latch
+    await registry.observe_reading("main-distribution-current", 25.0, "ampere", 1.0)
+    assert (
+        registry.health_snapshot()["pairs"]["main-distribution/fixture.overcurrent.v1"][
+            "measurement_degraded"
+        ]
+        is False
+    )
+
+
+async def test_loss_watch_covers_a_sensor_that_never_connected(
+    store: StateStore,
+) -> None:
+    """No reading ever arrives — the watch runs from the configured interval
+    and the started baseline, not from adapter state."""
+    registry, _, sink, clock = build_watched(store)
+    await registry.start()
+    clock.now += 60_001
+    await registry.watch_measurement_loss()
+    assert ("measurement_loss", "main-distribution") in sink.notices
+
+
+async def test_retry_loop_runs_the_loss_watch(store: StateStore) -> None:
+    registry, _, sink, clock = build_watched(store)
+    await registry.start()
+    clock.now += 60_001
+    shutdown = asyncio.Event()
+
+    async def _stop_soon():
+        await asyncio.sleep(0.05)
+        shutdown.set()
+
+    await asyncio.gather(registry.run_retry_loop(shutdown), _stop_soon())
+    await asyncio.sleep(0)
+    assert ("measurement_loss", "main-distribution") in sink.notices

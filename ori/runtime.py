@@ -200,6 +200,28 @@ from ori.utils.time_utils import now_ms
 logger = logging.getLogger(__name__)
 
 
+class _SafetyAlertAdapter:
+    """The registry's alert sink: straight to the runtime's deliver-or-queue
+    path, never the dispatcher, never anything DevicePolicy can gate. The
+    sender arrives late in startup; a notice raised before then is refused
+    and the registry logs it."""
+
+    def __init__(self, runtime: "OriRuntime") -> None:
+        self._runtime = runtime
+        self.sender: AlertFailoverSender | None = None
+
+    async def send(
+        self, *, kind: str, zone_id: str, profile_id: str, message: str
+    ) -> bool:
+        if self.sender is None:
+            return False
+        return await self._runtime._send_or_queue_safety_alert(
+            message=f"SAFETY {kind}: {message}",
+            trigger_name=f"safety_{kind}",
+            alert_sender=self.sender,
+        )
+
+
 def _refuse_unbound_active_zones(unbound: list[str], *, hardened: bool) -> None:
     """Active protection needs a physical executor. A zone with an active
     profile and no bound actuator refuses a hardened start; a development
@@ -370,6 +392,7 @@ class OriRuntime:
         self._commissioning_state: CommissioningState | None = None
         self._safety_registry: SafetyRegistry | None = None
         self._safety_commander: ActuatorOutcomeCommander | None = None
+        self._safety_alert_sink: _SafetyAlertAdapter | None = None
         self._commissioned_actuator: CommissionedActuator | None = None
         self._firmware_confirmation_coordinator: (
             FirmwareConfirmationCoordinator | None
@@ -669,11 +692,17 @@ class OriRuntime:
         )
         assert self._state_store is not None
         self._safety_commander = ActuatorOutcomeCommander()
+        self._safety_alert_sink = _SafetyAlertAdapter(self)
         self._safety_registry = SafetyRegistry(
             load_shipped_profile_set(),
             in_force_zones,
             TripJournal(self._state_store),
             self._safety_commander,
+            alert_sink=self._safety_alert_sink,
+            poll_intervals_ms={
+                str(sensor.id): int(sensor.poll_interval_ms)
+                for sensor in config.sensors
+            },
             binding_seq=(
                 commissioning_state.in_force.binding_seq
                 if commissioning_state is not None
@@ -839,6 +868,8 @@ class OriRuntime:
             whatsapp_sender=whatsapp_action,
         )
         self._alert_sender = alert_sender
+        if self._safety_alert_sink is not None:
+            self._safety_alert_sink.sender = alert_sender
         causal_cfg = (
             config.reasoning.causal_memory
             if isinstance(config.reasoning.causal_memory, dict)
@@ -4037,6 +4068,63 @@ class OriRuntime:
                 "[runtime] alert already queued id=%s channel=%s", alert_id, channel
             )
         return True
+
+    async def _send_or_queue_safety_alert(
+        self,
+        *,
+        message: str,
+        trigger_name: str,
+        alert_sender: AlertFailoverSender,
+    ) -> bool:
+        """Mandatory safety notices: delivery or durable queue, structurally
+        outside DevicePolicy — no external-alert gate is consulted and no
+        policy-counted counter moves. Reachable only from the safety
+        registry's sink, never from skills or ordinary action execution."""
+        recipient = self._operator_contact
+        if not recipient:
+            logger.warning(
+                "[safety] notice not sent: operator_contact is not configured"
+            )
+            return False
+        channel = self._primary_alert_channel
+        alert_ts = now_ms()
+        self._last_alert_timestamps_by_channel[channel] = alert_ts
+        self._last_alert_timestamps_by_trigger[trigger_name] = alert_ts
+        delivered = False
+        try:
+            delivered = await alert_sender.send(
+                message=message,
+                to_number=recipient,
+                preferred_channel=channel,
+            )
+        except Exception:
+            logger.exception(
+                "[safety] %s notice send failed; falling back to outbox", channel
+            )
+        if delivered:
+            return True
+        if self._state_store is None:
+            logger.error(
+                "[safety] notice delivery failed and StateStore is unavailable"
+            )
+            return False
+        alert_id = _build_alert_id(
+            channel=channel,
+            recipient=recipient,
+            message=message,
+            action_tier="A",
+            trigger_name=trigger_name,
+            original_ts=alert_ts,
+        )
+        return await self._state_store.enqueue_alert(
+            alert_id=alert_id,
+            channel=channel,
+            recipient=recipient,
+            message=message,
+            action_tier="A",
+            trigger_name=trigger_name,
+            original_ts=alert_ts,
+        )
 
     async def _policy_permits_external_alert(
         self,

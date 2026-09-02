@@ -452,3 +452,65 @@ async def test_credible_reading_drives_the_deferred_acquisition_through_the_runt
     runtime = OriRuntime(config_path=str(_write_config(tmp_path)))
     await _run_until(runtime, lambda: True if calls else None)
     assert calls == [("acquire_at", "de_energised")]
+
+
+async def test_safety_notice_survives_a_denying_device_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exemption is structural: with the external-alert policy gate
+    denying everything, a rejected-input safety notice still reaches the
+    sender through the dedicated entrypoint, and the policy-counted
+    counter never moves for it."""
+    _write_binding(tmp_path)
+    _patch_environment(tmp_path, monkeypatch, ratified=True)
+    from ori.actions.alert_failover import AlertFailoverSender
+    from ori.hal.psutil_adapter import PsutilAdapter
+    from ori.network.events import SensorReading
+    from ori.utils.time_utils import now_ms
+
+    sent: list[str] = []
+    counted: list[str] = []
+
+    async def _deny(self, *, channel, action_tier):
+        return False
+
+    async def _spy_send(self, *, message, to_number, preferred_channel):
+        sent.append(message)
+        return True
+
+    async def _count(self, channel, *, action_tier):
+        counted.append(action_tier)
+
+    monkeypatch.setattr(OriRuntime, "_policy_permits_external_alert", _deny)
+    monkeypatch.setattr(OriRuntime, "_record_policy_counted_alert", _count)
+    monkeypatch.setattr(AlertFailoverSender, "send", _spy_send)
+    monkeypatch.setenv("OWNER_PHONE_NUMBER", "+2340000000000")
+
+    async def _rejected_read(self, sensor_id):
+        return SensorReading(
+            sensor_id=sensor_id,
+            sensor_type="current",
+            value=5.0,
+            unit="ampere",
+            timestamp=now_ms(),
+            quality=0.0,
+        )
+
+    monkeypatch.setattr(PsutilAdapter, "read", _rejected_read)
+    runtime = OriRuntime(config_path=str(_write_config_with_contact(tmp_path)))
+    await _run_until(
+        runtime,
+        lambda: True if any("SAFETY rejected_input" in m for m in sent) else None,
+    )
+    assert not counted
+
+
+def _write_config_with_contact(tmp_path: Path) -> Path:
+    cfg = _write_config(tmp_path)
+    text = cfg.read_text()
+    spliced = text.replace(
+        "actions:\n", 'actions:\n  operator_contact: "+2340000000000"\n', 1
+    )
+    assert spliced != text, "the config splice found no actions block"
+    cfg.write_text(spliced)
+    return cfg

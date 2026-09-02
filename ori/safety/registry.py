@@ -46,12 +46,35 @@ logger = logging.getLogger(__name__)
 # selects it — whoever chooses this number controls Tier D response latency.
 TRIP_INTENT_APPEND_DEADLINE_MS = 250
 
+# Safety notices repeat no faster than this per pair and kind: the contract
+# requires bounded suppression so a persistent fault is not a message flood.
+SAFETY_ALERT_SUPPRESSION_S = 300.0
+
+# Measurement loss is declared after this many missed poll intervals with
+# no credible reading, and never sooner than the floor: fast pollers get
+# the floor's tolerance, and a sensor with no declared interval gets
+# exactly the floor. Both are release-owned and documented, not
+# configurable.
+MEASUREMENT_LOSS_INTERVALS = 5
+MEASUREMENT_LOSS_FLOOR_MS = 60_000
+
 RETRY_BACKOFF_BASE_S = 1.0
 RETRY_BACKOFF_CAP_S = 60.0
 
 # How long the record write waits behind its own intent before deferring to
 # recovery. Release-owned like the deadline; injectable only for tests.
 RECORD_ORDER_GRACE_S = 5.0
+
+
+class SafetyAlertSink(Protocol):
+    """Where mandatory Tier A safety notices go. The runtime's sink calls
+    its delivery-or-durable-queue path directly — never the dispatcher and
+    never anything DevicePolicy can gate — so a safety-path notice cannot
+    disappear behind entitlement."""
+
+    async def send(
+        self, *, kind: str, zone_id: str, profile_id: str, message: str
+    ) -> bool: ...
 
 
 class OutcomeCommander(Protocol):
@@ -159,12 +182,24 @@ class SafetyRegistry:
         *,
         binding_seq: int,
         record_order_grace_s: float = RECORD_ORDER_GRACE_S,
+        alert_sink: SafetyAlertSink | None = None,
+        poll_intervals_ms: Mapping[str, int] | None = None,
+        clock: Any = now_ms,
     ) -> None:
         self._journal = journal
         self._commander = commander
         self._binding_seq = binding_seq
         self._record_order_grace_s = record_order_grace_s
         self._unsettled_intents: dict[tuple[str, str], asyncio.Future[None]] = {}
+        self._alert_sink = alert_sink
+        self._poll_intervals_ms = dict(poll_intervals_ms or {})
+        self._clock = clock
+        self._started_ms = int(clock())
+        self._last_credible_ms: dict[tuple[str, str], int] = {}
+        self._measurement_degraded: set[tuple[str, str]] = set()
+        self._rejected_active: set[tuple[str, str]] = set()
+        self._last_alert_ms: dict[tuple[tuple[str, str], str], int] = {}
+        self._suppressed_alerts = 0
         self._zones = {z.zone_id: z for z in zones}
         facts = [ZoneFacts.from_accepted_zone(z) for z in self._zones.values()]
         self._terminal_states = {
@@ -264,6 +299,27 @@ class SafetyRegistry:
                 range_max=entry.range_max,
             )
             transition = machine.observe(verdict)
+            if verdict.verdict == "rejected_input":
+                # A rejected reading never trips and never silently vanishes:
+                # an immediate Tier A notice under bounded suppression, and a
+                # health flag until a credible reading clears it.
+                self._rejected_active.add(pair)
+                await self._safety_alert(
+                    pair,
+                    "rejected_input",
+                    f"reading rejected ({verdict.reason}) on zone {pair[0]} "
+                    f"profile {pair[1]}; the profile cannot evaluate it",
+                )
+            else:
+                self._last_credible_ms[pair] = int(self._clock())
+                self._rejected_active.discard(pair)
+                if pair in self._measurement_degraded:
+                    self._measurement_degraded.discard(pair)
+                    logger.info(
+                        "[safety] measurement recovered zone=%s profile=%s",
+                        pair[0],
+                        pair[1],
+                    )
             if transition.outcome == OPEN_PROTECTED_CIRCUIT:
                 tripped_now = True
                 accepted = await self._attempt_command(pair, entry, machine)
@@ -449,10 +505,62 @@ class SafetyRegistry:
             recovered += 1
         return recovered
 
+    async def _safety_alert(
+        self, pair: tuple[str, str], kind: str, message: str
+    ) -> None:
+        key = (pair, kind)
+        now = int(self._clock())
+        last = self._last_alert_ms.get(key)
+        if last is not None and now - last < SAFETY_ALERT_SUPPRESSION_S * 1000:
+            self._suppressed_alerts += 1
+            return
+        self._last_alert_ms[key] = now
+        if self._alert_sink is None:
+            logger.error("[safety] %s (no alert sink wired): %s", kind, message)
+            return
+        delivered = await self._alert_sink.send(
+            kind=kind, zone_id=pair[0], profile_id=pair[1], message=message
+        )
+        if not delivered:
+            logger.error(
+                "[safety] %s notice not delivered or queued: %s", kind, message
+            )
+
+    async def watch_measurement_loss(self) -> None:
+        """The per-pair loss watch: no credible reading for longer than the
+        documented bound — five intervals, never sooner than the floor —
+        degrades the pair, alerts under suppression, and holds the trip
+        state, because v1 never opens a circuit on loss. It runs from
+        configured intervals, so a sensor whose adapter never connected is
+        watched from the start rather than absent. Degradation is recorded
+        synchronously; the notice is awaited, not fired and forgotten."""
+        now = int(self._clock())
+        newly_lost: list[tuple[tuple[str, str], int, int]] = []
+        for pair, entry in self._active.items():
+            interval = self._poll_intervals_ms.get(entry.sensor_id, 0)
+            bound = max(
+                interval * MEASUREMENT_LOSS_INTERVALS, MEASUREMENT_LOSS_FLOOR_MS
+            )
+            last = self._last_credible_ms.get(pair, self._started_ms)
+            if now - last <= bound or pair in self._measurement_degraded:
+                continue
+            self._measurement_degraded.add(pair)
+            newly_lost.append((pair, now - last, bound))
+        for pair, elapsed, bound in newly_lost:
+            await self._safety_alert(
+                pair,
+                "measurement_loss",
+                f"no credible reading for zone {pair[0]} profile {pair[1]} "
+                f"in {elapsed} ms (bound {bound} ms); trip state held",
+            )
+
     async def run_retry_loop(self, shutdown: asyncio.Event) -> None:
-        """Bounded backoff, no terminal limit, stops only on shutdown."""
+        """Bounded backoff, no terminal limit, stops only on shutdown; each
+        pass also runs the measurement-loss watch, so its cadence is bounded
+        by the backoff cap."""
         delay = RETRY_BACKOFF_BASE_S
         while not shutdown.is_set():
+            await self.watch_measurement_loss()
             attempted = await self.retry_pending_once()
             attempted += await self.retry_records_once()
             delay = (
@@ -482,7 +590,15 @@ class SafetyRegistry:
                     "record": m.record_state,
                     "effect": m.effect,
                     "orphaned": m.orphaned,
+                    "measurement_degraded": (zone_id, profile_id)
+                    in self._measurement_degraded,
+                    "rejected_input_active": (zone_id, profile_id)
+                    in self._rejected_active,
+                    "last_credible_at_ms": self._last_credible_ms.get(
+                        (zone_id, profile_id)
+                    ),
                 }
                 for (zone_id, profile_id), m in sorted(self._machines.items())
             },
+            "suppressed_alerts": self._suppressed_alerts,
         }
