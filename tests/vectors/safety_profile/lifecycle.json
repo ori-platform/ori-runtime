@@ -742,7 +742,7 @@
     },
     {
       "name": "closed_terminal_startup_hazard_first_reading_never_closes",
-      "note": "The first credible reading satisfies the condition: the zone trips and the deferred closing command is never given.",
+      "note": "The first credible reading satisfies the condition: the zone trips and the deferred closing command is never given — not at the trip, and not for a later clear reading, because a latched zone's circuit is closed only by reset.",
       "profile": "fixture.overcurrent.v1",
       "zone": {
         "rated_capacity": {
@@ -771,12 +771,18 @@
           "expect_outcome": "open_protected_circuit",
           "expect_startup_command": null,
           "expect_command_status": "command_issued"
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_state": "tripped",
+          "expect_startup_command": null
         }
       ]
     },
     {
       "name": "two_profiles_one_zone_defer_until_all_evaluated",
-      "note": "Two active profiles on one closed-terminal zone. A reading between the trip points trips one pair and not the other, and the zonal closing command is withheld because the reading did not clear every profile.",
+      "note": "Two active profiles on one closed-terminal zone. A reading between the trip points trips one pair and not the other, and the zonal closing command is withheld because the reading did not clear every profile. A later clear reading does not revive the zonal command either: one pair is latched, and only reset closes it.",
       "profiles": [
         "fixture.overcurrent.v1",
         "fixture.overcurrent_aux.v1"
@@ -808,6 +814,19 @@
           "value": 22.0,
           "expect_outcomes": {
             "fixture.overcurrent.v1": "open_protected_circuit",
+            "fixture.overcurrent_aux.v1": null
+          },
+          "expect_states": {
+            "fixture.overcurrent.v1": "tripped",
+            "fixture.overcurrent_aux.v1": "inactive"
+          },
+          "expect_startup_command": null
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_outcomes": {
+            "fixture.overcurrent.v1": null,
             "fixture.overcurrent_aux.v1": null
           },
           "expect_states": {
@@ -1953,7 +1972,7 @@
     },
     {
       "name": "duplicate_attempt_id_refuses",
-      "note": "Two entries claiming one attempt identity is corruption beyond the entry level: the journal refuses to load.",
+      "note": "Two unresolved entries claiming one attempt identity violate nothing but the duplicate rule, so only that rule can refuse them — corruption beyond the entry level, refusing the journal.",
       "profile": "fixture.overcurrent.v1",
       "zone": {
         "zone_id": "protected-zone",
@@ -1988,8 +2007,8 @@
             "attempt_id": "a-1",
             "binding_seq": 1,
             "outcome": "open_protected_circuit",
-            "created_at_ms": 1756684800000,
-            "resolved": true
+            "created_at_ms": 1756684800001,
+            "resolved": false
           }
         }
       ]
@@ -2054,6 +2073,56 @@
             "outcome": "open_protected_circuit",
             "created_at_ms": 1756684800000,
             "resolved": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "journal_record_without_status_refuses",
+      "note": "A journal record entry with no command status. Legacy treatment is the pre-journal source's alone; a current-format row missing its status is corruption, and loading it as retryable legacy would launder it into history.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "durable_state": "tripped",
+      "durable_journal": [
+        {
+          "record": {}
+        }
+      ]
+    },
+    {
+      "name": "journal_record_empty_status_refuses",
+      "note": "The same with an empty string, which a truthiness fallback would silently replace.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "durable_state": "tripped",
+      "durable_journal": [
+        {
+          "record": {
+            "command_status": ""
           }
         }
       ]
