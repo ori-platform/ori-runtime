@@ -1,13 +1,13 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "safety-profile/vectors",
-  "source_commit": "7db6ed2e7ba6abc0a9e7edf0fe0e7f2f83aa937e",
+  "source_commit": "df2ea27c57898eb660e9dbbe64b1341fc2390104",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {
     "activation.json": "33700efe31ebf11dc02cbf43168cde4e2181a551239489da565acf206ac2a5f7",
     "evaluation.json": "3c2f0a5de078d7fa90f06538a5f38ed06f65ef6aa230d2f806192b8c1f10f991",
     "legacy-actions.json": "301cf959cd46f23dfc1ce1bfc618c0735c5f01b482897bede68bd1898afdd4ab",
-    "lifecycle.json": "f4bc75c80205c1c6ea489748c117007bf110b0dc55f410e435319f6f769fa292",
+    "lifecycle.json": "9a77f69ec0ab8b7f4fe28c1af2c4a54fbfba70f0a1a3617a4b9e3dc8e6e7961e",
     "profile-load.json": "486d2acbfc769bb82d611175bb872de0f367edffe21c3a340a67d2d068737fc9",
     "profiles.json": "a42d678cbda65f18885800dfe3a8df02b59e5269d0ab35cc0da9566c0dabccea"
   }

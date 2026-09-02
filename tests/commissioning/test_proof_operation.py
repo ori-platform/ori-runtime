@@ -1422,7 +1422,7 @@ def test_only_the_commissioned_seam_can_take_a_line_energised() -> None:
                 and node.func.attr == "acquire_at"
             ):
                 callers.append(str(path))
-    assert callers == ["ori/actions/commissioned_actuator.py"], callers
+    assert set(callers) == {"ori/actions/commissioned_actuator.py"}, callers
 
 
 def test_the_terminal_is_never_acquired_only_used(

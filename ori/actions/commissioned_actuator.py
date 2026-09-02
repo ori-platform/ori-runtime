@@ -145,6 +145,39 @@ class CommissionedActuator:
         coil_state = self.coil_state_for(outcome)
         return await self.command_coil(coil_state, reason=outcome)
 
+    async def acquire_coil(self, coil_state: str, *, reason: str) -> bool:
+        """Take the pin *at* a coil state directly, as one physical act.
+
+        The deferred-startup path uses this: on a closed-terminal zone the
+        acquisition itself drives the line, so connecting de-energised and
+        commanding later would close the protected circuit before the first
+        credible reading. One acquisition, at the licensed state, is the
+        whole act."""
+        if coil_state not in ("energised", "de_energised"):
+            raise ValueError(f"{coil_state!r} is not a coil state")
+        await self._driver.acquire_at(
+            gpio_pin=int(self._zone.identity["gpio_pin"]),
+            active_high=self.active_high,
+            coil_state=coil_state,
+        )
+        executed = not self._driver.is_simulated
+        self._last = Actuation(
+            outcome=reason,
+            coil_state=coil_state,
+            level=self.level_for(coil_state),
+            binding_seq=self._binding_seq,
+            executed=executed,
+        )
+        logger.info(
+            "[actuator] %s: line taken at coil %s (pin %s) under binding %d%s",
+            reason,
+            coil_state,
+            self.level_for(coil_state),
+            self._binding_seq,
+            "" if executed else " — no hardware line was taken",
+        )
+        return executed
+
     async def acquire_commanding(self, outcome: str) -> bool:
         """Take the pin *at* an outcome's coil state, as the single command.
 
