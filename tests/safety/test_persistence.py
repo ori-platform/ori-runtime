@@ -173,3 +173,22 @@ async def test_malformed_record_row_refuses_at_load(journal: TripJournal) -> Non
     machine = ZoneTripState(*PAIR)
     with pytest.raises(DurableStateError):
         machine.startup(durable_state, entries)
+
+
+async def test_empty_status_record_row_refuses_at_load(journal: TripJournal) -> None:
+    """The empty-string sibling of the NULL row: a truthiness fallback would
+    silently replace it, so it must refuse instead."""
+    await _append_intent(journal)
+    store = journal._store
+    assert store._conn is not None
+    store._conn.execute(
+        "INSERT INTO safety_trip_journal "
+        "(zone_id, profile_id, entry_kind, command_status, created_at_ms) "
+        "VALUES (?, ?, 'record', '', 1)",
+        PAIR,
+    )
+    store._conn.commit()
+    durable_state, entries = await journal.load(*PAIR)
+    machine = ZoneTripState(*PAIR)
+    with pytest.raises(DurableStateError):
+        machine.startup(durable_state, entries)
