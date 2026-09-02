@@ -74,7 +74,9 @@ class SafetyAlertSink(Protocol):
 
     async def send(
         self, *, kind: str, zone_id: str, profile_id: str, message: str
-    ) -> bool: ...
+    ) -> bool:
+        """Deliver or durably queue one notice; True when it is accounted for."""
+        raise NotImplementedError
 
 
 class OutcomeCommander(Protocol):
@@ -82,11 +84,11 @@ class OutcomeCommander(Protocol):
 
     async def command_outcome(self, zone_id: str, outcome: str) -> bool:
         """Command a protected-circuit outcome; True when the driver accepts."""
-        ...
+        raise NotImplementedError
 
     async def command_startup_de_energised(self, zone_id: str) -> bool:
         """The startup coil command, through the zone's commissioned mapping."""
-        ...
+        raise NotImplementedError
 
 
 class _RegistryAuthority:
