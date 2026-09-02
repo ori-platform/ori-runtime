@@ -145,9 +145,15 @@ def _load_journal(
         if "record" in entry:
             unresolved = []
             unjustified_resolutions = 0
-            status = entry["record"].get("command_status") or "legacy"
-            if status not in COMMAND_STATUSES and status != "legacy":
-                raise DurableStateError(f"unknown durable command status {status!r}")
+            status = entry["record"].get("command_status")
+            # A journal record is current-format by construction: legacy
+            # treatment exists only for the pre-journal durable source, so a
+            # missing or empty status here is corruption, not history.
+            if status not in COMMAND_STATUSES or status == "none":
+                raise DurableStateError(
+                    f"journal record carries command status {status!r}, "
+                    "outside the vocabulary"
+                )
             record_status = status
             continue
         if "intent" in entry:

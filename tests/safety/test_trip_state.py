@@ -422,3 +422,17 @@ def test_crash_drops_the_lease_but_not_the_pending_posture() -> None:
     assert machine.state == "tripped"
     assert machine.command_status == "command_pending"
     assert machine.outcome_retry().retry == "attempted"
+
+
+@pytest.mark.parametrize(
+    "record",
+    [{}, {"command_status": None}, {"command_status": ""}, {"command_status": "none"}],
+    ids=["absent", "null", "empty", "none_literal"],
+)
+def test_journal_record_without_a_real_status_refuses(record: dict) -> None:
+    """Legacy treatment belongs to the pre-journal durable source alone: a
+    journal record missing its command status is corruption, and loading it
+    as retryable legacy would launder a malformed current row into history."""
+    machine = ZoneTripState("protected-zone", "fixture.overcurrent.v1")
+    with pytest.raises(DurableStateError):
+        machine.startup("tripped", [{"record": record}])
