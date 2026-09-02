@@ -200,6 +200,14 @@ class SafetyRegistry:
     def startup_verdict(self, *, hardened: bool) -> str:
         return self.activation.startup_verdict(hardened=hardened)
 
+    @property
+    def zones_with_active_pairs(self) -> frozenset[str]:
+        """Zones whose startup coil command this registry owns: the
+        terminal-state conditioning and the latch check only exist where a
+        profile is active, and every other zone keeps the plain startup
+        de_energised command it has today."""
+        return frozenset(entry.zone_id for entry in self._active.values())
+
     async def start(self) -> None:
         """Load durable state for every pair — active and orphaned alike —
         and issue the terminal-state-conditioned startup commands. Must run

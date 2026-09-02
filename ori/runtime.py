@@ -100,6 +100,8 @@ from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfi
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM, local_llm_backend_available
 from ori.runtime_health_socket import RuntimeHealthSocketServer
+from ori.safety.commander import ActuatorOutcomeCommander
+from ori.safety.registry import SafetyRegistry
 from ori.security.commissioning.anchors import (
     AnchorError,
     CommissioningAnchors,
@@ -188,7 +190,7 @@ from ori.skills.loader import (
     SkillLoader,
 )
 from ori.skills.signing import verify_signed_payload
-from ori.state.store import StateStore
+from ori.state.store import StateStore, TripJournal
 from ori.telemetry.http_export import HttpTelemetryExporter
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
@@ -196,6 +198,25 @@ from ori.utils.path_utils import path_is_relative_to
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
+
+
+def _refuse_unbound_active_zones(unbound: list[str], *, hardened: bool) -> None:
+    """Active protection needs a physical executor. A zone with an active
+    profile and no bound actuator refuses a hardened start; a development
+    start degrades it explicitly rather than reporting protection."""
+    if not unbound:
+        return
+    if hardened:
+        raise ConfigValidationError(
+            "hardened posture refuses to start: zones with active safety "
+            f"profiles have no bound executor: {', '.join(unbound)}"
+        )
+    logger.warning(
+        "[safety] starting degraded: zones %s have active profiles and no "
+        "bound executor; their profiles cannot actuate",
+        unbound,
+    )
+
 
 WATCHDOG_DEVICE = "/dev/watchdog"
 WATCHDOG_PING_INTERVAL = 10  # seconds — kernel expects a ping at least this often
@@ -347,6 +368,8 @@ class OriRuntime:
         self._evidence_outbound_publisher: MqttEvidenceOutboundPublisher | None = None
         self._evidence_posture_problems: list[str] = []
         self._commissioning_state: CommissioningState | None = None
+        self._safety_registry: SafetyRegistry | None = None
+        self._safety_commander: ActuatorOutcomeCommander | None = None
         self._commissioned_actuator: CommissionedActuator | None = None
         self._firmware_confirmation_coordinator: (
             FirmwareConfirmationCoordinator | None
@@ -634,6 +657,53 @@ class OriRuntime:
         )
         if has_relay_config and zone is not None and not zone.in_force_eligible:
             zone = None
+        # The safety registry activates release-shipped profiles on the
+        # in-force zones before any pin is driven, and its refusals gate a
+        # hardened start exactly as a missing hardware backend does.
+        in_force_zones = (
+            commissioning_state.in_force.zones
+            if commissioning_state is not None
+            and commissioning_state.actuation_licensed
+            and commissioning_state.in_force is not None
+            else ()
+        )
+        assert self._state_store is not None
+        self._safety_commander = ActuatorOutcomeCommander()
+        self._safety_registry = SafetyRegistry(
+            load_shipped_profile_set(),
+            in_force_zones,
+            TripJournal(self._state_store),
+            self._safety_commander,
+            binding_seq=(
+                commissioning_state.in_force.binding_seq
+                if commissioning_state is not None
+                and commissioning_state.in_force is not None
+                else 0
+            ),
+        )
+        safety_verdict = self._safety_registry.startup_verdict(
+            hardened=requires_production_posture(
+                device=config.device, security=config.security
+            )
+        )
+        if safety_verdict == "refuse":
+            refusals = ", ".join(
+                f"{r.zone_id}/{r.profile_id}: {r.reason}"
+                for r in self._safety_registry.activation.refused
+            )
+            raise ConfigValidationError(
+                "hardened posture refuses to start with refused safety-profile "
+                f"activations: {refusals}"
+            )
+        if safety_verdict == "start_degraded":
+            logger.warning(
+                "[safety] starting degraded: refused activations %s; those zones "
+                "are not protected by their profiles",
+                [
+                    (r.zone_id, r.profile_id, r.reason)
+                    for r in self._safety_registry.activation.refused
+                ],
+            )
         if has_relay_config and zone is None:
             logger.warning(
                 "[runtime] relay on GPIO pin %s is declared but has no zone in force "
@@ -642,7 +712,45 @@ class OriRuntime:
                 config.actions.relay.get("gpio_pin"),
             )
             has_relay_config = False
-        if has_relay_config and zone is not None and commissioning_state is not None:
+        if self._safety_registry is not None:
+            prospective_bound = (
+                frozenset({zone.zone_id})
+                if has_relay_config and zone is not None
+                else frozenset()
+            )
+            _refuse_unbound_active_zones(
+                sorted(
+                    self._safety_registry.zones_with_active_pairs - prospective_bound
+                ),
+                hardened=requires_production_posture(
+                    device=config.device, security=config.security
+                ),
+            )
+        defer_line_acquisition = (
+            zone is not None
+            and self._safety_registry is not None
+            and zone.zone_id in self._safety_registry.zones_with_active_pairs
+            and zone.mapping.get("de_energised_terminal_state") == "closed"
+        )
+        if (
+            has_relay_config
+            and zone is not None
+            and commissioning_state is not None
+            and defer_line_acquisition
+        ):
+            # Connecting acquires the line de-energised, which on this zone
+            # closes the protected circuit — the act the registry defers
+            # until the first credible reading. The line stays untouched;
+            # the registry's first command is the acquisition.
+            relay_action = RelayAction()
+            if not gpio_backend_importable() and requires_production_posture(
+                device=config.device, security=config.security
+            ):
+                raise ConfigValidationError(
+                    "production posture requires a real GPIO backend for the "
+                    f"deferred-acquisition relay on pin {config.actions.relay['gpio_pin']}"
+                )
+        elif has_relay_config and zone is not None and commissioning_state is not None:
             relay_action = RelayAction()
             gpio_pin: int = config.actions.relay["gpio_pin"]
             try:
@@ -689,10 +797,23 @@ class OriRuntime:
                 zone=zone,
                 binding_seq=commissioning_state.in_force.binding_seq,
             )
-            # Startup commands the coil, it does not assume it: de_energised
-            # through the commissioned polarity, whatever the platform default.
-            await actuator.command_coil("de_energised", reason="startup")
             self._commissioned_actuator = actuator
+            if self._safety_commander is not None:
+                self._safety_commander.bind(
+                    zone.zone_id, actuator, defer_acquisition=defer_line_acquisition
+                )
+            if (
+                self._safety_registry is None
+                or zone.zone_id not in self._safety_registry.zones_with_active_pairs
+            ):
+                # Startup commands the coil, it does not assume it:
+                # de_energised through the commissioned polarity, whatever
+                # the platform default. A zone with an active profile gets
+                # the terminal-state-conditioned command from the registry
+                # instead, which also honours a durable latch.
+                await actuator.command_coil("de_energised", reason="startup")
+        if self._safety_registry is not None:
+            await self._safety_registry.start()
 
         # operator_contact is a first-class config field, not assembled from sub-dicts
         _operator_contact: str = config.actions.operator_contact or ""
@@ -1412,6 +1533,12 @@ class OriRuntime:
         await self._send_setup_success_notifications(config, alert_sender)
 
         # Block here until stop() sets the shutdown event
+        if self._safety_registry is not None:
+            self._background_tasks.append(
+                asyncio.create_task(
+                    self._safety_registry.run_retry_loop(self._shutdown_event)
+                )
+            )
         await self._shutdown_event.wait()
 
     async def stop(self) -> None:
@@ -2760,6 +2887,12 @@ class OriRuntime:
                 }
             )
 
+        safety_state: dict[str, Any] | None = (
+            self._safety_registry.health_snapshot()
+            if self._safety_registry is not None
+            else None
+        )
+
         device_policy_state: dict[str, Any]
         if self._dispatcher is not None:
             device_policy_state = self._dispatcher.get_policy_state_snapshot()
@@ -2805,6 +2938,7 @@ class OriRuntime:
             "gateway_broker_posture": self._gateway_broker_posture_health(),
             "state_store_encryption": self._state_store_encryption_health(),
             "sensors": sensors,
+            "safety": safety_state,
             "last_alert_timestamps": {
                 "by_channel": dict(self._last_alert_timestamps_by_channel),
                 "by_trigger": dict(self._last_alert_timestamps_by_trigger),
@@ -3007,6 +3141,24 @@ class OriRuntime:
         while not self._shutdown_event.is_set():
             try:
                 reading = await adapter.read(sensor_cfg.id)
+                # The safety registry consumes every reading synchronously,
+                # before deduplication, history, the EventBus, or any skill:
+                # a duplicate is irrelevant to skills and still matters to
+                # credible-reading freshness and a latched trip.
+                if self._safety_registry is not None:
+                    for decision in await self._safety_registry.observe_reading(
+                        reading.sensor_id,
+                        reading.value,
+                        reading.unit,
+                        reading.quality,
+                    ):
+                        if decision.tripped:
+                            logger.critical(
+                                "[safety] TRIP zone=%s profile=%s driver_accepted=%s",
+                                decision.pair[0],
+                                decision.pair[1],
+                                decision.driver_accepted,
+                            )
                 self._sensor_last_seen_ms[sensor_cfg.id] = now_ms()
                 await self._note_measurement_accepted(str(sensor_cfg.id))
                 if sensor_cfg.id in self._stale_sensor_active:
