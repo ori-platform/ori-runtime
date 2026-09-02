@@ -46,6 +46,20 @@
         "threshold": 400.0
       },
       "outcome": "open_protected_circuit"
+    },
+    {
+      "v": 1,
+      "id": "fixture.overcurrent_aux.v1",
+      "status": "ratified",
+      "observes": {
+        "quantity": "current",
+        "unit": "ampere"
+      },
+      "condition": {
+        "kind": "upper_bound",
+        "threshold": 28.0
+      },
+      "outcome": "open_protected_circuit"
     }
   ],
   "states": [
@@ -78,14 +92,16 @@
           "unit": "ampere",
           "range_min": 0.0,
           "range_max": 30.0
-        }
+        },
+        "de_energised_terminal_state": "open"
       },
       "trip_point": 20.0,
       "events": [
         {
           "event": "startup",
           "durable_state": "none",
-          "expect_state": "inactive"
+          "expect_state": "inactive",
+          "expect_startup_command": "de_energised"
         },
         {
           "event": "safety_path_confirmed",
@@ -267,7 +283,7 @@
     },
     {
       "name": "crash_before_trip_record_is_recovered_by_the_arming_rule",
-      "note": "The trip executed but the process died before recording it. On restart nothing is on disk, the hazard persists, and the first credible reading takes the zone to tripped before any arm attempt could close the circuit.",
+      "note": "The residual crash path: the trip-intent append failed before the process died between command and record, so the restart finds neither a durable trip nor an unresolved intent. Recovery is the arming rule; the intent-recorded path is its own case.",
       "profile": "fixture.overcurrent.v1",
       "zone": {
         "rated_capacity": {
@@ -305,7 +321,8 @@
           "event": "reading",
           "value": 25.0,
           "expect_state": "tripped",
-          "expect_outcome": "open_protected_circuit"
+          "expect_outcome": "open_protected_circuit",
+          "intent_result": "append_failed"
         },
         {
           "event": "restart",
@@ -613,6 +630,1431 @@
           "source": "configuration",
           "expect_state": "inactive",
           "expect_refusal": "no_authority"
+        }
+      ]
+    },
+    {
+      "name": "intent_recorded_crash_loads_tripped",
+      "note": "The intent path: the append succeeded, the command was issued, and the process died before the full record committed. The restart finds no durable trip but an unresolved intent, loads the pair tripped with command_pending, and the reading-independent retry resolves the command.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive",
+          "expect_startup_command": "de_energised"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_state": "inactive"
+        },
+        {
+          "event": "arm_attempt",
+          "expect_state": "armed",
+          "expect_outcome": "close_protected_circuit"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "intent_result": "appended",
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit",
+          "expect_command_status": "command_issued"
+        },
+        {
+          "event": "restart",
+          "durable_state": "none",
+          "expect_state": "tripped",
+          "expect_command_status": "command_pending",
+          "expect_startup_command": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            }
+          ]
+        },
+        {
+          "event": "retry_tick",
+          "driver_result": "accepted",
+          "expect_state": "tripped",
+          "expect_retry": "attempted",
+          "expect_command_status": "command_issued"
+        }
+      ]
+    },
+    {
+      "name": "closed_terminal_startup_defers_until_non_hazard_reading",
+      "note": "De-energising this zone closes the protected circuit, so startup commands nothing; the first credible reading that trips no profile licenses the closing command.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "closed"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive",
+          "expect_startup_command": "deferred"
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_state": "inactive",
+          "expect_startup_command": "de_energised"
+        }
+      ]
+    },
+    {
+      "name": "closed_terminal_startup_hazard_first_reading_never_closes",
+      "note": "The first credible reading satisfies the condition: the zone trips and the deferred closing command is never given.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "closed"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive",
+          "expect_startup_command": "deferred"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit",
+          "expect_startup_command": null,
+          "expect_command_status": "command_issued"
+        }
+      ]
+    },
+    {
+      "name": "two_profiles_one_zone_defer_until_all_evaluated",
+      "note": "Two active profiles on one closed-terminal zone. A reading between the trip points trips one pair and not the other, and the zonal closing command is withheld because the reading did not clear every profile.",
+      "profiles": [
+        "fixture.overcurrent.v1",
+        "fixture.overcurrent_aux.v1"
+      ],
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "closed"
+      },
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_states": {
+            "fixture.overcurrent.v1": "inactive",
+            "fixture.overcurrent_aux.v1": "inactive"
+          },
+          "expect_startup_command": "deferred"
+        },
+        {
+          "event": "reading",
+          "value": 22.0,
+          "expect_outcomes": {
+            "fixture.overcurrent.v1": "open_protected_circuit",
+            "fixture.overcurrent_aux.v1": null
+          },
+          "expect_states": {
+            "fixture.overcurrent.v1": "tripped",
+            "fixture.overcurrent_aux.v1": "inactive"
+          },
+          "expect_startup_command": null
+        }
+      ]
+    },
+    {
+      "name": "driver_refusal_retries_without_a_reading_and_acceptance_ends_retries",
+      "note": "The driver refuses the trip command; the registry-owned loop retries with no further sensor reading, and once the driver accepts, a later tick does not re-issue the accepted command merely because its physical effect is unverified.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "driver_result": "refused",
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit",
+          "expect_command_status": "driver_refused"
+        },
+        {
+          "event": "retry_tick",
+          "driver_result": "accepted",
+          "expect_state": "tripped",
+          "expect_retry": "attempted",
+          "expect_command_status": "command_issued"
+        },
+        {
+          "event": "retry_tick",
+          "driver_result": "accepted",
+          "expect_state": "tripped",
+          "expect_retry": "skipped",
+          "expect_command_status": "command_issued"
+        }
+      ]
+    },
+    {
+      "name": "reset_cancels_a_scheduled_retry",
+      "note": "A reset licenses closing the circuit; a retry scheduled before it must not fire afterwards and reopen what the operator closed.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "driver_result": "refused",
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit",
+          "expect_command_status": "driver_refused"
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_state": "tripped"
+        },
+        {
+          "event": "reset_attempt",
+          "expect_state": "armed",
+          "expect_outcome": "close_protected_circuit"
+        },
+        {
+          "event": "retry_tick",
+          "driver_result": "accepted",
+          "expect_state": "armed",
+          "expect_retry": "skipped"
+        }
+      ]
+    },
+    {
+      "name": "orphaned_trip_retires_only_through_the_local_procedure",
+      "note": "Retirement before orphaning is refused; after the zone leaves the binding the pair stays latched and health-visible, and the local retirement moves it to the terminal audit disposition without commanding any coil.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "tripped",
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        },
+        {
+          "event": "orphan_retirement",
+          "expect_state": "tripped",
+          "expect_refusal": "not_orphaned"
+        },
+        {
+          "event": "binding_removed",
+          "expect_state": "tripped",
+          "expect_orphaned": true
+        },
+        {
+          "event": "external",
+          "source": "binding_revision",
+          "expect_state": "tripped",
+          "expect_refusal": "no_authority",
+          "expect_orphaned": true
+        },
+        {
+          "event": "orphan_retirement",
+          "expect_state": "tripped",
+          "expect_orphaned": true,
+          "expect_retired": true
+        }
+      ]
+    },
+    {
+      "name": "legacy_tripped_record_without_status_retries",
+      "note": "A durable tripped record predating the command-status vocabulary proves no acceptance: it loads command_pending — the retryable status, never the one that stops retries — and the reading-independent loop resolves it.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "tripped",
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        },
+        {
+          "event": "retry_tick",
+          "driver_result": "accepted",
+          "expect_state": "tripped",
+          "expect_retry": "attempted",
+          "expect_command_status": "command_issued"
+        }
+      ]
+    },
+    {
+      "name": "accepted_command_with_failed_record_recovers_persistence_only",
+      "note": "The driver accepted the open command but the full record write failed. Acceptance stops the outcome retries and stops nothing about persistence: the record recovery continues on its own, and never re-issues the accepted physical command.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "record_result": "write_failed",
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit",
+          "expect_command_status": "command_issued",
+          "expect_record": "pending"
+        },
+        {
+          "event": "retry_tick",
+          "driver_result": "accepted",
+          "expect_state": "tripped",
+          "expect_retry": "skipped",
+          "expect_command_status": "command_issued",
+          "expect_record": "pending"
+        },
+        {
+          "event": "record_retry_tick",
+          "record_result": "write_failed",
+          "expect_state": "tripped",
+          "expect_record": "pending"
+        },
+        {
+          "event": "record_retry_tick",
+          "record_result": "committed",
+          "expect_state": "tripped",
+          "expect_record": "committed",
+          "expect_command_status": "command_issued"
+        }
+      ]
+    },
+    {
+      "name": "record_resolves_only_older_intents",
+      "note": "A crash between the record commit and the intent resolution leaves the older intent unresolved in the journal; the record resolves it at load, so the pair carries the record's status rather than degrading to command_pending.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "tripped",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            },
+            {
+              "record": {
+                "command_status": "command_issued"
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_issued"
+        }
+      ]
+    },
+    {
+      "name": "duplicate_intents_collapse_by_append_order",
+      "note": "Two unresolved intents for the pair; the later append governs. Its binding matches the binding in force, so the pair is not orphaned and the retry actuates — a collapse to the earlier intent would orphan the pair and skip it.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "binding_seq_in_force": 5,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 3,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            },
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-2",
+                "binding_seq": 5,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending",
+          "expect_orphaned": false
+        },
+        {
+          "event": "retry_tick",
+          "driver_result": "accepted",
+          "expect_state": "tripped",
+          "expect_retry": "attempted",
+          "expect_command_status": "command_issued"
+        }
+      ]
+    },
+    {
+      "name": "intent_binding_mismatch_orphans_not_actuates",
+      "note": "The unresolved intent was commanded under a binding no longer in force. The pair loads tripped and orphaned: latched, health-visible, and never actuated through a binding it was not commanded under — the retry is skipped, and the exit is the local retirement.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "binding_seq_in_force": 5,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 3,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending",
+          "expect_orphaned": true
+        },
+        {
+          "event": "retry_tick",
+          "driver_result": "accepted",
+          "expect_state": "tripped",
+          "expect_retry": "skipped",
+          "expect_command_status": "command_pending",
+          "expect_orphaned": true
+        }
+      ]
+    },
+    {
+      "name": "malformed_intent_entry_fails_closed",
+      "note": "An intent entry missing required fields, still identifiable by its position in this pair's journal: it loads the pair tripped with a pending command rather than being skipped.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "binding_seq": 1
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        }
+      ]
+    },
+    {
+      "name": "reset_clear_is_durable_and_resolves_older_intents",
+      "note": "A successful reset durably clears the trip record; a restart whose journal ends in that clear loads inactive, with the cleared trip's intent resolved by it rather than resurrecting the latch.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "safety_path_confirmed",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit"
+        },
+        {
+          "event": "reading",
+          "value": 5.0,
+          "expect_state": "tripped"
+        },
+        {
+          "event": "reset_attempt",
+          "expect_state": "armed",
+          "expect_outcome": "close_protected_circuit"
+        },
+        {
+          "event": "restart",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            },
+            {
+              "record": {
+                "command_status": "command_issued"
+              }
+            },
+            {
+              "clear": true
+            }
+          ],
+          "expect_state": "inactive",
+          "expect_startup_command": "de_energised"
+        }
+      ]
+    },
+    {
+      "name": "intent_after_record_governs",
+      "note": "A record, then a newer unresolved intent: append order governs, so the pair loads command_pending from the intent rather than the record's acceptance — a record resolves every intent before it and none after.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "tripped",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            },
+            {
+              "record": {
+                "command_status": "command_issued"
+              }
+            },
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-2",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        }
+      ]
+    },
+    {
+      "name": "intent_after_clear_governs",
+      "note": "Record, reset clear, then a newer unresolved intent: the second trip's crash is not hidden by the first trip's resolution.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            },
+            {
+              "record": {
+                "command_status": "command_issued"
+              }
+            },
+            {
+              "clear": true
+            },
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-2",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        }
+      ]
+    },
+    {
+      "name": "acceptance_never_implies_effect",
+      "note": "The driver accepted the command; the effect axis stays unknown until something actually verifies it, and neither matched nor mismatched moves the latch.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "expect_state": "inactive"
+        },
+        {
+          "event": "reading",
+          "value": 25.0,
+          "expect_state": "tripped",
+          "expect_outcome": "open_protected_circuit",
+          "expect_command_status": "command_issued",
+          "expect_effect": "unknown"
+        },
+        {
+          "event": "effect_report",
+          "result": "matched",
+          "expect_state": "tripped",
+          "expect_effect": "matched"
+        },
+        {
+          "event": "effect_report",
+          "result": "mismatched",
+          "expect_state": "tripped",
+          "expect_effect": "mismatched",
+          "expect_command_status": "command_issued"
+        }
+      ]
+    },
+    {
+      "name": "intent_wrong_zone_fails_closed",
+      "note": "A pair field naming another zone is a malformed entry.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "other-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        }
+      ]
+    },
+    {
+      "name": "intent_wrong_profile_fails_closed",
+      "note": "A pair field naming another profile is a malformed entry.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.gas.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        }
+      ]
+    },
+    {
+      "name": "intent_empty_attempt_id_fails_closed",
+      "note": "attempt_id must be a non-empty string.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        }
+      ]
+    },
+    {
+      "name": "intent_boolean_binding_seq_fails_closed",
+      "note": "binding_seq must be a positive integer, and a boolean is not one.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": true,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        }
+      ]
+    },
+    {
+      "name": "intent_wrong_outcome_fails_closed",
+      "note": "close_protected_circuit is never an intent outcome.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 1,
+                "outcome": "close_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        }
+      ]
+    },
+    {
+      "name": "intent_string_created_at_fails_closed",
+      "note": "created_at_ms must be a positive integer.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": "1756684800000",
+                "resolved": false
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        }
+      ]
+    },
+    {
+      "name": "intent_string_resolved_fails_closed",
+      "note": "resolved must be a boolean; the string false is truthy in some languages and silently resolves the intent.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": "false"
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending"
+        }
+      ]
+    },
+    {
+      "name": "intent_empty_zone_id_fails_closed",
+      "note": "The pair fields are non-empty before they are equal: an empty zone_id matching an empty enclosing zone_id is still a malformed entry. The intent's binding_seq deliberately mismatches the binding in force so the two readings diverge observably: the malformed path fails closed without an orphan mark, while a checker that let equality launder emptiness would read a well-formed intent and orphan the pair.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "none",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 3,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": false
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_pending",
+          "expect_orphaned": false
+        }
+      ],
+      "binding_seq_in_force": 5
+    },
+    {
+      "name": "justified_resolution_loads_from_the_record",
+      "note": "A resolved intent followed by the record that resolved it is the legitimate shape: the record's status governs and the mark is witnessed.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "trip_point": 20.0,
+      "events": [
+        {
+          "event": "startup",
+          "durable_state": "tripped",
+          "durable_journal": [
+            {
+              "intent": {
+                "zone_id": "protected-zone",
+                "profile_id": "fixture.overcurrent.v1",
+                "attempt_id": "a-1",
+                "binding_seq": 1,
+                "outcome": "open_protected_circuit",
+                "created_at_ms": 1756684800000,
+                "resolved": true
+              }
+            },
+            {
+              "record": {
+                "command_status": "command_issued"
+              }
+            }
+          ],
+          "expect_state": "tripped",
+          "expect_startup_command": "none",
+          "expect_command_status": "command_issued"
+        }
+      ]
+    }
+  ],
+  "durable_reject_cases": [
+    {
+      "name": "unknown_durable_state_refuses",
+      "note": "trippped is a record this machine never wrote.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "durable_state": "trippped"
+    },
+    {
+      "name": "unreadable_intent_journal_refuses",
+      "note": "Unidentifiable corruption: the journal cannot be read at all, and hardened startup refuses rather than guessing.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "durable_state": "none",
+      "durable_journal": [
+        {
+          "corrupt": "unidentifiable"
+        }
+      ]
+    },
+    {
+      "name": "unknown_durable_command_status_refuses",
+      "note": "executed is the overclaim this contract removed; a record carrying it is a record from a vocabulary this version never wrote.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "durable_state": "tripped",
+      "durable_command_status": "executed"
+    },
+    {
+      "name": "tripped_without_any_record_refuses",
+      "note": "durable_state tripped with neither a journal record nor a legacy record is a state the persistence rules cannot produce.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "durable_state": "tripped",
+      "durable_journal": [
+        {
+          "intent": {
+            "zone_id": "protected-zone",
+            "profile_id": "fixture.overcurrent.v1",
+            "attempt_id": "a-1",
+            "binding_seq": 1,
+            "outcome": "open_protected_circuit",
+            "created_at_ms": 1756684800000,
+            "resolved": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "duplicate_attempt_id_refuses",
+      "note": "Two entries claiming one attempt identity is corruption beyond the entry level: the journal refuses to load.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "durable_state": "none",
+      "durable_journal": [
+        {
+          "intent": {
+            "zone_id": "protected-zone",
+            "profile_id": "fixture.overcurrent.v1",
+            "attempt_id": "a-1",
+            "binding_seq": 1,
+            "outcome": "open_protected_circuit",
+            "created_at_ms": 1756684800000,
+            "resolved": false
+          }
+        },
+        {
+          "intent": {
+            "zone_id": "protected-zone",
+            "profile_id": "fixture.overcurrent.v1",
+            "attempt_id": "a-1",
+            "binding_seq": 1,
+            "outcome": "open_protected_circuit",
+            "created_at_ms": 1756684800000,
+            "resolved": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "resolved_intent_without_record_refuses",
+      "note": "A resolved mark with no later record or clear claims a resolution nothing durable performed. On a closed-terminal zone, loading this as inactive would eventually command the circuit closed on the strength of an unwitnessed claim.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "durable_state": "none",
+      "durable_journal": [
+        {
+          "intent": {
+            "zone_id": "protected-zone",
+            "profile_id": "fixture.overcurrent.v1",
+            "attempt_id": "a-1",
+            "binding_seq": 1,
+            "outcome": "open_protected_circuit",
+            "created_at_ms": 1756684800000,
+            "resolved": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "resolved_intent_without_record_refuses_even_tripped",
+      "note": "The same unwitnessed resolution with durable_state tripped: the refusal is about the journal's own coherence, not the state beside it.",
+      "profile": "fixture.overcurrent.v1",
+      "zone": {
+        "zone_id": "protected-zone",
+        "rated_capacity": {
+          "parameter": "rated_capacity_amps",
+          "value": 10.0
+        },
+        "sensor": {
+          "unit": "ampere",
+          "range_min": 0.0,
+          "range_max": 30.0
+        },
+        "de_energised_terminal_state": "open"
+      },
+      "durable_state": "tripped",
+      "durable_journal": [
+        {
+          "intent": {
+            "zone_id": "protected-zone",
+            "profile_id": "fixture.overcurrent.v1",
+            "attempt_id": "a-1",
+            "binding_seq": 1,
+            "outcome": "open_protected_circuit",
+            "created_at_ms": 1756684800000,
+            "resolved": true
+          }
         }
       ]
     }
