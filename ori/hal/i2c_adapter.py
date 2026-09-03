@@ -6,6 +6,7 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 from ori.hal.ac_measurement import (
@@ -44,45 +45,86 @@ CALIBRATION_SCHEMAS = {
 }
 
 # Optional hardware libraries — guarded so the module imports cleanly on any host.
+#
+# The guards catch `ImportError` *and* `RuntimeError`, and the second one is the
+# point. adafruit-blinka raises `RuntimeError` from
+# `raise_for_missing_platform_dependency` when its platform library is absent,
+# so an `ImportError` guard let that escape and crashed this module on import.
+# It crashed only on a Raspberry Pi: a host with no blinka at all raises
+# `ImportError` and the narrow guard held, so every developer machine and every
+# CI job passed while the supported target could not import the module.
+#
+# It is deliberately not `except Exception`. A driver reporting an unusable
+# platform is an expected state; a driver raising `TypeError` or `AttributeError`
+# at import time is a defect, and swallowing that would turn a bug into a
+# capability this runtime quietly does not have.
+#
+# The reason is kept rather than reduced to a boolean, so a refusal can say
+# which import failed and why instead of guessing "not installed" at an
+# operator whose problem is a missing platform library.
+_DRIVER_FAILURE = (ImportError, RuntimeError)
+
+_DRIVER_UNAVAILABLE: dict[str, str] = {}
+
+
+def _unavailable(capability: str, exc: BaseException) -> None:
+    _DRIVER_UNAVAILABLE[capability] = f"{type(exc).__name__}: {exc}"
+
+
 try:
     import smbus2 as smbus  # type: ignore[import-untyped]
 
     _SMBUS_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised on non-Pi hosts
+except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
     smbus = None
     _SMBUS_AVAILABLE = False
+    _unavailable("smbus2", exc)
 
 try:
     import bme280 as _bme280_lib  # type: ignore[import-untyped]
 
     _BME280_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised on non-Pi hosts
+except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
     _bme280_lib = None
     _BME280_AVAILABLE = False
+    _unavailable("bme280", exc)
 
 try:
     import adafruit_ads1x15.ads1x15 as _ads1x15  # type: ignore[import-untyped]
     import adafruit_ads1x15.ads1115 as _ads1115  # type: ignore[import-untyped]
     import adafruit_ads1x15.analog_in as _analog_in  # type: ignore[import-untyped]
-    import board as _board  # type: ignore[import-untyped]
-    import busio as _busio  # type: ignore[import-untyped]
 
     _ADS1115_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised on non-Pi hosts
+except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
     _ads1115 = None
     _ads1x15 = None
     _analog_in = None
+    _ADS1115_AVAILABLE = False
+    _unavailable("ads1115", exc)
+
+# blinka is a separate dependency from the ADS1115 driver and separate sensors
+# need it. Folding the two into one block made `scd40` — which needs blinka for
+# its bus but not the ADC driver at all — report a missing `adafruit_ads1x15`,
+# and told an operator to install a package their device does not use.
+try:
+    import board as _board  # type: ignore[import-untyped]
+    import busio as _busio  # type: ignore[import-untyped]
+
+    _BLINKA_AVAILABLE = True
+except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
     _board = None
     _busio = None
-    _ADS1115_AVAILABLE = False
+    _BLINKA_AVAILABLE = False
+    _unavailable("blinka", exc)
 
 try:
     import adafruit_scd4x  # type: ignore[import-untyped]
 
     _SCD40_AVAILABLE = True
-except ImportError:  # pragma: no cover - exercised on non-Pi hosts
+except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
     adafruit_scd4x = None
     _SCD40_AVAILABLE = False
+    _unavailable("scd40", exc)
 
 # Sensor types that require the ADS1115 ADC
 _ADS_SENSOR_TYPES = frozenset({"ads1115_current", "ads1115_voltage"})
@@ -96,6 +138,90 @@ _SUPPORTED = frozenset(
         "scd40",
     }
 )
+
+# Which drivers each sensor type cannot be read without. Tuples, not single
+# names: `scd40` needs its own driver *and* the blinka bundle, because
+# `busio`/`board` come from there, and `bme280` needs `smbus2` as well as the
+# calibration library. A one-driver-per-type map looks right and silently
+# under-reports exactly those two.
+#
+# `_require_drivers` below is called by every `_connect_*`, so this table and
+# the connect path cannot disagree about what a type needs: a type whose entry
+# is wrong fails at connect too, rather than passing a startup gate and being
+# skipped later.
+_SENSOR_TYPE_DRIVERS: dict[str, tuple[str, ...]] = {
+    "bme280": ("smbus2", "bme280"),
+    "ads1115_current": ("ads1115", "blinka"),
+    "ads1115_voltage": ("ads1115", "blinka"),
+    "scd40": ("scd40", "blinka"),
+}
+
+# What to tell an operator to install, per driver key.
+_DRIVER_INSTALL_HINT = {
+    "smbus2": "pip install smbus2",
+    "bme280": "pip install RPi.bme280",
+    "ads1115": "pip install adafruit-circuitpython-ads1x15",
+    "blinka": "install a blinka platform library for this board (rpi-lgpio on Raspberry Pi OS Trixie)",
+    "scd40": "pip install adafruit-circuitpython-scd4x",
+}
+
+
+# The availability flag remains the single answer to "can this be used". The
+# reason dict only explains a False.
+#
+# Each entry names its flag directly rather than resolving it through
+# `globals()`. The indirect form worked and made the flags invisible to static
+# analysis, which then reported every one of them as an unused global — a tool
+# reporting less than the truth because of how the code was written, which is
+# worth avoiding rather than suppressing. A lambda reads the module global when
+# it is called, so `patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", ...)` still
+# takes, which is how the suite simulates a Pi.
+_DRIVER_AVAILABLE: dict[str, Callable[[], bool]] = {
+    "smbus2": lambda: _SMBUS_AVAILABLE,
+    "bme280": lambda: _BME280_AVAILABLE,
+    "ads1115": lambda: _ADS1115_AVAILABLE,
+    "blinka": lambda: _BLINKA_AVAILABLE,
+    "scd40": lambda: _SCD40_AVAILABLE,
+}
+
+
+def _driver_missing(driver: str) -> bool:
+    return not _DRIVER_AVAILABLE[driver]()
+
+
+def i2c_driver_unavailable_reason(sensor_type: str) -> str | None:
+    """Why this sensor type's drivers are unusable, or ``None``.
+
+    ``None`` means every driver it needs imported. It does **not** mean the
+    sensor can be read: a wrong address, a bus this adapter refuses, an
+    unsupported type, or a device that does not answer all fail later, at
+    ``connect()``. The boundary covering those is the hardened refusal in the
+    runtime's sensor startup, not this function.
+    """
+    reasons = []
+    for driver in _SENSOR_TYPE_DRIVERS.get(sensor_type, ()):
+        if not _driver_missing(driver):
+            continue
+        detail = _DRIVER_UNAVAILABLE.get(driver, "not available")
+        reasons.append(f"{driver} ({detail})")
+    return "; ".join(reasons) or None
+
+
+def _require_drivers(sensor_type: str) -> None:
+    """Refuse a connect whose drivers are unusable, naming what failed."""
+    reason = i2c_driver_unavailable_reason(sensor_type)
+    if reason is None:
+        return
+    hints = " ".join(
+        _DRIVER_INSTALL_HINT[driver]
+        for driver in _SENSOR_TYPE_DRIVERS.get(sensor_type, ())
+        if _driver_missing(driver) and driver in _DRIVER_INSTALL_HINT
+    )
+    raise AdapterConnectionError(
+        f"I2CAdapter: '{sensor_type}' needs drivers that did not import: "
+        f"{reason}. Try: {hints}"
+    )
+
 
 # Calibration keys read from a sensor's nested ``calibration`` block. The two
 # required ones have no default: a clamp's sensitivity and the supply frequency
@@ -450,30 +576,16 @@ class I2CAdapter(BaseAdapter):
             self._connect_scd40()
 
     def _connect_bme280(self) -> None:
-        if not _SMBUS_AVAILABLE or smbus is None:
-            raise AdapterConnectionError(
-                "I2CAdapter: 'smbus2' is not installed. Run: pip install smbus2"
-            )
-        if not _BME280_AVAILABLE or _bme280_lib is None or smbus is None:
-            raise AdapterConnectionError(
-                "I2CAdapter: 'RPi.bme280' is not installed. Run: pip install RPi.bme280"
-            )
+        _require_drivers("bme280")
+        assert smbus is not None and _bme280_lib is not None
         self._bus = smbus.SMBus(self._bus_number)
         self._bme280_params = _bme280_lib.load_calibration_params(
             self._bus, self._address
         )
 
     def _connect_ads1115(self) -> None:
-        if (
-            not _ADS1115_AVAILABLE
-            or _ads1115 is None
-            or _ads1x15 is None
-            or _analog_in is None
-        ):
-            raise AdapterConnectionError(
-                "I2CAdapter: Adafruit ADS1x15 library is not installed. "
-                "Run: pip install adafruit-circuitpython-ads1x15"
-            )
+        _require_drivers(self._sensor_type)
+        assert _ads1115 is not None and _ads1x15 is not None
         i2c = _get_shared_busio_i2c(self._bus_number)
         # The driver defaults are 128 SPS in single-shot mode, which yields
         # about two samples per 50 Hz cycle. Continuous conversion at the
@@ -487,16 +599,10 @@ class I2CAdapter(BaseAdapter):
         )
 
     def _connect_scd40(self) -> None:
-        if not _SCD40_AVAILABLE or adafruit_scd4x is None:
-            raise AdapterConnectionError(
-                "I2CAdapter: 'adafruit-circuitpython-scd4x' is not installed. "
-                "Run: pip install adafruit-circuitpython-scd4x"
-            )
-        if not _ADS1115_AVAILABLE or _ads1115 is None or _analog_in is None:
-            # busio/board come from the same adafruit-blinka bundle
-            raise AdapterConnectionError(
-                "I2CAdapter: 'adafruit-blinka' (busio/board) is not installed."
-            )
+        # scd40 needs blinka as well as its own driver, because busio and board
+        # come from there — but not the ADS1115 driver. The table says so.
+        _require_drivers("scd40")
+        assert adafruit_scd4x is not None
         i2c = _get_shared_busio_i2c(self._bus_number)
         self._scd4x = adafruit_scd4x.SCD4X(i2c)
         self._scd4x.start_periodic_measurement()

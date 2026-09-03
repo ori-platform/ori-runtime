@@ -5,6 +5,7 @@ import asyncio
 import math
 import os
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -173,9 +174,15 @@ class TestConnect:
         adapter = I2CAdapter()
         with (
             patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", False),
-            pytest.raises(AdapterConnectionError, match="ADS1x15"),
+            pytest.raises(AdapterConnectionError) as excinfo,
         ):
             await adapter.connect(_config(sensor_type="ads1115_current"))
+        message = str(excinfo.value)
+        # Which sensor, which driver, and what to do about it — a bare library
+        # name leaves an operator guessing which of several sensors is down.
+        assert "ads1115_current" in message
+        assert "ads1115" in message
+        assert "pip install" in message
 
     async def test_connect_scd40_missing_lib_raises(self):
         adapter = I2CAdapter()
@@ -208,6 +215,7 @@ class TestConnect:
         adapter = I2CAdapter()
         with (
             patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", True),
+            patch("ori.hal.i2c_adapter._BLINKA_AVAILABLE", True),
             patch("ori.hal.i2c_adapter._ads1115"),
             patch("ori.hal.i2c_adapter._ads1x15"),
             patch("ori.hal.i2c_adapter._analog_in"),
@@ -221,6 +229,7 @@ class TestConnect:
         adapter = I2CAdapter()
         with (
             patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", True),
+            patch("ori.hal.i2c_adapter._BLINKA_AVAILABLE", True),
             patch("ori.hal.i2c_adapter._busio", create=True),
             patch("ori.hal.i2c_adapter._board", create=True),
             patch("ori.hal.i2c_adapter._ads1115", create=True),
@@ -243,6 +252,7 @@ class TestConnect:
         adapter = I2CAdapter()
         with (
             patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", True),
+            patch("ori.hal.i2c_adapter._BLINKA_AVAILABLE", True),
             patch("ori.hal.i2c_adapter._busio", create=True),
             patch("ori.hal.i2c_adapter._board", create=True),
             patch("ori.hal.i2c_adapter._ads1115", create=True),
@@ -819,3 +829,131 @@ class TestPiIntegration:
         assert reading.sensor_type == "ads1115_current"
         assert reading.unit == "ampere"
         await adapter.close()
+
+
+class TestDriverGuardWidth:
+    """The optional-driver guards must not care how a driver fails.
+
+    adafruit-blinka's `board` raises RuntimeError when its platform library is
+    absent, which an `except ImportError` guard let escape — crashing this
+    module on import. It crashed only on a Raspberry Pi: a host with no blinka
+    raises ImportError, so the narrow guard held everywhere the suite ran.
+    """
+
+    @staticmethod
+    def _probe(error_expr: str) -> dict:
+        """Import the adapter in a subprocess with `board` raising `error_expr`.
+
+        A subprocess rather than a reimport: popping the module from
+        `sys.modules` and re-importing leaves this file's module-level
+        `I2CAdapter` bound to a stale class whose globals are the old module
+        dict, so every later `patch("ori.hal.i2c_adapter....")` in this file
+        would patch a different object. That is invisible while this class is
+        last in the file and breaks two dozen unrelated tests the moment it is
+        not.
+        """
+        import json
+        import subprocess
+        import sys
+        from types import ModuleType  # noqa: F401  (used inside the child)
+
+        program = f"""
+import builtins, json, sys
+from types import ModuleType
+
+# The driver has to be importable for the guard to reach `board` at all: on a
+# host without it the block fails at the first import and never gets there.
+parent = ModuleType("adafruit_ads1x15")
+sys.modules["adafruit_ads1x15"] = parent
+for child in ("ads1x15", "ads1115", "analog_in"):
+    module = ModuleType("adafruit_ads1x15." + child)
+    setattr(parent, child, module)
+    sys.modules["adafruit_ads1x15." + child] = module
+sys.modules["busio"] = ModuleType("busio")
+
+real_import = builtins.__import__
+def fake_import(name, *args, **kwargs):
+    if name == "board":
+        raise {error_expr}
+    return real_import(name, *args, **kwargs)
+builtins.__import__ = fake_import
+
+import ori.hal.i2c_adapter as m
+print(json.dumps({{
+    "ads1115_available": m._ADS1115_AVAILABLE,
+    "blinka_available": m._BLINKA_AVAILABLE,
+    "smbus_available": m._SMBUS_AVAILABLE,
+    "ads_reason": m.i2c_driver_unavailable_reason("ads1115_current"),
+    "scd40_reason": m.i2c_driver_unavailable_reason("scd40"),
+    "bme280_reason": m.i2c_driver_unavailable_reason("bme280"),
+}}))
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", program],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert completed.returncode == 0, completed.stderr
+        return json.loads(completed.stdout.strip().splitlines()[-1])
+
+    def test_a_runtime_error_from_board_does_not_crash_the_import(self):
+        result = self._probe(
+            "RuntimeError(\"The platform library 'RPi' was not found\")"
+        )
+
+        # The ADS1115 driver itself imported: only blinka failed, and the two
+        # are separate dependencies.
+        assert result["ads1115_available"] is True
+        assert result["blinka_available"] is False
+        reason = result["ads_reason"]
+        assert reason is not None
+        assert "blinka" in reason
+        assert "RuntimeError" in reason
+        # The operator needs the real cause: "not installed" would send them
+        # after a package that is already there.
+        assert "platform library 'RPi'" in reason
+
+    def test_an_import_error_is_still_handled(self):
+        result = self._probe("ImportError(\"No module named 'board'\")")
+
+        assert result["blinka_available"] is False
+        assert "ImportError" in result["ads_reason"]
+
+    def test_scd40_reports_blinka_and_not_the_ads1115_driver(self):
+        """scd40 needs blinka for its bus, and the ADS1115 driver never.
+
+        Folding board/busio into the ADS1115 guard made scd40 report a missing
+        `adafruit_ads1x15` and told an operator to install a package their
+        device does not use — while a CO2-only Pi, which has blinka and scd4x
+        but no ads1x15, would be refused for a sensor that works.
+        """
+        result = self._probe(
+            "RuntimeError(\"The platform library 'RPi' was not found\")"
+        )
+
+        reason = result["scd40_reason"]
+        assert reason is not None
+        assert "blinka" in reason
+        assert "ads1115" not in reason
+
+    def test_one_broken_guard_does_not_contaminate_another(self):
+        """Each guarded block records only its own failure."""
+        result = self._probe("RuntimeError('boom')")
+
+        assert "boom" in result["ads_reason"]
+        assert "boom" not in (result["bme280_reason"] or "")
+
+    def test_bme280_reports_smbus2_which_it_also_needs(self):
+        from ori.hal.i2c_adapter import _DRIVER_UNAVAILABLE, _SENSOR_TYPE_DRIVERS
+
+        assert "smbus2" in _SENSOR_TYPE_DRIVERS["bme280"]
+        # Every recorded driver must be reachable through some sensor type, or
+        # the table and the guards have drifted.
+        reachable = {d for drivers in _SENSOR_TYPE_DRIVERS.values() for d in drivers}
+        assert set(_DRIVER_UNAVAILABLE) <= reachable
+
+    def test_a_sensor_type_needing_no_driver_reports_nothing(self):
+        from ori.hal.i2c_adapter import i2c_driver_unavailable_reason
+
+        assert i2c_driver_unavailable_reason("cpu_percent") is None
