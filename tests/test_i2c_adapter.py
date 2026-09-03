@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import importlib
 import itertools
 import math
 import os
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from ori.hal import i2c_adapter as i2c_module
 from ori.hal.base import (
     AdapterConnectionError,
     AdapterReadError,
@@ -59,23 +61,19 @@ def _needs_hardware(
 @pytest.fixture(autouse=True)
 def _clear_ads1115_claims():
     """One ADS1115 serves one adapter, and most tests never close theirs."""
-    import ori.hal.i2c_adapter
-
-    ori.hal.i2c_adapter._ADS1115_CLAIMS.clear()
+    i2c_module._ADS1115_CLAIMS.clear()
     yield
-    ori.hal.i2c_adapter._ADS1115_CLAIMS.clear()
+    i2c_module._ADS1115_CLAIMS.clear()
 
 
 @pytest.fixture(autouse=True)
 def _clear_shared_i2c_bus_cache():
     """Ensure tests don't leak cached bus handles."""
-    import ori.hal.i2c_adapter
-
-    ori.hal.i2c_adapter._shared_busio_instances.clear()
-    ori.hal.i2c_adapter._shared_busio_refs.clear()
+    i2c_module._shared_busio_instances.clear()
+    i2c_module._shared_busio_refs.clear()
     yield
-    ori.hal.i2c_adapter._shared_busio_instances.clear()
-    ori.hal.i2c_adapter._shared_busio_refs.clear()
+    i2c_module._shared_busio_instances.clear()
+    i2c_module._shared_busio_refs.clear()
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -163,7 +161,7 @@ def _connected_scd40_adapter() -> I2CAdapter:
 class TestModuleImport:
     def test_imports_cleanly_without_hardware_libraries(self):
         """The module must import on any host regardless of smbus2/adafruit presence."""
-        import ori.hal.i2c_adapter  # noqa: F401
+        importlib.import_module("ori.hal.i2c_adapter")
 
     def test_adapter_instantiates_without_hardware(self):
         adapter = I2CAdapter()
@@ -210,7 +208,9 @@ class _PinnedDriverADS1115:
         self._mux = chip_mux  # power-on default: A0-A1 differential
         self._honours = honours_pin_in_single
         self._mode = self.SINGLE if mode is None else mode
-        self._conversion = conversion
+        # Normalised to a callable so a waveform and a fixed value take the
+        # same path, and nothing has to call a value that might be an int.
+        self._conversion = conversion if callable(conversion) else (lambda: conversion)
         self._completes = completes
         self._pointer = self.POINTER_CONFIG
         self._last_pin_read = None
@@ -266,9 +266,7 @@ class _PinnedDriverADS1115:
             self._pointer = pointer
         if self._pointer == self.POINTER_CONFIG:
             return self._config_word()
-        if callable(self._conversion):
-            return self._conversion()
-        return self._conversion
+        return self._conversion()
 
 
 class _PinnedDriverAnalogIn:
@@ -291,8 +289,6 @@ class _PinnedDriverAnalogIn:
 
 def _pinned_driver(monkeypatch, **ads_kwargs):
     """Install the reproduction as the adapter's driver for one test."""
-    import ori.hal.i2c_adapter as m
-
     created: list[_PinnedDriverADS1115] = []
 
     def _construct(i2c, **kw):
@@ -314,13 +310,13 @@ def _pinned_driver(monkeypatch, **ads_kwargs):
     class _AI:
         AnalogIn = _PinnedDriverAnalogIn
 
-    monkeypatch.setattr(m, "_ADS1115_AVAILABLE", True)
-    monkeypatch.setattr(m, "_BLINKA_AVAILABLE", True)
-    monkeypatch.setattr(m, "_busio", MagicMock(), raising=False)
-    monkeypatch.setattr(m, "_board", MagicMock(), raising=False)
-    monkeypatch.setattr(m, "_ads1115", _Module, raising=False)
-    monkeypatch.setattr(m, "_ads1x15", _X, raising=False)
-    monkeypatch.setattr(m, "_analog_in", _AI, raising=False)
+    monkeypatch.setattr(i2c_module, "_ADS1115_AVAILABLE", True)
+    monkeypatch.setattr(i2c_module, "_BLINKA_AVAILABLE", True)
+    monkeypatch.setattr(i2c_module, "_busio", MagicMock(), raising=False)
+    monkeypatch.setattr(i2c_module, "_board", MagicMock(), raising=False)
+    monkeypatch.setattr(i2c_module, "_ads1115", _Module, raising=False)
+    monkeypatch.setattr(i2c_module, "_ads1x15", _X, raising=False)
+    monkeypatch.setattr(i2c_module, "_analog_in", _AI, raising=False)
     return created
 
 
@@ -465,59 +461,51 @@ class TestClose:
 
     async def test_close_evicts_shared_bus_cache_for_ads1115(self):
         """After close(), if ref array hits 0, busio.I2C cache entry is removed."""
-        import ori.hal.i2c_adapter as _mod
-
         adapter = _connected_ads_adapter("ads1115_current")
         adapter._bus_number = 1
-        _mod._shared_busio_instances[1] = MagicMock()  # seed the cache
-        _mod._shared_busio_refs[1] = 1  # seed the reference
+        i2c_module._shared_busio_instances[1] = MagicMock()  # seed the cache
+        i2c_module._shared_busio_refs[1] = 1  # seed the reference
 
         await adapter.close()
 
-        assert 1 not in _mod._shared_busio_instances
-        assert 1 not in _mod._shared_busio_refs
+        assert 1 not in i2c_module._shared_busio_instances
+        assert 1 not in i2c_module._shared_busio_refs
 
     async def test_close_evicts_shared_bus_cache_for_scd40(self):
-        import ori.hal.i2c_adapter as _mod
-
         adapter = _connected_scd40_adapter()
         adapter._bus_number = 1
-        _mod._shared_busio_instances[1] = MagicMock()
-        _mod._shared_busio_refs[1] = 1
+        i2c_module._shared_busio_instances[1] = MagicMock()
+        i2c_module._shared_busio_refs[1] = 1
 
         await adapter.close()
 
-        assert 1 not in _mod._shared_busio_instances
-        assert 1 not in _mod._shared_busio_refs
+        assert 1 not in i2c_module._shared_busio_instances
+        assert 1 not in i2c_module._shared_busio_refs
 
     async def test_close_does_not_evict_if_references_remain(self):
         """If 2 sensors share a bus, close() on the first leaves the cache intact."""
-        import ori.hal.i2c_adapter as _mod
-
         adapter = _connected_ads_adapter("ads1115_current")
         adapter._bus_number = 1
         sentinel = MagicMock()
-        _mod._shared_busio_instances[1] = sentinel
-        _mod._shared_busio_refs[1] = 2  # 2 sensors actively using the bus
+        i2c_module._shared_busio_instances[1] = sentinel
+        i2c_module._shared_busio_refs[1] = 2  # 2 sensors actively using the bus
 
         await adapter.close()
 
         # The cache MUST stay alive to serve the second sensor
-        assert _mod._shared_busio_instances.get(1) is sentinel
-        assert _mod._shared_busio_refs.get(1) == 1
+        assert i2c_module._shared_busio_instances.get(1) is sentinel
+        assert i2c_module._shared_busio_refs.get(1) == 1
 
     async def test_close_does_not_evict_cache_for_bme280(self):
         """BME280 uses smbus2 directly — it must not touch the busio cache."""
-        import ori.hal.i2c_adapter as _mod
-
         adapter = _connected_bme280_adapter()
         adapter._bus_number = 1
         sentinel = MagicMock()
-        _mod._shared_busio_instances[1] = sentinel
+        i2c_module._shared_busio_instances[1] = sentinel
 
         await adapter.close()
 
-        assert _mod._shared_busio_instances.get(1) is sentinel
+        assert i2c_module._shared_busio_instances.get(1) is sentinel
 
 
 # ─── health_check ─────────────────────────────────────────────────────────────
@@ -1393,7 +1381,6 @@ class TestAds1115ChannelSelection:
         self, monkeypatch
     ):
         """The claim is taken before the chip is touched, so it must not outlive it."""
-        import ori.hal.i2c_adapter as module
 
         class _FailsLate(_PinnedDriverADS1115):
             """Fails on the last register access of connect, not the first.
@@ -1414,11 +1401,11 @@ class TestAds1115ChannelSelection:
                 return super().get_last_result(fast)
 
         _pinned_driver(monkeypatch, chip_mux=0)
-        monkeypatch.setattr(module._ads1115, "ADS1115", _FailsLate)
+        monkeypatch.setattr(i2c_module._ads1115, "ADS1115", _FailsLate)
         first = I2CAdapter()
         with pytest.raises(AdapterConnectionError):
             await first.connect(_config(sensor_type="ads1115_voltage", channel=0))
-        monkeypatch.setattr(module._ads1115, "ADS1115", _PinnedDriverADS1115)
+        monkeypatch.setattr(i2c_module._ads1115, "ADS1115", _PinnedDriverADS1115)
         second = I2CAdapter()
         await second.connect(_config(sensor_type="ads1115_voltage", channel=0))
         assert second.is_connected
@@ -1449,8 +1436,6 @@ class TestAds1115ChannelSelection:
         given back: the cached handle outlives its last real user, and the
         next connect on that bus is handed the stale one.
         """
-        import ori.hal.i2c_adapter as module
-
         _pinned_driver(monkeypatch, chip_mux=0)
         first = I2CAdapter()
         await first.connect(_config(sensor_type="ads1115_current", channel=0))
@@ -1459,10 +1444,10 @@ class TestAds1115ChannelSelection:
             await second.connect(_config(sensor_type="ads1115_voltage", channel=1))
         # The runtime's own handling: the refused adapter is simply dropped.
         del second
-        assert module._shared_busio_refs.get(1) == 1
+        assert i2c_module._shared_busio_refs.get(1) == 1
         await first.close()
-        assert module._shared_busio_refs == {}
-        assert module._shared_busio_instances == {}
+        assert i2c_module._shared_busio_refs == {}
+        assert i2c_module._shared_busio_instances == {}
 
     @pytest.mark.parametrize(
         "failure", ["channel", "claimed", "construct", "verify", "late_read"]
@@ -1474,8 +1459,6 @@ class TestAds1115ChannelSelection:
         raises after the bus is reachable, and a leak on any of them has the
         same effect on the next connect.
         """
-        import ori.hal.i2c_adapter as module
-
         _pinned_driver(monkeypatch, chip_mux=0)
         holder = None
         config = _config(sensor_type="ads1115_voltage", channel=0)
@@ -1489,7 +1472,7 @@ class TestAds1115ChannelSelection:
             def _explode(i2c, **kw):
                 raise OSError("no device")
 
-            monkeypatch.setattr(module._ads1115, "ADS1115", staticmethod(_explode))
+            monkeypatch.setattr(i2c_module._ads1115, "ADS1115", staticmethod(_explode))
         elif failure == "verify":
             _pinned_driver(monkeypatch, chip_mux=0, honours_pin_in_single=False)
         elif failure == "late_read":
@@ -1504,22 +1487,20 @@ class TestAds1115ChannelSelection:
                             raise OSError("bus fell over")
                     return super().get_last_result(fast)
 
-            monkeypatch.setattr(module._ads1115, "ADS1115", _FailsLate)
+            monkeypatch.setattr(i2c_module._ads1115, "ADS1115", _FailsLate)
 
         adapter = I2CAdapter()
         with pytest.raises(AdapterConnectionError):
             await adapter.connect(config)
         assert not adapter._holds_shared_bus
         expected = 1 if holder is not None else 0
-        assert module._shared_busio_refs.get(1, 0) == expected
+        assert i2c_module._shared_busio_refs.get(1, 0) == expected
         if holder is not None:
             await holder.close()
-        assert module._shared_busio_refs == {}
+        assert i2c_module._shared_busio_refs == {}
 
     async def test_a_second_close_does_not_release_a_reference_twice(self, monkeypatch):
         """The count is shared, so an extra release evicts someone else's handle."""
-        import ori.hal.i2c_adapter as module
-
         _pinned_driver(monkeypatch, chip_mux=0)
         first = I2CAdapter()
         await first.connect(_config(sensor_type="ads1115_voltage", channel=0))
@@ -1534,14 +1515,14 @@ class TestAds1115ChannelSelection:
                 sensor_id="v2",
             )
         )
-        assert module._shared_busio_refs.get(1) == 2
+        assert i2c_module._shared_busio_refs.get(1) == 2
         await first.close()
         await first.close()
         # The second adapter is still reading through this handle.
-        assert module._shared_busio_refs.get(1) == 1
-        assert 1 in module._shared_busio_instances
+        assert i2c_module._shared_busio_refs.get(1) == 1
+        assert 1 in i2c_module._shared_busio_instances
         await second.close()
-        assert module._shared_busio_refs == {}
+        assert i2c_module._shared_busio_refs == {}
 
     async def test_the_reproduction_spins_on_a_conversion_that_never_completes(self):
         """Guards the fake: without a real poll the hang test proves nothing."""
