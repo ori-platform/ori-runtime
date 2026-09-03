@@ -9,6 +9,7 @@ are mocked.  No real hardware, credentials, or network calls are made.
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -53,6 +54,7 @@ from ori.runtime import (
     _setup_success_message,
     _validate_required_runtime_capabilities,
     _warn_sms_webhook_security_posture,
+    requires_production_posture,
 )
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
@@ -662,6 +664,174 @@ def test_build_gateway_message_encryptor_requires_auth_enabled():
 
     with pytest.raises(ValueError, match="gateway auth"):
         _build_gateway_message_encryptor(config)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_sensor_connect_does_not_take_the_runtime_down(
+    minimal_config, monkeypatch
+):
+    """A sensor that cannot connect is skipped; the runtime keeps running.
+
+    This is the boundary a hardened refusal was briefly placed at, and the
+    reason it was withdrawn. Aborting startup on any unconnectable sensor lets
+    an unrelated network-backed sensor take the whole runtime down, and with it
+    every protection the device does have — Tier D included. A safety runtime
+    that will not start is not failing closed; it has removed the agent.
+
+    The sensor is still not silently fine: it is absent from the connected set
+    and reported disconnected on the health surface.
+    """
+    from ori.hal.base import AdapterConnectionError
+    from ori.hal.psutil_adapter import PsutilAdapter
+
+    attempts: list[str] = []
+
+    async def _refuse(self, config):
+        attempts.append(config.get("sensor_id", "?"))
+        raise AdapterConnectionError("simulated: device does not answer")
+
+    monkeypatch.setattr(PsutilAdapter, "connect", _refuse)
+
+    runtime = OriRuntime(config_path=str(minimal_config))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        # Wait for the sensor loop, not merely for the event bus: the bus is
+        # built well before any adapter is connected, so breaking on it would
+        # assert against a runtime that had not reached the boundary yet.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not attempts:
+            if start_task.done():
+                break
+            await asyncio.sleep(0.05)
+
+        # The runtime came up rather than aborting.
+        assert not start_task.done(), (
+            "startup aborted on an unconnectable sensor: "
+            f"{start_task.exception() if start_task.done() else ''}"
+        )
+        assert runtime._event_bus is not None
+        # And the sensor is absent, not quietly counted as present.
+        assert "cpu-sensor" not in runtime._connected_sensor_ids
+        # Without this the test passes whether or not the refusal ever fired:
+        # any exception from connect() produces the same skip.
+        assert attempts, "connect() was never attempted, so nothing was proven"
+    finally:
+        await runtime.stop()
+        start_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await start_task
+
+
+@pytest.mark.asyncio
+async def test_a_failed_sensor_connect_is_non_fatal_under_hardened_posture_too(
+    minimal_config, monkeypatch
+):
+    """The same boundary, with `enforce_production_posture` on.
+
+    The development case alone does not guard the regression it exists for:
+    reinstating a hardened-only refusal leaves it green, because development
+    never refuses. This is the posture where the withdrawn behaviour would
+    fire, so it is the one that has to hold.
+
+    Aborting here would let any unconnectable sensor — a network-backed one on
+    a slow broker, say — take down a runtime that is protecting something else
+    entirely. A safety runtime that will not start has removed the agent, which
+    is not the same as failing closed.
+    """
+    import base64
+
+    import yaml
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from ori.hal.base import AdapterConnectionError
+    from ori.hal.psutil_adapter import PsutilAdapter
+    from ori.security.config_signatures import (
+        CONFIG_SIGNATURE_SCHEMA,
+        canonical_config_signature_payload,
+    )
+
+    # A genuinely hardened config, not a stubbed posture: production posture
+    # demands signed skills, signed config and an encrypted state path, and
+    # none of those relate to the sensor boundary under test. Satisfying them
+    # is what makes `requires_production_posture` true at the sensor loop,
+    # which is the only reason this test differs from its development twin.
+    private_key = Ed25519PrivateKey.generate()
+    public_key_b64 = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode("ascii")
+
+    raw = yaml.safe_load(minimal_config.read_text(encoding="utf-8"))
+    assert "security" not in raw, "fixture now sets security; merge rather than assign"
+    raw["security"] = {
+        "enforce_production_posture": True,
+        "skills": {"require_signed": True},
+        "config_signature": {"require_signed": True},
+    }
+    # Local reasoning is a host capability the hardened gate also checks, and it
+    # is nothing to do with this boundary; turn it off rather than ship a model.
+    raw.setdefault("reasoning", {})["default_tier"] = "rule"
+    raw["state"] = {
+        "encryption": {
+            "mode": "filesystem_required",
+            "encrypted_path_prefixes": [str(minimal_config.parent)],
+        }
+    }
+    raw["config_signature"] = {
+        "schema": CONFIG_SIGNATURE_SCHEMA,
+        "signer_id": "product-provisioning-test",
+        "signed_at_ms": 1_800_000_000_000,
+        "signature": "ed25519:",
+    }
+    signature = private_key.sign(canonical_config_signature_payload(raw))
+    raw["config_signature"]["signature"] = "ed25519:" + base64.b64encode(
+        signature
+    ).decode("ascii")
+
+    hardened = minimal_config.parent / "ori-hardened.yaml"
+    hardened.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    # The anchor is delivered out of band, as the signing contract requires.
+    monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+
+    attempts: list[str] = []
+
+    async def _refuse(self, config):
+        attempts.append(config.get("sensor_id", "?"))
+        raise AdapterConnectionError("simulated: device does not answer")
+
+    monkeypatch.setattr(PsutilAdapter, "connect", _refuse)
+
+    runtime = OriRuntime(config_path=str(hardened))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not attempts:
+            if start_task.done():
+                break
+            await asyncio.sleep(0.05)
+
+        assert attempts, "connect() was never attempted, so nothing was proven"
+        # Without this the test would pass on a config that silently stayed in
+        # development, which is the posture it exists to exclude.
+        assert runtime._config is not None
+        assert requires_production_posture(
+            device=runtime._config.device,
+            security=runtime._config.security,
+        ), "the hardened posture did not take; this test proves nothing"
+        assert not start_task.done(), (
+            "hardened startup aborted on an unconnectable sensor: "
+            f"{start_task.exception() if start_task.done() else ''}"
+        )
+        assert runtime._event_bus is not None
+        assert "cpu-sensor" not in runtime._connected_sensor_ids
+    finally:
+        await runtime.stop()
+        start_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await start_task
 
 
 @pytest.fixture
