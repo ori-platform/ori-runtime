@@ -25,8 +25,9 @@ wheelhouse build, and apt's build is wanted regardless — matched to this
 interpreter's ABI and to the system liblgpio. Pinning the placeholder is a hard
 resolver conflict. Raspberry Pi OS ships the shim prebuilt as
 `python3-rpi-lgpio`, so it is staged the way the pin factory already is —
-best effort, because images that ship the classic `python3-rpi.gpio` or ship
-neither install and run today.
+best effort, because a Pi that staged the pin factory but has no shim installs
+today, and the classic `python3-rpi.gpio` can occupy the same import name with
+a layout this manifest does not carry.
 
 ## What was verified
 
@@ -68,6 +69,31 @@ files and no `egg-info`.
 holds its line through the kernel rather than driving `/dev/gpiomem` without
 claiming it, so a second writer is refused. The reading is the expected one for
 a grounded input on a channel wired to a header ground pin.
+
+## Bookworm 3.11, measured rather than assumed
+
+Run in an `arm64` Bookworm container answering as Pi hardware, against the
+installer's own staging code. Bookworm packages neither `python3-lgpio` nor
+`python3-rpi-lgpio`.
+
+```
+no pin factory:
+  refused -> prerequisite_install_failed: this device needs the system lgpio
+             pin factory and lgpio is not installed; install python3-lgpio
+  notes: []                       <- the shim block never ran
+
+pin factory present, shim absent:
+  install proceeds
+  notes: ['adafruit-blinka has no platform library in this release
+           (RPi is not installed (python3-rpi-lgpio)); i2c sensors will
+           report their driver unavailable']
+  staged: lgpio.py, _lgpio.cpython-311-aarch64-linux-gnu.so
+```
+
+So a Pi with no pin factory refuses today and still refuses, unchanged by this
+work; the configuration the best-effort shim protects is the second one. An
+earlier draft of this record claimed the first case installed today. It does
+not.
 
 ## What this does not establish
 

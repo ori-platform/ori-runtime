@@ -1474,6 +1474,7 @@ def _pi_preparer(
     purelib: Path | None = None,
     occupied: bool = False,
     shim_present: bool = True,
+    occupied_dirs: tuple[str, ...] = (),
     import_answer: str = "ok",
     shim_import_answer: str | None = None,
 ) -> tuple[Path, list[Sequence[str]], Callable[[], None]]:
@@ -1502,6 +1503,10 @@ def _pi_preparer(
             site_packages.mkdir(parents=True, exist_ok=True)
             if occupied:
                 (site_packages / "lgpio.py").write_text("SQUATTER", encoding="utf-8")
+            for name in occupied_dirs:
+                occupant = site_packages / name
+                occupant.mkdir(parents=True, exist_ok=True)
+                (occupant / "squatter.py").write_text("SQUATTER", encoding="utf-8")
         body = command[-1]
         stdout = ""
         if "sys._base_executable" in body:
@@ -1625,15 +1630,51 @@ def test_offline_preparer_stages_the_shim_for_every_supported_interpreter(
     assert not (purelib / "_lgpio.cpython-310-aarch64-linux-gnu.so").exists()
 
 
+@pytest.mark.parametrize("occupied", ["RPi", "RPi/GPIO"])
+def test_offline_preparer_refuses_to_merge_into_a_tree_it_did_not_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, occupied: str
+) -> None:
+    """An existing directory is refused, not merged into.
+
+    A file or a symlink at a manifest component was already refused; an
+    ordinary directory was not, so the staged files would land beside whatever
+    put it there. `RPi/` from a different package is exactly the tree that
+    would be merged into, and the result imports as `RPi.GPIO`.
+
+    The shim is best effort, so this reports rather than failing the install —
+    but nothing may be written on the way to that decision.
+    """
+    _plant(tmp_path / "dist")
+    _accept_system_files(monkeypatch)
+    monkeypatch.setattr(
+        installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (tmp_path / "dist",)
+    )
+    purelib, _, run = _pi_preparer(
+        tmp_path,
+        source=tmp_path / "dist",
+        monkeypatch=monkeypatch,
+        occupied_dirs=(occupied,),
+    )
+    run()
+    # The occupant is untouched and nothing of the manifest joined it.
+    occupant = purelib / occupied
+    assert (occupant / "squatter.py").read_text(encoding="utf-8") == "SQUATTER"
+    assert not (purelib / "RPi" / "__init__.py").exists()
+    assert not (purelib / "RPi" / "GPIO" / "__init__.py").exists()
+    # The pin factory is unaffected: it shares no path component with the shim.
+    assert (purelib / "lgpio.py").read_text(encoding="utf-8") == "PIN_FACTORY"
+
+
 def test_offline_preparer_installs_without_the_blinka_shim(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A missing shim reports and never fails the install.
 
-    Images that ship the classic `python3-rpi.gpio`, and images where nobody
-    installed either, install and run today. Refusing them would break working
-    deployments to add a capability they may not use — the runtime reports the
-    i2c driver unavailable at connect instead.
+    A Pi that staged the pin factory but has no shim installs today, and the
+    classic `python3-rpi.gpio` can occupy the same import name. Refusing either
+    would break a working deployment to add a capability it may not use — the
+    runtime reports the i2c driver unavailable at connect instead. A Pi with no
+    pin factory never reaches here; mandatory staging refuses first.
     """
     dist = tmp_path / "dist"
     _plant(dist)

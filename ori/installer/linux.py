@@ -2071,11 +2071,15 @@ def _staging_refusal(
 def _shim_refusal(origins: dict[str, str], root: Path) -> str | None:
     """Why the blinka shim cannot be staged, or None.
 
-    Never fails an install. The shim is absent on images that ship the classic
-    `python3-rpi.gpio` instead, and on any image where nobody installed it, and
-    those devices install and run today. Refusing them would break working
-    deployments to add a capability they may not use; the runtime reports the
-    driver unavailable at connect instead.
+    Never fails an install. A Pi that staged the pin factory but has no shim
+    installs today, and the classic `python3-rpi.gpio` can occupy the same
+    import name with a layout this manifest does not carry. Refusing either
+    would break a working deployment to add a capability it may not use; the
+    runtime reports the driver unavailable at connect instead.
+
+    A Pi with no pin factory never reaches here: mandatory staging refuses
+    first. Measured on a Bookworm 3.11 arm64 image, which packages neither
+    `python3-lgpio` nor `python3-rpi-lgpio`.
     """
     origin = origins.get(_SYSTEM_BLINKA_SHIM_MODULE, "")
     if not origin:
@@ -2311,8 +2315,8 @@ class OfflineReleasePreparer:
             )
 
         # The shim is best effort. Its absence costs i2c sensors and nothing
-        # else, and images that ship the classic `python3-rpi.gpio`, or ship
-        # neither, install and run today.
+        # else, and a Pi that staged the pin factory without it installs
+        # today. A Pi with no pin factory never reaches this line.
         shim_reason = _shim_refusal(origins, root)
         if shim_reason is None:
             shim_members = [PurePosixPath(name) for name in _BLINKA_SHIM_MEMBERS]
@@ -2356,14 +2360,20 @@ class OfflineReleasePreparer:
                 return f"{member} {failure}"
             # A fresh venv holds none of these names. One already sitting there
             # means the wheelhouse or the staging tree is not what it should
-            # be, and overwriting it would hide that. Every component is
-            # checked, not just the leaf: a symlink one level up redirects the
-            # write as surely as one at the end.
+            # be, and overwriting it would hide that.
+            #
+            # Every component is checked, not just the leaf: a symlink one
+            # level up redirects the write as surely as one at the end. And an
+            # existing *directory* is refused too, not only a file — a release
+            # must not merge its modules into a tree something else created,
+            # and `RPi/` from another package is exactly the tree that would
+            # be merged into. Only the release's own site directory may
+            # already exist, because it is what is being written into.
             for depth in range(1, len(member.parts) + 1):
                 candidate = destination / PurePosixPath(*member.parts[:depth])
                 if candidate.is_symlink():
                     return f"{member} would be written through a symbolic link"
-                if candidate.exists() and not candidate.is_dir():
+                if candidate.exists():
                     return f"{member} is already present in the release"
         for member in members:
             target = destination / member

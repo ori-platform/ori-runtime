@@ -98,11 +98,16 @@ name. Four files across two apt packages are **copied** into the release's own
 and adafruit-blinka's platform library, `RPi/__init__.py` and
 `RPi/GPIO/__init__.py`, which keep their package layout.
 
-The pin factory is mandatory and its absence fails the install. The blinka
-shim is not: images that ship the classic `python3-rpi.gpio`, or ship neither,
-install and run today, and refusing them would break working deployments to add
-a capability they may not use. Its absence is reported, and the runtime reports
-the i2c driver unavailable at connect.
+The pin factory is mandatory and its absence fails the install — measured on a
+Bookworm 3.11 arm64 image, which packages neither `python3-lgpio` nor
+`python3-rpi-lgpio`: the install refuses at mandatory staging, before any shim
+logic runs.
+
+The blinka shim is not mandatory. A Pi that staged the pin factory but has no
+shim installs today, and the classic `python3-rpi.gpio` can occupy the same
+import name with a layout this manifest does not carry; refusing either would
+break a working deployment to add a capability it may not use. Its absence is
+reported, and the runtime reports the i2c driver unavailable at connect.
 
 Copied rather than linked, for two reasons. The release permission transaction
 requires an external symlink target to be executable and apt ships both files
