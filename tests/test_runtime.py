@@ -666,6 +666,18 @@ def test_build_gateway_message_encryptor_requires_auth_enabled():
         _build_gateway_message_encryptor(config)
 
 
+async def _stop_and_join(runtime, start_task: asyncio.Task) -> None:
+    """Shut a started runtime down and join its task.
+
+    The cancellation is expected, so `CancelledError` is suppressed; awaiting
+    the task is what joins it, and is the point rather than its value.
+    """
+    await runtime.stop()
+    start_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await start_task
+
+
 @pytest.mark.asyncio
 async def test_a_failed_sensor_connect_does_not_take_the_runtime_down(
     minimal_config, monkeypatch
@@ -716,10 +728,7 @@ async def test_a_failed_sensor_connect_does_not_take_the_runtime_down(
         # any exception from connect() produces the same skip.
         assert attempts, "connect() was never attempted, so nothing was proven"
     finally:
-        await runtime.stop()
-        start_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await start_task
+        await _stop_and_join(runtime, start_task)
 
 
 @pytest.mark.asyncio
@@ -828,10 +837,7 @@ async def test_a_failed_sensor_connect_is_non_fatal_under_hardened_posture_too(
         assert runtime._event_bus is not None
         assert "cpu-sensor" not in runtime._connected_sensor_ids
     finally:
-        await runtime.stop()
-        start_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await start_task
+        await _stop_and_join(runtime, start_task)
 
 
 @pytest.fixture

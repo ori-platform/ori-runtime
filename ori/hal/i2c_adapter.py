@@ -6,6 +6,7 @@ import logging
 import math
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 from ori.hal.ac_measurement import (
@@ -166,20 +167,26 @@ _DRIVER_INSTALL_HINT = {
 
 
 # The availability flag remains the single answer to "can this be used". The
-# reason dict only explains a False. Reading the flag through `globals()` keeps
-# the two in step under `patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", ...)`,
-# which is how the suite simulates a Pi.
-_DRIVER_FLAG = {
-    "smbus2": "_SMBUS_AVAILABLE",
-    "bme280": "_BME280_AVAILABLE",
-    "ads1115": "_ADS1115_AVAILABLE",
-    "blinka": "_BLINKA_AVAILABLE",
-    "scd40": "_SCD40_AVAILABLE",
+# reason dict only explains a False.
+#
+# Each entry names its flag directly rather than resolving it through
+# `globals()`. The indirect form worked and made the flags invisible to static
+# analysis, which then reported every one of them as an unused global — a tool
+# reporting less than the truth because of how the code was written, which is
+# worth avoiding rather than suppressing. A lambda reads the module global when
+# it is called, so `patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", ...)` still
+# takes, which is how the suite simulates a Pi.
+_DRIVER_AVAILABLE: dict[str, Callable[[], bool]] = {
+    "smbus2": lambda: _SMBUS_AVAILABLE,
+    "bme280": lambda: _BME280_AVAILABLE,
+    "ads1115": lambda: _ADS1115_AVAILABLE,
+    "blinka": lambda: _BLINKA_AVAILABLE,
+    "scd40": lambda: _SCD40_AVAILABLE,
 }
 
 
 def _driver_missing(driver: str) -> bool:
-    return not globals().get(_DRIVER_FLAG[driver], False)
+    return not _DRIVER_AVAILABLE[driver]()
 
 
 def i2c_driver_unavailable_reason(sensor_type: str) -> str | None:
