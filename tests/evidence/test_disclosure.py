@@ -1259,6 +1259,11 @@ PATTERN_AUDIT_EXEMPT = {
         "evidence-chain evidence; its digests and tag commit are public "
         "release provenance."
     ),
+    "docs/releases/evidence/v2.5.0-rc.7-published-systemd-host-linux-x86_64-python3.12.md": (
+        "Installer runbook evidence for the published candidate, not "
+        "evidence-chain evidence; its digests, tag commit and ephemeral key "
+        "fingerprint are public release provenance."
+    ),
     "docs/releases/evidence/v2.5.0-rc.7-rollback-published-linux-aarch64-python3.13.md": (
         "Installer rollback evidence against the published candidate, not "
         "evidence-chain evidence; its digests and tag commit are public "
