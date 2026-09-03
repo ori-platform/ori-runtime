@@ -1284,6 +1284,12 @@ PATTERN_AUDIT_EXEMPT = {
         "raw pin readings are the deliberately public provenance of a "
         "hardware observation."
     ),
+    "docs/evidence/2026-09-03-pi4-staged-blinka-platform-library.md": (
+        "Bench measurement record for installer staging on a Pi, not "
+        "evidence-chain evidence; its module paths, library versions and the "
+        "resolved GPIO backend are the deliberately public provenance of a "
+        "hardware observation."
+    ),
     "docs/evidence/2026-09-01-pi4-circuit-leg-observations.md": (
         "Bench measurement record for protected-circuit behaviour at a wired "
         "load, not evidence-chain evidence; its wiring, scripts and raw pin "

@@ -18,7 +18,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Literal, NoReturn, Sequence
 
 import yaml
@@ -1973,6 +1973,43 @@ def _set_owned_mode(change: _PermissionChange, uid: int, gid: int, mode: int) ->
 
 
 _SYSTEM_PIN_FACTORY_MODULE = "lgpio"
+# The blinka platform library. adafruit-blinka builds `board` for a Pi through
+# an RPi.GPIO-compatible module, and without one `import board` raises
+# RuntimeError rather than ImportError — a crash on the supported Pi and
+# nothing anywhere else. It cannot come from the wheelhouse: `rpi-lgpio`
+# publishes a pure wheel but requires `lgpio>=0.1.0.1`, and no lgpio release
+# publishes a wheel for the supported interpreter: 0.2.2.0 ships cp39 through
+# cp312 and no cp313, 0.1.0.0 ships eggs pip cannot install, and the
+# requirement excludes the zero-byte 0.0.0.2 placeholder. One lock serves every
+# target, so a resolution that cannot satisfy the supported Trixie tuple fails
+# the wheelhouse build. Raspberry Pi OS ships it prebuilt as
+# `python3-rpi-lgpio`, and apt's build is wanted regardless, being matched to
+# this interpreter's ABI.
+_SYSTEM_BLINKA_SHIM_MODULE = "RPi"
+
+# Exactly what is copied, relative to an admitted system package directory.
+# `{ext}` is the importing interpreter's ABI suffix.
+#
+# A manifest, not a directory copy. Walking `RPi/` would let a future apt
+# package decide how much of the system a release takes, and would sweep in
+# egg-info metadata that describes an installation this release is not. Adding
+# a file here is a reviewed change; adding one to the image is not.
+#
+# The two sets are separate because they carry different obligations. Without
+# the pin factory a device cannot drive its relay, so its absence fails the
+# install. Without the shim a device cannot read an i2c sensor, which matters
+# only where one is configured — and the shim is not on every supported image.
+_PIN_FACTORY_MEMBERS = ("lgpio.py", "_lgpio{ext}")
+_BLINKA_SHIM_MEMBERS = ("RPi/__init__.py", "RPi/GPIO/__init__.py")
+
+# Which apt package to name when one is missing. A refusal that names the
+# module leaves an operator searching; naming the package is the actionable
+# half.
+_SYSTEM_PACKAGE_NAMES = {
+    _SYSTEM_PIN_FACTORY_MODULE: "python3-lgpio",
+    _SYSTEM_BLINKA_SHIM_MODULE: "python3-rpi-lgpio",
+}
+
 # Where a Raspberry Pi OS image puts apt's Python packages. Discovery is
 # constrained to this set so an interpreter answering from somewhere else
 # cannot decide what gets copied into a release.
@@ -1996,9 +2033,13 @@ def _is_raspberry_pi() -> bool:
 
 
 def _staging_refusal(
-    venv: Path, base: str, purelib: str, suffix: str, origin: str
+    venv: Path,
+    base: str,
+    purelib: str,
+    suffix: str,
+    origins: dict[str, str],
 ) -> str | None:
-    """Why the pin factory cannot be staged from this system, or None."""
+    """Why the system modules cannot be staged from this system, or None."""
     if not base:
         return "the base interpreter could not be identified"
     if not purelib or not Path(purelib).is_dir():
@@ -2015,14 +2056,67 @@ def _staging_refusal(
         return "the release site directory lies outside the environment"
     if not suffix:
         return "the interpreter reports no extension suffix"
+    origin = origins.get(_SYSTEM_PIN_FACTORY_MODULE, "")
     if not origin:
-        return (
-            f"{_SYSTEM_PIN_FACTORY_MODULE} is not installed; "
-            "install the system package that provides it"
-        )
+        package = _SYSTEM_PACKAGE_NAMES[_SYSTEM_PIN_FACTORY_MODULE]
+        return f"{_SYSTEM_PIN_FACTORY_MODULE} is not installed; install {package}"
     if Path(origin).parent not in _SYSTEM_PACKAGE_DIRECTORIES:
-        return "it resolves outside the admitted system package directories"
+        return (
+            f"{_SYSTEM_PIN_FACTORY_MODULE} resolves outside the admitted "
+            "system package directories"
+        )
     return None
+
+
+def _shim_refusal(origins: dict[str, str], root: Path) -> str | None:
+    """Why the blinka shim cannot be staged, or None.
+
+    Never fails an install. A Pi that staged the pin factory but has no shim
+    installs today, and the classic `python3-rpi.gpio` can occupy the same
+    import name with a layout this manifest does not carry. Refusing either
+    would break a working deployment to add a capability it may not use; the
+    runtime reports the driver unavailable at connect instead.
+
+    A Pi with no pin factory never reaches here: mandatory staging refuses
+    first. Measured on a Bookworm 3.11 arm64 image, which packages neither
+    `python3-lgpio` nor `python3-rpi-lgpio`.
+    """
+    origin = origins.get(_SYSTEM_BLINKA_SHIM_MODULE, "")
+    if not origin:
+        package = _SYSTEM_PACKAGE_NAMES[_SYSTEM_BLINKA_SHIM_MODULE]
+        return f"{_SYSTEM_BLINKA_SHIM_MODULE} is not installed ({package})"
+    # A module resolves to its own file; a package resolves to its
+    # `__init__.py`, one level deeper. Lift to the directory the package sits
+    # in, so the comparison is against a system directory rather than the
+    # package itself.
+    if Path(origin).parent.parent != root:
+        return (
+            f"{_SYSTEM_BLINKA_SHIM_MODULE} resolves outside the directory the "
+            "pin factory was read from"
+        )
+    return None
+
+
+def _staging_root(origins: dict[str, str]) -> Path:
+    """The single admitted directory every staged member is read from."""
+    origin = origins[_SYSTEM_PIN_FACTORY_MODULE]
+    return Path(origin).parent
+
+
+def _escapes_root(source: Path, member: PurePosixPath, root: Path) -> bool:
+    """Whether a member reaches outside the directory it is read from.
+
+    `find_spec` answers with an unresolved origin, and only a path's final
+    component is `lstat`ed before it is copied — so a symlink at an
+    *intermediate* component reads from wherever it points. A single-file
+    module has no intermediate component; a package does, which is why this
+    check arrives alongside one.
+    """
+    try:
+        resolved = Path(os.path.realpath(source / member))
+    except OSError:
+        return True
+    return not resolved.is_relative_to(root)
 
 
 def _system_file_failure(path: Path) -> str | None:
@@ -2054,6 +2148,10 @@ class OfflineReleasePreparer:
         self._bundle = bundle
         self._runner = runner or _run_command
         self._bootstrap_python = bootstrap_python
+        # Non-fatal conditions an operator needs to know about. Retained as
+        # well as printed: a degradation nobody can see is the failure this
+        # project refuses, and a caller may want to carry it into a report.
+        self.notes: list[str] = []
 
     def prepare(self, staging: Path) -> None:
         wheelhouse = self._bundle.root / "wheelhouse"
@@ -2081,7 +2179,7 @@ class OfflineReleasePreparer:
             self._run([*base, "--require-hashes", "-r", str(pi_requirements)])
         self._run([*base, "--no-deps", str(wheels[0])])
         if pi_requirements.is_file() and _is_raspberry_pi():
-            self._stage_system_pin_factory(venv)
+            self._stage_system_modules(venv)
 
     def validate(self, release: Path) -> None:
         python = release / "venv" / "bin" / "python"
@@ -2112,18 +2210,39 @@ class OfflineReleasePreparer:
             )
         self._run([str(entrypoint), "--help"])
 
-    def _stage_system_pin_factory(self, venv: Path) -> None:
-        """Copy the operating system's pin factory into the isolated venv.
+    def _stage_system_modules(self, venv: Path) -> None:
+        """Copy apt-owned, ABI-matched modules into the isolated venv.
 
-        `lgpio` ships only from apt: PyPI's release carries an empty module, and
-        apt builds the extension per interpreter version. An isolated venv
-        cannot import it, so gpiozero falls back to NativeFactory, which drives
+        Two things arrive this way, for the same reason: PyPI cannot deliver
+        either to this target.
+
+        `lgpio` is the pin factory. Its PyPI release carries an empty module and
+        apt builds the extension per interpreter version, so an isolated venv
+        cannot import it and gpiozero falls back to NativeFactory, which drives
         pins without claiming the line through the kernel.
+
+        `RPi` is adafruit-blinka's platform library, shipped by the image as
+        `python3-rpi-lgpio` — the RPi.GPIO API over lgpio. Without it
+        `import board` raises RuntimeError, which is a crash on the supported
+        Pi and nothing at all elsewhere, so the i2c adapter could not open an
+        ADS1115 on the only platform it exists for. It cannot be wheelhoused:
+        `rpi-lgpio` publishes a pure wheel but requires `lgpio>=0.1.0.1`, and
+        no lgpio release publishes a wheel for the supported interpreter:
+        0.2.2.0 ships cp39 through cp312 and no cp313, 0.1.0.0 ships eggs, and
+        the requirement excludes the 0.0.0.2 placeholder. apt's build is wanted
+        regardless, being matched to this interpreter's ABI and to the system
+        liblgpio. Staging it does not move the pin factory —
+        gpiozero 2.x still selects LGPIOFactory with the shim present.
 
         The venv stays isolated and the module is taken by name. Creating it
         with `--system-site-packages` would put every apt package on the
         runtime's import path, where an unpinned optional import — a transport,
         a hardware backend — could activate a capability no release reviewed.
+
+        Only the manifest is copied. `RPi/` is not walked: a directory copy
+        would let a future apt package decide how much of the system a release
+        takes, and would sweep in egg-info metadata describing an installation
+        this release is not.
 
         The bytes are copied rather than linked, for two reasons. The release
         permission transaction requires an external symlink target to be
@@ -2158,43 +2277,130 @@ class OfflineReleasePreparer:
         # Discovery is constrained as well as isolated: the interpreter says
         # where it would import from, and only an admitted system directory is
         # accepted as that answer.
-        origin = (
-            self._probe(
-                base,
-                "import importlib.util as u;"
-                f"s = u.find_spec({_SYSTEM_PIN_FACTORY_MODULE!r});"
-                "print(s.origin or '' if s else '')",
+        origins = {
+            module: (
+                self._probe(
+                    base,
+                    "import importlib.util as u;"
+                    f"s = u.find_spec({module!r});"
+                    "print(s.origin or '' if s else '')",
+                )
+                if base
+                else ""
             )
-            if base
-            else ""
-        )
-        reason = _staging_refusal(venv, base, purelib, suffix, origin)
+            for module in (_SYSTEM_PIN_FACTORY_MODULE, _SYSTEM_BLINKA_SHIM_MODULE)
+        }
+        reason = _staging_refusal(venv, base, purelib, suffix, origins)
         if reason is not None:
             self._refuse_pin_factory(reason)
 
-        source = Path(origin).parent
-        members = [
-            source / f"{_SYSTEM_PIN_FACTORY_MODULE}.py",
-            source / f"_{_SYSTEM_PIN_FACTORY_MODULE}{suffix}",
+        source = _staging_root(origins)
+        root = source.resolve(strict=False)
+
+        # The pin factory is mandatory: a device that cannot drive its relay
+        # must not finish installing and report itself healthy.
+        pin_members = [
+            PurePosixPath(name.format(ext=suffix)) for name in _PIN_FACTORY_MEMBERS
         ]
-        for member in members:
-            failure = _system_file_failure(member)
-            if failure is not None:
-                self._refuse_pin_factory(f"{member.name} {failure}")
-        destination = Path(purelib)
-        for member in members:
-            target = destination / member.name
-            # A fresh venv holds neither name. One already sitting there means
-            # the wheelhouse or the staging tree is not what it should be, and
-            # overwriting it would hide that.
-            if target.exists() or target.is_symlink():
-                self._refuse_pin_factory(
-                    f"{member.name} is already present in the release"
+        failure = self._stage_members(source, root, Path(purelib), pin_members)
+        if failure is not None:
+            self._refuse_pin_factory(failure)
+        if (
+            self._probe(python, f"import {_SYSTEM_PIN_FACTORY_MODULE}; print('ok')")
+            != "ok"
+        ):
+            self._refuse_pin_factory(
+                f"{_SYSTEM_PIN_FACTORY_MODULE} could not be imported from the "
+                "release after staging"
+            )
+
+        # The shim is best effort. Its absence costs i2c sensors and nothing
+        # else, and a Pi that staged the pin factory without it installs
+        # today. A Pi with no pin factory never reaches this line.
+        shim_reason = _shim_refusal(origins, root)
+        if shim_reason is None:
+            shim_members = [PurePosixPath(name) for name in _BLINKA_SHIM_MEMBERS]
+            shim_reason = self._stage_members(source, root, Path(purelib), shim_members)
+            if shim_reason is None and (
+                self._probe(python, "import RPi.GPIO; print('ok')") != "ok"
+            ):
+                # A different package can occupy the same import name with a
+                # layout this manifest does not carry — the classic RPi.GPIO
+                # keeps its implementation in a compiled `_GPIO` extension. A
+                # half-staged package is worse than none, so take it back out.
+                self._unstage(Path(purelib), shim_members)
+                shim_reason = (
+                    "RPi.GPIO could not be imported from the release after "
+                    "staging; the installed package is not the expected shim"
                 )
+        if shim_reason is not None:
+            self._report(
+                "adafruit-blinka has no platform library in this release "
+                f"({shim_reason}); i2c sensors will report their driver "
+                "unavailable"
+            )
+
+    def _stage_members(
+        self,
+        source: Path,
+        root: Path,
+        destination: Path,
+        members: list[PurePosixPath],
+    ) -> str | None:
+        """Copy one member set, or say why it cannot be copied.
+
+        Nothing is written until every member has passed, so a refusal leaves
+        the release as it found it.
+        """
         for member in members:
-            target = destination / member.name
-            shutil.copyfile(member, target)
+            if _escapes_root(source, member, root):
+                return f"{member} resolves outside the staging root"
+            failure = _system_file_failure(source / member)
+            if failure is not None:
+                return f"{member} {failure}"
+            # A fresh venv holds none of these names. One already sitting there
+            # means the wheelhouse or the staging tree is not what it should
+            # be, and overwriting it would hide that.
+            #
+            # Every component is checked, not just the leaf: a symlink one
+            # level up redirects the write as surely as one at the end. And an
+            # existing *directory* is refused too, not only a file — a release
+            # must not merge its modules into a tree something else created,
+            # and `RPi/` from another package is exactly the tree that would
+            # be merged into. Only the release's own site directory may
+            # already exist, because it is what is being written into.
+            for depth in range(1, len(member.parts) + 1):
+                candidate = destination / PurePosixPath(*member.parts[:depth])
+                if candidate.is_symlink():
+                    return f"{member} would be written through a symbolic link"
+                if candidate.exists():
+                    return f"{member} is already present in the release"
+        for member in members:
+            target = destination / member
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(target.parent, 0o755)
+            shutil.copyfile(source / member, target)
             os.chmod(target, 0o644)
+        return None
+
+    def _unstage(self, destination: Path, members: list[PurePosixPath]) -> None:
+        """Remove a member set, and any directories it alone created."""
+        for member in members:
+            target = destination / member
+            with contextlib.suppress(OSError):
+                target.unlink()
+        for member in members:
+            parent = (destination / member).parent
+            while parent != destination:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
+
+    def _report(self, message: str) -> None:
+        self.notes.append(message)
+        print(f"warning: {message}", file=sys.stderr)
 
     def _refuse_pin_factory(self, reason: str) -> NoReturn:
         raise LinuxInstallError(

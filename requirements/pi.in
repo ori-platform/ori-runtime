@@ -16,10 +16,24 @@
 # working module is apt's `python3-lgpio`, whose extension is built per
 # interpreter: `_lgpio.cpython-313-aarch64-linux-gnu.so`.
 #
-# So the pin factory comes from the operating system, and the runtime venv must
-# be able to see it. That is also why the interpreter matters: a venv on any
-# version other than the one apt built for cannot import that extension, and
-# GPIO silently degrades to simulation. See docs/RASPBERRY_PI_SUPPORT.md.
+# So the pin factory comes from the operating system, and the installer stages
+# it. It is not seen: the release venv is built with
+# `include-system-site-packages = false`, so nothing under
+# /usr/lib/python3/dist-packages is on its import path. `_stage_system_modules`
+# in ori/installer/linux.py copies an allow-listed manifest of apt-owned,
+# ABI-matched files into the isolated venv after the wheelhouse install.
+#
+# adafruit-blinka's platform library arrives the same way and for the same
+# reason. `board` needs an RPi.GPIO-compatible module and raises RuntimeError
+# without one; the image ships `python3-rpi-lgpio`, and `rpi-lgpio` cannot be
+# wheelhoused because it requires `lgpio>=0.1.0.1` while no lgpio release
+# publishes a wheel for the supported interpreter: 0.2.2.0 ships cp39 through
+# cp312 and no cp313, 0.1.0.0 ships eggs, and the requirement excludes the
+# zero-byte 0.0.0.2 placeholder.
+#
+# That is also why the interpreter matters: a venv on any version other than
+# the one apt built for cannot import that extension, and GPIO silently
+# degrades to simulation. See docs/RASPBERRY_PI_SUPPORT.md.
 gpiozero>=2.0.1.post3
 smbus2>=0.4
 # The ADS1115 driver the I2C adapter imports. Never declared until now, so the
