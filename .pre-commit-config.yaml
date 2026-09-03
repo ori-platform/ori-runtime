@@ -78,26 +78,7 @@ repos:
         name: Conventional commit format
         language: python
         stages: [commit-msg]
-        entry: python
-        args:
-          - -c
-          - |-
-            import re
-            import sys
-
-            msg = open(sys.argv[1]).read().split("\n")[0]
-            pattern = (
-                r"^(feat|fix|docs|test|skill|refactor|perf|build|ci|chore|revert|security)"
-                r"(\([a-z0-9/-]+\))?: .{1,100}$"
-            )
-            if not re.match(pattern, msg):
-                print("❌ Commit message does not follow Conventional Commits format.")
-                print(f"   Got: {msg!r}")
-                print("   Expected: type(scope): description")
-                print(
-                    "   Valid types: feat fix docs test skill refactor perf build ci chore revert security"
-                )
-                sys.exit(1)
+        entry: python3 scripts/check_conventional_subject.py --commit-msg-file
         pass_filenames: true
 
   # ── Basic file hygiene ───────────────────────────────────────────────────────
