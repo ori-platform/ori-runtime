@@ -131,6 +131,7 @@ def _connected_ads_adapter(
     adapter._ads = MagicMock()
     # The config readback before every measurement: the configured channel
     # single-ended (mux 4 + n), PGA gain 1, continuous, 860 SPS, comparator off.
+    adapter._holds_shared_bus = True
     adapter._ads.gain = 1
     adapter._ads.data_rate = 860
     adapter._ads._read_register.side_effect = lambda *_a, **_k: (
@@ -150,6 +151,7 @@ def _connected_scd40_adapter() -> I2CAdapter:
     adapter = I2CAdapter()
     adapter._connected = True
     adapter._sensor_type = "scd40"
+    adapter._holds_shared_bus = True
     adapter._breaker = HardwareCircuitBreaker("I2CAdapter", {})
     adapter._scd4x = MagicMock()
     return adapter
@@ -1437,6 +1439,109 @@ class TestAds1115ChannelSelection:
             await adapter.connect(
                 _config(sensor_type="ads1115_voltage", channel=channel)
             )
+
+    async def test_a_refused_duplicate_does_not_pin_the_shared_bus(self, monkeypatch):
+        """A refused connect is dropped by the runtime without a close().
+
+        `ori/runtime.py` logs the failure and continues to the next sensor, so
+        nothing calls the refused adapter's teardown. If connect() took a
+        reference on the shared bus before refusing, that reference is never
+        given back: the cached handle outlives its last real user, and the
+        next connect on that bus is handed the stale one.
+        """
+        import ori.hal.i2c_adapter as module
+
+        _pinned_driver(monkeypatch, chip_mux=0)
+        first = I2CAdapter()
+        await first.connect(_config(sensor_type="ads1115_current", channel=0))
+        second = I2CAdapter()
+        with pytest.raises(AdapterConnectionError, match="already driven"):
+            await second.connect(_config(sensor_type="ads1115_voltage", channel=1))
+        # The runtime's own handling: the refused adapter is simply dropped.
+        del second
+        assert module._shared_busio_refs.get(1) == 1
+        await first.close()
+        assert module._shared_busio_refs == {}
+        assert module._shared_busio_instances == {}
+
+    @pytest.mark.parametrize(
+        "failure", ["channel", "claimed", "construct", "verify", "late_read"]
+    )
+    async def test_no_failed_connect_pins_the_shared_bus(self, monkeypatch, failure):
+        """Every way connect() can fail gives the reference back.
+
+        The refusal is the interesting one, but it is not the only path that
+        raises after the bus is reachable, and a leak on any of them has the
+        same effect on the next connect.
+        """
+        import ori.hal.i2c_adapter as module
+
+        _pinned_driver(monkeypatch, chip_mux=0)
+        holder = None
+        config = _config(sensor_type="ads1115_voltage", channel=0)
+        if failure == "channel":
+            config = _config(sensor_type="ads1115_voltage", channel=9)
+        elif failure == "claimed":
+            holder = I2CAdapter()
+            await holder.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        elif failure == "construct":
+
+            def _explode(i2c, **kw):
+                raise OSError("no device")
+
+            monkeypatch.setattr(module._ads1115, "ADS1115", staticmethod(_explode))
+        elif failure == "verify":
+            _pinned_driver(monkeypatch, chip_mux=0, honours_pin_in_single=False)
+        elif failure == "late_read":
+
+            class _FailsLate(_PinnedDriverADS1115):
+                pointered = 0
+
+                def get_last_result(self, fast: bool = False):
+                    if not fast:
+                        _FailsLate.pointered += 1
+                        if _FailsLate.pointered == 2:
+                            raise OSError("bus fell over")
+                    return super().get_last_result(fast)
+
+            monkeypatch.setattr(module._ads1115, "ADS1115", _FailsLate)
+
+        adapter = I2CAdapter()
+        with pytest.raises(AdapterConnectionError):
+            await adapter.connect(config)
+        assert not adapter._holds_shared_bus
+        expected = 1 if holder is not None else 0
+        assert module._shared_busio_refs.get(1, 0) == expected
+        if holder is not None:
+            await holder.close()
+        assert module._shared_busio_refs == {}
+
+    async def test_a_second_close_does_not_release_a_reference_twice(self, monkeypatch):
+        """The count is shared, so an extra release evicts someone else's handle."""
+        import ori.hal.i2c_adapter as module
+
+        _pinned_driver(monkeypatch, chip_mux=0)
+        first = I2CAdapter()
+        await first.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        # A second chip at its own address: a legitimate second reference on
+        # the same bus, which is exactly what must survive the extra close.
+        second = I2CAdapter()
+        await second.connect(
+            _config(
+                sensor_type="ads1115_voltage",
+                address=0x49,
+                channel=1,
+                sensor_id="v2",
+            )
+        )
+        assert module._shared_busio_refs.get(1) == 2
+        await first.close()
+        await first.close()
+        # The second adapter is still reading through this handle.
+        assert module._shared_busio_refs.get(1) == 1
+        assert 1 in module._shared_busio_instances
+        await second.close()
+        assert module._shared_busio_refs == {}
 
     async def test_the_reproduction_spins_on_a_conversion_that_never_completes(self):
         """Guards the fake: without a real poll the hang test proves nothing."""

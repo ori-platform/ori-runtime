@@ -561,6 +561,10 @@ class I2CAdapter(BaseAdapter):
         self._bme280_params: Any = None  # bme280 calibration params
         self._ads: Any = None  # ADS1115 instance
         self._scd4x: Any = None  # SCD4X instance
+        # Whether this adapter holds a reference on the shared busio.I2C. The
+        # count is shared, so releasing one this adapter never took would evict
+        # a handle another adapter is still reading through.
+        self._holds_shared_bus: bool = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -601,8 +605,10 @@ class I2CAdapter(BaseAdapter):
             self._calibration = _resolve_calibration(config)
             self._window = _window_spec(self._calibration)
 
+        connected = False
         try:
             await asyncio.to_thread(self._connect_sync, sensor_type)
+            connected = True
         except AdapterConnectionError:
             raise
         except Exception as exc:
@@ -610,6 +616,14 @@ class I2CAdapter(BaseAdapter):
                 f"I2CAdapter: failed to connect to '{sensor_type}' at "
                 f"address 0x{self._address:02X} on bus {self._bus_number}: {exc}"
             ) from exc
+        finally:
+            # The runtime logs a failed connect and moves on without calling
+            # close(), so a connect that raises has to give back what it took
+            # on the way in. A leaked reference keeps the cached bus handle
+            # alive past its last real user, and the next connect is then
+            # handed a stale one.
+            if not connected:
+                self._release_shared_bus()
 
         self._breaker = HardwareCircuitBreaker(
             getattr(self, "adapter_name", type(self).__name__), config
@@ -636,7 +650,6 @@ class I2CAdapter(BaseAdapter):
     def _connect_ads1115(self) -> None:
         _require_drivers(self._sensor_type)
         assert _ads1115 is not None and _ads1x15 is not None
-        i2c = _get_shared_busio_i2c(self._bus_number)
         # The driver defaults are 128 SPS in single-shot mode, which yields
         # about two samples per 50 Hz cycle. Continuous conversion at the
         # configured rate is what makes a window resolvable at all.
@@ -675,6 +688,7 @@ class I2CAdapter(BaseAdapter):
                 )
             _ADS1115_CLAIMS[key] = weakref.ref(self)
         try:
+            i2c = self._acquire_shared_bus()
             self._ads = _ads1115.ADS1115(
                 i2c,
                 address=self._address,
@@ -757,6 +771,19 @@ class I2CAdapter(BaseAdapter):
                 )
             time.sleep(0.0005)
         self._ads.get_last_result(False)
+
+    def _acquire_shared_bus(self) -> Any:
+        """Take a reference on the shared bus, and record that this one holds it."""
+        i2c = _get_shared_busio_i2c(self._bus_number)
+        self._holds_shared_bus = True
+        return i2c
+
+    def _release_shared_bus(self) -> None:
+        """Give back this adapter's reference, once, if it took one."""
+        if not self._holds_shared_bus:
+            return
+        self._holds_shared_bus = False
+        _release_shared_busio_i2c(self._bus_number)
 
     def _release_ads1115_claim(self) -> None:
         key = (self._bus_number, self._address)
@@ -847,7 +874,7 @@ class I2CAdapter(BaseAdapter):
         # come from there — but not the ADS1115 driver. The table says so.
         _require_drivers("scd40")
         assert adafruit_scd4x is not None
-        i2c = _get_shared_busio_i2c(self._bus_number)
+        i2c = self._acquire_shared_bus()
         self._scd4x = adafruit_scd4x.SCD4X(i2c)
         self._scd4x.start_periodic_measurement()
 
@@ -869,8 +896,7 @@ class I2CAdapter(BaseAdapter):
             if self._bus is not None:
                 await asyncio.to_thread(self._bus.close)
                 self._bus = None
-            if self._sensor_type in _ADS_SENSOR_TYPES | {"scd40"}:
-                _release_shared_busio_i2c(self._bus_number)
+            self._release_shared_bus()
         except Exception:
             logger.warning("I2CAdapter: exception during close — already disconnected?")
         finally:
