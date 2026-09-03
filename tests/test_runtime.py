@@ -9,7 +9,6 @@ are mocked.  No real hardware, credentials, or network calls are made.
 
 import asyncio
 import base64
-import contextlib
 import json
 import logging
 import os
@@ -669,13 +668,17 @@ def test_build_gateway_message_encryptor_requires_auth_enabled():
 async def _stop_and_join(runtime, start_task: asyncio.Task) -> None:
     """Shut a started runtime down and join its task.
 
-    The cancellation is expected, so `CancelledError` is suppressed; awaiting
-    the task is what joins it, and is the point rather than its value.
+    The join asserts the task actually stopped: a runtime that hangs on
+    shutdown would otherwise leave the test to time out somewhere less
+    informative.
     """
     await runtime.stop()
     start_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await start_task
+    # `asyncio.wait` joins without re-raising the task's CancelledError, and
+    # returns what is still pending — so the teardown asserts the runtime task
+    # actually stopped rather than discarding an awaited value.
+    _, pending = await asyncio.wait({start_task}, timeout=10)
+    assert not pending, "the runtime task did not stop"
 
 
 @pytest.mark.asyncio
