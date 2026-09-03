@@ -33,10 +33,19 @@ interpreter version:
 | Other published bundles | `x86_64`, `aarch64` | 3.11, 3.12, 3.13 | Community compatibility |
 
 Every tuple above uses the interpreter its distribution ships, so no manual
-Python installation is required. Trixie is listed as a published bundle rather
-than production-supported because those are different claims: the bundle
-builds, signs, verifies and passes the suite on 3.13, and an installation on
-the hardware followed by a reboot has not yet been evidenced.
+Python installation is required.
+
+Both production-supported tuples are certified on the published `v2.5.0-rc.7`
+bundle: each was installed from the release origin against the production trust
+anchor, survived a genuine reboot, rolled back off a deliberately failing
+candidate onto the restored release, and uninstalled cleanly. The records are
+`docs/releases/evidence/v2.5.0-rc.7-published-systemd-host-linux-aarch64-python3.13.md`
+with `docs/releases/evidence/v2.5.0-rc.7-rollback-published-linux-aarch64-python3.13.md`,
+and `docs/releases/evidence/v2.5.0-rc.7-published-systemd-host-linux-x86_64-python3.12.md`.
+
+Building, signing and passing the suite for a tuple is a different claim from
+installing on it, which is why the other bundles are listed as published rather
+than supported: nothing has been installed and rebooted on them.
 
 Where the distribution's `python3` is some other version, the installer looks
 for a supported one rather than refusing the host: it tries `python3.13`,
