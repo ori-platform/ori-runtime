@@ -69,9 +69,13 @@ Two dead ends, both checked:
 - **`RPi.GPIO` publishes sdists only.** The wheelhouse build resolves with
   `--only-binary=:all:`, which reduces its candidate set to nothing. The `pi`
   wheelhouse target could never be built while it was pinned.
-- **`lgpio` on PyPI is a placeholder.** The only installable release is
-  `0.0.0.2`, whose wheel contains a zero-byte `lgpio.py`. `rpi-lgpio` depends on
-  it and inherits the same emptiness. Neither yields a working factory.
+- **`lgpio` on PyPI has no wheel for the supported interpreter.** `0.2.2.0`
+  publishes wheels for cp39 through cp312 and none for cp313; `0.1.0.0` ships
+  eggs pip cannot install; and the release left, `0.0.0.2`, contains a
+  zero-byte `lgpio.py` and is excluded by `rpi-lgpio`'s `lgpio>=0.1.0.1`. One
+  lock serves every target, so a resolution that cannot satisfy the supported
+  Trixie tuple fails the wheelhouse build. apt's build is wanted regardless: it
+  is matched to this interpreter's ABI and to the system liblgpio.
 
 So the pin factory comes from the operating system. `requirements/pi.in` carries
 `gpiozero` and `smbus2` only, and the image supplies the rest:
@@ -88,9 +92,17 @@ An isolated venv cannot import apt packages, so a Pi install needs the pin
 factory reachable from inside it — otherwise `gpiozero` is present but
 factory-less, which fails in exactly the silent way described above.
 
-The venv stays isolated and the installer takes the module by name. The two
-files apt ships, `lgpio.py` and the extension built for this interpreter's ABI,
-are **copied** into the release's own `site-packages`.
+The venv stays isolated and the installer takes an allow-listed manifest by
+name. Four files across two apt packages are **copied** into the release's own
+`site-packages`: `lgpio.py` and the extension built for this interpreter's ABI,
+and adafruit-blinka's platform library, `RPi/__init__.py` and
+`RPi/GPIO/__init__.py`, which keep their package layout.
+
+The pin factory is mandatory and its absence fails the install. The blinka
+shim is not: images that ship the classic `python3-rpi.gpio`, or ship neither,
+install and run today, and refusing them would break working deployments to add
+a capability they may not use. Its absence is reported, and the runtime reports
+the i2c driver unavailable at connect.
 
 Copied rather than linked, for two reasons. The release permission transaction
 requires an external symlink target to be executable and apt ships both files

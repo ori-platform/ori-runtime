@@ -16,11 +16,17 @@ developer machine and every CI job while the i2c adapter could not open an
 ADS1115 on the only platform it exists for.
 
 It cannot be carried in the wheelhouse. `rpi-lgpio` publishes a pure
-`py3-none-any` wheel, but requires `lgpio>=0.1.0.1`, and every `lgpio` release
-above the zero-byte `0.0.0.2` placeholder is an sdist that the wheelhouse's
-`--only-binary` filter refuses. Pinning the placeholder is a hard resolver
-conflict. Raspberry Pi OS ships the shim prebuilt as `python3-rpi-lgpio`, so it
-is staged the way the pin factory already is.
+`py3-none-any` wheel, but requires `lgpio>=0.1.0.1`, and no `lgpio` release
+publishes a wheel for the supported interpreter: `0.2.2.0` ships cp39 through
+cp312 and no cp313, `0.1.0.0` ships eggs pip cannot install, and the
+requirement excludes the zero-byte `0.0.0.2` placeholder. One lock serves every
+target, so a resolution that cannot satisfy the supported Trixie tuple fails the
+wheelhouse build, and apt's build is wanted regardless — matched to this
+interpreter's ABI and to the system liblgpio. Pinning the placeholder is a hard
+resolver conflict. Raspberry Pi OS ships the shim prebuilt as
+`python3-rpi-lgpio`, so it is staged the way the pin factory already is —
+best effort, because images that ship the classic `python3-rpi.gpio` or ship
+neither install and run today.
 
 ## What was verified
 

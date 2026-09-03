@@ -1475,6 +1475,7 @@ def _pi_preparer(
     occupied: bool = False,
     shim_present: bool = True,
     import_answer: str = "ok",
+    shim_import_answer: str | None = None,
 ) -> tuple[Path, list[Sequence[str]], Callable[[], None]]:
     """A Pi bundle whose system probe answers with *source* as lgpio's home."""
     root = tmp_path / "bundle"
@@ -1516,8 +1517,14 @@ def _pi_preparer(
                 stdout = str(source / "lgpio.py")
         elif "print('ok')" in body:
             # The post-stage check asks the release interpreter whether what
-            # was copied can actually be imported.
-            stdout = import_answer
+            # was copied can actually be imported. The two member sets are
+            # asked separately, because only one of them is mandatory.
+            if "RPi.GPIO" in body:
+                stdout = (
+                    import_answer if shim_import_answer is None else shim_import_answer
+                )
+            else:
+                stdout = import_answer
         elif "purelib" in body:
             stdout = str(site_packages)
         return subprocess.CompletedProcess(command, 0, stdout, "")
@@ -1537,7 +1544,7 @@ def _plant(directory: Path, *, suffix: str = _EXT_SUFFIX) -> None:
     (directory / f"_lgpio{suffix}").write_bytes(b"\x7fELF")
     (directory / "yaml.py").write_text("", encoding="utf-8")
     # An extension left behind for a different interpreter ABI.
-    (directory / "_lgpio.cpython-311-aarch64-linux-gnu.so").write_bytes(b"stale")
+    (directory / "_lgpio.cpython-310-aarch64-linux-gnu.so").write_bytes(b"stale")
     # adafruit-blinka's platform library, as `python3-rpi-lgpio` lays it out,
     # with the metadata a directory copy would sweep up beside it.
     shim = directory / "RPi"
@@ -1583,15 +1590,94 @@ def test_offline_preparer_copies_the_pin_factory_into_a_pi_venv(
     ) == "BLINKA_SHIM"
 
 
-def test_offline_preparer_refuses_a_release_it_cannot_import_from(
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        ".cpython-311-aarch64-linux-gnu.so",
+        ".cpython-312-aarch64-linux-gnu.so",
+        ".cpython-313-aarch64-linux-gnu.so",
+    ],
+)
+def test_offline_preparer_stages_the_shim_for_every_supported_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    """The shim is pure Python; only the pin factory extension is ABI-bound.
+
+    3.12 and 3.13 are supported targets and 3.11 is community, so a change that
+    staged only for the interpreter it was written on would break two of the
+    three published aarch64 bundles. The extension is selected by the ABI tag;
+    the shim's two files are the same on all of them.
+    """
+    dist = tmp_path / "dist"
+    _plant(dist, suffix=suffix)
+    _accept_system_files(monkeypatch)
+    monkeypatch.setattr(installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (dist,))
+    purelib, _, run = _pi_preparer(
+        tmp_path, source=dist, monkeypatch=monkeypatch, suffix=suffix
+    )
+    run()
+    staged = sorted(entry.name for entry in purelib.iterdir())
+    assert staged == ["RPi", f"_lgpio{suffix}", "lgpio.py"]
+    assert (purelib / "RPi" / "GPIO" / "__init__.py").read_text(
+        encoding="utf-8"
+    ) == "BLINKA_SHIM"
+    # The extension for another interpreter is left where it was.
+    assert not (purelib / "_lgpio.cpython-310-aarch64-linux-gnu.so").exists()
+
+
+def test_offline_preparer_installs_without_the_blinka_shim(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Copied bytes are not proof the release can import them.
+    """A missing shim reports and never fails the install.
 
-    The extension is ABI-tagged and the shim needs every level of its own
-    package; a stage that finished without the release being able to import
-    either would leave gpiozero on NativeFactory and `board` still raising.
+    Images that ship the classic `python3-rpi.gpio`, and images where nobody
+    installed either, install and run today. Refusing them would break working
+    deployments to add a capability they may not use — the runtime reports the
+    i2c driver unavailable at connect instead.
     """
+    dist = tmp_path / "dist"
+    _plant(dist)
+    shutil.rmtree(dist / "RPi")
+    _accept_system_files(monkeypatch)
+    monkeypatch.setattr(installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (dist,))
+    purelib, _, run = _pi_preparer(
+        tmp_path, source=dist, monkeypatch=monkeypatch, shim_present=False
+    )
+    run()
+    staged = sorted(entry.name for entry in purelib.iterdir())
+    assert staged == [f"_lgpio{_EXT_SUFFIX}", "lgpio.py"]
+
+
+def test_offline_preparer_takes_back_a_shim_the_release_cannot_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A different package can occupy the same import name.
+
+    The classic RPi.GPIO keeps its implementation in a compiled `_GPIO`
+    extension this manifest does not carry, so the copied files would be a
+    package that cannot import. Half-staged is worse than absent.
+    """
+    _plant(tmp_path / "dist")
+    _accept_system_files(monkeypatch)
+    monkeypatch.setattr(
+        installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (tmp_path / "dist",)
+    )
+    purelib, _, run = _pi_preparer(
+        tmp_path,
+        source=tmp_path / "dist",
+        monkeypatch=monkeypatch,
+        shim_import_answer="",
+    )
+    run()
+    staged = sorted(entry.name for entry in purelib.iterdir())
+    assert staged == [f"_lgpio{_EXT_SUFFIX}", "lgpio.py"]
+    assert not (purelib / "RPi").exists()
+
+
+def test_offline_preparer_refuses_a_release_that_cannot_import_the_pin_factory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pin factory is mandatory, so its import failure is fatal."""
     _plant(tmp_path / "dist")
     _accept_system_files(monkeypatch)
     monkeypatch.setattr(
@@ -1606,23 +1692,6 @@ def test_offline_preparer_refuses_a_release_it_cannot_import_from(
     with pytest.raises(LinuxInstallError) as excinfo:
         run()
     assert "could not be imported" in str(excinfo.value)
-
-
-def test_offline_preparer_refuses_when_the_blinka_shim_is_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Both modules are required, and the refusal says which one is missing."""
-    dist = tmp_path / "dist"
-    _plant(dist)
-    shutil.rmtree(dist / "RPi")
-    _accept_system_files(monkeypatch)
-    monkeypatch.setattr(installer_linux, "_SYSTEM_PACKAGE_DIRECTORIES", (dist,))
-    _, _, run = _pi_preparer(
-        tmp_path, source=dist, monkeypatch=monkeypatch, shim_present=False
-    )
-    with pytest.raises(LinuxInstallError) as excinfo:
-        run()
-    assert "RPi" in str(excinfo.value)
 
 
 def test_offline_preparer_takes_only_the_current_abi_and_nothing_else(
@@ -1640,7 +1709,7 @@ def test_offline_preparer_takes_only_the_current_abi_and_nothing_else(
     run()
     staged = {entry.name for entry in purelib.iterdir()}
     assert "yaml.py" not in staged
-    assert "_lgpio.cpython-311-aarch64-linux-gnu.so" not in staged
+    assert "_lgpio.cpython-310-aarch64-linux-gnu.so" not in staged
     # A directory copy of RPi/ would take both of these.
     assert "rpi_lgpio-0.6.egg-info" not in staged
     assert not (purelib / "RPi" / "GPIO" / "scratch.py").exists()
