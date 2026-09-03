@@ -8,7 +8,13 @@ from unittest.mock import patch
 import pytest
 
 from ori.hal.base import AdapterConnectionError, AdapterReadError, CircuitState
-from ori.hal.usb_serial_adapter import _SENSOR_MAP, UsbSerialAdapter, _crc16
+from ori.hal.config_schema import DocumentError, validate_document, validate_schema
+from ori.hal.usb_serial_adapter import (
+    _SENSOR_MAP,
+    CONFIG_SCHEMA,
+    UsbSerialAdapter,
+    _crc16,
+)
 
 
 def _config(
@@ -249,3 +255,107 @@ class TestUsbSerialAdapter:
 
                 with pytest.raises(AdapterReadError, match="circuit breaker OPEN"):
                     await adapter.read("mains-power")
+
+
+class TestUsbBindingDeclaration:
+    """The signed document carries a block this adapter does not read.
+
+    There is one configuration document per device and the Android agent needs
+    the meter's USB identity in it, so the block travels inside this sensor.
+    The runtime's obligation is to load it, not to use it. Every phone starter
+    ever onboarded carries one, and this schema refused all of them; nothing
+    noticed because the phone package still ships a shell shim in place of a
+    runtime binary, so no such document has ever been validated.
+    """
+
+    def _schema(self):
+        return validate_schema(CONFIG_SCHEMA, name="usb_serial")
+
+    def _document(self, **extra) -> dict:
+        return {
+            "device_path": "/dev/ttyUSB0",
+            "auto_detect_device_path": False,
+            "baud_rate": 9600,
+            **extra,
+        }
+
+    def _load(self, document: dict) -> dict:
+        return validate_document(
+            document, self._schema(), context="sensors[0] (protocol='usb_serial')"
+        )
+
+    def test_a_document_carrying_a_binding_loads(self):
+        resolved = self._load(
+            self._document(usb_binding={"vendor_id": 4292, "product_id": 60000})
+        )
+        assert resolved["usb_binding"]["vendor_id"] == 4292
+        assert resolved["usb_binding"]["product_id"] == 60000
+
+    def test_the_serial_number_is_optional_and_defaults_empty(self):
+        """It is emitted only when the meter reports one."""
+        resolved = self._load(
+            self._document(usb_binding={"vendor_id": 4292, "product_id": 60000})
+        )
+        assert resolved["usb_binding"]["serial_number"] == ""
+        carried = self._load(
+            self._document(
+                usb_binding={
+                    "vendor_id": 4292,
+                    "product_id": 60000,
+                    "serial_number": "0001",
+                }
+            )
+        )
+        assert carried["usb_binding"]["serial_number"] == "0001"
+
+    def test_a_document_without_a_binding_still_loads(self):
+        """A document that omits the block loads unchanged."""
+        assert "usb_binding" not in self._load(self._document())
+        assert "usb_binding" not in self._load({"auto_detect_device_path": True})
+
+    def test_a_binding_that_names_no_device_is_accepted_like_an_absent_one(self):
+        """Shape is this side's business; identity is the reading party's.
+
+        Omitting the block entirely is accepted and is the same no-identity
+        state, so refusing an empty one would draw a line the runtime cannot
+        defend for a field it never reads.
+        """
+        assert self._load(self._document(usb_binding={}))["usb_binding"] == {
+            "serial_number": ""
+        }
+
+    def test_a_zero_identifier_is_accepted_because_older_documents_carry_one(self):
+        """Documents signed before the issuing side required real identifiers.
+
+        Those were never recalled. The agent already declines to name a meter
+        for them, which is a handled meter-binding failure; refusing them here
+        would turn it into a runtime that will not start at all.
+        """
+        resolved = self._load(
+            self._document(usb_binding={"vendor_id": 0, "product_id": 0})
+        )
+        assert resolved["usb_binding"]["vendor_id"] == 0
+
+    def test_an_identifier_outside_sixteen_bits_is_refused(self):
+        with pytest.raises(DocumentError, match="above the maximum"):
+            self._load(
+                self._document(usb_binding={"vendor_id": 0x10000, "product_id": 1})
+            )
+
+    def test_the_block_is_declared_field_by_field_not_left_open(self):
+        """An undeclared object would reopen the pass-through one level down.
+
+        The block is closed, so it cannot smuggle anything past the validator.
+        The cost is that a field added on the issuing side is refused by every
+        deployed runtime, which makes adding one a coordinated release.
+        """
+        with pytest.raises(DocumentError, match="not declared by the schema"):
+            self._load(
+                self._document(
+                    usb_binding={"vendor_id": 1, "product_id": 2, "bus_number": 3}
+                )
+            )
+
+    def test_a_binding_that_is_not_an_object_is_refused(self):
+        with pytest.raises(DocumentError, match="expected object"):
+            self._load(self._document(usb_binding=4292))
