@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import itertools
 import math
 import os
 import time
@@ -15,9 +16,11 @@ from ori.hal.base import (
     AdapterReadError,
     AdapterTimeoutError,
     HardwareCircuitBreaker,
+    MeasurementRefusedError,
 )
 from ori.hal.i2c_adapter import (
     _ADS1115_AVAILABLE,
+    _BLINKA_AVAILABLE,
     _BME280_AVAILABLE,
     I2CAdapter,
     _window_spec,
@@ -37,6 +40,12 @@ def _needs_hardware(
     installed or that anything answers at the address, and these tests need
     both. Reporting a missing driver as a failure reads as a defect in the
     adapter, so a Pi run showed two red tests that said nothing about the code.
+
+    `available` must cover every driver the sensor type reads through, not just
+    the one that names it. An ADS1115 needs blinka for its bus as well as the
+    ADC driver, and a guard that checked only the latter would run the test on
+    a host that cannot open a bus — failing at connect, which is the outcome
+    this decorator exists to prevent.
     """
     return pytest.mark.skipif(
         not (_HAS_I2C_BUS and available),
@@ -45,6 +54,16 @@ def _needs_hardware(
             f"{package} package; install it on the bench to run this for real"
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def _clear_ads1115_claims():
+    """One ADS1115 serves one adapter, and most tests never close theirs."""
+    import ori.hal.i2c_adapter
+
+    ori.hal.i2c_adapter._ADS1115_CLAIMS.clear()
+    yield
+    ori.hal.i2c_adapter._ADS1115_CLAIMS.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +129,13 @@ def _connected_ads_adapter(
     adapter._channel = 0
     adapter._breaker = HardwareCircuitBreaker("I2CAdapter", {})
     adapter._ads = MagicMock()
+    # The config readback before every measurement: the configured channel
+    # single-ended (mux 4 + n), PGA gain 1, continuous, 860 SPS, comparator off.
+    adapter._ads.gain = 1
+    adapter._ads.data_rate = 860
+    adapter._ads._read_register.side_effect = lambda *_a, **_k: (
+        ((4 + adapter._channel) << 12) | 0x0200 | 0x00E0 | 0x0003
+    )
     if sensor_type == "ads1115_current":
         from ori.hal.i2c_adapter import _resolve_calibration
 
@@ -144,6 +170,156 @@ class TestModuleImport:
 
 
 # ─── connect — validation ─────────────────────────────────────────────────────
+
+
+class _PinnedDriverADS1115:
+    """The 3.0.5 driver's channel, pointer and single-shot behaviour, reproduced.
+
+    In `Mode.SINGLE`, writing a pin sets the mux and the OS bit and a read
+    polls the conversion-complete bit — forever, if it never sets. In
+    `Mode.CONTINUOUS` the pin is discarded and the chip's existing mux kept;
+    once a pin has been read, later reads take a *fast* path that does not
+    move the register pointer. Every config write moves the pointer to
+    CONFIG; a fast read returns whatever the pointer is on, config word
+    included.
+
+    A fake more permissive than this on any of those lets a wrong connect
+    sequence pass, which is exactly what happened once. The guard tests at
+    the end of this file hold the fake to the driver.
+    """
+
+    SINGLE, CONTINUOUS = 0x0100, 0x0000
+    POINTER_CONVERSION, POINTER_CONFIG = 0x00, 0x01
+
+    def __init__(
+        self,
+        i2c,
+        address=0x48,
+        gain=1,
+        data_rate=860,
+        mode=None,
+        *,
+        chip_mux: int = 0,
+        honours_pin_in_single: bool = True,
+        conversion=0,
+        completes: bool = True,
+    ):
+        self.address, self.gain, self.data_rate = address, gain, data_rate
+        self._mux = chip_mux  # power-on default: A0-A1 differential
+        self._honours = honours_pin_in_single
+        self._mode = self.SINGLE if mode is None else mode
+        self._conversion = conversion
+        self._completes = completes
+        self._pointer = self.POINTER_CONFIG
+        self._last_pin_read = None
+        # The chip's gain and rate fields, settable so a test can be the other
+        # process that rewrites them without touching the mux.
+        self._gain_bits = 0x0200  # gain 1
+        self._rate_bits = 0x00E0  # 860 SPS
+        self.writes: list[tuple[str, int | None]] = []
+
+    @property
+    def mode(self):
+        return self._mode
+
+    @mode.setter
+    def mode(self, value):
+        self._mode = value
+        self._write_config(None)
+
+    def _config_word(self) -> int:
+        return (
+            (self._mux << 12) | self._gain_bits | self._mode | self._rate_bits | 0x0003
+        )
+
+    def _write_config(self, pin_config):
+        if pin_config is not None and self._mode == self.SINGLE and self._honours:
+            self._mux = pin_config & 0x7
+        # else: continuous, or a driver that ignores the pin: keep the chip's mux
+        self._pointer = self.POINTER_CONFIG
+        self.writes.append(("config", pin_config))
+
+    def _conversion_complete(self) -> int:
+        return 0x8000 if self._completes else 0
+
+    def _read(self, pin):
+        self.writes.append(("sample", pin))
+        if self._mode == self.CONTINUOUS and self._last_pin_read == pin:
+            return self.get_last_result(True)
+        self._last_pin_read = pin
+        self._write_config(pin)
+        if self._mode == self.SINGLE:
+            while not self._conversion_complete():
+                pass  # the real driver spins here with no bound
+        return self.get_last_result(False)
+
+    def read(self, pin):
+        return self._read(pin)
+
+    def get_last_result(self, fast: bool = False) -> int:
+        return self._read_register(self.POINTER_CONVERSION, fast)
+
+    def _read_register(self, pointer, fast: bool = False):
+        if not fast:
+            self._pointer = pointer
+        if self._pointer == self.POINTER_CONFIG:
+            return self._config_word()
+        if callable(self._conversion):
+            return self._conversion()
+        return self._conversion
+
+
+class _PinnedDriverAnalogIn:
+    def __init__(self, ads, positive_pin, negative_pin=None):
+        self._ads, self._pin = ads, positive_pin
+
+    @property
+    def value(self):
+        # Single-ended AINn is mux code 4 + n, as the driver maps it.
+        return self._ads.read(self._pin + 0x04)
+
+    @property
+    def voltage(self):
+        # Gain 1: +/-4.096 V over a signed 16-bit range, as the driver scales.
+        raw = self.value
+        if raw >= 0x8000:
+            raw -= 0x10000
+        return raw * 4.096 / 32767
+
+
+def _pinned_driver(monkeypatch, **ads_kwargs):
+    """Install the reproduction as the adapter's driver for one test."""
+    import ori.hal.i2c_adapter as m
+
+    created: list[_PinnedDriverADS1115] = []
+
+    def _construct(i2c, **kw):
+        ads = _PinnedDriverADS1115(i2c, **kw, **ads_kwargs)
+        created.append(ads)
+        return ads
+
+    class _Module:
+        # The driver's class is spelled ADS1115; this must answer to that name.
+        ADS1115 = staticmethod(_construct)
+
+    class _Mode:
+        SINGLE = _PinnedDriverADS1115.SINGLE
+        CONTINUOUS = _PinnedDriverADS1115.CONTINUOUS
+
+    class _X:
+        Mode = _Mode
+
+    class _AI:
+        AnalogIn = _PinnedDriverAnalogIn
+
+    monkeypatch.setattr(m, "_ADS1115_AVAILABLE", True)
+    monkeypatch.setattr(m, "_BLINKA_AVAILABLE", True)
+    monkeypatch.setattr(m, "_busio", MagicMock(), raising=False)
+    monkeypatch.setattr(m, "_board", MagicMock(), raising=False)
+    monkeypatch.setattr(m, "_ads1115", _Module, raising=False)
+    monkeypatch.setattr(m, "_ads1x15", _X, raising=False)
+    monkeypatch.setattr(m, "_analog_in", _AI, raising=False)
+    return created
 
 
 class TestConnect:
@@ -225,42 +401,28 @@ class TestConnect:
             ):
                 await adapter.connect(_config(sensor_type="ads1115_current", bus=3))
 
-    async def test_connect_resolves_the_declared_calibration(self):
+    async def test_connect_resolves_the_declared_calibration(self, monkeypatch):
+        _pinned_driver(monkeypatch)
         adapter = I2CAdapter()
-        with (
-            patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", True),
-            patch("ori.hal.i2c_adapter._BLINKA_AVAILABLE", True),
-            patch("ori.hal.i2c_adapter._busio", create=True),
-            patch("ori.hal.i2c_adapter._board", create=True),
-            patch("ori.hal.i2c_adapter._ads1115", create=True),
-            patch("ori.hal.i2c_adapter._ads1x15", create=True),
-            patch("ori.hal.i2c_adapter._analog_in", create=True),
-        ):
-            await adapter.connect(
-                _config(
-                    sensor_type="ads1115_current",
-                    calibration={
-                        "sensitivity_v_per_amp": 0.05,
-                        "mains_frequency_hz": 60.0,
-                    },
-                )
+        await adapter.connect(
+            _config(
+                sensor_type="ads1115_current",
+                calibration={
+                    "sensitivity_v_per_amp": 0.05,
+                    "mains_frequency_hz": 60.0,
+                },
             )
+        )
         assert adapter._calibration["sensitivity_v_per_amp"] == 0.05
         assert adapter._calibration["mains_frequency_hz"] == 60.0
 
-    async def test_connect_stores_channel(self):
+    async def test_connect_stores_channel(self, monkeypatch):
+        created = _pinned_driver(monkeypatch)
         adapter = I2CAdapter()
-        with (
-            patch("ori.hal.i2c_adapter._ADS1115_AVAILABLE", True),
-            patch("ori.hal.i2c_adapter._BLINKA_AVAILABLE", True),
-            patch("ori.hal.i2c_adapter._busio", create=True),
-            patch("ori.hal.i2c_adapter._board", create=True),
-            patch("ori.hal.i2c_adapter._ads1115", create=True),
-            patch("ori.hal.i2c_adapter._ads1x15", create=True),
-            patch("ori.hal.i2c_adapter._analog_in", create=True),
-        ):
-            await adapter.connect(_config(sensor_type="ads1115_current", channel=2))
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=2))
         assert adapter._channel == 2
+        # And the chip agrees: single-ended AIN2 is mux code 6.
+        assert created[0]._mux == 6
 
     async def test_connect_hardware_exception_raises_connection_error(self):
         adapter = I2CAdapter()
@@ -805,14 +967,121 @@ class TestPiIntegration:
         await adapter.close()
         assert not adapter.is_connected
 
-    @_needs_hardware(
-        _ADS1115_AVAILABLE,
-        "adafruit-circuitpython-ads1x15",
-        "ADS1115",
-        0x48,
+    _ADS1115_GUARD = dict(
+        available=_ADS1115_AVAILABLE and _BLINKA_AVAILABLE,
+        package=(
+            "adafruit-circuitpython-ads1x15 and a blinka platform library "
+            "(python3-rpi-lgpio on Raspberry Pi OS Trixie)"
+        ),
+        part="ADS1115",
+        address=0x48,
         article="an",
     )
+
+    @_needs_hardware(**_ADS1115_GUARD)
+    async def test_ads1115_voltage_connect_and_read(self):
+        """The bus, the driver, the address and the read path, end to end.
+
+        A DC read needs no signal conditioning, so this runs on the bench as
+        wired: A0 tied to a header ground pin reads within a few millivolts
+        of zero. It proves the ADS1115 answers at 0x48 through the release's
+        driver stack; it says nothing about the current measurement contract.
+        """
+        adapter = I2CAdapter()
+        await adapter.connect(
+            {
+                "sensor_type": "ads1115_voltage",
+                "sensor_id": "a0-volts",
+                "address": 0x48,
+                "bus": 1,
+                "channel": 0,
+            }
+        )
+        assert adapter.is_connected
+        reading = await adapter.read("a0-volts")
+        assert reading.sensor_type == "ads1115_voltage"
+        assert reading.unit == "volt"
+        # A grounded input, not a floating one: unconnected channels on this
+        # part float at roughly +0.56 V, which is the signature to exclude.
+        assert abs(reading.value) < 0.05, reading.value
+        await adapter.close()
+
+    async def _a0_volts(self) -> float:
+        adapter = I2CAdapter()
+        await adapter.connect(
+            {
+                "sensor_type": "ads1115_voltage",
+                "sensor_id": "probe",
+                "address": 0x48,
+                "bus": 1,
+                "channel": 0,
+            }
+        )
+        try:
+            return (await adapter.read("probe")).value
+        finally:
+            await adapter.close()
+
+    async def _a0_is_at_a_rail(self) -> bool:
+        from ori.hal.i2c_adapter import _ADC_SUPPLY_VOLTS, _OPTIONAL_CALIBRATION
+
+        volts = await self._a0_volts()
+        margin = _OPTIONAL_CALIBRATION["clip_margin_volts"]
+        return volts <= margin or volts >= _ADC_SUPPLY_VOLTS - margin
+
+    async def _a0_is_biased_to_mid_rail(self) -> bool:
+        """The bias network holds A0 near VDD/2. A floating pin does not.
+
+        "Not at a rail" is not the same test: an unconnected A0 on this part
+        floats at roughly +0.5 V, which is off both rails and would let the
+        RMS test emit a current for a wire that is not attached to anything.
+        """
+        from ori.hal.i2c_adapter import _ADC_SUPPLY_VOLTS
+
+        return abs(await self._a0_volts() - _ADC_SUPPLY_VOLTS / 2) < 0.2
+
+    @_needs_hardware(**_ADS1115_GUARD)
+    async def test_ads1115_current_refuses_an_input_pinned_at_a_rail(self):
+        """A grounded A0 is refused as clipped, and that is the right answer.
+
+        A current clamp rides on a mid-rail bias; a sample at either rail means
+        the amplitude is unknown. The bench without its bias network puts A0
+        at the low rail, so this is hardware evidence for the clip refusal's
+        low-rail half — the only half a grounded input can exercise.
+        """
+        if not await self._a0_is_at_a_rail():
+            pytest.skip("A0 is not at a rail; the bias network is connected")
+        adapter = I2CAdapter()
+        await adapter.connect(
+            {
+                "sensor_type": "ads1115_current",
+                "sensor_id": "load-current",
+                "address": 0x48,
+                "bus": 1,
+                "channel": 0,
+                "calibration": dict(CALIBRATION),
+            }
+        )
+        try:
+            with pytest.raises(MeasurementRefusedError, match="clipped"):
+                await adapter.read("load-current")
+        finally:
+            await adapter.close()
+
+    @_needs_hardware(**_ADS1115_GUARD)
     async def test_ads1115_current_connect_and_read(self):
+        """The measurement contract, over a real biased clamp signal.
+
+        Needs the mid-rail bias network on A0 — two equal resistors from 3.3 V
+        to ground with a capacitor holding the midpoint, and the SCT-013-030
+        across the midpoint and A0. Without it A0 sits at a rail and the
+        window is refused as clipped, which the test above asserts instead.
+        """
+        if not await self._a0_is_biased_to_mid_rail():
+            pytest.skip(
+                "A0 is not held at mid-rail: connect the bias network and the "
+                "clamp to exercise the current measurement"
+            )
         adapter = I2CAdapter()
         await adapter.connect(
             {
@@ -828,7 +1097,390 @@ class TestPiIntegration:
         reading = await adapter.read("load-current")
         assert reading.sensor_type == "ads1115_current"
         assert reading.unit == "ampere"
+        assert reading.metadata["sample_count"] > 0
+        # The window measured a signal riding on the bias, not a floating pin.
+        from ori.hal.i2c_adapter import _ADC_SUPPLY_VOLTS
+
+        assert abs(reading.metadata["bias_volts"] - _ADC_SUPPLY_VOLTS / 2) < 0.2
         await adapter.close()
+
+
+class TestAds1115ChannelSelection:
+    """The configured channel must be the input the chip is actually reading.
+
+    adafruit-circuitpython-ads1x15 3.0.5 never selects a channel in continuous
+    mode, and the adapter used to build the object in continuous mode — so it
+    read whatever mux the chip held, which on a fresh chip is the A0-A1
+    differential. These tests drive the connect against a fake that behaves as
+    that driver does.
+    """
+
+    async def test_connect_selects_the_channel_through_single_shot_then_goes_continuous(
+        self, monkeypatch
+    ):
+        created = _pinned_driver(monkeypatch, chip_mux=0)  # power-on: A0-A1 diff
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        ads = created[0]
+        assert ads._mux == 4, "AIN0 single-ended is mux code 4"
+        assert ads.mode == ads.CONTINUOUS
+        # The order is what makes it work: the pin write happens in SINGLE.
+        modes_at_pin_write = [w for w in ads.writes if w[1] is not None]
+        assert modes_at_pin_write, "no pin was ever written"
+
+    async def test_a_chip_left_on_another_channel_is_moved(self, monkeypatch):
+        created = _pinned_driver(monkeypatch, chip_mux=7)  # left on AIN3 single
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_voltage", channel=1))
+        assert created[0]._mux == 5
+
+    async def test_a_driver_that_ignores_the_pin_entirely_is_refused(self, monkeypatch):
+        """If even single-shot did not honour the pin, the readback catches it."""
+        _pinned_driver(monkeypatch, chip_mux=0, honours_pin_in_single=False)
+        adapter = I2CAdapter()
+        with pytest.raises(AdapterConnectionError) as excinfo:
+            await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        message = str(excinfo.value)
+        assert "mux code 0" in message
+        assert "channel 0" in message
+        assert not adapter.is_connected
+
+    async def test_a_readback_that_fails_refuses_rather_than_assumes(self, monkeypatch):
+        """Only the config readback is broken: the mux-selecting read still works.
+
+        Breaking every register read would fail the connect one step earlier,
+        in the single-shot read, and prove nothing about the verification.
+        """
+        _pinned_driver(monkeypatch)
+        adapter = I2CAdapter()
+        original = _PinnedDriverADS1115._read_register
+
+        def config_read_fails(self, pointer, fast=False):
+            if pointer == self.POINTER_CONFIG:
+                raise OSError("[Errno 121] Remote I/O error")
+            return original(self, pointer, fast)
+
+        monkeypatch.setattr(_PinnedDriverADS1115, "_read_register", config_read_fails)
+        with pytest.raises(AdapterConnectionError, match="could not read back"):
+            await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        assert not adapter.is_connected
+
+    async def test_connect_leaves_the_pointer_on_the_conversion_register(
+        self, monkeypatch
+    ):
+        """A fast read after connect must return a sample, not the config word.
+
+        The mode switch and the mux readback both leave the chip's pointer on
+        CONFIG. The driver's continuous-mode read is a fast read that does not
+        move it, so without a pointered read at the end of connect every
+        sample would be 0x42E3 — which scales to +2.14 V, a number no clip
+        check questions. Measured on the bench before the fix.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0, conversion=-2)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        ads = created[0]
+        assert ads._pointer == ads.POINTER_CONVERSION
+        assert ads.get_last_result(True) == -2, "fast read returned the config word"
+
+    async def test_the_reproduction_really_returns_the_config_word_on_a_fast_read(self):
+        """Guards the fake: without this, the pointer test above proves nothing."""
+        ads = _PinnedDriverADS1115(
+            None, mode=_PinnedDriverADS1115.SINGLE, chip_mux=4, conversion=-2
+        )
+        ads._write_config(4)
+        assert ads.get_last_result(True) == ads._config_word()
+        ads.get_last_result(False)
+        assert ads.get_last_result(True) == -2
+
+    async def test_a_second_adapter_on_the_same_chip_is_refused(self, monkeypatch):
+        """One ADS1115 serves one adapter: a second connect would move the mux.
+
+        The shipped example puts load-current on A0 and grid-voltage on A1 at
+        one address. With one driver object per adapter, the second connect
+        moves the shared mux and the first adapter's fast reads then return
+        the other channel — both connects having verified their own. Refused
+        at connect rather than discovered as volts reported as amperes.
+        """
+        _pinned_driver(monkeypatch, chip_mux=0)
+        first = I2CAdapter()
+        await first.connect(_config(sensor_type="ads1115_current", channel=0))
+        second = I2CAdapter()
+        with pytest.raises(AdapterConnectionError, match="already driven"):
+            await second.connect(_config(sensor_type="ads1115_voltage", channel=1))
+        assert not second.is_connected
+        await first.close()
+        # Released on close: the chip can be claimed again.
+        await second.connect(_config(sensor_type="ads1115_voltage", channel=1))
+        assert second.is_connected
+        await second.close()
+
+    async def test_a_failed_connect_does_not_keep_the_claim(self, monkeypatch):
+        _pinned_driver(monkeypatch, chip_mux=0, honours_pin_in_single=False)
+        first = I2CAdapter()
+        with pytest.raises(AdapterConnectionError):
+            await first.connect(_config(sensor_type="ads1115_current", channel=0))
+        _pinned_driver(monkeypatch, chip_mux=0)
+        second = I2CAdapter()
+        await second.connect(_config(sensor_type="ads1115_current", channel=0))
+        assert second.is_connected
+        await second.close()
+
+    async def test_a_chip_that_never_completes_a_conversion_is_refused_not_hung(
+        self, monkeypatch
+    ):
+        """A TMP102, LM75 or PCF8591 defaults to 0x48 and ACKs with bit 15 clear.
+
+        The driver's own single-shot read spins on that bit with no bound; a
+        connect that hangs never reaches the runtime's event loop, and Tier D
+        never arms, with no log line to say so.
+        """
+        _pinned_driver(monkeypatch, chip_mux=0, completes=False)
+        adapter = I2CAdapter()
+        started = time.monotonic()
+        with pytest.raises(
+            AdapterConnectionError, match="never completed a conversion"
+        ):
+            await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        assert time.monotonic() - started < 2.0
+        assert not adapter.is_connected
+
+    @pytest.mark.parametrize("channel", [-1, -4, 4, 7])
+    async def test_a_channel_this_part_does_not_have_is_refused(
+        self, monkeypatch, channel
+    ):
+        """Below zero the readback's `4 + channel` lands on a differential code."""
+        _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        with pytest.raises(AdapterConnectionError, match="channel must be 0-3"):
+            await adapter.connect(
+                _config(sensor_type="ads1115_voltage", channel=channel)
+            )
+
+    async def test_every_read_returns_a_conversion_not_the_config_word(
+        self, monkeypatch
+    ):
+        """Driven through `adapter.read()`, the way the runtime reads.
+
+        Read more than once. The per-measurement readback re-points the
+        register itself, so a first read passes whether or not the read path
+        does — the defect returns from the second read onward, which is where a
+        runtime polling every second spends all of its time. -2 counts at gain
+        1 is -0.00025 V; the config word is +2.14 V.
+        """
+        _pinned_driver(monkeypatch, chip_mux=0, conversion=0xFFFE)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        for _ in range(3):
+            reading = await adapter.read("s")
+            assert abs(reading.value) < 0.01, reading.value
+        await adapter.close()
+
+    async def test_every_current_window_measures_the_signal(self, monkeypatch):
+        """The current twin of the read above, and the one that reaches Tier D.
+
+        A window of identical config words is neither clipped nor short, so it
+        is emitted: a steady load becomes 0.0 A, silently, from the second poll
+        onward. Two windows over the same signal must agree.
+        """
+        counts = itertools.count()
+        bias, peak = 1.65, 0.5
+
+        def square():
+            volts = bias + (peak if next(counts) % 2 == 0 else -peak)
+            return int(volts * 32767 / 4.096)
+
+        _pinned_driver(monkeypatch, chip_mux=0, conversion=square)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        first = (await adapter.read("s")).value
+        second = (await adapter.read("s")).value
+        # 0.5 V RMS over a 1/30 V/A clamp is 15 A.
+        assert first > 10.0, first
+        assert abs(second - first) < 0.1 * first, (first, second)
+        await adapter.close()
+
+    async def test_a_mux_moved_under_a_connected_adapter_refuses_the_measurement(
+        self, monkeypatch
+    ):
+        """Verified at connect is not verified for the life of the process.
+
+        Something in another process on the same chip can move the mux. The
+        re-verification before every measurement is what catches it.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        created[0]._mux = 5  # someone else selected A1 on the chip
+        with pytest.raises(AdapterReadError, match="mux code 5"):
+            await adapter.read("s")
+        await adapter.close()
+
+    async def test_a_mux_moved_under_a_current_adapter_refuses_the_window(
+        self, monkeypatch
+    ):
+        """The current path is the one that reaches Tier D; it re-verifies too.
+
+        Refused for the mux, before any sample is taken — not for the clipped
+        window a grounded fake would otherwise produce.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        created[0]._mux = 5
+        with pytest.raises(AdapterReadError, match="mux code 5"):
+            await adapter.read("s")
+        assert not any(w[0] == "sample" for w in created[0].writes)
+        await adapter.close()
+
+    async def test_single_shot_mode_set_by_something_else_is_refused(self, monkeypatch):
+        """Same mux, and the chip stops converting after one sample.
+
+        A diagnostic script or a default driver instance reading this channel
+        writes single-shot. The mux it writes is the one already configured, so
+        a check on the mux alone passes while the window that follows is one
+        held value repeated.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        created[0]._mode = _PinnedDriverADS1115.SINGLE
+        with pytest.raises(MeasurementRefusedError, match="conversion mode"):
+            await adapter.read("s")
+        await adapter.close()
+
+    async def test_a_gain_set_by_something_else_is_refused(self, monkeypatch):
+        """Same mux, every sample rescaled, and the error under-reports.
+
+        At gain 2/3 against the gain 1 the adapter set, a current reads about
+        two thirds of itself. Nothing about the number looks wrong.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        created[0]._gain_bits = 0x0000  # gain 2/3
+        with pytest.raises(MeasurementRefusedError, match="0x40E3"):
+            await adapter.read("s")
+        await adapter.close()
+
+    async def test_a_data_rate_set_by_something_else_is_refused(self, monkeypatch):
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        created[0]._rate_bits = 0x0080  # 128 SPS
+        with pytest.raises(MeasurementRefusedError, match="data rate"):
+            await adapter.read("s")
+        await adapter.close()
+
+    async def test_a_voltage_refusal_keeps_its_class(self, monkeypatch):
+        """`MeasurementRefusedError` is what the runtime degrades and alerts on.
+
+        Downgrading it to its parent here would leave a voltage sensor that
+        cannot prove its input reporting nothing but a warning line, and a
+        voltage channel can be a safety input.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        created[0]._mux = 5
+        with pytest.raises(MeasurementRefusedError):
+            await adapter.read("s")
+        await adapter.close()
+
+    async def test_a_connect_that_fails_after_the_readback_releases_the_claim(
+        self, monkeypatch
+    ):
+        """The claim is taken before the chip is touched, so it must not outlive it."""
+        import ori.hal.i2c_adapter as module
+
+        class _FailsLate(_PinnedDriverADS1115):
+            """Fails on the last register access of connect, not the first.
+
+            Connect makes two pointered conversion reads: one closing the
+            single-shot channel select, one closing the whole sequence. Only
+            the second is past the configuration readback, so only it reaches
+            the window this test is about.
+            """
+
+            pointered = 0
+
+            def get_last_result(self, fast: bool = False):
+                if not fast:
+                    _FailsLate.pointered += 1
+                    if _FailsLate.pointered == 2:
+                        raise OSError("bus fell over after the readback")
+                return super().get_last_result(fast)
+
+        _pinned_driver(monkeypatch, chip_mux=0)
+        monkeypatch.setattr(module._ads1115, "ADS1115", _FailsLate)
+        first = I2CAdapter()
+        with pytest.raises(AdapterConnectionError):
+            await first.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        monkeypatch.setattr(module._ads1115, "ADS1115", _PinnedDriverADS1115)
+        second = I2CAdapter()
+        await second.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        assert second.is_connected
+        await second.close()
+
+    @pytest.mark.parametrize("channel", [2.5, True, "1", None])
+    async def test_a_channel_that_is_not_an_integer_is_refused(
+        self, monkeypatch, channel
+    ):
+        """`int()` turns 2.5 into 2 and True into 1, both inside the range.
+
+        Config load refuses these; an adapter reached directly must too, so
+        that neither layer is the only one holding.
+        """
+        _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        with pytest.raises(AdapterConnectionError, match="must be an integer"):
+            await adapter.connect(
+                _config(sensor_type="ads1115_voltage", channel=channel)
+            )
+
+    async def test_the_reproduction_spins_on_a_conversion_that_never_completes(self):
+        """Guards the fake: without a real poll the hang test proves nothing."""
+        ads = _PinnedDriverADS1115(
+            None, mode=_PinnedDriverADS1115.SINGLE, completes=False
+        )
+        import threading
+
+        done = threading.Event()
+
+        def spin():
+            _PinnedDriverAnalogIn(ads, 0).value
+            done.set()
+
+        t = threading.Thread(target=spin, daemon=True)
+        t.start()
+        assert not done.wait(0.2), (
+            "the fake completed a conversion it was told never to"
+        )
+        ads._completes = True  # let the daemon thread exit
+        done.wait(1.0)
+
+    async def test_the_reproduction_takes_the_fast_path_after_the_first_read(self):
+        """Guards the fake: the fast path is what returns the config word."""
+        ads = _PinnedDriverADS1115(
+            None, mode=_PinnedDriverADS1115.CONTINUOUS, chip_mux=4, conversion=7
+        )
+        first = _PinnedDriverAnalogIn(ads, 0).value  # slow path: pointered
+        ads._write_config(None)  # pointer -> CONFIG
+        second = _PinnedDriverAnalogIn(ads, 0).value  # fast path: does not move it
+        assert first == 7
+        assert second == ads._config_word()
+
+    async def test_the_reproduction_really_ignores_the_pin_in_continuous_mode(self):
+        """Guards the fake: a fake that honoured the pin in continuous mode would
+        let a regression to the old connect sequence pass every test above."""
+        ads = _PinnedDriverADS1115(
+            None, mode=_PinnedDriverADS1115.CONTINUOUS, chip_mux=0
+        )
+        _PinnedDriverAnalogIn(ads, 2).value
+        assert ads._mux == 0, "continuous mode must not move the mux, as 3.0.5 does not"
+        ads = _PinnedDriverADS1115(None, mode=_PinnedDriverADS1115.SINGLE, chip_mux=0)
+        _PinnedDriverAnalogIn(ads, 2).value
+        assert ads._mux == 6
 
 
 class TestDriverGuardWidth:

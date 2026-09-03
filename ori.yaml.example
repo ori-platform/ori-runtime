@@ -57,10 +57,14 @@ sensors:
       # max_value: 30.0
 
   # ─── Grid voltage sensor on ADS1115 channel 1 ───────────────────────────
+  # One ADS1115 serves one sensor per runtime. The chip has a single input
+  # multiplexer, and a second sensor on the same chip moves it under the first
+  # — the runtime refuses that at connect. A second channel means a second
+  # chip: ADDR to VDD selects 0x49.
   - id: grid-voltage
     type: ads1115_voltage
     protocol: i2c
-    address: 0x48
+    address: 0x49
     channel: 1
     poll_interval_ms: 2000
 

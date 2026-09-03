@@ -626,16 +626,19 @@ device:
 
 sensors:
   - id: load-current
-    type: current_clamp
+    type: ads1115_current
     protocol: i2c
     address: 0x48
     channel: 0
     poll_interval_ms: 1000
+    calibration:
+      sensitivity_v_per_amp: 0.0333 # the clamp's own figure; no default exists
+      mains_frequency_hz: 50.0
 
   - id: grid-voltage
-    type: voltage
+    type: ads1115_voltage
     protocol: i2c
-    address: 0x48
+    address: 0x49 # one ADS1115 serves one sensor; a second channel is a second chip
     channel: 1
     poll_interval_ms: 2000
 
