@@ -21,6 +21,52 @@ plan a deployment around one.
 
 Reference bench: Pi 4 Model B, BCM2711, 4GB.
 
+### What is on the bench I2C bus, and how the i2c tests run for real
+
+`tests/test_i2c_adapter.py::TestPiIntegration` skips, naming what it needs,
+on any host without the hardware. On the bench it runs. Recorded here so that
+whoever runs the suite there does not have to rediscover it.
+
+| Part | Address | Wiring to the Pi header | Driver in the test venv |
+| --- | --- | --- | --- |
+| ADS1115 ADC | `0x48` | VDD→1 (3.3 V), SDA→3, SCL→5, GND→6, ADDR→9 (ground, selects 0x48), A0→14 (ground, a defined input for timing runs) | `adafruit-circuitpython-ads1x15` 3.0.5 from pip; blinka's platform library from apt `python3-rpi-lgpio` |
+| BME280 | `0x76` | not fitted | `bme280` — its test skips |
+
+One ADS1115 serves one sensor per runtime. The chip has a single input
+multiplexer and the driver keeps its own idea of the selected pin per adapter,
+so a second sensor on the same chip moves the mux under the first and both
+report the wrong channel — reproduced on this bench. The runtime refuses a
+second sensor on a claimed chip at connect; a second channel is a second chip
+at a second address (ADDR to VDD for `0x49`). The chip's whole configuration,
+not the mux alone, is read back at the start of every measurement, so a gain,
+data rate or conversion mode changed by anything outside the runtime refuses
+the measurement rather than quietly rescaling it. A change that lands part-way
+through a window is caught at the next window, not within that one.
+
+A full bus scan (`sudo /usr/sbin/i2cdetect -y 1` — the binary is on the root
+path only) shows `48` and nothing else. `/dev/i2c-1` is present on the image;
+no I2C enabling step was needed.
+
+VDD is taken from 3.3 V, not 5 V: the Pi's I2C lines are 3.3 V and VDD sets the
+ADS1115's input ceiling. ADDR and A0 go to header ground pins directly rather
+than to the MB102 rail that carries the relay coil and fan returns, so their
+switching noise stays off the ADC's reference.
+
+The test environment, per issue #431:
+
+```text
+python3 -m venv --system-site-packages .venv    # sees apt's lgpio and rpi-lgpio
+.venv/bin/pip install -e .
+.venv/bin/pip install pytest pytest-asyncio adafruit-circuitpython-ads1x15==3.0.5
+.venv/bin/python -m pytest tests/test_i2c_adapter.py -k PiIntegration -rs
+```
+
+With A0 grounded the DC read and the rail-pinned refusal run; the RMS current
+test skips until the mid-rail bias network — two equal resistors from 3.3 V to
+ground, a capacitor holding the midpoint, the SCT-013-030 across the midpoint
+and A0 — is fitted. A grounded input is not a clamp signal, and the window
+refuses it as clipped, which is the correct answer and is itself asserted.
+
 ## Why the interpreter version is not cosmetic
 
 Ori drives GPIO through `gpiozero`. It never imports `RPi.GPIO` directly.
@@ -31,7 +77,7 @@ from whatever is installed. On Trixie that is `LGPIOFactory`, backed by
 
 That package ships a compiled extension built **per interpreter version**:
 
-```
+```text
 /usr/lib/python3/dist-packages/_lgpio.cpython-313-aarch64-linux-gnu.so
 ```
 
@@ -42,7 +88,7 @@ and the consequence is worse than a failure.
 back to `NativeFactory`, its own experimental implementation. Measured on the
 bench Pi, installing this lock into an isolated virtual environment gives:
 
-```
+```text
 PinFactoryFallback: Falling back from pigpio: No module named 'pigpio'
 NativePinFactoryFallback: Falling back to the experimental pin factory
 NativeFactory because no other pin factory could be loaded.

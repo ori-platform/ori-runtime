@@ -6,6 +6,7 @@ import logging
 import math
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 CONFIG_SCHEMA = {
     "address": {"type": "integer", "default": 0, "minimum": 0, "maximum": 127},
     "bus": {"type": "integer", "default": 1, "minimum": 0},
-    "channel": {"type": "integer", "default": 0, "minimum": 0},
+    "channel": {"type": "integer", "default": 0, "minimum": 0, "maximum": 3},
 }
 CALIBRATION_SCHEMAS = {
     "ads1115_current": {
@@ -129,6 +130,20 @@ except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
 # Sensor types that require the ADS1115 ADC
 _ADS_SENSOR_TYPES = frozenset({"ads1115_current", "ads1115_voltage"})
 
+# One ADS1115 serves one adapter per process. The chip has a single mux, and
+# the pinned driver keeps its own idea of the selected pin per driver object:
+# with two adapters on one chip, the second connect moves the mux and the
+# first adapter's fast reads then return the other channel — both connects
+# having "verified" their channel. The shipped example configures exactly that
+# (load-current on A0, grid-voltage on A1, both at 0x48), so it is refused at
+# connect rather than discovered as amperes that are really volts. Keyed by
+# (bus, address); released by close(), or by the holder being collected. Weak
+# references rather than ids: an id is reused once its object is collected,
+# so a dead holder's id could match a new adapter's and *admit* a second
+# claimant — a false allow, which is the unsafe direction.
+_ADS1115_CLAIMS: "dict[tuple[int, int], weakref.ref[I2CAdapter]]" = {}
+_ADS1115_CLAIMS_LOCK = threading.Lock()
+
 # All sensor types handled by this adapter
 _SUPPORTED = frozenset(
     {
@@ -207,6 +222,21 @@ def i2c_driver_unavailable_reason(sensor_type: str) -> str | None:
     return "; ".join(reasons) or None
 
 
+def _require_int(value: object, name: str) -> int:
+    """Refuse a non-integer rather than truncating it into a valid one.
+
+    `int()` turns 2.5 into channel 2 and True into channel 1, both of which
+    then pass every range check below. Config load already refuses these; an
+    adapter reached directly must fail closed on its own.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AdapterConnectionError(
+            f"I2CAdapter: {name} must be an integer, "
+            f"not {type(value).__name__} ({value!r})"
+        )
+    return value
+
+
 def _require_drivers(sensor_type: str) -> None:
     """Refuse a connect whose drivers are unusable, naming what failed."""
     reason = i2c_driver_unavailable_reason(sensor_type)
@@ -228,24 +258,43 @@ def _require_drivers(sensor_type: str) -> None:
 # are facts about an installation, and guessing either produces a plausible
 # number rather than a measurement.
 _REQUIRED_CALIBRATION = ("sensitivity_v_per_amp", "mains_frequency_hz")
-# PROVISIONAL — these four are datasheet figures, not measurements.
+# Three of these four were measured on the bench Pi on 2026-09-03; the fourth
+# was not and is marked. The measurement path is the release's own — blinka over
+# /dev/i2c-1 with the apt-staged platform library — with the runtime service
+# active throughout, so the figures include a realistic load. Three trials each;
+# `docs/evidence/2026-09-03-pi4-ads1115-characterisation.md` carries them.
 #
-# Nothing here has been run against an ADS1115. The arithmetic and the refusals
-# are tested against synthetic waveforms, which proves what the code does with
-# samples and says nothing about what the hardware delivers. Whoever runs the
-# first hardware session should expect to change these, and should treat a
-# sensor that sits permanently degraded as a sign that one of them is wrong
-# rather than that the sensor is:
-#
-#   data_rate            the part advertises 860 SPS. Whether adafruit-blinka
-#                        over I2C on a Pi 4 sustains it, and with what jitter,
-#                        is unmeasured. If the achieved rate is lower, the
-#                        sample floor below refuses every window.
-#   _MIN_SAMPLE_FRACTION derived from data_rate, so wrong for the same reason.
-#   clip_margin_volts    assumes a saturated input reads near the rail. The
-#                        real signature may differ, and if it does the clipping
-#                        refusal never fires and an under-report passes.
-#   overrun_tolerance    a guess at how much scheduling slop a loaded Pi adds.
+#   data_rate            MEASURED on the host side. The part advertises 860 SPS
+#                        and the read path sustains that cadence; with a
+#                        grounded input a duplicate read of one conversion
+#                        cannot be told from a fresh one, so the chip's own
+#                        conversion rate rests on the datasheet and on the rate
+#                        bits in the config word. Paced at the interval, a
+#                        2-cycle 50 Hz window (40 ms) collects 36 samples at a
+#                        mean gap of 1.164 ms against the 1.163 ms target, jitter
+#                        sd 0.010 ms, worst gap 1.222 ms. Unpaced, the same path
+#                        reads the conversion register ~3000 times a second —
+#                        3.5 reads per conversion — which is why the loop below
+#                        paces: an unpaced loop meets the sample floor with the
+#                        same value three times over.
+#   _MIN_SAMPLE_FRACTION MEASURED SAFE. Nominal 34.4 samples at 860 SPS gives a
+#                        floor of 22; the window delivers 36, so the floor holds
+#                        with ~60% headroom. Left at two thirds: the margin is
+#                        for a loaded Pi, and the load during measurement was
+#                        one running runtime, not a worst case.
+#   overrun_tolerance    MEASURED SAFE. It bounds the whole window's elapsed
+#                        time against nominal; five windows on the bench ran
+#                        41.09 ms against 40.00 ms, a ratio of 1.027, so 1.5x
+#                        is far more slack than the path needs and is left
+#                        alone for the same reason.
+#   clip_margin_volts    NOT YET MEASURED at the high rail. A grounded input
+#                        reads between -0.0006 and +0.0000 V single-shot on the
+#                        bench, inside the 0.05 V margin of the low rail, and
+#                        the window is refused as clipped — so the low-rail
+#                        half fires as intended. Whether a
+#                        saturated clamp reads within the margin of the high
+#                        rail needs the clamp and its bias network on the
+#                        bench, and this constant is provisional until then.
 #
 # `window_cycles` and `gain` are not in that list: two whole cycles is a
 # property of the measurement, and gain 1 is the only PGA range that spans a
@@ -269,8 +318,9 @@ _OPTIONAL_CALIBRATION = {
 
 # What fraction of the samples the configured rate should have produced must
 # actually arrive for a window to count. Two thirds leaves room for scheduling
-# slop without accepting a window that covers only part of its cycles.
-# Provisional with `data_rate`: both describe the same unmeasured assumption.
+# slop without accepting a window that covers only part of its cycles. Measured
+# with ~60% headroom on the bench Pi under a running runtime; see the block
+# above for the figures and for why the margin is kept.
 _MIN_SAMPLE_FRACTION = 2 / 3
 _CALIBRATION_KEYS = frozenset(_REQUIRED_CALIBRATION) | frozenset(_OPTIONAL_CALIBRATION)
 
@@ -511,6 +561,10 @@ class I2CAdapter(BaseAdapter):
         self._bme280_params: Any = None  # bme280 calibration params
         self._ads: Any = None  # ADS1115 instance
         self._scd4x: Any = None  # SCD4X instance
+        # Whether this adapter holds a reference on the shared busio.I2C. The
+        # count is shared, so releasing one this adapter never took would evict
+        # a handle another adapter is still reading through.
+        self._holds_shared_bus: bool = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -544,15 +598,17 @@ class I2CAdapter(BaseAdapter):
 
         self._sensor_id = config.get("sensor_id", "")
         self._sensor_type = sensor_type
-        self._address = int(config.get("address", 0x00))
-        self._bus_number = int(config.get("bus", 1))
-        self._channel = int(config.get("channel", 0))
+        self._address = _require_int(config.get("address", 0x00), "address")
+        self._bus_number = _require_int(config.get("bus", 1), "bus")
+        self._channel = _require_int(config.get("channel", 0), "channel")
         if sensor_type == "ads1115_current":
             self._calibration = _resolve_calibration(config)
             self._window = _window_spec(self._calibration)
 
+        connected = False
         try:
             await asyncio.to_thread(self._connect_sync, sensor_type)
+            connected = True
         except AdapterConnectionError:
             raise
         except Exception as exc:
@@ -560,6 +616,14 @@ class I2CAdapter(BaseAdapter):
                 f"I2CAdapter: failed to connect to '{sensor_type}' at "
                 f"address 0x{self._address:02X} on bus {self._bus_number}: {exc}"
             ) from exc
+        finally:
+            # The runtime logs a failed connect and moves on without calling
+            # close(), so a connect that raises has to give back what it took
+            # on the way in. A leaked reference keeps the cached bus handle
+            # alive past its last real user, and the next connect is then
+            # handed a stale one.
+            if not connected:
+                self._release_shared_bus()
 
         self._breaker = HardwareCircuitBreaker(
             getattr(self, "adapter_name", type(self).__name__), config
@@ -586,35 +650,245 @@ class I2CAdapter(BaseAdapter):
     def _connect_ads1115(self) -> None:
         _require_drivers(self._sensor_type)
         assert _ads1115 is not None and _ads1x15 is not None
-        i2c = _get_shared_busio_i2c(self._bus_number)
         # The driver defaults are 128 SPS in single-shot mode, which yields
         # about two samples per 50 Hz cycle. Continuous conversion at the
         # configured rate is what makes a window resolvable at all.
-        self._ads = _ads1115.ADS1115(
-            i2c,
-            address=self._address,
-            gain=self._calibration.get("gain", 1),
-            data_rate=int(self._calibration.get("data_rate", 860)),
-            mode=_ads1x15.Mode.CONTINUOUS,
+        #
+        # But the channel is selected in single-shot mode first, and that
+        # order is load-bearing. adafruit-circuitpython-ads1x15 3.0.5 — the
+        # pinned release and the latest published — never selects a channel
+        # in continuous mode: `_write_config` re-reads the chip's current mux
+        # and discards the requested pin unless the mode is SINGLE. Built
+        # straight into continuous mode, the adapter read whatever mux the
+        # chip already held; on a chip at its power-on default that is the
+        # A0-A1 differential, so a clamp on A0 was measured against a
+        # floating pin. Measured at the register on the bench Pi.
+        #
+        # One single-shot read of the configured channel writes the mux with
+        # the OS bit — the one path in this driver that honours the pin — and
+        # the mode setter then rewrites the config keeping that mux. The
+        # readback below is what turns "should be" into "is".
+        if not 0 <= self._channel <= 3:
+            # Below zero the readback's `4 + channel` lands on a differential
+            # mux code and would pass; above three it fails with a confusing
+            # message. Neither is a channel this part has.
+            raise AdapterConnectionError(
+                f"I2CAdapter: ADS1115 channel must be 0-3, not {self._channel}"
+            )
+        key = (self._bus_number, self._address)
+        with _ADS1115_CLAIMS_LOCK:
+            ref = _ADS1115_CLAIMS.get(key)
+            holder = ref() if ref is not None else None
+            if holder is not None and holder is not self:
+                raise AdapterConnectionError(
+                    f"I2CAdapter: ADS1115 at 0x{self._address:02X} on bus "
+                    f"{self._bus_number} is already driven by another sensor; "
+                    "one ADS1115 serves one sensor per runtime, because a second "
+                    "adapter moves the shared mux under the first"
+                )
+            _ADS1115_CLAIMS[key] = weakref.ref(self)
+        try:
+            i2c = self._acquire_shared_bus()
+            self._ads = _ads1115.ADS1115(
+                i2c,
+                address=self._address,
+                gain=self._calibration.get("gain", 1),
+                data_rate=int(self._calibration.get("data_rate", 860)),
+                mode=_ads1x15.Mode.SINGLE,
+            )
+            self._select_ads1115_channel_single_shot()
+            self._ads.mode = _ads1x15.Mode.CONTINUOUS
+            self._verify_ads1115_channel(AdapterConnectionError)
+            # — the mode switch above, and the readback that just confirmed
+            # it — leaves the chip's register pointer at CONFIG. The driver's
+            # continuous-mode read is a "fast" read that does not move the
+            # pointer, so from here it would return the config word as if it
+            # were a sample: 0x42E3 for this configuration, which scales to a
+            # plausible +2.14 V that no clip check would question. A pointered
+            # read puts
+            # the pointer back on CONVERSION, after waiting for a conversion
+            # at the new rate to exist. This is the last register access at
+            # connect; the read path never touches the pointer again.
+            time.sleep(2 / self._ads.data_rate)
+            self._ads.get_last_result(False)
+        except BaseException:
+            self._release_ads1115_claim()
+            raise
+
+    # Config register pointer and the mux field, from the ADS1115 datasheet.
+    # Single-ended AINn is mux code 4 + n; codes 0-3 are differential pairs.
+    _ADS1115_CONFIG_REGISTER = 0x01
+    _ADS1115_MUX_SHIFT = 12
+    _ADS1115_MUX_SINGLE_ENDED_BASE = 4
+    # The rest of the word, so the readback can be compared against everything
+    # this adapter set rather than the mux alone. Bit 15 reads as conversion
+    # state rather than configuration, so it is masked out of the comparison.
+    _ADS1115_CONFIG_MASK = 0x7FFF
+    _ADS1115_CONTINUOUS_BITS = 0x0000
+    _ADS1115_COMPARATOR_DISABLED = 0x0003
+    _ADS1115_GAIN_BITS = {
+        2 / 3: 0x0000,
+        1: 0x0200,
+        2: 0x0400,
+        4: 0x0600,
+        8: 0x0800,
+        16: 0x0A00,
+    }
+    _ADS1115_RATE_BITS = {
+        8: 0x0000,
+        16: 0x0020,
+        32: 0x0040,
+        64: 0x0060,
+        128: 0x0080,
+        250: 0x00A0,
+        475: 0x00C0,
+        860: 0x00E0,
+    }
+
+    def _select_ads1115_channel_single_shot(self) -> None:
+        """Write the mux in single-shot mode, with a bounded wait.
+
+        The driver's own single-shot read spins on the conversion-complete bit
+        with no bound. A TMP102 and an LM75 both default to 0x48, ACK, and
+        answer with that bit clear for any temperature below mid-scale, so the
+        runtime would hang here with no log line and Tier D never armed. The
+        bound turns that into a refusal.
+
+        It does not identify the part. A device whose word happens to carry
+        that bit passes this wait, and the configuration readback that follows
+        is what refuses it. A chip that does not answer at all is refused by
+        the driver before this is reached.
+        """
+        rate = int(self._ads.data_rate)
+        self._ads._write_config(self._ADS1115_MUX_SINGLE_ENDED_BASE + self._channel)
+        deadline = time.monotonic() + max(0.05, 8 / rate)
+        while not self._ads._conversion_complete():
+            if time.monotonic() > deadline:
+                raise AdapterConnectionError(
+                    f"I2CAdapter: the device at 0x{self._address:02X} on bus "
+                    f"{self._bus_number} never completed a conversion; it is "
+                    "not behaving as an ADS1115"
+                )
+            time.sleep(0.0005)
+        self._ads.get_last_result(False)
+
+    def _acquire_shared_bus(self) -> Any:
+        """Take a reference on the shared bus, and record that this one holds it."""
+        i2c = _get_shared_busio_i2c(self._bus_number)
+        self._holds_shared_bus = True
+        return i2c
+
+    def _release_shared_bus(self) -> None:
+        """Give back this adapter's reference, once, if it took one."""
+        if not self._holds_shared_bus:
+            return
+        self._holds_shared_bus = False
+        _release_shared_busio_i2c(self._bus_number)
+
+    def _release_ads1115_claim(self) -> None:
+        key = (self._bus_number, self._address)
+        with _ADS1115_CLAIMS_LOCK:
+            ref = _ADS1115_CLAIMS.get(key)
+            if ref is not None and ref() is self:
+                del _ADS1115_CLAIMS[key]
+
+    def _expected_ads1115_config(self) -> int:
+        """The configuration word this adapter set, as the chip should hold it."""
+        gain = self._ADS1115_GAIN_BITS.get(self._ads.gain)
+        rate = self._ADS1115_RATE_BITS.get(int(self._ads.data_rate))
+        if gain is None or rate is None:
+            raise MeasurementRefusedError(
+                f"I2CAdapter: ADS1115 gain {self._ads.gain!r} or data rate "
+                f"{self._ads.data_rate!r} is outside the datasheet's settings, "
+                "so the configuration it is running cannot be certified"
+            )
+        return (
+            (self._ADS1115_MUX_SINGLE_ENDED_BASE + self._channel)
+            << self._ADS1115_MUX_SHIFT
+            | gain
+            | self._ADS1115_CONTINUOUS_BITS
+            | rate
+            | self._ADS1115_COMPARATOR_DISABLED
         )
+
+    def _verify_ads1115_channel(self, error: type[Exception]) -> None:
+        """Refuse when the chip is not running the configuration this set.
+
+        Run at connect and again before every measurement, because a connect-
+        time check certifies the chip only until something else touches it: a
+        second adapter in another process on the same chip moves the mux and
+        this adapter's fast reads would follow it. The driver exposes no getter
+        for any of it, so this reads the config register through the driver's
+        register accessor. The driver is pinned by hash, and one that changes
+        shape fails here loudly — a read that cannot prove what it is reporting
+        must not report, because the measurement it feeds is the one a safety
+        condition is defined over.
+
+        The whole word is compared, not the mux field. Anything writing this
+        chip writes a complete configuration, and the two fields that carry no
+        mux change are the ones that corrupt a reading quietly: a gain another
+        process prefers rescales every sample, and single-shot mode leaves the
+        chip powered down after one conversion, so the window that follows is a
+        held value rather than a signal. Both under-report, which is the
+        direction that matters for a current a trip threshold is defined over.
+
+        The readback leaves the chip's register pointer on CONFIG. Callers must
+        follow it with a pointered conversion read before any fast read.
+        """
+        expected = self._expected_ads1115_config()
+        try:
+            config = self._ads._read_register(self._ADS1115_CONFIG_REGISTER)
+        except Exception as exc:
+            # Classified as a refusal, not a bus error: what the caller needs
+            # to know is that this window cannot be shown to be a measurement.
+            raise error(
+                "I2CAdapter: could not read back the ADS1115 configuration to "
+                f"confirm its channel: {type(exc).__name__}: {exc}"
+            ) from exc
+        observed = int(config) & self._ADS1115_CONFIG_MASK
+        mux = (observed >> self._ADS1115_MUX_SHIFT) & 0x7
+        expected_mux = self._ADS1115_MUX_SINGLE_ENDED_BASE + self._channel
+        if mux != expected_mux:
+            raise error(
+                f"I2CAdapter: ADS1115 at 0x{self._address:02X} is reading mux "
+                f"code {mux}, not single-ended channel {self._channel} "
+                f"(code {expected_mux}); the input it reports is not the one "
+                "configured"
+            )
+        if observed != expected:
+            raise error(
+                f"I2CAdapter: ADS1115 at 0x{self._address:02X} is running "
+                f"configuration 0x{observed:04X}, not the 0x{expected:04X} "
+                "this adapter set; its gain, data rate or conversion mode was "
+                "changed by something else, and the samples it returns are no "
+                "longer the ones configured"
+            )
+
+    def _reaffirm_ads1115_channel(self) -> None:
+        """Per-measurement: prove the mux, then re-point the conversion register."""
+        self._verify_ads1115_channel(MeasurementRefusedError)
+        self._ads.get_last_result(False)
 
     def _connect_scd40(self) -> None:
         # scd40 needs blinka as well as its own driver, because busio and board
         # come from there — but not the ADS1115 driver. The table says so.
         _require_drivers("scd40")
         assert adafruit_scd4x is not None
-        i2c = _get_shared_busio_i2c(self._bus_number)
+        i2c = self._acquire_shared_bus()
         self._scd4x = adafruit_scd4x.SCD4X(i2c)
         self._scd4x.start_periodic_measurement()
 
     async def close(self) -> None:
         """Release I2C bus resources and stop any periodic measurements.
 
+        Also releases this adapter's claim on its ADS1115, if it holds one.
+
         For Adafruit-based sensors (ADS1115, SCD40) the shared ``busio.I2C``
         cache entry is evicted so that a subsequent :meth:`connect` call
         creates a fresh bus handle.  Existing references held by other adapters
         sharing the same bus are unaffected.
         """
+        self._release_ads1115_claim()
         try:
             if self._scd4x is not None:
                 await asyncio.to_thread(self._scd4x.stop_periodic_measurement)
@@ -622,8 +896,7 @@ class I2CAdapter(BaseAdapter):
             if self._bus is not None:
                 await asyncio.to_thread(self._bus.close)
                 self._bus = None
-            if self._sensor_type in _ADS_SENSOR_TYPES | {"scd40"}:
-                _release_shared_busio_i2c(self._bus_number)
+            self._release_shared_bus()
         except Exception:
             logger.warning("I2CAdapter: exception during close — already disconnected?")
         finally:
@@ -734,6 +1007,7 @@ class I2CAdapter(BaseAdapter):
             raise AdapterReadError(
                 "I2CAdapter: current calibration was not resolved at connect()"
             )
+        self._reaffirm_ads1115_channel()
         channel = _analog_in.AnalogIn(self._ads, self._channel)
 
         # Monotonic throughout: a wall clock stepped by NTP mid-window would
@@ -794,6 +1068,10 @@ class I2CAdapter(BaseAdapter):
             raise AdapterConnectionError(
                 "I2CAdapter: the ADS1115 driver is not loaded; connect() must run first"
             )
+        # Not downgraded to AdapterReadError: MeasurementRefusedError is one
+        # already, and the subclass is what drives the runtime's degradation
+        # state and operator notice. A voltage channel can be a safety input.
+        self._reaffirm_ads1115_channel()
         chan = _analog_in.AnalogIn(self._ads, self._channel)
         voltage = chan.voltage
         return SensorReading(
