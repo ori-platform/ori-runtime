@@ -24,6 +24,7 @@ import yaml
 from ori.config import Config, ConfigValidationError
 from ori.utils import terminal
 from ori.utils.bool_utils import is_truthy
+from ori.utils.termux import parse_termux_usb_output
 
 _DIRECT_SERIAL_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
 _TERMUX_USB_TIMEOUT_S = 2.0
@@ -68,7 +69,6 @@ def run_phone_doctor(config_path: str = "ori.yaml") -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     checks.extend(_check_termux_environment())
     checks.append(_check_wake_lock_command())
-    checks.append(_check_usb_readiness())
 
     config: Config | None = None
     try:
@@ -103,6 +103,8 @@ def run_phone_doctor(config_path: str = "ori.yaml") -> list[DoctorCheck]:
         )
         checks.extend(_check_phone_config(config))
 
+    checks.extend(_check_usb_support(config))
+
     return checks
 
 
@@ -136,7 +138,6 @@ def _check_termux_environment() -> list[DoctorCheck]:
         "python": "Python is available.",
         "git": "Git is available.",
         "sshd": "OpenSSH server is available for support access.",
-        "termux-usb": "Termux:API USB helper is available.",
     }
     for command, ok_message in command_expectations.items():
         checks.append(
@@ -168,6 +169,53 @@ def _check_wake_lock_command() -> DoctorCheck:
             "battery optimization before unattended phone testing."
         ),
     )
+
+
+def _deployment_declares_usb(config: Config | None) -> bool:
+    """Whether this deployment uses a USB meter, or its profile is unknowable.
+
+    A `None` config means the configuration could not be read. Answering
+    `True` there is deliberate: omitting the USB checks would hide a genuine
+    USB problem at exactly the moment the configuration cannot be consulted to
+    rule one out.
+    """
+    if config is None:
+        return True
+    return any(_phone_sensor_profile(sensor) == "usb" for sensor in config.sensors)
+
+
+def _check_usb_support(config: Config | None) -> list[DoctorCheck]:
+    """Every USB-dependent check, or none of them.
+
+    Both USB signals ran before the configuration was loaded and so could not
+    know whether the deployment used a USB meter at all. A LAN-inverter phone,
+    whose sensors are all `solarman_modbus`, was told both that `termux-usb`
+    was not on PATH and that no USB serial device was found — each true, and
+    each irrelevant to it. Suppressing one and leaving the other would have
+    left the same misleading line in the report.
+
+    Omitting is deliberate rather than reporting these as informational.
+    `_STATUSES` is a closed set that `DoctorCheck.__post_init__` enforces, and
+    at least one downstream consumer maps any warning onto an operator-visible
+    health state. A consumer seeing fewer checks already tolerates that; a
+    consumer seeing a status it has never parsed does not.
+    """
+    if not _deployment_declares_usb(config):
+        return []
+
+    termux_usb_available = shutil.which("termux-usb") is not None
+    return [
+        DoctorCheck(
+            name="command.termux-usb",
+            status="pass" if termux_usb_available else "warn",
+            message=(
+                "Termux:API USB helper is available."
+                if termux_usb_available
+                else "termux-usb is not available on PATH."
+            ),
+        ),
+        _check_usb_readiness(),
+    ]
 
 
 def _check_usb_readiness() -> DoctorCheck:
@@ -233,18 +281,7 @@ def _list_termux_usb_devices() -> list[str]:
 
 
 def _parse_termux_usb_output(output: str) -> list[str]:
-    cleaned = output.strip()
-    if not cleaned:
-        return []
-    if cleaned.startswith("[") and cleaned.endswith("]"):
-        try:
-            parsed = json.loads(cleaned)
-        except json.JSONDecodeError:
-            return []
-        if isinstance(parsed, list):
-            return [str(item) for item in parsed if str(item).strip()]
-        return []
-    return [line.strip() for line in cleaned.splitlines() if line.strip()]
+    return parse_termux_usb_output(output)
 
 
 def _check_phone_config(config: Config) -> list[DoctorCheck]:
