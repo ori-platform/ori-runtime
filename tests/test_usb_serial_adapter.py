@@ -211,6 +211,43 @@ class TestUsbSerialAdapter:
             to_thread.assert_called_once_with(list_termux)
 
     @pytest.mark.asyncio
+    async def test_prose_from_termux_usb_is_not_reported_as_a_device(self):
+        """The join, not the parser.
+
+        `termux-usb -l` exits zero while printing prose. Every non-device line
+        used to come back as a device path, so a missing `device_path` was
+        reported as a phantom USB device and the installer was sent after a
+        USB-serial bridge instead of the setting that was actually absent.
+
+        This drives the real `_list_termux_usb_devices_sync` over a subprocess
+        result rather than stubbing its return value, so the parser and the
+        error it feeds are exercised together.
+        """
+        adapter = UsbSerialAdapter()
+        fake_module = SimpleNamespace(Serial=_FakeSerial)
+        config = _config()
+        config.pop("device_path")
+
+        completed = SimpleNamespace(returncode=0, stdout="No USB devices found.\n")
+
+        with (
+            patch("ori.hal.usb_serial_adapter._PYSERIAL_AVAILABLE", True),
+            patch("ori.hal.usb_serial_adapter._serial_module", fake_module),
+            patch(
+                "ori.hal.usb_serial_adapter.shutil.which",
+                return_value="/data/data/com.termux/files/usr/bin/termux-usb",
+            ),
+            patch("ori.hal.usb_serial_adapter.subprocess.run", return_value=completed),
+        ):
+            with pytest.raises(AdapterConnectionError) as excinfo:
+                await adapter.connect(config)
+
+        message = str(excinfo.value)
+        assert "'device_path' is required" in message
+        assert "termux-usb can see" not in message
+        assert "No USB devices found." not in message
+
+    @pytest.mark.asyncio
     async def test_read_sensor_types(self):
         fake_module = SimpleNamespace(Serial=_FakeSerial)
 

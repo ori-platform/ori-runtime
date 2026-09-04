@@ -7,6 +7,7 @@ import json
 import struct
 from pathlib import Path
 
+import pytest
 import yaml
 
 from ori import phone_doctor
@@ -14,6 +15,7 @@ from ori.security.config_signatures import (
     CONFIG_SIGNATURE_SCHEMA,
     canonical_config_signature_payload,
 )
+from ori.utils.termux import parse_termux_usb_output
 
 _PZEM_SIM_PATH = Path("scripts/pzem_socket_sim.py")
 
@@ -578,7 +580,6 @@ def test_usb_readiness_prefers_direct_serial_device(monkeypatch):
     )
 
     check = phone_doctor._check_usb_readiness()
-
     assert check.status == "pass"
     assert check.details == {"serial_devices": ["/dev/ttyUSB0"]}
 
@@ -592,15 +593,161 @@ def test_usb_readiness_warns_for_raw_termux_usb_without_serial(monkeypatch):
     )
 
     check = phone_doctor._check_usb_readiness()
-
     assert check.status == "warn"
     assert "no /dev/ttyUSB" in check.message
 
 
-def test_parse_termux_usb_json_output():
-    assert phone_doctor._parse_termux_usb_output(
-        '["/dev/bus/usb/001/002", "/dev/bus/usb/001/003"]'
-    ) == ["/dev/bus/usb/001/002", "/dev/bus/usb/001/003"]
+def _lan_only_sensor_block() -> str:
+    return """
+  - id: inverter
+    type: solarman_inverter
+    protocol: solarman_modbus
+    profile: deye_hybrid
+    host: "192.168.1.20"
+    serial: "1234567890"
+    port: 8899
+    poll_interval_ms: 5000
+""".rstrip()
+
+
+def test_usb_readiness_is_absent_for_a_deployment_that_declares_no_usb(
+    tmp_path, monkeypatch
+):
+    """A LAN inverter phone was told its missing USB hardware was a problem."""
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor.shutil, "which", lambda _name: None)
+    config_path = _write_phone_config(tmp_path, sensor_block=_lan_only_sensor_block())
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    names = [check.name for check in checks]
+    assert "config.load" in names, names
+    # Both USB signals, not just one. Suppressing `usb.readiness` alone left
+    # `command.termux-usb` warning about the same irrelevant hardware.
+    assert "usb.readiness" not in names, names
+    assert "command.termux-usb" not in names, names
+    assert not [name for name in names if "usb" in name.lower()], names
+    # The unrelated command checks are untouched.
+    assert "command.python" in names, names
+
+
+def test_usb_readiness_is_present_for_a_deployment_that_declares_usb(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor.shutil, "which", lambda _name: None)
+    config_path = _write_phone_config(tmp_path)  # the default block is usb_serial
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    names = [check.name for check in checks]
+    assert "usb.readiness" in names, names
+    assert "command.termux-usb" in names, names
+
+
+def test_usb_readiness_is_present_when_the_config_cannot_be_read(tmp_path, monkeypatch):
+    """The profile is unknowable here, so the check must not be silently dropped.
+
+    Omitting it would hide a real USB problem at exactly the moment the
+    configuration cannot be consulted to rule one out.
+    """
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor.shutil, "which", lambda _name: None)
+    path = tmp_path / "ori.yaml"
+    path.write_text("device: [not, a, mapping]\n")
+
+    checks = phone_doctor.run_phone_doctor(str(path))
+
+    by_name = {check.name: check for check in checks}
+    assert by_name["config.load"].status == "fail"
+    assert by_name["usb.readiness"].status == "warn"
+    assert by_name["command.termux-usb"].status == "warn"
+
+
+def test_a_declining_usb_check_does_not_change_the_overall_verdict(
+    tmp_path, monkeypatch
+):
+    """Dropping a `warn` must not turn a failing report into a passing one."""
+    monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
+    monkeypatch.setattr(phone_doctor.shutil, "which", lambda _name: None)
+    config_path = _write_phone_config(
+        tmp_path,
+        deployment_type="pi",
+        sensor_block=_lan_only_sensor_block(),
+    )
+
+    checks = phone_doctor.run_phone_doctor(config_path)
+
+    names = [check.name for check in checks]
+    assert "usb.readiness" not in names, names
+    assert "command.termux-usb" not in names, names
+    assert phone_doctor.has_failures(checks) is True
+
+
+class TestTermuxUsbOutputParsing:
+    """`termux-usb -l` exits zero while printing prose often enough to matter.
+
+    Every non-device line used to be returned as a device path, so the doctor
+    reported "termux-usb sees USB device(s)" for output saying the opposite,
+    and the adapter raised a connection error pointing the installer at a
+    USB-serial bridge instead of the missing `device_path`.
+    """
+
+    def test_json_device_paths_are_returned(self):
+        assert parse_termux_usb_output(
+            '["/dev/bus/usb/001/002", "/dev/bus/usb/001/003"]'
+        ) == ["/dev/bus/usb/001/002", "/dev/bus/usb/001/003"]
+
+    def test_plain_device_paths_are_returned(self):
+        assert parse_termux_usb_output("/dev/bus/usb/001/002\n") == [
+            "/dev/bus/usb/001/002"
+        ]
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            pytest.param("", id="empty"),
+            pytest.param("   \n\n", id="whitespace"),
+            pytest.param("[]", id="json-empty"),
+            pytest.param("No USB devices found.", id="none-message"),
+            pytest.param("Permission denied", id="permission"),
+            pytest.param(
+                "termux-usb: command requires Termux:API app", id="api-missing"
+            ),
+            pytest.param('["error: denied"]', id="json-prose"),
+            pytest.param('{"devices": []}', id="json-object"),
+            pytest.param("[not json", id="malformed"),
+        ],
+    )
+    def test_output_that_names_no_device_yields_no_device(self, output):
+        assert parse_termux_usb_output(output) == []
+
+    def test_prose_mixed_with_a_device_keeps_only_the_device(self):
+        assert parse_termux_usb_output(
+            "Permission denied\n/dev/bus/usb/001/002\nNo further devices"
+        ) == ["/dev/bus/usb/001/002"]
+
+    def test_the_doctor_does_not_claim_a_device_for_a_prose_line(self, monkeypatch):
+        """The defect through its real entry point, not the parser alone."""
+        monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
+        monkeypatch.setattr(
+            phone_doctor,
+            "_list_termux_usb_devices",
+            lambda: parse_termux_usb_output("No USB devices found."),
+        )
+        monkeypatch.setattr(
+            phone_doctor.shutil, "which", lambda _name: "/bin/termux-usb"
+        )
+
+        check = phone_doctor._check_usb_readiness()
+
+        assert check.status == "warn"
+        assert "No USB serial meter detected yet." == check.message
+        assert "sees USB device" not in check.message
 
 
 def test_main_emits_json_and_returns_failure(tmp_path, monkeypatch, capsys):

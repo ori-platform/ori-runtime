@@ -18,6 +18,7 @@ from ori.hal.base import (
     resolve_baud_rate,
 )
 from ori.network.events import SensorReading
+from ori.utils.termux import parse_termux_usb_output
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -346,17 +347,4 @@ def _list_termux_usb_devices_sync() -> list[str]:
         return []
     if result.returncode != 0:
         return []
-    output = result.stdout.strip()
-    if not output:
-        return []
-    # termux-usb usually emits a JSON array but older builds can emit plain text.
-    if output.startswith("[") and output.endswith("]"):
-        try:
-            import json
-
-            parsed = json.loads(output)
-            if isinstance(parsed, list):
-                return [str(item) for item in parsed if str(item).strip()]
-        except Exception:
-            return []
-    return [line.strip() for line in output.splitlines() if line.strip()]
+    return parse_termux_usb_output(result.stdout)
