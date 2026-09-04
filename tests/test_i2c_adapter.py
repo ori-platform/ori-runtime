@@ -1846,3 +1846,292 @@ print(json.dumps({{
         from ori.hal.i2c_adapter import i2c_driver_unavailable_reason
 
         assert i2c_driver_unavailable_reason("cpu_percent") is None
+
+
+class TestCloseDuringConnect:
+    """A close that overtakes an in-flight connect.
+
+    `connect()` runs its hardware initialisation in a worker thread and used to
+    mark itself connected when that thread returned, whatever had happened
+    meanwhile. A `close()` in that window released what had been taken at the
+    time while the thread went on taking more, leaving an adapter that believed
+    it was connected holding a shared-bus reference `close()` had already given
+    back. The runtime would then poll a sensor whose bus nobody believes is in
+    use.
+
+    Driven for every sensor type the adapter serves, and from both sides of the
+    window, because the two orderings fail differently: a close landing after
+    the acquisition is undone by the close itself, and one landing before it is
+    undone only by the connect noticing.
+    """
+
+    def _install_drivers(self, monkeypatch, sensor_type: str):
+        if sensor_type == "bme280":
+            monkeypatch.setattr(i2c_module, "_SMBUS_AVAILABLE", True)
+            monkeypatch.setattr(i2c_module, "_BME280_AVAILABLE", True)
+            monkeypatch.setattr(i2c_module, "smbus", MagicMock(), raising=False)
+            monkeypatch.setattr(i2c_module, "_bme280_lib", MagicMock(), raising=False)
+            return
+        if sensor_type == "scd40":
+            monkeypatch.setattr(i2c_module, "_SCD40_AVAILABLE", True)
+            monkeypatch.setattr(i2c_module, "_BLINKA_AVAILABLE", True)
+            monkeypatch.setattr(i2c_module, "_busio", MagicMock(), raising=False)
+            monkeypatch.setattr(i2c_module, "_board", MagicMock(), raising=False)
+            monkeypatch.setattr(
+                i2c_module, "adafruit_scd4x", MagicMock(), raising=False
+            )
+            return
+        _pinned_driver(monkeypatch, chip_mux=0)
+
+    def _gate(self, monkeypatch, when: str, started, release):
+        """Hold the worker thread open, before or after it takes anything."""
+        original = I2CAdapter._connect_sync
+
+        def _gated(self, sensor_type):
+            if when == "after":
+                original(self, sensor_type)
+            started.set()
+            release.wait(5.0)
+            if when == "before":
+                original(self, sensor_type)
+
+        monkeypatch.setattr(I2CAdapter, "_connect_sync", _gated)
+
+    def _assert_nothing_held(self, adapter, sensor_type: str, before: dict) -> None:
+        """Per type, on the resource that type actually takes."""
+        assert adapter.is_connected is False
+        assert i2c_module._shared_busio_refs == before, (
+            "a shared bus reference outlived the connect that took it"
+        )
+        if sensor_type == "bme280":
+            assert adapter._bus is None
+        elif sensor_type == "scd40":
+            assert adapter._scd4x is None
+        else:
+            assert i2c_module._ADS1115_CLAIMS == {}
+            assert adapter._ads is None
+
+    @pytest.mark.parametrize("when", ["before", "after"])
+    @pytest.mark.parametrize(
+        "sensor_type", ["bme280", "ads1115_voltage", "ads1115_current", "scd40"]
+    )
+    async def test_a_close_during_connect_leaves_nothing_held(
+        self, monkeypatch, sensor_type, when
+    ):
+        import threading
+
+        self._install_drivers(monkeypatch, sensor_type)
+        started, release = threading.Event(), threading.Event()
+        self._gate(monkeypatch, when, started, release)
+
+        address = 0x76 if sensor_type == "bme280" else 0x48
+        before = dict(i2c_module._shared_busio_refs)
+        adapter = I2CAdapter()
+        connecting = asyncio.create_task(
+            adapter.connect(_config(sensor_type=sensor_type, address=address))
+        )
+        await asyncio.to_thread(started.wait, 5.0)
+
+        closing = asyncio.create_task(adapter.close())
+        await asyncio.sleep(0)
+        release.set()
+
+        with pytest.raises(AdapterConnectionError, match="closed while it was still"):
+            await connecting
+        await closing
+
+        self._assert_nothing_held(adapter, sensor_type, before)
+
+    async def test_a_close_part_way_through_its_teardown_blocks_a_new_connect(
+        self, monkeypatch
+    ):
+        """The counter records that a close began, not that it finished.
+
+        `_teardown()` awaits, so a close suspended inside it would otherwise be
+        invisible to a connect starting in that gap, and the rest of the stale
+        teardown would then release what the new connect had just taken. The
+        lifecycle lock is what stops the two straddling each other.
+        """
+        import threading
+
+        self._install_drivers(monkeypatch, "scd40")
+        in_teardown, finish = threading.Event(), threading.Event()
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="scd40", address=0x62))
+        before_connect = dict(i2c_module._shared_busio_refs)
+
+        def _slow_stop():
+            in_teardown.set()
+            finish.wait(5.0)
+
+        adapter._scd4x.stop_periodic_measurement = _slow_stop
+
+        closing = asyncio.create_task(adapter.close())
+        await asyncio.to_thread(in_teardown.wait, 5.0)
+
+        # The close is suspended inside its own teardown. A connect starting
+        # now must not run alongside it.
+        reconnecting = asyncio.create_task(
+            adapter.connect(_config(sensor_type="scd40", address=0x62))
+        )
+        await asyncio.sleep(0.05)
+        assert not reconnecting.done(), "a connect ran inside a close's teardown"
+
+        finish.set()
+        await closing
+        await reconnecting
+
+        assert adapter.is_connected is True
+        assert i2c_module._shared_busio_refs == before_connect, (
+            "the suspended teardown released the later connect's reference"
+        )
+        await adapter.close()
+        assert i2c_module._shared_busio_refs == {}
+
+    async def test_a_close_declares_itself_before_it_waits(self, monkeypatch):
+        """Recording the close after its teardown would reinstate the defect.
+
+        The connect holds the lifecycle lock, so a close cannot tear anything
+        down until the connect finishes. If it also did not record itself
+        first, the connect would see nothing and report success.
+        """
+        import threading
+
+        self._install_drivers(monkeypatch, "ads1115_voltage")
+        started, release = threading.Event(), threading.Event()
+        self._gate(monkeypatch, "after", started, release)
+
+        adapter = I2CAdapter()
+        connecting = asyncio.create_task(
+            adapter.connect(_config(sensor_type="ads1115_voltage"))
+        )
+        await asyncio.to_thread(started.wait, 5.0)
+        closing = asyncio.create_task(adapter.close())
+        await asyncio.sleep(0)
+
+        # The close has not torn anything down — it is waiting for the lock.
+        assert adapter._close_count == 1
+        release.set()
+        with pytest.raises(AdapterConnectionError, match="closed while it was still"):
+            await connecting
+        await closing
+
+    async def test_a_teardown_never_releases_another_adapters_claim(self, monkeypatch):
+        """The property that makes the teardown safe to run from two places.
+
+        Driven on the method rather than through a race, because the lifecycle
+        lock now makes the interleaving that produced it hard to construct —
+        and the ownership check has to hold regardless of how the state arose,
+        since a stale teardown that stole a live claim would admit a third
+        adapter onto a chip another is driving.
+        """
+        _pinned_driver(monkeypatch, chip_mux=0)
+        first = I2CAdapter()
+        await first.connect(_config(sensor_type="ads1115_voltage"))
+        await first.close()
+
+        second = I2CAdapter()
+        await second.connect(_config(sensor_type="ads1115_voltage"))
+        held = dict(i2c_module._ADS1115_CLAIMS)
+        assert held, "the second adapter did not take the claim"
+
+        await first._teardown()
+
+        assert i2c_module._ADS1115_CLAIMS == held, (
+            "a stale teardown released a claim another adapter holds"
+        )
+        assert second.is_connected is True
+        await second.close()
+
+    async def test_a_second_connect_cannot_change_the_first_ones_device(
+        self, monkeypatch
+    ):
+        """Config written to the adapter before the lock is a second race.
+
+        One connect holds the lifecycle lock while its worker is running; a
+        second, for a different address and channel, would overwrite the
+        address, channel and calibration the first is in the middle of using.
+        The worker then opens whatever the second left behind: the wrong
+        device, or the right one on the wrong channel.
+        """
+        import threading
+
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        started, release = threading.Event(), threading.Event()
+        self._gate(monkeypatch, "before", started, release)
+
+        adapter = I2CAdapter()
+        first = asyncio.create_task(
+            adapter.connect(
+                _config(sensor_type="ads1115_voltage", address=0x48, channel=0)
+            )
+        )
+        await asyncio.to_thread(started.wait, 5.0)
+
+        # A second connect for a different chip and channel, while the first
+        # is inside its own initialisation.
+        second = asyncio.create_task(
+            adapter.connect(
+                _config(sensor_type="ads1115_voltage", address=0x49, channel=3)
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not second.done(), "the second connect ran alongside the first"
+
+        release.set()
+        await first
+
+        # The first connected its own device, on its own channel.
+        assert adapter._address == 0x48
+        assert adapter._channel == 0
+        assert [d.address for d in created] == [0x48]
+
+        # And the second is refused rather than reconnecting in place, so it
+        # takes no further shared-bus reference against the one release the
+        # single close will make.
+        with pytest.raises(AdapterConnectionError, match="already connected"):
+            await second
+        assert i2c_module._shared_busio_refs == {1: 1}
+
+        await adapter.close()
+        assert i2c_module._shared_busio_refs == {}
+        assert i2c_module._ADS1115_CLAIMS == {}
+
+    async def test_a_refused_second_connect_leaves_the_first_readable(
+        self, monkeypatch
+    ):
+        """Refusing must not disturb the adapter that is already working."""
+        _pinned_driver(monkeypatch, chip_mux=0, conversion=0xFFFE)
+        adapter = I2CAdapter()
+        await adapter.connect(
+            _config(sensor_type="ads1115_voltage", address=0x48, channel=0)
+        )
+
+        with pytest.raises(AdapterConnectionError, match="already connected"):
+            await adapter.connect(
+                _config(sensor_type="ads1115_voltage", address=0x49, channel=3)
+            )
+
+        assert adapter.is_connected is True
+        assert adapter._address == 0x48
+        assert adapter._channel == 0
+        assert abs((await adapter.read("s")).value) < 0.01
+        await adapter.close()
+
+    async def test_an_ordinary_connect_is_unaffected(self, monkeypatch):
+        """The guard must not refuse a connect nothing closed."""
+        _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_voltage"))
+        assert adapter.is_connected is True
+        await adapter.close()
+
+    async def test_an_adapter_reconnects_after_a_clean_close(self, monkeypatch):
+        """The close count is a comparison, not a latch."""
+        _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_voltage"))
+        await adapter.close()
+        await adapter.connect(_config(sensor_type="ads1115_voltage"))
+        assert adapter.is_connected is True
+        await adapter.close()
