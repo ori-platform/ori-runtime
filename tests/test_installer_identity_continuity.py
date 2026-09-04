@@ -307,3 +307,22 @@ def test_backend_authored_identity_is_preserved_the_same_way(tmp_path):
         InstallerInputOptions(unattended=True, location="Site", installed=installed)
     )
     assert values.device_id == "tenant-site-0042"
+
+
+def test_a_hostile_literal_does_not_escape_as_an_interpreter_error(tmp_path):
+    """An unreadable configuration is unreadable, not a traceback.
+
+    This function decides whether an existing installation would be stranded,
+    and it caught only `yaml.YAMLError`. A 5000-digit integer literal reached
+    the interpreter's digit limit as `ValueError` and escaped, so the caller
+    saw a traceback where the refusal it handles was expected.
+    """
+    layout = _layout(tmp_path)
+    (layout.data / "ori.yaml").write_text(
+        "device:\n  id: x\n  rated_capacity_amps: " + "9" * 5000 + "\n"
+    )
+
+    with pytest.raises(identity.InstalledConfigUnreadableError) as excinfo:
+        identity.read_installed(layout)
+
+    assert "could not be read" in str(excinfo.value)

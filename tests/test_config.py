@@ -1,19 +1,29 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import base64
 import os
+import pathlib
 import subprocess
 import sys
 import textwrap
+import threading
 
 import pytest
 import yaml
 
+import ori.config as config_module
 from ori.config import (
+    _MAX_CONFIG_BYTES,
     Config,
     ConfigValidationError,
+    _load_config_document,
 )
+from ori.phone_doctor import (
+    _phone_profile_hints_from_invalid_config as phone_doctor_hints,
+)
+from ori.phone_doctor import run_phone_doctor
 from ori.security.config_signatures import (
     CONFIG_SIGNATURE_SCHEMA,
     canonical_config_signature_payload,
@@ -4741,8 +4751,10 @@ class TestHostileDocumentIsRefused:
                 id="flow-map",
             ),
             pytest.param(
-                "".join("  " * i + f"k{i}:\n" for i in range(2000))
-                + "  " * 2000
+                # 500 levels, not 2000: at 2000 the document is past the
+                # 1 MiB admission cap and that is what would refuse it.
+                "".join("  " * i + f"k{i}:\n" for i in range(500))
+                + "  " * 500
                 + "v: 1\n",
                 id="block",
             ),
@@ -4888,15 +4900,17 @@ class TestHostileDocumentIsRefused:
         with pytest.raises(ConfigValidationError, match="more than 20000 nodes"):
             self._load(tmp_path, document)
 
-    def test_the_limits_apply_after_environment_expansion(self, tmp_path, monkeypatch):
-        """Both parse sites are covered, not only the one that reads the file.
+    def test_the_limits_apply_to_an_environment_substituted_scalar(
+        self, tmp_path, monkeypatch
+    ):
+        """The bounds see substituted values, not only what is on disk.
 
-        The document on disk is parsed once, then expanded and parsed again.
-        A value substituted from the environment reaches the second parse
-        only, so a limit enforced at the first would not see it.
+        An environment value can no longer become structure, so nesting is not
+        the shape to test any more. Length still is: a substituted scalar is
+        bounded exactly as a written one.
         """
-        monkeypatch.setenv("ORI_TEST_INJECTED", "[" * 100 + "]" * 100)
-        with pytest.raises(ConfigValidationError, match="nesting deeper than 32"):
+        monkeypatch.setenv("ORI_TEST_INJECTED", "A" * 5000)
+        with pytest.raises(ConfigValidationError, match="longer than 4096"):
             self._load(tmp_path, "device:\n  id: x\n  k: ${ORI_TEST_INJECTED}\n")
 
     def test_a_file_that_is_not_utf8_is_refused(self, tmp_path):
@@ -5043,3 +5057,575 @@ class TestHostileDocumentIsRefused:
             ),
         )
         assert config.device.id == "bench-01"
+
+
+class TestEnvironmentExpansionCannotRewriteTheDocument:
+    """ori-platform/ori-runtime#518.
+
+    The signature was verified over the document as written, and the document
+    the runtime built from was a textual substitution of it. A value carrying
+    a quote and a newline did not stay inside the scalar it replaced.
+    """
+
+    def _load(self, tmp_path, content: str):
+        path = tmp_path / "ori.yaml"
+        path.write_text(textwrap.dedent(content))
+        return Config.load(str(path))
+
+    _DOCUMENT = """
+        device:
+          id: bench-01
+          name: Bench
+          location: Lagos
+          rated_capacity_amps: 10.0
+          contact: "${ORI_TEST_INJECT}"
+        sensors: []
+        skills: []
+        reasoning:
+          default_tier: rule
+        gateway:
+          enabled: false
+          broker_url: mqtt://localhost
+        actions:
+          primary_alert_channel: sms
+        """
+
+    @pytest.mark.parametrize(
+        "injected",
+        [
+            pytest.param(
+                '+234000"\n  rated_capacity_amps: 0.001\n  z: "y', id="sibling-key"
+            ),
+            pytest.param('+234000"\nevil_top_level: 1\nz: "y', id="top-level-key"),
+            pytest.param('+234000"\n  id: attacker\n  z: "y', id="overwrite-id"),
+            pytest.param("+234000\"\n  name: 'x'\n  z: \"y", id="overwrite-name"),
+        ],
+    )
+    def test_an_environment_value_cannot_add_or_replace_a_key(
+        self, tmp_path, monkeypatch, injected
+    ):
+        monkeypatch.setenv("ORI_TEST_INJECT", injected)
+        config = self._load(tmp_path, self._DOCUMENT)
+
+        assert config.device.rated_capacity_amps == 10.0
+        assert config.device.id == "bench-01"
+        assert config.device.name == "Bench"
+        assert "evil_top_level" not in config.raw
+        # Whatever it contained, it is still exactly one scalar.
+        assert config.raw["device"]["contact"] == injected
+
+    _KEY_DOCUMENT = """
+        device:
+          id: bench-01
+          name: Bench
+          location: Lagos
+          rated_capacity_amps: 10.0
+          rated_capacity_${ORI_TEST_INJECT}: 5000.0
+        sensors: []
+        skills: []
+        reasoning:
+          default_tier: rule
+        gateway:
+          enabled: false
+          broker_url: mqtt://localhost
+        actions:
+          primary_alert_channel: sms
+        """
+
+    def test_an_environment_value_cannot_choose_a_key_name(self, tmp_path, monkeypatch):
+        """A placeholder in key position is not a value.
+
+        Expanding one lets an environment variable name the key it lands on,
+        so `rated_capacity_${SUFFIX}` becomes `rated_capacity_amps` and the
+        Tier D threshold input moves — under a signature that still verifies,
+        because the bytes on disk did not change.
+        """
+        monkeypatch.setenv("ORI_TEST_INJECT", "amps")
+        config = self._load(tmp_path, self._KEY_DOCUMENT)
+
+        assert config.device.rated_capacity_amps == 10.0
+        assert "rated_capacity_${ORI_TEST_INJECT}" in config.raw["device"]
+        assert list(config.raw["device"]).count("rated_capacity_amps") == 1
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            pytest.param("${ORI_TEST_INJECT}: 1\n", id="plain-key"),
+            pytest.param('"${ORI_TEST_INJECT}": 1\n', id="quoted-key"),
+            pytest.param("a:\n  ${ORI_TEST_INJECT}: 1\n", id="nested-key"),
+        ],
+    )
+    def test_a_placeholder_in_key_position_stays_literal(self, monkeypatch, document):
+        monkeypatch.setenv("ORI_TEST_INJECT", "substituted")
+        loaded = _load_config_document(document, "ori.yaml", expand_env=True)
+        assert "${ORI_TEST_INJECT}" in str(loaded)
+        assert "substituted" not in str(loaded)
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            pytest.param("? {a: 1}\n: 2\n", id="mapping-key"),
+            pytest.param("? [a]\n: 2\n", id="sequence-key"),
+        ],
+    )
+    def test_a_complex_key_is_refused_outright(self, document):
+        """Why key position is inherited but cannot matter in an accepted document.
+
+        Expansion is suppressed for everything inside a complex (`?`) key, and
+        that guard is unreachable in a document the loader accepts, because a
+        non-string key is refused when the mapping is constructed. Pinned here
+        so the claim is a tested fact rather than an assumption: if complex
+        keys ever became constructible, the inheritance would start to matter
+        and this test would say so.
+        """
+        with pytest.raises(ConfigValidationError, match="keys must be strings"):
+            _load_config_document(document, "ori.yaml", expand_env=True)
+
+    def test_an_environment_value_cannot_become_a_merge_key(self, monkeypatch):
+        """`<<` is not an ordinary key: it rewrites the mapping it appears in."""
+        monkeypatch.setenv("ORI_TEST_INJECT", "<<")
+        loaded = _load_config_document(
+            "base:\n  b: 1\nd:\n  ${ORI_TEST_INJECT}:\n    c: 2\n",
+            "ori.yaml",
+            expand_env=True,
+        )
+        assert loaded["d"] == {"${ORI_TEST_INJECT}": {"c": 2}}
+
+    def test_a_plain_scalar_still_has_its_whitespace_stripped(self, monkeypatch):
+        """The parser strips a plain scalar, and substitution used to precede it.
+
+        Without this an environment value with a stray trailing space types as
+        a string, and a deployment that loads today stops loading.
+        """
+        monkeypatch.setenv("ORI_TEST_INJECT", "1000 ")
+        assert (
+            _load_config_document("k: ${ORI_TEST_INJECT}", "ori.yaml", expand_env=True)[
+                "k"
+            ]
+            == 1000
+        )
+        # Quoting still means exactly what it says.
+        assert (
+            _load_config_document(
+                'k: "${ORI_TEST_INJECT}"', "ori.yaml", expand_env=True
+            )["k"]
+            == "1000 "
+        )
+
+    def test_the_expanded_document_has_the_structure_that_was_signed(
+        self, tmp_path, monkeypatch
+    ):
+        """The invariant, asserted directly rather than through one attack.
+
+        Both passes parse the same bytes, so the key structure cannot differ,
+        and a key is never expanded, so nothing can name a key either.
+        """
+        monkeypatch.setenv("ORI_TEST_INJECT", '+234000"\n  injected: 1\n  z: "y')
+        text = textwrap.dedent(self._DOCUMENT)
+
+        def shape(value):
+            if isinstance(value, dict):
+                return {key: shape(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [shape(item) for item in value]
+            return None
+
+        signed = _load_config_document(text, "ori.yaml")
+        used = _load_config_document(text, "ori.yaml", expand_env=True)
+
+        assert shape(signed) == shape(used)
+        assert signed != used  # values did change; only the shape may not
+
+        # Driven through `Config.load` as well, because the two calls above
+        # would still agree if `Config.load` went back to substituting text.
+        path = tmp_path / "ori.yaml"
+        path.write_text(text)
+        loaded = Config.load(str(path))
+        assert shape(loaded.raw["device"]) == shape(signed["device"])
+        assert loaded.device.rated_capacity_amps == 10.0
+
+    @pytest.mark.parametrize(
+        ("document", "value", "expected"),
+        [
+            pytest.param("k: ${ORI_TEST_INJECT}", "8899", 8899, id="plain-int"),
+            pytest.param("k: ${ORI_TEST_INJECT}", "true", True, id="plain-bool"),
+            pytest.param("k: ${ORI_TEST_INJECT}", "1.5", 1.5, id="plain-float"),
+            pytest.param("k: ${ORI_TEST_INJECT}", "text", "text", id="plain-str"),
+            pytest.param(
+                'k: "${ORI_TEST_INJECT}"', "8899", "8899", id="quoted-stays-str"
+            ),
+            pytest.param("k: '${ORI_TEST_INJECT}'", "8899", "8899", id="single-quoted"),
+            pytest.param('k: "+234${ORI_TEST_INJECT}"', "555", "+234555", id="partial"),
+            pytest.param("k: !!str ${ORI_TEST_INJECT}", "8899", "8899", id="tagged"),
+        ],
+    )
+    def test_typing_matches_what_the_textual_substitution_produced(
+        self, monkeypatch, document, value, expected
+    ):
+        """Expansion moved into the parser; it must not retype anything.
+
+        A plain scalar still takes implicit typing from the substituted text
+        and a quoted one still stays a string, because that is what the
+        re-parse did.
+        """
+        monkeypatch.setenv("ORI_TEST_INJECT", value)
+        loaded = _load_config_document(document, "ori.yaml", expand_env=True)
+        assert loaded["k"] == expected
+        assert type(loaded["k"]) is type(expected)
+
+    def test_an_unset_variable_is_left_alone(self, monkeypatch):
+        monkeypatch.delenv("ORI_TEST_ABSENT", raising=False)
+        loaded = _load_config_document(
+            "k: ${ORI_TEST_ABSENT}", "ori.yaml", expand_env=True
+        )
+        assert loaded["k"] == "${ORI_TEST_ABSENT}"
+
+    def test_expansion_is_off_for_the_pass_the_signature_covers(self, monkeypatch):
+        monkeypatch.setenv("ORI_TEST_INJECT", "substituted")
+        loaded = _load_config_document("k: ${ORI_TEST_INJECT}", "ori.yaml")
+        assert loaded["k"] == "${ORI_TEST_INJECT}"
+
+    _SIGNED_ATTACK_DOCUMENT = """
+        device:
+          id: dev-01
+          name: Test
+          location: Lagos
+          rated_capacity_amps: 10.0
+          contact: "${ORI_TEST_INJECT}"
+          rated_capacity_${ORI_TEST_INJECT}: 5000.0
+        sensors: []
+        skills: []
+        reasoning: {}
+        gateway: {}
+        actions:
+          primary_alert_channel: sms
+          sms:
+            enabled: false
+        security:
+          config_signature:
+            require_signed: true
+        """
+
+    @pytest.mark.parametrize(
+        ("injected", "label"),
+        [
+            pytest.param(
+                '+234000"\n  rated_capacity_amps: 0.001\n  z: "y',
+                "value-breakout",
+                id="value-breakout",
+            ),
+            pytest.param("amps", "key-name", id="key-name"),
+        ],
+    )
+    def test_a_verified_signature_still_means_what_it_says(
+        self, tmp_path, monkeypatch, injected, label
+    ):
+        """The attack against a document that is actually signed.
+
+        The other tests in this class drive `Config.load` with an unsigned
+        document, which proves containment but not the property the issue is
+        about: that a *verified* signature binds the semantics the runtime
+        runs on. Here the trust anchor is supplied, the signature verifies,
+        and the environment is hostile at the same time.
+        """
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        monkeypatch.setenv("ORI_TEST_INJECT", injected)
+        yaml_path = _write_yaml(
+            tmp_path, _sign_config_yaml(self._SIGNED_ATTACK_DOCUMENT, private_key)
+        )
+
+        config = Config.load(yaml_path)
+
+        assert config.security["config_signature"]["verified"] is True
+        assert config.security["config_signature"]["required"] is True
+
+        # The signed value, not one an environment variable chose.
+        assert config.device.rated_capacity_amps == 10.0
+        device = config.raw["device"]
+        assert device["rated_capacity_${ORI_TEST_INJECT}"] == 5000.0
+        assert "z" not in device
+        assert "z" not in config.raw
+        assert device["contact"] == injected
+        # Exactly the keys the signed document declared.
+        assert set(device) == {
+            "id",
+            "name",
+            "location",
+            "rated_capacity_amps",
+            "contact",
+            "rated_capacity_${ORI_TEST_INJECT}",
+            "timezone",
+        } - {"timezone"} | ({"timezone"} if "timezone" in device else set())
+
+    def test_a_substituted_merge_token_is_refused_not_applied(
+        self, tmp_path, monkeypatch
+    ):
+        """`<<` in a plain value fails closed rather than merging anything.
+
+        PyYAML resolves a plain `<<` to the merge tag wherever it appears, and
+        `SafeLoader` has no constructor for one in value position, so the
+        document is refused. Recorded because it is a behaviour an operator
+        could hit with an ordinary-looking environment value, and because the
+        refusal is the outcome that matters: the token is never honoured.
+        """
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        monkeypatch.setenv("ORI_TEST_INJECT", "<<")
+        yaml_path = _write_yaml(
+            tmp_path, _sign_config_yaml(self._SIGNED_ATTACK_DOCUMENT, private_key)
+        )
+
+        with pytest.raises(ConfigValidationError, match="merge"):
+            Config.load(yaml_path)
+
+
+class TestNoShippedGeneratorEmitsAPlaceholderInKeyPosition:
+    """#518 requires the config-generating paths be checked before this lands.
+
+    A placeholder is no longer expanded in key position, so a generator that
+    emitted one would produce a document whose key stays literal. Nothing in
+    this repository does. The provisioning backend that signs the phone's
+    configuration is not in this repository and cannot be checked from here;
+    the requirement on it is recorded in `DECISIONS.md` instead.
+    """
+
+    def _keys(self, value, found=None):
+        found = [] if found is None else found
+        if isinstance(value, dict):
+            for key, item in value.items():
+                found.append(str(key))
+                self._keys(item, found)
+        elif isinstance(value, list):
+            for item in value:
+                self._keys(item, found)
+        return found
+
+    @pytest.mark.parametrize(
+        "example",
+        [
+            EXAMPLE_YAML,
+            LINUX_EXAMPLE_YAML,
+            PHONE_EXAMPLE_YAML,
+            PHONE_GROWATT_EXAMPLE_YAML,
+            PHONE_VICTRON_EXAMPLE_YAML,
+        ],
+    )
+    def test_no_shipped_example_places_a_placeholder_in_a_key(self, example):
+        document = yaml.safe_load(open(example, encoding="utf-8").read())
+        offenders = [key for key in self._keys(document) if "${" in key]
+        assert offenders == [], offenders
+
+    def test_the_installer_generator_emits_no_placeholder_key(self):
+        """The one generator this repository owns, checked by parsing it.
+
+        `ori/installer/linux.py` builds the configuration as dict literals, so
+        every key it can emit is a literal in that source. Read with `ast`
+        rather than by slicing text, so the check does not depend on the
+        formatting of the block it examines.
+        """
+        source = (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "ori"
+            / "installer"
+            / "linux.py"
+        ).read_text(encoding="utf-8")
+        offenders = [
+            key.value
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Dict)
+            for key in node.keys
+            if isinstance(key, ast.Constant)
+            and isinstance(key.value, str)
+            and "${" in key.value
+        ]
+        assert offenders == [], offenders
+
+
+class TestDuplicateKeysAreRefused:
+    """ori-platform/ori-runtime#519."""
+
+    def _load(self, tmp_path, content: str):
+        path = tmp_path / "ori.yaml"
+        path.write_text(content)
+        return Config.load(str(path))
+
+    def test_a_repeated_key_is_refused_rather_than_last_wins(self, tmp_path):
+        """The signature covers the parsed document, so last-wins means a
+        reviewer reads one rated capacity and the runtime uses another."""
+        with pytest.raises(ConfigValidationError, match="duplicate configuration key"):
+            self._load(
+                tmp_path,
+                "device:\n  rated_capacity_amps: 10.0\n  rated_capacity_amps: 5000.0\n",
+            )
+
+    def test_a_repeated_top_level_key_is_refused(self, tmp_path):
+        with pytest.raises(ConfigValidationError, match="duplicate configuration key"):
+            self._load(tmp_path, "device:\n  id: a\nsensors: []\ndevice:\n  id: b\n")
+
+    def test_the_refusal_names_the_key_and_the_line(self, tmp_path):
+        with pytest.raises(ConfigValidationError) as excinfo:
+            self._load(tmp_path, "device:\n  id: a\nsensors: []\ndevice:\n  id: b\n")
+        message = str(excinfo.value)
+        assert "'device'" in message
+        assert "line 4" in message
+
+    def test_a_non_string_key_is_refused(self, tmp_path):
+        with pytest.raises(ConfigValidationError, match="keys must be strings"):
+            self._load(tmp_path, "1: x\n")
+
+    def test_a_duplicate_is_refused_in_the_expanded_pass_too(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("ORI_TEST_INJECT", "value")
+        with pytest.raises(ConfigValidationError, match="duplicate configuration key"):
+            self._load(tmp_path, 'device:\n  k: "${ORI_TEST_INJECT}"\n  k: 2\n')
+
+
+class TestFileAdmissionIsBounded:
+    """ori-platform/ori-runtime#520.
+
+    The bounds the loader applies begin after the text is in memory. Getting
+    it there was unbounded, and all of it happens before signature
+    verification.
+    """
+
+    def test_a_fifo_is_refused_instead_of_blocking(self, tmp_path):
+        """It blocked with no refusal and no timeout.
+
+        Driven on a thread so that a regression is a failure rather than a
+        hung suite: without `O_NONBLOCK` the open itself never returns, and
+        `pytest.raises` can never be reached to report it.
+        """
+        path = tmp_path / "ori.yaml"
+        os.mkfifo(path)
+
+        outcome: list[BaseException | None] = []
+
+        def load() -> None:
+            try:
+                Config.load(str(path))
+                outcome.append(None)
+            except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
+                outcome.append(exc)
+
+        worker = threading.Thread(target=load, daemon=True)
+        worker.start()
+        worker.join(timeout=10)
+
+        assert not worker.is_alive(), "Config.load blocked on a FIFO"
+        raised = outcome[0]
+        assert isinstance(raised, ConfigValidationError)
+        assert "not a regular file" in str(raised)
+
+    def test_a_symlinked_config_path_is_refused(self, tmp_path):
+        """The Linux installer already refuses to write to one."""
+        target = tmp_path / "real.yaml"
+        target.write_text("device:\n  id: x\n")
+        link = tmp_path / "ori.yaml"
+        os.symlink(target, link)
+
+        with pytest.raises(ConfigValidationError, match="symbolic link"):
+            Config.load(str(link))
+
+    def test_a_directory_is_refused(self, tmp_path):
+        with pytest.raises(ConfigValidationError, match="not a regular file"):
+            Config.load(str(tmp_path))
+
+    def test_the_cap_stays_small_enough_to_exercise(self):
+        """Pins the constant, and keeps the two tests below cheap.
+
+        Both size the document they write from `_MAX_CONFIG_BYTES`, so a cap
+        raised past this would have them writing gigabytes rather than
+        reporting the change.
+        """
+        assert _MAX_CONFIG_BYTES == 1024 * 1024
+
+    def test_an_oversized_document_is_refused(self, tmp_path):
+        """Comments compose no nodes, so no structural bound can fire on them."""
+        assert _MAX_CONFIG_BYTES <= 4 * 1024 * 1024, "cap too large for this test"
+        path = tmp_path / "ori.yaml"
+        with path.open("w") as handle:
+            while path.stat().st_size <= _MAX_CONFIG_BYTES:
+                handle.write("# " + "c" * 200 + "\n")
+                handle.flush()
+
+        with pytest.raises(ConfigValidationError, match="larger than"):
+            Config.load(str(path))
+
+    def test_an_oversized_document_is_not_read_past_the_cap(
+        self, tmp_path, monkeypatch
+    ):
+        """Refusing a large file after reading all of it defeats the cap.
+
+        The refusal is the visible half; the bound on what it costs to reach
+        that refusal is the half the issue is actually about, and nothing else
+        here observes it.
+        """
+        assert _MAX_CONFIG_BYTES <= 4 * 1024 * 1024, "cap too large for this test"
+        path = tmp_path / "ori.yaml"
+        filler = "# " + "c" * 200 + "\n"
+        path.write_text(filler * ((_MAX_CONFIG_BYTES * 3) // len(filler)))
+        assert path.stat().st_size > _MAX_CONFIG_BYTES * 2
+
+        read_sizes: list[int] = []
+        real_read = os.read
+
+        def counting_read(descriptor: int, length: int) -> bytes:
+            chunk = real_read(descriptor, length)
+            read_sizes.append(len(chunk))
+            return chunk
+
+        monkeypatch.setattr(config_module.os, "read", counting_read)
+
+        with pytest.raises(ConfigValidationError, match="larger than"):
+            Config.load(str(path))
+
+        assert sum(read_sizes) == _MAX_CONFIG_BYTES + 1
+
+    def test_a_document_just_under_the_cap_is_admitted(self, tmp_path):
+        """The cap refuses hostile input, not a large legitimate document."""
+        assert _MAX_CONFIG_BYTES <= 4 * 1024 * 1024, "cap too large for this test"
+        path = tmp_path / "ori.yaml"
+        filler = "# " + "c" * 200 + "\n"
+        body = "device:\n  id: bench-01\n"
+        padding = filler * ((_MAX_CONFIG_BYTES - len(body) - 1024) // len(filler))
+        path.write_text(body + padding)
+        assert _MAX_CONFIG_BYTES - 4096 < path.stat().st_size < _MAX_CONFIG_BYTES
+
+        with pytest.raises(ConfigValidationError) as excinfo:
+            Config.load(str(path))
+        assert "larger than" not in str(excinfo.value)
+
+
+class TestSiblingReadersDoNotEscape:
+    """ori-platform/ori-runtime#521.
+
+    Three other readers of `ori.yaml` parsed it independently and caught only
+    `yaml.YAMLError`, so #505's reproducer escaped all three.
+    """
+
+    _HOSTILE = "device:\n  id: x\n  rated_capacity_amps: " + "9" * 5000 + "\n"
+
+    def test_the_installer_device_id_reader_does_not_raise(self, tmp_path):
+        """Its docstring says it must not raise and mask a clearer diagnosis."""
+        from ori.installer.paths import _device_id
+
+        path = tmp_path / "ori.yaml"
+        path.write_text(self._HOSTILE)
+        assert _device_id(path) == ""
+
+    def test_the_doctor_profile_hints_reader_does_not_raise(self, tmp_path):
+        path = tmp_path / "ori.yaml"
+        path.write_text(self._HOSTILE)
+        assert phone_doctor_hints(str(path)) == []
+
+    def test_the_doctor_reports_a_hostile_document_as_a_failed_check(self, tmp_path):
+        """Through the real entry point: a report, not a traceback."""
+        path = tmp_path / "ori.yaml"
+        path.write_text(self._HOSTILE)
+
+        checks = run_phone_doctor(str(path))
+
+        by_name = {check.name: check for check in checks}
+        assert by_name["config.load"].status == "fail"

@@ -24,10 +24,12 @@ from typing import Any, cast
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from ori.config import Config, ConfigValidationError
+from ori.config import Config, ConfigValidationError, read_config_bytes
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_MAX_CONFIG_BYTES = 512 * 1024
+# Named apart from `ori.config._MAX_SOURCE_CONFIG_BYTES`, which bounds the runtime's
+# own `ori.yaml` at 1 MiB. Two different documents, two different limits.
+_MAX_SOURCE_CONFIG_BYTES = 512 * 1024
 _DEFAULT_TIMEOUT_S = 10.0
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -75,8 +77,10 @@ def install_signed_config(
     )
     if not source_bytes.strip():
         raise ConfigInstallError("generated config is empty")
-    if len(source_bytes) > _MAX_CONFIG_BYTES:
-        raise ConfigInstallError(f"generated config exceeds {_MAX_CONFIG_BYTES} bytes")
+    if len(source_bytes) > _MAX_SOURCE_CONFIG_BYTES:
+        raise ConfigInstallError(
+            f"generated config exceeds {_MAX_SOURCE_CONFIG_BYTES} bytes"
+        )
 
     destination_parent = destination_path.parent
     destination_parent.mkdir(parents=True, exist_ok=True)
@@ -160,13 +164,15 @@ def _read_source(
     if bearer_token_env:
         raise ConfigInstallError("bearer-token-env is only valid for URL sources")
     path = Path(source).expanduser()
+    # Admitted, not merely checked afterwards: reading the whole file first and
+    # measuring it second is unbounded, and this path also followed a symlink
+    # and would block on a FIFO. The cap is this module's own, deliberately
+    # tighter than the runtime loader's, because what arrives here is a
+    # generated document rather than one an operator may have grown.
     try:
-        data = path.read_bytes()
-    except OSError as exc:
+        return read_config_bytes(str(path), max_bytes=_MAX_SOURCE_CONFIG_BYTES)
+    except ConfigValidationError as exc:
         raise ConfigInstallError(f"cannot read generated config {path}: {exc}") from exc
-    if len(data) > _MAX_CONFIG_BYTES:
-        raise ConfigInstallError(f"generated config exceeds {_MAX_CONFIG_BYTES} bytes")
-    return data
 
 
 def _fetch_https_source(
@@ -210,14 +216,16 @@ def _fetch_https_source(
                 raise ConfigInstallError(
                     "config download redirected to a non-https URL"
                 )
-            data = cast(bytes, response.read(_MAX_CONFIG_BYTES + 1))
+            data = cast(bytes, response.read(_MAX_SOURCE_CONFIG_BYTES + 1))
     except ConfigInstallError:
         raise
     except Exception as exc:
         raise ConfigInstallError(f"cannot fetch generated config: {exc}") from exc
 
-    if len(data) > _MAX_CONFIG_BYTES:
-        raise ConfigInstallError(f"generated config exceeds {_MAX_CONFIG_BYTES} bytes")
+    if len(data) > _MAX_SOURCE_CONFIG_BYTES:
+        raise ConfigInstallError(
+            f"generated config exceeds {_MAX_SOURCE_CONFIG_BYTES} bytes"
+        )
     return data
 
 

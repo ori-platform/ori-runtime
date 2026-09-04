@@ -4,12 +4,15 @@
 import base64
 import os
 import textwrap
+import threading
 from pathlib import Path
 
 import pytest
 import yaml
 
+import ori.config as config_module
 from ori.config_installer import (
+    _MAX_SOURCE_CONFIG_BYTES,
     ConfigInstallError,
     install_signed_config,
     main,
@@ -243,3 +246,73 @@ def test_install_signed_config_replaces_existing_symlink_not_target(
     assert destination.is_file()
     assert not destination.is_symlink()
     assert target.read_text(encoding="utf-8") == "target: true\n"
+
+
+class TestTheGeneratedSourceIsAdmittedBeforeItIsRead:
+    """The install path reads a document it did not write, like the loader does.
+
+    It read the whole file and measured it afterwards, which bounds nothing,
+    and it followed a symlink and would have blocked on a FIFO. Found while
+    closing ori-platform/ori-runtime#520 for the runtime loader; the same hole
+    in the entry point that *installs* `ori.yaml` is fixed with the same
+    admission, under this module's own deliberately tighter cap.
+    """
+
+    def test_a_fifo_source_is_refused_instead_of_blocking(self, tmp_path):
+        source = tmp_path / "generated.yaml"
+        os.mkfifo(source)
+
+        outcome: list[BaseException | None] = []
+
+        def install() -> None:
+            try:
+                install_signed_config(
+                    source=str(source), destination=tmp_path / "ori.yaml"
+                )
+                outcome.append(None)
+            except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
+                outcome.append(exc)
+
+        worker = threading.Thread(target=install, daemon=True)
+        worker.start()
+        worker.join(timeout=10)
+
+        assert not worker.is_alive(), "install blocked on a FIFO source"
+        assert isinstance(outcome[0], ConfigInstallError)
+        assert "not a regular file" in str(outcome[0])
+
+    def test_a_symlinked_source_is_refused(self, tmp_path):
+        target = tmp_path / "real.yaml"
+        target.write_text("device:\n  id: x\n")
+        link = tmp_path / "generated.yaml"
+        os.symlink(target, link)
+
+        with pytest.raises(ConfigInstallError, match="symbolic link"):
+            install_signed_config(source=str(link), destination=tmp_path / "ori.yaml")
+
+    def test_an_oversized_source_is_not_read_past_the_cap(self, tmp_path, monkeypatch):
+        """Refusing after reading it all is what this change exists to stop."""
+        assert _MAX_SOURCE_CONFIG_BYTES <= 4 * 1024 * 1024, "cap too large for a test"
+        source = tmp_path / "generated.yaml"
+        filler = "# " + "c" * 200 + "\n"
+        source.write_text(filler * ((_MAX_SOURCE_CONFIG_BYTES * 3) // len(filler)))
+        assert source.stat().st_size > _MAX_SOURCE_CONFIG_BYTES * 2
+
+        read_sizes: list[int] = []
+        real_read = os.read
+
+        def counting_read(descriptor: int, length: int) -> bytes:
+            chunk = real_read(descriptor, length)
+            read_sizes.append(len(chunk))
+            return chunk
+
+        monkeypatch.setattr(config_module.os, "read", counting_read)
+
+        with pytest.raises(ConfigInstallError, match="larger than"):
+            install_signed_config(source=str(source), destination=tmp_path / "ori.yaml")
+
+        assert sum(read_sizes) == _MAX_SOURCE_CONFIG_BYTES + 1
+
+    def test_the_two_caps_are_distinct_and_the_source_cap_is_tighter(self):
+        """Two documents, two limits, and no name collision between them."""
+        assert _MAX_SOURCE_CONFIG_BYTES < config_module._MAX_CONFIG_BYTES

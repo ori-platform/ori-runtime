@@ -1873,10 +1873,12 @@ class TestLifecycle:
             config_text.replace(
                 relay_disabled,
                 "  relay:\n    enabled: true\n    gpio_pin: 26\n",
-            )
-            + f"database:\n  path: {cfg_path.parent / 'ori_state.db'}\n",
+            ),
             encoding="utf-8",
         )
+        # The fixture already declares `database:`; appending a second block
+        # relied on YAML keeping the last of two duplicate keys, which the
+        # loader now refuses.
         # Commissioned so that isolating the load energises the coil: the test
         # then observes the outcome reaching the relay as `trigger`.
         commission_relay(

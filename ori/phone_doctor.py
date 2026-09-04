@@ -19,9 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import yaml
-
-from ori.config import Config, ConfigValidationError
+from ori.config import Config, ConfigValidationError, read_config_document
 from ori.utils import terminal
 from ori.utils.bool_utils import is_truthy
 from ori.utils.termux import parse_termux_usb_output
@@ -308,8 +306,8 @@ def _phone_profile_hints_from_invalid_config(config_path: str) -> list[DoctorChe
     document is otherwise valid.
     """
     try:
-        raw = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+        raw = read_config_document(str(config_path))
+    except ConfigValidationError:
         return []
     if not isinstance(raw, dict) or not isinstance(raw.get("sensors"), list):
         return []

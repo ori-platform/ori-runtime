@@ -13,8 +13,7 @@ from __future__ import annotations
 from enum import Enum
 from pathlib import Path
 
-import yaml
-
+from ori.config import ConfigValidationError, read_config_document
 from ori.doctor import InstallIdentity
 
 SERVICE_NAME = "ori-runtime.service"
@@ -178,8 +177,8 @@ def _device_id(config_path: Path) -> str:
     raise and mask that clearer diagnosis.
     """
     try:
-        document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+        document = read_config_document(str(config_path))
+    except ConfigValidationError:
         return ""
     device = document.get("device") if isinstance(document, dict) else None
     return str(device.get("id", "")) if isinstance(device, dict) else ""
