@@ -933,12 +933,18 @@ async def test_an_unconnected_sensor_notice_is_queued_when_delivery_fails(
     runtime = OriRuntime(config_path=str(minimal_config))
     start_task = asyncio.create_task(runtime.start())
     try:
+        # Not queried until the connect has actually failed. `_state_store` is
+        # assigned before `open()` creates the schema, so polling the outbox
+        # from the first iteration reads a store that has no tables yet, and
+        # on a slow machine that window is wide enough to hit. The connect
+        # loop runs long after `open()`, so this is the point from which the
+        # outbox can be asked at all.
         deadline = time.monotonic() + 10.0
         queued: list = []
         while time.monotonic() < deadline and not queued:
             if start_task.done():
                 break
-            if runtime._state_store is not None:
+            if runtime._unconnected_sensors and runtime._state_store is not None:
                 queued = await runtime._state_store.get_retryable_alerts(limit=10)
             await asyncio.sleep(0.05)
 
