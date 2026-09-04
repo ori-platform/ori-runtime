@@ -31,6 +31,14 @@ sensors:
     auto_detect_device_path: false
     baud_rate: 9600
     poll_interval_ms: 2000
+    # Read by the Android agent, not by the runtime: it is how the phone picks
+    # the meter out of everything on its USB bus. The onboarding API writes
+    # this block into every phone starter's signed document. 4292/60000 is a
+    # CP210x bridge, which is what the kit's meter uses; read yours from the
+    # device rather than copying these.
+    usb_binding:
+      vendor_id: 4292
+      product_id: 60000
 
 skills:
   - name: energy-anomaly-detector

@@ -35,6 +35,33 @@ CONFIG_SCHEMA = {
     "stopbits": {"type": "integer", "default": 1, "enum": [1, 2]},
     "timeout_s": {"type": "number", "default": 1.0, "minimum": 0},
     "slave_id": {"type": "integer", "default": 1, "minimum": 1, "maximum": 247},
+    # Addressed to the Android agent, not to this adapter: it is how the phone
+    # picks its meter out of everything on the USB bus. One signed document
+    # carries both sides, so the runtime's job is to stop refusing the block,
+    # not to read it.
+    #
+    # Shape only, deliberately. Which values make a usable binding is the
+    # reading party's judgement: an absent block is accepted, so refusing an
+    # empty one would draw a line this side cannot defend, and documents signed
+    # before the issuing side required real identifiers carry zeroes and were
+    # never recalled.
+    #
+    # Declared field by field because this schema admits no open object. So a
+    # field added here on the issuing side is refused by every deployed
+    # runtime, and the document is signed, so no operator can edit it out:
+    # adding one is a coordinated release, not a server change.
+    "usb_binding": {
+        "type": "object",
+        "description": (
+            "USB device identity for the Android agent; unread by the runtime"
+        ),
+        "properties": {
+            "vendor_id": {"type": "integer", "minimum": 0, "maximum": 0xFFFF},
+            "product_id": {"type": "integer", "minimum": 0, "maximum": 0xFFFF},
+            # Emitted only when the meter reports one, so it cannot be required.
+            "serial_number": {"type": "string", "default": ""},
+        },
+    },
 }
 CALIBRATION_SCHEMAS: dict[str, dict] = {}
 

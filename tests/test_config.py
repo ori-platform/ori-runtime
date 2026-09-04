@@ -4031,6 +4031,13 @@ class TestLoadPhoneExample:
         assert cfg.actions.relay["enabled"] is False
         assert cfg.sensors[0].protocol == "usb_serial"
         assert cfg.sensors[0].type == "usb_power"
+        # The example is the regression guard for the block the schema once
+        # refused. Asserted here so removing it from the example is caught.
+        assert cfg.sensors[0].metadata["usb_binding"] == {
+            "vendor_id": 4292,
+            "product_id": 60000,
+            "serial_number": "",
+        }
         assert cfg.telemetry_export.enabled is False
         assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
         assert cfg.health_socket["path"] == (
