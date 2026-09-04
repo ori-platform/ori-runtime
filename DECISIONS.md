@@ -1833,3 +1833,56 @@ This narrowing is within the middle category of that contract — an unsafe
 implicit default becoming an error — because the account the runtime runs as is
 privilege-relevant, and a name that only the unit file knew about was never
 verified against the identity the permission checks examined.
+
+## 2026-09-05 — What a signed `ori.yaml` binds, and what reads it
+
+**Environment expansion happens inside a scalar, never over the document text.**
+The signature is verified over the document as written, and the runtime used to
+build its configuration from a textual substitution of that document. A value
+carrying a quote and a newline therefore did not stay inside the scalar it
+replaced: it could close the quote and add keys, so a variable the document
+merely named could rewrite any key in a verified document —
+`device.rated_capacity_amps`, the Tier D threshold input, included. Substituting
+into a scalar the parser has already delimited makes that impossible, because
+the document's structure is fixed before any environment value is consulted.
+
+**A placeholder in key position is not expanded, and neither is anything inside
+a complex key.** The first version of this change expanded every scalar, and a
+key is a scalar. That left the same authority reachable a different way:
+`rated_capacity_${SUFFIX}` becomes `rated_capacity_amps` when the variable is
+set, under a signature that still verifies because the bytes on disk did not
+change, and a value of `<<` becomes a merge key that rewrites the mapping it
+appears in. Expansion is suppressed for key material, inherited downwards.
+
+**Typing is preserved deliberately, with one deliberate exception.** An unquoted
+placeholder still takes implicit typing from the substituted text and has its
+surrounding whitespace stripped, because the parser stripped a plain scalar and
+the textual substitution ran before it did; without that, a value with a stray
+trailing space types as a string and a working deployment stops loading. A
+quoted placeholder stays a string, spaces included. The exception is `#`: a hash
+in a substituted value is now part of the value rather than a comment that
+truncates the scalar. Honouring it would be letting the value alter the document
+again, which is the thing this change exists to stop.
+
+**Expansion behaves identically whether or not the document is signed.** There
+is one loader. A signature changes what is checked before the configuration is
+used, not how the file is read, and a deployment that does not sign its
+configuration gets the same containment rather than the old behaviour.
+
+**A duplicate key is refused rather than kept last-wins.** The signature is
+computed over the parsed document, so keeping the last of two would mean a
+reviewer reading the file top to bottom sees one rated capacity while the
+runtime uses another, both consistent with a valid signature. Non-string keys
+are refused with them. This matches the skill manifest loader and the
+commissioned-binding loader, which already refuse duplicates for the same
+reason; the configuration loader had taken their structural limits without
+their mapping constructor.
+
+**The file is admitted before it is parsed, and every reader of `ori.yaml`
+shares that admission.** There was no size cap, the path was followed if it was
+a symlink, and a FIFO blocked in `read()` with no refusal and no timeout — all
+before the signature was verified. Refusing a symlinked configuration path
+matches the decision the Linux installer already makes at write time, where a
+symlinked path or parent is an unsafe destination. The installer's own source
+document keeps a separate, deliberately tighter cap, because what arrives there
+is generated rather than grown.

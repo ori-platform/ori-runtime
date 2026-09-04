@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import yaml
+from ori.config import ConfigValidationError, read_config_document
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime
     from ori.installer.linux import InstallLayout
@@ -239,8 +239,8 @@ def read_installed(layout: InstallLayout) -> InstalledIdentity | None:
             )
         return None
     try:
-        document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        document = read_config_document(str(config_path))
+    except ConfigValidationError as exc:
         raise InstalledConfigUnreadableError(
             f"an installation exists at {config_path} but its configuration "
             "could not be read"

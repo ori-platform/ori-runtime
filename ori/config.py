@@ -1,10 +1,12 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import errno
 import logging
 import math
 import os
 import re
+import stat
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from ipaddress import ip_network
@@ -112,10 +114,13 @@ class _BoundedConfigSafeLoader(yaml.SafeLoader):
     max_collection_entries = 1_000
     max_scalar_length = 4_096
 
+    expand_env = False
+
     def __init__(self, stream: Any) -> None:
         super().__init__(stream)
         self._depth = 0
         self._node_count = 0
+        self._in_key_position = False
 
     def _limit_error(self, detail: str) -> _ConfigDocumentLimitError:
         return _ConfigDocumentLimitError(detail)
@@ -136,18 +141,76 @@ class _BoundedConfigSafeLoader(yaml.SafeLoader):
         self._depth += 1
         if self._depth > self.max_depth:
             raise self._limit_error(f"nesting deeper than {self.max_depth} levels")
+        # PyYAML composes a mapping key as `compose_node(node, None)` and its
+        # value as `compose_node(node, key_node)`; a sequence item passes an
+        # integer index and the root passes neither. Inherited downwards, so
+        # everything inside a complex (`?`) key counts as key material too.
+        was_in_key = self._in_key_position
+        # Compared through a local so that narrowing `index` to `None` here
+        # does not follow it into the `super()` call below, whose stub types
+        # the parameter as `int`.
+        position: Any = index
+        self._in_key_position = was_in_key or (
+            isinstance(parent, yaml.MappingNode) and position is None
+        )
         try:
             return super().compose_node(parent, index)
         finally:
+            self._in_key_position = was_in_key
             self._depth -= 1
 
     def compose_scalar_node(self, anchor: Any) -> Any:
+        if self.expand_env and not self._in_key_position:
+            self._expand_scalar_event()
         node = super().compose_scalar_node(anchor)
         if len(node.value) > self.max_scalar_length:
             raise self._limit_error(
                 f"a scalar longer than {self.max_scalar_length} characters"
             )
         return node
+
+    def _expand_scalar_event(self) -> None:
+        """Substitute environment values into one scalar, and only into it.
+
+        Expansion used to be a textual substitution over the whole document,
+        performed after the signature was verified and before a second parse.
+        A value carrying a quote and a newline therefore did not stay inside
+        the scalar it was substituted into: it could close the quote and add
+        keys, so a variable the document merely named could rewrite the
+        document the runtime ran on — `device.rated_capacity_amps` included.
+
+        Substituting into a scalar that the parser has already delimited makes
+        that impossible. The value can be anything at all and it is still one
+        scalar, because the document's structure was fixed before any
+        environment value was consulted.
+
+        A key is never expanded. Substituting into one would let an
+        environment value choose a key name — `rated_capacity_${SUFFIX}`
+        becoming `rated_capacity_amps`, or a value of `<<` becoming a merge
+        key that rewrites the whole mapping — which is the same authority a
+        textual substitution had, reached a different way.
+
+        An unquoted scalar keeps its implicit typing: the tag is resolved from
+        the substituted text, so a plain `${PORT}` still becomes an integer,
+        exactly as the re-parse used to make it. A quoted scalar stays a
+        string, because that is what quoting already meant, and an explicitly
+        tagged one keeps its tag.
+        """
+        event = self.peek_event()
+        if "${" not in event.value:
+            return
+        # Only the value is substituted. An explicit tag and a quoting style
+        # both survive, because both already decided how the scalar is read,
+        # so neither re-resolves against the substituted text.
+        expanded = _expand_env_vars(event.value)
+        if event.style is None:
+            # A plain scalar has its surrounding whitespace stripped by the
+            # parser, and the textual substitution happened before that ran.
+            # Stripping here keeps a value with a stray trailing space typing
+            # as it did — otherwise `poll_interval_ms: ${PORT}` with "1000 "
+            # becomes a string and a working deployment stops loading.
+            expanded = expanded.strip()
+        event.value = expanded
 
     def compose_sequence_node(self, anchor: Any) -> Any:
         node = super().compose_sequence_node(anchor)
@@ -164,6 +227,42 @@ class _BoundedConfigSafeLoader(yaml.SafeLoader):
                 f"a mapping with more than {self.max_collection_entries} keys"
             )
         return node
+
+    def construct_config_mapping(
+        self, node: yaml.MappingNode, deep: bool = False
+    ) -> dict[str, Any]:
+        """Refuse a repeated key rather than keeping the last of them.
+
+        The signature is computed over the parsed document, so a last-wins
+        duplicate means a reviewer reading the file top to bottom sees one
+        rated capacity and the runtime uses another, both consistent with a
+        valid signature. There is no document in which repeating a key is
+        meaningful, and the field it silently changes is a Tier D input.
+
+        The skill manifest loader and the commissioned-binding loader already
+        refuse duplicates for this reason; this loader took their structural
+        limits without their mapping constructor.
+        """
+        self.flatten_mapping(node)
+        mapping: dict[str, Any] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, str):
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a configuration mapping",
+                    node.start_mark,
+                    f"configuration keys must be strings, got {type(key).__name__}",
+                    key_node.start_mark,
+                )
+            if key in mapping:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a configuration mapping",
+                    node.start_mark,
+                    f"duplicate configuration key {key!r}",
+                    key_node.start_mark,
+                )
+            mapping[key] = self.construct_object(value_node, deep=deep)
+        return mapping
 
     def construct_object(self, node: Any, deep: bool = False) -> Any:
         """Give every constructor failure a position instead of a bare traceback.
@@ -188,7 +287,19 @@ class _BoundedConfigSafeLoader(yaml.SafeLoader):
             ) from exc
 
 
-def _load_config_document(text: str, path: str) -> Any:
+_BoundedConfigSafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _BoundedConfigSafeLoader.construct_config_mapping,
+)
+
+
+class _ExpandingConfigSafeLoader(_BoundedConfigSafeLoader):
+    """The same loader, resolving `${VAR}` inside each scalar as it composes."""
+
+    expand_env = True
+
+
+def _load_config_document(text: str, path: str, *, expand_env: bool = False) -> Any:
     """Parse a configuration document, answering any parser failure with a refusal.
 
     The two known shapes are not special-cased. The loader's contract is that
@@ -196,8 +307,9 @@ def _load_config_document(text: str, path: str) -> Any:
     anything the parser raises is classified here rather than reaching the
     caller as an interpreter error.
     """
+    loader = _ExpandingConfigSafeLoader if expand_env else _BoundedConfigSafeLoader
     try:
-        return yaml.load(text, Loader=_BoundedConfigSafeLoader)
+        return yaml.load(text, Loader=loader)
     except _ConfigDocumentLimitError as exc:
         raise ConfigValidationError(
             f"Config file '{path}' exceeds document limits: {exc}"
@@ -208,6 +320,110 @@ def _load_config_document(text: str, path: str) -> Any:
         raise ConfigValidationError(
             f"Config file '{path}' could not be parsed: {type(exc).__name__}: {exc}"
         ) from exc
+
+
+# A configuration document is admitted before it is parsed. The largest shipped
+# example is 31 KB; this is roughly thirty times that, and matches the cap the
+# skill manifest loader applies for the same reason.
+_MAX_CONFIG_BYTES = 1024 * 1024
+_CONFIG_READ_CHUNK = 65536
+
+
+def read_config_bytes(path: str, *, max_bytes: int = _MAX_CONFIG_BYTES) -> bytes:
+    """Admit and read a configuration document, bounding what that costs.
+
+    Shared with `ori/config_installer.py`, which admits a *generated* document
+    under a tighter cap of its own before installing it. Both need the same
+    admission: the whole file used to be read with no size cap, the path was
+    followed if it was a symlink, and a FIFO blocked in `read()` with no
+    refusal and no timeout.
+
+    `O_NONBLOCK` is what makes a FIFO refusable at all — without it the open
+    itself blocks — and `fstat` on the descriptor, rather than a check on the
+    path, is what makes the regular-file test hold for the file actually read.
+    `O_NOFOLLOW` matches a decision the Linux installer already makes at write
+    time, where a symlinked configuration path or parent is refused as an
+    unsafe destination. It covers the final component only; a symlinked parent
+    directory is still followed, as it is everywhere else on the platform.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ConfigValidationError(
+                f"Config file '{path}' is a symbolic link, which is refused. "
+                "Point the configuration path at the file itself."
+            ) from exc
+        raise ConfigValidationError(f"Cannot read config file '{path}': {exc}") from exc
+
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise ConfigValidationError(
+                f"Config file '{path}' is not a regular file. A FIFO, device or "
+                "directory cannot be a configuration document."
+            )
+        # Read one byte past the cap rather than trusting the size `fstat`
+        # reported: the file may grow between the two.
+        chunks: list[bytes] = []
+        total = 0
+        while total <= max_bytes:
+            # Never more than one byte past the cap: enough to know the file
+            # is oversized, and no more of it read than that.
+            chunk = os.read(descriptor, min(_CONFIG_READ_CHUNK, max_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+    except OSError as exc:
+        raise ConfigValidationError(f"Cannot read config file '{path}': {exc}") from exc
+    finally:
+        os.close(descriptor)
+
+    if total > max_bytes:
+        raise ConfigValidationError(
+            f"Config file '{path}' is larger than the {max_bytes} byte "
+            "limit for a configuration document."
+        )
+    return b"".join(chunks)
+
+
+def _read_config_text(path: str) -> str:
+    """Read a configuration document, bounding what it costs to obtain it.
+
+    Admission is `read_config_bytes`; the encoding is fixed here rather than
+    taken from the host locale, because a signed configuration must decode to
+    the same document on every device that reads it.
+    """
+    raw = read_config_bytes(path)
+
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigValidationError(
+            f"Config file '{path}' is not valid UTF-8: {exc}"
+        ) from exc
+
+
+def read_config_document(path: str) -> Any:
+    """Admit, parse and classify a configuration document, without building it.
+
+    `Config.load` is not the only reader of `ori.yaml`. The installer resolves
+    a device id from it, the doctor re-reads it to report profile fields after
+    a strict refusal, and identity resolution decides from it whether an
+    existing installation would be stranded. Each parsed independently and
+    caught only `yaml.YAMLError`, so a hostile literal escaped all three as a
+    raw interpreter error — one of them from inside a function whose docstring
+    says it must not raise.
+
+    They share this rather than each growing a guard, so a bound added here
+    applies to every reader of the file. Callers translate the refusal into
+    their own vocabulary; what they must not do is let an interpreter error
+    through.
+    """
+    return _load_config_document(_read_config_text(path), path)
 
 
 def _validate_iana_timezone(tz_name: str) -> bool:
@@ -446,11 +662,11 @@ class Config:
         both preserved through the chained cause, and a loader whose contract
         is refusal must not have a second, unclassified way to fail.
 
-        This contract begins once the file has been opened and read. Obtaining
-        the text is not bounded: there is no size cap, no ``O_NOFOLLOW``, and a
-        FIFO at the configuration path blocks in ``read()`` rather than being
-        refused. Admission hardening is tracked separately; do not read the
-        limits below as covering it.
+        The file is admitted before it is parsed: opened with ``O_NOFOLLOW``
+        and ``O_NONBLOCK``, refused unless ``fstat`` on that descriptor says it
+        is a regular file, and read no further than one byte past a 1 MiB cap.
+        A FIFO, a device, a directory and a symlinked path are all refused
+        rather than blocking or being followed.
         """
         try:
             return cls._interpret(path)
@@ -464,21 +680,7 @@ class Config:
 
     @classmethod
     def _interpret(cls, path: str) -> "Config":
-        # The encoding is fixed rather than taken from the host locale: a
-        # signed configuration must decode to the same document on every
-        # device that reads it. A file that is not UTF-8 is a bad document,
-        # and is refused as one rather than as a decoder traceback.
-        try:
-            with open(path, encoding="utf-8") as fh:
-                raw_text = fh.read()
-        except OSError as exc:
-            raise ConfigValidationError(
-                f"Cannot read config file '{path}': {exc}"
-            ) from exc
-        except UnicodeDecodeError as exc:
-            raise ConfigValidationError(
-                f"Config file '{path}' is not valid UTF-8: {exc}"
-            ) from exc
+        raw_text = _read_config_text(path)
 
         raw_unexpanded = _load_config_document(raw_text, path)
 
@@ -498,9 +700,13 @@ class Config:
         except ConfigSignatureError as exc:
             raise ConfigValidationError(str(exc)) from exc
 
-        expanded = _expand_env_vars(raw_text)
-
-        data: dict[str, Any] = _load_config_document(expanded, path)
+        # The same bytes are parsed again rather than a substituted copy of
+        # them, so the document the runtime uses has, by construction, the
+        # structure the signature covered. Environment values reach individual
+        # scalar *values*; a key is never expanded, so one cannot name a key.
+        # This is the same in every deployment, signed or not — there is one
+        # loader, and a signature changes what is checked, not what is read.
+        data: dict[str, Any] = _load_config_document(raw_text, path, expand_env=True)
 
         if not isinstance(data, dict):
             raise ConfigValidationError(

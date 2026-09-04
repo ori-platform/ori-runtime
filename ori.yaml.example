@@ -16,7 +16,14 @@
 #   aliases are not accepted at all: write the value out in full. These bound
 #   a hostile or corrupt document, not authorship — this file is depth 6 with
 #   579 nodes, 17 entries in its widest collection, and a longest scalar of 54
-#   characters. The file is read as UTF-8 regardless of the host's locale.
+#   characters. A repeated key is refused rather than the last one winning, and
+#   keys must be strings. The file is read as UTF-8 regardless of the host's
+#   locale, must be a regular file no larger than 1 MiB, and must not be a
+#   symbolic link. A ${VAR} placeholder is substituted into the value it sits
+#   in. It is never substituted into a key, so it cannot introduce or rename
+#   one. An unquoted placeholder still takes implicit typing and has its
+#   surrounding whitespace stripped; a quoted one is still a string, spaces
+#   included. A '#' in a substituted value is part of the value, not a comment.
 # ─────────────────────────────────────────────────────────────────────────────
 
 device:
