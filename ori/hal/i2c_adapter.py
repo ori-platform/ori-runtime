@@ -574,6 +574,14 @@ class I2CAdapter(BaseAdapter):
         # count is shared, so releasing one this adapter never took would evict
         # a handle another adapter is still reading through.
         self._holds_shared_bus: bool = False
+        # Incremented by every close(), before it waits for anything, so a
+        # connect already past its own sampling point can still see it.
+        self._close_count: int = 0
+        # One lifecycle operation at a time. `_teardown()` awaits, so without
+        # this a close suspended part-way through it is invisible to a connect
+        # starting in that gap, and the rest of the stale teardown then
+        # releases what the new connect had just taken.
+        self._lifecycle = asyncio.Lock()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -605,15 +613,46 @@ class I2CAdapter(BaseAdapter):
                 f"Supported: {sorted(_SUPPORTED)}"
             )
 
-        self._sensor_id = config.get("sensor_id", "")
-        self._sensor_type = sensor_type
-        self._address = _require_int(config.get("address", 0x00), "address")
-        self._bus_number = _require_int(config.get("bus", 1), "bus")
-        self._channel = _require_int(config.get("channel", 0), "channel")
+        # Validated into locals here and applied to the adapter only under the
+        # lock. Written straight to `self`, two concurrent connects overwrite
+        # each other's address, channel and calibration while one of them is
+        # already inside its own initialisation, and its worker thread then
+        # opens whatever the other left behind — the wrong device, or the right
+        # one on the wrong channel.
+        sensor_id = config.get("sensor_id", "")
+        address = _require_int(config.get("address", 0x00), "address")
+        bus_number = _require_int(config.get("bus", 1), "bus")
+        channel = _require_int(config.get("channel", 0), "channel")
+        calibration: dict[str, float] = {}
+        window: WindowSpec | None = None
         if sensor_type == "ads1115_current":
-            self._calibration = _resolve_calibration(config)
-            self._window = _window_spec(self._calibration)
+            calibration = _resolve_calibration(config)
+            window = _window_spec(calibration)
 
+        async with self._lifecycle:
+            if self._connected:
+                # Refused before any state is touched and before the bus is
+                # reached. Reconnecting in place would take a second shared-bus
+                # reference against one release, and would move a live
+                # adapter's device under readings already being taken from it.
+                raise AdapterConnectionError(
+                    f"I2CAdapter: already connected to '{self._sensor_type}' at "
+                    f"address 0x{self._address:02X} on bus {self._bus_number}; "
+                    "close it before connecting again"
+                )
+            self._sensor_id = sensor_id
+            self._sensor_type = sensor_type
+            self._address = address
+            self._bus_number = bus_number
+            self._channel = channel
+            self._calibration = calibration
+            self._window = window
+            await self._connect_locked(sensor_type, config)
+
+    async def _connect_locked(self, sensor_type: str, config: dict) -> None:
+        # Sampled inside the lock, so a close that has already run in full is
+        # counted here rather than mistaken for one that arrived later.
+        closes_before = self._close_count
         connected = False
         try:
             await asyncio.to_thread(self._connect_sync, sensor_type)
@@ -633,6 +672,21 @@ class I2CAdapter(BaseAdapter):
             # handed a stale one.
             if not connected:
                 self._release_shared_bus()
+
+        if self._close_count != closes_before:
+            # A close() arrived while this connect held the lock. It could not
+            # tear anything down yet, but it has declared itself, and the
+            # worker thread went on taking more meanwhile. Reporting success
+            # would leave an adapter that believes it is connected while a
+            # close already waiting tears it down, and the runtime would poll
+            # it. The connect gives everything back itself and refuses,
+            # because a connect that was closed did not connect.
+            await self._teardown()
+            raise AdapterConnectionError(
+                f"I2CAdapter: '{sensor_type}' at address "
+                f"0x{self._address:02X} on bus {self._bus_number} was closed "
+                "while it was still connecting"
+            )
 
         self._breaker = HardwareCircuitBreaker(
             getattr(self, "adapter_name", type(self).__name__), config
@@ -974,15 +1028,16 @@ class I2CAdapter(BaseAdapter):
         self._scd4x = adafruit_scd4x.SCD4X(i2c)
         self._scd4x.start_periodic_measurement()
 
-    async def close(self) -> None:
-        """Release I2C bus resources and stop any periodic measurements.
+    async def _teardown(self) -> None:
+        """Give back everything a connect may have taken, in any order.
 
-        Also releases this adapter's claim on its ADS1115, if it holds one.
+        Idempotent, because it runs from both `close()` and from a `connect()`
+        that found itself closed: the claim release checks ownership, the bus
+        release checks whether this adapter holds a reference, and the device
+        handles are cleared as they are closed.
 
-        For Adafruit-based sensors (ADS1115, SCD40) the shared ``busio.I2C``
-        cache entry is evicted so that a subsequent :meth:`connect` call
-        creates a fresh bus handle.  Existing references held by other adapters
-        sharing the same bus are unaffected.
+        Runs under the lifecycle lock in both cases, so two teardowns never
+        interleave and one cannot release what the other has just taken.
         """
         self._release_ads1115_claim()
         try:
@@ -992,11 +1047,39 @@ class I2CAdapter(BaseAdapter):
             if self._bus is not None:
                 await asyncio.to_thread(self._bus.close)
                 self._bus = None
+            # Dropped as well as released: the driver object holds the bus
+            # handle about to be evicted from the cache, so leaving it attached
+            # keeps the evicted handle alive.
+            self._ads = None
+            self._bme280_params = None
             self._release_shared_bus()
         except Exception:
             logger.warning("I2CAdapter: exception during close — already disconnected?")
-        finally:
-            self._connected = False
+
+    async def close(self) -> None:
+        """Release I2C bus resources and stop any periodic measurements.
+
+        Also releases this adapter's claim on its ADS1115, if it holds one.
+
+        For Adafruit-based sensors (ADS1115, SCD40) the shared ``busio.I2C``
+        cache entry is evicted so that a subsequent :meth:`connect` call
+        creates a fresh bus handle.  Existing references held by other adapters
+        sharing the same bus are unaffected.
+
+        The close is recorded before the lifecycle lock is even requested, so a
+        `connect()` holding it can see that a close is waiting and give back
+        what it took rather than reporting success.
+
+        Recorded before anything is released, so a `connect()` still running in
+        a worker thread can see that it was closed and give back what it took
+        after this ran.
+        """
+        self._close_count += 1
+        async with self._lifecycle:
+            try:
+                await self._teardown()
+            finally:
+                self._connected = False
 
     async def health_check(self) -> bool:
         """Return ``True`` when connected and the device handle is open."""
