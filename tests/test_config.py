@@ -4797,19 +4797,26 @@ class TestHostileDocumentIsRefused:
         shapes special-cased. The bounds and the constructor mark cover every
         shape reachable today, which leaves the general guard untested unless
         the parser is made to raise something none of them classify.
+
+        The refusal must name the parse step. `Config.load` also classifies
+        interpretation, and that outer guard would catch this too, so a test
+        asserting only the exception type passes with the parse guard removed.
         """
-        import ori.config as config_module
 
         def _explode(*args, **kwargs):
             raise OverflowError("parser exploded")
 
-        monkeypatch.setattr(config_module.yaml, "load", _explode)
+        monkeypatch.setattr(yaml, "load", _explode)
         with pytest.raises(ConfigValidationError) as excinfo:
             self._load(tmp_path, "device:\n  id: x\n")
         message = str(excinfo.value)
         assert "ori.yaml" in message
         assert "OverflowError" in message
         assert isinstance(excinfo.value.__cause__, OverflowError)
+        # The parse step classifies it, not the wrapper around interpretation.
+        # Both catch it, and each has to be a boundary in its own right; asserting
+        # only the exception type would pass with the parse guard deleted.
+        assert "could not be parsed" in message
 
     def test_the_depth_bound_is_pinned_at_exactly_32(self, tmp_path):
         """The last accepted depth and the first refused one, measured.
@@ -4942,14 +4949,12 @@ class TestHostileDocumentIsRefused:
             PYTHONUTF8="0",
             PYTHONIOENCODING="utf-8",
         )
+        program = (
+            "import sys; from ori.config import Config; "
+            "print(Config.load(sys.argv[1]).device.location)"
+        )
         completed = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "import sys;from ori.config import Config;"
-                "print(Config.load(sys.argv[1]).device.location)",
-                str(path),
-            ],
+            [sys.executable, "-c", program, str(path)],
             capture_output=True,
             text=True,
             env=env,
