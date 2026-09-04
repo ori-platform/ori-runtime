@@ -75,6 +75,141 @@ class ConfigValidationError(Exception):
     pass
 
 
+class _ConfigDocumentLimitError(Exception):
+    """Raised by the bounded loader when a document exceeds a structural limit."""
+
+
+class _BoundedConfigSafeLoader(yaml.SafeLoader):
+    """Safe YAML loader with bounded structure and no aliases.
+
+    ``Config.load`` reads a document the runtime did not write: on a phone it
+    arrives from an onboarding API, on a Pi it can arrive through a remote
+    policy fetch. Parsing happens before any of it is validated, and before a
+    signature is checked, so these limits apply to content nothing has yet
+    decided to trust.
+
+    Aliases are refused rather than bounded, because a depth limit that allows
+    them does not bound anything. Each alias composes at its own shallow depth
+    while referencing an already-composed node, so a chain of them builds an
+    object graph arbitrarily deeper than any node this loader ever saw, and the
+    ordinary recursive visitors downstream are what then exhaust the stack. No
+    shipped configuration uses an anchor.
+
+    Limits match the skill manifest loader, which bounds the same hazard for
+    the same reason. The deepest shipped example reaches depth 6 with 579
+    nodes and 17 entries in its widest collection, and its longest scalar is
+    54 characters.
+
+    Scalar length is bounded here rather than left to the interpreter, because
+    the interpreter's limit is neither general nor fixed: it applies to decimal
+    conversion only, so a hex, octal or binary literal of any length is built
+    without complaint, and ``PYTHONINTMAXSTRDIGITS=0`` removes it entirely from
+    a process the runtime does not control.
+    """
+
+    max_depth = 32
+    max_nodes = 20_000
+    max_collection_entries = 1_000
+    max_scalar_length = 4_096
+
+    def __init__(self, stream: Any) -> None:
+        super().__init__(stream)
+        self._depth = 0
+        self._node_count = 0
+
+    def _limit_error(self, detail: str) -> _ConfigDocumentLimitError:
+        return _ConfigDocumentLimitError(detail)
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        if self.check_event(yaml.events.AliasEvent):
+            event = self.peek_event()
+            raise self._limit_error(
+                f"YAML aliases are not permitted (*{event.anchor}). Write the "
+                "value out in full — a device configuration is a declaration, "
+                "not a program."
+            )
+
+        self._node_count += 1
+        if self._node_count > self.max_nodes:
+            raise self._limit_error(f"more than {self.max_nodes} nodes")
+
+        self._depth += 1
+        if self._depth > self.max_depth:
+            raise self._limit_error(f"nesting deeper than {self.max_depth} levels")
+        try:
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
+
+    def compose_scalar_node(self, anchor: Any) -> Any:
+        node = super().compose_scalar_node(anchor)
+        if len(node.value) > self.max_scalar_length:
+            raise self._limit_error(
+                f"a scalar longer than {self.max_scalar_length} characters"
+            )
+        return node
+
+    def compose_sequence_node(self, anchor: Any) -> Any:
+        node = super().compose_sequence_node(anchor)
+        if len(node.value) > self.max_collection_entries:
+            raise self._limit_error(
+                f"a sequence with more than {self.max_collection_entries} entries"
+            )
+        return node
+
+    def compose_mapping_node(self, anchor: Any) -> Any:
+        node = super().compose_mapping_node(anchor)
+        if len(node.value) > self.max_collection_entries:
+            raise self._limit_error(
+                f"a mapping with more than {self.max_collection_entries} keys"
+            )
+        return node
+
+    def construct_object(self, node: Any, deep: bool = False) -> Any:
+        """Give every constructor failure a position instead of a bare traceback.
+
+        A constructor is free to raise whatever its underlying conversion
+        raises: an oversized integer literal reaches the interpreter's digit
+        limit as ``ValueError``, and an out-of-range timestamp raises from
+        ``datetime``. Neither is a ``YAMLError``, so neither carries a mark.
+        Re-raising with the node's mark is what lets the refusal name the line
+        rather than the exception type alone.
+        """
+        try:
+            return super().construct_object(node, deep=deep)
+        except (yaml.YAMLError, _ConfigDocumentLimitError):
+            raise
+        except Exception as exc:
+            raise yaml.constructor.ConstructorError(
+                None,
+                None,
+                f"cannot construct value: {exc}",
+                node.start_mark,
+            ) from exc
+
+
+def _load_config_document(text: str, path: str) -> Any:
+    """Parse a configuration document, answering any parser failure with a refusal.
+
+    The two known shapes are not special-cased. The loader's contract is that
+    a bad document produces ``ConfigValidationError`` naming the file, so
+    anything the parser raises is classified here rather than reaching the
+    caller as an interpreter error.
+    """
+    try:
+        return yaml.load(text, Loader=_BoundedConfigSafeLoader)
+    except _ConfigDocumentLimitError as exc:
+        raise ConfigValidationError(
+            f"Config file '{path}' exceeds document limits: {exc}"
+        ) from exc
+    except yaml.YAMLError as exc:
+        raise ConfigValidationError(f"YAML parse error in '{path}': {exc}") from exc
+    except Exception as exc:
+        raise ConfigValidationError(
+            f"Config file '{path}' could not be parsed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
 def _validate_iana_timezone(tz_name: str) -> bool:
     try:
         ZoneInfo(tz_name)
@@ -294,22 +429,62 @@ class Config:
 
     @classmethod
     def load(cls, path: str) -> "Config":
+        """Load and validate a device configuration.
+
+        Every failure is a ``ConfigValidationError``. Classifying the parse
+        step alone is not enough: interpreting the parsed document converts
+        values, and a conversion refuses in its own vocabulary. ``float()`` on
+        a 309-digit integer raises ``OverflowError``, on a string
+        ``ValueError``, on a list ``TypeError``, and
+        ``device.rated_capacity_amps`` — the Tier D threshold input — is the
+        first field to reach one. Neither `Config.load`'s callers in
+        `ori/runtime.py` nor `ori/config_installer.py` catch those, so each
+        would leave startup as an interpreter traceback and a restart loop.
+
+        A defect in a section parser is classified here too. That is the
+        deliberate cost: the exception type and the original traceback are
+        both preserved through the chained cause, and a loader whose contract
+        is refusal must not have a second, unclassified way to fail.
+
+        This contract begins once the file has been opened and read. Obtaining
+        the text is not bounded: there is no size cap, no ``O_NOFOLLOW``, and a
+        FIFO at the configuration path blocks in ``read()`` rather than being
+        refused. Admission hardening is tracked separately; do not read the
+        limits below as covering it.
+        """
         try:
-            with open(path) as fh:
+            return cls._interpret(path)
+        except ConfigValidationError:
+            raise
+        except Exception as exc:
+            raise ConfigValidationError(
+                f"Config file '{path}' could not be interpreted: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+    @classmethod
+    def _interpret(cls, path: str) -> "Config":
+        # The encoding is fixed rather than taken from the host locale: a
+        # signed configuration must decode to the same document on every
+        # device that reads it. A file that is not UTF-8 is a bad document,
+        # and is refused as one rather than as a decoder traceback.
+        try:
+            with open(path, encoding="utf-8") as fh:
                 raw_text = fh.read()
         except OSError as exc:
             raise ConfigValidationError(
                 f"Cannot read config file '{path}': {exc}"
             ) from exc
+        except UnicodeDecodeError as exc:
+            raise ConfigValidationError(
+                f"Config file '{path}' is not valid UTF-8: {exc}"
+            ) from exc
 
-        try:
-            raw_unexpanded = yaml.safe_load(raw_text)
-        except yaml.YAMLError as exc:
-            raise ConfigValidationError(f"YAML parse error in '{path}': {exc}") from exc
+        raw_unexpanded = _load_config_document(raw_text, path)
 
         if not isinstance(raw_unexpanded, dict):
             raise ConfigValidationError(
-                "Config file must be a YAML mapping at the top level."
+                f"Config file '{path}' must be a YAML mapping at the top level."
             )
 
         try:
@@ -325,14 +500,11 @@ class Config:
 
         expanded = _expand_env_vars(raw_text)
 
-        try:
-            data: dict[str, Any] = yaml.safe_load(expanded)
-        except yaml.YAMLError as exc:
-            raise ConfigValidationError(f"YAML parse error in '{path}': {exc}") from exc
+        data: dict[str, Any] = _load_config_document(expanded, path)
 
         if not isinstance(data, dict):
             raise ConfigValidationError(
-                "Config file must be a YAML mapping at the top level."
+                f"Config file '{path}' must be a YAML mapping at the top level."
             )
 
         device = _parse_device(data.get("device", {}))
