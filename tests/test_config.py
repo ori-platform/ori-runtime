@@ -13,7 +13,6 @@ import threading
 import pytest
 import yaml
 
-import ori.config as config_module
 from ori.config import (
     _MAX_CONFIG_BYTES,
     Config,
@@ -5412,7 +5411,7 @@ class TestNoShippedGeneratorEmitsAPlaceholderInKeyPosition:
         ],
     )
     def test_no_shipped_example_places_a_placeholder_in_a_key(self, example):
-        document = yaml.safe_load(open(example, encoding="utf-8").read())
+        document = yaml.safe_load(pathlib.Path(example).read_text(encoding="utf-8"))
         offenders = [key for key in self._keys(document) if "${" in key]
         assert offenders == [], offenders
 
@@ -5500,13 +5499,13 @@ class TestFileAdmissionIsBounded:
         path = tmp_path / "ori.yaml"
         os.mkfifo(path)
 
-        outcome: list[BaseException | None] = []
+        outcome: list[Exception | None] = []
 
         def load() -> None:
             try:
                 Config.load(str(path))
                 outcome.append(None)
-            except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
+            except Exception as exc:  # noqa: BLE001 - recorded, then asserted
                 outcome.append(exc)
 
         worker = threading.Thread(target=load, daemon=True)
@@ -5576,7 +5575,7 @@ class TestFileAdmissionIsBounded:
             read_sizes.append(len(chunk))
             return chunk
 
-        monkeypatch.setattr(config_module.os, "read", counting_read)
+        monkeypatch.setattr(os, "read", counting_read)
 
         with pytest.raises(ConfigValidationError, match="larger than"):
             Config.load(str(path))

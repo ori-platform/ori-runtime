@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-import ori.config as config_module
+from ori.config import _MAX_CONFIG_BYTES
 from ori.config_installer import (
     _MAX_SOURCE_CONFIG_BYTES,
     ConfigInstallError,
@@ -262,7 +262,7 @@ class TestTheGeneratedSourceIsAdmittedBeforeItIsRead:
         source = tmp_path / "generated.yaml"
         os.mkfifo(source)
 
-        outcome: list[BaseException | None] = []
+        outcome: list[Exception | None] = []
 
         def install() -> None:
             try:
@@ -270,7 +270,7 @@ class TestTheGeneratedSourceIsAdmittedBeforeItIsRead:
                     source=str(source), destination=tmp_path / "ori.yaml"
                 )
                 outcome.append(None)
-            except BaseException as exc:  # noqa: BLE001 - recorded, then asserted
+            except Exception as exc:  # noqa: BLE001 - recorded, then asserted
                 outcome.append(exc)
 
         worker = threading.Thread(target=install, daemon=True)
@@ -306,7 +306,7 @@ class TestTheGeneratedSourceIsAdmittedBeforeItIsRead:
             read_sizes.append(len(chunk))
             return chunk
 
-        monkeypatch.setattr(config_module.os, "read", counting_read)
+        monkeypatch.setattr(os, "read", counting_read)
 
         with pytest.raises(ConfigInstallError, match="larger than"):
             install_signed_config(source=str(source), destination=tmp_path / "ori.yaml")
@@ -315,4 +315,4 @@ class TestTheGeneratedSourceIsAdmittedBeforeItIsRead:
 
     def test_the_two_caps_are_distinct_and_the_source_cap_is_tighter(self):
         """Two documents, two limits, and no name collision between them."""
-        assert _MAX_SOURCE_CONFIG_BYTES < config_module._MAX_CONFIG_BYTES
+        assert _MAX_SOURCE_CONFIG_BYTES < _MAX_CONFIG_BYTES
