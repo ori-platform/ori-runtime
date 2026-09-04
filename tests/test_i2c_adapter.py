@@ -131,7 +131,7 @@ def _connected_ads_adapter(
     adapter._ads = MagicMock()
     # The config readback before every measurement: the configured channel
     # single-ended (mux 4 + n), PGA gain 1, continuous, 860 SPS, comparator off.
-    adapter._holds_shared_bus = True
+    adapter._shared_bus_holds = 1
     adapter._ads.gain = 1
     adapter._ads.data_rate = 860
     adapter._ads._read_register.side_effect = lambda *_a, **_k: (
@@ -151,7 +151,7 @@ def _connected_scd40_adapter() -> I2CAdapter:
     adapter = I2CAdapter()
     adapter._connected = True
     adapter._sensor_type = "scd40"
-    adapter._holds_shared_bus = True
+    adapter._shared_bus_holds = 1
     adapter._breaker = HardwareCircuitBreaker("I2CAdapter", {})
     adapter._scd4x = MagicMock()
     return adapter
@@ -1491,7 +1491,7 @@ class TestAds1115ChannelSelection:
         adapter = I2CAdapter()
         with pytest.raises(AdapterConnectionError):
             await adapter.connect(config)
-        assert not adapter._holds_shared_bus
+        assert adapter._shared_bus_holds == 0
         expected = 1 if holder is not None else 0
         assert i2c_module._shared_busio_refs.get(1, 0) == expected
         if holder is not None:
@@ -2012,7 +2012,7 @@ class TestCloseDuringConnect:
         await asyncio.sleep(0)
 
         # The close has not torn anything down — it is waiting for the lock.
-        assert adapter._close_count == 1
+        assert adapter._close_generation == 1
         release.set()
         with pytest.raises(AdapterConnectionError, match="closed while it was still"):
             await asyncio.wait_for(connecting, 5)
@@ -2312,3 +2312,92 @@ class TestWindowIntegrity:
         ads._conversion = lambda: 0x7FFF
         assert adapter._sample_ads1115_volts() == pytest.approx(4.095875)
         await adapter.close()
+
+
+class TestSharedBusReferenceAccounting:
+    """ori-platform/ori-runtime#512.
+
+    The adapter tracked whether it held a reference on the shared `busio.I2C`
+    with a boolean while the cache counted references. The two disagreed the
+    moment one adapter acquired twice: the single release cleared the flag and
+    the second reference became unreleasable by anything, pinning the cached
+    handle for the life of the process so the next connect on that bus was
+    handed a stale one.
+    """
+
+    @pytest.fixture
+    def counting_bus(self, monkeypatch):
+        def fake(bus_number: int):
+            i2c_module._shared_busio_refs[bus_number] = (
+                i2c_module._shared_busio_refs.get(bus_number, 0) + 1
+            )
+            return MagicMock()
+
+        monkeypatch.setattr(i2c_module, "_get_shared_busio_i2c", fake)
+        i2c_module._shared_busio_refs.clear()
+        yield i2c_module._shared_busio_refs
+        i2c_module._shared_busio_refs.clear()
+
+    def test_acquiring_twice_and_releasing_returns_the_count(self, counting_bus):
+        """`connect, connect, close` must leave the count where it started."""
+        adapter = I2CAdapter()
+        adapter._bus_number = 1
+        before = counting_bus.get(1, 0)
+
+        adapter._acquire_shared_bus()
+        adapter._acquire_shared_bus()
+        assert counting_bus[1] == before + 2
+
+        adapter._release_shared_bus()
+        assert counting_bus.get(1, 0) == before
+
+    def test_the_adapters_accounting_matches_the_cache(self, counting_bus):
+        adapter = I2CAdapter()
+        adapter._bus_number = 1
+        for expected in (1, 2, 3):
+            adapter._acquire_shared_bus()
+            assert adapter._shared_bus_holds == expected == counting_bus[1]
+
+    def test_an_adapter_cannot_release_a_reference_it_did_not_take(
+        self, counting_bus, monkeypatch
+    ):
+        """Asserted directly, not inferred from the counting.
+
+        This is the property the boolean existed for: releasing one this
+        adapter never took would evict a handle another adapter is still
+        reading through.
+        """
+        holder = I2CAdapter()
+        holder._bus_number = 1
+        holder._acquire_shared_bus()
+
+        released: list[int] = []
+        monkeypatch.setattr(
+            i2c_module, "_release_shared_busio_i2c", lambda bus: released.append(bus)
+        )
+
+        freeloader = I2CAdapter()
+        freeloader._bus_number = 1
+        freeloader._release_shared_bus()
+        freeloader._release_shared_bus()
+
+        assert released == []
+        assert counting_bus[1] == 1
+        assert freeloader._shared_bus_holds == 0
+
+    @pytest.mark.asyncio
+    async def test_a_second_connect_while_connected_is_refused(self):
+        """The recorded choice: refuse, rather than tear down and reopen.
+
+        Reconnecting in place would take a second reference against one
+        release and move a live adapter's device under readings already being
+        taken from it.
+        """
+        adapter = I2CAdapter()
+        adapter._connected = True
+        adapter._sensor_type = "ads1115_voltage"
+        adapter._address = 0x48
+        adapter._bus_number = 1
+
+        with pytest.raises(AdapterConnectionError, match="already connected"):
+            await adapter.connect(_config(sensor_type="ads1115_voltage"))

@@ -235,10 +235,15 @@ class SmartAdapter(BaseAdapter):
                 "SmartAdapter: 'device' is required (e.g. /dev/sda, /dev/nvme0n1)"
             )
 
-        self._sensor_type = sensor_type
-        self._device = device
-        self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
-        self._connected = True
+        # Nothing is awaited here and `close()` releases nothing, so this
+        # adapter has no race to lose; it takes the guarantee from
+        # `BaseAdapter` so that the contract is one rule rather than five, and
+        # applies its configuration inside the guard so that a refused connect
+        # leaves the live one alone.
+        async with self._connecting(f"'{device}'"):
+            self._sensor_type = sensor_type
+            self._device = device
+            self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
 
         if not _PYSMART_AVAILABLE:
             logger.info(
@@ -283,7 +288,8 @@ class SmartAdapter(BaseAdapter):
             )
 
     async def close(self) -> None:
-        self._connected = False
+        async with self._closing():
+            pass
 
     def _read_metrics_sync(self) -> dict[str, float | None]:
         # Try pySMART first, then fallback to smartctl subprocess.

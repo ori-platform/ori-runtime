@@ -46,20 +46,22 @@ class VictronAdapter(MqttCachedAdapter):
                 f"Supported: {sorted(_SUPPORTED)}"
             )
 
-        self._sensor_type = sensor_type
-        self._portal_id = str(config.get("portal_id", "")).strip()
-        if not self._portal_id:
+        portal_id = str(config.get("portal_id", "")).strip()
+        if not portal_id:
             raise AdapterConnectionError(
                 "VictronAdapter: 'portal_id' is required in sensor config."
             )
 
-        topics = [self._topic_for_sensor(sensor) for sensor in sorted(_SUPPORTED)]
-        await self._connect_mqtt(
-            config=config,
-            topics=topics,
-            default_port=_DEFAULT_PORT,
-            listener_name=f"victron-listener:{self._portal_id}",
-        )
+        async with self._connecting(f"portal '{portal_id}'", release=self._close_mqtt):
+            self._sensor_type = sensor_type
+            self._portal_id = portal_id
+            topics = [self._topic_for_sensor(sensor) for sensor in sorted(_SUPPORTED)]
+            await self._connect_mqtt(
+                config=config,
+                topics=topics,
+                default_port=_DEFAULT_PORT,
+                listener_name=f"victron-listener:{portal_id}",
+            )
 
     async def _handle_message(self, topic: str, payload: Any) -> None:
         value, raw_payload = self.parse_numeric_payload(payload)
@@ -102,9 +104,6 @@ class VictronAdapter(MqttCachedAdapter):
                     "raw_payload": raw_payload,
                 },
             )
-
-    async def close(self) -> None:
-        await self._close_mqtt()
 
     def _topic_for_sensor(self, sensor_type: str) -> str:
         suffix, _unit = _SENSOR_MAP[sensor_type]

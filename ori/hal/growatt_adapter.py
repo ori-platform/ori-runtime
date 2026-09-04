@@ -76,23 +76,19 @@ class GrowattAdapter(BaseAdapter):
                 f"Supported: {sorted(_SUPPORTED)}"
             )
 
-        self._sensor_type = sensor_type
-        self._host = str(config.get("host", "")).strip()
-        self._serial = str(config.get("serial", "")).strip()
-        self._port = int(config.get("port", _DEFAULT_PORT))
-        self._breaker = HardwareCircuitBreaker(
-            getattr(self, "adapter_name", type(self).__name__), config
-        )
+        host = str(config.get("host", "")).strip()
+        serial = str(config.get("serial", "")).strip()
+        port = int(config.get("port", _DEFAULT_PORT))
 
-        if not self._host:
+        if not host:
             raise AdapterConnectionError(
                 "GrowattAdapter: 'host' is required in sensor config."
             )
-        if not self._serial:
+        if not serial:
             raise AdapterConnectionError(
                 "GrowattAdapter: 'serial' is required in sensor config."
             )
-        if self._port <= 0:
+        if port <= 0:
             raise AdapterConnectionError("GrowattAdapter: 'port' must be > 0.")
 
         if not _PYSOLARMAN_AVAILABLE:
@@ -101,13 +97,26 @@ class GrowattAdapter(BaseAdapter):
                 "Run: pip install pysolarmanv5"
             )
 
-        # Lazy connect on first read.
-        self._connected = True
+        # Lazy connect on first read. Nothing is awaited above, so no close
+        # can interleave with it, but the guarantee is taken from
+        # `BaseAdapter` rather than rested on that: a later await added here
+        # would silently reopen the race.
+        async with self._connecting(f"'{host}:{port}'"):
+            self._sensor_type = sensor_type
+            self._host = host
+            self._serial = serial
+            self._port = port
+            self._breaker = HardwareCircuitBreaker(
+                getattr(self, "adapter_name", type(self).__name__), config
+            )
 
     async def close(self) -> None:
+        async with self._closing():
+            await self._teardown()
+
+    async def _teardown(self) -> None:
         client = self._client
         self._client = None
-        self._connected = False
         if client is None:
             return
 

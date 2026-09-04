@@ -54,33 +54,41 @@ class OpcUaAdapter(BaseAdapter):
                 "OpcUaAdapter: 'asyncua' is not installed. Run: pip install asyncua"
             )
 
-        self._sensor_type = str(config.get("sensor_type", "")).strip()
-        self._url = str(config.get("url", "")).strip()
-        self._node_id = str(config.get("node_id", "")).strip()
-        self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
+        sensor_type = str(config.get("sensor_type", "")).strip()
+        url = str(config.get("url", "")).strip()
+        node_id = str(config.get("node_id", "")).strip()
 
-        if not self._sensor_type:
+        if not sensor_type:
             raise AdapterConnectionError("OpcUaAdapter: 'sensor_type' is required")
-        if not self._url:
+        if not url:
             raise AdapterConnectionError("OpcUaAdapter: 'url' is required")
-        if not self._node_id:
+        if not node_id:
             raise AdapterConnectionError("OpcUaAdapter: 'node_id' is required")
 
-        try:
+        async with self._connecting(
+            f"'{url}' node '{node_id}'", release=self._teardown
+        ):
+            self._sensor_type = sensor_type
+            self._url = url
+            self._node_id = node_id
+            self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
             try:
-                client = _AsyncUaClient(url=self._url)
-            except TypeError:
-                client = _AsyncUaClient(self._url)
-            await client.connect()
-            self._client = client
-            self._node = client.get_node(self._node_id)
-            self._connected = True
-        except Exception as exc:
-            await self.close()
-            raise AdapterConnectionError(
-                f"OpcUaAdapter: failed to connect to '{self._url}' "
-                f"node '{self._node_id}': {exc}"
-            ) from exc
+                try:
+                    client = _AsyncUaClient(url=url)
+                except TypeError:
+                    client = _AsyncUaClient(url)
+                await client.connect()
+                self._client = client
+                self._node = client.get_node(node_id)
+            except Exception as exc:
+                # `_teardown`, not `close()`: the guard already holds the
+                # lifecycle lock, so calling `close()` here would deadlock on
+                # it, and would also record a close this connect did not
+                # receive.
+                raise AdapterConnectionError(
+                    f"OpcUaAdapter: failed to connect to '{url}' "
+                    f"node '{node_id}': {exc}"
+                ) from exc
 
     async def read(self, sensor_id: str) -> SensorReading:
         if not _ASYNCUA_AVAILABLE:
@@ -119,10 +127,14 @@ class OpcUaAdapter(BaseAdapter):
             )
 
     async def close(self) -> None:
+        async with self._closing():
+            await self._teardown()
+
+    async def _teardown(self) -> None:
+        """Drop the client, whether the connect finished or not."""
         client = self._client
         self._client = None
         self._node = None
-        self._connected = False
 
         if client is None:
             return

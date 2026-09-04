@@ -50,15 +50,16 @@ class MqttPerceptionAdapter(MqttCachedAdapter):
                 "MqttPerceptionAdapter: 'topic' is required in sensor config."
             )
 
-        self._sensor_type = sensor_type
-        self._topic = topic
+        async with self._connecting(f"'{topic}'", release=self._close_mqtt):
+            self._sensor_type = sensor_type
+            self._topic = topic
 
-        await self._connect_mqtt(
-            config=config,
-            topics=[topic],
-            default_port=_DEFAULT_PORT,
-            listener_name=f"perception-listener:{topic}",
-        )
+            await self._connect_mqtt(
+                config=config,
+                topics=[topic],
+                default_port=_DEFAULT_PORT,
+                listener_name=f"perception-listener:{topic}",
+            )
 
     async def _handle_message(self, topic: str, payload: Any) -> None:
         parsed = self._parse_payload(payload)
@@ -112,9 +113,6 @@ class MqttPerceptionAdapter(MqttCachedAdapter):
                     "port": self._port,
                 },
             )
-
-    async def close(self) -> None:
-        await self._close_mqtt()
 
     def _parse_payload(self, payload: Any) -> dict[str, Any]:
         if isinstance(payload, (bytes, bytearray)):

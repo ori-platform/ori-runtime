@@ -6,6 +6,8 @@ import enum
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
 from ori.network.events import SensorReading
@@ -242,13 +244,160 @@ class BaseAdapter(ABC):
 
     _connected: bool = False
 
+    # Bumped by every close before it can acquire the lifecycle lock, so a
+    # connect can tell that one arrived while its own worker was still
+    # running. Class-level defaults because most adapters do not call
+    # ``super().__init__()``; both become instance attributes on first write.
+    _close_generation: int = 0
+    _lifecycle_lock: "asyncio.Lock | None" = None
+
+    # ── Lifecycle contract ────────────────────────────────────────────────────
+    #
+    # `connect()` does its blocking work off the event loop, and `close()`
+    # releases resources with awaits of its own. Without a shared rule the two
+    # interleave: a close releases what has been taken so far while the
+    # connect's worker goes on taking more, and the adapter ends up believing
+    # it is connected while holding resources nobody else believes are in use.
+    #
+    # The guarantee every adapter gets from `_connecting` and `_closing`:
+    #
+    #   * Only one of connect and close runs at a time, per adapter.
+    #   * A connect that finds itself connected is refused, before it touches
+    #     any state and before it reaches the device. Reconnecting in place
+    #     would take a second resource reference against one release and move
+    #     a live adapter's device under readings already being taken from it.
+    #     **An adapter must therefore validate into locals and assign to
+    #     `self` inside the `_connecting` body.** Assigning before it leaves a
+    #     refused connect having already overwritten the live configuration:
+    #     the adapter stays connected on the old handle while its fields name
+    #     the new target, and `read()` then samples one device and labels the
+    #     reading with another.
+    #   * **A connect that was closed while it was connecting raises**
+    #     `AdapterConnectionError` and leaves the adapter disconnected and
+    #     holding nothing. It does not return successfully, because a connect
+    #     that was closed did not connect.
+    #   * A connect that fails for any reason gives back what it took.
+    #
+    # What the runtime does with that refusal: it connects adapters
+    # sequentially and appends each to its list only after `connect()` returns,
+    # closing only what is in that list, so an in-flight adapter is never
+    # closed in production and the refusal is not reachable there. It is a
+    # contract, held at the boundary, rather than a live bug being papered
+    # over. During shutdown the refusal would surface the same way any other
+    # connect failure does — logged, the adapter not added, the runtime
+    # continuing — which is the correct outcome for an adapter that is being
+    # torn down anyway. `ori/runtime.py` does more than log: it records the
+    # sensor in `_unconnected_sensors`, calls
+    # `_safety_registry.note_sensor_unavailable()` and warns the operator. A
+    # refused connect therefore tells a Tier D pair that its measurement is
+    # unavailable, which is the reason this refusal has to be correct rather
+    # than merely tidy.
+    #
+    # An adapter that cannot meet this must say so in its own docstring rather
+    # than inherit the guarantee silently.
+
+    @property
+    def _lifecycle(self) -> asyncio.Lock:
+        """The per-adapter connect/close lock, created on first use.
+
+        Lazily created rather than set in ``__init__`` because most adapters
+        do not call ``super().__init__()``. There is no race in creating it:
+        the first access happens on the event loop thread before any await.
+        """
+        lock = self._lifecycle_lock
+        if lock is None:
+            lock = asyncio.Lock()
+            # Shadows the class default with an instance attribute, so every
+            # adapter gets its own.
+            self._lifecycle_lock = lock
+        return lock
+
+    @asynccontextmanager
+    async def _connecting(
+        self,
+        description: str,
+        *,
+        release: Callable[[], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[None]:
+        """Run an adapter's connect body under the lifecycle guarantee above.
+
+        Args:
+            description: What is being connected, for the refusal messages.
+            release: Gives back everything the body may have taken. Called
+                when the body raises and when a close arrived while it ran, so
+                it must be idempotent and safe on a partial connect.
+        """
+        # Sampled before the lock is requested, not inside it. A close that
+        # arrives while an earlier connect holds the lock has already declared
+        # itself by the time this one is admitted, and sampling after the wait
+        # would lose that: the second connect would report success for an
+        # adapter a close outstanding before its body ran then tears down.
+        generation = self._close_generation
+        async with self._lifecycle:
+            if self._connected:
+                # Names what was *requested*, not what is held: the base
+                # class does not know an adapter's fields, and claiming to
+                # name the live device while printing the refused one is
+                # worse than not naming it.
+                raise AdapterConnectionError(
+                    f"{self.adapter_name}: already connected; close it before "
+                    f"connecting to {description}"
+                )
+            try:
+                yield
+            except BaseException:
+                await self._release_quietly(release)
+                raise
+
+            if self._close_generation != generation:
+                await self._release_quietly(release)
+                raise AdapterConnectionError(
+                    f"{self.adapter_name}: {description} was closed while it "
+                    "was still connecting"
+                )
+            self._connected = True
+
+    async def _release_quietly(
+        self, release: Callable[[], Awaitable[None]] | None
+    ) -> None:
+        """Give resources back without letting that replace the real failure.
+
+        `release` runs on the failure and abandonment paths, where an
+        exception is already on its way to the caller. If it raised, it would
+        become the exception `connect()` reports — a `RuntimeError` in place of
+        the `AdapterConnectionError` that says what actually went wrong — and
+        the remaining resources would still be held.
+        """
+        if release is None:
+            return
+        try:
+            await release()
+        except Exception:
+            logger.exception(
+                "%s: exception while releasing after a failed connect",
+                self.adapter_name,
+            )
+
+    @asynccontextmanager
+    async def _closing(self) -> AsyncIterator[None]:
+        """Run an adapter's close body under the lifecycle guarantee above.
+
+        The close records itself *before* requesting the lock. A connect
+        holding the lock cannot be interrupted, but it can be told that a
+        close is waiting, and that is what stops it reporting success.
+        """
+        self._close_generation += 1
+        async with self._lifecycle:
+            self._connected = False
+            yield
+
     # ── Abstract methods ──────────────────────────────────────────────────────
 
     @abstractmethod
     async def connect(self, config: dict) -> None:
         """Open the underlying hardware or protocol connection.
 
-        Called once during runtime start-up.  Must set ``_connected = True`` on success.  Raise :exc:`AdapterConnectionError` if the resource cannot be reached, or :exc:`AdapterTimeoutError` if the attempt exceeds the configured deadline.
+        Called once during runtime start-up.  Run the body inside :meth:`_connecting`, which owns ``_connected`` and the lifecycle guarantee above; do not set the flag directly.  Raise :exc:`AdapterConnectionError` if the resource cannot be reached, or :exc:`AdapterTimeoutError` if the attempt exceeds the configured deadline.
 
         Args:
             config: The sensor-level config dict from ``ori.yaml`` (keys such as ``address``, ``channel``, ``port`` vary by adapter type).
@@ -270,8 +419,9 @@ class BaseAdapter(ABC):
     async def close(self) -> None:
         """Release the underlying hardware or protocol connection.
 
-        Called during graceful runtime shutdown.  Must set
-        ``_connected = False``.  Should not raise even if the connection was already lost — log and return cleanly.
+        Called during graceful runtime shutdown.  Run the body inside
+        :meth:`_closing`, which owns ``_connected``; do not clear the flag
+        directly.  Should not raise even if the connection was already lost — log and return cleanly.
         """
 
     # ── Concrete methods (may be overridden) ──────────────────────────────────
