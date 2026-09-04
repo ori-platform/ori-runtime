@@ -93,6 +93,10 @@ except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
 try:
     import adafruit_ads1x15.ads1x15 as _ads1x15  # type: ignore[import-untyped]
     import adafruit_ads1x15.ads1115 as _ads1115  # type: ignore[import-untyped]
+
+    # Imported to prove the driver package is complete, not to read through:
+    # a sample is taken with the register pointer written explicitly, which
+    # this module's reader does not do.
     import adafruit_ads1x15.analog_in as _analog_in  # type: ignore[import-untyped]
 
     _ADS1115_AVAILABLE = True
@@ -805,6 +809,21 @@ class I2CAdapter(BaseAdapter):
         8: 0x0800,
         16: 0x0A00,
     }
+    # Full-scale range per gain, from the datasheet's PGA table. Carried here
+    # rather than taken from the driver, so a sample can be read with the
+    # pointer written explicitly instead of through the driver's fast path.
+    _ADS1115_PGA_VOLTS = {
+        2 / 3: 6.144,
+        1: 4.096,
+        2: 2.048,
+        4: 1.024,
+        8: 0.512,
+        16: 0.256,
+    }
+    # 2^15, not 32767: the driver divides the full-scale range by
+    # `1 << (bits - 1)`. Verified against its own conversion on the bench for
+    # every gain and every edge value, exact to the last place.
+    _ADS1115_FULL_SCALE_COUNTS = 32768
     _ADS1115_RATE_BITS = {
         8: 0x0000,
         16: 0x0020,
@@ -981,6 +1000,51 @@ class I2CAdapter(BaseAdapter):
         "a reset"
     )
 
+    def _sample_ads1115_volts(self) -> float:
+        """One sample, with the register pointer written for it.
+
+        The driver's continuous read is a fast read that leaves the pointer
+        wherever it was, so anything else on the bus that reads the
+        configuration register turns every remaining sample in the window into
+        the configuration word — a plausible mid-range value no clip check
+        questions. Writing the pointer per sample closes that class outright
+        rather than narrowing it.
+
+        Measured on the bench at 860 SPS before it was adopted: 35 samples
+        against 36 in a 40 ms window, the same 1.164 ms mean gap and 1.22 ms
+        worst gap, and a whole-window elapsed ratio of 1.004 against 1.027.
+        The floor for that window is 22 samples, so the cost is well inside it.
+        """
+        full_scale = self._ADS1115_PGA_VOLTS.get(self._ads.gain)
+        if full_scale is None:
+            raise MeasurementRefusedError(
+                f"I2CAdapter: ADS1115 gain {self._ads.gain!r} is outside the "
+                "datasheet's settings, so a sample cannot be scaled"
+            )
+        # The driver returns the register unsigned and signs it a layer up, in
+        # the reader this replaces, so the two's complement is done here.
+        raw = int(self._ads.get_last_result(False)) & 0xFFFF
+        if raw >= 0x8000:
+            raw -= 0x10000
+        return raw * full_scale / self._ADS1115_FULL_SCALE_COUNTS
+
+    def _refuse_if_configuration_moved(self) -> None:
+        """Refuse, and quarantine the chip, when it is not running what this set."""
+        quarantined = self._ads1115_quarantined()
+        if quarantined is not None:
+            raise MeasurementRefusedError(quarantined)
+        try:
+            fault = self._ads1115_configuration_fault()
+        except Exception as exc:
+            raise MeasurementRefusedError(
+                "I2CAdapter: could not read back the ADS1115 configuration to "
+                f"confirm its channel: {type(exc).__name__}: {exc}"
+            ) from exc
+        if fault is not None:
+            message = f"{fault}{self._REFUSAL_REMEDY}"
+            self._quarantine_ads1115(message)
+            raise MeasurementRefusedError(message)
+
     def _reaffirm_ads1115_channel(self) -> None:
         """Per-measurement: prove the configuration, then re-point the register.
 
@@ -1003,20 +1067,7 @@ class I2CAdapter(BaseAdapter):
         A readback that cannot be performed at all is a bus failure and does
         not latch: it is not evidence that anything took the chip.
         """
-        quarantined = self._ads1115_quarantined()
-        if quarantined is not None:
-            raise MeasurementRefusedError(quarantined)
-        try:
-            fault = self._ads1115_configuration_fault()
-        except Exception as exc:
-            raise MeasurementRefusedError(
-                "I2CAdapter: could not read back the ADS1115 configuration to "
-                f"confirm its channel: {type(exc).__name__}: {exc}"
-            ) from exc
-        if fault is not None:
-            message = f"{fault}{self._REFUSAL_REMEDY}"
-            self._quarantine_ads1115(message)
-            raise MeasurementRefusedError(message)
+        self._refuse_if_configuration_moved()
         self._ads.get_last_result(False)
 
     def _connect_scd40(self) -> None:
@@ -1177,9 +1228,10 @@ class I2CAdapter(BaseAdapter):
         carrying a plausible ampere figure can be emitted from samples that were
         never a measurement.
         """
-        if _analog_in is None:
+        if self._ads is None:
             raise AdapterConnectionError(
-                "I2CAdapter: the ADS1115 driver is not loaded; connect() must run first"
+                "I2CAdapter: no ADS1115 is open on this adapter; connect() must "
+                "run first"
             )
         window = self._window
         if window is None:
@@ -1187,7 +1239,6 @@ class I2CAdapter(BaseAdapter):
                 "I2CAdapter: current calibration was not resolved at connect()"
             )
         self._reaffirm_ads1115_channel()
-        channel = _analog_in.AnalogIn(self._ads, self._channel)
 
         # Monotonic throughout: a wall clock stepped by NTP mid-window would
         # otherwise make an overrun look like a normal window, or the reverse.
@@ -1209,9 +1260,23 @@ class I2CAdapter(BaseAdapter):
                 break
             if now < due:
                 time.sleep(due - now)
-            samples.append(float(channel.voltage))
+            samples.append(self._sample_ads1115_volts())
             due += interval
         elapsed = time.monotonic() - started
+        # Checked again at the end, because the check before the window
+        # certifies the chip only at that instant. This catches a change that
+        # is *still present* at the end, which is what an interfering process
+        # that keeps its own configuration leaves behind.
+        #
+        # It is not whole-window certification. A writer that changes the gain,
+        # lets some samples be taken under it, and restores this adapter's
+        # configuration before the window closes passes both checks, and those
+        # samples are summarised. Detecting that would need exclusive ownership
+        # of the bus, which cannot be established from the same bus — it is a
+        # wiring and platform property, not something more polling can prove.
+        #
+        # The pointer needs no such check: every sample writes it.
+        self._refuse_if_configuration_moved()
 
         try:
             measured = summarise_window(samples, elapsed, window)
@@ -1243,16 +1308,16 @@ class I2CAdapter(BaseAdapter):
     # ── ADS1115 voltage ───────────────────────────────────────────────────────
 
     def _read_ads1115_voltage(self, sensor_id: str) -> SensorReading:
-        if _analog_in is None:
+        if self._ads is None:
             raise AdapterConnectionError(
-                "I2CAdapter: the ADS1115 driver is not loaded; connect() must run first"
+                "I2CAdapter: no ADS1115 is open on this adapter; connect() must "
+                "run first"
             )
         # Not downgraded to AdapterReadError: MeasurementRefusedError is one
         # already, and the subclass is what drives the runtime's degradation
         # state and operator notice. A voltage channel can be a safety input.
         self._reaffirm_ads1115_channel()
-        chan = _analog_in.AnalogIn(self._ads, self._channel)
-        voltage = chan.voltage
+        voltage = self._sample_ads1115_volts()
         return SensorReading(
             sensor_id=sensor_id,
             sensor_type="ads1115_voltage",

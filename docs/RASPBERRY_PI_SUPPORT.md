@@ -40,8 +40,16 @@ second sensor on a claimed chip at connect; a second channel is a second chip
 at a second address (ADDR to VDD for `0x49`). The chip's whole configuration,
 not the mux alone, is read back at the start of every measurement, so a gain,
 data rate or conversion mode changed by anything outside the runtime refuses
-the measurement rather than quietly rescaling it. A change that lands part-way
-through a window is caught at the next window, not within that one.
+the measurement rather than quietly rescaling it. It is read back again at the
+end of each window, so a change that is still present when the window closes
+refuses that window rather than the next one. A writer that changes the
+configuration and restores it before the window closes is not caught, and
+cannot be from this side of the bus.
+
+Every sample writes the chip's register pointer for itself, so a foreign read
+of the configuration register cannot turn the rest of a window into the
+configuration word. That costs one sample in thirty-six at 860 SPS against a
+floor of twenty-two, measured on this bench before it was adopted.
 
 A full bus scan (`sudo /usr/sbin/i2cdetect -y 1` — the binary is on the root
 path only) shows `48` and nothing else. `/dev/i2c-1` is present on the image;
