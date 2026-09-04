@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ori.actions.alert_failover import AlertFailoverSender
 from ori.config import (
     Config,
     ConfigValidationError,
@@ -730,6 +731,220 @@ async def test_a_failed_sensor_connect_does_not_take_the_runtime_down(
         # Without this the test passes whether or not the refusal ever fired:
         # any exception from connect() produces the same skip.
         assert attempts, "connect() was never attempted, so nothing was proven"
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+async def test_a_sensor_that_never_connects_reaches_the_operator(
+    minimal_config, monkeypatch
+):
+    """Skipped is not the same as silent, and not the same as attempted.
+
+    The staleness watch cannot cover this one: it runs from the poll intervals
+    of sensors that connected, so a sensor that never did is not late, it is
+    absent. Health reports it, and on a headless device nothing carries a log
+    line to anyone.
+
+    Driven with DevicePolicy refusing every external alert, and asserted on
+    the sender rather than on the call. A notice that a measurement is not
+    being taken must not be suppressed by an entitlement cap: an operator who
+    does not receive it believes something is being watched that is not.
+    """
+    from ori.hal.base import AdapterConnectionError
+    from ori.hal.psutil_adapter import PsutilAdapter
+
+    _patch_external(monkeypatch)
+    config = Config.load(str(minimal_config))
+    config.actions.operator_contact = "+2348000000000"
+    monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+
+    async def _refuse(self, config):
+        raise AdapterConnectionError("simulated: device does not answer")
+
+    monkeypatch.setattr(PsutilAdapter, "connect", _refuse)
+
+    # Every policy-governed alert is denied. The structural path must not
+    # consult this at all.
+    policy_calls: list[str] = []
+
+    async def _deny(self, **kwargs):
+        policy_calls.append(str(kwargs.get("trigger_name", "")))
+        return False
+
+    monkeypatch.setattr(OriRuntime, "_policy_permits_external_alert", _deny)
+
+    sent: list[dict] = []
+
+    async def _send(self, *, message, to_number, preferred_channel=None, **kwargs):
+        sent.append({"message": message, "to_number": to_number})
+        return True
+
+    monkeypatch.setattr(AlertFailoverSender, "send", _send)
+
+    runtime = OriRuntime(config_path=str(minimal_config))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not sent:
+            if start_task.done():
+                break
+            await asyncio.sleep(0.05)
+
+        assert not start_task.done(), (
+            "startup aborted rather than reporting: "
+            f"{start_task.exception() if start_task.done() else ''}"
+        )
+        # Delivered, not merely attempted, and not suppressed by the denial.
+        assert sent, "the sensor was skipped without the notice reaching a sender"
+        assert "cpu-sensor" in sent[0]["message"]
+        assert sent[0]["to_number"] == "+2348000000000"
+        assert not policy_calls, (
+            "the notice was routed through the policy-governed path and would "
+            f"have been suppressed: {policy_calls}"
+        )
+
+        # And the runtime says it is degraded rather than healthy.
+        assert runtime._unconnected_sensors == {"cpu-sensor"}
+        snapshot = await runtime._build_health_snapshot()
+        assert snapshot["status"] == "degraded"
+        cpu = next(s for s in snapshot["sensors"] if s["id"] == "cpu-sensor")
+        assert cpu["connected"] is False
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_connect_reaches_the_pair_that_depends_on_it(
+    minimal_config, monkeypatch
+):
+    """The registry must not wait out its loss bound for a fact already known.
+
+    Its measurement-loss watch infers unavailability from absent readings, so
+    the earliest it can conclude anything is its bound — at least the
+    documented floor. Through that window an active pair would carry no record
+    that its required measurement is unavailable, and once the actuator seam
+    can report drivability the same window would read as `protected`.
+    """
+    from ori.hal.base import AdapterConnectionError
+    from ori.hal.psutil_adapter import PsutilAdapter
+    from ori.security.commissioning.profiles import load_profile_set
+
+    _patch_external(monkeypatch)
+    ratified = load_profile_set(
+        [
+            {
+                "v": 1,
+                "id": "fixture.overcurrent.v1",
+                "status": "ratified",
+                "observes": {"quantity": "current", "unit": "ampere"},
+                "condition": {
+                    "kind": "upper_capacity_multiplier",
+                    "capacity_parameter": "rated_capacity_amps",
+                    "multiplier": 2.0,
+                },
+                "outcome": "open_protected_circuit",
+            }
+        ]
+    )
+    monkeypatch.setattr("ori.runtime.load_shipped_profile_set", lambda: ratified)
+    commission_relay(
+        minimal_config,
+        monkeypatch,
+        device_id="test-device-01",
+        sensor_id="cpu-sensor",
+        proof_method="actuate_and_observe",
+    )
+    config = Config.load(str(minimal_config))
+    # The binding names a local-GPIO actuator, so the config has to declare
+    # that pin or no zone reaches in force and there is no pair to bind.
+    config.actions.relay = {"enabled": False, "gpio_pin": 26}
+    config.actions.operator_contact = "+2348000000000"
+    monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+    monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: True)
+    monkeypatch.setattr("ori.runtime.gpio_backend_arbitrated", lambda: True)
+
+    async def _refuse(self, config):
+        raise AdapterConnectionError("simulated: device does not answer")
+
+    monkeypatch.setattr(PsutilAdapter, "connect", _refuse)
+
+    sent: list[str] = []
+
+    async def _send(self, *, message, to_number, preferred_channel=None, **kwargs):
+        sent.append(message)
+        return True
+
+    monkeypatch.setattr(AlertFailoverSender, "send", _send)
+
+    runtime = OriRuntime(config_path=str(minimal_config))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not runtime._unconnected_sensors:
+            if start_task.done():
+                break
+            await asyncio.sleep(0.05)
+        assert not start_task.done(), (
+            f"startup aborted: {start_task.exception() if start_task.done() else ''}"
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+        zones = snapshot.get("safety_zones")
+        assert zones, "no eligible pair was reported, so nothing was proven"
+        entry = next(z for z in zones if z["zone_id"])
+        assert entry["activation"] == "active", entry
+        # Immediately, without the loss bound having elapsed.
+        assert entry["measurement_degraded"] is True, entry
+        assert entry["protection_claim"] == "unprotected", entry
+
+        # One event, one notice. The pair notice already names the sensor,
+        # the zone and the profile, so the runtime-wide one would be a second
+        # message saying less, and one more again per additional pair.
+        assert any("measurement_loss" in m for m in sent), sent
+        assert not any("could not be connected at startup" in m for m in sent), sent
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+async def test_an_unconnected_sensor_notice_is_queued_when_delivery_fails(
+    minimal_config, monkeypatch
+):
+    """Delivery or durable queue: the notice is never simply dropped."""
+    from ori.hal.base import AdapterConnectionError
+    from ori.hal.psutil_adapter import PsutilAdapter
+
+    _patch_external(monkeypatch)
+    config = Config.load(str(minimal_config))
+    config.actions.operator_contact = "+2348000000000"
+    monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+
+    async def _refuse(self, config):
+        raise AdapterConnectionError("simulated: device does not answer")
+
+    monkeypatch.setattr(PsutilAdapter, "connect", _refuse)
+
+    async def _fail(self, *, message, to_number, preferred_channel=None, **kwargs):
+        return False
+
+    monkeypatch.setattr(AlertFailoverSender, "send", _fail)
+
+    runtime = OriRuntime(config_path=str(minimal_config))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        deadline = time.monotonic() + 10.0
+        queued: list = []
+        while time.monotonic() < deadline and not queued:
+            if start_task.done():
+                break
+            if runtime._state_store is not None:
+                queued = await runtime._state_store.get_retryable_alerts(limit=10)
+            await asyncio.sleep(0.05)
+
+        assert not start_task.done(), "startup aborted rather than queueing"
+        assert queued, "delivery failed and nothing was durably queued"
+        assert any("cpu-sensor" in str(row) for row in queued), queued
     finally:
         await _stop_and_join(runtime, start_task)
 
@@ -3415,6 +3630,48 @@ class TestAlertOutbox:
             assert senders[0]["stale"] is False
         finally:
             await runtime._state_store.close()
+
+    def _bare_health_runtime(self, tmp_path) -> OriRuntime:
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._device_id = "dev-01"
+        runtime._config = SimpleNamespace(
+            gateway=SimpleNamespace(enabled=False, broker_url="", broker_posture={}),
+            state=SimpleNamespace(
+                encryption=SimpleNamespace(
+                    mode="disabled", encrypted_path_prefixes=[], marker_file=""
+                )
+            ),
+            database_path=str(tmp_path / "ori_state.db"),
+        )
+        return runtime
+
+    async def test_health_snapshot_omits_safety_zones_without_a_registry(
+        self, tmp_path
+    ):
+        """`runtime-health/v2` types the field as an array and reads absence
+        as unknown, so a device with no registry must omit the key rather than
+        carry a null a consumer would iterate."""
+        runtime = self._bare_health_runtime(tmp_path)
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert "safety_zones" not in snapshot
+
+    async def test_health_snapshot_carries_the_registrys_pairs_when_there_is_one(
+        self, tmp_path
+    ):
+        """An empty array is a device with no eligible pair, which is not the
+        same statement as absence. The pairs themselves are produced and
+        proven in `tests/safety/test_registry.py`; this is the wiring."""
+        runtime = self._bare_health_runtime(tmp_path)
+        runtime._safety_registry = SimpleNamespace(
+            health_snapshot=lambda: {},
+            safety_zones=lambda: [],
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["safety_zones"] == []
 
     async def test_health_snapshot_reports_state_store_encryption_posture(
         self, tmp_path

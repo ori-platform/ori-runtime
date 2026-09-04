@@ -641,3 +641,299 @@ async def test_retry_loop_runs_the_loss_watch(store: StateStore) -> None:
     await asyncio.gather(registry.run_retry_loop(shutdown), _stop_soon())
     await asyncio.sleep(0)
     assert ("measurement_loss", "main-distribution") in sink.notices
+
+
+# ─── The protection claim (runtime-health/v2 safety_zones[]) ──────────────────
+
+
+PAIR = ("main-distribution", "fixture.overcurrent.v1")
+
+
+def _entry(registry, zone_id: str = "main-distribution") -> dict:
+    return next(z for z in registry.safety_zones() if z["zone_id"] == zone_id)
+
+
+def _backend_answers_drivable(monkeypatch) -> None:
+    """Stand in for the non-actuating seam member tracked on #482.
+
+    Everything else in the conjunction is live code today. Without this the
+    claim would be `unprotected` for one reason in every case and the other
+    conditions could be deleted unnoticed.
+    """
+    monkeypatch.setattr(SafetyRegistry, "_backend_drivable", lambda self, zone: True)
+
+
+async def test_no_pair_claims_protection_while_the_backend_cannot_be_asked(
+    store: StateStore,
+) -> None:
+    """The shipped producer never emits `protected`.
+
+    `runtime-health/v2` puts a drivable actuator backend among the conjuncts,
+    and the actuation seam carries commands and no status, so the only way to
+    answer it would be to drive a coil. Nothing may move one in order to
+    describe itself. `unprotected` says this side lacks the evidence for the
+    positive claim; it does not assert that any backend is broken.
+    """
+    registry, _ = build(store)
+    await registry.start()
+    await registry.observe_reading("main-distribution-current", 5.0, "ampere", 1.0)
+
+    entry = _entry(registry)
+    assert entry["activation"] == "active"
+    assert entry["measurement_degraded"] is False
+    assert entry["rejected_input_active"] is False
+    assert entry["trip_state"] != "tripped"
+    assert entry["protection_claim"] == "unprotected"
+
+
+async def test_a_clean_pair_claims_protection_once_the_backend_can_be_asked(
+    store: StateStore, monkeypatch
+) -> None:
+    _backend_answers_drivable(monkeypatch)
+    registry, _ = build(store)
+    await registry.start()
+    await registry.observe_reading("main-distribution-current", 5.0, "ampere", 1.0)
+
+    assert _entry(registry)["protection_claim"] == "protected"
+
+
+async def test_a_degraded_measurement_withdraws_the_claim_for_its_pair_only(
+    store: StateStore, monkeypatch
+) -> None:
+    """Per affected pair, never global: a pair with nothing to evaluate is not
+    watching anything, and every other pair carries on."""
+    _backend_answers_drivable(monkeypatch)
+    commander = FakeCommander()
+    clock = FakeClock()
+    registry = SafetyRegistry(
+        RATIFIED,
+        (zone("zone-a"), zone("zone-b")),
+        TripJournal(store),
+        commander,
+        binding_seq=4,
+        poll_intervals_ms={"zone-a-current": 1000, "zone-b-current": 1000},
+        clock=clock,
+    )
+    await registry.start()
+    for zone_id in ("zone-a", "zone-b"):
+        await registry.observe_reading(f"{zone_id}-current", 5.0, "ampere", 1.0)
+    assert _entry(registry, "zone-a")["protection_claim"] == "protected"
+
+    # Only zone-a goes quiet; zone-b keeps reporting.
+    clock.now += 60_001
+    await registry.observe_reading("zone-b-current", 5.0, "ampere", 1.0)
+    await registry.watch_measurement_loss()
+
+    quiet, reporting = _entry(registry, "zone-a"), _entry(registry, "zone-b")
+    assert quiet["measurement_degraded"] is True
+    assert quiet["protection_claim"] == "unprotected"
+    assert reporting["measurement_degraded"] is False
+    assert reporting["protection_claim"] == "protected"
+
+
+async def test_a_rejected_reading_withdraws_the_claim_and_names_the_reason(
+    store: StateStore, monkeypatch
+) -> None:
+    """A pair whose readings are rejected is evaluating nothing credible.
+
+    The reason comes from the contract's closed vocabulary, so an operator is
+    told which rejection it was rather than that one happened.
+    """
+    _backend_answers_drivable(monkeypatch)
+    registry, _ = build(store)
+    await registry.start()
+    await registry.observe_reading("main-distribution-current", 5.0, "volt", 1.0)
+
+    entry = _entry(registry)
+    assert entry["rejected_input_active"] is True
+    assert entry["last_rejected_reason"] == "unit_mismatch"
+    assert entry["protection_claim"] == "unprotected"
+
+    await registry.observe_reading("main-distribution-current", 5.0, "ampere", 1.0)
+    recovered = _entry(registry)
+    assert recovered["rejected_input_active"] is False
+    assert recovered["last_rejected_reason"] == ""
+    assert recovered["protection_claim"] == "protected"
+
+
+async def test_a_trip_whose_effect_is_unverified_does_not_claim_protection(
+    store: StateStore, monkeypatch
+) -> None:
+    """It has decided to open a circuit that may still be closed."""
+    _backend_answers_drivable(monkeypatch)
+    registry, commander = build(store)
+    await registry.start()
+    await registry.observe_reading("main-distribution-current", 25.0, "ampere", 1.0)
+    assert commander.outcome_calls
+
+    entry = _entry(registry)
+    assert entry["trip_state"] == "tripped"
+    assert entry["effect_verified"] == "unknown"
+    assert entry["protection_claim"] == "unprotected"
+
+
+async def test_a_pair_held_for_ratification_is_reported_and_never_protected(
+    store: StateStore, monkeypatch
+) -> None:
+    """Absence would read as unknown, so a pending pair is named, not omitted."""
+    _backend_answers_drivable(monkeypatch)
+    registry, _ = build(store, profile_set=load_shipped_profile_set())
+    await registry.start()
+
+    zones = registry.safety_zones()
+    assert zones, "an eligible pair must be reported even when it did not activate"
+    for entry in zones:
+        assert entry["activation"] == "pending_ratification"
+        assert entry["protection_claim"] == "unprotected"
+        assert entry["qualification"]["state"] == "none"
+
+
+async def test_a_pair_under_qualification_is_unavailable_before_anything_else(
+    store: StateStore, monkeypatch
+) -> None:
+    """The contract decides this first, in every posture.
+
+    Asserted against a tripped pair as well as a clean one: a check that only
+    ever runs on an otherwise-perfect pair proves the value, not the ordering,
+    and the ordering is the normative part.
+    """
+    _backend_answers_drivable(monkeypatch)
+    monkeypatch.setattr(
+        SafetyRegistry,
+        "_qualification",
+        lambda self: {
+            "state": "session_open",
+            "fixture_hash": "sha256:" + "0" * 64,
+            "expires_at_ms": 1,
+            "sessions_used": 1,
+            "sessions_remaining": 0,
+            "min_acceptable_seq": 1,
+        },
+    )
+    registry, commander = build(store)
+    await registry.start()
+    await registry.observe_reading("main-distribution-current", 5.0, "ampere", 1.0)
+    assert _entry(registry)["protection_claim"] == "unavailable"
+
+    await registry.observe_reading("main-distribution-current", 25.0, "ampere", 1.0)
+    tripped = _entry(registry)
+    assert tripped["trip_state"] == "tripped"
+    assert tripped["protection_claim"] == "unavailable"
+
+
+async def test_a_refused_pair_is_reported_with_its_verdict_and_binding(
+    store: StateStore, monkeypatch
+) -> None:
+    """A refused pair omitted from the array would read as unknown."""
+    _backend_answers_drivable(monkeypatch)
+    import dataclasses
+
+    mismatched = dataclasses.replace(zone(), unit="milliampere")
+    registry, _ = build(store, mismatched)
+    await registry.start()
+
+    entry = _entry(registry)
+    assert entry["activation"] == "unit_mismatch"
+    assert entry["binding_seq"] == 4
+    assert entry["protection_claim"] == "unprotected"
+
+
+async def test_a_trip_whose_command_was_refused_does_not_claim_protection(
+    store: StateStore, monkeypatch
+) -> None:
+    """A verified effect is not enough when the driver never took the command.
+
+    Both halves of the contract's exception are required: the command must
+    have been issued *and* the effect matched. This pair has the second
+    without the first, and has decided to open a circuit that may still be
+    closed.
+    """
+    _backend_answers_drivable(monkeypatch)
+    registry, commander = build(store)
+    commander.accept = False
+    await registry.start()
+    await registry.observe_reading("main-distribution-current", 25.0, "ampere", 1.0)
+    registry._machines[PAIR].effect_report("matched")
+
+    entry = _entry(registry)
+    assert entry["command_status"] == "driver_refused"
+    assert entry["effect_verified"] == "matched"
+    assert entry["protection_claim"] == "unprotected"
+
+
+async def test_a_trip_that_was_issued_and_verified_still_claims_protection(
+    store: StateStore, monkeypatch
+) -> None:
+    """Its outcome is resolved and the circuit is isolated."""
+    _backend_answers_drivable(monkeypatch)
+    registry, commander = build(store)
+    await registry.start()
+    await registry.observe_reading("main-distribution-current", 25.0, "ampere", 1.0)
+    assert commander.outcome_calls
+    registry._machines[PAIR].effect_report("matched")
+
+    entry = _entry(registry)
+    assert entry["trip_state"] == "tripped"
+    assert entry["command_status"] == "command_issued"
+    assert entry["protection_claim"] == "protected"
+
+
+async def test_a_sensor_known_unavailable_degrades_its_pairs_at_once(
+    store: StateStore, monkeypatch
+) -> None:
+    """A failed connect is not silence to be waited out.
+
+    The loss watch infers unavailability from absent readings, so it cannot
+    conclude anything before its bound — at least the documented floor. When
+    the runtime already knows no reading will arrive, the pair is told
+    immediately, and the clock is not moved here to prove it.
+    """
+    _backend_answers_drivable(monkeypatch)
+    commander = FakeCommander()
+    sink = FakeSink()
+    clock = FakeClock()
+    registry = SafetyRegistry(
+        RATIFIED,
+        (zone("zone-a"), zone("zone-b")),
+        TripJournal(store),
+        commander,
+        binding_seq=4,
+        alert_sink=sink,
+        poll_intervals_ms={"zone-a-current": 1000, "zone-b-current": 1000},
+        clock=clock,
+    )
+    await registry.start()
+    for zone_id in ("zone-a", "zone-b"):
+        await registry.observe_reading(f"{zone_id}-current", 5.0, "ampere", 1.0)
+    assert _entry(registry, "zone-a")["protection_claim"] == "protected"
+
+    await registry.note_sensor_unavailable("zone-a-current", "could not be connected")
+
+    down = _entry(registry, "zone-a")
+    assert down["measurement_degraded"] is True
+    assert down["protection_claim"] == "unprotected"
+    assert ("measurement_loss", "zone-a") in sink.notices
+
+    # Per affected pair, never global: the other zone is untouched and still
+    # evaluates, up to and including a trip.
+    other = _entry(registry, "zone-b")
+    assert other["measurement_degraded"] is False
+    assert other["protection_claim"] == "protected"
+    await registry.observe_reading("zone-b-current", 25.0, "ampere", 1.0)
+    assert commander.outcome_calls == [("zone-b", "open_protected_circuit")]
+
+
+async def test_an_unavailable_sensor_with_no_pair_is_not_an_error(
+    store: StateStore,
+) -> None:
+    """Most sensors carry no safety pair; the runtime tells the registry anyway."""
+    registry, _ = build(store)
+    await registry.start()
+
+    told = await registry.note_sensor_unavailable(
+        "some-other-sensor", "could not be connected"
+    )
+
+    # Nothing was said about any pair, so the caller must speak for itself.
+    assert told is False
+    assert _entry(registry)["measurement_degraded"] is False

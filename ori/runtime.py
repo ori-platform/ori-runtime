@@ -368,6 +368,10 @@ class OriRuntime:
         self._measurement_refusals: dict[str, int] = {}
         self._measurement_valid_streak: dict[str, int] = {}
         self._measurement_degraded: set[str] = set()
+        # Configured sensors whose adapter never connected. Distinct from a
+        # sensor that connected and went quiet: that one is late and the
+        # staleness watch sees it, this one is absent and nothing else does.
+        self._unconnected_sensors: set[str] = set()
         self._measurement_unnotified: set[str] = set()
         self._measurement_notify_attempts: dict[str, int] = {}
         self._runtime_started_at_ms: int = 0
@@ -1239,6 +1243,7 @@ class OriRuntime:
 
         # ── Start background tasks ────────────────────────────────────────────
         self._configured_sensors = list(config.sensors)
+        self._unconnected_sensors = set()
         self._connected_sensor_ids = set()
         self._sensor_poll_interval_ms = {}
         self._sensor_last_seen_ms = {}
@@ -1288,6 +1293,28 @@ class OriRuntime:
                     "[runtime] failed to connect adapter for sensor_id=%s — skipping",
                     sensor_cfg.id,
                 )
+                # Skipped, and said out loud. The staleness watch cannot cover
+                # this: it runs from the poll intervals of sensors that
+                # connected, so one that never did is not late, it is absent.
+                self._unconnected_sensors.add(str(sensor_cfg.id))
+                # The registry must not wait out its loss bound for a fact the
+                # runtime already holds. Until a pair is told, it is an active
+                # pair with no record that its measurement is unavailable.
+                told_a_pair = False
+                if self._safety_registry is not None:
+                    told_a_pair = await self._safety_registry.note_sensor_unavailable(
+                        str(sensor_cfg.id), "could not be connected"
+                    )
+                if not told_a_pair:
+                    # A pair notice already names the sensor, its zone and its
+                    # profile, so sending this as well would be two messages
+                    # for one event, and one per pair where several depend on
+                    # the sensor. Decided on whether a pair was actually told,
+                    # not on whether a registry exists: candidate, pending and
+                    # refused profiles produce no pair notice at all.
+                    await self._emit_unconnected_sensor_warning(
+                        sensor_id=str(sensor_cfg.id)
+                    )
                 continue
 
             task = asyncio.create_task(
@@ -2995,12 +3022,25 @@ class OriRuntime:
             "commissioning": self._commissioning_health(),
             "firmware_liveness": firmware_liveness_health,
         }
+        # `runtime-health/v2` types this as an array and reads absence as
+        # unknown, so a device with no registry omits the key entirely rather
+        # than carrying a null a consumer would iterate.
+        if self._safety_registry is not None:
+            snapshot["safety_zones"] = self._safety_registry.safety_zones()
         if firmware_liveness_health["degraded"]:
             # A stopped or stalled liveness loop puts timely publication at
             # risk for one or more supervised devices while the rest of the
             # runtime looks healthy. Contributed rather than assigned, so this
             # never clears a critical condition another subsystem has raised.
             snapshot["critical"] = True
+            snapshot["status"] = "degraded"
+        if self._unconnected_sensors:
+            # A configured sensor that never connected is not a healthy
+            # runtime: something it was told to measure is not being measured.
+            # Degraded rather than critical, and it names no token in
+            # `degradation_reasons` because that vocabulary is closed and
+            # carries none for this (ori-platform/ori-specs#171); the sensor
+            # itself reports `connected: false` in the meantime.
             snapshot["status"] = "degraded"
         if getattr(self, "_evidence_posture_problems", ()):
             # Evidence trust not established is degraded, not critical: the
@@ -3439,6 +3479,35 @@ class OriRuntime:
                 original_ts=now_ms(),
                 alert_sender=self._alert_sender,
             )
+        )
+
+    async def _emit_unconnected_sensor_warning(self, *, sensor_id: str) -> None:
+        """A configured sensor that never connected, as a Tier A notice.
+
+        Health already reports it unconnected, and on a headless device
+        nothing carries a log line to an operator. It never aborts startup:
+        a runtime that refuses to run has removed the agent, and the sensor
+        that failed may not be the one protecting anything.
+
+        Sent through the structural path rather than the ordinary one, so it
+        is delivered or durably queued rather than dropped. An entitlement cap
+        that suppressed it would leave an operator believing a measurement is
+        being taken that is not, which is the fact this notice exists to carry.
+        """
+        if self._alert_sender is None:
+            logger.warning(
+                "[runtime] unconnected sensor warning not sent for %s: "
+                "no alert sender is configured",
+                sensor_id,
+            )
+            return
+        await self._send_or_queue_safety_alert(
+            message=(
+                f"Sensor {sensor_id} could not be connected at startup and is "
+                "not being read. The rest of the runtime is running."
+            ),
+            trigger_name="sensor_unconnected_warning",
+            alert_sender=self._alert_sender,
         )
 
     async def _emit_stale_sensor_warning(
@@ -4076,10 +4145,17 @@ class OriRuntime:
         trigger_name: str,
         alert_sender: AlertFailoverSender,
     ) -> bool:
-        """Mandatory safety notices: delivery or durable queue, structurally
-        outside DevicePolicy — no external-alert gate is consulted and no
-        policy-counted counter moves. Reachable only from the safety
-        registry's sink, never from skills or ordinary action execution."""
+        """Mandatory notices: delivery or durable queue, structurally outside
+        DevicePolicy — no external-alert gate is consulted and no
+        policy-counted counter moves.
+
+        Two callers, admitted by one rule: a notice that a protection is
+        absent or failed must not be suppressed by an entitlement cap, because
+        suppressing it leaves an operator believing something is being watched
+        that is not. The safety registry's sink is one. A configured sensor
+        that never connected is the other, and it qualifies for the same
+        reason — the runtime cannot measure what it was told to measure.
+        Never reachable from skills or ordinary action execution."""
         recipient = self._operator_contact
         if not recipient:
             logger.warning(

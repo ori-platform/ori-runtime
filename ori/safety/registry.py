@@ -32,6 +32,7 @@ from ori.safety.activation import (
 from ori.safety.evaluation import evaluate_reading
 from ori.safety.trip_state import (
     OPEN_PROTECTED_CIRCUIT,
+    TRIPPED,
     DeferredStartupGate,
     ZoneTripState,
 )
@@ -200,6 +201,7 @@ class SafetyRegistry:
         self._last_credible_ms: dict[tuple[str, str], int] = {}
         self._measurement_degraded: set[tuple[str, str]] = set()
         self._rejected_active: set[tuple[str, str]] = set()
+        self._last_rejected_reason: dict[tuple[str, str], str] = {}
         self._last_alert_ms: dict[tuple[tuple[str, str], str], int] = {}
         self._suppressed_alerts = 0
         self._zones = {z.zone_id: z for z in zones}
@@ -306,6 +308,8 @@ class SafetyRegistry:
                 # an immediate Tier A notice under bounded suppression, and a
                 # health flag until a credible reading clears it.
                 self._rejected_active.add(pair)
+                # The contract carries this as a string, empty when none.
+                self._last_rejected_reason[pair] = verdict.reason or ""
                 await self._safety_alert(
                     pair,
                     "rejected_input",
@@ -315,6 +319,7 @@ class SafetyRegistry:
             else:
                 self._last_credible_ms[pair] = int(self._clock())
                 self._rejected_active.discard(pair)
+                self._last_rejected_reason.pop(pair, None)
                 if pair in self._measurement_degraded:
                     self._measurement_degraded.discard(pair)
                     logger.info(
@@ -509,17 +514,19 @@ class SafetyRegistry:
 
     async def _safety_alert(
         self, pair: tuple[str, str], kind: str, message: str
-    ) -> None:
+    ) -> bool:
+        """Whether the notice reached the sink, so a caller can tell whether
+        anything was actually said about this pair."""
         key = (pair, kind)
         now = int(self._clock())
         last = self._last_alert_ms.get(key)
         if last is not None and now - last < SAFETY_ALERT_SUPPRESSION_S * 1000:
             self._suppressed_alerts += 1
-            return
+            return False
         self._last_alert_ms[key] = now
         if self._alert_sink is None:
             logger.error("[safety] %s (no alert sink wired): %s", kind, message)
-            return
+            return False
         delivered = await self._alert_sink.send(
             kind=kind, zone_id=pair[0], profile_id=pair[1], message=message
         )
@@ -527,6 +534,47 @@ class SafetyRegistry:
             logger.error(
                 "[safety] %s notice not delivered or queued: %s", kind, message
             )
+        return delivered
+
+    async def note_sensor_unavailable(self, sensor_id: str, reason: str) -> bool:
+        """A measurement known to be unavailable, rather than inferred from silence.
+
+        The loss watch infers unavailability from the absence of readings, so
+        it cannot conclude anything before its bound has elapsed — at least the
+        documented floor. A connect that failed is not silence to be waited
+        out: the runtime already knows that no reading will arrive from this
+        sensor. Recording it here closes the window in which a pair would
+        otherwise still look like one that is watching something.
+
+        Per affected pair, never global, and the trip state is untouched: v1
+        never opens a circuit on loss. A credible reading clears it through
+        the same path a recovered sensor takes.
+
+        Returns whether an affected pair was actually told. A pair notice
+        already names the sensor, its zone and profile, and that the trip
+        state is held, so a caller that also sends its own would send two
+        messages for one event, once per pair. False where nothing was said —
+        no active pair, which is every sensor while profiles are candidates,
+        and also a notice the sink refused or suppressed — and the caller
+        speaks instead. Erring toward one notice too many rather than none.
+        """
+        newly = [
+            pair
+            for pair in self._by_sensor.get(sensor_id, ())
+            if pair not in self._measurement_degraded
+        ]
+        for pair in newly:
+            self._measurement_degraded.add(pair)
+        told = False
+        for pair in newly:
+            if await self._safety_alert(
+                pair,
+                "measurement_loss",
+                f"no measurement for zone {pair[0]} profile {pair[1]}: "
+                f"sensor {sensor_id} {reason}; trip state held",
+            ):
+                told = True
+        return told
 
     async def watch_measurement_loss(self) -> None:
         """The per-pair loss watch: no credible reading for longer than the
@@ -574,6 +622,104 @@ class SafetyRegistry:
                 await asyncio.wait_for(shutdown.wait(), timeout=delay)
             except asyncio.TimeoutError:
                 continue
+
+    def _backend_drivable(self, zone_id: str) -> bool:
+        """Whether this zone's commissioned backend can accept a command.
+
+        The actuation seam carries commands and no status, so the only way to
+        answer this today would be to drive a coil, and nothing may move one
+        in order to describe itself. Until the seam carries a non-actuating
+        drivability member (#482) the producer has no evidence for the
+        positive claim, and says so.
+        """
+        return False
+
+    def _protection_claim(self, pair: tuple[str, str], activation: str) -> str:
+        """`runtime-health/v2`'s conjunction, decided here rather than by a reader.
+
+        Each conjunct is present because a pair can satisfy the obvious ones
+        and protect nothing: one whose sensor stopped reporting has nothing to
+        evaluate, one whose readings are rejected is evaluating nothing
+        credible, and one that tripped without a verified effect has decided
+        to open a circuit that may still be closed.
+        """
+        # Decided first, in every posture. No fixture is implemented here yet,
+        # so this is `none` on every device and the branch never fires; it is
+        # written because the ordering is normative, not to be exercised.
+        if self._qualification()["state"] != "none":
+            return "unavailable"
+        if activation != "active":
+            return "unprotected"
+        # A candidate profile is refused into `pending_ratification` before it
+        # can activate, so an active pair is ratified by construction.
+        if not self._backend_drivable(pair[0]):
+            return "unprotected"
+        if pair in self._measurement_degraded or pair in self._rejected_active:
+            return "unprotected"
+        machine = self._machines.get(pair)
+        if machine is None:
+            return "unprotected"
+        if machine.state == TRIPPED and not (
+            machine.command_status == "command_issued" and machine.effect == "matched"
+        ):
+            return "unprotected"
+        return "protected"
+
+    def _qualification(self) -> dict[str, Any]:
+        """Qualification posture. No fixture is accepted on this runtime yet."""
+        return {
+            "state": "none",
+            "fixture_hash": "",
+            "expires_at_ms": None,
+            "sessions_used": 0,
+            "sessions_remaining": None,
+            "min_acceptable_seq": 0,
+        }
+
+    def _zone_entry(
+        self, zone_id: str, profile_id: str, activation: str, binding_seq: int | None
+    ) -> dict[str, Any]:
+        pair = (zone_id, profile_id)
+        machine = self._machines.get(pair)
+        return {
+            "zone_id": zone_id,
+            "profile_id": profile_id,
+            "activation": activation,
+            "trip_state": machine.state if machine is not None else "inactive",
+            "command_status": machine.command_status if machine is not None else "none",
+            "effect_verified": machine.effect if machine is not None else "unknown",
+            "measurement_degraded": pair in self._measurement_degraded,
+            "rejected_input_active": pair in self._rejected_active,
+            "last_rejected_reason": self._last_rejected_reason.get(pair, ""),
+            "binding_seq": binding_seq,
+            "qualification": self._qualification(),
+            "protection_claim": self._protection_claim(pair, activation),
+        }
+
+    def safety_zones(self) -> list[dict[str, Any]]:
+        """Per-pair protection posture, in `runtime-health/v2`'s shape.
+
+        One entry per eligible pair, not per active one: a consumer that does
+        not find a pair here knows nothing about it, and absence reads as
+        unknown rather than as protected. Pairs held for ratification and
+        pairs refused are therefore reported too, with the verdict that put
+        them there.
+        """
+        zones = [
+            self._zone_entry(zone_id, profile_id, "active", entry.binding_seq)
+            for (zone_id, profile_id), entry in self._active.items()
+        ]
+        zones += [
+            self._zone_entry(
+                p.zone_id, p.profile_id, "pending_ratification", self._binding_seq
+            )
+            for p in self.activation.pending
+        ]
+        zones += [
+            self._zone_entry(r.zone_id, r.profile_id, r.reason, self._binding_seq)
+            for r in self.activation.refused
+        ]
+        return sorted(zones, key=lambda z: (z["zone_id"], z["profile_id"]))
 
     def health_snapshot(self) -> dict[str, Any]:
         return {
