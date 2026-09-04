@@ -8,6 +8,15 @@
 #   Tier B  SOFT PHYSICAL   — Approval or post-action policy required.
 #   Tier C  HARD PHYSICAL   — Approval workflow required. Relay/contactor shutdowns.
 #   Tier D  SAFETY-CRITICAL — Always autonomous. Cannot be overridden.
+#
+# DOCUMENT LIMITS:
+#   The loader refuses a document nested deeper than 32 levels, carrying more
+#   than 20000 nodes, holding a mapping or sequence of more than 1000 entries,
+#   or containing a scalar longer than 4096 characters. YAML anchors and
+#   aliases are not accepted at all: write the value out in full. These bound
+#   a hostile or corrupt document, not authorship — this file is depth 6 with
+#   579 nodes, 17 entries in its widest collection, and a longest scalar of 54
+#   characters. The file is read as UTF-8 regardless of the host's locale.
 # ─────────────────────────────────────────────────────────────────────────────
 
 device:

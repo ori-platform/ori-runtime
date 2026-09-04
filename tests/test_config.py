@@ -3,6 +3,8 @@
 
 import base64
 import os
+import subprocess
+import sys
 import textwrap
 
 import pytest
@@ -4682,3 +4684,357 @@ def test_relay_polarity_is_refused_from_the_provisioning_document(tmp_path):
     )
     with pytest.raises(ConfigValidationError, match="active_high"):
         Config.load(yaml_path)
+
+
+class TestHostileDocumentIsRefused:
+    """`Config.load` answers a malformed document with a refusal, never a traceback.
+
+    Every case here reached the caller as a raw interpreter error before
+    ori-platform/ori-runtime#505: the component that exists to turn a bad
+    document into a clear refusal was not the one answering.
+    """
+
+    def _load(self, tmp_path, content: str):
+        path = tmp_path / "ori.yaml"
+        path.write_text(content)
+        return Config.load(str(path))
+
+    def test_the_issues_own_reproducer_is_refused_naming_the_file(self, tmp_path):
+        """#505's headline shape: a 5000-digit integer literal."""
+        with pytest.raises(ConfigValidationError) as excinfo:
+            self._load(
+                tmp_path,
+                "device:\n  id: x\n  rated_capacity_amps: " + "9" * 5000 + "\n",
+            )
+        assert "ori.yaml" in str(excinfo.value)
+
+    def test_a_constructor_refusal_names_the_line(self, tmp_path):
+        """The mark path, exercised by a literal short enough to be constructed.
+
+        Every literal long enough to reach the interpreter's 4300-digit limit
+        is also past the 4096-character scalar bound, so the bound refuses it
+        first. A malformed timestamp is short, so it reaches a constructor and
+        carries the node's mark.
+        """
+        with pytest.raises(ConfigValidationError) as excinfo:
+            self._load(tmp_path, "device:\n  id: x\n  t: 2026-13-45T99:99:99\n")
+        assert "line 3" in str(excinfo.value)
+        assert isinstance(excinfo.value.__cause__, yaml.YAMLError)
+
+    def test_a_constructor_failure_that_is_not_the_digit_limit_is_also_refused(
+        self, tmp_path
+    ):
+        """Not the two shapes #505 named: `datetime` refuses this one, not `int`."""
+        with pytest.raises(ConfigValidationError) as excinfo:
+            self._load(tmp_path, "device:\n  id: x\n  t: 2026-13-45T99:99:99\n")
+        assert "ori.yaml" in str(excinfo.value)
+        assert "month must be in 1..12" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            pytest.param(
+                "device:\n  k: " + "[" * 5000 + "]" * 5000 + "\n", id="flow-seq"
+            ),
+            pytest.param(
+                "device:\n  k: " + "{a: " * 3000 + "1" + "}" * 3000 + "\n",
+                id="flow-map",
+            ),
+            pytest.param(
+                "".join("  " * i + f"k{i}:\n" for i in range(2000))
+                + "  " * 2000
+                + "v: 1\n",
+                id="block",
+            ),
+        ],
+    )
+    def test_deep_nesting_is_refused_by_the_depth_bound(self, tmp_path, document):
+        with pytest.raises(ConfigValidationError, match="nesting deeper than 32"):
+            self._load(tmp_path, document)
+
+    def test_a_document_nested_just_under_the_bound_loads(self, tmp_path):
+        """The bound refuses hostile input, not a legitimately nested document.
+
+        The deepest shipped example reaches depth 6. This composes to 31, one
+        under the bound, and its value survives to the parsed config.
+        """
+        nesting = 27  # plus the four levels of mapping around it
+        config = self._load(
+            tmp_path,
+            textwrap.dedent(
+                """
+                device:
+                  id: bench-01
+                  name: Bench
+                  location: Lagos
+                sensors: []
+                skills: []
+                reasoning:
+                  default_tier: rule
+                gateway:
+                  enabled: false
+                  broker_url: mqtt://localhost
+                actions:
+                  primary_alert_channel: sms
+                  deep:
+                    nested: PLACEHOLDER
+                """
+            ).replace("PLACEHOLDER", "[" * nesting + '"leaf"' + "]" * nesting),
+        )
+        value = config.raw["actions"]["deep"]["nested"]
+        observed = 0
+        while isinstance(value, list):
+            value = value[0]
+            observed += 1
+        assert (observed, value) == (nesting, "leaf")
+
+    def test_no_parser_failure_reaches_the_caller_unclassified(
+        self, tmp_path, monkeypatch
+    ):
+        """The backstop, asserted rather than assumed.
+
+        #505 asks for the parse step to be wrapped rather than the two known
+        shapes special-cased. The bounds and the constructor mark cover every
+        shape reachable today, which leaves the general guard untested unless
+        the parser is made to raise something none of them classify.
+        """
+        import ori.config as config_module
+
+        def _explode(*args, **kwargs):
+            raise OverflowError("parser exploded")
+
+        monkeypatch.setattr(config_module.yaml, "load", _explode)
+        with pytest.raises(ConfigValidationError) as excinfo:
+            self._load(tmp_path, "device:\n  id: x\n")
+        message = str(excinfo.value)
+        assert "ori.yaml" in message
+        assert "OverflowError" in message
+        assert isinstance(excinfo.value.__cause__, OverflowError)
+
+    def test_the_depth_bound_is_pinned_at_exactly_32(self, tmp_path):
+        """The last accepted depth and the first refused one, measured.
+
+        Without both sides only the constant in the refusal message is pinned,
+        and a bound can move without any test noticing.
+        """
+        prefix = "device:\n  id: x\n  k: "
+        # Measured: the two mapping levels above `k` mean N brackets compose
+        # to depth N + 2, so 30 is the last accepted and 31 the first refused.
+        at_bound = prefix + "[" * 30 + "]" * 30 + "\n"
+        past_bound = prefix + "[" * 31 + "]" * 31 + "\n"
+
+        with pytest.raises(ConfigValidationError) as accepted:
+            self._load(tmp_path, at_bound)
+        assert "nesting deeper" not in str(accepted.value)
+
+        with pytest.raises(ConfigValidationError, match="nesting deeper than 32"):
+            self._load(tmp_path, past_bound)
+
+    def test_an_alias_is_refused(self, tmp_path):
+        """A depth bound that permits aliases bounds nothing — see the next test."""
+        with pytest.raises(ConfigValidationError, match="aliases are not permitted"):
+            self._load(tmp_path, "device: &d\n  id: x\nother: *d\n")
+
+    def test_an_alias_chain_would_otherwise_build_a_graph_past_the_depth_bound(self):
+        """Why aliases are refused rather than bounded.
+
+        Each alias composes at its own shallow depth while referencing an
+        already-composed node, so the depth bound never sees the graph the
+        document actually builds. Asserted against the parser directly, since
+        the loader now refuses the document before this can happen.
+        """
+        levels = 2000
+        document = "a0: &a0 [x]\n" + "".join(
+            f"a{i}: &a{i} [*a{i - 1}]\n" for i in range(1, levels)
+        )
+        graph = yaml.safe_load(document)
+
+        node = graph[f"a{levels - 1}"]
+        observed = 0
+        while isinstance(node, list) and node:
+            node = node[0]
+            observed += 1
+        assert observed == levels
+
+        def visit(value):
+            if isinstance(value, dict):
+                return sum(visit(v) for v in value.values())
+            if isinstance(value, list):
+                return sum(visit(v) for v in value)
+            return 1
+
+        with pytest.raises(RecursionError):
+            visit(graph)
+
+    def test_an_oversized_mapping_is_refused(self, tmp_path):
+        document = "device:\n  id: x\n" + "".join(f"  k{i}: 1\n" for i in range(1500))
+        with pytest.raises(ConfigValidationError, match="more than 1000 keys"):
+            self._load(tmp_path, document)
+
+    def test_an_oversized_sequence_is_refused(self, tmp_path):
+        document = "device:\n  id: x\n  k: [" + ",".join(["1"] * 1500) + "]\n"
+        with pytest.raises(ConfigValidationError, match="more than 1000 entries"):
+            self._load(tmp_path, document)
+
+    def test_an_oversized_node_count_is_refused(self, tmp_path):
+        document = "".join(f"k{i}: [1,2,3,4,5,6,7,8,9,0]\n" for i in range(2000))
+        with pytest.raises(ConfigValidationError, match="more than 20000 nodes"):
+            self._load(tmp_path, document)
+
+    def test_the_limits_apply_after_environment_expansion(self, tmp_path, monkeypatch):
+        """Both parse sites are covered, not only the one that reads the file.
+
+        The document on disk is parsed once, then expanded and parsed again.
+        A value substituted from the environment reaches the second parse
+        only, so a limit enforced at the first would not see it.
+        """
+        monkeypatch.setenv("ORI_TEST_INJECTED", "[" * 100 + "]" * 100)
+        with pytest.raises(ConfigValidationError, match="nesting deeper than 32"):
+            self._load(tmp_path, "device:\n  id: x\n  k: ${ORI_TEST_INJECTED}\n")
+
+    def test_a_file_that_is_not_utf8_is_refused(self, tmp_path):
+        """Found by the adversarial pass, not by the issue.
+
+        The read happened in text mode with the host's locale encoding, so a
+        corrupt or truncated download reached the caller as
+        ``UnicodeDecodeError``. The encoding is now fixed, because a signed
+        configuration has to decode to the same document on every device.
+        """
+        path = tmp_path / "ori.yaml"
+        path.write_bytes(b"device:\n  id: \xff\xfe\xff\n")
+        with pytest.raises(ConfigValidationError, match="not valid UTF-8"):
+            Config.load(str(path))
+
+    def test_a_non_ascii_document_loads_under_a_non_utf8_locale(self, tmp_path):
+        """The other half: fixing the encoding must not refuse a legitimate file.
+
+        Driven in a subprocess, because ``open()``'s default encoding comes
+        from the C locale fixed at interpreter startup. Setting ``LC_ALL`` in
+        ``os.environ`` afterwards changes nothing, so a monkeypatched version
+        of this test passes whether or not the encoding is pinned.
+        """
+        path = tmp_path / "ori.yaml"
+        path.write_text(
+            textwrap.dedent(
+                """
+                device:
+                  id: bench-01
+                  name: Bench
+                  location: Lagos — Ikeja
+                sensors: []
+                skills: []
+                reasoning:
+                  default_tier: rule
+                gateway:
+                  enabled: false
+                  broker_url: mqtt://localhost
+                actions:
+                  primary_alert_channel: sms
+                """
+            ),
+            encoding="utf-8",
+        )
+        env = dict(os.environ)
+        env.update(
+            LC_ALL="C",
+            LANG="C",
+            PYTHONCOERCECLOCALE="0",
+            PYTHONUTF8="0",
+            PYTHONIOENCODING="utf-8",
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys;from ori.config import Config;"
+                "print(Config.load(sys.argv[1]).device.location)",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=os.path.join(os.path.dirname(__file__), ".."),
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert "Lagos — Ikeja" in completed.stdout
+
+    def test_an_overlong_scalar_is_refused(self, tmp_path):
+        with pytest.raises(ConfigValidationError, match="longer than 4096 characters"):
+            self._load(tmp_path, "device:\n  id: x\n  k: " + "A" * 5000 + "\n")
+
+    def test_the_scalar_bound_does_not_rest_on_the_interpreter_digit_limit(
+        self, tmp_path
+    ):
+        """`PYTHONINTMAXSTRDIGITS=0` removes the interpreter's own limit.
+
+        #505's headline reproducer is a 5000-digit integer, which the
+        interpreter refuses only while that limit is in force and only for
+        decimal. The loader's own bound has to be what refuses it.
+        """
+        for literal in ("9" * 5000, "0x" + "f" * 5000, "0b" + "1" * 5000):
+            with pytest.raises(ConfigValidationError, match="longer than 4096"):
+                self._load(tmp_path, f"device:\n  id: x\n  k: {literal}\n")
+
+    def test_a_value_that_no_conversion_accepts_is_refused_not_raised(self, tmp_path):
+        """The defect #505 names, one step past the parse it was found in.
+
+        `device.rated_capacity_amps` is the Tier D threshold input, and it is
+        read through `float()`. A 309-digit integer parses cleanly and then
+        overflows; a string and a list fail differently again. None of them is
+        a `YAMLError`, and `Config.load`'s callers catch nothing else.
+        """
+        # `true` is deliberately absent: `float(True)` is 1.0, so a boolean is
+        # accepted as a rated capacity. That is a field-validation gap, not an
+        # unclassified escape, and it belongs to its own issue.
+        for value in ("9" * 309, "abc", "[1]", "{a: 1}"):
+            document = textwrap.dedent(
+                f"""
+                device:
+                  id: bench-01
+                  name: Bench
+                  location: Lagos
+                  rated_capacity_amps: {value}
+                sensors: []
+                skills: []
+                reasoning:
+                  default_tier: rule
+                gateway:
+                  enabled: false
+                  broker_url: mqtt://localhost
+                actions:
+                  primary_alert_channel: sms
+                """
+            )
+            with pytest.raises(ConfigValidationError) as excinfo:
+                self._load(tmp_path, document)
+            assert "ori.yaml" in str(excinfo.value)
+
+    def test_the_top_level_shape_refusal_names_the_file(self, tmp_path):
+        """The likeliest bad document of all: a truncated or zero-byte write."""
+        for document in ("", "   \n\n", "just-a-string\n", "- a\n- b\n", "~\n"):
+            with pytest.raises(ConfigValidationError) as excinfo:
+                self._load(tmp_path, document)
+            assert "ori.yaml" in str(excinfo.value)
+
+    def test_a_valid_document_is_unaffected(self, tmp_path):
+        config = self._load(
+            tmp_path,
+            textwrap.dedent(
+                """
+                device:
+                  id: bench-01
+                  name: Bench
+                  location: Lagos
+                sensors: []
+                skills: []
+                reasoning:
+                  default_tier: rule
+                gateway:
+                  enabled: false
+                  broker_url: mqtt://localhost
+                actions:
+                  primary_alert_channel: sms
+                """
+            ),
+        )
+        assert config.device.id == "bench-01"
