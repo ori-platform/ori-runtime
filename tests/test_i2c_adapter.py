@@ -62,8 +62,10 @@ def _needs_hardware(
 def _clear_ads1115_claims():
     """One ADS1115 serves one adapter, and most tests never close theirs."""
     i2c_module._ADS1115_CLAIMS.clear()
+    i2c_module._ADS1115_QUARANTINE.clear()
     yield
     i2c_module._ADS1115_CLAIMS.clear()
+    i2c_module._ADS1115_QUARANTINE.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -1523,6 +1525,155 @@ class TestAds1115ChannelSelection:
         assert 1 in i2c_module._shared_busio_instances
         await second.close()
         assert i2c_module._shared_busio_refs == {}
+
+    async def test_a_refused_measurement_holds_and_never_rewrites_the_chip(
+        self, monkeypatch
+    ):
+        """The refusal is terminal for the process, and it is read-only.
+
+        A reading that refuses is evidence that something outside this process
+        changed the configuration after connect. This adapter's claim keeps a
+        second Ori adapter off the chip; it establishes nothing against another
+        process, a reset line or a second controller. Writing the configuration
+        back would be a contest with whatever moved it, and losing that
+        intermittently produces a plausible number instead of a refusal.
+
+        So every subsequent read refuses on its own terms, and the chip is left
+        exactly as it was found. Recovery is a restart, after the competing
+        writer is gone.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        ads = created[0]
+
+        # Something else takes the chip: same mux, different gain.
+        ads._gain_bits = 0x0000
+        settled = len([w for w in ads.writes if w[0] == "config"])
+
+        for _ in range(3):
+            with pytest.raises(MeasurementRefusedError, match="until runtime restart"):
+                await adapter.read("s")
+
+        assert len([w for w in ads.writes if w[0] == "config"]) == settled, (
+            "the adapter wrote the ADS1115 while refusing, which is a writing "
+            "contest with whatever changed it"
+        )
+
+        # The chip reading correct again does not clear it. Something outside
+        # this process is writing the chip, and a reading taken between two of
+        # its writes is a plausible number rather than a measurement — an
+        # intermittent wrong value, which is worse than an outage because
+        # nothing about it looks wrong. No reading can establish that the
+        # competing writer is gone, so no reading clears the refusal.
+        ads._gain_bits = 0x0200
+        with pytest.raises(MeasurementRefusedError, match="until runtime restart"):
+            await adapter.read("s")
+        assert len([w for w in ads.writes if w[0] == "config"]) == settled
+        await adapter.close()
+
+        # And a new adapter over the same chip is refused too, before it can
+        # acquire the bus or write anything. An adapter-scoped latch would let
+        # a second object reconnect, rewrite the chip and start reading inside
+        # the same process, which would make "until runtime restart" untrue.
+        # Asserted on the acquisition, not on the reference count: a failed
+        # connect gives its reference back, so counting before and after would
+        # pass whether or not the bus was ever touched.
+        acquisitions: list[int] = []
+        real_acquire = i2c_module._get_shared_busio_i2c
+
+        def _counted(bus_number):
+            acquisitions.append(bus_number)
+            return real_acquire(bus_number)
+
+        monkeypatch.setattr(i2c_module, "_get_shared_busio_i2c", _counted)
+
+        fresh = I2CAdapter()
+        with pytest.raises(AdapterConnectionError, match="until runtime restart"):
+            await fresh.connect(_config(sensor_type="ads1115_current", channel=0))
+        assert not fresh.is_connected
+        assert len([w for w in ads.writes if w[0] == "config"]) == settled
+        assert acquisitions == [], "the refused connect reached the bus before refusing"
+
+    async def test_a_quarantine_is_the_chip_not_the_bus(self, monkeypatch):
+        """Keyed by (bus, address): another chip is a different device.
+
+        A competing writer on one chip says nothing about a second one at its
+        own address, and refusing that too would lose a measurement nothing
+        established a problem with.
+        """
+        _pinned_driver(monkeypatch, chip_mux=0)
+        first = I2CAdapter()
+        await first.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        first._quarantine_ads1115("something took this chip")
+
+        with pytest.raises(MeasurementRefusedError):
+            await first.read("s")
+        await first.close()
+
+        other = I2CAdapter()
+        await other.connect(
+            _config(sensor_type="ads1115_voltage", address=0x49, channel=0)
+        )
+        assert other.is_connected
+        assert abs((await other.read("s")).value) < 0.01
+        await other.close()
+
+    async def test_a_bus_error_on_the_readback_refuses_but_does_not_latch(
+        self, monkeypatch
+    ):
+        """A readback that cannot be performed is not evidence of a writer.
+
+        The latch exists because a chip running a configuration this adapter
+        did not set means something else is writing it. A bus that dropped a
+        transaction means nothing of the kind, and latching on it would turn
+        one bad transfer into an outage lasting until restart.
+        """
+        _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_voltage", channel=0))
+
+        original = _PinnedDriverADS1115._read_register
+        broken = {"on": True}
+
+        def config_read_fails(self, pointer, fast=False):
+            if broken["on"] and pointer == self.POINTER_CONFIG and not fast:
+                raise OSError("[Errno 121] Remote I/O error")
+            return original(self, pointer, fast)
+
+        monkeypatch.setattr(_PinnedDriverADS1115, "_read_register", config_read_fails)
+        with pytest.raises(MeasurementRefusedError, match="could not read back"):
+            await adapter.read("s")
+
+        broken["on"] = False
+        # The bus recovered, so the adapter does too, without a restart.
+        assert abs((await adapter.read("s")).value) < 0.01
+        await adapter.close()
+
+    async def test_a_refusal_names_what_an_operator_should_do(self, monkeypatch):
+        """A refusal an operator cannot act on is a log line, not a report."""
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        created[0]._mux = 5
+
+        with pytest.raises(MeasurementRefusedError) as raised:
+            await adapter.read("s")
+
+        message = str(raised.value)
+        assert "withheld until runtime restart" in message
+        assert "competing writer" in message
+        await adapter.close()
+
+    async def test_a_connect_refusal_does_not_promise_a_restart(self, monkeypatch):
+        """Connect refuses the sensor outright; there is nothing to withhold."""
+        _pinned_driver(monkeypatch, chip_mux=0, honours_pin_in_single=False)
+        adapter = I2CAdapter()
+
+        with pytest.raises(AdapterConnectionError) as raised:
+            await adapter.connect(_config(sensor_type="ads1115_voltage", channel=0))
+
+        assert "until runtime restart" not in str(raised.value)
 
     async def test_the_reproduction_spins_on_a_conversion_that_never_completes(self):
         """Guards the fake: without a real poll the hang test proves nothing."""

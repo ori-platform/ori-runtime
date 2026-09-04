@@ -144,6 +144,15 @@ _ADS_SENSOR_TYPES = frozenset({"ads1115_current", "ads1115_voltage"})
 _ADS1115_CLAIMS: "dict[tuple[int, int], weakref.ref[I2CAdapter]]" = {}
 _ADS1115_CLAIMS_LOCK = threading.Lock()
 
+# Chips seen running a configuration this process did not set, by (bus,
+# address). Never emptied: the operator message promises that a refusal lasts
+# until the runtime restarts, and an adapter-scoped latch would not keep that
+# promise — a second adapter object over the same chip would connect, rewrite
+# it, and start reading again inside the same process. Keyed by the physical
+# chip rather than by the object, because the chip is what was taken.
+_ADS1115_QUARANTINE: dict[tuple[int, int], str] = {}
+_ADS1115_QUARANTINE_LOCK = threading.Lock()
+
 # All sensor types handled by this adapter
 _SUPPORTED = frozenset(
     {
@@ -650,6 +659,14 @@ class I2CAdapter(BaseAdapter):
     def _connect_ads1115(self) -> None:
         _require_drivers(self._sensor_type)
         assert _ads1115 is not None and _ads1x15 is not None
+        # Before the bus is touched, and before anything is written. A chip
+        # this process has already found under someone else's configuration is
+        # refused for the life of the process: connecting would mean writing
+        # the configuration back, which is the contest the refusal exists to
+        # avoid, and it would make "until runtime restart" untrue.
+        quarantined = self._ads1115_quarantined()
+        if quarantined is not None:
+            raise AdapterConnectionError(quarantined)
         # The driver defaults are 128 SPS in single-shot mode, which yields
         # about two samples per 50 Hz cycle. Continuous conversion at the
         # configured rate is what makes a window resolvable at all.
@@ -785,6 +802,21 @@ class I2CAdapter(BaseAdapter):
         self._holds_shared_bus = False
         _release_shared_busio_i2c(self._bus_number)
 
+    def _ads1115_quarantined(self) -> str | None:
+        """Why this chip is refused for the life of the process, if it is."""
+        with _ADS1115_QUARANTINE_LOCK:
+            return _ADS1115_QUARANTINE.get((self._bus_number, self._address))
+
+    def _quarantine_ads1115(self, reason: str) -> None:
+        """Refuse this chip until the process restarts.
+
+        The first reason recorded is kept: it describes the configuration the
+        chip was found running, and a later one would only describe what the
+        competing writer did next.
+        """
+        with _ADS1115_QUARANTINE_LOCK:
+            _ADS1115_QUARANTINE.setdefault((self._bus_number, self._address), reason)
+
     def _release_ads1115_claim(self) -> None:
         key = (self._bus_number, self._address)
         with _ADS1115_CLAIMS_LOCK:
@@ -811,7 +843,40 @@ class I2CAdapter(BaseAdapter):
             | self._ADS1115_COMPARATOR_DISABLED
         )
 
-    def _verify_ads1115_channel(self, error: type[Exception]) -> None:
+    def _ads1115_configuration_fault(self) -> str | None:
+        """What the chip is running, when it is not what this adapter set.
+
+        Returns the mismatch rather than raising it, so a caller can decide
+        what a mismatch means: a connect refuses the sensor, and a measurement
+        refuses and latches. A readback that cannot be performed at all is a
+        bus failure rather than evidence of a competing writer, and is raised
+        from here for the caller to classify.
+        """
+        expected = self._expected_ads1115_config()
+        config = self._ads._read_register(self._ADS1115_CONFIG_REGISTER)
+        observed = int(config) & self._ADS1115_CONFIG_MASK
+        mux = (observed >> self._ADS1115_MUX_SHIFT) & 0x7
+        expected_mux = self._ADS1115_MUX_SINGLE_ENDED_BASE + self._channel
+        if mux != expected_mux:
+            return (
+                f"I2CAdapter: ADS1115 at 0x{self._address:02X} is reading mux "
+                f"code {mux}, not single-ended channel {self._channel} "
+                f"(code {expected_mux}); the input it reports is not the one "
+                "configured"
+            )
+        if observed != expected:
+            return (
+                f"I2CAdapter: ADS1115 at 0x{self._address:02X} is running "
+                f"configuration 0x{observed:04X}, not the 0x{expected:04X} "
+                "this adapter set; its gain, data rate or conversion mode was "
+                "changed by something else, and the samples it returns are no "
+                "longer the ones configured"
+            )
+        return None
+
+    def _verify_ads1115_channel(
+        self, error: type[Exception], *, remedy: str = ""
+    ) -> None:
         """Refuse when the chip is not running the configuration this set.
 
         Run at connect and again before every measurement, because a connect-
@@ -835,9 +900,8 @@ class I2CAdapter(BaseAdapter):
         The readback leaves the chip's register pointer on CONFIG. Callers must
         follow it with a pointered conversion read before any fast read.
         """
-        expected = self._expected_ads1115_config()
         try:
-            config = self._ads._read_register(self._ADS1115_CONFIG_REGISTER)
+            fault = self._ads1115_configuration_fault()
         except Exception as exc:
             # Classified as a refusal, not a bus error: what the caller needs
             # to know is that this window cannot be shown to be a measurement.
@@ -845,28 +909,60 @@ class I2CAdapter(BaseAdapter):
                 "I2CAdapter: could not read back the ADS1115 configuration to "
                 f"confirm its channel: {type(exc).__name__}: {exc}"
             ) from exc
-        observed = int(config) & self._ADS1115_CONFIG_MASK
-        mux = (observed >> self._ADS1115_MUX_SHIFT) & 0x7
-        expected_mux = self._ADS1115_MUX_SINGLE_ENDED_BASE + self._channel
-        if mux != expected_mux:
-            raise error(
-                f"I2CAdapter: ADS1115 at 0x{self._address:02X} is reading mux "
-                f"code {mux}, not single-ended channel {self._channel} "
-                f"(code {expected_mux}); the input it reports is not the one "
-                "configured"
-            )
-        if observed != expected:
-            raise error(
-                f"I2CAdapter: ADS1115 at 0x{self._address:02X} is running "
-                f"configuration 0x{observed:04X}, not the 0x{expected:04X} "
-                "this adapter set; its gain, data rate or conversion mode was "
-                "changed by something else, and the samples it returns are no "
-                "longer the ones configured"
-            )
+        if fault is not None:
+            raise error(f"{fault}{remedy}")
+
+    # What an operator can act on, and the posture it states. The refusal is
+    # not retried and the chip is not written again: a reading that refuses is
+    # evidence that something outside this process changed the configuration
+    # after connect, and this adapter's claim cannot establish exclusive
+    # ownership of the bus against another process, a reset line or a second
+    # controller. Selecting this configuration again would be a writing
+    # contest, and the failure mode of losing one intermittently is a
+    # plausible number rather than a refusal. Availability is given up so that
+    # truthfulness is not, and #508 makes the loss visible rather than healthy.
+    _REFUSAL_REMEDY = (
+        "; configuration changed after startup, so the measurement is withheld "
+        "until runtime restart — investigate a competing writer, a brownout or "
+        "a reset"
+    )
 
     def _reaffirm_ads1115_channel(self) -> None:
-        """Per-measurement: prove the mux, then re-point the conversion register."""
-        self._verify_ads1115_channel(MeasurementRefusedError)
+        """Per-measurement: prove the configuration, then re-point the register.
+
+        Nothing here writes the chip. The verification is a read, and the
+        pointered read that follows runs only once the configuration has been
+        proven, so a refused measurement leaves the device as it was found.
+
+        The refusal quarantines the chip for the life of the process. Once it
+        has been seen running a configuration this adapter did not set, later
+        readings are refused without consulting it again, even if it reads
+        correct afterwards, and a new adapter over the same chip is refused at
+        connect before it can touch the bus.
+        Something outside this process is writing the chip, and a reading
+        taken between two of its writes is a plausible number rather than a
+        measurement — the fault would present as an intermittent value, which
+        is worse than an outage because nothing about it looks wrong. Clearing
+        it needs the competing writer gone, which no reading can establish, so
+        recovery is a restart rather than the next poll going quiet.
+
+        A readback that cannot be performed at all is a bus failure and does
+        not latch: it is not evidence that anything took the chip.
+        """
+        quarantined = self._ads1115_quarantined()
+        if quarantined is not None:
+            raise MeasurementRefusedError(quarantined)
+        try:
+            fault = self._ads1115_configuration_fault()
+        except Exception as exc:
+            raise MeasurementRefusedError(
+                "I2CAdapter: could not read back the ADS1115 configuration to "
+                f"confirm its channel: {type(exc).__name__}: {exc}"
+            ) from exc
+        if fault is not None:
+            message = f"{fault}{self._REFUSAL_REMEDY}"
+            self._quarantine_ads1115(message)
+            raise MeasurementRefusedError(message)
         self._ads.get_last_result(False)
 
     def _connect_scd40(self) -> None:
