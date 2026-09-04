@@ -1859,6 +1859,11 @@ class TestCloseDuringConnect:
     back. The runtime would then poll a sensor whose bus nobody believes is in
     use.
 
+    Every wait here is bounded. A lifecycle that deadlocks should fail the
+    test rather than hang the run, which is the difference between a defect
+    that is reported and one that is discovered by a timeout somewhere less
+    informative.
+
     Driven for every sensor type the adapter serves, and from both sides of the
     window, because the two orderings fail differently: a close landing after
     the acquisition is undone by the close itself, and one landing before it is
@@ -1937,8 +1942,8 @@ class TestCloseDuringConnect:
         release.set()
 
         with pytest.raises(AdapterConnectionError, match="closed while it was still"):
-            await connecting
-        await closing
+            await asyncio.wait_for(connecting, 5)
+        await asyncio.wait_for(closing, 5)
 
         self._assert_nothing_held(adapter, sensor_type, before)
 
@@ -1978,8 +1983,8 @@ class TestCloseDuringConnect:
         assert not reconnecting.done(), "a connect ran inside a close's teardown"
 
         finish.set()
-        await closing
-        await reconnecting
+        await asyncio.wait_for(closing, 5)
+        await asyncio.wait_for(reconnecting, 5)
 
         assert adapter.is_connected is True
         assert i2c_module._shared_busio_refs == before_connect, (
@@ -2013,8 +2018,8 @@ class TestCloseDuringConnect:
         assert adapter._close_count == 1
         release.set()
         with pytest.raises(AdapterConnectionError, match="closed while it was still"):
-            await connecting
-        await closing
+            await asyncio.wait_for(connecting, 5)
+        await asyncio.wait_for(closing, 5)
 
     async def test_a_teardown_never_releases_another_adapters_claim(self, monkeypatch):
         """The property that makes the teardown safe to run from two places.
@@ -2079,7 +2084,7 @@ class TestCloseDuringConnect:
         assert not second.done(), "the second connect ran alongside the first"
 
         release.set()
-        await first
+        await asyncio.wait_for(first, 5)
 
         # The first connected its own device, on its own channel.
         assert adapter._address == 0x48
@@ -2090,7 +2095,7 @@ class TestCloseDuringConnect:
         # takes no further shared-bus reference against the one release the
         # single close will make.
         with pytest.raises(AdapterConnectionError, match="already connected"):
-            await second
+            await asyncio.wait_for(second, 5)
         assert i2c_module._shared_busio_refs == {1: 1}
 
         await adapter.close()
