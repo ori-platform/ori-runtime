@@ -282,11 +282,12 @@ class _PinnedDriverAnalogIn:
 
     @property
     def voltage(self):
-        # Gain 1: +/-4.096 V over a signed 16-bit range, as the driver scales.
+        # Gain 1: +/-4.096 V over 2^15, which is how the driver scales -- it
+        # divides the full-scale range by `1 << (bits - 1)`, not by 32767.
         raw = self.value
         if raw >= 0x8000:
             raw -= 0x10000
-        return raw * 4.096 / 32767
+        return raw * 4.096 / 32768
 
 
 def _pinned_driver(monkeypatch, **ads_kwargs):
@@ -718,8 +719,7 @@ class TestReadAds1115Current:
         adapter = _connected_ads_adapter("ads1115_current")
         channel = self._waveform_channel(amplitude=math.sqrt(2))
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
-            analog.AnalogIn.return_value = channel
+        with patch.object(adapter, "_sample_ads1115_volts", lambda: channel.voltage):
             reading = await adapter.read("load-current")
 
         assert reading.unit == "ampere"
@@ -738,8 +738,7 @@ class TestReadAds1115Current:
         )
         channel = self._waveform_channel(amplitude=math.sqrt(2))
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
-            analog.AnalogIn.return_value = channel
+        with patch.object(adapter, "_sample_ads1115_volts", lambda: channel.voltage):
             reading = await adapter.read("load-current")
 
         assert reading.value == pytest.approx(10.0, rel=0.05)
@@ -749,8 +748,7 @@ class TestReadAds1115Current:
         channel = MagicMock()
         channel.voltage = 1.65
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
-            analog.AnalogIn.return_value = channel
+        with patch.object(adapter, "_sample_ads1115_volts", lambda: channel.voltage):
             reading = await adapter.read("load-current")
 
         assert reading.value == pytest.approx(0.0, abs=1e-3)
@@ -759,8 +757,7 @@ class TestReadAds1115Current:
         adapter = _connected_ads_adapter("ads1115_current")
         channel = self._waveform_channel(amplitude=1.0)
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
-            analog.AnalogIn.return_value = channel
+        with patch.object(adapter, "_sample_ads1115_volts", lambda: channel.voltage):
             reading = await adapter.read("load-current")
 
         assert reading.metadata["sensitivity_v_per_amp"] == pytest.approx(1 / 30)
@@ -780,8 +777,7 @@ class TestReadAds1115Current:
         channel = MagicMock()
         channel.voltage = 4.09  # hard against the +/-4.096 V full scale
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
-            analog.AnalogIn.return_value = channel
+        with patch.object(adapter, "_sample_ads1115_volts", lambda: channel.voltage):
             with pytest.raises(AdapterReadError, match="clipped"):
                 await adapter.read("load-current")
 
@@ -800,8 +796,7 @@ class TestReadAds1115Current:
 
         type(channel).voltage = property(lambda _self: voltage())
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
-            analog.AnalogIn.return_value = channel
+        with patch.object(adapter, "_sample_ads1115_volts", lambda: channel.voltage):
             with pytest.raises(AdapterReadError, match="fewer than"):
                 await adapter.read("load-current")
 
@@ -819,8 +814,7 @@ class TestReadAds1115Current:
 
         original = channel.__class__.voltage
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
-            analog.AnalogIn.return_value = channel
+        with patch.object(adapter, "_sample_ads1115_volts", lambda: channel.voltage):
             started = time.monotonic()
             reading = await adapter.read("load-current")
             elapsed = time.monotonic() - started
@@ -836,15 +830,22 @@ class TestReadAds1115Current:
         assert elapsed >= adapter._window.nominal_seconds * 0.9
 
     async def test_channel_used_correctly(self):
+        """The channel is the chip's multiplexer, not an argument per read.
+
+        It is written once at connect and proven from the configuration
+        register before and after every window, so what this asserts is that
+        the configured channel is the one the check demands: single-ended
+        AIN2 is mux code 6.
+        """
         adapter = _connected_ads_adapter("ads1115_current")
         adapter._channel = 2
         channel = self._waveform_channel(amplitude=1.0)
 
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as analog:
-            analog.AnalogIn.return_value = channel
-            await adapter.read("load-current")
+        with patch.object(adapter, "_sample_ads1115_volts", lambda: channel.voltage):
+            reading = await adapter.read("load-current")
 
-        analog.AnalogIn.assert_called_once_with(adapter._ads, 2)
+        assert reading.metadata["channel"] == 2
+        assert (adapter._expected_ads1115_config() >> 12) & 0x7 == 6
 
 
 # ─── read — ADS1115 voltage ───────────────────────────────────────────────────
@@ -853,11 +854,7 @@ class TestReadAds1115Current:
 class TestReadAds1115Voltage:
     async def test_returns_voltage_reading(self):
         adapter = _connected_ads_adapter("ads1115_voltage")
-        mock_chan = MagicMock()
-        mock_chan.voltage = 3.3
-
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as mock_analog:
-            mock_analog.AnalogIn.return_value = mock_chan
+        with patch.object(adapter, "_sample_ads1115_volts", lambda: 3.3):
             reading = await adapter.read("grid-voltage")
 
         assert reading.sensor_type == "ads1115_voltage"
@@ -2139,4 +2136,179 @@ class TestCloseDuringConnect:
         await adapter.close()
         await adapter.connect(_config(sensor_type="ads1115_voltage"))
         assert adapter.is_connected is True
+        await adapter.close()
+
+
+class TestWindowIntegrity:
+    """What the configuration check does not see between its two ends.
+
+    The check before a window certifies the chip at that instant only. Two
+    things can go wrong inside the window afterwards, and they need different
+    answers: a foreign pointered read moves the chip's register pointer, and a
+    foreign configuration write rescales or halts the conversion.
+    """
+
+    async def test_a_sample_writes_the_pointer_rather_than_trusting_it(
+        self, monkeypatch
+    ):
+        """The fast path returns whatever the pointer is on.
+
+        Moved mid-window, because the check before the window re-points the
+        register itself: a pointer disturbed before the window is put back and
+        proves nothing. Anything else on the bus that reads the configuration
+        register part-way through leaves the pointer there, and with a fast
+        read every remaining sample comes back as the configuration word —
+        2.14 V, a plausible mid-range value the clip check does not question.
+
+        The window is not refused for it and could not be: those samples look
+        like a signal. Writing the pointer per sample removes the question.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        ads = created[0]
+
+        counts = itertools.count()
+        bias, peak = 1.65, 0.5
+
+        def square():
+            i = next(counts)
+            if i == 8:
+                # Another reader on the bus leaves the pointer on CONFIG.
+                ads._pointer = ads.POINTER_CONFIG
+            volts = bias + (peak if i % 2 == 0 else -peak)
+            return int(volts * 32768 / 4.096)
+
+        ads._conversion = square
+
+        reading = await adapter.read("s")
+
+        # 0.5 V RMS over a 1/30 V/A clamp is 15 A. Reading the config word for
+        # most of the window puts it nowhere near that.
+        assert reading.value == pytest.approx(15.0, rel=0.1), reading.value
+        await adapter.close()
+
+    async def test_a_configuration_still_moved_at_the_close_refuses_the_window(
+        self, monkeypatch
+    ):
+        """Samples already taken are rescaled or held; they are not a window.
+
+        The check before the window cannot see this and the pointered read does
+        not address it, so the configuration is read back again at the end. A
+        chip still on someone else's configuration then is refused rather than
+        summarised, which is what an interfering process that keeps its own
+        settings leaves behind.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        ads = created[0]
+
+        counts = itertools.count()
+        bias, peak = 1.65, 0.5
+
+        def square():
+            volts = bias + (peak if next(counts) % 2 == 0 else -peak)
+            if next(counts) > 8:
+                # Part-way through: another writer takes the gain.
+                ads._gain_bits = 0x0000
+            return int(volts * 32768 / 4.096)
+
+        ads._conversion = square
+
+        with pytest.raises(MeasurementRefusedError, match="0x40E3"):
+            await adapter.read("s")
+
+    async def test_a_window_whose_chip_stayed_put_is_still_measured(self, monkeypatch):
+        """The end-of-window check must not refuse an untouched chip."""
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+
+        counts = itertools.count()
+        bias, peak = 1.65, 0.5
+
+        def square():
+            volts = bias + (peak if next(counts) % 2 == 0 else -peak)
+            return int(volts * 32768 / 4.096)
+
+        created[0]._conversion = square
+
+        reading = await adapter.read("s")
+        assert reading.value > 10.0, reading.value
+        await adapter.close()
+
+    async def test_a_configuration_restored_before_the_close_corrupts_silently(
+        self, monkeypatch
+    ):
+        """The limitation, asserted with its consequence rather than described.
+
+        A writer that changes the gain, lets samples be taken under it, and
+        restores this adapter's configuration before the window closes passes
+        both checks. What makes that unsafe rather than merely undetected is
+        that the samples taken meanwhile are wrong: the chip converts against
+        the foreign full-scale range while this adapter scales back with the
+        one its own driver object still believes, because nothing told that
+        object anything changed.
+
+        Modelled at the code level for exactly that reason. A fake that
+        produced the same counts under either gain would pass this test while
+        proving nothing, since the transient would have had no measurement
+        consequence at all.
+
+        Proving a configuration held for a whole 40 ms window needs exclusive
+        ownership of the bus, which cannot be established from the same bus.
+        Written down here so the boundary is visible in the suite rather than
+        only in prose: a change that closes it should make this test fail.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        ads = created[0]
+
+        full_scale = {0x0200: 4.096, 0x0000: 6.144}  # gain 1, gain 2/3
+        counts = itertools.count()
+        bias, peak = 1.65, 0.5
+
+        def square():
+            i = next(counts)
+            if i == 0:
+                ads._gain_bits = 0x0000  # another writer takes the gain
+            elif i == 32:
+                ads._gain_bits = 0x0200  # and restores it before the close
+            volts = bias + (peak if i % 2 == 0 else -peak)
+            # The chip converts against whatever range it is actually on.
+            return int(volts * 32768 / full_scale[ads._gain_bits])
+
+        ads._conversion = square
+
+        reading = await adapter.read("s")
+
+        # 0.5 V RMS over a 1/30 V/A clamp is 15 A on an untouched chip.
+        assert 8.0 < reading.value < 13.0, (
+            "the window was refused or read correctly, so the limitation this "
+            f"pins has changed and the documents stating it are now wrong: "
+            f"{reading.value}"
+        )
+        await adapter.close()
+
+    async def test_a_sample_is_scaled_the_way_the_driver_scales(self, monkeypatch):
+        """Release-owned arithmetic, pinned to the values it replaces.
+
+        Verified against the driver's own conversion on the bench for every
+        gain and every edge value; these are the two that name themselves in
+        the record, at gain 1.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_voltage", channel=0))
+        ads = created[0]
+
+        # The fake normalises its source to a callable, as the adapter reads it.
+        ads._conversion = lambda: 0xFFFE  # -2 counts
+        assert adapter._sample_ads1115_volts() == pytest.approx(-0.00025)
+        ads._conversion = lambda: 0x42E3  # the configuration word, as a sample
+        assert adapter._sample_ads1115_volts() == pytest.approx(2.140375)
+        ads._conversion = lambda: 0x7FFF
+        assert adapter._sample_ads1115_volts() == pytest.approx(4.095875)
         await adapter.close()

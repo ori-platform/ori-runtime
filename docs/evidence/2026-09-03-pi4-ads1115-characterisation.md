@@ -135,13 +135,13 @@ and a 21.7 A load reads 0.0 A. Both under-report, which is the direction that
 matters for a current a trip threshold is defined over. Both were measured by
 driving the real 3.0.5 driver over a register-level model of the part.
 
-The check certifies the chip at the start of each window, not through it. A
-write that lands mid-window is not caught until the next one, and a foreign
-pointered read mid-window sends the remaining fast reads back to the config
-word: measured in that model at 10.9 A against 20.9 A. Closing that costs
-either a second readback after the window or a pointered read per sample, and
-the per-sample cost at 1.163 ms has not been measured on the bench. Tracked in
-ori-runtime#503 rather than guessed at here.
+The check certified the chip at the start of each window and not through it,
+which left two ways in. A configuration write landing mid-window was not caught
+until the next window, and a foreign pointered read mid-window sent the
+remaining fast reads back to the config word: measured in that model at 10.9 A
+against 20.9 A. The pointer half is closed outright, on a
+measurement rather than on inspection. The configuration half is narrowed
+rather than closed, and the residue is stated below rather than left implied.
 
 ## Defect 4: a chip at 0x48 that is not an ADS1115 hung the connect
 
@@ -194,7 +194,7 @@ A readback that cannot be performed at all does not quarantine. A dropped
 transaction is not evidence that anything took the chip, and treating it as
 such would turn one bad transfer into an outage lasting until restart.
 
-## What this does not establish
+## What a quarantine does not establish
 
 A quarantine is a refusal to measure, not a protection. A device holding one is
 not protecting that channel, and nothing here restores it: the runtime does not
@@ -203,6 +203,86 @@ a reset would do to a commissioned coil is measured in
 `2026-09-01-pi4-gpio-controller-loss.md`, which also records that a genuine
 watchdog reset was not among the conditions tested. The consequence of a
 withheld measurement having no effect beyond one notice is tracked separately.
+
+## Defect 6: the window was certified only at its start
+
+Recorded 2026-09-04, same bench and part.
+
+A pointered conversion read per sample was the obvious way to close the pointer
+class outright — no sample can then return anything but the conversion register
+— and the objection to it was cost: it writes one extra byte per sample, and
+nothing had established that this fits inside the 1.163 ms conversion interval
+at 860 SPS. So it was measured before it was adopted, paced exactly as the
+adapter paces, over a 2-cycle 50 Hz window:
+
+```text
+fast read (today)        samples 36  elapsed 41.09 ms (ratio 1.0272)
+                         gap mean 1.164 ms  max 1.223  sd 0.010
+pointered every sample   samples 35  elapsed 40.15 ms (ratio 1.0038)
+                         gap mean 1.164 ms  max 1.222  sd 0.011
+floor at 2/3 of nominal 34.4 samples = 22
+```
+
+One sample in thirty-six, an unchanged mean gap, and a whole-window elapsed
+ratio that is nearer nominal rather than further from it. The floor is 22, so
+the cost is well inside it. Adopted.
+
+Confirmed afterwards through the adapter's own sampler rather than a standalone
+loop:
+
+```text
+trial 0: samples=35 elapsed=40.16 ms ratio=1.0039 gap mean=1.164 max=1.829
+trial 1: samples=35 elapsed=40.16 ms ratio=1.0039 gap mean=1.164 max=1.221
+trial 2: samples=35 elapsed=40.16 ms ratio=1.0039 gap mean=1.164 max=1.221
+```
+
+The 1.829 ms outlier in the first trial is one gap of thirty-four on a loaded
+Pi; the window still filled to 35 against a floor of 22.
+
+The scaling moved with it. A pointered read returns the register unsigned,
+because the driver signs it a layer up in the reader this replaces, so the
+adapter now does the two's complement and multiplies by the datasheet's
+full-scale range over 2^15 — not 32767, which is what the driver's own
+arithmetic uses. Checked against that arithmetic on the bench for every gain
+and for the edge values 0x0000, 0x0001, 0x7FFF, 0x8000, 0xFFFF, 0xFFFE, 0x42E3
+and 0x4000: identical to the last place.
+
+The configuration half is narrowed, not closed. A pointered read says nothing
+about a gain or a mode changed part-way through, so the configuration is read
+back again at the end of every window and a window whose chip is **still** on
+someone else's configuration at that point is refused rather than summarised.
+That is what an interfering process which keeps its own settings leaves behind,
+and it was the case measured at 13.9 A against 20.8 A.
+
+What it does not catch is a writer that changes the configuration, lets some
+samples be taken under it, and restores this adapter's configuration before the
+window closes. Both checks then pass and those samples are summarised.
+
+The residue is not a harmless transient, and it does not only under-report.
+The chip converts against whatever range it is on while the adapter scales back
+with the range its own driver object still believes, since nothing told that
+object anything changed. Two effects then pull in opposite directions: the
+affected samples have their amplitude scaled by the ratio of the ranges, and
+the bias shifts with them, which puts a step in the middle of the window that
+adds to the RMS about its mean. Modelled at code level for a foreign gain of
+2/3 over a 15 A signal in a 35-sample window:
+
+```text
+samples under the foreign gain ->  emitted current  (true 15.00 A)
+   4/35                              15.48 A   ( +3.2%)
+  12/35                              15.75 A   ( +5.0%)
+  20/35                              15.10 A   ( +0.7%)
+  28/35                              13.40 A   (-10.6%)
+  34/35                              11.17 A   (-25.6%)
+```
+
+So a brief interference over-reports by a few per cent and a sustained one
+under-reports by a quarter, and neither is refused. A window affected for its
+whole length is the case the end-of-window check does catch.
+
+No amount of additional polling closes this: proving a configuration held for
+the whole of a 40 ms window requires exclusive ownership of the bus, which
+cannot be established from the same bus. It is a wiring and platform property.
 
 ## The adapter as fixed
 
