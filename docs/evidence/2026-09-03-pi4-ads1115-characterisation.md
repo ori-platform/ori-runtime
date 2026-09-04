@@ -157,6 +157,53 @@ happens to carry that bit passes the wait, and what refuses it is the
 configuration readback: a foreign word has to match the exact 16 bits this
 adapter wrote to get through. That is a probability, not a proof of part.
 
+## Defect 5: a chip taken by another writer was retried rather than refused
+
+Recorded 2026-09-04, on the same bench and the same part.
+
+A reading refused because the chip is running a configuration this process did
+not set is evidence that something else is writing it. Re-selecting the
+configuration would be a contest with that writer, and losing it intermittently
+produces a plausible number rather than a refusal — the failure would present
+as an occasional wrong value, which is worse than an outage because nothing
+about it looks wrong.
+
+So the chip is quarantined for the life of the process, keyed by bus and
+address rather than by the adapter object: `close()` releases the chip claim,
+so an adapter-scoped latch would let a second object connect, rewrite the chip
+and resume reading inside the same process, and the operator message promising
+a restart would not be true.
+
+Driven against the bench part with a second driver instance as the competing
+writer, which writes single-shot mode and leaves the mux alone:
+
+```text
+before            : -0.0001 V
+after the writer  : refused
+chip put back     : 0x42E3
+same adapter      : still refused
+new adapter       : refused at connect
+```
+
+The third line matters: the chip was returned to exactly the word the adapter
+had set, `0x42E3`, and the refusal held anyway. No reading can establish that
+the competing writer is gone, so no reading clears the refusal. Recovery is a
+restart, after an operator has removed whatever was writing the chip.
+
+A readback that cannot be performed at all does not quarantine. A dropped
+transaction is not evidence that anything took the chip, and treating it as
+such would turn one bad transfer into an outage lasting until restart.
+
+## What this does not establish
+
+A quarantine is a refusal to measure, not a protection. A device holding one is
+not protecting that channel, and nothing here restores it: the runtime does not
+restart itself, and it does not withhold a watchdog feed to force a reset. What
+a reset would do to a commissioned coil is measured in
+`2026-09-01-pi4-gpio-controller-loss.md`, which also records that a genuine
+watchdog reset was not among the conditions tested. The consequence of a
+withheld measurement having no effect beyond one notice is tracked separately.
+
 ## The adapter as fixed
 
 Chip forced to its power-on default, then the real `I2CAdapter` connected on
