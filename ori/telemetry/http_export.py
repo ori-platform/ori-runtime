@@ -4,7 +4,6 @@
 """HTTP telemetry export for phone and lightweight provisioned deployments."""
 
 import asyncio
-import hashlib
 import hmac
 import json
 import logging
@@ -77,7 +76,8 @@ class HttpTelemetryExporter:
         self._refused_events = 0
         self._refusal_status: int | None = None
         self._refusal_detail: str | None = None
-        self._refused_credential_digest: str | None = None
+        self._refused_credential_tag: bytes | None = None
+        self._credential_tag_key = os.urandom(32)
         self._refused_at_ms: int | None = None
 
     @property
@@ -199,14 +199,24 @@ class HttpTelemetryExporter:
             return 0
         return len(batch)
 
-    def _credential_digest(self, api_key: str) -> str:
-        return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+    def _credential_tag(self, api_key: str) -> bytes:
+        """An opaque tag for asking whether the credential is the refused one.
+
+        Keyed with per-instance random material, so the tag answers that
+        question inside this process and nothing else: it is not reproducible
+        elsewhere, and it offers no purchase on the credential to anything that
+        reads it. A bare digest of a credential would be reproducible by anyone
+        who guessed the credential, which is what a keyed MAC removes.
+        """
+        return hmac.new(
+            self._credential_tag_key, api_key.encode("utf-8"), "sha256"
+        ).digest()
 
     def _credential_matches_refusal(self, api_key: str) -> bool:
-        recorded = self._refused_credential_digest
+        recorded = self._refused_credential_tag
         if recorded is None:
             return False
-        return hmac.compare_digest(recorded, self._credential_digest(api_key))
+        return hmac.compare_digest(recorded, self._credential_tag(api_key))
 
     def _suspend_on_terminal_refusal(
         self,
@@ -216,7 +226,7 @@ class HttpTelemetryExporter:
     ) -> None:
         self._refusal_status = refusal.status
         self._refusal_detail = refusal.detail
-        self._refused_credential_digest = self._credential_digest(api_key)
+        self._refused_credential_tag = self._credential_tag(api_key)
         self._refused_at_ms = now_ms()
         self._refused_events += batch_size
         logger.error(
@@ -238,7 +248,7 @@ class HttpTelemetryExporter:
         )
         self._refusal_status = None
         self._refusal_detail = None
-        self._refused_credential_digest = None
+        self._refused_credential_tag = None
         self._refused_at_ms = None
 
     def _discard_queued_while_suspended(self) -> None:

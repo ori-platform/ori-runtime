@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -692,16 +693,41 @@ async def test_no_response_text_reaches_the_reported_detail(
 async def test_the_status_snapshot_carries_no_credential_material(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Neither the credential nor its digest is reportable."""
+    """Neither the credential, nor its tag, nor the tag's key is reportable."""
     endpoint = _Endpoint(CASES["suspended_device"])
     _install(monkeypatch, endpoint)
     exporter = HttpTelemetryExporter(device_id="phone-01", config=_config())
     await exporter.handle_event(_event())
     await exporter.flush_once()
 
+    assert exporter._refused_credential_tag is not None
     rendered = json.dumps(exporter.status_snapshot())
+    for secret in (
+        b"device-secret",
+        exporter._refused_credential_tag,
+        exporter._credential_tag_key,
+    ):
+        assert secret.hex() not in rendered
+        assert base64.b64encode(secret).decode() not in rendered
     assert "device-secret" not in rendered
-    assert hashlib.sha256(b"device-secret").hexdigest() not in rendered
+
+
+def test_the_credential_tag_is_not_reproducible_outside_the_process() -> None:
+    """The tag answers one question here and offers no purchase on the key.
+
+    A bare digest of a credential is reproducible by anyone who guesses the
+    credential, which for a provisioned key is a short list. Keying it with
+    per-instance random material removes that: two exporters given the same
+    credential produce different tags, so a tag read anywhere else says nothing.
+    """
+    config = _config()
+    first = HttpTelemetryExporter(device_id="phone-01", config=config)
+    second = HttpTelemetryExporter(device_id="phone-01", config=config)
+
+    assert first._credential_tag_key != second._credential_tag_key
+    assert first._credential_tag("k") != second._credential_tag("k")
+    assert first._credential_tag("k") == first._credential_tag("k")
+    assert first._credential_tag("k") != first._credential_tag("other")
 
 
 @pytest.mark.asyncio
