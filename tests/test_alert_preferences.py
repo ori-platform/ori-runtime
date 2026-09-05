@@ -706,7 +706,7 @@ def test_the_identity_resolver_reads_provenance_from_the_loader() -> None:
         def __init__(self, skill):
             self.skill = skill
 
-    resolve = cast("Callable[..., tuple[str, bool]]", _resolve_skill_identity)
+    resolve = cast(Callable[..., tuple[str, bool]], _resolve_skill_identity)
     assert resolve(_Ctx(_Skill(SKILL, True))) == (SKILL, True)
     assert resolve(_Ctx(_Skill(SKILL, False))) == (SKILL, False)
     # Anything unresolvable reads as community, which resolves to no class.
