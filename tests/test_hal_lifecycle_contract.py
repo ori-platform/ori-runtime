@@ -27,8 +27,10 @@ the race silently.
 from __future__ import annotations
 
 import asyncio
+import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -260,6 +262,11 @@ class TestTheGuaranteeItself:
         assert probe.opened == 1
 
 
+def _module_of(adapter_class: type) -> Any:
+    """The module an adapter is defined in, for patching its driver flags."""
+    return sys.modules[adapter_class.__module__]
+
+
 # Each entry: the adapter, a first config, a second naming a different target,
 # and the attributes a refused second connect must not have changed. The
 # drivers are stubbed so the real `connect()` runs without hardware.
@@ -378,10 +385,16 @@ ADAPTER_CASES = [
 @pytest.fixture
 def stub_drivers(monkeypatch):
     """Let every adapter's real `connect()` run without hardware."""
-    import ori.hal.growatt_adapter as growatt
-    import ori.hal.serial_adapter as serial_module
-    import ori.hal.solarman_modbus_adapter as solarman
-    import ori.hal.usb_serial_adapter as usb
+    # Each adapter's module is reached through the class already imported at
+    # the top of this file, rather than imported a second time under an alias.
+    serial_module = _module_of(SerialAdapter)
+    usb = _module_of(UsbSerialAdapter)
+    growatt = _module_of(GrowattAdapter)
+    solarman = _module_of(SolarmanModbusAdapter)
+    coap = _module_of(CoapAdapter)
+    http = _module_of(HttpAdapter)
+    opcua = _module_of(OpcUaAdapter)
+    mqtt_base = sys.modules["ori.hal.mqtt_base"]
 
     monkeypatch.setattr(serial_module, "_SERIAL_AVAILABLE", True)
     monkeypatch.setattr(SerialAdapter, "_open_port", lambda self: None)
@@ -390,11 +403,6 @@ def stub_drivers(monkeypatch):
     monkeypatch.setattr(UsbSerialAdapter, "_open_port_sync", lambda self: None)
     monkeypatch.setattr(growatt, "_PYSOLARMAN_AVAILABLE", True)
     monkeypatch.setattr(solarman, "_PYSOLARMAN_AVAILABLE", True)
-
-    import ori.hal.coap_adapter as coap
-    import ori.hal.http_adapter as http
-    import ori.hal.mqtt_base as mqtt_base
-    import ori.hal.opcua_adapter as opcua
 
     async def _noop(self, *args, **kwargs):
         return None
@@ -547,4 +555,7 @@ class TestEveryAdapterInherits:
         one = adapter_class()
         another = adapter_class()
         assert one._lifecycle is not another._lifecycle
-        assert one._lifecycle is one._lifecycle
+        # Created on first use, so the second access must return the same lock
+        # rather than a fresh one that serialises nothing.
+        first_access = one._lifecycle
+        assert one._lifecycle is first_access
