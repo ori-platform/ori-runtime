@@ -8,11 +8,38 @@ the decision to accept or refuse a window can be driven exactly.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import math
+import sys
+from typing import Any, cast
 
 import pytest
 
+from ori.actions.alert_failover import AlertFailoverSender
 from ori.hal.ac_measurement import WindowRefusedError, WindowSpec, summarise_window
+
+
+@contextlib.contextmanager
+def _frozen_at(elapsed_ms: int):
+    """Hold `ori.runtime.now_ms` at one instant.
+
+    The schedule is a function of elapsed time, so every escalation test has
+    to say what time it is. The module is resolved through `sys.modules`
+    rather than imported a second time under an alias, since this file
+    already imports from it.
+    """
+    # `sys.modules` is typed as a plain module, so the attribute this needs to
+    # swap is invisible to the checker; resolved through it rather than
+    # imported a second time under an alias.
+    module = cast(Any, sys.modules["ori.runtime"])
+    original = module.now_ms
+    module.now_ms = lambda: int(elapsed_ms)
+    try:
+        yield
+    finally:
+        module.now_ms = original
+
 
 SPEC = WindowSpec(
     mains_frequency_hz=50.0,
@@ -363,7 +390,7 @@ class _EscalationHarness:
         self.runtime._measurement_notice_stage = {"load-current": 0}
         self.runtime._measurement_notify_attempts = {}
         self.runtime._state_store = None
-        self.runtime._alert_sender = object()
+        self.runtime._alert_sender = cast(AlertFailoverSender, object())
         self.runtime._operator_contact = "+2340000000000"
         self.runtime._secondary_contact = secondary
         self.runtime._primary_alert_channel = "sms"
@@ -388,14 +415,8 @@ class _EscalationHarness:
         self.runtime._send_or_queue_alert = _policy_gated  # type: ignore[method-assign]
 
     async def tick(self, at_hours: float) -> None:
-        import ori.runtime as runtime_module
-
-        original = runtime_module.now_ms
-        runtime_module.now_ms = lambda: int(at_hours * 60 * 60 * 1000)
-        try:
+        with _frozen_at(int(at_hours * 60 * 60 * 1000)):
             await self.runtime._escalate_persistent_measurement_loss()
-        finally:
-            runtime_module.now_ms = original
 
 
 def test_the_schedule_is_a_function_of_elapsed_time_alone():
@@ -546,15 +567,12 @@ async def test_the_reminder_never_claims_anything_was_restored():
 async def test_the_staleness_loop_drives_the_escalation():
     """The join, not the mechanism.
 
-    Everything above calls `_escalate_persistent_measurement_loss` directly,
-    so removing its one call site left the whole suite green while a
-    persistent measurement loss went back to being reported once and then
-    forgotten.
+    Every other escalation test reaches
+    `_escalate_persistent_measurement_loss` directly, so none of them
+    observes that anything calls it. Without this one, deleting its call site
+    would leave a persistent measurement loss reported once and then
+    forgotten while the rest of the suite stayed green.
     """
-    import asyncio
-
-    import ori.runtime as runtime_module
-
     harness = _EscalationHarness()
     runtime = harness.runtime
     runtime._sensor_poll_interval_ms = {}
@@ -562,12 +580,11 @@ async def test_the_staleness_loop_drives_the_escalation():
     runtime._stale_sensor_active = set()
     runtime._shutdown_event = asyncio.Event()
 
-    original = runtime_module.now_ms
-    runtime_module.now_ms = lambda: 12 * 60 * 60 * 1000
-    try:
+    with _frozen_at(12 * 60 * 60 * 1000):
         task = asyncio.create_task(
             runtime._sensor_staleness_loop(
-                alert_sender=object(), check_interval_s=3600.0
+                alert_sender=cast(AlertFailoverSender, object()),
+                check_interval_s=3600.0,
             )
         )
         for _ in range(20):
@@ -576,8 +593,6 @@ async def test_the_staleness_loop_drives_the_escalation():
                 break
         runtime._shutdown_event.set()
         await asyncio.wait_for(task, 5)
-    finally:
-        runtime_module.now_ms = original
 
     assert [recipient for recipient, _ in harness.sent] == ["+2349999999999"]
 
@@ -665,8 +680,6 @@ async def test_the_runtime_restores_the_schedule_and_sends_the_stage_that_is_due
     would let the durable join drift from what a restart actually does and
     the test would not notice.
     """
-    import ori.runtime as runtime_module
-
     store = await _store(tmp_path)
     await store.set_measurement_degraded("load-current", notified=True)
     began = (await store.get_measurement_notice_schedule())["load-current"][0]
@@ -683,12 +696,8 @@ async def test_the_runtime_restores_the_schedule_and_sends_the_stage_that_is_due
     assert runtime._measurement_notice_stage == {"load-current": 1}
     assert runtime._measurement_unnotified == set()
 
-    original = runtime_module.now_ms
-    runtime_module.now_ms = lambda: began + 12 * 60 * 60 * 1000
-    try:
+    with _frozen_at(began + 12 * 60 * 60 * 1000):
         await runtime._escalate_persistent_measurement_loss()
-    finally:
-        runtime_module.now_ms = original
 
     # Stage 1 was sent before the restart and is not repeated; stage 2 is due
     # and goes to the secondary contact.
@@ -709,8 +718,6 @@ async def test_a_delivered_escalation_stops_the_initial_notice_being_retried(
     warning again — to the primary, about a fault the secondary already has,
     at the cost of another message.
     """
-    import ori.runtime as runtime_module
-
     store = await _store(tmp_path)
     # The transition: degraded, and the notice did not get out.
     await store.set_measurement_degraded("load-current", notified=False)
@@ -722,12 +729,8 @@ async def test_a_delivered_escalation_stops_the_initial_notice_being_retried(
     await runtime._restore_measurement_state()
     assert runtime._measurement_unnotified == {"load-current"}
 
-    original = runtime_module.now_ms
-    runtime_module.now_ms = lambda: began + 12 * 60 * 60 * 1000
-    try:
+    with _frozen_at(began + 12 * 60 * 60 * 1000):
         await runtime._escalate_persistent_measurement_loss()
-    finally:
-        runtime_module.now_ms = original
 
     assert [recipient for recipient, _ in harness.sent] == ["+2349999999999"]
     assert runtime._measurement_unnotified == set()
@@ -769,7 +772,7 @@ async def test_the_notice_on_the_transition_is_policy_exempt() -> None:
     from ori.runtime import OriRuntime
 
     runtime = OriRuntime.__new__(OriRuntime)
-    runtime._alert_sender = object()
+    runtime._alert_sender = cast(AlertFailoverSender, object())
     runtime._operator_contact = "+2340000000000"
     runtime._primary_alert_channel = "sms"
     structural: list[str] = []
@@ -830,8 +833,6 @@ async def test_a_failed_record_leaves_the_operator_still_owed_the_notice(
     owed the notice on the transition, so the initial retry keeps owning this
     sensor rather than the runtime believing a message got out that did not.
     """
-    import ori.runtime as runtime_module
-
     store = await _store(tmp_path)
     await store.set_measurement_degraded("load-current", notified=False)
     began = (await store.get_measurement_notice_schedule())["load-current"][0]
@@ -846,12 +847,8 @@ async def test_a_failed_record_leaves_the_operator_still_owed_the_notice(
 
     store.record_measurement_notice_delivered = _fails  # type: ignore[method-assign]
 
-    original = runtime_module.now_ms
-    runtime_module.now_ms = lambda: began + 12 * 60 * 60 * 1000
-    try:
+    with _frozen_at(began + 12 * 60 * 60 * 1000):
         await runtime._escalate_persistent_measurement_loss()
-    finally:
-        runtime_module.now_ms = original
 
     assert len(harness.sent) == 1
     assert runtime._measurement_unnotified == {"load-current"}
@@ -868,8 +865,6 @@ async def test_a_failing_store_does_not_turn_every_pass_into_another_message(
     Otherwise a store that is failing makes the loop resend the same stage on
     every pass, which is a message flood rather than a bounded repeat.
     """
-    import ori.runtime as runtime_module
-
     store = await _store(tmp_path)
     await store.set_measurement_degraded("load-current", notified=True)
     began = (await store.get_measurement_notice_schedule())["load-current"][0]
@@ -884,14 +879,10 @@ async def test_a_failing_store_does_not_turn_every_pass_into_another_message(
 
     store.record_measurement_notice_delivered = _fails  # type: ignore[method-assign]
 
-    original = runtime_module.now_ms
-    runtime_module.now_ms = lambda: began + 12 * 60 * 60 * 1000
-    try:
+    with _frozen_at(began + 12 * 60 * 60 * 1000):
         await runtime._escalate_persistent_measurement_loss()
         await runtime._escalate_persistent_measurement_loss()
         await runtime._escalate_persistent_measurement_loss()
-    finally:
-        runtime_module.now_ms = original
 
     assert len(harness.sent) == 1
     await store.close()
@@ -910,8 +901,6 @@ async def test_an_escalation_reconstructs_a_row_the_first_write_never_created(
     a degradation the disk has never heard of; the next start finds no
     degraded sensor and forgets the measurement loss entirely.
     """
-    import ori.runtime as runtime_module
-
     store = await _store(tmp_path)
     harness = _EscalationHarness()
     runtime = harness.runtime
@@ -926,12 +915,8 @@ async def test_an_escalation_reconstructs_a_row_the_first_write_never_created(
     assert await store.get_measurement_degradation() == {}
 
     # The store recovers, and the twelve-hour escalation is delivered.
-    original = runtime_module.now_ms
-    runtime_module.now_ms = lambda: began + 12 * 60 * 60 * 1000
-    try:
+    with _frozen_at(began + 12 * 60 * 60 * 1000):
         await runtime._escalate_persistent_measurement_loss()
-    finally:
-        runtime_module.now_ms = original
 
     assert [recipient for recipient, _ in harness.sent] == ["+2349999999999"]
     await store.close()
