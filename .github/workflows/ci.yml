@@ -63,6 +63,15 @@ jobs:
         if: matrix.python-version == '3.12'
         run: bash scripts/refresh-evidence-vectors.sh
 
+      # The telemetry refusal contract is vendored from a private repository,
+      # so the drift run itself cannot execute here and the producer's own
+      # generator is the upstream gate. The provenance rule is testable
+      # regardless, against throwaway git fixtures and no network, and it is
+      # the half a private source would otherwise leave unchecked.
+      - name: Test the telemetry refusal fixture provenance rule
+        if: matrix.python-version == '3.12'
+        run: bash scripts/test-refresh-telemetry-refusal-fixture.sh
+
       # The wheelhouse audit runs only under the release marker, so defects in
       # it reach tags before any branch can see them: v2.5.0-rc.1 and rc.2 were
       # both spent that way. It needs a built wheelhouse rather than a secret,

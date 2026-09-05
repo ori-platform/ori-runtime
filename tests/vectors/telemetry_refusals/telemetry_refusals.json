@@ -1,0 +1,47 @@
+{
+  "contract": "ori-energy.runtime-telemetry-refusals",
+  "contract_version": 1,
+  "endpoint": "POST /runtime/telemetry",
+  "generated_from": {
+    "repo": "ori-energy",
+    "commit": "cb6b1258b14b967509679432116d68d5b6087f91",
+    "api_version": "0.1.0"
+  },
+  "cases": [
+    {
+      "name": "bad_credential",
+      "status": 401,
+      "www_authenticate": "Bearer",
+      "detail": "telemetry credentials are invalid",
+      "meaning": "credentials did not prove the device; retry with a fresh credential"
+    },
+    {
+      "name": "bad_signature",
+      "status": 401,
+      "www_authenticate": "Bearer",
+      "detail": "telemetry signature is invalid",
+      "meaning": "credentials did not prove the device; retry with a fresh credential"
+    },
+    {
+      "name": "malformed_batch",
+      "status": 422,
+      "www_authenticate": null,
+      "detail": null,
+      "meaning": "status control only; exporter behaviour unchanged unless #517 widens scope"
+    },
+    {
+      "name": "wrong_content_type",
+      "status": 415,
+      "www_authenticate": null,
+      "detail": null,
+      "meaning": "status control only; exporter behaviour unchanged unless #517 widens scope"
+    },
+    {
+      "name": "suspended_device",
+      "status": 403,
+      "www_authenticate": null,
+      "detail": "device is suspended",
+      "meaning": "the device is suspended; re-authenticating cannot help -- stop and surface the device to an operator"
+    }
+  ]
+}
