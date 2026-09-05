@@ -92,18 +92,19 @@ class MqttAdapter(MqttCachedAdapter):
         if not topic:
             raise AdapterConnectionError("MqttAdapter: 'topic' is required")
 
-        self._sensor_type = sensor_type
-        self._topic = topic
-        self._value_path = str(config.get("value_path", "value")).strip()
-        self._quality_path = str(config.get("quality_path", "")).strip()
-        self._unit = str(config.get("unit", "")).strip()
+        async with self._connecting(f"'{topic}'", release=self._close_mqtt):
+            self._sensor_type = sensor_type
+            self._topic = topic
+            self._value_path = str(config.get("value_path", "value")).strip()
+            self._quality_path = str(config.get("quality_path", "")).strip()
+            self._unit = str(config.get("unit", "")).strip()
 
-        await self._connect_mqtt(
-            config=config,
-            topics=[topic],
-            default_port=_DEFAULT_PORT,
-            listener_name=f"mqtt-listener:{topic}",
-        )
+            await self._connect_mqtt(
+                config=config,
+                topics=[topic],
+                default_port=_DEFAULT_PORT,
+                listener_name=f"mqtt-listener:{topic}",
+            )
 
     async def _handle_message(self, topic: str, payload: Any) -> None:
         parsed = self._parse_payload(payload)
@@ -164,9 +165,6 @@ class MqttAdapter(MqttCachedAdapter):
                     "raw_payload": payload,
                 },
             )
-
-    async def close(self) -> None:
-        await self._close_mqtt()
 
     @staticmethod
     def _parse_payload(payload: Any) -> dict[str, Any]:

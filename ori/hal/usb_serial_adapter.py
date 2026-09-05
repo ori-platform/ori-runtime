@@ -166,12 +166,14 @@ class UsbSerialAdapter(BaseAdapter):
                 f"UsbSerialAdapter: unsupported sensor_type '{sensor_type}'. "
                 f"Supported: {sorted(_SUPPORTED)}"
             )
-        self._sensor_type = sensor_type
-
-        self._device_path = str(config.get("device_path", "")).strip()
-        if not self._device_path and bool(config.get("auto_detect_device_path", False)):
-            self._device_path = _find_direct_serial_device()
-        if not self._device_path:
+        # Validated into locals and applied to the adapter only inside the
+        # guard: assigning first would leave a refused connect having already
+        # replaced the live device path, slave id and sensor type while the
+        # adapter stayed connected on the old handle.
+        device_path = str(config.get("device_path", "")).strip()
+        if not device_path and bool(config.get("auto_detect_device_path", False)):
+            device_path = _find_direct_serial_device()
+        if not device_path:
             termux_devices = await asyncio.to_thread(_list_termux_usb_devices_sync)
             if termux_devices:
                 devices = ", ".join(termux_devices)
@@ -187,7 +189,7 @@ class UsbSerialAdapter(BaseAdapter):
                 "UsbSerialAdapter: 'device_path' is required (e.g. /dev/ttyUSB0)"
             )
 
-        self._baud_rate = resolve_baud_rate(
+        baud_rate = resolve_baud_rate(
             has_canonical="baud_rate" in config,
             canonical=config.get("baud_rate"),
             has_legacy="baudrate" in config,
@@ -195,25 +197,33 @@ class UsbSerialAdapter(BaseAdapter):
             default=_DEFAULT_BAUD_RATE,
             adapter_name="UsbSerialAdapter",
         )
-        self._bytesize = int(config.get("bytesize", _DEFAULT_BYTESIZE))
-        self._parity = str(config.get("parity", _DEFAULT_PARITY))
-        self._stopbits = int(config.get("stopbits", _DEFAULT_STOPBITS))
-        self._timeout_s = float(config.get("timeout_s", _DEFAULT_TIMEOUT_S))
-        self._slave_id = int(config.get("slave_id", _DEFAULT_SLAVE_ID))
-        self._transport = _transport_for_path(self._device_path)
+        bytesize = int(config.get("bytesize", _DEFAULT_BYTESIZE))
+        parity = str(config.get("parity", _DEFAULT_PARITY))
+        stopbits = int(config.get("stopbits", _DEFAULT_STOPBITS))
+        timeout_s = float(config.get("timeout_s", _DEFAULT_TIMEOUT_S))
+        slave_id = int(config.get("slave_id", _DEFAULT_SLAVE_ID))
+        transport = _transport_for_path(device_path)
 
-        self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
+        async with self._connecting(f"'{device_path}'", release=self._teardown):
+            self._sensor_type = sensor_type
+            self._device_path = device_path
+            self._baud_rate = baud_rate
+            self._bytesize = bytesize
+            self._parity = parity
+            self._stopbits = stopbits
+            self._timeout_s = timeout_s
+            self._slave_id = slave_id
+            self._transport = transport
+            self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
+            try:
+                await asyncio.to_thread(self._open_port_sync)
+            except AdapterConnectionError:
+                raise
+            except Exception as exc:
+                raise AdapterConnectionError(
+                    f"UsbSerialAdapter: failed to open '{self._device_path}': {exc}"
+                ) from exc
 
-        try:
-            await asyncio.to_thread(self._open_port_sync)
-        except AdapterConnectionError:
-            raise
-        except Exception as exc:
-            raise AdapterConnectionError(
-                f"UsbSerialAdapter: failed to open '{self._device_path}': {exc}"
-            ) from exc
-
-        self._connected = True
         logger.info(
             "UsbSerialAdapter: connected device_path=%s transport=%s sensor_type=%s",
             self._device_path,
@@ -272,6 +282,12 @@ class UsbSerialAdapter(BaseAdapter):
             )
 
     async def close(self) -> None:
+        """Close the port under the lifecycle contract on `BaseAdapter`."""
+        async with self._closing():
+            await self._teardown()
+
+    async def _teardown(self) -> None:
+        """Give back the port, whether the connect finished or not."""
         try:
             if self._serial is not None and self._serial.is_open:
                 await asyncio.to_thread(self._serial.close)
@@ -282,7 +298,6 @@ class UsbSerialAdapter(BaseAdapter):
             )
         finally:
             self._serial = None
-            self._connected = False
 
     def _open_port_sync(self) -> None:
         if _serial_module is None:

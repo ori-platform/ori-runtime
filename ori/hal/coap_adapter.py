@@ -90,52 +90,67 @@ class CoapAdapter(BaseAdapter):
                 "CoapAdapter: 'aiocoap' is not installed. Run: pip install aiocoap"
             )
 
-        self._sensor_id = str(config.get("sensor_id", "")).strip()
-        self._sensor_type = str(config.get("sensor_type", "")).strip()
-        self._uri = str(config.get("uri", "")).strip()
-        self._method = str(config.get("method", "GET")).strip().upper()
-        self._json_path = str(config.get("json_path", "")).strip()
-        self._unit = str(config.get("unit", "")).strip()
-        self._poll_interval_ms = int(
+        # Validated into locals and applied inside the guard. This adapter has
+        # the most to lose from getting it wrong: it awaits a client context
+        # and then starts a background poll task, so a close that overlapped a
+        # connect used to return while both were still live and unreachable.
+        sensor_id = str(config.get("sensor_id", "")).strip()
+        sensor_type = str(config.get("sensor_type", "")).strip()
+        uri = str(config.get("uri", "")).strip()
+        method = str(config.get("method", "GET")).strip().upper()
+        json_path = str(config.get("json_path", "")).strip()
+        unit = str(config.get("unit", "")).strip()
+        poll_interval_ms = int(
             config.get("poll_interval_ms", _DEFAULT_POLL_INTERVAL_MS)
         )
-        self._timeout_s = float(config.get("timeout_s", _DEFAULT_TIMEOUT_S))
-        self._payload = self._encode_payload(config.get("payload", ""))
-        self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
+        timeout_s = float(config.get("timeout_s", _DEFAULT_TIMEOUT_S))
+        payload = self._encode_payload(config.get("payload", ""))
 
         allowed_hosts = config.get("allowed_hosts", []) or []
-        self._allowed_hosts = {
+        allowed = {
             str(host).strip().lower() for host in allowed_hosts if str(host).strip()
         }
 
-        if not self._sensor_type:
+        if not sensor_type:
             raise AdapterConnectionError("CoapAdapter: 'sensor_type' is required")
-        if not self._uri:
+        if not uri:
             raise AdapterConnectionError("CoapAdapter: 'uri' is required")
-        if not self._json_path:
+        if not json_path:
             raise AdapterConnectionError("CoapAdapter: 'json_path' is required")
-        if self._method not in _ALLOWED_METHODS:
+        if method not in _ALLOWED_METHODS:
             raise AdapterConnectionError(
                 f"CoapAdapter: method must be one of {sorted(_ALLOWED_METHODS)}"
             )
-        if self._poll_interval_ms < 100:
+        if poll_interval_ms < 100:
             raise AdapterConnectionError("CoapAdapter: poll_interval_ms must be >= 100")
-        if self._timeout_s <= 0:
+        if timeout_s <= 0:
             raise AdapterConnectionError("CoapAdapter: timeout_s must be > 0")
-        self._validate_target()
 
-        try:
-            self._context = await _aiocoap.Context.create_client_context()
-        except Exception as exc:
-            raise AdapterConnectionError(
-                f"CoapAdapter: failed to create aiocoap client context: {exc}"
-            ) from exc
+        async with self._connecting(f"'{uri}'", release=self._teardown):
+            self._sensor_id = sensor_id
+            self._sensor_type = sensor_type
+            self._uri = uri
+            self._method = method
+            self._json_path = json_path
+            self._unit = unit
+            self._poll_interval_ms = poll_interval_ms
+            self._timeout_s = timeout_s
+            self._payload = payload
+            self._allowed_hosts = allowed
+            self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
+            self._validate_target()
 
-        self._connected = True
-        self._poll_task = asyncio.create_task(
-            self._poll_loop(),
-            name=f"coap-poll:{self._sensor_id or self._sensor_type}",
-        )
+            try:
+                self._context = await _aiocoap.Context.create_client_context()
+            except Exception as exc:
+                raise AdapterConnectionError(
+                    f"CoapAdapter: failed to create aiocoap client context: {exc}"
+                ) from exc
+
+            self._poll_task = asyncio.create_task(
+                self._poll_loop(),
+                name=f"coap-poll:{sensor_id or sensor_type}",
+            )
 
     async def read(self, sensor_id: str) -> SensorReading:
         if not self._connected:
@@ -159,9 +174,17 @@ class CoapAdapter(BaseAdapter):
         )
 
     async def close(self) -> None:
+        async with self._closing():
+            await self._teardown()
+
+    async def _teardown(self) -> None:
+        """Stop the poll loop and drop the context, finished or not.
+
+        Both are started inside the connect body, so a connect abandoned
+        part-way through has to give back whichever of them it reached.
+        """
         task = self._poll_task
         self._poll_task = None
-        self._connected = False
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)

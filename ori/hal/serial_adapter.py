@@ -238,14 +238,17 @@ class SerialAdapter(BaseAdapter):
                 f"Supported: {sorted(_SUPPORTED)}"
             )
 
-        self._sensor_type = sensor_type
-        self._port = config.get("port", "")
-        if not self._port:
+        # Validated into locals and applied to the adapter only inside the
+        # guard: assigning first would leave a refused connect having already
+        # replaced the live port, slave id and sensor type while the adapter
+        # stayed connected on the old handle.
+        port = config.get("port", "")
+        if not port:
             raise AdapterConnectionError(
                 "SerialAdapter: 'port' is required in sensor config (e.g. /dev/ttyUSB0)"
             )
 
-        self._baudrate = resolve_baud_rate(
+        baudrate = resolve_baud_rate(
             has_canonical="baud_rate" in config,
             canonical=config.get("baud_rate"),
             has_legacy="baudrate" in config,
@@ -253,27 +256,46 @@ class SerialAdapter(BaseAdapter):
             default=_DEFAULT_BAUDRATE,
             adapter_name="SerialAdapter",
         )
-        self._bytesize = int(config.get("bytesize", _DEFAULT_BYTESIZE))
-        self._parity = str(config.get("parity", _DEFAULT_PARITY))
-        self._stopbits = int(config.get("stopbits", _DEFAULT_STOPBITS))
-        self._timeout = float(config.get("timeout", _DEFAULT_TIMEOUT))
-        self._slave_id = int(config.get("slave_id", _DEFAULT_SLAVE_ID))
+        bytesize = int(config.get("bytesize", _DEFAULT_BYTESIZE))
+        parity = str(config.get("parity", _DEFAULT_PARITY))
+        stopbits = int(config.get("stopbits", _DEFAULT_STOPBITS))
+        timeout = float(config.get("timeout", _DEFAULT_TIMEOUT))
+        slave_id = int(config.get("slave_id", _DEFAULT_SLAVE_ID))
         reg = config.get("register")
-        self._register = int(reg) if reg is not None else None
+        register = int(reg) if reg is not None else None
 
+        async with self._connecting(f"'{port}'", release=self._teardown):
+            self._sensor_type = sensor_type
+            self._port = port
+            self._baudrate = baudrate
+            self._bytesize = bytesize
+            self._parity = parity
+            self._stopbits = stopbits
+            self._timeout = timeout
+            self._slave_id = slave_id
+            self._register = register
+            try:
+                await asyncio.to_thread(self._open_port)
+            except AdapterConnectionError:
+                raise
+            except Exception as exc:
+                raise AdapterConnectionError(
+                    f"SerialAdapter: failed to open '{self._port}': {exc}"
+                ) from exc
+
+            self._breaker = HardwareCircuitBreaker(
+                getattr(self, "adapter_name", type(self).__name__), config
+            )
+
+    async def _teardown(self) -> None:
+        """Give back the port, whether the connect finished or not."""
         try:
-            await asyncio.to_thread(self._open_port)
-        except AdapterConnectionError:
-            raise
-        except Exception as exc:
-            raise AdapterConnectionError(
-                f"SerialAdapter: failed to open '{self._port}': {exc}"
-            ) from exc
-
-        self._breaker = HardwareCircuitBreaker(
-            getattr(self, "adapter_name", type(self).__name__), config
-        )
-        self._connected = True
+            if self._serial is not None and self._serial.is_open:
+                await asyncio.to_thread(self._serial.close)
+        except Exception:
+            logger.warning("SerialAdapter: exception during close on '%s'", self._port)
+        finally:
+            self._serial = None
 
     def _open_port(self) -> None:
         if serial is None:
@@ -290,15 +312,14 @@ class SerialAdapter(BaseAdapter):
         )
 
     async def close(self) -> None:
-        """Close the serial port."""
-        try:
-            if self._serial is not None and self._serial.is_open:
-                await asyncio.to_thread(self._serial.close)
-        except Exception:
-            logger.warning("SerialAdapter: exception during close on '%s'", self._port)
-        finally:
-            self._serial = None
-            self._connected = False
+        """Close the serial port.
+
+        Runs under the lifecycle contract on `BaseAdapter`: recorded before the
+        lock is requested, so a connect still opening the port sees that it was
+        closed and gives the port back rather than reporting success.
+        """
+        async with self._closing():
+            await self._teardown()
 
     async def health_check(self) -> bool:
         """Return ``True`` if the serial port is open."""

@@ -574,18 +574,14 @@ class I2CAdapter(BaseAdapter):
         self._bme280_params: Any = None  # bme280 calibration params
         self._ads: Any = None  # ADS1115 instance
         self._scd4x: Any = None  # SCD4X instance
-        # Whether this adapter holds a reference on the shared busio.I2C. The
-        # count is shared, so releasing one this adapter never took would evict
-        # a handle another adapter is still reading through.
-        self._holds_shared_bus: bool = False
-        # Incremented by every close(), before it waits for anything, so a
-        # connect already past its own sampling point can still see it.
-        self._close_count: int = 0
-        # One lifecycle operation at a time. `_teardown()` awaits, so without
-        # this a close suspended part-way through it is invisible to a connect
-        # starting in that gap, and the rest of the stale teardown then
-        # releases what the new connect had just taken.
-        self._lifecycle = asyncio.Lock()
+        # How many references on the shared busio.I2C this adapter holds. A
+        # boolean here disagreed with the cache's count the moment one adapter
+        # acquired twice: the single release cleared the flag, and the second
+        # reference became unreleasable by anything, pinning the cached handle
+        # for the life of the process. Counting keeps the property the boolean
+        # was there for — an adapter cannot release a reference it never took,
+        # because it has none to give back.
+        self._shared_bus_holds: int = 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -633,17 +629,8 @@ class I2CAdapter(BaseAdapter):
             calibration = _resolve_calibration(config)
             window = _window_spec(calibration)
 
-        async with self._lifecycle:
-            if self._connected:
-                # Refused before any state is touched and before the bus is
-                # reached. Reconnecting in place would take a second shared-bus
-                # reference against one release, and would move a live
-                # adapter's device under readings already being taken from it.
-                raise AdapterConnectionError(
-                    f"I2CAdapter: already connected to '{self._sensor_type}' at "
-                    f"address 0x{self._address:02X} on bus {self._bus_number}; "
-                    "close it before connecting again"
-                )
+        description = f"'{sensor_type}' at address 0x{address:02X} on bus {bus_number}"
+        async with self._connecting(description, release=self._teardown):
             self._sensor_id = sensor_id
             self._sensor_type = sensor_type
             self._address = address
@@ -651,51 +638,20 @@ class I2CAdapter(BaseAdapter):
             self._channel = channel
             self._calibration = calibration
             self._window = window
-            await self._connect_locked(sensor_type, config)
+            try:
+                await asyncio.to_thread(self._connect_sync, sensor_type)
+            except AdapterConnectionError:
+                raise
+            except Exception as exc:
+                raise AdapterConnectionError(
+                    f"I2CAdapter: failed to connect to '{sensor_type}' at "
+                    f"address 0x{self._address:02X} on bus {self._bus_number}: "
+                    f"{exc}"
+                ) from exc
 
-    async def _connect_locked(self, sensor_type: str, config: dict) -> None:
-        # Sampled inside the lock, so a close that has already run in full is
-        # counted here rather than mistaken for one that arrived later.
-        closes_before = self._close_count
-        connected = False
-        try:
-            await asyncio.to_thread(self._connect_sync, sensor_type)
-            connected = True
-        except AdapterConnectionError:
-            raise
-        except Exception as exc:
-            raise AdapterConnectionError(
-                f"I2CAdapter: failed to connect to '{sensor_type}' at "
-                f"address 0x{self._address:02X} on bus {self._bus_number}: {exc}"
-            ) from exc
-        finally:
-            # The runtime logs a failed connect and moves on without calling
-            # close(), so a connect that raises has to give back what it took
-            # on the way in. A leaked reference keeps the cached bus handle
-            # alive past its last real user, and the next connect is then
-            # handed a stale one.
-            if not connected:
-                self._release_shared_bus()
-
-        if self._close_count != closes_before:
-            # A close() arrived while this connect held the lock. It could not
-            # tear anything down yet, but it has declared itself, and the
-            # worker thread went on taking more meanwhile. Reporting success
-            # would leave an adapter that believes it is connected while a
-            # close already waiting tears it down, and the runtime would poll
-            # it. The connect gives everything back itself and refuses,
-            # because a connect that was closed did not connect.
-            await self._teardown()
-            raise AdapterConnectionError(
-                f"I2CAdapter: '{sensor_type}' at address "
-                f"0x{self._address:02X} on bus {self._bus_number} was closed "
-                "while it was still connecting"
+            self._breaker = HardwareCircuitBreaker(
+                getattr(self, "adapter_name", type(self).__name__), config
             )
-
-        self._breaker = HardwareCircuitBreaker(
-            getattr(self, "adapter_name", type(self).__name__), config
-        )
-        self._connected = True
 
     def _connect_sync(self, sensor_type: str) -> None:
         """Blocking I2C initialisation — runs in executor."""
@@ -865,15 +821,14 @@ class I2CAdapter(BaseAdapter):
     def _acquire_shared_bus(self) -> Any:
         """Take a reference on the shared bus, and record that this one holds it."""
         i2c = _get_shared_busio_i2c(self._bus_number)
-        self._holds_shared_bus = True
+        self._shared_bus_holds += 1
         return i2c
 
     def _release_shared_bus(self) -> None:
-        """Give back this adapter's reference, once, if it took one."""
-        if not self._holds_shared_bus:
-            return
-        self._holds_shared_bus = False
-        _release_shared_busio_i2c(self._bus_number)
+        """Give back every reference this adapter took, and none it did not."""
+        while self._shared_bus_holds > 0:
+            self._shared_bus_holds -= 1
+            _release_shared_busio_i2c(self._bus_number)
 
     def _ads1115_quarantined(self) -> str | None:
         """Why this chip is refused for the life of the process, if it is."""
@@ -1125,12 +1080,8 @@ class I2CAdapter(BaseAdapter):
         a worker thread can see that it was closed and give back what it took
         after this ran.
         """
-        self._close_count += 1
-        async with self._lifecycle:
-            try:
-                await self._teardown()
-            finally:
-                self._connected = False
+        async with self._closing():
+            await self._teardown()
 
     async def health_check(self) -> bool:
         """Return ``True`` when connected and the device handle is open."""

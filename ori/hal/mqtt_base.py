@@ -393,7 +393,6 @@ class MqttCachedAdapter(BaseAdapter):
             self._client = await client.__aenter__()
             for topic in topics:
                 await self._client.subscribe(topic)
-            self._connected = True
             self._listener_task = asyncio.create_task(
                 self._listen_loop(),
                 name=listener_name or f"mqtt-listener:{self._broker_host}:{self._port}",
@@ -405,9 +404,21 @@ class MqttCachedAdapter(BaseAdapter):
                 f"{self._broker_host}:{self._port}: {exc}"
             ) from exc
 
-    async def _close_mqtt(self) -> None:
-        self._connected = False
+    async def close(self) -> None:
+        """Close for the whole MQTT family, under the lifecycle contract.
 
+        Every subclass had the same two-line `close()`; it lives here once so
+        that the guarantee cannot be adopted by some of them and not others.
+        """
+        async with self._closing():
+            await self._close_mqtt()
+
+    async def _close_mqtt(self) -> None:
+        """Give back the listener and the client, finished or not.
+
+        Called from `close()` and as the `release` of an abandoned connect, so
+        it must be idempotent and safe on a partial connect.
+        """
         task = self._listener_task
         self._listener_task = None
         if task is not None and not task.done():

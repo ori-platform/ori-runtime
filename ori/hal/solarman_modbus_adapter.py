@@ -98,18 +98,18 @@ class SolarmanModbusAdapter(BaseAdapter):
                 "must be numeric."
             )
 
-        self._host = str(config.get("host", "")).strip()
-        self._serial = str(config.get("serial", "")).strip()
-        self._port = int(config.get("port", profile.default_port))
-        if not self._host:
+        host = str(config.get("host", "")).strip()
+        serial = str(config.get("serial", "")).strip()
+        port = int(config.get("port", profile.default_port))
+        if not host:
             raise AdapterConnectionError(
                 "SolarmanModbusAdapter: 'host' is required in sensor config."
             )
-        if not self._serial:
+        if not serial:
             raise AdapterConnectionError(
                 "SolarmanModbusAdapter: 'serial' logger serial is required."
             )
-        if self._port <= 0:
+        if port <= 0:
             raise AdapterConnectionError(
                 "SolarmanModbusAdapter: 'port' must be greater than zero."
             )
@@ -127,15 +127,26 @@ class SolarmanModbusAdapter(BaseAdapter):
                 profile.status,
             )
 
-        self._profile = profile
-        self._sensor_type = sensor_type
-        self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
-        self._connected = True
+        # Nothing is awaited above, so no close can interleave with it, but the
+        # guarantee is taken from `BaseAdapter` rather than rested on that: a
+        # later await added here would silently reopen the race. The
+        # configuration is applied inside the guard so that a refused connect
+        # leaves the live one alone.
+        async with self._connecting(f"'{host}:{port}'"):
+            self._host = host
+            self._serial = serial
+            self._port = port
+            self._profile = profile
+            self._sensor_type = sensor_type
+            self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
 
     async def close(self) -> None:
+        async with self._closing():
+            await self._teardown()
+
+    async def _teardown(self) -> None:
         client = self._client
         self._client = None
-        self._connected = False
         if client is None:
             return
 

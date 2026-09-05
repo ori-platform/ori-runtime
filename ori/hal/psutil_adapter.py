@@ -88,17 +88,24 @@ class PsutilAdapter(BaseAdapter):
                 f"PsutilAdapter: unsupported sensor_type '{sensor_type}'. "
                 f"Supported: {sorted(_SUPPORTED)}"
             )
-        self._sensor_id = config.get("sensor_id", "")
-        self._sensor_type = sensor_type
-        self._config = dict(config)
-        self._breaker = HardwareCircuitBreaker(
-            getattr(self, "adapter_name", type(self).__name__), config
-        )
-        self._connected = True
+        sensor_id = config.get("sensor_id", "")
+        # Nothing is awaited and `close()` releases nothing, so this adapter
+        # has no race to lose; it takes the guarantee from `BaseAdapter` so
+        # that the contract is one rule rather than one per adapter, and
+        # applies its configuration inside the guard so a refused connect
+        # leaves the live one alone.
+        async with self._connecting(f"'{sensor_type}'"):
+            self._sensor_id = sensor_id
+            self._sensor_type = sensor_type
+            self._config = dict(config)
+            self._breaker = HardwareCircuitBreaker(
+                getattr(self, "adapter_name", type(self).__name__), config
+            )
 
     async def close(self) -> None:
         """Release resources (no-op for psutil — marks as disconnected)."""
-        self._connected = False
+        async with self._closing():
+            pass
 
     async def health_check(self) -> bool:
         """Return ``True`` if psutil is importable and adapter is connected."""
