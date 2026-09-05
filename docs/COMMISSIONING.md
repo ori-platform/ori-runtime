@@ -236,6 +236,32 @@ reproduced by a released line. Each of those modes has to be observed at the
 panel and recorded. What the release does establish is that the operation holds
 the output only for the command and the operator's observation of it.
 
+The ceremony commands run as their own process, started from a shell. Only
+the runtime service loads the environment file, through `EnvironmentFile=`, so
+a shell does not inherit the anchor and the commands verify against nothing:
+the delivery is refused `unknown_signer` at `key_selection`, which is the
+contract's verdict when no key can be selected.
+
+Pass the anchor to the command, and pass nothing else:
+
+```bash
+anchor=$(sed -n 's/^ORI_COMMISSIONING_ANCHOR_PUBLIC_KEY_B64=//p' \
+  /etc/ori/runtime.env | tr -d "\"'")
+ORI_COMMISSIONING_ANCHOR_PUBLIC_KEY_B64="$anchor" \
+  ori commissioning deliver --path /etc/ori/ori.yaml --binding ./binding.json
+```
+
+**Do not source that file.** It is the delivery channel for
+`GATEWAY_SHARED_SECRET`, `ORI_CUSTODY_SECRET`, `ORI_EVIDENCE_DEVICE_SECRET`,
+the remote-command secrets and the telemetry API key. `set -a; . file` would
+export every one of them into the interactive shell and each child it starts,
+to obtain a value that is a public key. It also reads the file as shell rather
+than as a systemd environment file, which is a different grammar: systemd
+performs no expansion, so a value containing `$` or a backtick means one thing
+to the service and another to the shell.
+
+For a user install the file is `~/.config/ori/runtime.env`.
+
 `commissioning deliver` stages the verified document beside `ori.yaml`; the
 provisional record appears when the runtime next starts. So a freshly delivered
 binding needs one runtime start before `commissioning prove-command` can see it,
