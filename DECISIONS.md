@@ -1926,3 +1926,54 @@ so a regression in the activation checks can no longer produce a false
 `protected` and a lying caller is refused. Drivability remains a constant, and
 the re-read status is still written only by the branch the earlier check gates.
 The gain is real and it is narrower than "every conjunct is independent".
+## 2026-09-05 — A withheld measurement escalates; it is never answered by a restart
+
+A device that cannot establish a trustworthy measurement reports it, degrades
+its health, and marks the affected safety pairs. What it must not do is treat
+its own liveness as the remedy. Two responses suggest themselves and both are
+rejected, on their own merits and not as a matter of sequencing.
+
+**A timed self-restart is rejected.** A restart clears the measurement
+quarantine and reconfigures the device while the competing writer may still be
+there, which is precisely the contest the quarantine refuses; losing it
+intermittently produces a plausible number rather than a refusal. It also makes
+the process boundary meaningless — the quarantine is process-scoped because a
+person is expected to intervene, and an automatic restart turns that into a
+retry loop with extra steps. And it repeats a mistake already withdrawn once: a
+restart taken to recover one sensor removes protection for every other active
+safety pair on the device for its duration, and a restart loop never restores
+it. Sensors are inputs; the protected thing is the commissioned zone-and-profile
+pair, and a restart takes all of them down together.
+
+**Coupling watchdog feeding to measurement health is rejected.** Withholding
+the feed does not report a problem, it resets the controller.
+`docs/evidence/2026-09-01-pi4-gpio-controller-loss.md` measured that a reset
+clears the driving pad and de-energises the coil, and states that a genuine
+watchdog reset was not among the conditions tested. What de-energising does to
+the protected circuit is commissioned per channel, and for a zone whose mapping
+makes `de_energised` the closed state, a watchdog reset reconnects the load at
+the exact moment the runtime cannot measure whether that is safe.
+
+**What is adopted instead is escalation, and escalation restores nothing.** A
+loss still present after a bounded period is re-notified on a slow cadence and
+escalates to the secondary contact: immediate to the primary, a primary
+reminder at six hours, the secondary at twelve, then daily. It is Tier A
+throughout, invents no physical authority, and travels the structural
+policy-exempt outbox so an entitlement cap cannot silence it. There is no
+give-up: a still-unprotected channel must not become permanently silent, so the
+schedule ends on credible recovery and on nothing else that is implemented
+today. The cadence is release-owned rather than site-configurable, because a
+setting would let a deployment configure a persistent loss into silence.
+
+**No text anywhere may describe escalation as restoring protection.** It tells a
+person that a channel is unprotected. It does not protect it.
+
+**Any reset-based response comes later, and only once platform qualification
+and HIL proof establish what a reset does to every relevant actuator, and
+commissioning establishes what that actuator state does to the site circuit.**
+That is the qualification fixture's work, not a runtime patch.
+
+This decision stands on its own and does not close
+`ori-platform/ori-runtime#510`, whose remaining scope is the pair-scoped
+supervision mechanism, its health and evidence state, the reset qualification
+boundary, and the connect-time contention case.
