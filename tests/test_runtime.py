@@ -1734,6 +1734,9 @@ class TestAdapterProtocol:
             try:
                 await asyncio.wait_for(runtime._shutdown_event.wait(), timeout=5.0)
             except asyncio.TimeoutError:
+                # The expected path: `start()` raised, so nothing ever set the
+                # shutdown event and the wait timed out. Fall through and stop
+                # anyway, which is a no-op on a runtime that never started.
                 pass
             await runtime.stop()
 
@@ -2209,7 +2212,9 @@ class TestShutdown:
             await runtime.stop()
             # `stop()` drains the task rather than abandoning it, so awaiting
             # it here observes the drain rather than waiting out its duration.
-            await tier_d_task
+            # Bounded, so a drain that never happens fails as a timeout rather
+            # than hanging the suite.
+            await asyncio.wait_for(tier_d_task, timeout=5.0)
 
         await asyncio.gather(runtime.start(), _inject_and_stop())
         assert completed == [True], "Tier D task was abandoned before completion"
