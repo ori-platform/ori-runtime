@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+
+from ori.policy.alert_classes import ALERT_CLASSES
 
 
 @dataclass
@@ -18,6 +20,7 @@ class DevicePolicy:
     signature: str  # ed25519:<base64> — verified at load time
     alert_sms_monthly_cap: Optional[int] = None
     alert_whatsapp_monthly_cap: Optional[int] = None
+    alerts: dict[str, bool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for field_name, cap in (
@@ -26,6 +29,39 @@ class DevicePolicy:
         ):
             if cap is not None and cap < -1:
                 raise ValueError(f"{field_name} must be null, -1, or non-negative")
+        # Only known classes carrying a real boolean survive. An unrecognised
+        # key cannot disable anything it does not name, and a non-boolean is
+        # not a decision to switch a notice off.
+        object.__setattr__(
+            self,
+            "alerts",
+            {
+                name: value
+                for name, value in (self.alerts or {}).items()
+                if name in ALERT_CLASSES and isinstance(value, bool)
+            },
+        )
+
+    def permits_alert_class(
+        self, alert_class: Optional[str], *, action_tier: str = "A"
+    ) -> bool:
+        """Whether a customer has left this class of notice switched on.
+
+        Tier D is exempt, as it is from the monthly cap: a safety-critical
+        notice is not a preference, and suppressing one would also read
+        downstream as a Tier D action that failed.
+
+        Absence is enablement everywhere else -- a trigger with no class, a
+        policy with no `alerts`, a policy omitting this class, and an expired
+        lease. Only an explicit `false` on a live policy silences anything.
+        """
+        if str(action_tier).upper() == "D":
+            return True
+        if not alert_class:
+            return True
+        if self.is_expired:
+            return True
+        return self.alerts.get(alert_class, True) is not False
 
     def permits_action(self, action_tier: str) -> bool:
         if action_tier in ("D", "A"):  # Tier D: Invariant 10. Tier A: always.

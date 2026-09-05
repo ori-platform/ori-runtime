@@ -88,13 +88,14 @@ from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading, compute_fingerprint
 from ori.network.sms_webhook import SMSWebhookServer
+from ori.policy.alert_classes import alert_class_for_trigger
 from ori.policy.remote_fetch import (
     RemotePolicyFetchError,
     device_policy_from_payload,
     fetch_remote_device_policy_bundle,
     fetch_remote_device_policy_bundle_by_reference,
 )
-from ori.reasoning.action_dispatcher import ActionDispatcher
+from ori.reasoning.action_dispatcher import ALERT_SUPPRESSED, ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
 from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfig
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
@@ -1047,13 +1048,16 @@ class OriRuntime:
         await self._maybe_refresh_remote_device_policy_once(config, dispatcher)
 
         # alert_whatsapp executor
-        async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> bool:
+        async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> bool | str:
             msg = _message_from_context(ctx, action, channel="whatsapp")
             action_tier = _resolve_action_declared_tier(ctx, action)
             trigger_name = _resolve_trigger_name(ctx)
+            skill_name, first_party = _resolve_skill_identity(ctx)
             original_ts = _resolve_original_ts(ctx)
             return await self._send_or_queue_alert(
                 channel="whatsapp",
+                skill_name=skill_name,
+                skill_is_first_party=first_party,
                 message=msg,
                 recipient=_operator_contact,
                 action_tier=action_tier,
@@ -1065,13 +1069,16 @@ class OriRuntime:
         dispatcher.register_executor("alert_whatsapp", _exec_alert_whatsapp)
 
         # alert_sms executor
-        async def _exec_alert_sms(action: str, ctx: SkillContext) -> bool:
+        async def _exec_alert_sms(action: str, ctx: SkillContext) -> bool | str:
             msg = _message_from_context(ctx, action, channel="sms")
             action_tier = _resolve_action_declared_tier(ctx, action)
             trigger_name = _resolve_trigger_name(ctx)
+            skill_name, first_party = _resolve_skill_identity(ctx)
             original_ts = _resolve_original_ts(ctx)
             return await self._send_or_queue_alert(
                 channel="sms",
+                skill_name=skill_name,
+                skill_is_first_party=first_party,
                 message=msg,
                 recipient=_operator_contact,
                 action_tier=action_tier,
@@ -4316,18 +4323,48 @@ class OriRuntime:
         original_ts: int,
         alert_sender: AlertFailoverSender,
         allow_failover: bool = True,
-    ) -> bool:
+        skill_name: str = "",
+        skill_is_first_party: bool = False,
+    ) -> bool | str:
         """Attempt immediate delivery; enqueue on failure.
 
-        Returns True if delivered immediately or queued successfully.
-        Returns False only if queueing also fails.
+        True when delivered immediately or queued successfully, False when
+        queueing also fails, and `ALERT_SUPPRESSED` when a customer preference
+        withheld the notice -- a deliberate non-action, which `action_log` must
+        not record as an attempt that failed.
         """
-        alert_ts = now_ms()
-        self._last_alert_timestamps_by_channel[channel] = alert_ts
-        if trigger_name:
-            self._last_alert_timestamps_by_trigger[trigger_name] = alert_ts
+        if not self._policy_permits_alert_class(
+            skill_name,
+            trigger_name,
+            action_tier=action_tier,
+            first_party=skill_is_first_party,
+        ):
+            logger.info(
+                "[runtime] %s alert suppressed by customer preference "
+                "skill=%s trigger=%s class=%s",
+                channel,
+                skill_name,
+                trigger_name,
+                alert_class_for_trigger(
+                    skill_name, trigger_name, first_party=skill_is_first_party
+                ),
+            )
+            await self._record_preference_disabled_alert(
+                channel=channel,
+                alert_class=alert_class_for_trigger(
+                    skill_name, trigger_name, first_party=skill_is_first_party
+                ),
+                trigger_name=trigger_name,
+                action_tier=action_tier,
+                original_ts=original_ts,
+            )
+            return ALERT_SUPPRESSED
 
         if not recipient:
+            # Checked after the preference, because a notice the customer
+            # switched off was not going to be sent to anyone. Reporting it as
+            # a missing recipient would record a configuration fault the
+            # deployment does not have.
             logger.warning(
                 "[runtime] %s alert skipped: operator_contact not configured", channel
             )
@@ -4344,6 +4381,15 @@ class OriRuntime:
                 trigger_name,
             )
             return False
+
+        # Stamped only once a send is actually attempted. These timestamps are
+        # published in the health snapshot, and a customer preference or a cap
+        # that stopped the alert would otherwise report activity that never
+        # happened.
+        alert_ts = now_ms()
+        self._last_alert_timestamps_by_channel[channel] = alert_ts
+        if trigger_name:
+            self._last_alert_timestamps_by_trigger[trigger_name] = alert_ts
 
         delivered = False
         try:
@@ -4492,6 +4538,84 @@ class OriRuntime:
             trigger_name=trigger_name,
             original_ts=alert_ts,
         )
+
+    def _policy_permits_alert_class(
+        self,
+        skill_name: str,
+        trigger_name: str,
+        *,
+        action_tier: str = "A",
+        first_party: bool = False,
+    ) -> bool:
+        """Whether a customer preference leaves this trigger's notice on.
+
+        Reached only from `_send_or_queue_alert`. Mandatory notices travel
+        `_send_or_queue_safety_alert`, which does not call this and must not.
+        No policy means no preference, so the notice stands.
+        """
+        if str(action_tier).upper() == "D":
+            return True
+        alert_class = alert_class_for_trigger(
+            skill_name, trigger_name, first_party=first_party
+        )
+        if alert_class is None:
+            return True
+        if self._dispatcher is None:
+            return True
+        return self._dispatcher.permits_alert_class(
+            alert_class, action_tier=action_tier
+        )
+
+    async def _record_preference_disabled_alert(
+        self,
+        *,
+        channel: str,
+        alert_class: str | None,
+        trigger_name: str,
+        action_tier: str,
+        original_ts: int,
+    ) -> None:
+        """Record that a notice was withheld by preference, and send nothing.
+
+        Bounded to one row per channel, class and month, like the cap counter
+        beside it. Keying by event timestamp instead would add a row per
+        suppression, and a class with no cooldown suppressing at the poll rate
+        would grow the state store without limit for a record nothing reads
+        back yet.
+        """
+        if self._state_store is None:
+            return
+        key = _preference_disabled_key(channel, alert_class, original_ts)
+        try:
+            raw = await self._state_store.get_skill_state(
+                "__runtime_alert_preferences__", key
+            )
+            try:
+                previous = json.loads(raw) if raw else {}
+            except ValueError:
+                previous = {}
+            count = int(previous.get("count", 0) or 0) + 1
+            await self._state_store.set_skill_state(
+                "__runtime_alert_preferences__",
+                key,
+                json.dumps(
+                    {
+                        "outcome": "disabled",
+                        "reason": "customer_preference",
+                        "channel": channel,
+                        "alert_class": alert_class,
+                        "action_tier": action_tier,
+                        "count": count,
+                        "last_trigger_name": trigger_name,
+                        "last_suppressed_ms": now_ms(),
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "[runtime] failed to record a preference-disabled alert outcome"
+            )
 
     async def _policy_permits_external_alert(
         self,
@@ -4887,6 +5011,19 @@ def _count_active_triggers(
     return active_count
 
 
+def _resolve_skill_identity(ctx: SkillContext) -> tuple[str, bool]:
+    """The skill's name and whether the loader marked it first-party.
+
+    `first_party` is set by the loader from the packaged roots and never read
+    from `skill.yaml`, so a skill cannot claim it. Anything that cannot be
+    resolved reads as community, which resolves to no class.
+    """
+    skill = getattr(ctx, "skill", None) if ctx else None
+    name = getattr(skill, "name", "") if skill is not None else ""
+    first_party = bool(getattr(skill, "first_party", False))
+    return (str(name or "").strip(), first_party)
+
+
 def _resolve_trigger_name(ctx: SkillContext) -> str:
     if ctx and isinstance(getattr(ctx, "trigger_name", ""), str):
         trigger_name = ctx.trigger_name.strip()
@@ -4935,6 +5072,17 @@ def _build_alert_id(
 ) -> str:
     raw = f"{channel}|{recipient}|{action_tier}|{trigger_name}|{original_ts}|{message}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _preference_disabled_key(
+    channel: str, alert_class: str | None, timestamp_ms: int
+) -> str:
+    month = dt.datetime.fromtimestamp(
+        max(0, int(timestamp_ms)) / 1000,
+        tz=dt.UTC,
+    ).strftime("%Y-%m")
+    normalized = str(channel or "").strip().lower() or "unknown"
+    return f"disabled:{normalized}:{alert_class or 'unclassified'}:{month}"
 
 
 def _alert_policy_count_key(channel: str, timestamp_ms: int) -> str:
