@@ -24,7 +24,7 @@ import logging
 import secrets
 import string
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Final
 
 from ori.actions.logger import LoggerAction
 from ori.network.events import ActionResult, ActionTier, ReasoningResult
@@ -43,6 +43,13 @@ from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_commands.commands import extract_remote_command_payload
 from ori.utils.bool_utils import is_truthy
 from ori.utils.time_utils import now_ms
+
+#: An executor may return this instead of a bool to say it deliberately did not
+#: act. A plain `False` means the action was attempted and did not happen, which
+#: an operator reading `action_log` must be able to tell from a notice a
+#: customer switched off.
+ALERT_SUPPRESSED: Final = "suppressed"
+SUPPRESSED_ACTION_TAKEN: Final = "suppressed"
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +395,17 @@ class ActionDispatcher:
             channel=channel,
             action_tier=str(action_tier).upper(),
             current_month_count=current_month_count,
+        )
+
+    def permits_alert_class(
+        self, alert_class: str | None, *, action_tier: str = "A"
+    ) -> bool:
+        """Whether a customer preference leaves this alert class switched on."""
+        active_policy = (
+            self._policy if self._policy is not None else DevicePolicy.unrestricted()
+        )
+        return active_policy.permits_alert_class(
+            alert_class, action_tier=str(action_tier).upper()
         )
 
     def get_inflight_tier_d_tasks(self) -> set[asyncio.Task[Any]]:
@@ -853,6 +871,7 @@ class ActionDispatcher:
             return refusal
 
         executed = True
+        suppressed = False
         try:
             executor = self._executors.get(action)
             if executor is not None:
@@ -861,7 +880,12 @@ class ActionDispatcher:
                         "ActionDispatcher: executing action %r (tier=%s)", action, tier
                     )
                 maybe_ok = await executor(action, context)
-                if maybe_ok is False:
+                if maybe_ok == ALERT_SUPPRESSED:
+                    # Deliberate non-action: nothing was attempted and nothing
+                    # went wrong, which is not what a bare False records.
+                    suppressed = True
+                    executed = False
+                elif maybe_ok is False:
                     executed = False
             else:
                 if tier == ActionTier.SAFETY_CRITICAL:
@@ -891,7 +915,18 @@ class ActionDispatcher:
                 )
             executed = False
 
-        if not executed and tier == ActionTier.SAFETY_CRITICAL:
+        if suppressed and tier == ActionTier.SAFETY_CRITICAL:
+            # Unreachable by construction, since the preference gate exempts
+            # Tier D at three layers, and refused here as well: a Tier D action
+            # reporting itself suppressed would otherwise skip the escalation.
+            logger.critical(
+                "ActionDispatcher: action=%r reported itself suppressed at Tier D; "
+                "treating it as a failure",
+                action,
+            )
+            suppressed = False
+
+        if not executed and not suppressed and tier == ActionTier.SAFETY_CRITICAL:
             logger.critical(
                 "TIER D ACTION FAILED: action=%r could not execute. "
                 "Physical safety action was not taken. "
@@ -910,7 +945,9 @@ class ActionDispatcher:
             tier=tier,
             executed=executed,
             approved=None,  # no approval step for A/B/D
-            action_taken=action if executed else "",
+            action_taken=(
+                action if executed else (SUPPRESSED_ACTION_TAKEN if suppressed else "")
+            ),
             timestamp=now_ms(),
         )
 
