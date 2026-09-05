@@ -883,6 +883,188 @@ def test_cli_bridge_commissioning_deliver_refuses_by_stage_and_writes_nothing(
     assert not (tmp_path / BINDING_RELATIVE_PATH).exists()
 
 
+def _deliver_refusal(tmp_path, monkeypatch, capsys) -> dict:
+    config_path = _commissioning_config(tmp_path)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 2
+    assert payload["ok"] is False
+    return payload["error"]
+
+
+def test_cli_bridge_commissioning_deliver_names_an_unconfigured_anchor(
+    tmp_path, monkeypatch, capsys
+):
+    """An absent anchor keeps the contract's verdict and says where it lives.
+
+    The stage and reason are what `commissioned-safety-binding/v1` requires
+    when no key can be selected, so neither moves. An operator reading only
+    `unknown_signer` would go looking at the signing key, when what is missing
+    is the anchor this process never inherited.
+    """
+    from ori.security.commissioning.anchors import (
+        COMMISSIONING_ANCHOR_ENV,
+        COMMISSIONING_ANCHOR_PREVIOUS_ENV,
+    )
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    monkeypatch.delenv(COMMISSIONING_ANCHOR_ENV, raising=False)
+    monkeypatch.delenv(COMMISSIONING_ANCHOR_PREVIOUS_ENV, raising=False)
+
+    error = _deliver_refusal(tmp_path, monkeypatch, capsys)
+
+    assert error["code"] == "unknown_signer"
+    assert error["stage"] == "key_selection"
+    assert COMMISSIONING_ANCHOR_ENV in error["detail"]
+    assert "/etc/ori/runtime.env" in error["detail"]
+    assert "a shell does not inherit" in error["detail"]
+    assert not (tmp_path / BINDING_RELATIVE_PATH).exists()
+
+
+def test_cli_bridge_commissioning_deliver_separates_an_absent_anchor_from_a_wrong_one(
+    tmp_path, monkeypatch, capsys
+):
+    """One reason, two remedies; a detail that served both would name neither.
+
+    Merging the two messages passes every assertion about the verdict, so the
+    distinguishing property is asserted directly: the configured-but-wrong
+    detail must not carry the guidance that only an absent anchor earns.
+    """
+    from ori.security.commissioning.anchors import (
+        COMMISSIONING_ANCHOR_ENV,
+        COMMISSIONING_ANCHOR_PREVIOUS_ENV,
+    )
+
+    monkeypatch.delenv(COMMISSIONING_ANCHOR_ENV, raising=False)
+    monkeypatch.delenv(COMMISSIONING_ANCHOR_PREVIOUS_ENV, raising=False)
+    absent = _deliver_refusal(tmp_path, monkeypatch, capsys)
+
+    # The anchor configured is not the key that signed the document.
+    _anchor(monkeypatch, seed="6" * 64)
+    mismatched = _deliver_refusal(tmp_path, monkeypatch, capsys)
+
+    assert absent["code"] == mismatched["code"] == "unknown_signer"
+    assert absent["stage"] == mismatched["stage"] == "key_selection"
+    assert absent["detail"] != mismatched["detail"]
+    assert COMMISSIONING_ANCHOR_ENV not in mismatched["detail"]
+    assert "runtime.env" not in mismatched["detail"]
+    assert mismatched["detail"] == (
+        "binding refused at key_selection; the binding in force is unchanged "
+        "and nothing was written"
+    )
+
+
+def test_cli_bridge_commissioning_deliver_guidance_is_confined_to_unknown_signer(
+    tmp_path, monkeypatch, capsys
+):
+    """Only the verdict an absent anchor causes earns the anchor's remedy.
+
+    An unconfigured anchor is the state, not the verdict. Attaching the
+    guidance to every refusal decided while it happens to be unset would send
+    an operator to the environment file over a document that names the wrong
+    device, which sourcing it would not fix.
+    """
+    from ori.security.commissioning.anchors import (
+        COMMISSIONING_ANCHOR_ENV,
+        COMMISSIONING_ANCHOR_PREVIOUS_ENV,
+    )
+
+    monkeypatch.delenv(COMMISSIONING_ANCHOR_ENV, raising=False)
+    monkeypatch.delenv(COMMISSIONING_ANCHOR_PREVIOUS_ENV, raising=False)
+
+    config_path = _commissioning_config(tmp_path)
+    envelope = _bench_envelope()
+    # `device_id` is decided before `key_selection`, so this refusal is reached
+    # with the anchor still unconfigured.
+    envelope["binding"]["device_id"] = "not-this-device"
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(envelope), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 2
+    error = payload["error"]
+    assert error["code"] == "wrong_device"
+    assert error["stage"] == "device_id"
+    assert COMMISSIONING_ANCHOR_ENV not in error["detail"]
+    assert "runtime.env" not in error["detail"]
+
+
+def test_commissioning_doc_says_the_ceremony_commands_need_their_own_anchor(tmp_path):
+    """The remedy the refusal names must be written down where an installer looks."""
+    doc = (
+        Path(__file__).resolve().parents[1] / "docs" / "COMMISSIONING.md"
+    ).read_text()
+
+    assert "a shell does not inherit the anchor" in doc
+    # The table of what an installation carries already names both paths, so
+    # asserting those would pass with this guidance absent. What is new is the
+    # remedy: reading out one variable and scoping it to one command.
+    assert "sed -n 's/^ORI_COMMISSIONING_ANCHOR_PUBLIC_KEY_B64=//p'" in doc
+    assert 'ORI_COMMISSIONING_ANCHOR_PUBLIC_KEY_B64="$anchor"' in doc
+    assert "**Do not source that file.**" in doc
+    assert "~/.config/ori/runtime.env" in doc
+
+
+def test_the_anchor_remedy_never_tells_an_operator_to_source_the_env_file():
+    """The service environment file carries secrets, so the remedy is one key.
+
+    `set -a; . file` exports the gateway, custody and telemetry secrets into
+    the operator's shell and every child it starts, to obtain a value that is
+    a public key. It also reads a systemd environment file as shell, which is
+    a different grammar. Asserted over both surfaces the remedy appears on,
+    because fixing one and leaving the other is the shape of this defect.
+    """
+    from ori.security.commissioning.anchors import CommissioningAnchors
+
+    doc = (
+        Path(__file__).resolve().parents[1] / "docs" / "COMMISSIONING.md"
+    ).read_text()
+    remedy = cli_bridge._refused(
+        "key_selection",
+        "unknown_signer",
+        anchors=CommissioningAnchors(current=None, previous=None),
+    ).detail
+
+    # The runnable form is what gets copied. The doc may name the
+    # anti-pattern generically in order to warn against it, and does.
+    for surface, text in (("doc", doc), ("refusal detail", remedy)):
+        for runnable in (
+            "set -a; . /etc/ori/runtime.env",
+            "set -a; . ~/.config/ori/runtime.env",
+            "source /etc/ori/runtime.env",
+            "source ~/.config/ori/runtime.env",
+        ):
+            assert runnable not in text, f"{surface}: {runnable}"
+
+    assert "Do not source the file" in remedy
+    assert "gateway, custody and telemetry secrets" in remedy
+    assert "**Do not source that file.**" in doc
+
+
 def test_cli_bridge_commissioning_deliver_refuses_an_undemonstrated_zone_when_hardened(
     tmp_path, monkeypatch, capsys
 ):

@@ -30,7 +30,9 @@ from ori.config import (
 from ori.gateway.mqtt_security import parse_gateway_broker_endpoint
 from ori.network.events import SensorReading
 from ori.security.commissioning.anchors import (
+    COMMISSIONING_ANCHOR_ENV,
     AnchorError,
+    CommissioningAnchors,
     anchor_collision,
     load_commissioning_anchors,
     provisioning_anchor,
@@ -934,12 +936,12 @@ async def _commissioning_deliver(
 
     if anchor_collision(anchors, prov):
         # Decided before any document is read, exactly as at configuration load.
-        raise _refused("key_selection", "anchor_collision")
+        raise _refused("key_selection", "anchor_collision", anchors=anchors)
 
     try:
         document = parse_document(text)
     except BindingRefusedError as refusal:
-        raise _refused(refusal.stage, refusal.reason) from None
+        raise _refused(refusal.stage, refusal.reason, anchors=anchors) from None
 
     if in_force is not None and is_the_binding_in_force(document, in_force):
         return {
@@ -972,7 +974,7 @@ async def _commissioning_deliver(
     try:
         accepted = verify_binding_envelope(document, context)
     except BindingRefusedError as refusal:
-        raise _refused(refusal.stage, refusal.reason) from None
+        raise _refused(refusal.stage, refusal.reason, anchors=anchors) from None
 
     target = Path(config_path).resolve().parent / BINDING_RELATIVE_PATH
     payload = text.encode("utf-8")
@@ -1139,7 +1141,9 @@ def _declared_gpio_pin(config: Config) -> int | None:
     return int(pin) if pin is not None else None
 
 
-def _refused(stage: str, reason: str) -> BridgeError:
+def _refused(
+    stage: str, reason: str, *, anchors: CommissioningAnchors | None = None
+) -> BridgeError:
     """A refused binding, reported the way this bridge reports a rejected document.
 
     `config validate` already answers an invalid document with `ok: false` and
@@ -1147,15 +1151,34 @@ def _refused(stage: str, reason: str) -> BridgeError:
     operator handed the tool something the contract does not accept. The code
     is the contract's reason and the stage rides alongside it, because a
     refusal only proves a check ran if every earlier stage passed.
+
+    `unknown_signer` over an unconfigured anchor is the contract's verdict and
+    stays so; what changes is the detail. Absence and mismatch are one reason
+    with two remedies, and only the operator can be told them apart.
+
+    The remedy names one variable and scopes it to one command. The service
+    environment file is the delivery channel for the gateway, custody and
+    telemetry secrets too, so telling an operator to source it would export
+    every one of them into their shell and its children to obtain a public key.
     """
-    return BridgeError(
-        code=reason,
-        detail=(
-            f"binding refused at {stage}; the binding in force is unchanged "
-            "and nothing was written"
-        ),
-        stage=stage,
+    detail = (
+        f"binding refused at {stage}; the binding in force is unchanged "
+        "and nothing was written"
     )
+    if reason == "unknown_signer" and anchors is not None and not anchors.configured:
+        detail += (
+            f". No commissioning anchor is configured in this process's "
+            f"environment: {COMMISSIONING_ANCHOR_ENV} is unset, so no key "
+            "could be selected and the document's signer was never compared. "
+            "The installer writes the anchor to the service environment file "
+            "(/etc/ori/runtime.env, or ~/.config/ori/runtime.env for a user "
+            "install), which a shell does not inherit. Read that one variable "
+            f"out and pass it to this command alone, as {COMMISSIONING_ANCHOR_ENV}"
+            "=... before the command. Do not source the file: it also carries "
+            "the gateway, custody and telemetry secrets, and a systemd "
+            "environment file is not shell"
+        )
+    return BridgeError(code=reason, detail=detail, stage=stage)
 
 
 def _write_staged_binding(target: Path, payload: bytes) -> None:
