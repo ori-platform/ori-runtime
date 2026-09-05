@@ -186,3 +186,54 @@ def test_zone_facts_from_accepted_zone() -> None:
         rated_capacity_value=10.0,
         proof_method="actuate_and_observe",
     )
+
+
+def test_an_activated_pair_records_the_profiles_own_status(monkeypatch) -> None:
+    """The carry, not the re-check.
+
+    `_protection_claim` re-reads `profile_status` where it makes the claim,
+    and that re-check has its own test. This is the other half: the recorded
+    value has to track the profile. A constant here would satisfy the
+    re-check while saying nothing about any profile, so the two are separate
+    facts and each needs its own test.
+
+    `_check_pair` is bypassed rather than a ratified profile constructed,
+    because every shipped profile is a candidate and the point is precisely
+    that activation must not be trusted to have filtered them.
+    """
+    from ori.safety import activation as activation_module
+
+    monkeypatch.setattr(activation_module, "_check_pair", lambda profile, zone: None)
+    candidate = load_profile_set(
+        [
+            {
+                "v": 1,
+                "id": "fixture.candidate.v1",
+                "status": "candidate",
+                "observes": {"quantity": "current", "unit": "ampere"},
+                "condition": {
+                    "kind": "upper_capacity_multiplier",
+                    "capacity_parameter": "rated_capacity_amps",
+                    "multiplier": 2.0,
+                },
+                "outcome": "open_protected_circuit",
+            }
+        ]
+    )
+    zone = ZoneFacts(
+        zone_id="z",
+        sensor_id="s",
+        quantity="current",
+        unit="ampere",
+        direction="positive_is_load_draw",
+        range_min=0.0,
+        range_max=100.0,
+        rated_capacity_parameter="rated_capacity_amps",
+        rated_capacity_value=10.0,
+        proof_method="undemonstrated",
+    )
+
+    result = activate(candidate, [zone])
+
+    assert len(result.activated) == 1
+    assert result.activated[0].profile_status == "candidate"

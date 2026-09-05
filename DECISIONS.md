@@ -1886,3 +1886,43 @@ matches the decision the Linux installer already makes at write time, where a
 symlinked path or parent is an unsafe destination. The installer's own source
 document keeps a separate, deliberately tighter cap, because what arrives there
 is generated rather than grown.
+
+## 2026-09-05 — An active pair that is not protecting degrades runtime health
+
+`runtime-health/v2` defines a per-pair `protection_claim` and forbids a reader
+deriving it, but says nothing about what the snapshot's overall `status` should
+be when a pair claims `unprotected`. That silence is a decision the runtime has
+to make, and it is made here rather than left to fall out.
+
+**An active pair claiming `unprotected` degrades the snapshot's `status`.** An
+active pair is one the device has undertaken to protect; `unprotected` says it
+is not doing so. Without this a fleet view aggregating `status` shows nothing
+wrong while a zone the device claims to protect is not being protected, and
+commissioning problems already degrade for the same class of fact one step
+earlier. It degrades and never raises `critical`.
+
+**Only `active` pairs count.** A pair held for ratification or refused reports
+`unprotected` too, and correctly — the device never undertook to protect it.
+Degrading on those would leave every device carrying a candidate profile
+permanently degraded, which today is every device.
+
+**This changes nothing about Tier D.** The health snapshot is a publication
+surface: nothing in the runtime reads `status` back, and the protection path
+neither consults it nor is gated by it. A device that is degraded still trips.
+
+**The consequence to expect, stated rather than discovered later.** The
+drivability conjunct is a constant `False` until the non-actuating drivability
+member on ori-runtime#482, so the first ratified profile makes every device
+carrying one permanently degraded on a fully commissioned zone with nothing
+else wrong. That is the honest report — the producer genuinely cannot establish
+protection — but it is a fleet-wide change on the day ratification lands, and
+`degradation_reasons` carries no token that can say why until
+ori-platform/ori-specs#171 closes.
+
+**Each conjunct is checked where the claim is made, which is not the same as
+each standing alone.** The profile's status is carried onto the active pair and
+re-read, and the activation verdict is derived from the registry's active set,
+so a regression in the activation checks can no longer produce a false
+`protected` and a lying caller is refused. Drivability remains a constant, and
+the re-read status is still written only by the branch the earlier check gates.
+The gain is real and it is narrower than "every conjunct is independent".

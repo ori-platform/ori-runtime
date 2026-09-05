@@ -3,6 +3,7 @@
 """The registry orchestration: activation to actuation, with a fake seam."""
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -937,3 +938,53 @@ async def test_an_unavailable_sensor_with_no_pair_is_not_an_error(
     # Nothing was said about any pair, so the caller must speak for itself.
     assert told is False
     assert _entry(registry)["measurement_degraded"] is False
+
+
+async def test_an_unratified_profile_cannot_produce_a_protected_claim(
+    store: StateStore, monkeypatch
+) -> None:
+    """The ratified conjunct, checked where the claim is made.
+
+    `activate()` refuses a candidate into `pending_ratification` before it can
+    reach the active set, so this holds today by construction — which is
+    exactly why it was not a boundary. `CLAUDE.md`: a check that holds only
+    because an earlier check held is not a boundary. Placed directly into the
+    active set here, bypassing activation, because that is the only way to ask
+    whether this side checks anything at all.
+    """
+    _backend_answers_drivable(monkeypatch)
+    registry, _ = build(store)
+    await registry.start()
+    await registry.observe_reading("main-distribution-current", 5.0, "ampere", 1.0)
+    assert _entry(registry)["protection_claim"] == "protected"
+
+    pair = next(iter(registry._active))
+    registry._active[pair] = replace(registry._active[pair], profile_status="candidate")
+
+    entry = _entry(registry)
+    assert entry["activation"] == "active"
+    assert entry["protection_claim"] == "unprotected"
+
+
+async def test_the_activation_verdict_comes_from_the_active_set(
+    store: StateStore, monkeypatch
+) -> None:
+    """The first conjunct is registry state, not a string a caller supplied.
+
+    Asked of a pair that is not in the active set and with no verdict passed
+    in, which is the only way to tell a derived answer from a hardcoded one:
+    every call site that omits the verdict happens to be iterating the active
+    set, so the two are indistinguishable there.
+    """
+    _backend_answers_drivable(monkeypatch)
+    registry, _ = build(store)
+    await registry.start()
+    await registry.observe_reading("main-distribution-current", 5.0, "ampere", 1.0)
+
+    active = next(iter(registry._active))
+    assert registry._zone_entry(*active, 1)["activation"] == "active"
+
+    # `runtime-health/v2` closes the field, so a pair that is neither active
+    # nor carrying a verdict is refused rather than given an invented token.
+    with pytest.raises(ValueError, match="no activation verdict"):
+        registry._zone_entry("no-such-zone", "no-such-profile", 1)

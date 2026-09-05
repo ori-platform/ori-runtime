@@ -63,6 +63,13 @@ class ActivatedProfile:
     profile_id: str
     trip_point: float
     outcome: str
+    # The status the profile carried when this pair activated. Recorded so a
+    # consumer that claims a pair is protecting something can re-check it,
+    # rather than inferring it from `activate()` having refused candidates
+    # earlier. A check that holds only because an earlier check held is not a
+    # boundary, and this one is load-bearing for `runtime-health/v2`'s
+    # `protection_claim`.
+    profile_status: str
 
 
 @dataclass(frozen=True)
@@ -129,6 +136,7 @@ def activate(profile_set: ProfileSet, zones: Iterable[ZoneFacts]) -> ActivationR
                         profile_id=profile.id,
                         trip_point=trip_point(profile, zone),
                         outcome=profile.outcome,
+                        profile_status=profile.status,
                     )
                 )
             elif verdict == "pending_ratification":

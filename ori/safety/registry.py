@@ -112,6 +112,7 @@ class ActivePair:
     terminal_state: str
     binding_seq: int
     actuator_identity: tuple[str, str]
+    profile_status: str
 
 
 class SafetyOutcomeExecutor:
@@ -228,6 +229,7 @@ class SafetyRegistry:
                 terminal_state=self._terminal_states[entry.zone_id],
                 binding_seq=binding_seq,
                 actuator_identity=zone.identity_key,
+                profile_status=entry.profile_status,
             )
         self._executor = SafetyOutcomeExecutor(commander, self._authority, self._active)
         self._machines: dict[tuple[str, str], ZoneTripState] = {}
@@ -650,8 +652,13 @@ class SafetyRegistry:
             return "unavailable"
         if activation != "active":
             return "unprotected"
-        # A candidate profile is refused into `pending_ratification` before it
-        # can activate, so an active pair is ratified by construction.
+        # Re-checked here rather than inferred. `activate()` refuses a
+        # candidate into `pending_ratification` before it can reach the active
+        # set, so this holds today by construction — which is exactly why it
+        # is not a boundary until it is checked where the claim is made.
+        entry = self._active.get(pair)
+        if entry is None or entry.profile_status != "ratified":
+            return "unprotected"
         if not self._backend_drivable(pair[0]):
             return "unprotected"
         if pair in self._measurement_degraded or pair in self._rejected_active:
@@ -677,9 +684,31 @@ class SafetyRegistry:
         }
 
     def _zone_entry(
-        self, zone_id: str, profile_id: str, activation: str, binding_seq: int | None
+        self,
+        zone_id: str,
+        profile_id: str,
+        binding_seq: int | None,
+        activation: str | None = None,
     ) -> dict[str, Any]:
+        """One pair's posture. `activation` is derived unless a verdict is given.
+
+        A pair in the active set is active because it is in the active set.
+        Only the non-active entries carry a verdict the registry cannot
+        recompute — the reason a pair was refused, or that it is pending
+        ratification — and those pass it in.
+        """
         pair = (zone_id, profile_id)
+        if activation is None:
+            if pair not in self._active:
+                # `runtime-health/v2` closes this field to `active`,
+                # `pending_ratification`, or a refusal verdict from
+                # `safety-profile/v1`. A pair that is neither active nor
+                # carrying a verdict has no value in that vocabulary, so this
+                # refuses rather than inventing one a consumer cannot parse.
+                raise ValueError(
+                    f"no activation verdict for pair {zone_id}/{profile_id}"
+                )
+            activation = "active"
         machine = self._machines.get(pair)
         return {
             "zone_id": zone_id,
@@ -705,18 +734,26 @@ class SafetyRegistry:
         pairs refused are therefore reported too, with the verdict that put
         them there.
         """
+        # "active" is read from the active set itself rather than passed in,
+        # so the first conjunct of the claim is only ever as true as the
+        # registry's own state.
         zones = [
-            self._zone_entry(zone_id, profile_id, "active", entry.binding_seq)
+            self._zone_entry(zone_id, profile_id, entry.binding_seq)
             for (zone_id, profile_id), entry in self._active.items()
         ]
         zones += [
             self._zone_entry(
-                p.zone_id, p.profile_id, "pending_ratification", self._binding_seq
+                p.zone_id,
+                p.profile_id,
+                self._binding_seq,
+                activation="pending_ratification",
             )
             for p in self.activation.pending
         ]
         zones += [
-            self._zone_entry(r.zone_id, r.profile_id, r.reason, self._binding_seq)
+            self._zone_entry(
+                r.zone_id, r.profile_id, self._binding_seq, activation=r.reason
+            )
             for r in self.activation.refused
         ]
         return sorted(zones, key=lambda z: (z["zone_id"], z["profile_id"]))

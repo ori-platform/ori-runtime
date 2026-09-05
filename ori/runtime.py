@@ -3025,8 +3025,10 @@ class OriRuntime:
         # `runtime-health/v2` types this as an array and reads absence as
         # unknown, so a device with no registry omits the key entirely rather
         # than carrying a null a consumer would iterate.
+        safety_zones: list[dict[str, Any]] = []
         if self._safety_registry is not None:
-            snapshot["safety_zones"] = self._safety_registry.safety_zones()
+            safety_zones = self._safety_registry.safety_zones()
+            snapshot["safety_zones"] = safety_zones
         if firmware_liveness_health["degraded"]:
             # A stopped or stalled liveness loop puts timely publication at
             # risk for one or more supervised devices while the rest of the
@@ -3050,6 +3052,38 @@ class OriRuntime:
         if commissioning is not None and commissioning.problems:
             # Declared actuating hardware with no accepted binding is a device
             # that cannot claim protection; it must not read as healthy.
+            snapshot["status"] = "degraded"
+        if any(
+            zone.get("activation") == "active"
+            and zone.get("protection_claim") == "unprotected"
+            for zone in safety_zones
+        ):
+            # An active pair is one the device has undertaken to protect, and
+            # `unprotected` says it is not doing so. `runtime-health/v2` does
+            # not require this, so it is a decision rather than a conformance
+            # gap: a fleet view aggregating `status` would otherwise show
+            # nothing wrong while a zone the device claims to protect is not
+            # being protected. Commissioning problems already degrade for the
+            # same class of fact, one step earlier.
+            #
+            # Only `active` pairs count. A pair held for ratification or
+            # refused reports `unprotected` too, and correctly — the device
+            # never undertook to protect it, and degrading on those would make
+            # every device carrying a candidate profile permanently degraded.
+            #
+            # Degraded, never critical, and it changes nothing about Tier D:
+            # this is a report, and the protection path neither reads it nor
+            # is gated by it.
+            #
+            # The consequence to expect: `_backend_drivable` is a constant
+            # `False` until the non-actuating drivability member on #482, so
+            # the first ratified profile makes every device carrying one
+            # permanently degraded on a fully commissioned zone with nothing
+            # wrong. That is the honest report — the producer cannot establish
+            # protection — but it is a fleet-wide change the day ratification
+            # lands, and `degradation_reasons` carries no token for it
+            # (ori-platform/ori-specs#171), so the reason will not be nameable
+            # until that closes.
             snapshot["status"] = "degraded"
 
         # Named reasons for the site view. The rich diagnostics above stay
