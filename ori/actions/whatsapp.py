@@ -34,6 +34,7 @@ from ori.actions.alert_delivery import (
     AlertDeliveryReceipt,
     AlertIntent,
     AlertSendReceipt,
+    InboundApprovalResponse,
     InboundWhatsAppMessage,
     OutboundAlert,
     WhatsAppSessionReply,
@@ -567,13 +568,13 @@ class WhatsAppAction:
         receipt = await self.submit(alert, to_number)
         return message, bool(receipt.accepted)
 
-    async def listen_for_response(
+    async def listen_for_approval_response(
         self,
         from_number: str,
         timeout_seconds: int,
         since_ms: int | None = None,
-    ) -> str | None:
-        """Poll for an inbound WhatsApp reply from *from_number*.
+    ) -> InboundApprovalResponse | None:
+        """Poll for an inbound reply and retain its provider provenance.
 
         Polls every :attr:`_POLL_INTERVAL_SECONDS` seconds until a message
         arrives or *timeout_seconds* elapses.
@@ -589,7 +590,7 @@ class WhatsAppAction:
                 arrive in the window between sending and starting to listen.
 
         Returns:
-            The first message body received, or None on timeout.
+            The first provider-backed response, or None on timeout.
         """
         since_ms = since_ms if since_ms is not None else now_ms()
         deadline = time.monotonic() + timeout_seconds
@@ -664,11 +665,18 @@ class WhatsAppAction:
                     continue
 
                 logger.info(
-                    "WhatsAppAction.listen_for_response: received reply from %r: %r",
+                    "WhatsAppAction.listen_for_approval_response: received reply "
+                    "from %r sid=%s",
                     from_number,
-                    reply,
+                    inbound.provider_message_id,
                 )
-                return reply
+                return InboundApprovalResponse(
+                    body=reply,
+                    channel="whatsapp",
+                    from_number=inbound.from_number,
+                    received_at_ms=inbound.received_at_ms,
+                    provider_message_id=inbound.provider_message_id,
+                )
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -682,6 +690,21 @@ class WhatsAppAction:
             from_number,
         )
         return None
+
+    async def listen_for_response(
+        self,
+        from_number: str,
+        timeout_seconds: int,
+        since_ms: int | None = None,
+    ) -> str | None:
+        """Backward-compatible body-only approval listener."""
+
+        response = await self.listen_for_approval_response(
+            from_number=from_number,
+            timeout_seconds=timeout_seconds,
+            since_ms=since_ms,
+        )
+        return response.body if response is not None else None
 
     async def _send_remote_command_feedback(
         self,

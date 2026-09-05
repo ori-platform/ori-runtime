@@ -139,6 +139,10 @@ CREATE TABLE IF NOT EXISTS tier_c_decision_log (
     prompt_context_summary   TEXT    NOT NULL DEFAULT '',
     operator_decision        TEXT    NOT NULL DEFAULT '', -- 'approved' | 'rejected' | 'timeout'
     operator_response        TEXT,
+    operator_response_channel TEXT   NOT NULL DEFAULT '',
+    operator_response_provider_message_id TEXT NOT NULL DEFAULT '',
+    operator_response_from_number TEXT NOT NULL DEFAULT '',
+    operator_response_received_at_ms INTEGER,
     decision_latency_ms      INTEGER NOT NULL DEFAULT 0,
     approval_timeout_seconds INTEGER NOT NULL DEFAULT 0,
     safe_default_action      TEXT    NOT NULL DEFAULT '',
@@ -1011,12 +1015,19 @@ class StateStore:
             "last_runtime_seq",
             "INTEGER NOT NULL DEFAULT 0",
         )
-        self._add_column_if_missing_on_conn(
-            conn,
-            "tier_c_decision_log",
-            "proposal_id",
-            "TEXT    NOT NULL DEFAULT ''",
-        )
+        for col, typedef in (
+            ("proposal_id", "TEXT    NOT NULL DEFAULT ''"),
+            ("operator_response_channel", "TEXT NOT NULL DEFAULT ''"),
+            (
+                "operator_response_provider_message_id",
+                "TEXT NOT NULL DEFAULT ''",
+            ),
+            ("operator_response_from_number", "TEXT NOT NULL DEFAULT ''"),
+            ("operator_response_received_at_ms", "INTEGER"),
+        ):
+            self._add_column_if_missing_on_conn(
+                conn, "tier_c_decision_log", col, typedef
+            )
         self._add_column_if_missing_on_conn(
             conn,
             "remote_command_log",
@@ -2472,11 +2483,13 @@ class StateStore:
                  reading_value, reading_unit, reading_timestamp, history_window_json,
                  skill_name, trigger_name, proposed_action, confidence,
                  reasoning_tier, reasoning_model, prompt_context_summary,
-                 operator_decision, operator_response, decision_latency_ms,
+                 operator_decision, operator_response, operator_response_channel,
+                 operator_response_provider_message_id, operator_response_from_number,
+                 operator_response_received_at_ms, decision_latency_ms,
                  approval_timeout_seconds, safe_default_action, safe_default_used,
                  action_taken, action_executed, final_action_result_json,
                  later_outcome_json, proposal_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(fields.get("device_id", "") or ""),
@@ -2498,6 +2511,10 @@ class StateStore:
                 str(fields.get("prompt_context_summary", "") or ""),
                 str(fields.get("operator_decision", "") or ""),
                 fields.get("operator_response"),
+                str(fields.get("operator_response_channel", "") or ""),
+                str(fields.get("operator_response_provider_message_id", "") or ""),
+                str(fields.get("operator_response_from_number", "") or ""),
+                fields.get("operator_response_received_at_ms"),
                 int(fields.get("decision_latency_ms", 0) or 0),
                 int(fields.get("approval_timeout_seconds", 0) or 0),
                 str(fields.get("safe_default_action", "") or ""),

@@ -143,6 +143,17 @@ class AlertDeliveryReceipt:
 
 
 @dataclass(frozen=True)
+class InboundApprovalResponse:
+    """Operator response with the provider record that carried its authority."""
+
+    body: str
+    channel: str
+    from_number: str
+    received_at_ms: int
+    provider_message_id: str = ""
+
+
+@dataclass(frozen=True)
 class InboundWhatsAppMessage:
     """Provider-backed inbound message that can open a reply window."""
 

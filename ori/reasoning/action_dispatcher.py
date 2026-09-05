@@ -29,6 +29,7 @@ from typing import Any
 from ori.actions.alert_delivery import (
     AlertIntent,
     AlertSendReceipt,
+    InboundApprovalResponse,
     build_outbound_alert,
 )
 from ori.actions.logger import LoggerAction
@@ -1048,6 +1049,7 @@ class ActionDispatcher:
         # Wait for response
         operator_response: str | None = None
         parsed_operator_response: str | None = None
+        inbound_response: InboundApprovalResponse | None = None
         timed_out = False
         local_console_mode = bool(not has_comms and self._local_console_enabled)
         store = self._resolve_state_store(context)
@@ -1086,11 +1088,16 @@ class ActionDispatcher:
                 name=f"approval:{action}",
             )
             try:
-                operator_response = await asyncio.wait_for(
+                raw_operator_response = await asyncio.wait_for(
                     listen_task,
                     # Keep a small guard margin around provider-side timeout logic.
                     timeout=float(approval_timeout_seconds) + 1.0,
                 )
+                if isinstance(raw_operator_response, InboundApprovalResponse):
+                    inbound_response = raw_operator_response
+                    operator_response = raw_operator_response.body
+                else:
+                    operator_response = raw_operator_response
                 parsed_operator_response = operator_response
             except asyncio.TimeoutError:
                 timed_out = True
@@ -1235,6 +1242,7 @@ class ActionDispatcher:
                 safe_default_used=not bool(approved),
                 approval_receipt=approval_receipt,
                 escalation_receipt=escalation_receipt,
+                inbound_response=inbound_response,
             )
             return action_result
         finally:
@@ -1257,6 +1265,7 @@ class ActionDispatcher:
         safe_default_used: bool,
         approval_receipt: AlertSendReceipt,
         escalation_receipt: AlertSendReceipt,
+        inbound_response: InboundApprovalResponse | None,
     ) -> None:
         """Persist the rich Tier C proposal/decision record if supported."""
         if store is None or not hasattr(store, "log_tier_c_decision"):
@@ -1307,6 +1316,22 @@ class ActionDispatcher:
                 prompt_context_summary=prompt_context_summary,
                 operator_decision=operator_decision,
                 operator_response=action_result.operator_response,
+                operator_response_channel=(
+                    inbound_response.channel if inbound_response is not None else ""
+                ),
+                operator_response_provider_message_id=(
+                    inbound_response.provider_message_id
+                    if inbound_response is not None
+                    else ""
+                ),
+                operator_response_from_number=(
+                    inbound_response.from_number if inbound_response is not None else ""
+                ),
+                operator_response_received_at_ms=(
+                    inbound_response.received_at_ms
+                    if inbound_response is not None
+                    else None
+                ),
                 decision_latency_ms=max(0, completed_at - approval_started_at),
                 approval_timeout_seconds=approval_timeout_seconds,
                 safe_default_action=safe_default_action,
@@ -1320,6 +1345,19 @@ class ActionDispatcher:
                     "approved": action_result.approved,
                     "action_taken": action_result.action_taken,
                     "operator_response": action_result.operator_response,
+                    "operator_response_channel": (
+                        inbound_response.channel if inbound_response is not None else ""
+                    ),
+                    "operator_response_provider_message_id": (
+                        inbound_response.provider_message_id
+                        if inbound_response is not None
+                        else ""
+                    ),
+                    "operator_response_received_at_ms": (
+                        inbound_response.received_at_ms
+                        if inbound_response is not None
+                        else None
+                    ),
                     "proposal_id": action_result.proposal_id,
                     "timestamp": action_result.timestamp,
                     "approval_delivery": _receipt_audit_fields(approval_receipt),
@@ -1499,7 +1537,7 @@ class ActionDispatcher:
 
     async def _listen_for_response(
         self, from_number: str, timeout_seconds: int
-    ) -> str | None:
+    ) -> str | InboundApprovalResponse | None:
         """Delegate operator response listening to the configured alert sender.
 
         Returns:
@@ -1521,10 +1559,14 @@ class ActionDispatcher:
                 from_number=from_number,
                 timeout_seconds=timeout_seconds,
             )
+            if isinstance(response, (str, InboundApprovalResponse)):
+                return response
             return str(response) if response is not None else None
         except TypeError:
             # Compatibility with listeners that only accept positional args.
             response = await listener(from_number, timeout_seconds)
+            if isinstance(response, (str, InboundApprovalResponse)):
+                return response
             return str(response) if response is not None else None
         except Exception:
             logger.exception(

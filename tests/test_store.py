@@ -106,6 +106,43 @@ class TestLifecycle:
             "alert_outbox",
         } <= names
 
+    def test_open_migrates_inbound_tier_c_provenance_columns(self, tmp_path):
+        db_path = tmp_path / "legacy-tier-c.db"
+        initial = StateStore(db_path=str(db_path))
+        conn = initial._open_sync()
+        conn.execute("DROP TABLE tier_c_decision_log")
+        conn.execute(
+            """
+            CREATE TABLE tier_c_decision_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL DEFAULT '',
+                skill_name TEXT NOT NULL DEFAULT '',
+                trigger_name TEXT NOT NULL DEFAULT '',
+                proposal_id TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = StateStore(db_path=str(db_path))
+        migrated_conn = migrated._open_sync()
+        columns = {
+            row["name"]
+            for row in migrated_conn.execute(
+                "PRAGMA table_info(tier_c_decision_log)"
+            ).fetchall()
+        }
+        migrated_conn.close()
+
+        assert {
+            "operator_response_channel",
+            "operator_response_provider_message_id",
+            "operator_response_from_number",
+            "operator_response_received_at_ms",
+        } <= columns
+
     async def test_open_restricts_database_file_permissions(self, tmp_path):
         db_path = tmp_path / "least-privilege.db"
         s = StateStore(db_path=str(db_path))
@@ -604,6 +641,10 @@ class TestTierCDecisionLog:
             prompt_context_summary="load is high",
             operator_decision="rejected",
             operator_response="NO",
+            operator_response_channel="whatsapp",
+            operator_response_provider_message_id="SM" + "c" * 32,
+            operator_response_from_number="whatsapp:+234111",
+            operator_response_received_at_ms=4_900,
             decision_latency_ms=2500,
             approval_timeout_seconds=300,
             safe_default_action="log_to_dashboard",
@@ -626,6 +667,10 @@ class TestTierCDecisionLog:
         assert row["history_window"] == [{"timestamp": 1000, "value": 10.0}]
         assert row["skill_name"] == "energy-anomaly-detector"
         assert row["operator_decision"] == "rejected"
+        assert row["operator_response_channel"] == "whatsapp"
+        assert row["operator_response_provider_message_id"] == "SM" + "c" * 32
+        assert row["operator_response_from_number"] == "whatsapp:+234111"
+        assert row["operator_response_received_at_ms"] == 4_900
         assert row["safe_default_used"] is True
         assert row["action_executed"] is True
         assert row["final_action_result"] == {"approved": False}

@@ -12,6 +12,7 @@ Primary usage:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -20,6 +21,7 @@ from typing import Any, cast
 from ori.actions.alert_delivery import (
     AlertDeliveryReceipt,
     AlertSendReceipt,
+    InboundApprovalResponse,
     OutboundAlert,
 )
 from ori.reasoning.capability_posture import CapabilityPosture
@@ -203,11 +205,18 @@ class AlertFailoverSender:
         timeout_seconds: int,
         *,
         preferred_channel: str | None = None,
-    ) -> str | None:
+    ) -> str | InboundApprovalResponse | None:
         """Wait for first response from either transport listener."""
         listeners: list[tuple[str, Any]] = []
         for channel_name, sender in self._ordered_senders(preferred_channel):
-            listener = getattr(sender, "listen_for_response", None)
+            provenance_listener = inspect.getattr_static(
+                sender, "listen_for_approval_response", None
+            )
+            listener = (
+                getattr(sender, "listen_for_approval_response")
+                if callable(provenance_listener)
+                else getattr(sender, "listen_for_response", None)
+            )
             if callable(listener):
                 listeners.append((channel_name, listener))
 
@@ -215,7 +224,7 @@ class AlertFailoverSender:
             return None
 
         deadline = time.monotonic() + max(1, int(timeout_seconds))
-        pending: set[asyncio.Task[str | None]] = set()
+        pending: set[asyncio.Task[str | InboundApprovalResponse | None]] = set()
         for channel_name, listener in listeners:
             channel_contact = self._normalize_for_channel(channel_name, from_number)
             pending.add(
@@ -266,12 +275,12 @@ class AlertFailoverSender:
         listener: Any,
         from_number: str,
         timeout_seconds: int,
-    ) -> str | None:
+    ) -> str | InboundApprovalResponse | None:
         # cast rather than coerce: the listener is caller-supplied and untyped,
         # and this is a typing correction, not a behaviour change.
         try:
             return cast(
-                "str | None",
+                "str | InboundApprovalResponse | None",
                 await listener(
                     from_number=from_number,
                     timeout_seconds=timeout_seconds,
@@ -279,7 +288,10 @@ class AlertFailoverSender:
             )
         except TypeError:
             try:
-                return cast("str | None", await listener(from_number, timeout_seconds))
+                return cast(
+                    "str | InboundApprovalResponse | None",
+                    await listener(from_number, timeout_seconds),
+                )
             except Exception:
                 logger.exception(
                     "AlertFailoverSender: %s listener failed",

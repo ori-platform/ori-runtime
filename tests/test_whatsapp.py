@@ -17,6 +17,7 @@ from ori.actions.alert_delivery import (
     AlertDeliveryReceipt,
     AlertIntent,
     AlertSendReceipt,
+    InboundApprovalResponse,
     InboundWhatsAppMessage,
     WhatsAppSessionReply,
     build_outbound_alert,
@@ -317,6 +318,25 @@ async def test_listen_returns_reply_when_available():
         from_number="whatsapp:+234111", timeout_seconds=30
     )
     assert reply == "YES"
+
+
+@pytest.mark.asyncio
+async def test_provenance_listener_retains_provider_record():
+    provider = _OKProvider()
+    provider.inbox = [_inbound("YES-AB12CD34")]
+    action = WhatsAppAction(provider=provider)
+
+    response = await action.listen_for_approval_response(
+        from_number="whatsapp:+234111", timeout_seconds=30
+    )
+
+    assert response == InboundApprovalResponse(
+        body="YES-AB12CD34",
+        channel="whatsapp",
+        from_number="whatsapp:+234111",
+        received_at_ms=response.received_at_ms,
+        provider_message_id="SM" + "a" * 32,
+    )
 
 
 @pytest.mark.asyncio

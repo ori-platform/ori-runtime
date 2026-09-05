@@ -127,10 +127,10 @@ the contract the runtime currently emits:
 
 | Template name | Exact body |
 | --- | --- |
-| `ori_runtime_startup_v1` | `Ori is online at {{1}}: {{2}} sensors connected and {{3}} rules active. Ori will notify you when it detects a configured risk. No safety cutoff is commissioned, so Ori can warn but cannot intervene.` |
-| `ori_tier_a_alert_v1` | `Ori detected configured risk: {{1}} at {{2}} on {{3}}. Check the dashboard or SMS alert for details.` |
-| `ori_tier_c_approval_v1` | `Ori proposes {{1}} at {{2}} on {{3}}. Reply YES-{{4}} to approve or NO-{{4}} to reject within {{5}} seconds. If no valid reply arrives, Ori will use the configured safe default.` |
-| `ori_tier_c_escalation_v1` | `Ori Tier C proposal {{1}} at {{2}} timed out on {{3}}. Safe-default execution {{4}}.` |
+| `ori_runtime_startup_v2` | `Ori is online at {{1}}: {{2}} sensors connected and {{3}} rules active. Ori will notify you when it detects a configured risk. No safety cutoff is commissioned, so Ori can warn but cannot intervene.` |
+| `ori_tier_a_alert_v2` | `Ori detected configured risk: {{1}} at {{2}} on {{3}}. Check the dashboard or SMS alert for details.` |
+| `ori_tier_c_approval_v2` | `Ori proposes {{1}} at {{2}} on {{3}}. Reply YES-{{4}} to approve or NO-{{4}} to reject within {{5}} seconds. If no valid reply arrives, Ori will use the configured safe default.` |
+| `ori_tier_c_escalation_v3` | `Ori Tier C proposal {{1}} at {{2}} timed out on {{3}}. Safe-default execution status: {{4}}. Review the event in Ori.` |
 
 Use representative samples when Twilio asks for placeholder examples: `Ikeja
 Office`, `4`, `3`; `overcurrent`, `Ikeja Office`, `2026-08-29 17:00 WAT`;

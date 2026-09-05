@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ori.actions.alert_delivery import InboundApprovalResponse
 from ori.network.events import (
     ActionResult,
     ActionTier,
@@ -886,6 +887,49 @@ class TestTierC:
         assert kwargs["action_taken"] == "log_to_dashboard"
         assert kwargs["approval_timeout_seconds"] == 10
         assert kwargs["decision_latency_ms"] >= 0
+
+    async def test_tier_c_decision_retains_inbound_provider_provenance(self):
+        store = _mock_store()
+        ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=store)
+        dispatcher = ActionDispatcher()
+        response = InboundApprovalResponse(
+            body="YES-AB12CD34",
+            channel="whatsapp",
+            from_number="whatsapp:+234111",
+            received_at_ms=12_345,
+            provider_message_id="SM" + "c" * 32,
+        )
+
+        with (
+            patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                return_value="AB12CD34",
+            ),
+            patch.object(
+                dispatcher,
+                "_listen_for_response",
+                new=AsyncMock(return_value=response),
+            ),
+        ):
+            result = await dispatcher.dispatch(
+                "open_safety_circuit",
+                ActionTier.HARD_PHYSICAL,
+                ctx,
+                _result(action_tier="C"),
+                approval_timeout_seconds=10,
+            )
+
+        assert result.approved is True
+        fields = store.log_tier_c_decision.await_args.kwargs
+        assert fields["operator_response"] == "YES-AB12CD34"
+        assert fields["operator_response_channel"] == "whatsapp"
+        assert fields["operator_response_provider_message_id"] == "SM" + "c" * 32
+        assert fields["operator_response_from_number"] == "whatsapp:+234111"
+        assert fields["operator_response_received_at_ms"] == 12_345
+        assert (
+            fields["final_action_result"]["operator_response_provider_message_id"]
+            == "SM" + "c" * 32
+        )
 
     async def test_tier_c_uses_local_console_fallback_when_comms_unavailable(self):
         d = ActionDispatcher(
