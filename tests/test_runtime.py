@@ -64,6 +64,11 @@ from ori.security.remote_commands.throttle import RemoteCommandThrottleDecision
 from ori.skills.signing import canonical_signed_payload
 from ori.state.store import StateStore
 from tests.commissioning.signing import commission_relay
+from tests.conftest import (
+    logged,
+    run_runtime_full_startup,
+    run_runtime_until,
+)
 
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -72,6 +77,24 @@ except Exception:  # pragma: no cover - environment without cryptography support
     Ed25519PrivateKey = None
     Encoding = None
     PublicFormat = None
+
+
+async def _end_loop_once_warned(runtime, *, timeout: float = 15.0) -> None:
+    """Let the staleness loop exit once it has emitted its warning.
+
+    This test drives `_sensor_staleness_loop` directly and never starts the
+    runtime, so the loop's own exit condition is the shutdown event rather
+    than `stop()`. Waiting for the warning rather than for an interval is the
+    same correction: the loop's check cadence is not a promise about when the
+    alert lands.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while runtime._send_or_queue_alert.await_count == 0:
+        if loop.time() > deadline:
+            raise AssertionError("the staleness loop never emitted a warning")
+        await asyncio.sleep(0.02)
+    runtime._shutdown_event.set()
 
 
 def _capability_config(
@@ -1484,11 +1507,11 @@ class TestLocalSLMWiring:
 
         runtime = OriRuntime(config_path=str(minimal_config))
 
-        async def _stop():
-            await asyncio.sleep(0.1)
-            await runtime.stop()
-
-        await asyncio.gather(runtime.start(), _stop())
+        await run_runtime_until(
+            runtime,
+            lambda: "local_llm" in captured,
+            description="building the elevator",
+        )
         assert captured["local_llm"] is sentinel
         assert captured["gateway_reasoner"] is None
 
@@ -1704,12 +1727,21 @@ class TestAdapterProtocol:
 
         runtime = OriRuntime(config_path=str(cfg))
 
-        async def _stop():
-            await asyncio.sleep(0.5)
+        # No state to wait for: `start()` is expected to raise before it
+        # reaches any of it. The stop is a backstop so that a start which
+        # unexpectedly succeeds fails as a timeout rather than hanging.
+        async def _stop_if_it_did_not_raise():
+            try:
+                await asyncio.wait_for(runtime._shutdown_event.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                # The expected path: `start()` raised, so nothing ever set the
+                # shutdown event and the wait timed out. Fall through and stop
+                # anyway, which is a no-op on a runtime that never started.
+                pass
             await runtime.stop()
 
         with pytest.raises(ConfigValidationError, match="unknown_proto"):
-            await asyncio.gather(runtime.start(), _stop())
+            await asyncio.gather(runtime.start(), _stop_if_it_did_not_raise())
 
 
 class TestLifecycle:
@@ -1719,11 +1751,7 @@ class TestLifecycle:
 
         runtime = OriRuntime(config_path=str(minimal_config))
 
-        async def _auto_stop():
-            await asyncio.sleep(0.1)
-            await runtime.stop()
-
-        await asyncio.gather(runtime.start(), _auto_stop())
+        await run_runtime_full_startup(runtime)
         # If we reach here, start() returned cleanly after stop()
 
     async def test_stop_is_idempotent(self, minimal_config, monkeypatch):
@@ -1731,12 +1759,9 @@ class TestLifecycle:
         _patch_external(monkeypatch)
         runtime = OriRuntime(config_path=str(minimal_config))
 
-        async def _double_stop():
-            await asyncio.sleep(0.05)
-            await runtime.stop()
-            await runtime.stop()  # second call — must be a no-op
-
-        await asyncio.gather(runtime.start(), _double_stop())
+        await run_runtime_full_startup(runtime)
+        # Second call, after startup has finished and the first stop returned.
+        await runtime.stop()  # must be a no-op
 
     def test_resolve_dispatcher_approval_timeout_uses_max_declared(self):
         skills_cfg = [
@@ -1779,12 +1804,20 @@ class TestLifecycle:
         runtime1 = OriRuntime(config_path=str(cfg_path))
         runtime2 = OriRuntime(config_path=str(cfg_path))
 
-        async def _run_once(runtime: OriRuntime):
-            async def _stop():
-                await asyncio.sleep(0.1)
-                await runtime.stop()
+        def _handler_installed() -> bool:
+            return any(
+                isinstance(h, RotatingFileHandler)
+                and Path(getattr(h, "baseFilename", "")).resolve()
+                == custom_log.resolve()
+                for h in logging.getLogger().handlers
+            )
 
-            await asyncio.gather(runtime.start(), _stop())
+        async def _run_once(runtime: OriRuntime):
+            await run_runtime_until(
+                runtime,
+                _handler_installed,
+                description="installing the rotating file handler",
+            )
 
         await _run_once(runtime1)
         await _run_once(runtime2)
@@ -1848,12 +1881,12 @@ class TestLifecycle:
         )
         monkeypatch.setattr("ori.actions.relay.RelayAction.connect", mocked_connect)
 
-        async def _stop():
-            await asyncio.sleep(0.2)
-            await runtime.stop()
-
         with caplog.at_level(logging.WARNING):
-            await asyncio.gather(runtime.start(), _stop())
+            await run_runtime_until(
+                runtime,
+                lambda: logged(caplog, "deployment_type=phone with relay configured"),
+                description="logging that the phone deployment skipped the relay",
+            )
 
         assert mocked_connect.await_count == 0
         assert any(
@@ -1936,12 +1969,12 @@ class TestStartupLogs:
         _treat_scratch_skills_as_packaged(monkeypatch)
         runtime = OriRuntime(config_path=str(minimal_config))
 
-        async def _stop():
-            await asyncio.sleep(0.1)
-            await runtime.stop()
-
         with caplog.at_level(logging.INFO):
-            await asyncio.gather(runtime.start(), _stop())
+            await run_runtime_until(
+                runtime,
+                lambda: logged(caplog, "[skill]"),
+                description="logging the loaded skills",
+            )
 
         skill_lines = [r.message for r in caplog.records if "[skill]" in r.message]
         assert any("test-skill" in line for line in skill_lines), (
@@ -1959,12 +1992,12 @@ class TestStartupLogs:
         _patch_external(monkeypatch)
         runtime = OriRuntime(config_path=str(minimal_config))
 
-        async def _stop():
-            await asyncio.sleep(0.1)
-            await runtime.stop()
-
         with caplog.at_level(logging.INFO):
-            await asyncio.gather(runtime.start(), _stop())
+            await run_runtime_until(
+                runtime,
+                lambda: logged(caplog, "event loop ready"),
+                description="logging that the event loop is ready",
+            )
 
         messages = [r.message for r in caplog.records]
         assert any("event loop ready" in m for m in messages), (
@@ -2159,7 +2192,16 @@ class TestShutdown:
             completed.append(True)
 
         async def _inject_and_stop():
-            await asyncio.sleep(0.05)
+            # Injected once startup has a dispatcher to replace, rather than
+            # after a guessed interval: replacing it earlier races the
+            # construction this test depends on.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 15.0
+            while runtime._dispatcher is None:
+                if loop.time() > deadline:
+                    raise AssertionError("startup never built a dispatcher")
+                await asyncio.sleep(0.02)
+
             tier_d_task = asyncio.create_task(_tier_d_work())
 
             class _FakeDispatcher:
@@ -2168,8 +2210,11 @@ class TestShutdown:
 
             runtime._dispatcher = _FakeDispatcher()
             await runtime.stop()
-            # Give the drained task time to finish
-            await asyncio.sleep(0.25)
+            # `stop()` drains the task rather than abandoning it, so awaiting
+            # it here observes the drain rather than waiting out its duration.
+            # Bounded, so a drain that never happens fails as a timeout rather
+            # than hanging the suite.
+            await asyncio.wait_for(tier_d_task, timeout=5.0)
 
         await asyncio.gather(runtime.start(), _inject_and_stop())
         assert completed == [True], "Tier D task was abandoned before completion"
@@ -2185,12 +2230,12 @@ class TestWatchdog:
 
         runtime = OriRuntime(config_path=str(minimal_config))
 
-        async def _stop():
-            await asyncio.sleep(0.1)
-            await runtime.stop()
-
         with caplog.at_level(logging.WARNING):
-            await asyncio.gather(runtime.start(), _stop())
+            await run_runtime_until(
+                runtime,
+                lambda: logged(caplog, "watchdog"),
+                description="warning that the watchdog device is absent",
+            )
 
         watchdog_warnings = [r.message for r in caplog.records]
         assert watchdog_warnings, "Expected watchdog 'not found' warning in logs"
@@ -2217,12 +2262,12 @@ class TestWatchdog:
 
         runtime = OriRuntime(config_path=str(minimal_config))
 
-        async def _stop():
-            await asyncio.sleep(0.1)
-            await runtime.stop()
-
         with caplog.at_level(logging.INFO):
-            await asyncio.gather(runtime.start(), _stop())
+            await run_runtime_until(
+                runtime,
+                lambda: m_open.call_args is not None,
+                description="opening the watchdog device",
+            )
 
         # Assert watchdog device was opened for writing
         m_open.assert_called_with("/dev/watchdog", "wb", buffering=0)
@@ -2657,16 +2702,12 @@ class TestSensorPolling:
         runtime._send_or_queue_alert = AsyncMock(return_value=True)
         alert_sender = AsyncMock()
 
-        async def _stop():
-            await asyncio.sleep(0.05)
-            await runtime.stop()
-
         await asyncio.gather(
             runtime._sensor_staleness_loop(
                 alert_sender=alert_sender,
                 check_interval_s=0.01,
             ),
-            _stop(),
+            _end_loop_once_warned(runtime),
         )
 
         runtime._send_or_queue_alert.assert_awaited_once()
@@ -3198,12 +3239,11 @@ class TestWebhookServerStartup:
         fake_instance = _FakeServer()
 
         with patch("ori.runtime.SMSWebhookServer", return_value=fake_instance) as cls:
-
-            async def _stop():
-                await asyncio.sleep(0.1)
-                await runtime.stop()
-
-            await asyncio.gather(runtime.start(), _stop())
+            await run_runtime_until(
+                runtime,
+                lambda: cls.call_args is not None,
+                description="constructing the SMS webhook server",
+            )
 
         cls.assert_called_once()
         assert cls.call_args.kwargs["allowed_source_cidrs"] == ["127.0.0.1/32"]
@@ -3301,12 +3341,11 @@ class TestWebhookServerStartup:
         fake_instance = _FakeServer()
 
         with patch("ori.runtime.SMSWebhookServer", return_value=fake_instance) as cls:
-
-            async def _stop():
-                await asyncio.sleep(0.1)
-                await runtime.stop()
-
-            await asyncio.gather(runtime.start(), _stop())
+            await run_runtime_until(
+                runtime,
+                lambda: cls.call_args is not None,
+                description="constructing the SMS webhook server",
+            )
 
         cls.assert_called_once()
         assert cls.call_args.kwargs["host"] == "127.0.0.1"
@@ -3381,12 +3420,10 @@ class TestWebhookServerStartup:
 
         runtime = OriRuntime(config_path=str(cfg))
         with patch("ori.runtime.SMSWebhookServer") as cls:
-
-            async def _stop():
-                await asyncio.sleep(0.1)
-                await runtime.stop()
-
-            await asyncio.gather(runtime.start(), _stop())
+            # An absence cannot be waited for, so this waits for the end of
+            # startup: if the webhook were going to be constructed, it would
+            # have been by then.
+            await run_runtime_full_startup(runtime)
 
         cls.assert_not_called()
 

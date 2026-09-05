@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ori.runtime import OriRuntime
+from tests.conftest import run_runtime_full_startup
 
 
 def _patch_external(monkeypatch):
@@ -102,11 +103,10 @@ async def test_disabled_by_default(tmp_path: Path, monkeypatch):
     mocked_external_loop = AsyncMock()
     monkeypatch.setattr(runtime, "_external_watchdog_loop", mocked_external_loop)
 
-    async def _stop():
-        await asyncio.sleep(0.15)
-        await runtime.stop()
-
-    await asyncio.gather(runtime.start(), _stop())
+    # An absence cannot be waited for, so this waits for the end of startup:
+    # if the external watchdog loop were going to be started, it would have
+    # been by then.
+    await run_runtime_full_startup(runtime)
     assert mocked_external_loop.await_count == 0
 
 

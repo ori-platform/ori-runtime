@@ -113,7 +113,26 @@ async def test_status_loop_ticks_and_closes():
     task = asyncio.create_task(
         runtime._status_signaling_loop(indicator=indicator, tick_ms=50)
     )
-    await asyncio.sleep(0.12)
+    # Waits for the loop to have ticked rather than for an interval that ought
+    # to contain a tick: the tick cadence is not a promise about when a loaded
+    # runner gets there. Counted by wrapping `tick`, because the indicator
+    # exposes no count of its own.
+    ticks = 0
+    original_tick = indicator.tick
+
+    def _counted_tick() -> None:
+        nonlocal ticks
+        ticks += 1
+        original_tick()
+
+    indicator.tick = _counted_tick  # type: ignore[method-assign]
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 15.0
+    while ticks == 0:
+        if loop.time() > deadline:
+            raise AssertionError("the status loop never ticked the indicator")
+        await asyncio.sleep(0.01)
     await runtime.stop()
     await task
     assert indicator.available is False
