@@ -273,6 +273,62 @@ MEASUREMENT_WINDOWS_TO_RECOVER = 5
 # delivered or durably queued. Paced by the poll interval, and bounded so a
 # broken alert path does not retry forever on every refused window.
 MEASUREMENT_NOTIFY_MAX_ATTEMPTS = 5
+
+# The escalation schedule for a measurement loss that does not resolve, in
+# elapsed milliseconds since the degradation began.
+#
+# A device that cannot establish a trustworthy measurement said so once and
+# then waited indefinitely for a person. The first notice is not the problem;
+# the silence after it is, because a channel that is not being measured is a
+# channel nothing is protecting, and the operator has no reminder that it is
+# still in that state.
+#
+#   immediate   the primary contact, on the transition into degraded
+#   6 hours     the primary contact again
+#   12 hours    the secondary contact, or the primary where none is configured
+#   daily       the same escalation contact, indefinitely
+#
+# **There is no give-up.** A still-unprotected channel must not become
+# permanently silent, so nothing here stops on a message count or a delivery
+# cost. It stops when the sensor produces credible measurements again. Two
+# further stop conditions are sanctioned and neither is implemented: removal
+# of the affected safety pair, which belongs with the active-pair supervision
+# design, and a locally audited maintenance acknowledgement with a short
+# expiry, which needs an inbound, audited authority surface of its own. Until
+# they exist, recovery is the only way this stops, and an operator who has
+# accepted the fault keeps being reminded of it.
+#
+# Release-owned rather than site-configurable, deliberately. A setting here
+# would let a deployment configure a persistent measurement loss into silence,
+# which is the condition this schedule exists to prevent. Measure real pilot
+# message volume first; any later configuration must be a surface that cannot
+# disable, indefinitely defer, or remove the escalation.
+#
+# The cadence keeps message volume to two primary messages and then one daily
+# escalation, rather than repeating to everybody every day.
+MEASUREMENT_REMINDER_AFTER_MS = 6 * 60 * 60 * 1000
+MEASUREMENT_ESCALATE_AFTER_MS = 12 * 60 * 60 * 1000
+MEASUREMENT_ESCALATION_REPEAT_MS = 24 * 60 * 60 * 1000
+
+
+def measurement_notice_stage_due(elapsed_ms: int) -> int:
+    """Which notice the schedule owes at this point in a degradation.
+
+    Stage 0 is the notice sent on the transition itself. The schedule is a
+    function of elapsed time alone, never of what was delivered, so a reminder
+    that could not be sent is superseded by the next stage rather than
+    cancelling it.
+    """
+    if elapsed_ms < MEASUREMENT_REMINDER_AFTER_MS:
+        return 0
+    if elapsed_ms < MEASUREMENT_ESCALATE_AFTER_MS:
+        return 1
+    repeats = (elapsed_ms - MEASUREMENT_ESCALATE_AFTER_MS) // (
+        MEASUREMENT_ESCALATION_REPEAT_MS
+    )
+    return 2 + int(repeats)
+
+
 STALE_SENSOR_MAX_CHECK_INTERVAL_S = 30.0
 HEALTH_SOCKET_DEFAULT_PATH = "/run/ori/health.sock"
 
@@ -360,6 +416,7 @@ class OriRuntime:
         self._last_policy_refresh_transient_audit_ms: dict[str, int] = {}
         self._primary_alert_channel: str = "sms"
         self._operator_contact: str = ""
+        self._secondary_contact: str = ""
         self._sensor_poll_interval_ms: dict[str, int] = {}
         self._sensor_last_seen_ms: dict[str, int] = {}
         self._stale_sensor_active: set[str] = set()
@@ -374,6 +431,8 @@ class OriRuntime:
         self._unconnected_sensors: set[str] = set()
         self._measurement_unnotified: set[str] = set()
         self._measurement_notify_attempts: dict[str, int] = {}
+        self._measurement_degraded_since: dict[str, int] = {}
+        self._measurement_notice_stage: dict[str, int] = {}
         self._runtime_started_at_ms: int = 0
         self._configured_sensors: list[Any] = []
         self._connected_sensor_ids: set[str] = set()
@@ -865,6 +924,7 @@ class OriRuntime:
         primary_alert_channel = config.actions.primary_alert_channel
         self._primary_alert_channel = primary_alert_channel
         self._operator_contact = _operator_contact
+        self._secondary_contact = _secondary_contact
         self._configure_alert_outbox(config.actions.alert_outbox)
         alert_sender = AlertFailoverSender(
             primary_channel=primary_alert_channel,
@@ -1250,22 +1310,7 @@ class OriRuntime:
         self._stale_sensor_active = set()
         self._measurement_refusals = {}
         self._measurement_valid_streak = {}
-        # Restored rather than cleared. The alert fires on the transition into
-        # degradation, so an in-memory set emptied by every start would make a
-        # crash-looping runtime re-send the same warning after each restart.
-        restored = (
-            await self._state_store.get_measurement_degradation()
-            if self._state_store is not None
-            else {}
-        )
-        self._measurement_degraded = set(restored)
-        # A degradation whose warning never got out is still owed one. Losing
-        # that distinction would make the crash that prevented the alert the
-        # reason it is never sent.
-        self._measurement_unnotified = {
-            sensor_id for sensor_id, notified in restored.items() if not notified
-        }
-        self._measurement_notify_attempts = {}
+        await self._restore_measurement_state()
         self._last_alert_timestamps_by_channel = {}
         self._last_alert_timestamps_by_trigger = {}
 
@@ -3354,11 +3399,197 @@ class OriRuntime:
                         stale_after_ms=stale_after_ms,
                     )
 
+            await self._escalate_persistent_measurement_loss()
+
             try:
                 await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
                 break
             except asyncio.TimeoutError:
                 pass
+
+    async def _restore_measurement_state(self) -> None:
+        """Rebuild every measurement-degradation fact from the state store.
+
+        Restored rather than cleared. The notice fires on the transition into
+        degradation, so an in-memory set emptied by every start would make a
+        crash-looping runtime re-send the same warning after each restart, and
+        a schedule reset by every start would postpone every escalation
+        forever on the same device.
+
+        One seam, called at startup and driven directly by the tests that
+        prove a restart behaves, so the durable join cannot drift from what
+        startup actually does.
+        """
+        restored = (
+            await self._state_store.get_measurement_degradation()
+            if self._state_store is not None
+            else {}
+        )
+        schedule = (
+            await self._state_store.get_measurement_notice_schedule()
+            if self._state_store is not None
+            else {}
+        )
+        self._measurement_degraded = set(restored)
+        self._measurement_degraded_since = {
+            sensor_id: since for sensor_id, (since, _) in schedule.items()
+        }
+        self._measurement_notice_stage = {
+            sensor_id: stage for sensor_id, (_, stage) in schedule.items()
+        }
+        # A degradation whose notice never got out is still owed one. Losing
+        # that distinction would make the crash that prevented the alert the
+        # reason it is never sent.
+        self._measurement_unnotified = {
+            sensor_id for sensor_id, notified in restored.items() if not notified
+        }
+        self._measurement_notify_attempts = {}
+
+    async def _escalate_persistent_measurement_loss(self) -> None:
+        """Re-notify, and escalate, while a measurement loss persists.
+
+        The first notice fires on the transition and is not repeated, so a
+        device that cannot establish a trustworthy measurement said so once
+        and then waited indefinitely for a person. This is what keeps saying
+        it.
+
+        It restores nothing. A channel that is not being measured is not being
+        protected, and telling somebody about it does not change that; the
+        notice exists so an operator can act, not so the device can claim to
+        have handled it.
+        """
+        now = now_ms()
+        for sensor_id in sorted(self._measurement_degraded):
+            since = self._measurement_degraded_since.get(sensor_id)
+            if since is None:
+                # Degraded with no recorded start. Anchor it here rather than
+                # treating it as owed every stage at once.
+                self._measurement_degraded_since[sensor_id] = now
+                continue
+            due = measurement_notice_stage_due(now - since)
+            if due <= self._measurement_notice_stage.get(sensor_id, 0):
+                continue
+            await self._send_measurement_escalation(
+                sensor_id=sensor_id,
+                stage=due,
+                elapsed_ms=now - since,
+                first_notice_delivered=sensor_id not in self._measurement_unnotified,
+            )
+
+    def _measurement_escalation_recipient(self, stage: int) -> str:
+        """Who a given stage is addressed to.
+
+        Stages 0 and 1 are the primary contact; from stage 2 the escalation
+        goes to the secondary contact, and to the primary again only where no
+        secondary is configured. A device with one contact is not left silent
+        because it has nobody to escalate to.
+        """
+        if stage >= 2 and self._secondary_contact:
+            return self._secondary_contact
+        return self._operator_contact
+
+    async def _send_measurement_escalation(
+        self,
+        *,
+        sensor_id: str,
+        stage: int,
+        elapsed_ms: int,
+        first_notice_delivered: bool,
+    ) -> None:
+        """Send one scheduled stage, and record it only if it got out.
+
+        The escalation runs whether or not the notice on the transition ever
+        reached anybody. An undelivered first notice is the case where an
+        operator knows least, so blocking the schedule on it would silence the
+        device precisely when its contact is unreachable — and the initial
+        notice's own retries are bounded, so the block would be permanent.
+        What changes is the wording: a stage that cannot assume the first
+        notice arrived states the fault rather than recalling one.
+        """
+        recipient = self._measurement_escalation_recipient(stage)
+        if self._alert_sender is None or not recipient:
+            logger.warning(
+                "[sensor] measurement escalation for %s not sent: "
+                "no alert sender or no recipient for stage %d",
+                sensor_id,
+                stage,
+            )
+            return
+        hours = elapsed_ms // (60 * 60 * 1000)
+        opening = (
+            f"Sensor {sensor_id} has still not produced a valid measurement "
+            f"after {hours} hours."
+            if first_notice_delivered
+            else (
+                f"Sensor {sensor_id} has not produced a valid measurement for "
+                f"{hours} hours. An earlier notice about it could not be "
+                "delivered."
+            )
+        )
+        message = (
+            f"{opening} Readings are not being published for it, and any "
+            "protection depending on them is not running. Nothing has been "
+            "restored. Check the sensor wiring and signal."
+        )
+        # Structural rather than policy-gated, for the same reason as the
+        # notice on the transition, and addressed to the escalation contact.
+        delivered = await self._send_or_queue_safety_alert(
+            message=message,
+            trigger_name=f"measurement_degraded_persists:{sensor_id}",
+            alert_sender=self._alert_sender,
+            recipient=recipient,
+        )
+        if not delivered:
+            # Left un-recorded so this stage is retried on the next pass, and
+            # superseded without ceremony when the next stage falls due. A
+            # reminder that could not be sent never cancels the escalation
+            # after it.
+            return
+        # Advanced in memory whether or not the write below lands, so a store
+        # that is failing does not turn every pass of the loop into another
+        # message. A restart then repeats at most this one stage.
+        self._measurement_notice_stage[sensor_id] = stage
+        recorded = True
+        if self._state_store is not None:
+            try:
+                # One write, not two, and an upsert rather than an update.
+                # Recording only the stage would leave the disk saying a later
+                # stage was sent while still saying nobody was notified, so
+                # the next start would send the notice for the transition all
+                # over again. And the row may not exist at all: the write that
+                # records the degradation is allowed to fail transiently, so
+                # an escalation can be the first one to land. It carries the
+                # in-memory start so a reconstructed row dates the loss to
+                # when it happened rather than to when the disk caught up.
+                await self._state_store.record_measurement_notice_delivered(
+                    sensor_id,
+                    stage,
+                    degraded_since=self._measurement_degraded_since.get(
+                        sensor_id, now_ms()
+                    ),
+                )
+            except Exception:
+                recorded = False
+                logger.exception(
+                    "[sensor] could not persist notice stage %d for %s; "
+                    "a restart may repeat this reminder",
+                    stage,
+                    sensor_id,
+                )
+        if recorded:
+            # Cleared only once the disk agrees. Clearing it on a failed write
+            # would leave memory saying the operator has been told and disk
+            # saying they have not, and the restart would resolve that
+            # disagreement by messaging them again.
+            self._measurement_unnotified.discard(sensor_id)
+            self._measurement_notify_attempts.pop(sensor_id, None)
+        logger.warning(
+            "[sensor] measurement loss for %s persists after %d hours; "
+            "stage %d notice sent",
+            sensor_id,
+            hours,
+            stage,
+        )
 
     async def _note_measurement_accepted(self, sensor_id: str) -> None:
         """A window that was a measurement. Counts toward clearing degradation."""
@@ -3379,6 +3610,8 @@ class OriRuntime:
         self._measurement_notify_attempts.pop(sensor_id, None)
         self._measurement_refusals.pop(sensor_id, None)
         self._measurement_valid_streak.pop(sensor_id, None)
+        self._measurement_degraded_since.pop(sensor_id, None)
+        self._measurement_notice_stage.pop(sensor_id, None)
         logger.info(
             "[sensor] %s measurement recovered after %d consecutive valid windows",
             sensor_id,
@@ -3417,6 +3650,8 @@ class OriRuntime:
             return
         self._measurement_degraded.add(sensor_id)
         self._measurement_unnotified.add(sensor_id)
+        self._measurement_degraded_since.setdefault(sensor_id, now_ms())
+        self._measurement_notice_stage[sensor_id] = 0
         # Recorded before the alert is attempted, and without letting a store
         # failure escape the poll loop: this runs inside an `except` clause, so
         # an exception here would not be caught by the handler below it and
@@ -3503,14 +3738,14 @@ class OriRuntime:
             "published for it, and any protection depending on them is not "
             "running. Check the sensor wiring and signal."
         )
+        # Structural rather than policy-gated. A notice that a protection is
+        # absent must not be suppressed by an entitlement cap: suppressing it
+        # leaves an operator believing a measurement is being taken that is
+        # not, which is the fact this notice exists to carry.
         return bool(
-            await self._send_or_queue_alert(
-                channel=self._primary_alert_channel,
+            await self._send_or_queue_safety_alert(
                 message=message,
-                recipient=self._operator_contact,
-                action_tier="A",
                 trigger_name=f"measurement_degraded:{sensor_id}",
-                original_ts=now_ms(),
                 alert_sender=self._alert_sender,
             )
         )
@@ -4178,6 +4413,7 @@ class OriRuntime:
         message: str,
         trigger_name: str,
         alert_sender: AlertFailoverSender,
+        recipient: str = "",
     ) -> bool:
         """Mandatory notices: delivery or durable queue, structurally outside
         DevicePolicy — no external-alert gate is consulted and no
@@ -4188,9 +4424,14 @@ class OriRuntime:
         suppressing it leaves an operator believing something is being watched
         that is not. The safety registry's sink is one. A configured sensor
         that never connected is the other, and it qualifies for the same
-        reason — the runtime cannot measure what it was told to measure.
+        reason — the runtime cannot measure what it was told to measure. A
+        persistent measurement loss is the third, and its escalation is why
+        `recipient` exists: from the second stage the notice is addressed to
+        the secondary contact, and it must stay on this route to get there.
+        An entitlement cap that silenced the escalation would leave exactly
+        the operator who has not acted still not knowing.
         Never reachable from skills or ordinary action execution."""
-        recipient = self._operator_contact
+        recipient = recipient or self._operator_contact
         if not recipient:
             logger.warning(
                 "[safety] notice not sent: operator_contact is not configured"
