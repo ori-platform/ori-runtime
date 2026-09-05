@@ -1,0 +1,12 @@
+{
+  "source_repository": "ori-platform/ori-energy",
+  "source_path": "apps/api/tests/fixtures/runtime_contracts/telemetry_refusals.json",
+  "source_commit": "4726b51296e4bee5871f41e039cdd06f661254b4",
+  "note": "Vendored copy of the product API's normative telemetry refusal contract. The runtime must classify the statuses it records, so it is a conformance fixture. Digests detect a local edit; the source commit is the provenance trail. Upstream drift needs a checkout of a private repository, so scripts/refresh-telemetry-refusal-fixture.sh is a maintainer check rather than a CI gate; the fixture's own generator is the upstream gate.",
+  "excluded": {
+    "telemetry_refusals.snapshot.json": "Marked \"normative\": false upstream. It captures header order, casing and Content-Length, which are the HTTP client's rather than the contract's, so pinning it would move this digest on a dependency bump that changed no behaviour."
+  },
+  "files": {
+    "telemetry_refusals.json": "d208861cefdd96ecb478c5c2a4eba0b5aae1f68345e80f618419c642af48da18"
+  }
+}

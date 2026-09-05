@@ -2924,6 +2924,21 @@ class OriRuntime:
                 logger.warning("[evidence] attestation summary read failed")
         return health
 
+    def _telemetry_export_health(self) -> dict[str, Any]:
+        """Report export state. It never contributes to `status` or `critical`.
+
+        Export suspension is driven by product-side account state. Letting it
+        degrade the device's health verdict would put billing state on a path
+        that reaches protection decisions, which is the boundary this must not
+        cross.
+        """
+        exporter = self._telemetry_exporter
+        if exporter is None:
+            return {"enabled": False}
+        snapshot = exporter.status_snapshot()
+        snapshot["enabled"] = True
+        return snapshot
+
     async def _build_health_snapshot(self) -> dict[str, Any]:
         now = now_ms()
         uptime_s = (
@@ -3066,6 +3081,7 @@ class OriRuntime:
             "evidence": await self._evidence_health(),
             "commissioning": self._commissioning_health(),
             "firmware_liveness": firmware_liveness_health,
+            "telemetry_export": self._telemetry_export_health(),
         }
         # `runtime-health/v2` types this as an array and reads absence as
         # unknown, so a device with no registry omits the key entirely rather
