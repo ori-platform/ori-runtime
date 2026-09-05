@@ -3681,6 +3681,70 @@ class TestAlertOutbox:
 
         assert snapshot["safety_zones"] == []
 
+    def _zone(self, activation: str, claim: str) -> dict:
+        return {
+            "zone_id": "z",
+            "profile_id": "p",
+            "activation": activation,
+            "protection_claim": claim,
+        }
+
+    async def test_an_active_unprotected_pair_degrades_the_snapshot(self, tmp_path):
+        """A decision, not a conformance gap.
+
+        `runtime-health/v2` does not require this. Without it a fleet view
+        aggregating `status` shows nothing wrong while a zone the device has
+        undertaken to protect is not being protected — and commissioning
+        problems already degrade for the same class of fact one step earlier.
+        """
+        runtime = self._bare_health_runtime(tmp_path)
+        runtime._safety_registry = SimpleNamespace(
+            health_snapshot=lambda: {},
+            safety_zones=lambda: [self._zone("active", "unprotected")],
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["status"] == "degraded"
+        # Degraded is the whole of it. This is a report, and nothing about the
+        # protection path reads it or is gated by it.
+        assert snapshot.get("critical") is not True
+
+    async def test_an_active_protected_pair_leaves_the_snapshot_healthy(self, tmp_path):
+        runtime = self._bare_health_runtime(tmp_path)
+        runtime._safety_registry = SimpleNamespace(
+            health_snapshot=lambda: {},
+            safety_zones=lambda: [self._zone("active", "protected")],
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        # `.get`, because a healthy snapshot carries no `status` at all; the
+        # key appears only when a subsystem degrades it.
+        assert snapshot.get("status") != "degraded"
+
+    @pytest.mark.parametrize(
+        "activation", ["pending_ratification", "unit_mismatch", "direction_unsupported"]
+    )
+    async def test_a_pair_that_never_activated_does_not_degrade(
+        self, tmp_path, activation
+    ):
+        """Only an active pair is one the device undertook to protect.
+
+        A pair held for ratification reports `unprotected` too, and correctly.
+        Degrading on those would leave every device carrying a candidate
+        profile permanently degraded — which is every device today.
+        """
+        runtime = self._bare_health_runtime(tmp_path)
+        runtime._safety_registry = SimpleNamespace(
+            health_snapshot=lambda: {},
+            safety_zones=lambda: [self._zone(activation, "unprotected")],
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot.get("status") != "degraded"
+
     async def test_health_snapshot_reports_state_store_encryption_posture(
         self, tmp_path
     ):
