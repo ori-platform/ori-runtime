@@ -171,9 +171,31 @@ jobs:
       # managers entered synchronously. Scoped to `ori/` because the test tree
       # still carries stub-typing diagnostics; widening it is #358's remaining
       # half. A ratchet only holds if the clean half is enforced.
+      # `scripts/` is inside the ratchet's total, so it is gated at zero here
+      # too. Gating only `ori/` would leave diagnostics added under `scripts/`
+      # payable by removing some from `tests/`, which is the absorption the
+      # ratchet exists to prevent one directory over.
       - name: Type check production code (pyright)
         if: matrix.python-version == '3.12'
-        run: pyright ori/
+        run: pyright ori/ scripts/
+
+      # mypy needs no ratchet: it is already clean over both trees, so it gets
+      # the stronger control. Ordered before the ratchet so a type regression
+      # names the tree it is in rather than arriving as a moved count, and
+      # scoped to one interpreter because the analysis version is pinned in
+      # config and running it three times measures the same thing three times.
+      - name: Type check the test tree (mypy)
+        if: matrix.python-version == '3.12'
+        run: python -m mypy tests/
+
+      # The test tree is not zero and paying it down is separate work. This
+      # stops the number growing while that waits, which a per-author habit
+      # does not: a count nothing prints is a count no reviewer sees. Strict
+      # in both directions, because a baseline left above the real count is
+      # headroom someone later spends without noticing.
+      - name: Hold the pyright count against its baseline (ratchet)
+        if: matrix.python-version == '3.12'
+        run: python scripts/pyright_ratchet.py
 
       - name: Pre-commit (lint + format + hygiene)
         env:

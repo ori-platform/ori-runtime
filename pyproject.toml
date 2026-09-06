@@ -203,6 +203,13 @@ ignore = ["E501"]
 # duplicate is invisible in a total and makes the count untrackable.
 include = ["ori", "tests", "scripts"]
 extraPaths = ["scripts"]
+# Pinned, because the count is compared against a committed baseline and an
+# unpinned analysis environment makes that number a property of whoever ran it.
+# Typeshed declares some members under `sys.platform == "linux"` only, so the
+# same tree reports one more diagnostic on macOS than on Linux; the interpreter
+# version moves it too. These are the values the baseline was measured at.
+pythonPlatform = "Linux"
+pythonVersion = "3.12"
 
 [tool.mypy]
 python_version = "3.11"
