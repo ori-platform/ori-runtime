@@ -1,0 +1,11 @@
+{
+  "total": 478,
+  "by_area": {
+    "tests": 334,
+    "tests/commissioning": 14,
+    "tests/evidence": 6,
+    "tests/firmware": 86,
+    "tests/remote_commands": 38
+  },
+  "note": "pyright error count over the trees pyright analyses (ori, tests, scripts; skills/ is outside its include). Lower it whenever the real count falls. Raising it needs --allow-raise and is a decision, not a step. `pyright ori/ scripts/` is separately gated at zero, so a rise there cannot be absorbed by a fall in tests/. The count depends on pythonPlatform and pythonVersion, both pinned in pyproject.toml."
+}
