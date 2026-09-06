@@ -449,6 +449,9 @@ class OriRuntime:
         self._firmware_command_service: FirmwareCommandService | None = None
         self._firmware_liveness_scheduler: FirmwareLivenessScheduler | None = None
         self._telemetry_exporter: HttpTelemetryExporter | None = None
+        # Startup and stop must not run at once; these order them.
+        self._startup_complete = False
+        self._stop_requested_during_startup = False
         self._evidence_attestor: FirstPartyEvidenceAttestor | None = None
         self._evidence_inbound_subscriber: MqttEvidenceInboundSubscriber | None = None
         self._evidence_outbound_publisher: MqttEvidenceOutboundPublisher | None = None
@@ -1295,11 +1298,14 @@ class OriRuntime:
         )
 
         # ── Register signal handlers ──────────────────────────────────────────
+        # Registered here rather than at the end of startup, because a device
+        # that cannot be stopped for the whole of startup is worse than one
+        # that stops untidily, and startup includes adapter connects that can
+        # block on hardware. What the handler does depends on how far startup
+        # has got: see `_request_stop`.
         loop = asyncio.get_running_loop()
-        loop.add_signal_handler(
-            signal.SIGTERM, lambda: asyncio.create_task(self.stop())
-        )
-        loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(self.stop()))
+        loop.add_signal_handler(signal.SIGTERM, self._request_stop)
+        loop.add_signal_handler(signal.SIGINT, self._request_stop)
         if hasattr(signal, "SIGHUP"):
             loop.add_signal_handler(
                 signal.SIGHUP, lambda: asyncio.create_task(self.reload_skills())
@@ -1499,6 +1505,9 @@ class OriRuntime:
                     name="status-signaling",
                 )
             )
+        if await self._stop_if_requested_during_startup():
+            return
+
         webhook_task = await self._start_sms_webhook_if_enabled(config)
         if webhook_task is not None:
             self._background_tasks.append(webhook_task)
@@ -1608,6 +1617,9 @@ class OriRuntime:
                     )
                 )
 
+        if await self._stop_if_requested_during_startup():
+            return
+
         await self._start_firmware_mqtt_operator_if_enabled(config)
 
         node_heartbeat = _build_runtime_node_heartbeat_publisher(
@@ -1622,6 +1634,9 @@ class OriRuntime:
                     name="runtime-node-heartbeat",
                 )
             )
+
+        if await self._stop_if_requested_during_startup():
+            return
 
         await self._start_health_socket_if_enabled(config)
 
@@ -1640,6 +1655,9 @@ class OriRuntime:
         if status_indicator is not None:
             status_indicator.set_runtime_state(RuntimeHealthState.NORMAL)
 
+        if await self._stop_if_requested_during_startup():
+            return
+
         await self._send_setup_success_notifications(config, alert_sender)
 
         # Block here until stop() sets the shutdown event
@@ -1649,7 +1667,71 @@ class OriRuntime:
                     self._safety_registry.run_retry_loop(self._shutdown_event)
                 )
             )
+        if await self._complete_startup():
+            await self.stop()
+            return
+
         await self._shutdown_event.wait()
+
+    async def _complete_startup(self) -> bool:
+        """Hand the stop signal from startup's checkpoints to the handler.
+
+        Returns True when a request arrived during startup and is this
+        caller's to honour.
+
+        The flag is raised before the request is read, so a signal landing
+        between the two is taken by the handler rather than falling into an
+        instant that neither path owns. Reading first and raising after would
+        leave exactly that gap, and a stop dropped there is a device that
+        ignores its operator once per boot.
+        """
+        self._startup_complete = True
+        return self._stop_requested_during_startup and not self._shutdown_event.is_set()
+
+    def _request_stop(self) -> None:
+        """Handle SIGTERM or SIGINT, deciding what the signal means right now.
+
+        After startup has finished, a signal stops the runtime, which is the
+        whole of its meaning. During startup it cannot: `stop()` closes the
+        state store, the adapters and every server, and startup is still
+        constructing and using them. Running the two concurrently is how a
+        resource is closed under a step that is mid-way through using it, and
+        the failure surfaces deep inside whichever step lost the race.
+
+        So during startup the request is recorded and startup unwinds at its
+        next checkpoint, which serialises the two rather than making `stop()`
+        defensive against every order they could interleave in.
+
+        A second signal is taken as an instruction rather than a repetition.
+        Startup can block in an adapter connect that never answers, which is
+        exactly when an operator sends the first signal and exactly when no
+        checkpoint is coming. An operator who has asked twice is left with a
+        way out, at the cost of the untidy teardown the first signal avoids.
+        """
+        if self._startup_complete or self._stop_requested_during_startup:
+            if not self._startup_complete:
+                logger.warning(
+                    "[runtime] second stop signal during startup; tearing down "
+                    "now without waiting for a checkpoint"
+                )
+            asyncio.create_task(self.stop())
+            return
+        self._stop_requested_during_startup = True
+        logger.info(
+            "[runtime] stop requested during startup; unwinding at the next "
+            "checkpoint. Signal again to tear down immediately."
+        )
+
+    async def _stop_if_requested_during_startup(self) -> bool:
+        """A startup checkpoint: stop here if a signal asked us to.
+
+        Returns True when the caller should abandon the rest of startup.
+        """
+        if not self._stop_requested_during_startup:
+            return False
+        logger.info("[runtime] startup interrupted by a stop request")
+        await self.stop()
+        return True
 
     async def stop(self) -> None:
         """Graceful shutdown. Called by SIGTERM/SIGINT signal handlers."""
