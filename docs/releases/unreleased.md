@@ -83,6 +83,59 @@ candidate or release is cut.
   records the `binding_seq` in force, and health reports the actuator's coil
   state and last command.
 
+- The release-owned safety registry is wired and reports per-pair protection
+  posture on the health surface. Release-shipped profiles activate from
+  commissioned zones, and each conjunct of a protection claim is checked where
+  the claim is made rather than inferred from an earlier check. Every shipped
+  profile remains a candidate, so no zone is bound to an active runtime-owned
+  pair on any real device yet.
+- A measurement loss that does not resolve escalates rather than being reported
+  once. The transition notice is followed by a reminder to the primary contact
+  at six hours and the secondary at twelve, then daily, on the existing audited
+  outbox. It is Tier A throughout, carries no physical authority, and has no
+  give-up condition: a still-unprotected channel must not become permanently
+  silent. Escalation tells a person a channel is unprotected; it never restores
+  protection, and no message says otherwise.
+- An alert a customer has switched off is withheld, and the suppression is
+  recorded in `action_log` as `suppressed` so it is distinguishable from a
+  delivery that failed.
+
+## Changed
+
+- `SIGTERM` and `SIGINT` are ordered against startup rather than racing it, so a
+  stop signal arriving mid-start is honoured at a checkpoint instead of leaving
+  a half-initialised runtime.
+- A signed configuration binds what it means and bounds how it is read: a
+  hostile document is refused rather than raising out of the loader, a repeated
+  key is refused, and a document nested past the recursion limit cannot stop the
+  runtime.
+- `SECURITY.md` names Raspberry Pi OS Trixie as the production-supported Pi
+  platform and Bookworm as a published bundle that is not a certified target,
+  which is what `docs/linux-install.md` and the capability matrix already said.
+  The installer now recognises Trixie, so `detect_platform` no longer returns
+  nothing on the platform the matrix certifies.
+
+## Fixed
+
+- Telemetry stops exporting to an endpoint that has refused this device. A
+  terminal refusal is classified narrowly — status, media type, absent
+  authentication challenge and an exact detail — so a captive portal or proxy
+  cannot suspend a device permanently, and the condition is observable through
+  its own counter without touching the health verdict.
+- The ADS1115 path measures what it claims: the channel is selected and verified
+  before every measurement, the window is certified at both ends, every sample
+  is pointered, a chip whose configuration changed under the runtime is
+  quarantined, and the adapter survives a driver reporting an unusable platform
+  instead of crashing on an import that raises something other than ImportError.
+- The adapter lifecycle is serialised so a close cannot straddle a connect, and
+  the contract sits on `BaseAdapter` rather than being restated per adapter.
+- The installer stages the Blinka platform library beside the pin factory, so a
+  Pi resolves its GPIO factory from inside the release tree.
+- The bootstrap keeps stdout for the installer's document, so `--json` is a
+  single JSON document rather than prose interleaved with it.
+- `ori doctor` no longer reports USB readiness for a deployment that declares no
+  USB.
+
 ## Security
 
 - A trust anchor whose private key this repository publishes is refused, at
@@ -101,3 +154,16 @@ candidate or release is cut.
   actuation; rotate to a key that has never left the producer. No installer,
   document or example ever configured one. Coordinated as
   `GHSA-rv38-92xc-7xq8`.
+
+- The same refusal covers every other boundary that treats a key as authority.
+  `verify_signed_payload` is the shared verifier for community skills, offline
+  Tier C approval tokens and device policy, so one check covers all three and a
+  later caller inherits it. The skill loader refuses the same material again at
+  admission, where it can name whether the anchor came from the constructor or
+  the environment.
+- A firmware signing seed this repository publishes is refused where one is
+  read: the environment loader every runtime consumer uses, and `read_seed` in
+  the provisioning CLI, which signs approvals without going through that loader.
+  Those boundaries receive the private half, so the public key is derived and
+  checked against the same list rather than a second one being kept in step. A
+  seed whose key cannot be derived is refused rather than trusted.
