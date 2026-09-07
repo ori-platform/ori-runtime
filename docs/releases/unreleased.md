@@ -82,3 +82,22 @@ candidate or release is cut.
   not driven and registers no relay action. Every logged physical action
   records the `binding_seq` in force, and health reports the actuator's coil
   state and last command.
+
+## Security
+
+- A trust anchor whose private key this repository publishes is refused, at
+  every deployment profile. This repository commits Ed25519 seeds as test
+  material, and three verification paths across two trust boundaries accepted a
+  public key derived from one: the commissioning anchor, loaded independently
+  at runtime startup and by `commissioning deliver`, and the
+  configuration-signature trust anchor. A device configured with such a key
+  accepted documents signed by anyone holding a clone — a commissioned binding
+  claiming both proof legs, which licenses actuation through the commissioned
+  seam, or a signed configuration carrying `device.rated_capacity_amps`, the
+  input that scales the Tier D trip point. The refusal covers the verify-only
+  previous commissioning slot, and `provisioning_anchor` reads such a key as
+  absent. A device carrying one now refuses to start rather than starting on a
+  forgeable authority, which is upgrade-breaking and costs detection as well as
+  actuation; rotate to a key that has never left the producer. No installer,
+  document or example ever configured one. Coordinated as
+  `GHSA-rv38-92xc-7xq8`.
