@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,14 @@ COMMAND_VECTORS = json.loads(
         Path(__file__).parent.parent / "fixtures" / "firmware_command_vectors.json"
     ).read_text()
 )
+# The runtime seed is conformance material: it comes from the shared vector
+# corpus and reproducing those bytes is the point, so it stays committed.
 RUNTIME_SEED = bytes.fromhex(COMMAND_VECTORS["runtime_test_seed_hex"])
+# The provisioner seed is conformance material too, and less obviously so: it
+# does not appear in the vector file, but the golden approval bytes there were
+# produced with it, so `test_provisioning_approval_reproduces_shared_golden_vectors`
+# fails if it changes. It stays committed for that reason. It is never loaded as
+# a deployment key -- `read_seed` and the environment loader both refuse it.
 PROVISIONER_SEED = bytes([0x22]) * 32
 PROVISIONER_PUBLIC = Ed25519PrivateKey.from_private_bytes(PROVISIONER_SEED).public_key()
 
@@ -414,7 +422,7 @@ async def test_service_refuses_to_publish_liveness_for_an_unsupervised_device(
         service = FirmwareCommandService(
             store=store,
             publisher=publisher,
-            runtime_command_key_bytes=bytes(range(32)),
+            runtime_command_key_bytes=secrets.token_bytes(32),
             provisioner_key_bytes=bytes(range(32, 64)),
             liveness_supervisor=FirmwareLivenessSupervisor(),
         )

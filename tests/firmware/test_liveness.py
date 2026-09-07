@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
 
 import pytest
 
@@ -25,7 +26,7 @@ from ori.security.firmware.liveness import (
 DEVICE = "ori-fw-7c9f2b3a"
 HASH = "sha256:" + "a" * 64
 OTHER_HASH = "sha256:" + "b" * 64
-SEED = bytes(range(32))
+SEED = secrets.token_bytes(32)  # never a committed seed: the runtime refuses those
 
 
 class FakeClock:

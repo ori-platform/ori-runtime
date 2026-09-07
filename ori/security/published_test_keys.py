@@ -55,3 +55,26 @@ PUBLISHED_TEST_KEYS_B64: Final[tuple[str, ...]] = (
 PUBLISHED_TEST_KEYS: Final[frozenset[bytes]] = frozenset(
     base64.b64decode(key) for key in PUBLISHED_TEST_KEYS_B64
 )
+
+
+def is_published_seed(seed: bytes) -> bool:
+    """Whether a private seed derives a key this repository publishes.
+
+    The refused set holds public keys, because the boundaries it was written for
+    receive public material. A boundary receiving the private half derives the
+    key and asks here, so there is one list rather than two that could drift.
+
+    Deliberately no exception handling: a seed whose key cannot be derived is
+    not a seed that may be used, and swallowing that would let a signing key
+    through on the one path where the check could not be made. Callers wrap this
+    in their own refusal so the failure keeps their vocabulary.
+    """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    public = (
+        Ed25519PrivateKey.from_private_bytes(seed)
+        .public_key()
+        .public_bytes(Encoding.Raw, PublicFormat.Raw)
+    )
+    return public in PUBLISHED_TEST_KEYS
