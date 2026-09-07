@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import secrets
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,9 @@ from ori.security.firmware.liveness import (
     FirmwareLivenessSupervisor,
 )
 from ori.state.store import StateStore
+
+_RUNTIME_SEED = secrets.token_bytes(32)  # never a committed seed
+_PROVISIONER_SEED = secrets.token_bytes(32)  # distinct from the runtime key
 
 VECTORS = json.loads(
     (
@@ -143,11 +147,9 @@ def _command_cfg() -> _Cfg:
 def command_keys(monkeypatch):
     """Seeds for the command builder, which loads them from the
     environment rather than taking them as arguments."""
+    monkeypatch.setenv(RUNTIME_KEY_ENV, base64.b64encode(_RUNTIME_SEED).decode("ascii"))
     monkeypatch.setenv(
-        RUNTIME_KEY_ENV, base64.b64encode(bytes(range(32))).decode("ascii")
-    )
-    monkeypatch.setenv(
-        PROVISIONER_KEY_ENV, base64.b64encode(bytes(range(32, 64))).decode("ascii")
+        PROVISIONER_KEY_ENV, base64.b64encode(_PROVISIONER_SEED).decode("ascii")
     )
 
 
@@ -363,8 +365,8 @@ def test_command_service_cannot_be_built_without_a_supervisor(store) -> None:
         FirmwareCommandService(
             store=store,
             publisher=publisher,
-            runtime_command_key_bytes=bytes(range(32)),
-            provisioner_key_bytes=bytes(range(32, 64)),
+            runtime_command_key_bytes=_RUNTIME_SEED,
+            provisioner_key_bytes=_PROVISIONER_SEED,
         )
 
 
@@ -398,12 +400,12 @@ def test_signer_cannot_be_built_without_a_supervisor(store) -> None:
     the two the review named. Left alone it would have re-created the
     private-instance hazard inside any future direct signer caller."""
     with pytest.raises(TypeError, match="supervisor"):
-        FirmwareLivenessSigner(store, bytes(range(32)))
+        FirmwareLivenessSigner(store, _RUNTIME_SEED)
 
     with pytest.raises(FirmwareLivenessError, match="supervisor must be"):
         FirmwareLivenessSigner(
             store,
-            bytes(range(32)),
+            _RUNTIME_SEED,
             supervisor=object(),  # type: ignore[arg-type]
         )
 

@@ -67,6 +67,7 @@ from typing import Any
 
 from ori.security.firmware.commands import build_provisioning_approval_bytes
 from ori.security.firmware.telemetry import FirmwareVerificationError
+from ori.security.published_test_keys import is_published_seed
 
 # The shared corpus that ties these bytes to the C verifier in
 # ori-edge-firmware; the same bytes its test_provisioning.c accepts.
@@ -137,6 +138,19 @@ def read_seed(path: Path, label: str) -> bytes:
         ) from exc
     if len(seed) != 32:
         raise ProvisionerError(f"{label} must be 32 bytes ({len(seed)} found)")
+    try:
+        published = is_published_seed(seed)
+    except Exception as exc:
+        raise ProvisionerError(
+            f"{label} at {path} could not be checked against the published-key "
+            "set, so it is refused rather than trusted"
+        ) from exc
+    if published:
+        raise ProvisionerError(
+            f"{label} at {path} holds a seed this repository publishes as test "
+            "material, so anyone with a clone signs the same provisioning "
+            "approvals. Generate a signing key that has never left the producer."
+        )
     return seed
 
 

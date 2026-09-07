@@ -35,6 +35,7 @@ from ori.security.firmware.liveness import (
     FirmwareLivenessSupervisor,
     SupervisedDevice,
 )
+from ori.security.published_test_keys import is_published_seed
 
 mqtt: Any
 try:
@@ -296,6 +297,30 @@ class FirmwareCommandService:
         return cast(dict[str, Any], row)
 
 
+def _refuse_published_seed(seed: bytes, env_name: str, label: str) -> None:
+    """A signing seed this repository publishes signs for anyone who has it.
+
+    A seed whose key cannot be derived is refused rather than allowed through:
+    the length and canonical encoding are already checked above, so reaching
+    that state means the check could not be made, and a security refusal that
+    cannot be made must not pass.
+    """
+    try:
+        published = is_published_seed(seed)
+    except Exception as exc:
+        raise FirmwareCommandError(
+            f"{label} env var {env_name!r} could not be checked against the "
+            "published-key set, so it is refused rather than trusted"
+        ) from exc
+    if published:
+        raise FirmwareCommandError(
+            f"{label} env var {env_name!r} holds a seed this repository "
+            "publishes as test material, so anyone with a clone signs the same "
+            "firmware approvals or commands this device would accept. Generate "
+            "a signing key that has never left the producer."
+        )
+
+
 def load_raw_ed25519_seed_from_env(env_name: str, *, label: str) -> bytes:
     clean_name = str(env_name or "").strip()
     if not clean_name:
@@ -313,6 +338,7 @@ def load_raw_ed25519_seed_from_env(env_name: str, *, label: str) -> bytes:
         raise FirmwareCommandError(
             f"{label} env var {clean_name!r} must encode exactly 32 bytes"
         )
+    _refuse_published_seed(seed, clean_name, label)
     return seed
 
 
