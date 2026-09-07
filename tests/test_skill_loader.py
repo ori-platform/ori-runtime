@@ -136,6 +136,16 @@ def _community_skill_mapping(name: str = "community-skill") -> dict:
     }
 
 
+def _public_key_b64(private_key) -> str:  # type: ignore[no-untyped-def]
+    """The base64 spelling of a key's public half, as an anchor is configured."""
+    return base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=Encoding.Raw,  # type: ignore[union-attr]
+            format=PublicFormat.Raw,  # type: ignore[union-attr]
+        )
+    ).decode("ascii")
+
+
 def _sign_skill(raw_skill: dict, private_key: Ed25519PrivateKey) -> str:  # type: ignore
     payload = canonical_skill_payload(raw_skill)
     signature = private_key.sign(payload)
@@ -611,6 +621,102 @@ class TestLoadOne:
         with patch.object(loader, "_is_core_bundled_skill", return_value=False):
             skill = loader.load_one(skill_dir)
         assert skill.name == raw["name"]
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_a_published_hub_anchor_refuses_a_community_skill(
+        self, tmp_path, monkeypatch
+    ):
+        """A key whose private seed ships here authenticates nobody.
+
+        Driven through `load_one` rather than the helper, because the anchor is
+        only authority at the point a skill is admitted on the strength of it.
+        """
+        import base64 as _b64
+
+        from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+        # Signed BY the published seed, so without the guard this skill verifies
+        # and loads. A test that signs with a fresh key is refused either way and
+        # only measures which message appears.
+        published_key = Ed25519PrivateKey.from_private_bytes(  # type: ignore[union-attr]
+            bytes(range(32))
+        )
+        published = _public_key_b64(published_key)
+        assert _b64.b64decode(published) in PUBLISHED_TEST_KEYS
+
+        skill_dir = tmp_path / "community-published-anchor"
+        raw = _community_skill_mapping()
+        raw["signature"] = _sign_skill(raw, published_key)
+        _write_skill_yaml_mapping(skill_dir, raw)
+
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", published)
+
+        loader = _first_party_loader()
+        with patch.object(loader, "_is_core_bundled_skill", return_value=False):
+            with pytest.raises(SkillSecurityError) as refusal:
+                loader.load_one(skill_dir)
+        assert "private seed is published" in str(refusal.value)
+        assert "ORI_HUB_ROOT_PUBLIC_KEY_B64" in str(refusal.value)
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_a_published_key_is_refused_from_the_constructor_too(
+        self, tmp_path, monkeypatch
+    ):
+        """The constructor override outranks the environment, so it is not exempt."""
+        published_key = Ed25519PrivateKey.from_private_bytes(  # type: ignore[union-attr]
+            bytes(range(32))
+        )
+        published = _public_key_b64(published_key)
+
+        skill_dir = tmp_path / "community-published-ctor"
+        raw = _community_skill_mapping()
+        raw["signature"] = _sign_skill(raw, published_key)
+        _write_skill_yaml_mapping(skill_dir, raw)
+
+        monkeypatch.delenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", raising=False)
+
+        loader = SkillLoader(community_trust_anchor_public_key_b64=published)
+        with patch.object(loader, "_is_core_bundled_skill", return_value=False):
+            with pytest.raises(SkillSecurityError) as refusal:
+                loader.load_one(skill_dir)
+        assert "private seed is published" in str(refusal.value)
+        assert "given to SkillLoader" in str(refusal.value)
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_a_malformed_hub_anchor_is_left_to_the_verifier(
+        self, tmp_path, monkeypatch
+    ):
+        """One fault, one error message.
+
+        The published-key guard defers anything that is not a 32-byte key, so a
+        malformed anchor is reported once, in the verifier's own vocabulary,
+        rather than twice in two.
+        """
+        skill_dir = tmp_path / "community-malformed-anchor"
+        raw = _community_skill_mapping()
+        raw["signature"] = _sign_skill(
+            raw,
+            Ed25519PrivateKey.generate(),  # type: ignore[union-attr]
+        )
+        _write_skill_yaml_mapping(skill_dir, raw)
+
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", "not-base64!!")
+
+        loader = _first_party_loader()
+        with patch.object(loader, "_is_core_bundled_skill", return_value=False):
+            with pytest.raises(Exception) as refusal:
+                loader.load_one(skill_dir)
+        assert "private seed is published" not in str(refusal.value)
+        assert "trust anchor public key" in str(refusal.value)
 
     def test_bundled_unsigned_skill_still_loads(self, tmp_path):
         skill_dir = tmp_path / "bundled-unsigned"

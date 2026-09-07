@@ -157,3 +157,42 @@ def test_verifier_rejects_wrong_signature_and_public_key_lengths() -> None:
             signed_manifest,
             "AA==",
         )
+
+
+def test_a_published_trust_anchor_is_refused_for_every_consumer():
+    """The shared verifier is the layer that covers callers nobody enumerated.
+
+    Community skills, offline Tier C approval tokens and device policy all reach
+    signature verification through this function. Guarding it here means a new
+    caller inherits the refusal instead of having to remember it, and this test
+    exists because removing the guard breaks nothing otherwise: the skill loader
+    refuses the same material a second time, which would mask its absence.
+    """
+    import base64
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+    from ori.skills.signing import verify_signed_payload
+
+    published_key = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+    raw_public = published_key.public_key().public_bytes(
+        encoding=Encoding.Raw, format=PublicFormat.Raw
+    )
+    assert raw_public in PUBLISHED_TEST_KEYS
+
+    payload = {"token_id": "t-1", "device_id": "dev-01"}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    payload["signature"] = "ed25519:" + base64.b64encode(
+        published_key.sign(canonical)
+    ).decode("ascii")
+
+    with pytest.raises(SkillSecurityError) as refusal:
+        verify_signed_payload(
+            payload,
+            base64.b64encode(raw_public).decode("ascii"),
+            context_label="offline tier c token",
+        )
+    assert "private seed is published" in str(refusal.value)
+    assert "offline tier c token" in str(refusal.value)

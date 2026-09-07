@@ -17,6 +17,8 @@ All I/O (LLM inference, network, GPIO) runs inside the background task.
 """
 
 import asyncio
+import base64
+import binascii
 import errno
 import importlib.util
 import logging
@@ -41,6 +43,7 @@ from ori.reasoning.action_registry import (
     tier_rank,
 )
 from ori.reasoning.rule_engine import RESERVED_CONTEXT_NAMES
+from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.skills.sandbox import SkillSecurityError
 from ori.skills.signing import verify_community_skill_signature
 
@@ -291,6 +294,34 @@ _UniqueStringKeySafeLoader.add_constructor(
 )
 _HUB_ROOT_PUBLIC_KEY_B64 = "PENDING_REPLACE_AT_HUB_LAUNCH"
 _HUB_TRUST_ANCHOR_ENV = "ORI_HUB_ROOT_PUBLIC_KEY_B64"
+
+
+def _refuse_published_hub_anchor(trust_anchor_b64: str, source: str) -> None:
+    """A Hub anchor is authority only while its private half is secret.
+
+    `verify_signed_payload` refuses the same key material for every caller, so
+    this is the second of two layers rather than the only one: it names the
+    source a deployment actually configured, which the shared verifier cannot
+    know. Material that does not decode to a 32-byte key is left to the
+    verifier, which reports a malformed anchor in its own vocabulary; refusing
+    it here would give one fault two messages.
+    """
+    try:
+        raw = base64.b64decode(trust_anchor_b64.encode("ascii"), validate=True)
+    except (binascii.Error, ValueError, UnicodeEncodeError):
+        return
+    if len(raw) == 32 and raw in PUBLISHED_TEST_KEYS:
+        raise SkillSecurityError(
+            f"{source} names a key whose private seed is "
+            "published test material in this repository, so anyone holding a "
+            "clone can sign a community skill this runtime would accept. A "
+            "forged skill cannot reach Tier D, which is granted by provenance "
+            "to skills shipped with the runtime, but it can declare Tier B "
+            "triggers that act without approval. Generate a Hub signing key "
+            "that has never left the producer and configure its public half "
+            "instead."
+        )
+
 
 # Where first-party skills live. A source checkout keeps them beside the
 # package; an installed wheel puts them under the interpreter's data path.
@@ -1101,6 +1132,12 @@ class SkillLoader:
             raise SkillSecurityError(
                 "community skill verification trust anchor is not configured"
             )
+        _refuse_published_hub_anchor(
+            trust_anchor,
+            "the community trust anchor given to SkillLoader"
+            if self._community_trust_anchor_public_key_b64
+            else _HUB_TRUST_ANCHOR_ENV,
+        )
 
         verify_community_skill_signature(
             raw_skill=raw,
