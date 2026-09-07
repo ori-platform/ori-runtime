@@ -6,20 +6,44 @@ Ori Runtime controls physical systems. Security issues can have real-world conse
 
 | Version | Supported |
 | ------- | --------- |
-| `2.3.x` (stable) | Yes |
-| `<2.3.0` | No |
+| `2.4.x` (stable) | Yes |
+| `<2.4.0` | No |
+
+### Where a security fix lands
+
+A fix reaches the release line under active development. `GHSA-rv38-92xc-7xq8`
+is fixed in `v2.5.0-rc.8` and is not backported to `2.4.x`, deliberately: that
+guard refuses to start a device configured with a forgeable anchor rather than
+repairing one, so shipping it to a stable line would stop a running device
+without making its anchor any less forgeable.
+
+**The remediation is the same on every version, and needs no release.** Rotate
+the anchor to a key that has never left the producer, and remove the old one
+from both the current and previous slots. An operator who does that is no longer
+exposed whatever version they run; an operator who does not is still exposed on
+the fixed release, where the runtime will refuse to start instead.
+
+Where a defect can only be repaired by code — rather than by a configuration an
+operator controls — it is backported to the supported stable line.
 
 Production support is expressed as tested platform tuples, not as one global
 interpreter version. A primary Raspberry Pi target cannot honestly require a
 non-stock interpreter while claiming a straightforward authenticated bootstrap,
-and Debian Bookworm supplies Python 3.11.
+and each row below runs its distribution's stock interpreter.
 
 | Platform | Architecture | Python | Status |
 | --- | --- | --- | --- |
-| Raspberry Pi OS Bookworm | `aarch64` | 3.11 (stock) | Production-supported |
+| Raspberry Pi OS Trixie | `aarch64` | 3.13 (stock) | Production-supported |
 | Ubuntu 24.04 | `x86_64` | 3.12 (stock) | Production-supported |
-| Raspberry Pi OS Trixie | `aarch64` | 3.13 (stock) | Bundle published, hardware validation pending |
+| Raspberry Pi OS Bookworm | `aarch64` | 3.11 (stock) | Bundle published, **not a supported target** |
 | Other published bundles | `x86_64`, `aarch64` | 3.11, 3.12, 3.13 | Community compatibility |
+
+Trixie 64-bit is the Raspberry Pi platform (`docs/RASPBERRY_PI_SUPPORT.md`), and
+both production rows were certified on the published `v2.5.0-rc.7` bundle through
+the whole systemd-host runbook, health-gated rollback included. Bookworm has a
+published bundle and is deliberately not certified; a bundle building and passing
+its suite is a different claim from an installation surviving a reboot on real
+hardware, which is the whole reason support is expressed as tuples.
 
 The state store additionally requires **SQLite 3.39 or newer**: its history
 queries use a `HAVING` clause on an aggregate query with no `GROUP BY`, and

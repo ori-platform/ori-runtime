@@ -31,11 +31,20 @@ from ori.installer.linux import LinuxInstallError
 
 FAILURE_CODE = "prerequisite_install_failed"
 
-# Distributions this installer knows how to help with. Anything else is
-# reported, never guessed at with a package manager it has not been tested on.
+# Distributions this installer knows how to help with, which is a narrower
+# claim than the support policy in SECURITY.md. A row here means only that the
+# prerequisite prompt can name the right package manager; a row there means the
+# tuple is certified. Bookworm stays listed because published bundles exist for
+# it and an operator running one deserves the right apt command, not because it
+# is a supported target -- docs/RASPBERRY_PI_SUPPORT.md names Trixie 64-bit as
+# the Raspberry Pi platform. Anything absent is reported, never guessed at with
+# a package manager this installer has not been tested on.
+#
 # Raspberry Pi OS reports ID=raspbian on 32-bit images and ID=debian on 64-bit
-# ones, so the primary production platform needs both entries to be recognised.
+# ones. Trixie is 64-bit only, so it needs the debian row alone; the bench Pi
+# running the certified tuple reports ID=debian VERSION_ID=13.
 SUPPORTED: dict[tuple[str, str], str] = {
+    ("debian", "13"): "Debian Trixie / Raspberry Pi OS (64-bit)",
     ("debian", "12"): "Debian Bookworm / Raspberry Pi OS (64-bit)",
     ("raspbian", "12"): "Raspberry Pi OS Bookworm",
     ("ubuntu", "24.04"): "Ubuntu 24.04",

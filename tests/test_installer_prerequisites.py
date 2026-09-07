@@ -527,11 +527,28 @@ def test_raspberry_pi_os_64_bit_is_recognised(tmp_path: Path) -> None:
     assert "Raspberry Pi OS" in platform.label
 
 
-def test_both_production_tuples_are_supported() -> None:
-    """The tuples SECURITY.md commits to must both be recognised."""
+def test_the_certified_tuples_are_recognised() -> None:
+    """The platforms SECURITY.md certifies must both be prepared automatically.
+
+    Raspberry Pi OS Trixie 64-bit reports ID=debian VERSION_ID=13, which is what
+    the certified bench Pi reports. Before this was listed, `detect_platform`
+    returned None on the very platform the capability matrix certifies, and the
+    installer told an operator it did not know how to prepare their host.
+    """
+    assert ("debian", "13") in prerequisites.SUPPORTED
+    assert ("ubuntu", "24.04") in prerequisites.SUPPORTED
+
+
+def test_bookworm_is_prepared_without_being_a_supported_target() -> None:
+    """Two different claims: this table names what apt command to offer.
+
+    Published bundles exist for Bookworm and it is not a certified target
+    (docs/RASPBERRY_PI_SUPPORT.md, docs/CAPABILITY_MATRIX.md). An operator
+    running one still deserves the right package manager rather than a refusal,
+    so these rows stay while the support policy says otherwise.
+    """
     assert ("raspbian", "12") in prerequisites.SUPPORTED
     assert ("debian", "12") in prerequisites.SUPPORTED
-    assert ("ubuntu", "24.04") in prerequisites.SUPPORTED
 
 
 def test_the_prompt_does_not_understate_what_apt_does(as_root: None) -> None:
