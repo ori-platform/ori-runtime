@@ -33,12 +33,14 @@ from ori.security.commissioning.loader import (
 )
 from ori.state.store import StateStore
 from tests.commissioning.signing import (
+    EPHEMERAL_SEED,
+    EPHEMERAL_SEED_OTHER,
     local_gpio_binding,
     public_key_b64,
     sign_envelope,
 )
 
-SEED = "5" * 64
+SEED = EPHEMERAL_SEED
 DEVICE = "bench-runtime-01"
 SENSOR = "cpu-sensor"
 
@@ -192,7 +194,7 @@ async def test_a_refused_binding_is_reported_by_stage_and_licenses_nothing(
 ) -> None:
     _patch_external(monkeypatch)
     # The anchor configured is not the key that signed the document.
-    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64("6" * 64))
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(EPHEMERAL_SEED_OTHER))
     _write_binding(tmp_path)
     runtime = OriRuntime(config_path=str(_write_config(tmp_path)))
     observed: dict[str, Any] = {}
@@ -632,3 +634,27 @@ async def test_a_binding_file_that_breaks_the_decoder_does_not_stop_the_runtime(
     assert block["last_verdict"]["reason"] == "malformed"
     assert block["actuation_licensed"] is False
     assert observed["health"]["status"] == "degraded"
+
+
+async def test_a_published_anchor_stops_the_start_before_any_binding_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Startup loads anchors independently of the bridge, so it is covered here.
+
+    The refusal lands where `anchor_collision` does -- at configuration load,
+    before a binding is opened -- because a forgeable authority is not a
+    property of any particular document.
+    """
+    import base64
+
+    from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+    _patch_external(monkeypatch)
+    published = base64.b64encode(next(iter(PUBLISHED_TEST_KEYS))).decode("ascii")
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, published)
+    _write_binding(tmp_path)
+    runtime = OriRuntime(config_path=str(_write_config(tmp_path)))
+
+    with pytest.raises(ConfigValidationError) as refusal:
+        await _start_expecting_refusal(runtime)
+    assert "private seed is published" in str(refusal.value)

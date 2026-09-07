@@ -997,6 +997,63 @@ class TestLoadExample:
         )
         assert cfg.security["config_signature"]["signed_at_ms"] == 1_800_000_000_000
 
+    def test_config_load_refuses_a_signature_from_a_published_key(
+        self, tmp_path, monkeypatch
+    ):
+        """A published key must not admit a configuration through the real loader.
+
+        `device.rated_capacity_amps` scales the Tier D trip point, and production
+        posture requires a verified signature -- so a key anyone can sign with
+        would satisfy a mandated control while moving where the runtime trips.
+        """
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+        published = Ed25519PrivateKey.from_private_bytes(bytes.fromhex("5" * 64))
+        raw_public = published.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        assert raw_public in PUBLISHED_TEST_KEYS, "this test needs a refused key"
+        monkeypatch.setenv(
+            "ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64",
+            base64.b64encode(raw_public).decode("ascii"),
+        )
+
+        yaml_path = _write_yaml(
+            tmp_path,
+            _sign_config_yaml(
+                """
+                device:
+                  id: dev-01
+                  name: Test
+                  location: Lagos
+                  rated_capacity_amps: 400.0
+                sensors: []
+                skills: []
+                reasoning: {}
+                gateway: {}
+                actions:
+                  primary_alert_channel: sms
+                  sms:
+                    enabled: false
+                  relay:
+                    enabled: false
+                    gpio_pin: 26
+                security:
+                  config_signature:
+                    require_signed: true
+                """,
+                published,
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError) as refusal:
+            Config.load(yaml_path)
+        assert "private seed is published" in str(refusal.value)
+        assert "ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64" in str(refusal.value)
+
     def test_signed_config_is_checked_before_env_expansion(self, tmp_path, monkeypatch):
         private_key, public_key_b64 = _ed25519_keypair()
         monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)

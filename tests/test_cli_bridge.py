@@ -754,7 +754,11 @@ def _commissioning_config(
 
 def _bench_envelope(**overrides):
     """A binding with both proof legs unless a test overrides one."""
-    from tests.commissioning.signing import local_gpio_binding, sign_envelope
+    from tests.commissioning.signing import (
+        EPHEMERAL_SEED,
+        local_gpio_binding,
+        sign_envelope,
+    )
 
     overrides.setdefault("proof_method", "actuate_and_observe")
     overrides.setdefault("control_proof_method", "commanded_and_observed")
@@ -765,14 +769,20 @@ def _bench_envelope(**overrides):
         active_high=False,
         **overrides,
     )
-    return sign_envelope(binding, "7" * 64)
+    return sign_envelope(binding, EPHEMERAL_SEED)
 
 
-def _anchor(monkeypatch, seed: str = "7" * 64) -> None:
+def _other_seed() -> str:
+    from tests.commissioning.signing import EPHEMERAL_SEED_OTHER
+
+    return EPHEMERAL_SEED_OTHER
+
+
+def _anchor(monkeypatch, seed: str | None = None) -> None:
     from ori.security.commissioning.anchors import COMMISSIONING_ANCHOR_ENV
-    from tests.commissioning.signing import public_key_b64
+    from tests.commissioning.signing import EPHEMERAL_SEED, public_key_b64
 
-    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(seed))
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(seed or EPHEMERAL_SEED))
 
 
 def test_cli_bridge_commissioning_inventory_reports_the_candidate_set(tmp_path, capsys):
@@ -858,7 +868,7 @@ def test_cli_bridge_commissioning_deliver_refuses_by_stage_and_writes_nothing(
 
     config_path = _commissioning_config(tmp_path)
     # The anchor configured is not the key that signed the document.
-    _anchor(monkeypatch, seed="6" * 64)
+    _anchor(monkeypatch, seed=_other_seed())
     source = tmp_path / "binding.json"
     source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
 
@@ -953,7 +963,7 @@ def test_cli_bridge_commissioning_deliver_separates_an_absent_anchor_from_a_wron
     absent = _deliver_refusal(tmp_path, monkeypatch, capsys)
 
     # The anchor configured is not the key that signed the document.
-    _anchor(monkeypatch, seed="6" * 64)
+    _anchor(monkeypatch, seed=_other_seed())
     mismatched = _deliver_refusal(tmp_path, monkeypatch, capsys)
 
     assert absent["code"] == mismatched["code"] == "unknown_signer"
@@ -1566,3 +1576,43 @@ def test_an_exiting_command_is_not_swallowed(
     monkeypatch.setattr(cli_bridge, "_commissioning_inventory", exiting)
     with pytest.raises(SystemExit):
         cli_bridge.run_bridge(["commissioning", "inventory", "--path", "ori.yaml"])
+
+
+def test_cli_bridge_commissioning_deliver_refuses_a_published_anchor(
+    tmp_path, monkeypatch, capsys
+):
+    """`deliver` loads anchors on its own path, so it needs its own coverage.
+
+    Nothing is staged: an operator who reached this refusal has an anchor whose
+    private half anyone can read, and accepting the document would license
+    actuation on a forgeable authority.
+    """
+    import base64
+
+    from ori.security.commissioning.anchors import COMMISSIONING_ANCHOR_ENV
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+    from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+    published = base64.b64encode(next(iter(PUBLISHED_TEST_KEYS))).decode("ascii")
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, published)
+
+    config_path = _commissioning_config(tmp_path)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+    payload = _read_stdout_json(capsys)
+
+    assert rc == 2 and payload["ok"] is False
+    assert payload["error"]["code"] == "anchor_error"
+    assert "private seed is published" in payload["error"]["detail"]
+    assert not (tmp_path / BINDING_RELATIVE_PATH).exists()

@@ -22,12 +22,13 @@ from ori.security.commissioning.binding import (
     verify_binding_envelope,
 )
 from tests.commissioning.signing import (
+    EPHEMERAL_SEED,
     local_gpio_binding,
     public_key_b64,
     sign_envelope,
 )
 
-SEED = "7" * 64
+SEED = EPHEMERAL_SEED
 DEVICE = "bench-01"
 SENSOR = "load-current"
 
