@@ -24,12 +24,13 @@ from ori.security.commissioning.anchors import COMMISSIONING_ANCHOR_ENV
 from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
 from ori.security.commissioning.profiles import load_profile_set
 from tests.commissioning.signing import (
+    EPHEMERAL_SEED,
     local_gpio_binding,
     public_key_b64,
     sign_envelope,
 )
 
-SEED = "5" * 64
+SEED = EPHEMERAL_SEED
 DEVICE = "bench-runtime-01"
 SENSOR = "cpu-sensor"
 

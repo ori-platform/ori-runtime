@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.utils.bool_utils import is_truthy
 
 CONFIG_SIGNATURE_SCHEMA = "ori.config_signature.v1"
@@ -141,6 +142,7 @@ def verify_config_signature_if_needed(
         signature=signature,
         public_key_b64=trust_anchor,
         payload=canonical_config_signature_payload(raw_config),
+        anchor_env=policy.trust_anchor_env,
     )
     return ConfigSignatureVerification(
         verified=True,
@@ -187,6 +189,7 @@ def _verify_ed25519_signature(
     signature: str,
     public_key_b64: str,
     payload: bytes,
+    anchor_env: str,
 ) -> None:
     _, signature_b64 = signature.split(":", 1)
     try:
@@ -208,6 +211,17 @@ def _verify_ed25519_signature(
         raise ConfigSignatureError(
             "config signature trust anchor is not base64"
         ) from exc
+
+    if public_key_bytes in PUBLISHED_TEST_KEYS:
+        raise ConfigSignatureError(
+            f"{anchor_env} names a key whose private seed is published test "
+            "material in this repository, so anyone holding a clone can sign a "
+            "configuration this runtime would accept as verified -- including "
+            "one that moves "
+            "device.rated_capacity_amps, the Tier D threshold input, or declares "
+            "a relay pin. Generate a signing key that has never left the producer "
+            "and write its public half here instead."
+        )
 
     try:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
