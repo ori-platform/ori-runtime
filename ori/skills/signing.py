@@ -8,6 +8,7 @@ import json
 import math
 from typing import Any
 
+from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.skills.sandbox import SkillSecurityError
 
 
@@ -141,6 +142,19 @@ def verify_signed_payload(
     if len(public_key_bytes) != 32:
         raise SkillSecurityError(
             "trust anchor public key must decode to exactly 32 bytes"
+        )
+    if public_key_bytes in PUBLISHED_TEST_KEYS:
+        # Every caller of this function is deciding whether to trust a document
+        # on the strength of an anchor: community skills, offline Tier C
+        # approval tokens, and device policy. A key whose private half ships in
+        # this repository authenticates nobody, so it is refused here rather
+        # than at each call site, where one caller could be missed.
+        raise SkillSecurityError(
+            f"{context_label} verification trust anchor names a key whose "
+            "private seed is published test material in this repository, so "
+            "anyone holding a clone can sign a document this runtime would "
+            "accept. Generate a signing key that has never left the producer "
+            "and configure its public half instead."
         )
 
     try:
