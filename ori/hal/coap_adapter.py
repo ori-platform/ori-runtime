@@ -19,6 +19,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
+from ori.utils.path_utils import shown
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -199,13 +200,14 @@ class CoapAdapter(BaseAdapter):
             except (AdapterReadError, AdapterTimeoutError) as exc:
                 logger.warning(
                     "CoapAdapter: poll failed for uri=%s json_path=%s: %s",
-                    self._uri,
-                    self._json_path,
+                    shown(self._uri),
+                    shown(self._json_path),
                     exc,
                 )
             except Exception:
                 logger.exception(
-                    "CoapAdapter: unexpected poll-loop error for uri=%s", self._uri
+                    "CoapAdapter: unexpected poll-loop error for uri=%s",
+                    shown(self._uri),
                 )
             try:
                 await asyncio.sleep(self._poll_interval_ms / 1000.0)

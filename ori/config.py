@@ -1078,6 +1078,38 @@ def _expand_env_vars(text: str) -> str:
     return _ENV_VAR_RE.sub(_replace, text)
 
 
+def config_env_placeholders(config_path: str) -> frozenset[str] | None:
+    """Every environment variable this document's values name, before expansion.
+
+    Answers what the document asks the environment for, which is what decides
+    whether a file supplying variables supplied anything to *this* document.
+    Collected from values only, because expansion never reaches a key.
+
+    Returns ``None`` when the document cannot be read, which is unknown rather
+    than none: a caller deciding whether an unsigned source contributed must
+    not read silence as proof that it did not.
+    """
+    try:
+        raw = _load_config_document(_read_config_text(config_path), config_path)
+    except Exception:
+        return None
+
+    names: set[str] = set()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, str):
+            names.update(_ENV_VAR_RE.findall(node))
+        elif isinstance(node, dict):
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value)
+
+    _walk(raw)
+    return frozenset(names)
+
+
 # ─── Section parsers ──────────────────────────────────────────────────────────
 
 

@@ -47,6 +47,7 @@ from ori.config import (
     ConfigValidationError,
     SensorConfig,
     anchor_to_config,
+    config_env_placeholders,
     hardened_posture_declared,
     requires_production_posture,
 )
@@ -197,7 +198,7 @@ from ori.state.store import StateStore, TripJournal
 from ori.telemetry.http_export import HttpTelemetryExporter
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
-from ori.utils.path_utils import path_is_relative_to
+from ori.utils.path_utils import path_is_relative_to, shown
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -395,13 +396,21 @@ class OriRuntime:
     """
 
     def __init__(
-        self, config_path: str = "ori.yaml", *, dotenv_loaded: bool = False
+        self,
+        config_path: str = "ori.yaml",
+        *,
+        dotenv_variables: frozenset[str] | None = None,
     ) -> None:
         self._config_path = config_path
-        #: Whether a `.env` was autoloaded before this configuration could be
-        #: read. The decision had to be made first; startup confirms it against
-        #: the posture the document turns out to declare.
-        self._dotenv_loaded = dotenv_loaded
+        #: What a `.env` autoloaded before this configuration could be read, or
+        #: ``None`` if none was. The decision had to be made first; startup
+        #: confirms it against the posture the document turns out to declare.
+        self._dotenv_variables = dotenv_variables
+        #: Which variables the document's values name, read once after it is
+        #: loaded. ``None`` until then, and read as unknown, because a report
+        #: cannot say a file supplied nothing while it does not know what the
+        #: document asks for.
+        self._config_env_placeholders: frozenset[str] | None = None
         self._config: Config | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
         self._adapters: list[BaseAdapter] = []
@@ -528,7 +537,7 @@ class OriRuntime:
             if not loaded and self._loaded_skills:
                 logger.warning(
                     "[runtime] skill reload found 0 valid skills in %s — keeping existing handlers",
-                    skills_dir,
+                    shown(skills_dir),
                 )
                 return False
 
@@ -570,7 +579,7 @@ class OriRuntime:
                 "[runtime] skills reloaded — skills=%d triggers=%d source=%s",
                 len(self._loaded_skills),
                 sum(len(s.triggers) for s in self._loaded_skills),
-                skills_dir,
+                shown(skills_dir),
             )
             return True
 
@@ -608,7 +617,7 @@ class OriRuntime:
             # its answer is confirmed against the posture the document turns
             # out to declare. This closes a document whose posture is itself
             # expanded, and one replaced between the two reads.
-            if self._dotenv_loaded and requires_production_posture(
+            if self._dotenv_variables is not None and requires_production_posture(
                 device=config.device, security=config.security
             ):
                 raise ConfigValidationError(
@@ -617,6 +626,7 @@ class OriRuntime:
                     "have supplied signed fields. Use the unit's EnvironmentFile."
                 )
             _validate_required_runtime_capabilities(config, self._config_path)
+            self._config_env_placeholders = config_env_placeholders(self._config_path)
         except ConfigValidationError:
             logger.exception("[runtime] config validation failed — aborting")
             raise
@@ -676,9 +686,9 @@ class OriRuntime:
 
         logger.info(
             "[runtime] config loaded — device=%s location=%s deployment=%s",
-            config.device.id,
-            config.device.location,
-            config.device.deployment_type,
+            shown(config.device.id),
+            shown(config.device.location),
+            shown(config.device.deployment_type),
         )
         self._device_id = str(config.device.id)
         self._runtime_started_at_ms = now_ms()
@@ -2605,7 +2615,7 @@ class OriRuntime:
 
         self._health_socket_server = server
         self._health_socket_path = bound_path
-        logger.info("[runtime] health socket ready at %s", bound_path)
+        logger.info("[runtime] health socket ready at %s", shown(bound_path))
 
     async def _start_firmware_mqtt_operator_if_enabled(
         self,
@@ -2697,7 +2707,9 @@ class OriRuntime:
             raise
         self._firmware_mqtt_operator_server = server
         self._firmware_mqtt_operator_socket_path = bound_path
-        logger.info("[runtime] firmware MQTT operator service ready at %s", bound_path)
+        logger.info(
+            "[runtime] firmware MQTT operator service ready at %s", shown(bound_path)
+        )
 
     def _configure_alert_outbox(self, alert_outbox_cfg: dict[str, Any]) -> None:
         cfg = alert_outbox_cfg if isinstance(alert_outbox_cfg, dict) else {}
@@ -3123,6 +3135,9 @@ class OriRuntime:
                 }
             )
 
+        community_skills_health = self._community_skills_health()
+        config_authority_health = self._config_authority_health()
+
         safety_state: dict[str, Any] | None = (
             self._safety_registry.health_snapshot()
             if self._safety_registry is not None
@@ -3198,6 +3213,8 @@ class OriRuntime:
             },
             "evidence": await self._evidence_health(),
             "commissioning": self._commissioning_health(),
+            "community_skills": community_skills_health,
+            "config_authority": config_authority_health,
             "firmware_liveness": firmware_liveness_health,
             "telemetry_export": self._telemetry_export_health(),
         }
@@ -3222,6 +3239,25 @@ class OriRuntime:
             # `degradation_reasons` because that vocabulary is closed and
             # carries none for this (ori-platform/ori-specs#171); the sensor
             # itself reports `connected: false` in the meantime.
+            snapshot["status"] = "degraded"
+        if community_skills_health["refused_skills"]:
+            # An anchor the deployment cannot verify with drops every
+            # community skill on the device. Authority still failed closed, so
+            # this is degraded rather than critical — but a device running
+            # none of the skills it was configured with is not healthy, and
+            # until now the only signal was one log line per dropped skill.
+            #
+            # The count, not the anchor, is what degrades. The default anchor
+            # is unconfigured, so a device carrying only first-party skills
+            # would otherwise report degraded with nothing wrong.
+            snapshot["status"] = "degraded"
+        if config_authority_health["unsigned_value_source"]:
+            # A signature covers the document before expansion. When a .env
+            # supplied what `${VAR}` fields expanded to, the signature still
+            # verifies and says nothing about the values the runtime is
+            # actually running on. Hardened posture refuses the autoload
+            # outright; a development deployment that asked for a signature
+            # gets to keep running, and gets told.
             snapshot["status"] = "degraded"
         if getattr(self, "_evidence_posture_problems", ()):
             # Evidence trust not established is degraded, not critical: the
@@ -3273,6 +3309,73 @@ class OriRuntime:
             firmware_liveness_degraded=bool(firmware_liveness_health["degraded"]),
         )
         return snapshot
+
+    def _community_skills_health(self) -> dict[str, Any]:
+        """Whether community skills can be verified here, and what was dropped.
+
+        Reported from one load rather than answered live: pairing this load's
+        count with a later reading of the anchor would describe a state the
+        device was never in.
+        """
+        if self._skill_loader is None:
+            # Before skills are loaded there is no answer, and an unusable
+            # anchor with no fault to name is a contradiction a consumer would
+            # try to act on. `available` is how the rest of this snapshot says
+            # a subsystem has not reported yet.
+            return {
+                "available": False,
+                "anchor_usable": False,
+                "anchor_fault": None,
+                "refused_skills": 0,
+            }
+        admission = self._skill_loader.community_admission()
+        return {
+            "available": True,
+            "anchor_usable": admission.anchor_usable,
+            "anchor_fault": admission.anchor_fault,
+            "refused_skills": admission.refused_skills,
+        }
+
+    def _config_authority_health(self) -> dict[str, Any]:
+        """What decided the configuration values this runtime is running on.
+
+        ``unsigned_value_source`` is the fact worth acting on: a signature was
+        asked for, and a file outside what it covers supplied the values of
+        fields inside it.
+        """
+        signature: dict[str, Any] = {}
+        if self._config is not None:
+            candidate = self._config.security.get("config_signature")
+            if isinstance(candidate, dict):
+                signature = candidate
+        required = bool(signature.get("required", False))
+        verified = bool(signature.get("verified", False))
+        supplied = self._dotenv_variables
+        referenced = self._config_env_placeholders
+        # The file's existence is not a supplied value. `load_dotenv` runs with
+        # `override=False`, so it decides nothing the environment already
+        # carried, and a document naming no variable it supplied expands to the
+        # same values with or without it. Reporting on existence degraded a
+        # device whose `.env` changed nothing about what it was running.
+        #
+        # Unknown is not the same as none: until the document has been read
+        # there is nothing to intersect, and a file that was loaded is then
+        # assumed to have decided something.
+        decided = supplied is not None and (
+            referenced is None or bool(supplied & referenced)
+        )
+        return {
+            # Reporting "no signature required" from a document that has not
+            # been read yet is a claim, not a reading.
+            "available": self._config is not None,
+            "signature_required": required,
+            "signature_verified": verified,
+            "dotenv_loaded": supplied is not None,
+            # A .env on a deployment that signs nothing undermines no
+            # authority; it is the ordinary development convenience the toggle
+            # is documented as. What is reportable is the combination.
+            "unsigned_value_source": decided and (required or verified),
+        }
 
     def _firmware_liveness_health(self) -> dict[str, Any]:
         scheduler = self._firmware_liveness_scheduler
@@ -5318,14 +5421,20 @@ def _sync_power_state_from_reading(indicator: LEDIndicator, reading: Any) -> Non
         indicator.set_power_state(PowerState.MAINS)
 
 
-def _maybe_autoload_dotenv(config_path: str) -> bool:
+def _maybe_autoload_dotenv(config_path: str) -> frozenset[str] | None:
     """Load .env when explicitly enabled via ORI_AUTOLOAD_DOTENV=true.
 
     This is a development convenience toggle. Production remains explicit-env
     by default (no implicit .env loading).
+
+    Returns ``None`` when no file was loaded, and otherwise the variable names
+    this file actually introduced — which is not the same as the names it
+    contains, because `override=False` leaves anything the environment already
+    carries alone. A report that treated the file's existence as a supplied
+    value degraded a device whose `.env` decided nothing.
     """
     if not is_truthy(os.environ.get("ORI_AUTOLOAD_DOTENV", "")):
-        return False
+        return None
 
     # A signature covers the document before expansion, so a file that supplies
     # what `${VAR}` fields expand to decides the value of a signed field
@@ -5338,7 +5447,7 @@ def _maybe_autoload_dotenv(config_path: str) -> bool:
             "production posture: a .env beside the configuration would supply "
             "values for signed fields. Use the unit's EnvironmentFile."
         )
-        return False
+        return None
 
     try:
         from dotenv import load_dotenv
@@ -5346,7 +5455,7 @@ def _maybe_autoload_dotenv(config_path: str) -> bool:
         logger.warning(
             "[runtime] ORI_AUTOLOAD_DOTENV is enabled but python-dotenv is not installed"
         )
-        return False
+        return None
 
     # Beside the configuration only. The unit works in a runtime directory
     # systemd empties on every stop, so a file found there is not this
@@ -5354,14 +5463,16 @@ def _maybe_autoload_dotenv(config_path: str) -> bool:
     # configuration the runtime then trusts.
     candidate = Path(config_path).resolve().parent / ".env"
     if candidate.is_file():
+        before = frozenset(os.environ)
         load_dotenv(dotenv_path=candidate, override=False)
-        logger.info("[runtime] loaded environment from %s", candidate)
-        return True
+        supplied = frozenset(os.environ) - before
+        logger.info("[runtime] loaded environment from %s", shown(candidate))
+        return supplied
     logger.info(
         "[runtime] ORI_AUTOLOAD_DOTENV enabled but no .env file beside %s",
-        config_path,
+        shown(config_path),
     )
-    return False
+    return None
 
 
 def _local_llm_requested(reasoning_cfg: Any) -> bool:
@@ -5543,13 +5654,13 @@ def _build_local_llm(
         logger.warning(
             "[runtime] local SLM unavailable for model=%s. Ensure llama-cpp-python "
             "is installed and model file is accessible.",
-            model_file,
+            shown(model_file),
         )
         return None
 
     logger.info(
         "[runtime] local SLM enabled — model=%s n_ctx=%d",
-        model_file,
+        shown(model_file),
         context_window,
     )
     return local_llm
@@ -6569,9 +6680,9 @@ def main() -> None:
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
 
-    dotenv_loaded = _maybe_autoload_dotenv(args.config)
+    dotenv_variables = _maybe_autoload_dotenv(args.config)
 
-    runtime = OriRuntime(config_path=args.config, dotenv_loaded=dotenv_loaded)
+    runtime = OriRuntime(config_path=args.config, dotenv_variables=dotenv_variables)
     asyncio.run(runtime.start())
 
 

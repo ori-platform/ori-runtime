@@ -10,6 +10,8 @@ import json
 import logging
 from urllib.parse import urlparse
 
+from ori.utils.path_utils import shown
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -164,15 +166,17 @@ class CoAPAction:
                 return True
             logger.warning(
                 "CoAPAction: non-success response for uri=%s code=%s",
-                uri,
+                shown(uri),
                 response_code,
             )
             return False
         except asyncio.TimeoutError:
-            logger.warning("CoAPAction: timeout sending CoAP command to %s", uri)
+            logger.warning("CoAPAction: timeout sending CoAP command to %s", shown(uri))
             return False
         except Exception:
-            logger.exception("CoAPAction: failed sending CoAP command to %s", uri)
+            logger.exception(
+                "CoAPAction: failed sending CoAP command to %s", shown(uri)
+            )
             return False
         finally:
             if context is not None:

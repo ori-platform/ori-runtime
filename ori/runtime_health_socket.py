@@ -11,6 +11,8 @@ import stat
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from ori.utils.path_utils import shown
+
 logger = logging.getLogger(__name__)
 
 _HEALTH_SOCKET_MAX_REQUEST_BYTES = 1024
@@ -59,9 +61,9 @@ class RuntimeHealthSocketServer:
             if self._socket_path == "/run/ori/health.sock":
                 logger.warning(
                     "[runtime] health socket path %s not writable (%s); falling back to %s",
-                    self._socket_path,
+                    shown(self._socket_path),
                     exc,
-                    _HEALTH_SOCKET_DEFAULT_DEV_FALLBACK_PATH,
+                    shown(_HEALTH_SOCKET_DEFAULT_DEV_FALLBACK_PATH),
                 )
                 self._bound_path = await asyncio.to_thread(
                     self._prepare_socket_path,

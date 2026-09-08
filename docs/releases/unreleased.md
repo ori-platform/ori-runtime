@@ -257,6 +257,35 @@ candidate or release is cut.
   single JSON document rather than prose interleaved with it.
 - `ori doctor` no longer reports USB readiness for a deployment that declares no
   USB.
+- A device whose community trust anchor can verify nothing no longer reports
+  healthy while every community skill it was configured with silently fails to
+  load. The anchor is a property of the deployment rather than of the skill
+  being read when it is noticed, so it is answered once before any skill
+  directory is opened, and every way it can fail is decided there rather than
+  only the two shapes that had a guard of their own. Health carries
+  `community_skills`, `skills list` carries `community_anchor`, and the
+  refusals are reported once against the anchor instead of once per skill under
+  an identical detail. Reporting and attribution are separate: an anchor that is
+  a well-formed key but not the Hub's cannot be blamed, because its refusal is a
+  signature failure indistinguishable from a tampered manifest, but the count of
+  community skills the device failed to admit carries it either way. **A device carrying any non-first-party skill directory
+  will now report `degraded`** where it previously reported healthy, since the
+  anchor a build ships with is unconfigured; no skill's admission changes,
+  because none was being admitted.
+- A `.env` loaded through `ORI_AUTOLOAD_DOTENV` beside a signed configuration is
+  reported. The signature covers the document before expansion, so the file
+  decides the effective value of a signed field without invalidating it.
+  Staging and production refuse the autoload outright; a development deployment
+  carrying a signature keeps running and reports `config_authority`, whose
+  `unsigned_value_source` degrades the device while it holds. Both halves are
+  measured: the autoload reports which variables it actually introduced, since
+  `override=False` decides nothing the environment already carried, and the
+  document is scanned for the variables its values name, so a `.env` the
+  document never references is not reported as having supplied anything.
+- Filesystem and configuration names in the runtime's log output are escaped
+  rather than handed to a terminal to act on. A skill directory holds whatever
+  was put in it, and a configuration scalar carries whatever `${VAR}` expanded
+  into it, so neither is necessarily a name an operator chose.
 
 ## Security
 

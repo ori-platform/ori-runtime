@@ -14,14 +14,17 @@ def path_is_relative_to(path: Path, prefix: Path) -> bool:
 
 
 def shown(name: object) -> str:
-    """A filesystem name as operator output, quoted and escaped.
+    """A name from the filesystem or the configuration, as operator output.
 
-    A refusal is produced when something about a path is already wrong, which
+    A refusal is produced when something about a name is already wrong, which
     is when an operator reads most carefully and distrusts least. The name in
     it is not always one they chose: a walk over a path's parents reports
     whichever component failed, and a directory listing reports whatever it
     found, so a name a less-privileged account created in a shared location
-    reaches a terminal intact.
+    reaches a terminal intact. The same holds for a name the configuration
+    supplies — a device path, an endpoint URL, a JSON pointer, a host — since
+    YAML refuses control characters in a scalar but `${VAR}` expansion puts
+    them there afterwards, outside anything a configuration signature covers.
 
     `repr` of the string covers what that name can do there: an escape
     sequence that erases the line it is printed on, a newline that forges a

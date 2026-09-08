@@ -20,8 +20,11 @@ from ori.skills.loader import (
     Trigger,
     _CooldownTracker,
 )
-from ori.skills.sandbox import SkillSecurityError
-from ori.skills.signing import canonical_skill_payload
+from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
+from ori.skills.signing import (
+    canonical_skill_payload,
+    verify_community_skill_signature,
+)
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -41,6 +44,12 @@ else:  # pragma: no cover - environment without cryptography support
         PublicFormat = None
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
+
+
+# A syntactically valid anchor for tests about a *skill's* faults. A stand-in
+# that is not a well-formed anchor makes the deployment-level check answer
+# first, and the test then proves nothing about the skill.
+_A_WELL_FORMED_ANCHOR = base64.b64encode(b"a" * 32).decode("ascii")
 
 
 def _first_party_loader(**kwargs) -> SkillLoader:
@@ -521,7 +530,7 @@ class TestLoadOne:
         _write_skill_yaml_mapping(skill_dir, raw)
         monkeypatch.setattr(
             "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
-            "dGVzdA==",
+            _A_WELL_FORMED_ANCHOR,
         )
         loader = _first_party_loader()
         with patch.object(loader, "_is_core_bundled_skill", return_value=False):
@@ -538,7 +547,7 @@ class TestLoadOne:
         _write_skill_yaml_mapping(skill_dir, raw)
         monkeypatch.setattr(
             "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
-            "dGVzdA==",
+            _A_WELL_FORMED_ANCHOR,
         )
         loader = _first_party_loader()
         with patch.object(loader, "_is_core_bundled_skill", return_value=False):
@@ -557,7 +566,7 @@ class TestLoadOne:
         _write_skill_yaml_mapping(skill_dir, raw)
         monkeypatch.setattr(
             "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
-            "dGVzdA==",
+            _A_WELL_FORMED_ANCHOR,
         )
         loader = _first_party_loader()
         with patch.object(loader, "_is_core_bundled_skill", return_value=False):
@@ -700,14 +709,14 @@ class TestLoadOne:
         Ed25519PrivateKey is None,
         reason="cryptography ed25519 is unavailable",
     )
-    def test_a_malformed_hub_anchor_is_left_to_the_verifier(
+    def test_a_malformed_hub_anchor_is_the_deployments_fault(
         self, tmp_path, monkeypatch
     ):
-        """One fault, one error message.
+        """One fault, one message, and it names where the anchor came from.
 
-        The published-key guard defers anything that is not a 32-byte key, so a
-        malformed anchor is reported once, in the verifier's own vocabulary,
-        rather than twice in two.
+        An anchor that decodes to nothing refuses every community skill on the
+        device, so it is answered where that can be said once rather than per
+        skill in a vocabulary no report reads.
         """
         skill_dir = tmp_path / "community-malformed-anchor"
         raw = _community_skill_mapping()
@@ -721,10 +730,10 @@ class TestLoadOne:
 
         loader = _first_party_loader()
         with patch.object(loader, "_is_core_bundled_skill", return_value=False):
-            with pytest.raises(Exception) as refusal:
+            with pytest.raises(SkillAnchorError) as refusal:
                 loader.load_one(skill_dir)
         assert "private seed is published" not in str(refusal.value)
-        assert "trust anchor public key" in str(refusal.value)
+        assert str(refusal.value) == ("ORI_HUB_ROOT_PUBLIC_KEY_B64 is not valid base64")
 
     def test_bundled_unsigned_skill_still_loads(self, tmp_path):
         skill_dir = tmp_path / "bundled-unsigned"
@@ -1424,3 +1433,345 @@ class TestIntegration:
 
         # EventBus should have handlers for cpu_percent (first sensor type)
         assert bus.subscriber_count("cpu_percent") >= 1
+
+
+# ─── Community trust anchor as a deployment fact ──────────────────────────────
+
+
+def _published_anchor_b64() -> str:
+    from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+    return base64.b64encode(next(iter(PUBLISHED_TEST_KEYS))).decode("ascii")
+
+
+def _community_skill_dir(root: Path, name: str, *, skill_name: str = "") -> Path:
+    """A skill directory that is community content whatever the anchor says.
+
+    The directory name and the declared skill name are separate: a directory
+    is whatever someone created on the filesystem, while a skill name is a
+    validated identity field the loader refuses control characters in.
+    """
+    skill_dir = root / name
+    raw = _community_skill_mapping(skill_name or name)
+    raw["signature"] = "ed25519:" + base64.b64encode(b"x" * 64).decode("ascii")
+    _write_skill_yaml_mapping(skill_dir, raw)
+    return skill_dir
+
+
+class TestCommunityAnchorAdmission:
+    def test_a_published_anchor_is_a_fault_before_any_skill_is_read(self, monkeypatch):
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", _published_anchor_b64())
+
+        fault = SkillLoader().community_anchor_fault()
+
+        assert fault is not None
+        assert "private seed is published" in fault
+
+    @pytest.mark.parametrize("configured", [None, "", "   "])
+    def test_an_unconfigured_anchor_is_a_fault(self, monkeypatch, configured):
+        """An empty value is unconfigured, not an empty anchor.
+
+        Both an empty constructor value and an empty environment variable fall
+        through to the shipped sentinel, so this is the answer either way.
+        """
+        monkeypatch.delenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", raising=False)
+        if configured is not None:
+            monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", configured)
+
+        assert (
+            SkillLoader(
+                community_trust_anchor_public_key_b64=configured
+            ).community_anchor_fault()
+            == "community skill verification trust anchor is not configured"
+        )
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    @pytest.mark.parametrize(
+        ("anchor", "expected"),
+        [
+            ("not-a-key", "ORI_HUB_ROOT_PUBLIC_KEY_B64 is not valid base64"),
+            (
+                base64.b64encode(b"x" * 16).decode("ascii"),
+                "ORI_HUB_ROOT_PUBLIC_KEY_B64 does not decode to a 32-byte "
+                "Ed25519 public key; it decodes to 16 bytes",
+            ),
+            (
+                # Decodes to the right 32 bytes, spelled with the discarded
+                # bits set. The shared verifier refuses this, so a pre-check
+                # that accepted it would report usable and refuse every skill.
+                "a2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2t=",
+                "ORI_HUB_ROOT_PUBLIC_KEY_B64 is not canonical base64",
+            ),
+        ],
+    )
+    def test_every_way_an_anchor_authenticates_nothing_is_a_fault(
+        self, monkeypatch, anchor, expected
+    ):
+        """Not only the two shapes that have a guard of their own.
+
+        Anything the anchor cannot be refuses every community skill on the
+        device just as completely as a published key does, and a report that
+        answers only the recognised faults calls the rest usable.
+        """
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", anchor)
+
+        assert SkillLoader().community_anchor_fault() == expected
+
+    def test_a_malformed_anchor_is_counted_as_a_refusal(self, tmp_path, monkeypatch):
+        """The count is what degrades the device, so it has to include these."""
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", "not-a-key")
+        for index in range(2):
+            _community_skill_dir(tmp_path, f"community-{index}")
+        loader = SkillLoader()
+
+        assert loader.load_all(str(tmp_path)) == []
+        admission = loader.community_admission()
+        assert admission.anchor_usable is False
+        assert admission.refused_skills == 2
+
+    def test_a_real_anchor_is_no_fault(self, monkeypatch):
+        monkeypatch.setenv(
+            "ORI_HUB_ROOT_PUBLIC_KEY_B64",
+            _public_key_b64(Ed25519PrivateKey.generate()),
+        )
+
+        assert SkillLoader().community_anchor_fault() is None
+
+    def test_the_refusal_and_the_report_come_from_one_answer(
+        self, tmp_path, monkeypatch
+    ):
+        """The message a skill is refused with is the fault the report names.
+
+        Two expressions for one condition is how a device ends up refusing
+        skills while reporting that it can load them.
+        """
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", _published_anchor_b64())
+        loader = SkillLoader()
+
+        with pytest.raises(SkillAnchorError) as refusal:
+            loader.load_one(_community_skill_dir(tmp_path, "community-one"))
+
+        assert str(refusal.value) == loader.community_anchor_fault()
+
+    def test_one_anchor_fault_is_reported_once_not_once_per_skill(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A device with N community skills has one misconfiguration, not N."""
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", _published_anchor_b64())
+        for index in range(3):
+            _community_skill_dir(tmp_path, f"community-{index}")
+        loader = SkillLoader()
+
+        with caplog.at_level("ERROR"):
+            loaded = loader.load_all(str(tmp_path))
+
+        assert loaded == []
+        anchor_records = [
+            record
+            for record in caplog.records
+            if "private seed is published" in record.getMessage()
+        ]
+        assert len(anchor_records) == 1
+        assert loader.community_admission().refused_skills == 3
+        assert loader.community_admission().anchor_usable is False
+
+    def test_the_affected_directory_names_are_escaped_in_that_report(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A skill directory is whatever someone put in the skills directory.
+
+        Its name reaches an operator's terminal through this log line, so it
+        is rendered rather than obeyed.
+        """
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", _published_anchor_b64())
+        _community_skill_dir(
+            tmp_path, "community\x1b[2K-forged", skill_name="community-forged"
+        )
+        loader = SkillLoader()
+
+        with caplog.at_level("ERROR"):
+            loader.load_all(str(tmp_path))
+
+        emitted = "\n".join(record.getMessage() for record in caplog.records)
+        assert "\x1b" not in emitted
+        assert "\\x1b[2K" in emitted
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_a_usable_anchor_admits_a_community_skill_and_reports_clean(
+        self, tmp_path, monkeypatch
+    ):
+        """Nothing refused is not the same statement as nothing attempted."""
+        private_key = Ed25519PrivateKey.generate()
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", _public_key_b64(private_key))
+        raw = _community_skill_mapping("community-signed")
+        raw["signature"] = _sign_skill(raw, private_key)
+        _write_skill_yaml_mapping(tmp_path / "community-signed", raw)
+        loader = SkillLoader()
+
+        loaded = loader.load_all(str(tmp_path))
+
+        assert [skill.name for skill in loaded] == ["community-signed"]
+        admission = loader.community_admission()
+        assert admission.anchor_usable is True
+        assert admission.anchor_fault is None
+        assert admission.refused_skills == 0
+
+    def test_an_unconfigured_anchor_refuses_nothing_without_community_skills(
+        self, tmp_path, monkeypatch
+    ):
+        """The default anchor is unconfigured on every device shipped so far.
+
+        Reporting that as a refusal would degrade every one of them for a
+        capability they are not using.
+        """
+        monkeypatch.delenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", raising=False)
+        loader = SkillLoader()
+
+        loader.load_all(str(tmp_path))
+
+        admission = loader.community_admission()
+        assert admission.anchor_usable is False
+        assert admission.refused_skills == 0
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    def test_an_anchor_that_verifies_nothing_is_still_counted(
+        self, tmp_path, monkeypatch
+    ):
+        """A well-formed key that is simply not the Hub's.
+
+        Nothing about the refusal says whether the anchor is wrong or the
+        skill is tampered with, so it is not attributed to the anchor. The
+        device still knows every community skill it has failed to load, and
+        reporting that does not depend on knowing whose fault it is.
+        """
+        monkeypatch.setenv(
+            "ORI_HUB_ROOT_PUBLIC_KEY_B64",
+            _public_key_b64(Ed25519PrivateKey.generate()),
+        )
+        raw = _community_skill_mapping("community-signed")
+        raw["signature"] = _sign_skill(raw, Ed25519PrivateKey.generate())
+        _write_skill_yaml_mapping(tmp_path / "community-signed", raw)
+        loader = SkillLoader()
+
+        assert loader.load_all(str(tmp_path)) == []
+        admission = loader.community_admission()
+        assert admission.anchor_usable is True
+        assert admission.anchor_fault is None
+        assert admission.refused_skills == 1
+
+    def test_a_packaged_skill_that_fails_is_not_a_community_refusal(
+        self, tmp_path, monkeypatch
+    ):
+        """The count is about community admission, not about packaging.
+
+        A packaged skill that will not load is a fault in the release, and
+        counting it here would attribute it to a capability the deployment
+        may not even use.
+        """
+        monkeypatch.delenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", raising=False)
+        skill_dir = tmp_path / "packaged-broken"
+        skill_dir.mkdir()
+        (skill_dir / "skill.yaml").write_text("name: broken\n", encoding="utf-8")
+        loader = _first_party_loader()
+
+        assert loader.load_all(str(tmp_path)) == []
+        assert loader.community_admission().refused_skills == 0
+
+    @pytest.mark.skipif(
+        Ed25519PrivateKey is None,
+        reason="cryptography ed25519 is unavailable",
+    )
+    @pytest.mark.parametrize(
+        "anchor",
+        [
+            "not-a-key",
+            "a2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2t=",
+            "",
+            "PENDING_REPLACE_AT_HUB_LAUNCH",
+        ],
+    )
+    def test_the_pre_check_and_the_verifier_agree_on_what_an_anchor_fault_is(
+        self, tmp_path, monkeypatch, anchor
+    ):
+        """Two answers to one question is how a report drifts from a refusal.
+
+        Whatever the pre-check calls a fault, the shared verifier must also
+        refuse, and whatever it clears must reach the verifier for the
+        signature itself to decide.
+        """
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", anchor)
+        raw = _community_skill_mapping("community-signed")
+        private_key = Ed25519PrivateKey.generate()
+        raw["signature"] = _sign_skill(raw, private_key)
+
+        pre_check = SkillLoader().community_anchor_fault()
+
+        verifier_refused = False
+        try:
+            verify_community_skill_signature(
+                raw_skill=raw,
+                trust_anchor_public_key_b64=anchor,
+            )
+        except SkillSecurityError:
+            verifier_refused = True
+
+        assert (pre_check is not None) is verifier_refused
+
+    def test_a_second_load_replaces_the_previous_count(self, tmp_path, monkeypatch):
+        """A reload after the anchor is fixed must clear what it reported.
+
+        The skill is signed by the key the anchor is corrected to, so the
+        second load admits it: a count that stayed above zero because the
+        skill was unsignable would prove nothing about the anchor.
+        """
+        private_key = Ed25519PrivateKey.generate()
+        raw = _community_skill_mapping("community-one")
+        raw["signature"] = _sign_skill(raw, private_key)
+        _write_skill_yaml_mapping(tmp_path / "community-one", raw)
+
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", _published_anchor_b64())
+        loader = SkillLoader()
+        loader.load_all(str(tmp_path))
+        assert loader.community_admission().refused_skills == 1
+        assert loader.community_admission().anchor_usable is False
+
+        monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", _public_key_b64(private_key))
+        loaded = loader.load_all(str(tmp_path))
+
+        assert [skill.name for skill in loaded] == ["community-one"]
+        assert loader.community_admission().refused_skills == 0
+        assert loader.community_admission().anchor_usable is True
+
+    def test_a_skill_directorys_name_is_escaped_when_its_load_fails(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Every load failure names the directory it was reading.
+
+        A skills directory holds whatever was put there, so the name in that
+        line is not always one an operator chose, and it reaches their
+        terminal whichever way the load failed.
+        """
+        monkeypatch.delenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", raising=False)
+        skill_dir = tmp_path / "malformed\x1b[2K-forged"
+        skill_dir.mkdir()
+        (skill_dir / "skill.yaml").write_text("name: no-triggers\n", encoding="utf-8")
+
+        with caplog.at_level("ERROR"):
+            SkillLoader().load_all(str(tmp_path))
+
+        emitted = "\n".join(record.getMessage() for record in caplog.records)
+        assert "\x1b" not in emitted
+        assert "\\x1b[2K" in emitted

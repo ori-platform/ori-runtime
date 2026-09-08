@@ -28,6 +28,7 @@ from ori.config import (
     ConfigValidationError,
     GatewayConfig,
     TelemetryExportConfig,
+    config_env_placeholders,
 )
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
@@ -62,6 +63,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
 )
 from ori.security.remote_commands.throttle import RemoteCommandThrottleDecision
+from ori.skills.loader import CommunitySkillAdmission, SkillLoader
 from ori.skills.signing import canonical_signed_payload
 from ori.state.store import StateStore
 from tests.commissioning.signing import commission_relay
@@ -1373,7 +1375,9 @@ async def test_startup_refuses_a_dotenv_loaded_before_a_hardened_document(
         "ori.runtime.requires_production_posture", lambda **_kwargs: True
     )
 
-    runtime = OriRuntime(config_path=str(home / "ori.yaml"), dotenv_loaded=True)
+    runtime = OriRuntime(
+        config_path=str(home / "ori.yaml"), dotenv_variables=frozenset()
+    )
     start_task = asyncio.create_task(runtime.start())
     try:
         # Bounded: a startup that does not refuse runs its loop forever, and an
@@ -1416,7 +1420,9 @@ async def test_startup_accepts_a_dotenv_under_a_document_that_stays_development(
         """),
         encoding="utf-8",
     )
-    runtime = OriRuntime(config_path=str(home / "ori.yaml"), dotenv_loaded=True)
+    runtime = OriRuntime(
+        config_path=str(home / "ori.yaml"), dotenv_variables=frozenset()
+    )
     start_task = asyncio.create_task(runtime.start())
     try:
         deadline = time.monotonic() + 10.0
@@ -1470,7 +1476,7 @@ async def test_a_hardened_document_without_a_dotenv_still_starts(tmp_path, monke
         "ori.runtime.requires_production_posture", lambda **_kwargs: True
     )
 
-    runtime = OriRuntime(config_path=str(home / "ori.yaml"), dotenv_loaded=False)
+    runtime = OriRuntime(config_path=str(home / "ori.yaml"), dotenv_variables=None)
     start_task = asyncio.create_task(runtime.start())
     try:
         deadline = time.monotonic() + 10.0
@@ -1486,6 +1492,71 @@ async def test_a_hardened_document_without_a_dotenv_still_starts(tmp_path, monke
         await _stop_and_join(runtime, start_task)
 
 
+@pytest.mark.asyncio
+async def test_startup_reads_the_documents_placeholders_and_escapes_its_banner(
+    tmp_path, monkeypatch, caplog
+):
+    """Two things startup owes the report, neither provable from a snapshot.
+
+    The placeholder scan is what tells the config-authority report whether a
+    loaded `.env` decided anything, so a startup that never populates it makes
+    every such report conservative for the wrong reason. And the banner prints
+    three configuration-supplied names, each of which reaches an operator's
+    terminal through whatever `${VAR}` expanded into it.
+    """
+    _patch_external(monkeypatch)
+    monkeypatch.setenv("ORI_BANNER_SITE", "Ikeja\x1b[2K")
+    home = tmp_path / "data"
+    home.mkdir()
+    (home / "ori.yaml").write_text(
+        textwrap.dedent("""\
+            device:
+              id: test-device-01
+              name: Test Device
+              location: "${ORI_BANNER_SITE}"
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: rule
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+        """),
+        encoding="utf-8",
+    )
+
+    runtime = OriRuntime(config_path=str(home / "ori.yaml"))
+    with caplog.at_level("INFO"):
+        start_task = asyncio.create_task(runtime.start())
+        try:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and runtime._config is None:
+                if start_task.done():
+                    break
+                await asyncio.sleep(0.05)
+            assert runtime._config is not None
+        finally:
+            await _stop_and_join(runtime, start_task)
+
+    assert runtime._config_env_placeholders == frozenset({"ORI_BANNER_SITE"})
+    banner = [
+        record.getMessage()
+        for record in caplog.records
+        if "config loaded" in record.getMessage()
+    ]
+    assert banner, "startup did not log the banner this test is about"
+    assert "\x1b" not in banner[0]
+    assert "\\x1b[2K" in banner[0]
+
+
 def test_main_carries_the_autoload_result_into_the_runtime(monkeypatch):
     """The confirmation is only reachable if the entry point wires it through.
 
@@ -1497,20 +1568,30 @@ def test_main_carries_the_autoload_result_into_the_runtime(monkeypatch):
     captured: dict[str, object] = {}
 
     class _Runtime:
-        def __init__(self, config_path: str, *, dotenv_loaded: bool = False) -> None:
+        def __init__(
+            self,
+            config_path: str,
+            *,
+            dotenv_variables: frozenset[str] | None = None,
+        ) -> None:
             captured["config_path"] = config_path
-            captured["dotenv_loaded"] = dotenv_loaded
+            captured["dotenv_variables"] = dotenv_variables
 
         async def start(self) -> None:
             return None
 
     monkeypatch.setattr(runtime_module, "OriRuntime", _Runtime)
-    monkeypatch.setattr(runtime_module, "_maybe_autoload_dotenv", lambda _path: True)
+    monkeypatch.setattr(
+        runtime_module, "_maybe_autoload_dotenv", lambda _path: frozenset({"SEEN"})
+    )
     monkeypatch.setattr(sys, "argv", ["ori-runtime", "--config", "/tmp/ori.yaml"])
 
     runtime_module.main()
 
-    assert captured == {"config_path": "/tmp/ori.yaml", "dotenv_loaded": True}
+    assert captured == {
+        "config_path": "/tmp/ori.yaml",
+        "dotenv_variables": frozenset({"SEEN"}),
+    }
 
 
 def _patch_external(monkeypatch):
@@ -2194,7 +2275,9 @@ class TestDotenvAutoload:
         monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
         monkeypatch.delenv("ORI_AUTOLOAD_SMOKE", raising=False)
 
-        assert _maybe_autoload_dotenv(str(cfg)) is True
+        # What it returns is what the file introduced, not that it existed:
+        # `override=False` decides nothing the environment already carried.
+        assert _maybe_autoload_dotenv(str(cfg)) == frozenset({"ORI_AUTOLOAD_SMOKE"})
         assert os.environ.get("ORI_AUTOLOAD_SMOKE") == "from_dotenv"
         # The return value is what startup confirms against the posture the
         # document turns out to declare; nothing is left in the environment.
@@ -3962,6 +4045,43 @@ class TestWebhookServerStartup:
         cls.assert_not_called()
 
 
+def _ed25519_keypair():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = Ed25519PrivateKey.generate()
+    public_key_b64 = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode("ascii")
+    return private_key, public_key_b64
+
+
+def _sign_config_yaml(content: str, private_key) -> str:
+    """A signed document, as the provisioning backend produces one."""
+    import yaml
+
+    from ori.security.config_signatures import (
+        CONFIG_SIGNATURE_SCHEMA,
+        canonical_config_signature_payload,
+    )
+
+    raw = yaml.safe_load(textwrap.dedent(content))
+    raw["config_signature"] = {
+        "schema": CONFIG_SIGNATURE_SCHEMA,
+        "signer_id": "product-provisioning-test",
+        "signed_at_ms": 1_800_000_000_000,
+        "signature": "ed25519:",
+    }
+    signature = private_key.sign(canonical_config_signature_payload(raw))
+    raw["config_signature"]["signature"] = "ed25519:" + base64.b64encode(
+        signature
+    ).decode("ascii")
+    return yaml.safe_dump(raw, sort_keys=False)
+
+
 class TestAlertOutbox:
     async def test_send_or_queue_alert_queues_when_send_fails(self, tmp_path):
         runtime = OriRuntime(config_path="ori.yaml")
@@ -4221,8 +4341,295 @@ class TestAlertOutbox:
                 )
             ),
             database_path=str(tmp_path / "ori_state.db"),
+            security={},
         )
         return runtime
+
+    async def test_health_snapshot_reports_community_skills_the_anchor_dropped(
+        self, tmp_path
+    ):
+        """A device running none of its community skills is not healthy.
+
+        Authority failed closed, so this is degraded rather than critical —
+        but the only signal before this was a log line, and a fleet view
+        reading `status` saw nothing wrong.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._skill_loader = SimpleNamespace(
+            community_admission=lambda: CommunitySkillAdmission(
+                anchor_usable=False,
+                anchor_fault="the anchor is published test material",
+                refused_skills=2,
+            )
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["community_skills"] == {
+            "available": True,
+            "anchor_usable": False,
+            "anchor_fault": "the anchor is published test material",
+            "refused_skills": 2,
+        }
+        assert snapshot["status"] == "degraded"
+
+    async def test_an_unusable_anchor_alone_does_not_degrade_a_device(self, tmp_path):
+        """The shipped anchor is unconfigured, so every device carries one.
+
+        Degrading on the anchor rather than on what it dropped would report
+        the whole fleet as unhealthy for a capability it is not using.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._skill_loader = SimpleNamespace(
+            community_admission=lambda: CommunitySkillAdmission(
+                anchor_usable=False,
+                anchor_fault="community skill verification trust anchor is not configured",
+                refused_skills=0,
+            )
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["community_skills"]["anchor_usable"] is False
+        assert snapshot.get("status") != "degraded"
+
+    async def test_health_snapshot_reports_a_dotenv_that_supplied_signed_fields(
+        self, tmp_path
+    ):
+        """A signature covers the document before expansion.
+
+        With a `.env` supplying what `${VAR}` fields expanded to, it verifies
+        and says nothing about the values the runtime is running on. Hardened
+        posture refuses the autoload; a development deployment that asked for
+        a signature keeps running and is told.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._dotenv_variables = frozenset({"SEEN"})
+        runtime._config_env_placeholders = frozenset({"SEEN"})
+        runtime._config.security = {
+            "config_signature": {"required": True, "verified": True}
+        }
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["config_authority"] == {
+            "available": True,
+            "signature_required": True,
+            "signature_verified": True,
+            "dotenv_loaded": True,
+            "unsigned_value_source": True,
+        }
+        assert snapshot["status"] == "degraded"
+
+    async def test_a_dotenv_that_supplied_nothing_the_document_names_is_not_a_source(
+        self, tmp_path
+    ):
+        """The file's existence is not a supplied value.
+
+        `load_dotenv` runs with `override=False` and a document that names
+        none of the variables it introduced expands identically with or
+        without it. Degrading there is a device reported unhealthy with
+        nothing wrong, which is the failure the count rule avoids on the
+        other half of this report.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._dotenv_variables = frozenset({"UNRELATED"})
+        runtime._config_env_placeholders = frozenset({"OWNER_PHONE_NUMBER"})
+        runtime._config.security = {
+            "config_signature": {"required": True, "verified": True}
+        }
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["config_authority"]["dotenv_loaded"] is True
+        assert snapshot["config_authority"]["unsigned_value_source"] is False
+        assert snapshot.get("status") != "degraded"
+
+    async def test_an_unread_document_leaves_a_loaded_dotenv_assumed_to_decide(
+        self, tmp_path
+    ):
+        """Unknown is not none.
+
+        Until the document has been read there is nothing to intersect, and a
+        report must not clear a loaded file on the strength of not yet knowing
+        what the document asks for.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._dotenv_variables = frozenset({"ANYTHING"})
+        runtime._config_env_placeholders = None
+        runtime._config.security = {
+            "config_signature": {"required": True, "verified": True}
+        }
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["config_authority"]["unsigned_value_source"] is True
+        assert snapshot["status"] == "degraded"
+
+    async def test_a_dotenv_alone_does_not_degrade_an_unsigned_deployment(
+        self, tmp_path
+    ):
+        """Undermining a signature requires there to be one.
+
+        A development device that signs nothing is using the toggle exactly as
+        documented, and degrading on it would make the report unreadable where
+        it matters.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._dotenv_variables = frozenset({"SEEN"})
+        runtime._config_env_placeholders = frozenset({"SEEN"})
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["config_authority"]["dotenv_loaded"] is True
+        assert snapshot["config_authority"]["unsigned_value_source"] is False
+        assert snapshot.get("status") != "degraded"
+
+    async def test_a_signature_present_but_not_required_still_counts(self, tmp_path):
+        """A signature is verified whenever one is present, required or not.
+
+        A deployment that signs its configuration has stated what decides its
+        values, whether or not it also demands one.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._dotenv_variables = frozenset({"SEEN"})
+        runtime._config_env_placeholders = frozenset({"SEEN"})
+        runtime._config.security = {
+            "config_signature": {"required": False, "verified": True}
+        }
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["config_authority"]["unsigned_value_source"] is True
+        assert snapshot["status"] == "degraded"
+
+    async def test_neither_authority_report_claims_an_answer_before_it_has_one(
+        self, tmp_path
+    ):
+        """A snapshot taken before startup finished reports what it knows.
+
+        `signature_required: false` read off a document nobody has parsed is a
+        claim, and an unusable anchor with no fault to name is one a consumer
+        would try to act on.
+        """
+        runtime: Any = OriRuntime(config_path="ori.yaml")
+        runtime._device_id = "dev-01"
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["community_skills"]["available"] is False
+        assert snapshot["config_authority"]["available"] is False
+        assert snapshot.get("status") != "degraded"
+
+    async def test_the_community_report_is_joined_to_a_real_skill_loader(
+        self, tmp_path
+    ):
+        """The stubs above agree with the loader by construction, not by proof.
+
+        This drives the real `SkillLoader` over a real community skill so a
+        rename on either side of `community_admission()` fails here rather
+        than reaching a device as a report that never populates.
+        """
+        skills_dir = tmp_path / "skills" / "community-one"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "skill.yaml").write_text(
+            textwrap.dedent(
+                """
+                name: community-one
+                version: 0.1.0
+                author: community
+                signature: ed25519:AAAA
+                sensors_required:
+                  - type: usb_power
+                triggers:
+                  - name: warm
+                    condition: value > 1
+                    action_tier: A
+                actions:
+                  available:
+                    - name: log_to_dashboard
+                      tier: A
+                  defaults:
+                    warm: [log_to_dashboard]
+                """
+            ),
+            encoding="utf-8",
+        )
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        loader = SkillLoader()
+        loader.load_all(str(tmp_path / "skills"))
+        runtime._skill_loader = loader
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["community_skills"]["available"] is True
+        assert snapshot["community_skills"]["refused_skills"] == 1
+        assert snapshot["community_skills"]["anchor_usable"] is False
+        assert snapshot["status"] == "degraded"
+
+    @pytest.mark.parametrize(
+        ("location", "expected"),
+        [
+            ("${ORI_JOIN_SITE}", True),
+            ("Lagos", False),
+        ],
+    )
+    async def test_the_config_authority_report_is_joined_end_to_end(
+        self, tmp_path, monkeypatch, location, expected
+    ):
+        """The real autoload, the real loader, and the real placeholder scan.
+
+        A signed development document is the reachable case — a signature
+        present in a document is verified whether or not one is required. Both
+        rows use the same `.env`; only the document changes, so what is being
+        proven is that the report follows whether the file decided a value and
+        not whether the file exists.
+        """
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        config_path = tmp_path / "ori.yaml"
+        config_path.write_text(
+            _sign_config_yaml(
+                f"""
+                device:
+                  id: dev-01
+                  name: Test
+                  location: "{location}"
+                  deployment_profile: development
+                sensors: []
+                skills: []
+                reasoning: {{}}
+                gateway: {{}}
+                actions:
+                  primary_alert_channel: sms
+                  sms:
+                    enabled: false
+                """,
+                private_key,
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text("ORI_JOIN_SITE=Ikeja\n", encoding="utf-8")
+
+        os.environ.pop("ORI_JOIN_SITE", None)
+        try:
+            supplied = _maybe_autoload_dotenv(str(config_path))
+            runtime: Any = self._bare_health_runtime(tmp_path)
+            runtime._dotenv_variables = supplied
+            runtime._config = Config.load(str(config_path))
+            runtime._config_env_placeholders = config_env_placeholders(str(config_path))
+
+            snapshot = await runtime._build_health_snapshot()
+        finally:
+            os.environ.pop("ORI_JOIN_SITE", None)
+
+        assert supplied == frozenset({"ORI_JOIN_SITE"})
+        assert snapshot["config_authority"]["signature_verified"] is True
+        assert snapshot["config_authority"]["signature_required"] is False
+        assert snapshot["config_authority"]["dotenv_loaded"] is True
+        assert snapshot["config_authority"]["unsigned_value_source"] is expected
+        assert (snapshot.get("status") == "degraded") is expected
 
     async def test_health_snapshot_omits_safety_zones_without_a_registry(
         self, tmp_path
@@ -4338,6 +4745,7 @@ class TestAlertOutbox:
                 )
             ),
             database_path=str(database_path),
+            security={},
         )
 
         snapshot = await runtime._build_health_snapshot()
@@ -4374,6 +4782,7 @@ class TestAlertOutbox:
                 )
             ),
             database_path="ori_state.db",
+            security={},
         )
 
         snapshot = await runtime._build_health_snapshot()
