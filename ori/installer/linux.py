@@ -658,6 +658,26 @@ def _has_control_character(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
+_FILE_KINDS: tuple[tuple[Callable[[int], bool], str], ...] = (
+    (stat.S_ISFIFO, "named pipe"),
+    (stat.S_ISSOCK, "socket"),
+    (stat.S_ISCHR, "character device"),
+    (stat.S_ISBLK, "block device"),
+    (stat.S_ISDIR, "directory"),
+)
+
+
+def _describe_special_file(path: Path, mode: int) -> str:
+    """Name what was found and where, without letting the name speak for itself.
+
+    A refusal an operator cannot act on sends them looking, and the likeliest
+    causes are artefacts of the runtime having run. The name is repr-quoted
+    because it reaches a terminal and a path is not this installer's to trust.
+    """
+    kind = next((label for test, label in _FILE_KINDS if test(mode)), "special file")
+    return f"{kind} {str(path)!r}"
+
+
 def _unsafe_unit_value(value: str) -> bool:
     return (
         any(character.isspace() for character in value) or "%" in value or "@" in value
@@ -1901,7 +1921,11 @@ def _owned_tree_plan(
                 continue
             if not path.is_file():
                 raise LinuxInstallError(
-                    "unsafe_install_root", "special files are forbidden"
+                    "unsafe_install_root",
+                    "special files are forbidden in the install root: "
+                    f"{_describe_special_file(path, path_stat.st_mode)}. "
+                    "Stop the service, remove that file, and run this again: "
+                    "a running runtime recreates the ones it made.",
                 )
             existing_mode = path_stat.st_mode
             mode = executable_mode if existing_mode & 0o100 else regular_mode
@@ -1999,7 +2023,12 @@ def _apply_permission_plan(plan: Sequence[_PermissionChange]) -> None:
 
 
 def _set_owned_mode(change: _PermissionChange, uid: int, gid: int, mode: int) -> None:
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    # O_NONBLOCK because the service owns this tree and is still running: a
+    # regular file validated during planning can be a pipe by the time it is
+    # opened, and opening a pipe for reading waits for a writer that never
+    # comes. The identity check below is what refuses the substitution; without
+    # this flag it is unreachable and the installer stalls as root.
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     descriptor = os.open(change.path, flags)
     try:
         current = os.fstat(descriptor)

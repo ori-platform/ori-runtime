@@ -3,6 +3,7 @@
 
 import ast
 import base64
+import json
 import logging
 import os
 import pathlib
@@ -1328,6 +1329,346 @@ class TestLoadExample:
 
         with pytest.raises(ConfigValidationError, match="require_signed"):
             Config.load(yaml_path)
+
+    def test_the_log_and_evidence_paths_anchor_to_the_config(
+        self, tmp_path, monkeypatch
+    ):
+        """The service works in a runtime directory, not where it keeps state.
+
+        The evidence key is sealed on first use, so a second working directory
+        would seal a second device identity for one device.
+        """
+        home = tmp_path / "data"
+        home.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            logging:
+              file: ori.log
+            evidence:
+              enabled: false
+              db_path: ori_evidence.db
+              key_path: ori_evidence.key
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.logging.file == str(home / "ori.log")
+        assert cfg.evidence.db_path == str(home / "ori_evidence.db")
+        assert cfg.evidence.key_path == str(home / "ori_evidence.key")
+
+    def test_absolute_log_and_evidence_paths_are_left_alone(self, tmp_path):
+        mount = tmp_path / "mount"
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            logging:
+              file: {mount / "ori.log"}
+            evidence:
+              enabled: false
+              key_path: {mount / "ori_evidence.key"}
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.logging.file == str(mount / "ori.log")
+        assert cfg.evidence.key_path == str(mount / "ori_evidence.key")
+
+    def test_every_relative_filesystem_setting_anchors_to_the_config(
+        self, tmp_path, monkeypatch
+    ):
+        """The unit works in a runtime directory systemd empties on every stop.
+
+        A health socket bound there is unreachable, and a TLS material path
+        resolved there is a file the broker connection will not find.
+        """
+        home = tmp_path / "data"
+        home.mkdir()
+        elsewhere = tmp_path / "runtime-dir"
+        elsewhere.mkdir()
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: rule
+              model_path: models
+            gateway:
+              enabled: false
+              broker_url: ""
+              tls:
+                enabled: false
+                ca_certfile: tls/ca.pem
+                certfile: tls/client.pem
+                keyfile: tls/client.key
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            health_socket:
+              enabled: true
+              path: health.sock
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.health_socket["path"] == str(home / "health.sock")
+        assert cfg.gateway.tls["ca_certfile"] == str(home / "tls" / "ca.pem")
+        assert cfg.gateway.tls["certfile"] == str(home / "tls" / "client.pem")
+        assert cfg.gateway.tls["keyfile"] == str(home / "tls" / "client.key")
+        assert cfg.reasoning.model_path == str(home / "models")
+
+    def test_absolute_filesystem_settings_are_left_alone(self, tmp_path):
+        mount = tmp_path / "mount"
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: rule
+              model_path: {mount / "models"}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            health_socket:
+              enabled: true
+              path: {mount / "health.sock"}
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.health_socket["path"] == str(mount / "health.sock")
+        assert cfg.reasoning.model_path == str(mount / "models")
+
+    def _device_config(self, home, *, sensors: str = "", gsm: str = "") -> str:
+        home.mkdir(exist_ok=True)
+        return _write_yaml(
+            home,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors:{sensors or " []"}
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+{gsm}
+            """,
+        )
+
+    def test_a_relative_serial_port_is_refused(self, tmp_path, monkeypatch):
+        """It names a node the host owns, not a file beside the config.
+
+        Anchoring it would invent a device path; leaving it relative would make
+        it follow a runtime directory systemd empties on every stop.
+        """
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: meter
+                type: energy
+                protocol: serial
+                poll_interval_ms: 1000
+                port: ttyUSB0""",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConfigValidationError, match="absolute device path"):
+            Config.load(yaml_path)
+
+    def test_a_serial_port_may_not_be_a_url(self, tmp_path):
+        """`serial` opens with `Serial()`, which takes a port name only.
+
+        Admitting one here would move the failure to the first read.
+        """
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: meter
+                type: energy
+                protocol: serial
+                poll_interval_ms: 1000
+                port: socket://127.0.0.1:7000""",
+        )
+
+        with pytest.raises(ConfigValidationError, match="absolute device path"):
+            Config.load(yaml_path)
+
+    def test_a_usb_serial_device_path_may_be_a_url(self, tmp_path):
+        """`usb_serial` hands anything with a scheme to `serial_for_url`."""
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: meter
+                type: energy
+                protocol: usb_serial
+                poll_interval_ms: 1000
+                device_path: socket://127.0.0.1:7000""",
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.sensors[0].metadata["device_path"] == "socket://127.0.0.1:7000"
+
+    def test_an_absolute_device_path_is_taken_as_declared(self, tmp_path):
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: meter
+                type: energy
+                protocol: serial
+                poll_interval_ms: 1000
+                port: /dev/ttyUSB0""",
+        )
+
+        assert Config.load(yaml_path).sensors[0].metadata["port"] == "/dev/ttyUSB0"
+
+    def test_a_relative_gsm_modem_port_is_refused(self, tmp_path, monkeypatch):
+        """The modem is opened with `Serial()` too."""
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            gsm="""                transport: gsm
+                gsm:
+                  enabled: true
+                  port: ttyAMA0""",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConfigValidationError, match="absolute device path"):
+            Config.load(yaml_path)
+
+    def test_a_relative_smart_device_is_refused(self, tmp_path, monkeypatch):
+        """It reaches `smartctl` as an argv element, which takes a path."""
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: disk
+                type: disk_health
+                protocol: smart
+                poll_interval_ms: 60000
+                device: disk0""",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConfigValidationError, match="absolute device path"):
+            Config.load(yaml_path)
+
+    def test_a_smart_device_that_would_arrive_as_an_option_is_refused(self, tmp_path):
+        """`smartctl` would read a leading dash as one of its own flags."""
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: disk
+                type: disk_health
+                protocol: smart
+                poll_interval_ms: 60000
+                device: -d""",
+        )
+
+        with pytest.raises(ConfigValidationError, match="absolute device path"):
+            Config.load(yaml_path)
+
+    def test_an_absolute_smart_device_is_taken_as_declared(self, tmp_path):
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: disk
+                type: disk_health
+                protocol: smart
+                poll_interval_ms: 60000
+                device: /dev/sda""",
+        )
+
+        assert Config.load(yaml_path).sensors[0].metadata["device"] == "/dev/sda"
+
+    @pytest.mark.parametrize(
+        "placement",
+        [
+            "                mqtt:\n                  tls:\n                    ca_certfile: tls/ca.pem",
+            "                mqtt_tls_ca_certfile: tls/ca.pem",
+            "                tls_ca_certfile: tls/ca.pem",
+            "                mqtt:\n                  mqtt_tls_ca_certfile: tls/ca.pem",
+            "                mqtt:\n                  tls_ca_certfile: tls/ca.pem",
+        ],
+    )
+    def test_every_accepted_tls_spelling_anchors(
+        self, placement: str, tmp_path, monkeypatch
+    ):
+        """Whichever spelling an operator used, the value must be anchored.
+
+        The schema canonicalises the deprecated spellings into `mqtt.tls.*`
+        before the anchoring runs. This holds that path end to end, so a change
+        that stopped canonicalising would surface here rather than as material
+        resolved against a runtime directory systemd empties on every stop.
+        """
+        home = tmp_path / "data"
+        yaml_path = self._device_config(
+            home,
+            sensors=f"""
+              - id: broker
+                type: temperature
+                protocol: mqtt
+                poll_interval_ms: 1000
+                broker_host: 127.0.0.1
+                topic: sensors/temp
+{placement}""",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        cfg = Config.load(yaml_path)
+
+        found = json.dumps(cfg.sensors[0].metadata)
+        assert str(home / "tls" / "ca.pem") in found
+        assert '"tls/ca.pem"' not in found
 
     def test_the_in_memory_store_is_not_a_path_to_resolve(self, tmp_path):
         """SQLite's private database names no file."""

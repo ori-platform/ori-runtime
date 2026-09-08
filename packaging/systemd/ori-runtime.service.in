@@ -9,7 +9,9 @@ After=network.target
 Type=simple
 @ORI_USER_DIRECTIVE@
 @ORI_DEVICE_GROUPS@
-WorkingDirectory=@ORI_DATA_DIR@
+RuntimeDirectory=ori
+RuntimeDirectoryMode=0700
+WorkingDirectory=%t/ori
 EnvironmentFile=-@ORI_ENV_FILE@
 ExecStart=@ORI_ROOT@/current/venv/bin/python -m ori.runtime --config @ORI_CONFIG@
 Restart=on-failure

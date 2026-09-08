@@ -15,6 +15,7 @@ import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 import pytest
@@ -383,7 +384,7 @@ def test_creation_provenance_race_refuses_existing_entry_and_rolls_back_only_our
         *,
         dir_fd: int | None = None,
     ) -> None:
-        if Path(candidate) == layout.data:
+        if Path(cast(Any, candidate)) == layout.data:
             real_mkdir(candidate, mode, dir_fd=dir_fd)
             os.chmod(candidate, 0o775, dir_fd=dir_fd)
             raise FileExistsError(17, "simulated concurrent creation", str(candidate))
@@ -800,7 +801,7 @@ def test_composed_reinstall_integrates_config_dac_and_live_health_socket(
         bundle = ExtractedReleaseBundle(
             Path(root), "2.3.0", "linux-x86_64-python3.12", "3.12", 1
         )
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "layout": layout,
             "bundle": bundle,
             "values": InstallerConfigInput("ori-01", "Office", "Lagos"),
@@ -1283,7 +1284,7 @@ def test_same_version_is_idempotent_and_downgrade_requires_opt_in(
     tmp_path: Path,
 ) -> None:
     layout = InstallLayout.resolve(tmp_path / "ori")
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         layout=layout,
         prepare=_prepare,
         validate=_validate,
@@ -1333,7 +1334,7 @@ def test_noncanonical_version_is_rejected_with_stable_error(tmp_path: Path) -> N
 
 def test_prerelease_numeric_identifiers_use_semver_ordering(tmp_path: Path) -> None:
     layout = InstallLayout.resolve(tmp_path / "ori")
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         layout=layout,
         prepare=_prepare,
         validate=_validate,
@@ -2229,6 +2230,176 @@ def test_system_permissions_fail_closed_for_non_root_and_data_symlink(
             releases=[layout.release("2.3.0")],
         )
     assert layout.root.stat().st_mode & 0o777 == 0o755
+
+
+def test_a_file_that_becomes_a_pipe_after_validation_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The service owns this tree and is still running when the walk happens.
+
+    Without the non-blocking open the installer waits as root for a writer
+    that never comes, so the refusal below is never reached.
+    """
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    layout.data.mkdir()
+    target = layout.data / "state.json"
+    target.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+    monkeypatch.setattr("ori.installer.linux.os.fchmod", lambda *_args: None)
+
+    real_walk = os.walk
+
+    def swap_after_planning(*args: object, **kwargs: object):
+        for entry in real_walk(*args, **kwargs):  # type: ignore[arg-type]
+            yield entry
+        # Planning is complete and the plan holds a regular file. Replace it
+        # the way the running service could.
+        target.unlink()
+        os.mkfifo(target)
+
+    monkeypatch.setattr("ori.installer.linux.os.walk", swap_after_planning)
+
+    with pytest.raises(LinuxInstallError) as raised:
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+
+    assert raised.value.code == "service_start_failed"
+
+
+def test_a_file_swapped_for_another_file_after_validation_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A substitution that keeps the file type is still a different file."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    layout.data.mkdir()
+    target = layout.data / "state.json"
+    target.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+    monkeypatch.setattr("ori.installer.linux.os.fchmod", lambda *_args: None)
+
+    real_walk = os.walk
+
+    def swap_after_planning(*args: object, **kwargs: object):
+        for entry in real_walk(*args, **kwargs):  # type: ignore[arg-type]
+            yield entry
+        target.unlink()
+        target.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr("ori.installer.linux.os.walk", swap_after_planning)
+
+    with pytest.raises(LinuxInstallError) as raised:
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+
+    assert raised.value.code == "service_start_failed"
+
+
+def test_a_refused_special_file_is_named_with_its_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The likeliest causes are artefacts of the runtime having run."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    layout.data.mkdir()
+    fifo = layout.data / "unexpected.pipe"
+    os.mkfifo(fifo)
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+
+    with pytest.raises(LinuxInstallError) as raised:
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+
+    assert "named pipe" in raised.value.detail
+    assert str(fifo) in raised.value.detail
+
+
+def test_a_refused_special_file_says_how_to_clear_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live runtime recreates the artefacts it made, so naming is not enough."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    layout.data.mkdir()
+    os.mkfifo(layout.data / "unexpected.pipe")
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+
+    with pytest.raises(LinuxInstallError) as raised:
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+
+    assert "Stop the service" in raised.value.detail
+
+
+def test_a_refused_name_cannot_speak_for_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The path reaches a terminal and is not the installer's to trust."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    layout.data.mkdir()
+    os.mkfifo(layout.data / "pipe\nExecStart=evil")
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+
+    with pytest.raises(LinuxInstallError) as raised:
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+
+    assert "\n" not in raised.value.detail
+    assert "\\n" in raised.value.detail
+
+
+def test_a_system_unit_works_outside_the_directory_it_must_not_litter(
+    tmp_path: Path,
+) -> None:
+    """GPIO drops a notification pipe in the working directory, and the install
+    root admits regular files only."""
+    rendered = render_systemd_unit(
+        _service_template(),
+        profile=SystemdServiceProfile.system(),
+        root=Path("/opt/ori"),
+        data_dir=Path("/opt/ori/data"),
+        config_path=Path("/opt/ori/data/ori.yaml"),
+        env_file=Path("/etc/ori/runtime.env"),
+    )
+    assert "RuntimeDirectory=ori" in rendered
+    assert "WorkingDirectory=%t/ori" in rendered
+    assert "WorkingDirectory=/opt/ori/data" not in rendered
+    # The data directory stays writable: it is where the runtime keeps state.
+    assert "ReadWritePaths=/opt/ori/data" in rendered
+
+
+def test_a_user_unit_also_works_outside_its_data_directory(tmp_path: Path) -> None:
+    """A user install writes into a home directory it must not litter either."""
+    rendered = _rendered_unit(tmp_path, SystemdServiceProfile.user())
+
+    working = [
+        line for line in rendered.splitlines() if line.startswith("WorkingDirectory=")
+    ]
+
+    assert "RuntimeDirectory=ori" in rendered
+    assert working == ["WorkingDirectory=%t/ori"]
 
 
 def test_system_permissions_allow_only_configured_runtime_socket(
