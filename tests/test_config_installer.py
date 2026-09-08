@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
+import json
 import os
 import textwrap
 import threading
@@ -88,6 +89,57 @@ def _write_signed_config(tmp_path: Path, monkeypatch, *, device_id: str = "phone
         encoding="utf-8",
     )
     return source
+
+
+def test_the_human_output_escapes_the_destination_and_json_keeps_it(
+    tmp_path, monkeypatch, capsys
+):
+    """The two forms want different things from the same path.
+
+    An operator reads one in a terminal, where an escape sequence erases the
+    line it is printed on. A consumer reads the other and needs the name it
+    can open.
+    """
+    from ori import config_installer
+
+    hostile = tmp_path / "dest\x1b[2K\nFORGED" / "ori.yaml"
+    result = config_installer.ConfigInstallResult(
+        destination=hostile,
+        device_id="pi-01",
+        signer_id="product-provisioning",
+        signed_at_ms=1_800_000_000_000,
+    )
+    monkeypatch.setattr(
+        config_installer, "install_signed_config", lambda **_kwargs: result
+    )
+
+    assert config_installer.main(["--source", "http://x/c"]) == 0
+    human = capsys.readouterr().out
+    assert "\x1b[2K" not in human
+    assert "\nFORGED" not in human
+    assert "\\x1b[2K" in human
+
+    assert config_installer.main(["--source", "http://x/c", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    # The machine field is the name a consumer can open.
+    assert payload["destination"] == str(hostile)
+
+    # The dry-run branch prints a line of its own, so it is escaped separately.
+    dry = config_installer.ConfigInstallResult(
+        destination=hostile,
+        device_id="pi-01",
+        signer_id="product-provisioning",
+        signed_at_ms=1_800_000_000_000,
+        dry_run=True,
+    )
+    monkeypatch.setattr(
+        config_installer, "install_signed_config", lambda **_kwargs: dry
+    )
+
+    assert config_installer.main(["--source", "http://x/c", "--dry-run"]) == 0
+    dry_human = capsys.readouterr().out
+    assert "\x1b[2K" not in dry_human
+    assert "\\x1b[2K" in dry_human
 
 
 def test_install_signed_config_writes_verified_config_atomically(tmp_path, monkeypatch):

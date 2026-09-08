@@ -37,6 +37,7 @@ from ori.security.release_bundles import (
     load_release_key_registry,
     verify_release_bundle,
 )
+from ori.utils.path_utils import shown
 
 
 class UpgradeError(Exception):
@@ -49,7 +50,7 @@ def install_from_bundle(args: argparse.Namespace) -> dict[str, Any]:
     signature = Path(args.signature).expanduser()
     for label, path in (("bundle", bundle), ("signature", signature)):
         if not path.is_file():
-            raise UpgradeError(f"{label} not found: {path}")
+            raise UpgradeError(f"{label} not found: {shown(path)}")
 
     registry_resource = resources.files("ori.installer").joinpath("release-keys.json")
     try:

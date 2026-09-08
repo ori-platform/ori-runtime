@@ -38,6 +38,8 @@ import os
 import stat
 from pathlib import Path
 
+from ori.utils.path_utils import shown
+
 # Deep enough for any legitimate interpreter chain — `python` to `python3` to
 # `python3.12` to the packaged binary is four — and shallow enough that a
 # hostile link tree ends quickly.
@@ -68,7 +70,10 @@ def trust_failure(
     if failure is None:
         return None
     component, reason = failure
-    return f"{component} {reason}"
+    # Escaped where the string is built, so both the installer refusal and the
+    # doctor check inherit it. The component is whichever parent of the path
+    # failed the walk, which is not always a name an operator chose.
+    return f"{shown(component)} {reason}"
 
 
 def _walk(

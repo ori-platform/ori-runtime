@@ -160,6 +160,30 @@ def _dependency_finder(available):
     return find_spec
 
 
+def test_the_header_escapes_the_config_path_it_prints(tmp_path):
+    """The banner names the path an operator passed, in a terminal.
+
+    An escape sequence there erases the line it is printed on and a newline
+    forges another, in a report whose whole purpose is to be read when
+    something is already wrong.
+    """
+    hostile = str(tmp_path / "phone\x1b[2K\nFAIL forged" / "ori.yaml")
+    checks = [
+        phone_doctor.DoctorCheck(
+            name="config.load",
+            status="pass",
+            message="loaded",
+            details={"config_path": hostile},
+        )
+    ]
+
+    rendered = phone_doctor._format_text(checks)
+
+    assert "\x1b[2K" not in rendered
+    assert "\nFAIL forged" not in rendered
+    assert "\\x1b[2K" in rendered
+
+
 def test_phone_doctor_accepts_valid_phone_config_with_warnings(tmp_path, monkeypatch):
     config_path = _write_phone_config(tmp_path)
     monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])

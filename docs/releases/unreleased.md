@@ -138,6 +138,31 @@ candidate or release is cut.
   appeared to have taken no actions rather than a lookup that went elsewhere.
   An absent store is now refused and named, and a refusal distinguishes a store
   that is missing from a path that is not a file.
+- Installer and doctor output no longer prints a filesystem name raw. A
+  refusal is produced when something about a path is already wrong, which is
+  when an operator reads most carefully and distrusts least, and the name in it
+  is not always one they chose: a walk over a path's parents reports whichever
+  component failed, and a directory listing reports whatever it found. An
+  escape sequence that erases the line it is printed on, a newline that forges
+  a second diagnostic, a carriage return that overwrites the first and a bidi
+  mark that reverses the rest all now arrive escaped.
+- An error `detail` stays one message rather than becoming two. It is prose
+  for an operator, not a machine-readable path field, so the path in it is
+  escaped in the JSON form too; a consumer recovering a path by parsing that
+  sentence was never reliable, which is the mistake `offending_path` made.
+- A remedy is quoted for a shell rather than escaped for a terminal, because it
+  is a command an operator copies and runs. A path containing a newline would
+  otherwise have ended that command and run what followed as the next one. The
+  path stays a single argument.
+- A configuration error names its path escaped as well. The loader wrote
+  `'{path}'`, which looks quoted and is not escaped, and `ori config validate`
+  appends that message to a line of its own, so escaping only the outer line
+  left the name it reports untouched. The same treatment reaches the config
+  installer, the firmware provisioner, the inverter profile doctor and the
+  phone doctor's report header.
+- `ori doctor` reports the offending release path whole. The machine-readable
+  `offending_path` was recovered by splitting the human sentence on its first
+  space, so any release path containing one was reported truncated.
 - The service works in a runtime directory of its own rather than in the
   directory it keeps state in. A GPIO library creates its notification pipe in
   the working directory and never removes it, and the install root admits
