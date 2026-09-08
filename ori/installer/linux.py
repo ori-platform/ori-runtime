@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import grp
 import json
 import os
 import pwd
@@ -872,6 +873,11 @@ def _health_bridge_response(
     return "healthy", health
 
 
+#: Groups owning the device nodes a runtime drives. Granted through the unit,
+#: never through the account: the installer adopts an account exactly as found.
+DEVICE_GROUPS: tuple[str, ...] = ("gpio", "i2c")
+
+
 class SystemdServiceManager:
     """Shell-free systemd lifecycle adapter with explicit unit scope."""
 
@@ -1113,6 +1119,7 @@ class SystemdServiceManager:
         section = ""
         users: list[str] = []
         targets: list[str] = []
+        groups: list[str] = []
         for raw_line in rendered.splitlines():
             if raw_line.rstrip().endswith("\\"):
                 raise LinuxInstallError(
@@ -1129,6 +1136,8 @@ class SystemdServiceManager:
             key, value = line.split("=", 1)
             if section == "Service" and key.strip() == "User":
                 users.append(value.strip())
+            if section == "Service" and key.strip() == "SupplementaryGroups":
+                groups.append(value.strip())
             if section == "Install" and key.strip() == "WantedBy":
                 targets.append(value.strip())
         expected_target = (
@@ -1146,6 +1155,19 @@ class SystemdServiceManager:
             raise LinuxInstallError(
                 "service_start_failed", "service unit identity does not match profile"
             )
+        if self._profile.scope == "user" and groups:
+            raise LinuxInstallError(
+                "service_start_failed",
+                "service unit grants device groups outside a system profile",
+            )
+        for line in groups:
+            for name in line.split():
+                if name not in DEVICE_GROUPS:
+                    raise LinuxInstallError(
+                        "service_start_failed",
+                        f"service unit names a group that is not a device "
+                        f"group: {name!r}",
+                    )
 
     def _systemctl(self) -> list[str]:
         return (
@@ -1175,6 +1197,21 @@ class SystemdServiceManager:
         return result
 
 
+def host_device_groups(
+    resolver: Callable[[str], object] | None = None,
+) -> tuple[str, ...]:
+    """The device groups this host defines, in a stable order."""
+    lookup = resolver if resolver is not None else grp.getgrnam
+    present: list[str] = []
+    for name in DEVICE_GROUPS:
+        try:
+            lookup(name)
+        except KeyError:
+            continue
+        present.append(name)
+    return tuple(present)
+
+
 def render_systemd_unit(
     template: str,
     *,
@@ -1183,6 +1220,7 @@ def render_systemd_unit(
     data_dir: Path,
     config_path: Path,
     env_file: Path,
+    device_groups: Sequence[str] = (),
 ) -> str:
     """Render a shell-free unit without mixing user and system semantics."""
     paths = {
@@ -1214,21 +1252,32 @@ def render_systemd_unit(
             "systemd config path must be inside the writable data directory",
         )
 
-    if "@ORI_USER_DIRECTIVE@" not in rendered or "@ORI_WANTED_BY@" not in rendered:
-        raise LinuxInstallError(
-            "service_start_failed", "service template is missing profile markers"
-        )
+    for marker in ("@ORI_USER_DIRECTIVE@", "@ORI_DEVICE_GROUPS@", "@ORI_WANTED_BY@"):
+        if marker not in rendered:
+            raise LinuxInstallError(
+                "service_start_failed", f"service template is missing {marker}"
+            )
     if profile.scope == "user":
         user_directive = ""
         wanted_by = "default.target"
+        groups_directive = ""
     elif profile.scope == "system" and profile.service_user is not None:
         user_directive = f"User={profile.service_user}"
         wanted_by = "multi-user.target"
+        names = list(device_groups)
+        for name in names:
+            if name not in DEVICE_GROUPS:
+                raise LinuxInstallError(
+                    "service_start_failed",
+                    f"device group name is not a device group: {name!r}",
+                )
+        groups_directive = f"SupplementaryGroups={' '.join(names)}" if names else ""
     else:
         raise LinuxInstallError(
             "service_start_failed", "service profile is inconsistent"
         )
     rendered = rendered.replace("@ORI_USER_DIRECTIVE@", user_directive)
+    rendered = rendered.replace("@ORI_DEVICE_GROUPS@", groups_directive)
     rendered = rendered.replace("@ORI_WANTED_BY@", wanted_by)
     if re.search(r"@[A-Z0-9_]+@", rendered):
         raise LinuxInstallError(
@@ -2471,6 +2520,7 @@ def install_composed_release(
         data_dir=layout.data,
         config_path=config_path,
         env_file=env_file,
+        device_groups=host_device_groups(),
     )
     release_preparer = preparer or OfflineReleasePreparer(bundle=bundle)
     verifier = health_verifier or RuntimeHealthVerifier(

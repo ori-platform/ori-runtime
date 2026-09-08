@@ -296,6 +296,50 @@ exit code: it succeeds for any factory at all, including the experimental
 fallback. Steps 1 and 2 can pass on a device whose Ori install still cannot
 drive a pin.
 
+## Device access is granted by the unit, not by the account
+
+On the certified Trixie 64-bit image, `/dev/gpiochip0` is `root:gpio` and
+`/dev/i2c-1` is `root:i2c`, both mode 0660, so a system install running as its
+own service account opens neither by default. Ownership and mode come from udev
+rules and vary between images and distributions; read the nodes on the device
+rather than assuming these values. A system unit renders
+
+```ini
+SupplementaryGroups=gpio i2c
+```
+
+naming only the groups the host's group database actually defines, because
+systemd refuses to start a unit that names a group that does not exist. The
+grant lives in the unit rather than in the account because the installer adopts
+an existing account exactly as found; a group added with `usermod -aG` would
+outlive both the unit and the uninstall.
+
+Be clear about what this grant is and is not. A defined `gpio` group is not
+evidence that a gpiochip exists or that it is owned by that group — the name
+resolving is only what systemd requires to start the unit. The grant is a
+standing one, decided at install time and covering every node those groups own,
+not only the two named above. It is deliberately wider than the installed
+configuration needs: the installer writes `relay.enabled: false` with no pin, so
+nothing at install time declares which devices this deployment will drive.
+
+A user-scope install gets no such directive: it already runs as someone with
+their own groups. `DeviceAllow=` is not used, because the unit sets neither
+`PrivateDevices=` nor a closed device policy; adding it alone would narrow
+nothing.
+
+Step 3 above runs under `sudo`, so it passes whatever the service account can
+do. Check the identity that actually runs:
+
+```bash
+systemctl show ori-runtime -p User -p SupplementaryGroups
+grep ^Groups: /proc/$(systemctl show ori-runtime -p MainPID --value)/status
+getent group gpio i2c
+```
+
+`/dev/gpiochip0` may also carry an ACL for the desktop login user. That entry
+does not cover the service account, so a `getfacl` line naming a human is not
+evidence the service can open the chip.
+
 ## Before a demo
 
 Anything that must physically actuate has to be proven on the device, under a

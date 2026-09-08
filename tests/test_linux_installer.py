@@ -33,6 +33,7 @@ from ori.installer.linux import (
     SystemdServiceProfile,
     apply_system_service_permissions,
     ensure_service_account,
+    host_device_groups,
     install_composed_release,
     install_release,
     provision_runtime_config,
@@ -2269,6 +2270,192 @@ def test_system_permissions_allow_only_configured_runtime_socket(
         finally:
             health_socket.close()
             unexpected_socket.close()
+
+
+def test_a_system_unit_grants_the_device_groups_the_host_defines() -> None:
+    """The service account cannot open a gpiochip without the owning group."""
+    rendered = render_systemd_unit(
+        _service_template(),
+        profile=SystemdServiceProfile.system(),
+        root=Path("/opt/ori"),
+        data_dir=Path("/opt/ori/data"),
+        config_path=Path("/opt/ori/data/ori.yaml"),
+        env_file=Path("/etc/ori/runtime.env"),
+        device_groups=("gpio", "i2c"),
+    )
+    assert "SupplementaryGroups=gpio i2c" in rendered
+
+
+def test_a_host_without_those_groups_gets_no_directive() -> None:
+    """systemd refuses to start a unit naming a group that does not exist."""
+    rendered = render_systemd_unit(
+        _service_template(),
+        profile=SystemdServiceProfile.system(),
+        root=Path("/opt/ori"),
+        data_dir=Path("/opt/ori/data"),
+        config_path=Path("/opt/ori/data/ori.yaml"),
+        env_file=Path("/etc/ori/runtime.env"),
+        device_groups=(),
+    )
+    assert "SupplementaryGroups" not in rendered
+
+
+def test_a_user_unit_names_no_supplementary_groups() -> None:
+    """A user unit runs as someone who already has their own groups."""
+    rendered = render_systemd_unit(
+        _service_template(),
+        profile=SystemdServiceProfile.user(),
+        root=Path("/opt/ori"),
+        data_dir=Path("/opt/ori/data"),
+        config_path=Path("/opt/ori/data/ori.yaml"),
+        env_file=Path("/etc/ori/runtime.env"),
+        device_groups=("gpio", "i2c"),
+    )
+    assert "SupplementaryGroups" not in rendered
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "gpio\nExecStartPre=/bin/sh",  # the value lands in a unit file
+        "wheel",  # a real group, but not a device group
+        "docker",
+        "",
+    ],
+)
+def test_a_group_that_is_not_a_device_group_is_refused(name: str) -> None:
+    """The allowlist is the constant, not the shape of the name."""
+    with pytest.raises(LinuxInstallError, match="not a device group"):
+        render_systemd_unit(
+            _service_template(),
+            profile=SystemdServiceProfile.system(),
+            root=Path("/opt/ori"),
+            data_dir=Path("/opt/ori/data"),
+            config_path=Path("/opt/ori/data/ori.yaml"),
+            env_file=Path("/etc/ori/runtime.env"),
+            device_groups=(name,),
+        )
+
+
+def test_host_device_groups_reports_only_what_the_host_defines() -> None:
+    defined = {"gpio"}
+
+    def resolver(name: str) -> object:
+        if name in defined:
+            return object()
+        raise KeyError(name)
+
+    assert host_device_groups(resolver) == ("gpio",)
+    assert host_device_groups(_raise_key) == ()
+
+
+def test_a_composed_system_install_writes_the_grant_into_the_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upgrade renders through this same call, so it regains the grant too."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    written: list[str] = []
+
+    class Preparer:
+        def prepare(self, release: Path) -> None:
+            interpreter = release / "venv" / "bin" / "python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"python")
+            interpreter.chmod(0o700)
+
+        def validate(self, _release: Path) -> None:
+            return None
+
+    class Health:
+        def verify(self, _release: Path) -> dict[str, object]:
+            return {"device_id": "ori-01", "critical": False}
+
+    class Manager:
+        def install_unit(self, rendered: str) -> Callable[[], None]:
+            written.append(rendered)
+            return lambda: None
+
+        def restart(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def enable(self) -> BootPersistence:
+            return BootPersistence(True, "enabled")
+
+        def boot_persistence(self) -> BootPersistence:
+            return BootPersistence(True, "enabled")
+
+    monkeypatch.setattr(
+        "ori.installer.linux.provision_runtime_config",
+        lambda **_kwargs: lambda: None,
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux.apply_system_service_permissions",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux.grp.getgrnam",
+        lambda name: object() if name in {"gpio", "i2c"} else _raise_key(name),
+    )
+    install_composed_release(
+        layout=layout,
+        bundle=ExtractedReleaseBundle(
+            tmp_path, "2.3.0", "linux-aarch64-python3.12", "3.12", 1
+        ),
+        values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+        service_profile=SystemdServiceProfile.system(),
+        service_manager=Manager(),  # type: ignore[arg-type]
+        unit_template=_service_template(),
+        env_file=layout.data / "runtime.env",
+        preparer=Preparer(),  # type: ignore[arg-type]
+        health_verifier=Health(),  # type: ignore[arg-type]
+    )
+    assert written and "SupplementaryGroups=gpio i2c" in written[0]
+
+
+def _raise_key(name: str) -> object:
+    raise KeyError(name)
+
+
+def test_a_user_unit_carrying_device_groups_is_refused_at_install(
+    tmp_path: Path,
+) -> None:
+    """The renderer is not the only thing that decides what the unit may grant."""
+    unit = (tmp_path / "units" / "ori-runtime.service").resolve()
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=unit,
+        runner=lambda command: subprocess.CompletedProcess(command, 0, "", ""),
+        effective_uid=1001,
+    )
+    rendered = _rendered_unit(tmp_path, SystemdServiceProfile.user()).replace(
+        "[Service]", "[Service]\nSupplementaryGroups=gpio i2c", 1
+    )
+    with pytest.raises(LinuxInstallError, match="outside a system profile"):
+        manager.install_unit(rendered)
+    assert not unit.exists()
+
+
+@pytest.mark.parametrize("named", ["gpio ../../root", "wheel", "gpio wheel"])
+def test_a_system_unit_naming_a_non_device_group_is_refused_at_install(
+    named: str, tmp_path: Path
+) -> None:
+    """A unit reaching the installer from anywhere is held to the same list."""
+    unit = (tmp_path / "units" / "ori-runtime.service").resolve()
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.system(),
+        unit_path=unit,
+        runner=lambda command: subprocess.CompletedProcess(command, 0, "", ""),
+        effective_uid=0,
+    )
+    rendered = _rendered_unit(tmp_path, SystemdServiceProfile.system()).replace(
+        "[Service]", f"[Service]\nSupplementaryGroups={named}", 1
+    )
+    with pytest.raises(LinuxInstallError, match="not a device group"):
+        manager.install_unit(rendered)
+    assert not unit.exists()
 
 
 def test_system_upgrade_preserves_access_and_reapplies_permissions(
