@@ -109,6 +109,35 @@ candidate or release is cut.
   hostile document is refused rather than raising out of the loader, a repeated
   key is refused, and a document nested past the recursion limit cannot stop the
   runtime.
+- A relative `database.path` resolves against the directory holding the
+  configuration that declared it, rather than against the working directory of
+  whatever process loaded it. Every generated configuration declares
+  `ori_state.db` relative, so the runtime, the commissioning bridge and the
+  production encrypted-storage check previously each answered according to
+  where they were started: a ceremony command run from outside the data
+  directory reported that the device held no state store while the store and
+  its binding sat intact beside the configuration, and the requirement that
+  `database.path` live under `state.encryption.encrypted_path_prefixes` could
+  be satisfied or defeated by standing in the right directory. An installed
+  deployment is unaffected, because its unit sets `WorkingDirectory` to the
+  data directory that holds its configuration. A deployment that relied on the
+  working directory to select its store, or to satisfy that posture check, now
+  resolves and is judged against the configuration instead. Where a store
+  exists only where the working directory would have found one, config load
+  reports both paths, since opening the resolved store creates it and the
+  device would otherwise come up on an empty one while its commissioned
+  binding sits in the other. That is reported and not refused: a file of that
+  name in the working directory is a coincidence as often as it is the
+  device's store. An absolute `database.path` is taken exactly as declared,
+  and `:memory:` names no file so it is not resolved.
+- `state action-log` and `state history` take `--path` and read the store the
+  named installation declares. They previously opened `ori_state.db` beside the
+  caller and read no configuration at all, so they could not reach a deployment
+  that declared any other `database.path`, and a read in a directory with no
+  store created an empty one and reported an empty action log — a device that
+  appeared to have taken no actions rather than a lookup that went elsewhere.
+  An absent store is now refused and named, and a refusal distinguishes a store
+  that is missing from a path that is not a file.
 - `SECURITY.md` names Raspberry Pi OS Trixie as the production-supported Pi
   platform and Bookworm as a published bundle that is not a certified target,
   which is what `docs/linux-install.md` and the capability matrix already said.

@@ -103,7 +103,7 @@ def _read_stdout_json(capsys) -> dict:
     return json.loads(captured.out)
 
 
-async def _seed_state_store(path: Path) -> None:
+async def _seed_state_store(path: Path, action: str = "trip_relay") -> None:
     store = StateStore(str(path))
     await store.open()
     try:
@@ -123,7 +123,7 @@ async def _seed_state_store(path: Path) -> None:
         )
         await store.log_action_for_event(
             ActionResult(
-                action_name="trip_relay",
+                action_name=action,
                 tier="D",
                 executed=True,
                 approved=None,
@@ -267,10 +267,11 @@ def test_cli_bridge_health_snapshot_preserves_device_policy_caps(monkeypatch, ca
 
 
 def test_cli_bridge_state_action_log_reads_runtime_store(tmp_path, monkeypatch, capsys):
+    config_path = _relative_store_config(tmp_path / "data")
+    asyncio.run(_seed_state_store(tmp_path / "data" / "ori_state.db"))
     monkeypatch.chdir(tmp_path)
-    asyncio.run(_seed_state_store(tmp_path / "ori_state.db"))
 
-    rc = cli_bridge.main(["state", "action-log", "limit=5"])
+    rc = cli_bridge.main(["state", "action-log", "--path", str(config_path), "limit=5"])
 
     payload = _read_stdout_json(capsys)
     assert rc == 0
@@ -283,10 +284,11 @@ def test_cli_bridge_state_action_log_reads_runtime_store(tmp_path, monkeypatch, 
 
 
 def test_cli_bridge_state_history_requires_sensor_id(tmp_path, monkeypatch, capsys):
+    config_path = _relative_store_config(tmp_path / "data")
+    asyncio.run(_seed_state_store(tmp_path / "data" / "ori_state.db"))
     monkeypatch.chdir(tmp_path)
-    asyncio.run(_seed_state_store(tmp_path / "ori_state.db"))
 
-    rc = cli_bridge.main(["state", "history", "limit=5"])
+    rc = cli_bridge.main(["state", "history", "--path", str(config_path), "limit=5"])
 
     payload = _read_stdout_json(capsys)
     assert rc == 2
@@ -299,10 +301,20 @@ def test_cli_bridge_state_history_requires_sensor_id(tmp_path, monkeypatch, caps
 def test_cli_bridge_state_history_reads_bounded_sensor_history(
     tmp_path, monkeypatch, capsys
 ):
+    config_path = _relative_store_config(tmp_path / "data")
+    asyncio.run(_seed_state_store(tmp_path / "data" / "ori_state.db"))
     monkeypatch.chdir(tmp_path)
-    asyncio.run(_seed_state_store(tmp_path / "ori_state.db"))
 
-    rc = cli_bridge.main(["state", "history", "sensor_id=pir_01", "limit=5"])
+    rc = cli_bridge.main(
+        [
+            "state",
+            "history",
+            "--path",
+            str(config_path),
+            "sensor_id=pir_01",
+            "limit=5",
+        ]
+    )
 
     payload = _read_stdout_json(capsys)
     assert rc == 0
@@ -322,10 +334,13 @@ def test_cli_bridge_state_history_reads_bounded_sensor_history(
 
 
 def test_cli_bridge_state_rejects_unknown_filter(tmp_path, monkeypatch, capsys):
+    config_path = _relative_store_config(tmp_path / "data")
+    asyncio.run(_seed_state_store(tmp_path / "data" / "ori_state.db"))
     monkeypatch.chdir(tmp_path)
-    asyncio.run(_seed_state_store(tmp_path / "ori_state.db"))
 
-    rc = cli_bridge.main(["state", "action-log", "table=sensor_history"])
+    rc = cli_bridge.main(
+        ["state", "action-log", "--path", str(config_path), "table=sensor_history"]
+    )
 
     payload = _read_stdout_json(capsys)
     assert rc == 2
@@ -335,15 +350,70 @@ def test_cli_bridge_state_rejects_unknown_filter(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_bridge_state_rejects_missing_database(tmp_path, monkeypatch, capsys):
+    """A read must refuse an absent store, not build one and answer from it."""
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    monkeypatch.chdir(tmp_path)
+
+    rc = cli_bridge.main(["state", "action-log", "--path", str(config_path)])
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 2
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "state_store_unavailable"
+    assert "does not exist" in payload["error"]["detail"]
+    assert str(home / "ori_state.db") in payload["error"]["detail"]
+    assert not (home / "ori_state.db").exists()
+    assert not (tmp_path / "ori_state.db").exists()
+
+
+def test_cli_bridge_state_separates_an_absent_store_from_one_that_is_not_a_file(
+    tmp_path, monkeypatch, capsys
+):
+    """A directory in the store's place is a wrong path, not a fresh device."""
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    (home / "ori_state.db").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    cli_bridge.main(["state", "action-log", "--path", str(config_path)])
+
+    detail = _read_stdout_json(capsys)["error"]["detail"]
+    assert "is not a file" in detail
+    assert "does not exist" not in detail
+
+
+def test_cli_bridge_state_read_requires_the_installation_it_reads(
+    tmp_path, monkeypatch, capsys
+):
+    """Without a configuration the command cannot know whose store it opened."""
+    asyncio.run(_seed_state_store(tmp_path / "ori_state.db"))
     monkeypatch.chdir(tmp_path)
 
     rc = cli_bridge.main(["state", "action-log"])
 
     payload = _read_stdout_json(capsys)
     assert rc == 2
-    assert payload["ok"] is False
-    assert payload["error"]["code"] == "state_store_unavailable"
-    assert not (tmp_path / "ori_state.db").exists()
+    assert payload["error"]["code"] == "invalid_arguments"
+    assert "--path" in payload["error"]["detail"]
+
+
+def test_cli_bridge_state_reads_the_store_the_config_names_not_the_cwd(
+    tmp_path, monkeypatch, capsys
+):
+    """A store sitting in the caller's directory must not answer for another."""
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    asyncio.run(_seed_state_store(home / "ori_state.db"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    asyncio.run(_seed_state_store(elsewhere / "ori_state.db", action="close_gas_valve"))
+    monkeypatch.chdir(elsewhere)
+
+    cli_bridge.main(["state", "action-log", "--path", str(config_path)])
+
+    payload = _read_stdout_json(capsys)
+    assert payload["result"][0]["action_name"] == "trip_relay"
 
 
 def test_cli_bridge_skills_validate_reports_invalid_skill(tmp_path, capsys):
@@ -783,6 +853,130 @@ def _anchor(monkeypatch, seed: str | None = None) -> None:
     from tests.commissioning.signing import EPHEMERAL_SEED, public_key_b64
 
     monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(seed or EPHEMERAL_SEED))
+
+
+def _relative_store_config(home: Path) -> Path:
+    """A configuration declaring its store the way every generated one does."""
+    home.mkdir(parents=True, exist_ok=True)
+    body = textwrap.dedent("""\
+        device:
+          id: bench-01
+          name: Bench
+          location: Test Lab
+          deployment_profile: development
+        sensors:
+          - id: load-current
+            type: cpu_percent
+            protocol: psutil
+            poll_interval_ms: 1000
+        skills: []
+        reasoning:
+          default_tier: rule
+        actions:
+          relay:
+            enabled: false
+            gpio_pin: 26
+        database:
+          path: ori_state.db
+        logging:
+          level: INFO
+          file: ori.log
+        """)
+    config_path = home / "ori.yaml"
+    config_path.write_text(body, encoding="utf-8")
+    return config_path
+
+
+def test_the_bridge_looks_for_the_store_beside_the_config_not_the_caller(
+    tmp_path, monkeypatch, capsys
+):
+    """`--path` names an installation, so the answer cannot depend on the cwd."""
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    rc = cli_bridge.main(["commissioning", "proof-export", "--path", str(config_path)])
+
+    error = _read_stdout_json(capsys)["error"]
+    assert rc != 0
+    assert error["code"] == "no_provisional_binding"
+    assert str(home / "ori_state.db") in error["detail"]
+    assert str(elsewhere) not in error["detail"]
+
+
+def test_a_store_beside_the_config_is_found_from_any_directory(
+    tmp_path, monkeypatch, capsys
+):
+    """A present store stops the refusal, and no second store is created."""
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    (home / "ori_state.db").write_bytes(b"")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    cli_bridge.main(["commissioning", "proof-export", "--path", str(config_path)])
+
+    error = _read_stdout_json(capsys)["error"]
+    assert "no state store" not in error["detail"]
+    # Opening a store applies the DDL, so a store materialising here is the
+    # command having built the runtime's durable state in the wrong place.
+    assert not (elsewhere / "ori_state.db").exists()
+
+
+async def _retain_own_binding(config_path: Path) -> None:
+    """An in-force binding this device itself holds."""
+    from ori.config import Config
+
+    config = Config.load(str(config_path))
+    store = cli_bridge._commissioning_store(config)
+    await store.open()
+    try:
+        await store.retain_commissioned_binding(
+            binding_seq=3,
+            canonical_hash="sha256:" + "b" * 64,
+            device_id=config.device.id,
+            inventory_generation=1,
+            signer_id="commissioning-test",
+            supersedes=None,
+            canonical_json="{}",
+            signature="ed25519:" + base64.b64encode(b"\x00" * 64).decode(),
+            zones_json=json.dumps(
+                [
+                    {
+                        **_legacy_zone(),
+                        "control_proof_method": "commanded_and_observed",
+                        "control_proof_performed_at_ms": 1800000000000,
+                    }
+                ]
+            ),
+        )
+    finally:
+        await store.close()
+
+
+def test_inventory_reads_the_binding_beside_the_config_from_any_directory(
+    tmp_path, monkeypatch, capsys
+):
+    """The baseline a producer chains onto cannot depend on the caller's cwd.
+
+    Reporting no accepted binding when one is held invites a first-sequence
+    document over a device that already holds one.
+    """
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    asyncio.run(_retain_own_binding(config_path))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    cli_bridge.main(["commissioning", "inventory", "--path", str(config_path)])
+
+    result = _read_stdout_json(capsys)["result"]
+    assert result["accepted_binding_seq"] == 3
+    assert result["accepted_binding_hash"] == "sha256:" + "b" * 64
 
 
 def test_cli_bridge_commissioning_inventory_reports_the_candidate_set(tmp_path, capsys):
