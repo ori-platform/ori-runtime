@@ -150,7 +150,11 @@ candidate or release is cut.
   one from an earlier release says which file to remove rather than sending an
   operator looking. That refusal is also what keeps a pipe from stalling an
   install indefinitely: the permission walk opens each file it plans to change,
-  and opening a pipe waits for a writer that never comes.
+  and opening a pipe waits for a writer that never comes, so it opens
+  non-blocking and checks what it opened. Both halves are needed. An inode
+  number is reused immediately after `unlink` on the filesystems these installs
+  run on, so a regular file the walk validated and a pipe that replaced it
+  carry the same number, and only the file type says anything changed.
 - A device endpoint must name an absolute path, or a URL where its transport
   can open one. `sensors[*].port` on `protocol: serial` and
   `actions.sms.gsm.port` are opened with `Serial()`, which takes a port name,

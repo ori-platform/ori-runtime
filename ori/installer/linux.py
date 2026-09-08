@@ -2026,12 +2026,18 @@ def _set_owned_mode(change: _PermissionChange, uid: int, gid: int, mode: int) ->
     # O_NONBLOCK because the service owns this tree and is still running: a
     # regular file validated during planning can be a pipe by the time it is
     # opened, and opening a pipe for reading waits for a writer that never
-    # comes. The identity check below is what refuses the substitution; without
-    # this flag it is unreachable and the installer stalls as root.
+    # comes. The checks below are what refuse the substitution; without this
+    # flag they are unreachable and the installer stalls as root.
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     descriptor = os.open(change.path, flags)
     try:
         current = os.fstat(descriptor)
+        # Both checks are needed, and neither subsumes the other. An inode
+        # number is reused immediately after unlink on the filesystems Linux
+        # installs run on, so a regular file replaced by a pipe keeps the
+        # number the plan recorded and only the type says it changed.
+        if not (stat.S_ISREG(current.st_mode) or stat.S_ISDIR(current.st_mode)):
+            raise OSError("permission target is no longer a regular file")
         if current.st_dev != change.device or current.st_ino != change.inode:
             raise OSError("permission target changed after validation")
         try:

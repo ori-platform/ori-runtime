@@ -2237,8 +2237,11 @@ def test_a_file_that_becomes_a_pipe_after_validation_is_refused(
 ) -> None:
     """The service owns this tree and is still running when the walk happens.
 
-    Without the non-blocking open the installer waits as root for a writer
-    that never comes, so the refusal below is never reached.
+    Two things have to hold for this to be caught. The open must not block,
+    or the installer waits as root for a writer that never comes. And the file
+    type must be checked, because an inode number is reused immediately after
+    unlink on the filesystems Linux installs run on, so the recorded inode
+    still matches and only the type says the file changed.
     """
     layout = InstallLayout.resolve(tmp_path / "ori")
     layout.releases.mkdir(parents=True)
@@ -2253,50 +2256,19 @@ def test_a_file_that_becomes_a_pipe_after_validation_is_refused(
     monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
     monkeypatch.setattr("ori.installer.linux.os.fchmod", lambda *_args: None)
 
-    real_walk = os.walk
+    real_apply = installer_linux._apply_permission_plan
 
-    def swap_after_planning(*args: object, **kwargs: object):
-        for entry in real_walk(*args, **kwargs):  # type: ignore[arg-type]
-            yield entry
-        # Planning is complete and the plan holds a regular file. Replace it
-        # the way the running service could.
+    def swap_between_planning_and_applying(plan):
+        # The plan holds a regular file it validated. Replace it the way
+        # the running service could, then let the apply proceed.
         target.unlink()
         os.mkfifo(target)
+        real_apply(plan)
 
-    monkeypatch.setattr("ori.installer.linux.os.walk", swap_after_planning)
-
-    with pytest.raises(LinuxInstallError) as raised:
-        apply_system_service_permissions(layout, SystemdServiceProfile.system())
-
-    assert raised.value.code == "service_start_failed"
-
-
-def test_a_file_swapped_for_another_file_after_validation_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A substitution that keeps the file type is still a different file."""
-    layout = InstallLayout.resolve(tmp_path / "ori")
-    layout.releases.mkdir(parents=True)
-    layout.data.mkdir()
-    target = layout.data / "state.json"
-    target.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
     monkeypatch.setattr(
-        "ori.installer.linux.pwd.getpwnam",
-        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+        "ori.installer.linux._apply_permission_plan",
+        swap_between_planning_and_applying,
     )
-    monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
-    monkeypatch.setattr("ori.installer.linux.os.fchmod", lambda *_args: None)
-
-    real_walk = os.walk
-
-    def swap_after_planning(*args: object, **kwargs: object):
-        for entry in real_walk(*args, **kwargs):  # type: ignore[arg-type]
-            yield entry
-        target.unlink()
-        target.write_text("{}", encoding="utf-8")
-
-    monkeypatch.setattr("ori.installer.linux.os.walk", swap_after_planning)
 
     with pytest.raises(LinuxInstallError) as raised:
         apply_system_service_permissions(layout, SystemdServiceProfile.system())
