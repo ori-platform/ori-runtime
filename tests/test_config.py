@@ -1738,6 +1738,96 @@ class TestLoadExample:
         assert str(elsewhere / "ori_state.db") in warned
         assert str(home / "ori_state.db") in warned
 
+    def test_the_ambiguity_warning_escapes_the_names_it_reports(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """This warning reaches a terminal and a log line like any refusal."""
+        home = tmp_path / "data"
+        home.mkdir()
+        elsewhere = tmp_path / "cwd\x1b[2K\nFORGED"
+        elsewhere.mkdir()
+        (elsewhere / "ori_state.db").write_bytes(b"")
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        with caplog.at_level(logging.WARNING, logger="ori.config"):
+            Config.load(yaml_path)
+
+        warned = "\n".join(
+            r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+        )
+        assert "\x1b[2K" not in warned
+        assert "\nFORGED" not in warned
+        assert "\\x1b[2K" in warned
+
+    def test_each_name_the_ambiguity_warning_reports_is_escaped(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """One hostile argument cannot prove the other two are escaped.
+
+        The warning names the declared value, where it resolved to, and where a
+        file of that name was found. A regression limited to any one of them
+        would pass a test that made only another hostile.
+        """
+        home = tmp_path / "data\x1b[2KRESOLVED"
+        home.mkdir()
+        elsewhere = tmp_path / "cwd\x1b[2KLEGACY"
+        elsewhere.mkdir()
+        # YAML refuses a raw control character in a scalar, so the declared
+        # value reaches the loader the way it actually could: through
+        # expansion, where the document is clean and the environment is not.
+        declared = "store\x1b[2KDECLARED.db"
+        monkeypatch.setenv("ORI_TEST_DB_PATH", declared)
+        (elsewhere / declared).write_bytes(b"")
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ${ORI_TEST_DB_PATH}
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        with caplog.at_level(logging.WARNING, logger="ori.config"):
+            Config.load(yaml_path)
+
+        warned = "\n".join(
+            r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+        )
+        assert "\x1b[2K" not in warned
+        for fragment in ("DECLARED", "RESOLVED", "LEGACY"):
+            assert f"\\x1b[2K{fragment}" in warned, fragment
+
     def test_a_store_beside_the_config_is_used_without_complaint(
         self, tmp_path, monkeypatch, caplog
     ):

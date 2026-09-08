@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ori.config import ConfigValidationError, read_config_document
 from ori.doctor import InstallIdentity
+from ori.utils.path_utils import shown
 
 SERVICE_NAME = "ori-runtime.service"
 SYSTEM_ROOT = Path("/opt/ori")
@@ -94,7 +95,7 @@ def detect_scope(root: Path | None = None) -> str:
 
     if user is _Presence.PRESENT and system is _Presence.PRESENT:
         raise AmbiguousScopeError(
-            f"installations exist at both {user_root()} and {SYSTEM_ROOT}; "
+            f"installations exist at both {shown(user_root())} and {shown(SYSTEM_ROOT)}; "
             "pass --scope user or --scope system"
         )
     # One installation is definitely here and the other cannot be read. The
@@ -107,7 +108,7 @@ def detect_scope(root: Path | None = None) -> str:
         return "system"
     if _Presence.INACCESSIBLE in (user, system):
         unreadable = " and ".join(
-            str(candidate)
+            shown(candidate)
             for candidate, presence in ((user_root(), user), (SYSTEM_ROOT, system))
             if presence is _Presence.INACCESSIBLE
         )
@@ -115,7 +116,9 @@ def detect_scope(root: Path | None = None) -> str:
             f"could not inspect {unreadable}, and no other installation was "
             "found; pass --scope user or --scope system explicitly"
         )
-    raise FileNotFoundError(f"no installation at {user_root()} or {SYSTEM_ROOT}")
+    raise FileNotFoundError(
+        f"no installation at {shown(user_root())} or {shown(SYSTEM_ROOT)}"
+    )
 
 
 def resolve_identity(
@@ -126,10 +129,10 @@ def resolve_identity(
     install_root = root or default_root(resolved_scope)
     current = install_root / "current"
     if not current.is_symlink() and not current.exists():
-        raise FileNotFoundError(f"no active release at {current}")
+        raise FileNotFoundError(f"no active release at {shown(current)}")
     active = current.resolve()
     if not active.is_dir():
-        raise FileNotFoundError(f"active release is unavailable: {active}")
+        raise FileNotFoundError(f"active release is unavailable: {shown(active)}")
     # `current` is a symlink, so its target is only as trustworthy as whoever
     # can write it. Callers execute the interpreter inside the active release,
     # so require a release this installer laid down rather than following the
@@ -137,8 +140,8 @@ def resolve_identity(
     releases = (install_root / "releases").resolve()
     if active.parent != releases:
         raise UnmanagedReleaseError(
-            f"{current} points outside the managed release directory: "
-            f"{active} is not a release in {releases}"
+            f"{shown(current)} points outside the managed release directory: "
+            f"{shown(active)} is not a release in {shown(releases)}"
         )
 
     data = install_root / "data"

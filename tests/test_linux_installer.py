@@ -392,7 +392,9 @@ def test_creation_provenance_race_refuses_existing_entry_and_rolls_back_only_our
 
     monkeypatch.setattr(installer_linux.os, "mkdir", mkdir_with_race)
 
-    with pytest.raises(LinuxInstallError, match="data is writable by another account"):
+    with pytest.raises(
+        LinuxInstallError, match="'data' is writable by another account"
+    ):
         install_release(
             layout=layout,
             version="2.3.0",

@@ -27,6 +27,7 @@ import yaml
 from ori.installer import identity
 from ori.installer.trusted_paths import trust_failure
 from ori.security.release_bundles import ExtractedReleaseBundle, distribution_version
+from ori.utils.path_utils import shown
 
 _VERSION_RE = re.compile(
     r"^(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)"
@@ -2679,14 +2680,14 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
             if not stat.S_ISREG(info.st_mode):
                 raise LinuxInstallError(
                     "offline_install_failed",
-                    f"unexpected special file in release venv bin: {entry.name}",
+                    f"unexpected special file in release venv bin: {shown(entry.name)}",
                 )
             if not info.st_mode & 0o111:
                 continue
             data = entry.read_bytes()
         except OSError as exc:
             raise LinuxInstallError(
-                "offline_install_failed", f"cannot inspect {entry.name}"
+                "offline_install_failed", f"cannot inspect {shown(entry.name)}"
             ) from exc
 
         break_at = data.find(b"\n")
@@ -2697,7 +2698,7 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
             if staging_reference in data:
                 raise LinuxInstallError(
                     "offline_install_failed",
-                    f"{entry.name} references the staging path without a shebang",
+                    f"{shown(entry.name)} references the staging path without a shebang",
                 )
             continue
 
@@ -2711,7 +2712,7 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
             if staging_reference in data:
                 raise LinuxInstallError(
                     "offline_install_failed",
-                    f"{entry.name} points at an unexpected staging interpreter",
+                    f"{shown(entry.name)} points at an unexpected staging interpreter",
                 )
             continue
         _rewrite_preserving_mode(
@@ -2773,7 +2774,7 @@ def _rewrite_preserving_mode(path: Path, content: bytes, mode: int) -> None:
         os.replace(temporary, path)
     except OSError as exc:
         raise LinuxInstallError(
-            "offline_install_failed", f"cannot rebind {path.name}"
+            "offline_install_failed", f"cannot rebind {shown(path.name)}"
         ) from exc
     finally:
         if descriptor >= 0:
@@ -2822,12 +2823,12 @@ def _assert_no_staging_references(bin_dir: Path, staging_reference: bytes) -> No
             data = entry.read_bytes()
         except OSError as exc:
             raise LinuxInstallError(
-                "offline_install_failed", f"cannot reread {entry.name}"
+                "offline_install_failed", f"cannot reread {shown(entry.name)}"
             ) from exc
         if staging_reference in data:
             raise LinuxInstallError(
                 "offline_install_failed",
-                f"{entry.name} still references the staging directory",
+                f"{shown(entry.name)} still references the staging directory",
             )
 
 
@@ -3219,12 +3220,12 @@ def _ensure_private_directory(path: Path) -> _CreatedDirectory | None:
         info = os.fstat(descriptor)
         if not stat.S_ISDIR(info.st_mode):  # O_DIRECTORY also enforces this.
             raise LinuxInstallError(
-                "unsafe_install_root", f"{path.name} is not a directory"
+                "unsafe_install_root", f"{shown(path.name)} is not a directory"
             )
         descriptor_identity = (info.st_dev, info.st_ino)
         if created_identity is not None and descriptor_identity != created_identity:
             raise LinuxInstallError(
-                "unsafe_install_root", f"{path.name} changed during preparation"
+                "unsafe_install_root", f"{shown(path.name)} changed during preparation"
             )
 
         mode = stat.S_IMODE(info.st_mode)
@@ -3232,7 +3233,8 @@ def _ensure_private_directory(path: Path) -> _CreatedDirectory | None:
             # Never silently adopt a pre-existing directory another account
             # can modify. Its exact mode is evidence that entries are replaceable.
             raise LinuxInstallError(
-                "unsafe_install_root", f"{path.name} is writable by another account"
+                "unsafe_install_root",
+                f"{shown(path.name)} is writable by another account",
             )
         if created or mode & 0o007:
             # Pin created directories despite umask/default ACLs, and tighten
@@ -3241,13 +3243,14 @@ def _ensure_private_directory(path: Path) -> _CreatedDirectory | None:
             info = os.fstat(descriptor)
             if stat.S_IMODE(info.st_mode) != 0o700:
                 raise LinuxInstallError(
-                    "unsafe_install_root", f"{path.name} could not be made private"
+                    "unsafe_install_root",
+                    f"{shown(path.name)} could not be made private",
                 )
 
         current = os.stat(path, follow_symlinks=False)
         if (current.st_dev, current.st_ino) != descriptor_identity:
             raise LinuxInstallError(
-                "unsafe_install_root", f"{path.name} changed during preparation"
+                "unsafe_install_root", f"{shown(path.name)} changed during preparation"
             )
         completed = True
         if created:
@@ -3275,22 +3278,22 @@ def _private_directory_error_detail(
     """Explain a kernel refusal; pathname inspection here is diagnostic only."""
     if created and isinstance(error, PermissionError):
         return (
-            f"{path.name} was created but is not accessible; "
+            f"{shown(path.name)} was created but is not accessible; "
             "owner-stripping umasks are unsupported"
         )
     if created:
-        return f"{path.name} could not be verified after creation"
+        return f"{shown(path.name)} could not be verified after creation"
     try:
         info = os.stat(path, follow_symlinks=False)
     except FileNotFoundError:
-        return f"{path.name} parent is unavailable"
+        return f"{shown(path.name)} parent is unavailable"
     except OSError:
-        return f"{path.name} could not be prepared"
+        return f"{shown(path.name)} could not be prepared"
     if stat.S_ISLNK(info.st_mode):
-        return f"{path.name} must not be a symlink"
+        return f"{shown(path.name)} must not be a symlink"
     if not stat.S_ISDIR(info.st_mode):
-        return f"{path.name} is not a directory"
-    return f"{path.name} could not be prepared"
+        return f"{shown(path.name)} is not a directory"
+    return f"{shown(path.name)} could not be prepared"
 
 
 def _remove_created_directory(path: Path, identity: tuple[int, int] | None) -> None:

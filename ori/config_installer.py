@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from ori.config import Config, ConfigValidationError, read_config_bytes
+from ori.utils.path_utils import shown
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Named apart from `ori.config._MAX_SOURCE_CONFIG_BYTES`, which bounds the runtime's
@@ -172,7 +173,9 @@ def _read_source(
     try:
         return read_config_bytes(str(path), max_bytes=_MAX_SOURCE_CONFIG_BYTES)
     except ConfigValidationError as exc:
-        raise ConfigInstallError(f"cannot read generated config {path}: {exc}") from exc
+        raise ConfigInstallError(
+            f"cannot read generated config {shown(path)}: {exc}"
+        ) from exc
 
 
 def _fetch_https_source(
@@ -339,12 +342,12 @@ def main(argv: list[str] | None = None) -> int:
     elif result.dry_run:
         print(
             "Verified signed Ori config for "
-            f"{result.device_id}; dry run did not write {result.destination}."
+            f"{result.device_id}; dry run did not write {shown(result.destination)}."
         )
     else:
         print(
             "Installed signed Ori config for "
-            f"{result.device_id} at {result.destination}."
+            f"{result.device_id} at {shown(result.destination)}."
         )
     return 0
 

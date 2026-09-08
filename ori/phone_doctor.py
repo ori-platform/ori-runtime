@@ -22,6 +22,7 @@ from typing import Any
 from ori.config import Config, ConfigValidationError, read_config_document
 from ori.utils import terminal
 from ori.utils.bool_utils import is_truthy
+from ori.utils.path_utils import shown
 from ori.utils.termux import parse_termux_usb_output
 
 _DIRECT_SERIAL_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
@@ -669,7 +670,7 @@ def _format_text(checks: list[DoctorCheck]) -> str:
         + c("  ORI  PHONE DOCTOR".center(width - 2), BOLD + WHITE)
         + c("║", BOLD + CYAN),
         c("║", BOLD + CYAN)
-        + c(f"  Config: {config_path}".center(width - 2), DIM)
+        + c(f"  Config: {shown(config_path)}".center(width - 2), DIM)
         + c("║", BOLD + CYAN),
         c("╚" + "═" * (width - 2) + "╝", BOLD + CYAN),
         "",

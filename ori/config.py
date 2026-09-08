@@ -35,7 +35,7 @@ from ori.security.remote_commands.commands import normalize_remote_command_sende
 from ori.security.remote_commands.lockout import normalize_remote_command_lockout_config
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
-from ori.utils.path_utils import path_is_relative_to
+from ori.utils.path_utils import path_is_relative_to, shown
 
 logger = logging.getLogger(__name__)
 
@@ -312,13 +312,15 @@ def _load_config_document(text: str, path: str, *, expand_env: bool = False) -> 
         return yaml.load(text, Loader=loader)
     except _ConfigDocumentLimitError as exc:
         raise ConfigValidationError(
-            f"Config file '{path}' exceeds document limits: {exc}"
+            f"Config file {shown(path)} exceeds document limits: {exc}"
         ) from exc
     except yaml.YAMLError as exc:
-        raise ConfigValidationError(f"YAML parse error in '{path}': {exc}") from exc
+        raise ConfigValidationError(
+            f"YAML parse error in {shown(path)}: {exc}"
+        ) from exc
     except Exception as exc:
         raise ConfigValidationError(
-            f"Config file '{path}' could not be parsed: {type(exc).__name__}: {exc}"
+            f"Config file {shown(path)} could not be parsed: {type(exc).__name__}: {exc}"
         ) from exc
 
 
@@ -353,16 +355,18 @@ def read_config_bytes(path: str, *, max_bytes: int = _MAX_CONFIG_BYTES) -> bytes
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise ConfigValidationError(
-                f"Config file '{path}' is a symbolic link, which is refused. "
+                f"Config file {shown(path)} is a symbolic link, which is refused. "
                 "Point the configuration path at the file itself."
             ) from exc
-        raise ConfigValidationError(f"Cannot read config file '{path}': {exc}") from exc
+        raise ConfigValidationError(
+            f"Cannot read config file {shown(path)}: {exc}"
+        ) from exc
 
     try:
         status = os.fstat(descriptor)
         if not stat.S_ISREG(status.st_mode):
             raise ConfigValidationError(
-                f"Config file '{path}' is not a regular file. A FIFO, device or "
+                f"Config file {shown(path)} is not a regular file. A FIFO, device or "
                 "directory cannot be a configuration document."
             )
         # Read one byte past the cap rather than trusting the size `fstat`
@@ -378,13 +382,15 @@ def read_config_bytes(path: str, *, max_bytes: int = _MAX_CONFIG_BYTES) -> bytes
             chunks.append(chunk)
             total += len(chunk)
     except OSError as exc:
-        raise ConfigValidationError(f"Cannot read config file '{path}': {exc}") from exc
+        raise ConfigValidationError(
+            f"Cannot read config file {shown(path)}: {exc}"
+        ) from exc
     finally:
         os.close(descriptor)
 
     if total > max_bytes:
         raise ConfigValidationError(
-            f"Config file '{path}' is larger than the {max_bytes} byte "
+            f"Config file {shown(path)} is larger than the {max_bytes} byte "
             "limit for a configuration document."
         )
     return b"".join(chunks)
@@ -403,7 +409,7 @@ def _read_config_text(path: str) -> str:
         return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ConfigValidationError(
-            f"Config file '{path}' is not valid UTF-8: {exc}"
+            f"Config file {shown(path)} is not valid UTF-8: {exc}"
         ) from exc
 
 
@@ -674,7 +680,7 @@ class Config:
             raise
         except Exception as exc:
             raise ConfigValidationError(
-                f"Config file '{path}' could not be interpreted: "
+                f"Config file {shown(path)} could not be interpreted: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
 
@@ -686,7 +692,7 @@ class Config:
 
         if not isinstance(raw_unexpanded, dict):
             raise ConfigValidationError(
-                f"Config file '{path}' must be a YAML mapping at the top level."
+                f"Config file {shown(path)} must be a YAML mapping at the top level."
             )
 
         try:
@@ -710,7 +716,7 @@ class Config:
 
         if not isinstance(data, dict):
             raise ConfigValidationError(
-                f"Config file '{path}' must be a YAML mapping at the top level."
+                f"Config file {shown(path)} must be a YAML mapping at the top level."
             )
 
         device = _parse_device(data.get("device", {}))
@@ -3300,14 +3306,14 @@ def _resolve_database_path(declared: str, config_path: str) -> str:
         # name in the working directory is a coincidence as often as it is that
         # deployment, so this reports rather than refuses.
         logger.warning(
-            "[config] database.path %r resolves to %s, which does not exist, "
+            "[config] database.path %s resolves to %s, which does not exist, "
             "while a file of that name exists at %s. A relative database.path "
             "is resolved against the directory holding the configuration, not "
             "the working directory. If that file is this device's store, move "
             "it beside the configuration or declare database.path absolutely.",
-            declared,
-            resolved,
-            legacy.resolve(strict=False),
+            shown(declared),
+            shown(resolved),
+            shown(legacy.resolve(strict=False)),
         )
     return str(resolved)
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ori.config import ConfigValidationError, read_config_document
+from ori.utils.path_utils import shown
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime
     from ori.installer.linux import InstallLayout
@@ -148,7 +149,7 @@ def _exists(path: Path, description: str) -> bool:
         return path.exists() or path.is_symlink()
     except OSError as exc:
         raise InstalledConfigUnreadableError(
-            f"{description} at {path} could not be inspected, so whether this "
+            f"{description} at {shown(path)} could not be inspected, so whether this "
             f"root is in use cannot be determined: {exc}"
         ) from exc
 
@@ -167,7 +168,7 @@ def _entries(directory: Path, description: str) -> list[str]:
         return []
     except OSError as exc:
         raise InstalledConfigUnreadableError(
-            f"{description} at {directory} could not be inspected, so whether "
+            f"{description} at {shown(directory)} could not be inspected, so whether "
             f"this root is in use cannot be determined: {exc}"
         ) from exc
 
@@ -190,10 +191,10 @@ def _occupancy(layout: InstallLayout) -> list[str]:
     signs: list[str] = []
     current = layout.current
     if _exists(current, "the active release pointer"):
-        signs.append(f"an activated release at {current}")
+        signs.append(f"an activated release at {shown(current)}")
     releases = _entries(layout.releases, "the releases directory")
     if releases:
-        signs.append(f"managed releases ({', '.join(releases)})")
+        signs.append(f"managed releases ({', '.join(shown(r) for r in releases)})")
     data_entries = _entries(layout.data, "the data directory")
     if data_entries:
         signs.append(f"runtime state ({', '.join(data_entries)})")
@@ -232,7 +233,7 @@ def read_installed(layout: InstallLayout) -> InstalledIdentity | None:
         occupied = _occupancy(layout)
         if occupied:
             raise InstalledConfigUnreadableError(
-                f"{layout.root} already holds {', and '.join(occupied)}, but no "
+                f"{shown(layout.root)} already holds {', and '.join(occupied)}, but no "
                 "readable configuration, so the device it belongs to cannot be "
                 "identified. Deriving a new identity here would strand that "
                 "installation."
@@ -242,18 +243,18 @@ def read_installed(layout: InstallLayout) -> InstalledIdentity | None:
         document = read_config_document(str(config_path))
     except ConfigValidationError as exc:
         raise InstalledConfigUnreadableError(
-            f"an installation exists at {config_path} but its configuration "
+            f"an installation exists at {shown(config_path)} but its configuration "
             "could not be read"
         ) from exc
     device = document.get("device") if isinstance(document, dict) else None
     if not isinstance(device, dict):
         raise InstalledConfigUnreadableError(
-            f"an installation exists at {config_path} but declares no device section"
+            f"an installation exists at {shown(config_path)} but declares no device section"
         )
     device_id = str(device.get("id", "") or "").strip()
     if not device_id:
         raise InstalledConfigUnreadableError(
-            f"an installation exists at {config_path} but declares no device id"
+            f"an installation exists at {shown(config_path)} but declares no device id"
         )
     return InstalledIdentity(
         device_id=device_id,

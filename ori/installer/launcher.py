@@ -22,6 +22,9 @@ import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from shlex import quote
+
+from ori.utils.path_utils import shown
 
 MARKER = "# ori-launcher: managed by Ori Runtime — do not edit"
 _MODE = 0o755
@@ -161,8 +164,8 @@ def _assert_replaceable(path: Path, install_root: Path, scope: str) -> None:
             # not. Swapping one for the other silently would change the
             # privilege policy of an installed command.
             raise LauncherConflictError(
-                f"{path} is the launcher for the {form.scope}-scope "
-                f"installation at {install_root}, and this is a {scope}-scope "
+                f"{shown(path)} is the launcher for the {form.scope}-scope "
+                f"installation at {shown(install_root)}, and this is a {scope}-scope "
                 "install. Changing scope is a migration: uninstall the "
                 f"{form.scope}-scope installation first."
             )
@@ -171,18 +174,18 @@ def _assert_replaceable(path: Path, install_root: Path, scope: str) -> None:
     identity = read_identity(path)
     if identity is not None and identity.schema not in supported_versions():
         raise LauncherConflictError(
-            f"{path} appears to have been written by a newer version of Ori "
+            f"{shown(path)} appears to have been written by a newer version of Ori "
             f"(launcher schema {identity.schema}; this release understands "
             f"{sorted(supported_versions())}). Use that version to change it."
         )
     if identity is not None and identity.install_root != str(install_root):
         raise LauncherConflictError(
-            f"{path} declares the Ori installation at {identity.install_root}, "
-            f"not {install_root}. Remove that installation first, or choose "
+            f"{shown(path)} declares the Ori installation at {shown(identity.install_root)}, "
+            f"not {shown(install_root)}. Remove that installation first, or choose "
             "another location for this one."
         )
     raise LauncherConflictError(
-        f"{path} already exists and is not a launcher this installer wrote, so "
+        f"{shown(path)} already exists and is not a launcher this installer wrote, so "
         "it will not be replaced. Move it aside, or choose another location "
         "for the ori command."
     )
@@ -321,9 +324,9 @@ def path_guidance(path: Path, path_entries: Sequence[str] | None = None) -> str 
     if directory in entries:
         return None
     return (
-        f"{directory} is not on your PATH, so the `ori` command will not be "
+        f"{shown(directory)} is not on your PATH, so the `ori` command will not be "
         f"found yet.\nAdd it for this shell:\n"
-        f'    export PATH="{directory}:$PATH"\n'
+        f'    export PATH={quote(directory)}:"$PATH"\n'
         f"To make it permanent, add that line to ~/.profile (or ~/.bashrc, or "
         f"~/.zshrc for zsh)."
     )
