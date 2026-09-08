@@ -4,6 +4,7 @@
 import base64
 import json
 import time
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -11,12 +12,16 @@ from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.skills.signing import canonical_signed_payload
 from ori.state.store import StateStore
 
-try:
+if TYPE_CHECKING:
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-except ImportError:  # pragma: no cover
-    Ed25519PrivateKey = None
-    serialization = None
+else:  # pragma: no cover - environment without cryptography support
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    except Exception:
+        Ed25519PrivateKey = None
+        serialization = None
 
 
 @pytest.mark.skipif(

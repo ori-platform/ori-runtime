@@ -27,6 +27,8 @@ identity on upgrade and starts reading it.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import yaml
 
@@ -231,11 +233,12 @@ def test_no_installer_option_can_mutate_an_established_identity():
     test in this file.
     """
     installed = _installed()
-    for overrides in (
+    cases: tuple[dict[str, Any], ...] = (
         {"device_id": "other-id"},
         {"generate_device_id": True},
         {"device_id": "other-id", "generate_device_id": True},
-    ):
+    )
+    for overrides in cases:
         with pytest.raises(LinuxInstallError):
             collect_installer_config(
                 InstallerInputOptions(

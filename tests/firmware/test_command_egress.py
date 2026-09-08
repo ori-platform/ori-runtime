@@ -7,6 +7,7 @@ import base64
 import json
 import secrets
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -97,6 +98,7 @@ async def _register_device(store: StateStore, *, approve: bool = True) -> str:
         from ori.utils.time_utils import now_ms
 
         dev = await store.get_firmware_device(manifest["device_id"])
+        assert dev is not None
         await store.resolve_firmware_confirmation(
             manifest["device_id"],
             dev["anchor_epoch_id"],
@@ -168,7 +170,7 @@ def test_provisioning_approval_reproduces_shared_golden_vectors(case: dict) -> N
 
 
 def test_provisioning_approval_rejects_noncanonical_inputs() -> None:
-    good = dict(
+    good: dict[str, Any] = dict(
         capability_hash="sha256:" + "ab" * 32,
         device_id="ori-fw-7c9f2b3a",
         posture="sealed_flash",

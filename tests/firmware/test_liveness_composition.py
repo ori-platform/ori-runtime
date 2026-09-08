@@ -21,6 +21,7 @@ import copy
 import json
 import secrets
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -129,12 +130,19 @@ class _Cfg:
         self.device = _Cfg._Device()
 
 
+#: Structural double for the declared parameter type.
+_cfg: Any = _Cfg
+
+#: Structural double for the declared parameter type.
+_fakebus: Any = _FakeBus
+
+
 RUNTIME_KEY_ENV = "ORI_TEST_RUNTIME_COMMAND_SEED"
 PROVISIONER_KEY_ENV = "ORI_TEST_PROVISIONER_SEED"
 
 
-def _command_cfg() -> _Cfg:
-    return _Cfg(
+def _command_cfg() -> Any:
+    return _cfg(
         {
             "enabled": True,
             "runtime_command_key_env": RUNTIME_KEY_ENV,
@@ -167,7 +175,7 @@ def test_builder_passes_the_supervisor_through_to_the_subscriber(store) -> None:
     """Object identity, not merely 'a supervisor exists'."""
     shared = FirmwareLivenessSupervisor()
     subscriber = _build_firmware_telemetry_subscriber(
-        _Cfg(), _FakeBus(), store, None, shared
+        _cfg(), _fakebus(), store, None, shared
     )
     assert subscriber is not None
     assert subscriber._liveness_supervisor is shared
@@ -181,7 +189,7 @@ async def test_accepted_telemetry_through_the_subscriber_enables_signing(
     arriving on the subscriber makes the service able to sign."""
     shared = FirmwareLivenessSupervisor()
     subscriber = _build_firmware_telemetry_subscriber(
-        _Cfg(), _FakeBus(), store, None, shared
+        _cfg(), _fakebus(), store, None, shared
     )
     assert subscriber is not None
 
@@ -204,7 +212,7 @@ async def test_rejected_telemetry_does_not_establish_supervision(store) -> None:
     backstop suppressed by asserting supervision no runtime provides."""
     shared = FirmwareLivenessSupervisor()
     subscriber = _build_firmware_telemetry_subscriber(
-        _Cfg(), _FakeBus(), store, None, shared
+        _cfg(), _fakebus(), store, None, shared
     )
     assert subscriber is not None
     # Provision first: otherwise this passes because the device is
@@ -265,7 +273,7 @@ def test_composition_root_gives_both_halves_one_supervisor(store, command_keys) 
     """
     cfg = _command_cfg()
     supervisor, subscriber, pair, _scheduler = _build_firmware_liveness_stack(
-        cfg, _FakeBus(), store, None
+        cfg, _fakebus(), store, None
     )
     assert subscriber is not None and pair is not None
     _, service = pair
@@ -285,7 +293,7 @@ def test_both_builders_receive_the_same_supervisor(store, command_keys) -> None:
     """
     shared = FirmwareLivenessSupervisor()
     subscriber = _build_firmware_telemetry_subscriber(
-        _Cfg(), _FakeBus(), store, None, shared
+        _cfg(), _fakebus(), store, None, shared
     )
     pair = _build_firmware_command_service(_command_cfg(), store, shared)
     assert subscriber is not None and pair is not None
@@ -313,7 +321,7 @@ async def test_service_signs_only_after_the_shared_supervisor_is_populated(
 
     shared = FirmwareLivenessSupervisor()
     subscriber = _build_firmware_telemetry_subscriber(
-        _Cfg(), _FakeBus(), store, None, shared
+        _cfg(), _fakebus(), store, None, shared
     )
     pair = _build_firmware_command_service(_command_cfg(), store, shared)
     assert subscriber is not None and pair is not None
@@ -362,7 +370,7 @@ def test_command_service_cannot_be_built_without_a_supervisor(store) -> None:
         client_factory=lambda **_: _FakeClient(),
     )
     with pytest.raises(TypeError, match="liveness_supervisor"):
-        FirmwareCommandService(
+        FirmwareCommandService(  # type: ignore[call-arg]
             store=store,
             publisher=publisher,
             runtime_command_key_bytes=_RUNTIME_SEED,
@@ -372,10 +380,10 @@ def test_command_service_cannot_be_built_without_a_supervisor(store) -> None:
 
 def test_telemetry_subscriber_cannot_be_built_without_a_supervisor(store) -> None:
     with pytest.raises(TypeError, match="liveness_supervisor"):
-        MqttFirmwareTelemetrySubscriber(
+        MqttFirmwareTelemetrySubscriber(  # type: ignore[call-arg]
             broker_url="mqtt://localhost",
             telemetry_gate=FirmwareTelemetryGate(store),
-            event_bus=_FakeBus(),
+            event_bus=_fakebus(),
             state_store=store,
             runtime_device_id="runtime-01",
         )
@@ -388,7 +396,7 @@ def test_telemetry_subscriber_rejects_a_wrongly_typed_supervisor(store) -> None:
         MqttFirmwareTelemetrySubscriber(
             broker_url="mqtt://localhost",
             telemetry_gate=FirmwareTelemetryGate(store),
-            event_bus=_FakeBus(),
+            event_bus=_fakebus(),
             state_store=store,
             runtime_device_id="runtime-01",
             liveness_supervisor=object(),  # type: ignore[arg-type]
@@ -400,7 +408,7 @@ def test_signer_cannot_be_built_without_a_supervisor(store) -> None:
     the two the review named. Left alone it would have re-created the
     private-instance hazard inside any future direct signer caller."""
     with pytest.raises(TypeError, match="supervisor"):
-        FirmwareLivenessSigner(store, _RUNTIME_SEED)
+        FirmwareLivenessSigner(store, _RUNTIME_SEED)  # type: ignore[call-arg]
 
     with pytest.raises(FirmwareLivenessError, match="supervisor must be"):
         FirmwareLivenessSigner(
@@ -420,7 +428,7 @@ def test_the_stack_builds_a_scheduler_bound_to_the_command_service(
     the assertion that fails if the scheduler is ever built but not
     returned, or returned but built against the wrong object."""
     _supervisor, _subscriber, pair, scheduler = _build_firmware_liveness_stack(
-        _command_cfg(), _FakeBus(), store, None
+        _command_cfg(), _fakebus(), store, None
     )
     assert pair is not None and scheduler is not None
     assert scheduler._service is pair[1]
@@ -431,7 +439,7 @@ def test_no_command_egress_means_no_scheduler(store) -> None:
     """Without the command service there is no key and no publisher, so a
     loop would have nothing to say and no way to say it."""
     _supervisor, _subscriber, pair, scheduler = _build_firmware_liveness_stack(
-        _Cfg(), _FakeBus(), store, None
+        _cfg(), _fakebus(), store, None
     )
     assert pair is None
     assert scheduler is None
@@ -443,7 +451,7 @@ def test_the_configured_interval_reaches_the_scheduler(store, command_keys) -> N
     cfg = _command_cfg()
     cfg.gateway.firmware_commands["liveness_interval_s"] = 5.0
     _supervisor, _subscriber, _pair, scheduler = _build_firmware_liveness_stack(
-        cfg, _FakeBus(), store, None
+        cfg, _fakebus(), store, None
     )
     assert scheduler is not None
     assert scheduler.interval_s == 5.0
@@ -463,7 +471,7 @@ async def test_scheduler_publishes_only_for_telemetry_established_devices(
     )
 
     _supervisor, subscriber, pair, scheduler = _build_firmware_liveness_stack(
-        _command_cfg(), _FakeBus(), store, None
+        _command_cfg(), _fakebus(), store, None
     )
     assert subscriber is not None and pair is not None and scheduler is not None
     publisher, _service = pair
@@ -497,7 +505,7 @@ def test_a_configured_interval_above_the_contract_ceiling_fails_startup(
     cfg = _command_cfg()
     cfg.gateway.firmware_commands["liveness_interval_s"] = 30.0
     with pytest.raises(ValueError, match="at most"):
-        _build_firmware_liveness_stack(cfg, _FakeBus(), store, None)
+        _build_firmware_liveness_stack(cfg, _fakebus(), store, None)
 
 
 # --- The health snapshot derives the degradation reason ---

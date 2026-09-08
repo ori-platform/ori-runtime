@@ -494,9 +494,11 @@ async def test_a_retained_binding_with_an_unproven_leg_is_retired_on_load(
     await store.open()
     runtime._state_store = store
     try:
+        conn = store._conn
+        assert conn is not None
         await store._run_write(
             lambda: (
-                store._conn.execute(
+                conn.execute(
                     "INSERT INTO commissioned_binding (binding_seq, canonical_hash, "
                     "device_id, inventory_generation, signer_id, supersedes, "
                     "canonical_json, signature, zones_json, accepted_at_ms, "
@@ -536,7 +538,7 @@ async def test_a_retained_binding_with_an_unproven_leg_is_retired_on_load(
                         ),
                     ),
                 ),
-                store._conn.commit(),
+                conn.commit(),
             )
         )
         await runtime._load_commissioning(

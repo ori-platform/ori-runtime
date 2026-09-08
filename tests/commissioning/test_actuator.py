@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from ori.actions.commissioned_actuator import CommissionedActuator
@@ -35,6 +37,10 @@ class _Driver:
     @property
     def is_active(self) -> bool:
         return self.energised
+
+
+#: Structural double for the declared parameter type.
+_driver: Any = _Driver
 
 
 def _zone(*, active_high: bool, open_outcome: str) -> AcceptedZone:
@@ -74,7 +80,7 @@ async def test_outcomes_resolve_through_the_mapping_not_a_convention(
 ) -> None:
     """Two zones with opposite mappings drive opposite coil operations for
     the same outcome; a seam that assumed 'trip energises' fails one of them."""
-    driver = _Driver()
+    driver = _driver()
     actuator = CommissionedActuator(
         driver=driver,
         zone=_zone(active_high=True, open_outcome=open_outcome),
@@ -100,7 +106,7 @@ def test_the_level_follows_the_commissioned_polarity(
     active_high: bool, coil_state: str, level: str
 ) -> None:
     actuator = CommissionedActuator(
-        driver=_Driver(),
+        driver=_driver(),
         zone=_zone(active_high=active_high, open_outcome="de_energised"),
         binding_seq=1,
     )
@@ -110,7 +116,7 @@ def test_the_level_follows_the_commissioned_polarity(
 async def test_startup_commands_de_energised_explicitly() -> None:
     """The coil is commanded, not assumed: a release is issued whatever the
     platform default level would have been."""
-    driver = _Driver()
+    driver = _driver()
     driver.energised = True  # whatever the platform left the pin at
     actuator = CommissionedActuator(
         driver=driver,
@@ -131,7 +137,7 @@ async def test_startup_commands_de_energised_explicitly() -> None:
 
 
 async def test_a_driver_failure_is_reported_not_hidden() -> None:
-    driver = _Driver(fail=True)
+    driver = _driver(fail=True)
     actuator = CommissionedActuator(
         driver=driver,
         zone=_zone(active_high=True, open_outcome="energised"),
@@ -143,7 +149,7 @@ async def test_a_driver_failure_is_reported_not_hidden() -> None:
 
 def test_only_protected_circuit_outcomes_and_coil_states_are_accepted() -> None:
     actuator = CommissionedActuator(
-        driver=_Driver(),
+        driver=_driver(),
         zone=_zone(active_high=True, open_outcome="energised"),
         binding_seq=1,
     )
@@ -158,12 +164,12 @@ def test_only_protected_circuit_outcomes_and_coil_states_are_accepted() -> None:
         }
     )
     with pytest.raises(ValueError):
-        CommissionedActuator(driver=_Driver(), zone=firmware, binding_seq=1)
+        CommissionedActuator(driver=_driver(), zone=firmware, binding_seq=1)
 
 
 async def test_an_unknown_coil_state_is_refused() -> None:
     actuator = CommissionedActuator(
-        driver=_Driver(),
+        driver=_driver(),
         zone=_zone(active_high=True, open_outcome="energised"),
         binding_seq=1,
     )

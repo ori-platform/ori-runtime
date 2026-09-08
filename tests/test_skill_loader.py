@@ -5,6 +5,7 @@ import asyncio
 import base64
 import textwrap
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,15 +23,22 @@ from ori.skills.loader import (
 from ori.skills.sandbox import SkillSecurityError
 from ori.skills.signing import canonical_skill_payload
 
-try:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-        Ed25519PrivateKey,
-    )
+if TYPE_CHECKING:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-except Exception:  # pragma: no cover - environment without cryptography support
-    Ed25519PrivateKey = None
-    Encoding = None
-    PublicFormat = None
+else:  # pragma: no cover - environment without cryptography support
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+        )
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            PublicFormat,
+        )
+    except Exception:
+        Ed25519PrivateKey = None
+        Encoding = None
+        PublicFormat = None
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 

@@ -794,11 +794,15 @@ def test_the_runbook_derives_the_filenames_the_builder_writes() -> None:
     builder = ARTIFACT_BUILDER.read_text(encoding="utf-8")
     runbook = _runbook()
 
-    produced = re.search(r'ARTIFACT_NAME="([^"]+)"', builder).group(1)
+    produced_match = re.search(r'ARTIFACT_NAME="([^"]+)"', builder)
+    assert produced_match is not None
+    produced = produced_match.group(1)
     assert produced.replace("$RELEASE_VERSION", "$VERSION") in runbook, (
         f"the runbook does not derive the artifact name the builder writes: {produced}"
     )
-    registry = re.search(r'"\$OUTDIR/(release-keys[^"]*)"', builder).group(1)
+    registry_match = re.search(r'"\$OUTDIR/(release-keys[^"]*)"', builder)
+    assert registry_match is not None
+    registry = registry_match.group(1)
     assert registry in runbook, "the runbook names a registry the builder never writes"
 
 

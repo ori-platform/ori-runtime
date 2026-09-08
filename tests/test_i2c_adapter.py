@@ -8,6 +8,7 @@ import math
 import os
 import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -762,7 +763,9 @@ class TestReadAds1115Current:
 
         assert reading.metadata["sensitivity_v_per_amp"] == pytest.approx(1 / 30)
         assert reading.metadata["mains_frequency_hz"] == 50.0
-        assert reading.metadata["sample_count"] >= adapter._window.min_samples
+        window = adapter._window
+        assert window is not None
+        assert reading.metadata["sample_count"] >= window.min_samples
         assert reading.metadata["window_ms"] > 0
         assert "bias_volts" in reading.metadata
 
@@ -791,6 +794,7 @@ class TestReadAds1115Current:
             try:
                 return next(slow)
             except StopIteration:
+                assert adapter._window is not None
                 time.sleep(adapter._window.nominal_seconds)
                 return 1.65
 
@@ -821,6 +825,7 @@ class TestReadAds1115Current:
 
         del original, reads
         rate = adapter._calibration["data_rate"]
+        assert adapter._window is not None
         expected = rate * adapter._window.nominal_seconds
         # Pacing bounds the count by the conversion rate. Without it the loop
         # takes thousands of reads in the same window.
@@ -956,7 +961,7 @@ class TestPiIntegration:
         await adapter.close()
         assert not adapter.is_connected
 
-    _ADS1115_GUARD = dict(
+    _ADS1115_GUARD: dict[str, Any] = dict(
         available=_ADS1115_AVAILABLE and _BLINKA_AVAILABLE,
         package=(
             "adafruit-circuitpython-ads1x15 and a blinka platform library "

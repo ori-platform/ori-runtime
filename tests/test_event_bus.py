@@ -3,6 +3,7 @@
 
 import asyncio
 import time
+from typing import Any, cast
 
 import pytest
 
@@ -88,7 +89,7 @@ class TestSubscribe:
 
         bus = EventBus()
         with caplog.at_level(logging.WARNING, logger="ori.network.event_bus"):
-            bus.subscribe("current_clamp", sync_handler)
+            bus.subscribe("current_clamp", cast(Any, sync_handler))
 
         assert any("not async" in r.message for r in caplog.records)
 
@@ -108,7 +109,7 @@ class TestSubscribe:
 
         bus = EventBus()
         with caplog.at_level(logging.WARNING, logger="ori.network.event_bus"):
-            bus.subscribe("current_clamp", sync_handler)
+            bus.subscribe("current_clamp", cast(Any, sync_handler))
 
         assert bus.subscriber_count("current_clamp") == 1
 

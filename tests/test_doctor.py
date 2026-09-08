@@ -13,7 +13,7 @@ import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Sequence
+from typing import Any, Sequence
 
 import pytest
 
@@ -682,10 +682,12 @@ def test_mode_evaluation_uses_the_owner_class_first() -> None:
         st_uid = 1000
         st_gid = 50
 
+    _stat: Any = _Stat
+
     service = doctor.ServiceIdentity("svc", 1000, frozenset({50}))
-    assert doctor._mode_allows(_Stat(), service, doctor.READ) is False
+    assert doctor._mode_allows(_stat(), service, doctor.READ) is False
     other = doctor.ServiceIdentity("other", 1001, frozenset({50}))
-    assert doctor._mode_allows(_Stat(), other, doctor.READ) is True
+    assert doctor._mode_allows(_stat(), other, doctor.READ) is True
 
 
 # --- classification and reporting ----------------------------------------

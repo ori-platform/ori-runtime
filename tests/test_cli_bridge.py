@@ -1483,9 +1483,11 @@ async def _retain_legacy_binding(config_path: Path) -> None:
     store = cli_bridge._commissioning_store(config)
     await store.open()
     try:
+        conn = store._conn
+        assert conn is not None
         await store._run_write(
             lambda: (
-                store._conn.execute(
+                conn.execute(
                     "INSERT INTO commissioned_binding (binding_seq, canonical_hash, "
                     "device_id, inventory_generation, signer_id, supersedes, "
                     "canonical_json, signature, zones_json, accepted_at_ms, "
@@ -1497,7 +1499,7 @@ async def _retain_legacy_binding(config_path: Path) -> None:
                         json.dumps([_legacy_zone()]),
                     ),
                 ),
-                store._conn.commit(),
+                conn.commit(),
             )
         )
     finally:

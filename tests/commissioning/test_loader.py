@@ -399,12 +399,12 @@ async def _seed_row(store: StateStore, table: str, zones_json: str) -> None:
             "supersedes, canonical_json, signature, zones_json, verified_at_ms) "
             "VALUES (1, 3, ?, ?, 1, 's', NULL, '{}', 'ed25519:x', ?, 1000)"
         )
+    conn = store._conn
+    assert conn is not None
     await store._run_write(
         lambda: (
-            store._conn.execute(
-                sql, ("sha256:" + "e" * 64, CTX["device_id"], zones_json)
-            ),
-            store._conn.commit(),
+            conn.execute(sql, ("sha256:" + "e" * 64, CTX["device_id"], zones_json)),
+            conn.commit(),
         )
     )
 

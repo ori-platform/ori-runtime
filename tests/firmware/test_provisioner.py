@@ -167,6 +167,7 @@ def _confirm(bench, device_id="ori-fw-bench0001"):
         await store.open()
         try:
             dev = await store.get_firmware_device(device_id)
+            assert dev is not None
             await store.resolve_firmware_confirmation(
                 device_id, dev["anchor_epoch_id"], status="confirmed", at_ms=now_ms()
             )

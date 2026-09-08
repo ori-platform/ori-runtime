@@ -42,7 +42,7 @@ def test_bundled_profile_vectors_decode_within_tolerance(profile_name):
 
     for vector in profile.vectors:
         decoded = decode_metric(profile, vector.metric, vector.raw_registers)
-        assert abs(decoded - vector.expected_value) <= vector.tolerance, (
+        assert abs(decoded - float(vector.expected_value)) <= vector.tolerance, (
             f"{profile_name}:{vector.metric} decoded {decoded}, expected "
             f"{vector.expected_value} +/- {vector.tolerance}"
         )

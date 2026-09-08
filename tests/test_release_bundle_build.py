@@ -15,6 +15,7 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
+from typing import cast
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -167,7 +168,9 @@ def _explain_difference(first: Path, second: Path) -> str:
     left, right = _archive_fingerprint(first), _archive_fingerprint(second)
     differences = [key for key in left if left[key] != right[key]]
     lines = [f"bundles differ in: {differences or 'compressed bytes only'}"]
-    for member_a, member_b in zip(left["members"], right["members"]):
+    for member_a, member_b in zip(
+        cast(list, left["members"]), cast(list, right["members"])
+    ):
         if member_a != member_b:
             lines.append(f"  first  {member_a}")
             lines.append(f"  second {member_b}")

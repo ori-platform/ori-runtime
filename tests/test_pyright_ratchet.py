@@ -92,8 +92,11 @@ def test_only_errors_are_counted() -> None:
 def test_the_committed_baseline_records_a_total_and_a_breakdown() -> None:
     baseline = json.loads(BASELINE.read_text())
     assert isinstance(baseline["total"], int) and baseline["total"] >= 0
-    assert baseline["by_area"]
     assert sum(baseline["by_area"].values()) == baseline["total"]
+    # A breakdown exists exactly when there is debt to break down. Requiring
+    # one unconditionally would mean a repository at zero could never record
+    # that it is at zero.
+    assert bool(baseline["by_area"]) == (baseline["total"] > 0)
     assert baseline["note"].strip()
 
 

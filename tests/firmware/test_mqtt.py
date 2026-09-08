@@ -4,6 +4,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -64,6 +65,13 @@ class _FakeStore:
         self.history.append(event)
 
 
+#: Structural double for the declared parameter type.
+_fakefirmwaregate: Any = _FakeFirmwareGate
+
+#: Structural double for the declared parameter type.
+_fakestore: Any = _FakeStore
+
+
 class _FakeClient:
     def __init__(self, payloads: list[dict] | None = None) -> None:
         self.payloads = payloads or []
@@ -111,9 +119,9 @@ def _subscriber(*, payloads: list[dict] | None = None, gate=None, store=None, bu
     return (
         firmware_mqtt_module.MqttFirmwareTelemetrySubscriber(
             broker_url="mqtt://localhost",
-            telemetry_gate=gate or _FakeFirmwareGate(),
+            telemetry_gate=gate or _fakefirmwaregate(),
             event_bus=bus or EventBus(),
-            state_store=store or _FakeStore(),
+            state_store=store or _fakestore(),
             runtime_device_id="runtime-01",
             liveness_supervisor=FirmwareLivenessSupervisor(),
             client_factory=lambda **_: fake_client,
@@ -140,8 +148,8 @@ async def test_serve_until_subscribes_to_firmware_topic():
 
 
 async def test_signed_telemetry_payload_publishes_accepted_readings_to_event_bus():
-    gate = _FakeFirmwareGate()
-    store = _FakeStore()
+    gate = _fakefirmwaregate()
+    store = _fakestore()
     bus = EventBus()
     delivered = []
 
@@ -174,8 +182,8 @@ async def test_signed_telemetry_payload_publishes_accepted_readings_to_event_bus
 
 
 async def test_signed_fault_payload_is_recorded_without_event_bus_publish():
-    gate = _FakeFirmwareGate()
-    store = _FakeStore()
+    gate = _fakefirmwaregate()
+    store = _fakestore()
     bus = EventBus(strict_exceptions=True)
     delivered = []
 
@@ -208,9 +216,9 @@ def test_paho_unavailable_raises():
             mp.setattr(firmware_mqtt_module, "_PAHO_AVAILABLE", False)
             firmware_mqtt_module.MqttFirmwareTelemetrySubscriber(
                 broker_url="mqtt://localhost",
-                telemetry_gate=_FakeFirmwareGate(),
+                telemetry_gate=_fakefirmwaregate(),
                 event_bus=EventBus(),
-                state_store=_FakeStore(),
+                state_store=_fakestore(),
                 runtime_device_id="runtime-01",
                 liveness_supervisor=FirmwareLivenessSupervisor(),
             )

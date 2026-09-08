@@ -69,6 +69,7 @@ class _FakeClient:
 
     def loop_start(self):
         self.loop_started = True
+        assert self.on_connect is not None
         self.on_connect(self, None, None, 0)
 
     def subscribe(self, topic):
@@ -78,6 +79,7 @@ class _FakeClient:
         decoded = json.loads(payload.decode("utf-8"))
         self.published.append((topic, decoded, qos, retain))
         if self.response_builder is not None:
+            assert self.on_message is not None
             self.on_message(self, None, _Message(self.response_builder(decoded)))
 
     def loop_stop(self):
