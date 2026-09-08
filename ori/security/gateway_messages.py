@@ -35,6 +35,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from ori.utils.path_utils import shown
 from ori.utils.time_utils import now_ms
 
 AUTH_FIELD = "auth"
@@ -110,7 +111,7 @@ class GatewayReplayCache:
                 logger.warning(
                     "[gateway-auth] persistent replay cache unavailable at %s; "
                     "falling back to in-memory replay protection.",
-                    path,
+                    shown(path),
                     exc_info=True,
                 )
                 self._conn = None

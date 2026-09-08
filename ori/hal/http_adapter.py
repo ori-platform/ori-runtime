@@ -12,6 +12,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
 )
 from ori.network.events import SensorReading
+from ori.utils.path_utils import shown
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -143,13 +144,14 @@ class HttpAdapter(BaseAdapter):
                 # Keep last cached value if available.
                 logger.warning(
                     "HttpAdapter: poll failed for url=%s json_path=%s: %s",
-                    self._url,
-                    self._json_path,
+                    shown(self._url),
+                    shown(self._json_path),
                     exc,
                 )
             except Exception:
                 logger.exception(
-                    "HttpAdapter: unexpected poll-loop error for url=%s", self._url
+                    "HttpAdapter: unexpected poll-loop error for url=%s",
+                    shown(self._url),
                 )
             try:
                 await asyncio.sleep(self._poll_interval_ms / 1000.0)

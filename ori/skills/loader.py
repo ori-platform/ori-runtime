@@ -44,8 +44,9 @@ from ori.reasoning.action_registry import (
 )
 from ori.reasoning.rule_engine import RESERVED_CONTEXT_NAMES
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
-from ori.skills.sandbox import SkillSecurityError
+from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
 from ori.skills.signing import verify_community_skill_signature
+from ori.utils.path_utils import shown
 
 logger = logging.getLogger(__name__)
 
@@ -292,26 +293,47 @@ _UniqueStringKeySafeLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
     _construct_unique_string_mapping,
 )
-_HUB_ROOT_PUBLIC_KEY_B64 = "PENDING_REPLACE_AT_HUB_LAUNCH"
+# The value a build ships with until a Hub signing key exists. Compared as a
+# sentinel rather than against the constant itself, so a deployment that
+# configures a real anchor is not called unconfigured by a build that has one.
+_UNCONFIGURED_HUB_ANCHOR = "PENDING_REPLACE_AT_HUB_LAUNCH"
+_HUB_ROOT_PUBLIC_KEY_B64 = _UNCONFIGURED_HUB_ANCHOR
 _HUB_TRUST_ANCHOR_ENV = "ORI_HUB_ROOT_PUBLIC_KEY_B64"
 
 
-def _refuse_published_hub_anchor(trust_anchor_b64: str, source: str) -> None:
-    """A Hub anchor is authority only while its private half is secret.
+def _anchor_fault(trust_anchor_b64: str, source: str) -> str | None:
+    """Why this anchor can authenticate nothing, or ``None`` if it can.
 
-    `verify_signed_payload` refuses the same key material for every caller, so
-    this is the second of two layers rather than the only one: it names the
-    source a deployment actually configured, which the shared verifier cannot
-    know. Material that does not decode to a 32-byte key is left to the
-    verifier, which reports a malformed anchor in its own vocabulary; refusing
-    it here would give one fault two messages.
+    Every way an anchor fails is answered here, because the caller asks two
+    questions with one answer: whether to refuse the skill being read, and
+    whether the deployment can admit community skills at all. Leaving the
+    malformed cases to the shared verifier answered only the first — it
+    refuses per skill, in a vocabulary that never reaches a health report, so
+    a device with an anchor that decodes to nothing refused every community
+    skill while reporting the anchor usable.
+
+    One fault still yields one message: this refuses first, so
+    `verify_signed_payload` is never reached with an anchor it would also
+    reject. What it adds is the source a deployment actually configured, which
+    the shared verifier cannot know.
+
+    An empty anchor has no branch here because it cannot arrive: an empty
+    constructor value and an empty environment variable both fall through to
+    the shipped sentinel, which the caller answers before this is reached.
     """
     try:
         raw = base64.b64decode(trust_anchor_b64.encode("ascii"), validate=True)
     except (binascii.Error, ValueError, UnicodeEncodeError):
-        return
-    if len(raw) == 32 and raw in PUBLISHED_TEST_KEYS:
-        raise SkillSecurityError(
+        return f"{source} is not valid base64"
+    if base64.b64encode(raw).decode("ascii") != trust_anchor_b64:
+        return f"{source} is not canonical base64"
+    if len(raw) != 32:
+        return (
+            f"{source} does not decode to a 32-byte Ed25519 public key; it "
+            f"decodes to {len(raw)} bytes"
+        )
+    if raw in PUBLISHED_TEST_KEYS:
+        return (
             f"{source} names a key whose private seed is "
             "published test material in this repository, so anyone holding a "
             "clone can sign a community skill this runtime would accept. A "
@@ -321,6 +343,7 @@ def _refuse_published_hub_anchor(trust_anchor_b64: str, source: str) -> None:
             "that has never left the producer and configure its public half "
             "instead."
         )
+    return None
 
 
 # Where first-party skills live. A source checkout keeps them beside the
@@ -357,6 +380,33 @@ def first_party_skill_roots() -> tuple[Path, ...]:
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class CommunitySkillAdmission:
+    """Whether this deployment can admit community skills, and what it dropped.
+
+    Reporting and attribution are separate questions, and conflating them is
+    how a device goes quiet. An anchor that is a well-formed key but not the
+    Hub's refuses every community skill with a signature failure, which cannot
+    be told apart from a tampered skill — so it is not attributed. The device
+    still knows the skills did not load, and that is what `refused_skills`
+    carries.
+
+    Args:
+        anchor_usable: Whether the community trust anchor can verify anything.
+            False only where the anchor itself is at fault beyond doubt.
+        anchor_fault: Why it cannot, in the words the refusal uses.
+        refused_skills: Community skills the last load did not admit, for any
+            reason. Zero on a deployment that carries none, which is why an
+            unusable anchor is reported without being treated as a fault on
+            its own — the default anchor is unconfigured, and a device running
+            only first-party skills is not degraded by that.
+    """
+
+    anchor_usable: bool
+    anchor_fault: str | None
+    refused_skills: int
 
 
 @dataclass
@@ -530,8 +580,44 @@ class SkillLoader:
         # Running total of handlers this loader has subscribed, so the
         # cumulative budget survives across separate register() calls.
         self._registered_subscriptions = 0
+        # What the last load_all() made of the community anchor. Both halves
+        # are recorded together so a health report never pairs one load's
+        # count with another load's anchor.
+        self._admission = self._admission_report(fault=self.community_anchor_fault())
 
     # ── Public API ────────────────────────────────────────────────────────────
+
+    def community_anchor_fault(self) -> str | None:
+        """Why no community skill can be verified here, or ``None`` if one can.
+
+        The anchor is the deployment's, so this is answerable before any skill
+        directory is read, and it is the same answer for every one of them.
+        """
+        anchor = self._resolve_community_trust_anchor()
+        if anchor == _UNCONFIGURED_HUB_ANCHOR:
+            return "community skill verification trust anchor is not configured"
+        return _anchor_fault(anchor, self._community_anchor_source())
+
+    def community_admission(self) -> CommunitySkillAdmission:
+        """What the last :meth:`load_all` made of the community anchor."""
+        return self._admission
+
+    def _community_anchor_source(self) -> str:
+        return (
+            "the community trust anchor given to SkillLoader"
+            if self._community_trust_anchor_public_key_b64
+            else _HUB_TRUST_ANCHOR_ENV
+        )
+
+    @staticmethod
+    def _admission_report(
+        *, fault: str | None, refused: int = 0
+    ) -> CommunitySkillAdmission:
+        return CommunitySkillAdmission(
+            anchor_usable=fault is None,
+            anchor_fault=fault,
+            refused_skills=refused,
+        )
 
     def load_all(self, skills_dir: str) -> list[Skill]:
         """Load every skill sub-directory found under *skills_dir*.
@@ -547,14 +633,30 @@ class SkillLoader:
         Returns:
             List of successfully loaded :class:`Skill` objects.
         """
+        anchor_fault = self.community_anchor_fault()
+        self._admission = self._admission_report(fault=anchor_fault)
+
         root = Path(skills_dir)
         if not root.is_dir():
-            logger.warning("SkillLoader: skills_dir %r does not exist", skills_dir)
+            logger.warning(
+                "SkillLoader: skills_dir %s does not exist", shown(skills_dir)
+            )
             return []
 
         skills: list[Skill] = []
         seen_names: dict[str, Path] = {}
         subscription_total = 0
+        refused_by_anchor: list[Path] = []
+        # Every community directory that did not become a loaded skill,
+        # however it failed. A packaged skill that fails to load is a
+        # packaging fault rather than a community-admission one, so it is not
+        # counted here.
+        community_not_admitted: set[Path] = set()
+
+        def _note_not_admitted(child: Path) -> None:
+            if not self._is_core_bundled_skill(child):
+                community_not_admitted.add(child)
+
         for child in self._discover_candidates(root):
             try:
                 skill = self.load_one(child)
@@ -569,9 +671,9 @@ class SkillLoader:
                     logger.error(
                         "SkillLoader: skipping %s — skill name %r is already "
                         "loaded from %s",
-                        child,
+                        shown(child),
                         skill.name,
-                        previous,
+                        shown(previous),
                     )
                     continue
 
@@ -584,7 +686,7 @@ class SkillLoader:
                         "SkillLoader: skipping %s — its %d handlers would take "
                         "the load past the cumulative limit of %d "
                         "subscriptions (%d already committed)",
-                        child,
+                        shown(child),
                         cost,
                         _MAX_TOTAL_SUBSCRIPTIONS,
                         subscription_total,
@@ -598,22 +700,45 @@ class SkillLoader:
                     "SkillLoader: loaded skill %r v%s from %s",
                     skill.name,
                     skill.version,
-                    child,
+                    shown(child),
                 )
             except SkillValidationError as exc:
+                _note_not_admitted(child)
                 logger.error(
-                    "SkillLoader: validation failed for %s — %s", child.name, exc
+                    "SkillLoader: validation failed for %s — %s",
+                    shown(child.name),
+                    exc,
                 )
+            except SkillAnchorError:
+                # One deployment fault, reported once below. Logging it per
+                # skill buries the misconfiguration under a count of the
+                # skills it happened to affect.
+                _note_not_admitted(child)
+                refused_by_anchor.append(child)
             except SkillSecurityError as exc:
+                _note_not_admitted(child)
                 logger.error(
                     "SkillLoader: security validation failed for %s — %s",
-                    child.name,
+                    shown(child.name),
                     exc,
                 )
             except Exception:
+                _note_not_admitted(child)
                 logger.exception(
-                    "SkillLoader: unexpected error loading skill from %s", child
+                    "SkillLoader: unexpected error loading skill from %s",
+                    shown(child),
                 )
+
+        if refused_by_anchor:
+            logger.error(
+                "SkillLoader: %d community skill(s) were not loaded — %s. Affected: %s",
+                len(refused_by_anchor),
+                anchor_fault,
+                ", ".join(sorted(shown(child.name) for child in refused_by_anchor)),
+            )
+        self._admission = self._admission_report(
+            fault=anchor_fault, refused=len(community_not_admitted)
+        )
         return skills
 
     def validate_one(self, skill_dir: Path | str) -> Skill:
@@ -879,7 +1004,7 @@ class SkillLoader:
                             "SkillLoader: stopping discovery in %s after %d "
                             "entries — the directory is larger than the runtime "
                             "will scan",
-                            root,
+                            shown(root),
                             _MAX_DIRECTORY_ENTRIES,
                         )
                         break
@@ -901,19 +1026,21 @@ class SkillLoader:
                             "SkillLoader: %d candidate manifests found in %s — "
                             "the limit per load is %d; the rest are not read",
                             len(candidates),
-                            root,
+                            shown(root),
                             _MAX_SKILLS_PER_LOAD,
                         )
                         break
         except OSError:
-            logger.exception("SkillLoader: could not scan skills directory %s", root)
+            logger.exception(
+                "SkillLoader: could not scan skills directory %s", shown(root)
+            )
             return []
 
         if truncated:
             logger.warning(
                 "SkillLoader: skill discovery was truncated in %s — some "
                 "manifests were not considered",
-                root,
+                shown(root),
             )
         return sorted(candidates)
 
@@ -1127,17 +1254,13 @@ class SkillLoader:
                 "with the runtime. Re-sign it with an 'ed25519:' signature."
             )
 
+        # Raised as the anchor's fault rather than this skill's: nothing in
+        # the file being read caused it, and every other community skill on
+        # the device is about to be refused for the same reason.
+        anchor_fault = self.community_anchor_fault()
+        if anchor_fault is not None:
+            raise SkillAnchorError(anchor_fault)
         trust_anchor = self._resolve_community_trust_anchor()
-        if trust_anchor == "PENDING_REPLACE_AT_HUB_LAUNCH":
-            raise SkillSecurityError(
-                "community skill verification trust anchor is not configured"
-            )
-        _refuse_published_hub_anchor(
-            trust_anchor,
-            "the community trust anchor given to SkillLoader"
-            if self._community_trust_anchor_public_key_b64
-            else _HUB_TRUST_ANCHOR_ENV,
-        )
 
         verify_community_skill_signature(
             raw_skill=raw,
@@ -1724,7 +1847,8 @@ class SkillLoader:
             return module
         except Exception:
             logger.exception(
-                "SkillLoader: failed to load hooks.py for %s", hooks_path.parent.name
+                "SkillLoader: failed to load hooks.py for %s",
+                shown(hooks_path.parent.name),
             )
             return None
 

@@ -55,7 +55,7 @@ from ori.security.commissioning.profiles import (
     load_shipped_profile_set,
 )
 from ori.skills.loader import Skill, SkillLoader, SkillValidationError
-from ori.skills.sandbox import SkillSecurityError
+from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
 from ori.state.store import StateStore
 from ori.utils.bool_utils import is_truthy
 
@@ -634,6 +634,11 @@ def _skills_result(
     unactivatable = [
         skill for skill in skills if not skill.get("activation", {"ok": True})["ok"]
     ]
+    # One deployment fact, published once. Every community skill in the
+    # listing carries `community_anchor_error` when this is unusable, and a
+    # consumer reading only the per-skill errors would count one
+    # misconfiguration as N faulty skills.
+    anchor_fault = loader.community_anchor_fault()
     return {
         "valid": not errors and not unactivatable,
         # Also conjunctive. A skill that failed to parse or validate is not
@@ -647,6 +652,10 @@ def _skills_result(
         "unactivatable_count": len(unactivatable),
         "skills": skills,
         "errors": errors,
+        "community_anchor": {
+            "usable": anchor_fault is None,
+            "detail": anchor_fault,
+        },
     }
 
 
@@ -693,6 +702,11 @@ def _summarize_skill(skill: Skill, skill_dir: Path) -> dict[str, Any]:
 
 
 def _skill_error_code(exc: Exception) -> str:
+    # Before the SkillSecurityError branch it is a subclass of: an anchor a
+    # deployment configured wrongly is not a fault in the skill that happened
+    # to be read when it was noticed.
+    if isinstance(exc, SkillAnchorError):
+        return "community_anchor_error"
     if isinstance(exc, SkillSecurityError):
         return "skill_security_error"
     if isinstance(exc, SkillValidationError):

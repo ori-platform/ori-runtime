@@ -127,19 +127,19 @@ class FirmwareTelemetryGate:
 
         if outcome == "pending_manifest_epoch":
             logger.info(
-                "firmware device %s published a new manifest epoch; stored as a "
+                "firmware device %r published a new manifest epoch; stored as a "
                 "PENDING candidate awaiting promotion (the active anchor is "
                 "unchanged)",
                 device_id,
             )
         elif outcome == "unchanged":
             logger.debug(
-                "firmware device %s re-published an identical anchor (no-op)",
+                "firmware device %r re-published an identical anchor (no-op)",
                 device_id,
             )
         else:
             logger.info(
-                "firmware device %s provisioned (posture=%s, awaiting approval)",
+                "firmware device %r provisioned (posture=%s, awaiting approval)",
                 device_id,
                 posture,
             )
@@ -256,7 +256,7 @@ class FirmwareTelemetryGate:
                 "returning to it would make rotation reversible",
             )
         logger.info(
-            "firmware device %s re-provisioned with a new key; pending promotion",
+            "firmware device %r re-provisioned with a new key; pending promotion",
             device_id,
         )
         return manifest_hash

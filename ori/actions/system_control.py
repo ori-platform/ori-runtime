@@ -10,6 +10,8 @@ kernel-level bus lockups that cannot be fixed by restarting the process.
 import asyncio
 import logging
 
+from ori.utils.path_utils import shown
+
 logger = logging.getLogger(__name__)
 
 _ALLOWED_SUBSYSTEMS = frozenset({"i2c-bcm2835", "i2c-bcm2708", "serial8250"})
@@ -80,7 +82,7 @@ class SystemControlAction:
                 )
                 logger.error(
                     "SystemControlAction: command failed for %s (rc=%s): %s",
-                    node_path,
+                    shown(node_path),
                     proc.returncode,
                     err_text,
                 )
@@ -89,12 +91,12 @@ class SystemControlAction:
         except asyncio.TimeoutError:
             logger.error(
                 "SystemControlAction: timeout writing subsystem node %s",
-                node_path,
+                shown(node_path),
             )
             return False
         except Exception:
             logger.exception(
                 "SystemControlAction: failed writing subsystem node %s",
-                node_path,
+                shown(node_path),
             )
             return False

@@ -1812,3 +1812,111 @@ def test_cli_bridge_commissioning_deliver_refuses_a_published_anchor(
     assert payload["error"]["code"] == "anchor_error"
     assert "private seed is published" in payload["error"]["detail"]
     assert not (tmp_path / BINDING_RELATIVE_PATH).exists()
+
+
+def _community_skill_yaml(name: str) -> str:
+    return textwrap.dedent(
+        f"""
+        name: {name}
+        version: 0.1.0
+        author: community
+        signature: ed25519:AAAA
+        sensors_required:
+          - type: usb_power
+        triggers:
+          - name: warm
+            condition: value > 1
+            action_tier: A
+        actions:
+          available:
+            - name: log_to_dashboard
+              tier: A
+          defaults:
+            warm: [log_to_dashboard]
+        """
+    )
+
+
+def test_cli_bridge_skills_list_attributes_one_anchor_fault_to_the_anchor(
+    tmp_path, monkeypatch, capsys
+):
+    """One misconfiguration, not one faulty skill per community skill.
+
+    A consumer counting `errors` on a device with N community skills would
+    otherwise read one published anchor as N skills that need fixing.
+    """
+    import base64
+
+    from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+    published = base64.b64encode(next(iter(PUBLISHED_TEST_KEYS))).decode("ascii")
+    monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", published)
+
+    skills_dir = tmp_path / "skills"
+    for index in range(2):
+        skill_dir = skills_dir / f"community-{index}"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "skill.yaml").write_text(
+            _community_skill_yaml(f"community-{index}"), encoding="utf-8"
+        )
+
+    rc = cli_bridge.main(["skills", "list", "--skills-dir", str(skills_dir)])
+    payload = _read_stdout_json(capsys)
+
+    assert rc == 0
+    result = payload["result"]
+    assert result["community_anchor"]["usable"] is False
+    assert "private seed is published" in result["community_anchor"]["detail"]
+    assert {error["code"] for error in result["errors"]} == {"community_anchor_error"}
+
+
+def test_cli_bridge_skills_list_reports_a_usable_anchor_as_usable(
+    tmp_path, monkeypatch, capsys
+):
+    """`usable` is the deployment's answer, not a summary of what was found.
+
+    A device with no community skills at all still reports whether it could
+    admit one.
+    """
+    monkeypatch.setenv(
+        "ORI_HUB_ROOT_PUBLIC_KEY_B64", base64.b64encode(b"k" * 32).decode("ascii")
+    )
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    rc = cli_bridge.main(["skills", "list", "--skills-dir", str(skills_dir)])
+    payload = _read_stdout_json(capsys)
+
+    assert rc == 0
+    assert payload["result"]["community_anchor"] == {"usable": True, "detail": None}
+
+
+@pytest.mark.parametrize(
+    "anchor", ["not-a-key", base64.b64encode(b"x" * 16).decode("ascii")]
+)
+def test_cli_bridge_skills_list_calls_a_malformed_anchor_unusable(
+    tmp_path, monkeypatch, capsys, anchor
+):
+    """An anchor that decodes to nothing refuses every skill on the device.
+
+    Reporting it usable beside those refusals puts the reassuring answer in
+    the field automation branches on and the disqualifying one in a per-skill
+    detail nobody aggregates.
+    """
+    monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", anchor)
+    skills_dir = tmp_path / "skills"
+    for index in range(2):
+        skill_dir = skills_dir / f"community-{index}"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "skill.yaml").write_text(
+            _community_skill_yaml(f"community-{index}"), encoding="utf-8"
+        )
+
+    rc = cli_bridge.main(["skills", "list", "--skills-dir", str(skills_dir)])
+    payload = _read_stdout_json(capsys)
+
+    assert rc == 0
+    result = payload["result"]
+    assert result["community_anchor"]["usable"] is False
+    assert "ORI_HUB_ROOT_PUBLIC_KEY_B64" in result["community_anchor"]["detail"]
+    assert {error["code"] for error in result["errors"]} == {"community_anchor_error"}
