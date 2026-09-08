@@ -3,6 +3,7 @@
 
 import ast
 import base64
+import logging
 import os
 import pathlib
 import subprocess
@@ -1326,6 +1327,236 @@ class TestLoadExample:
         )
 
         with pytest.raises(ConfigValidationError, match="require_signed"):
+            Config.load(yaml_path)
+
+    def test_the_in_memory_store_is_not_a_path_to_resolve(self, tmp_path):
+        """SQLite's private database names no file."""
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ":memory:"
+            """,
+        )
+
+        assert Config.load(yaml_path).database_path == ":memory:"
+
+    def test_a_store_only_the_working_directory_could_find_is_reported(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Coming up on an empty store would strand the binding in the old one.
+
+        Reported and not refused: a file of that name in the working directory
+        is a coincidence as often as it is this device's store.
+        """
+        home = tmp_path / "data"
+        home.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "ori_state.db").write_bytes(b"")
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        with caplog.at_level(logging.WARNING, logger="ori.config"):
+            cfg = Config.load(yaml_path)
+
+        assert cfg.database_path == str(home / "ori_state.db")
+        warned = "\n".join(
+            r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+        )
+        assert str(elsewhere / "ori_state.db") in warned
+        assert str(home / "ori_state.db") in warned
+
+    def test_a_store_beside_the_config_is_used_without_complaint(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The report fires on ambiguity alone, not on every relative path."""
+        home = tmp_path / "data"
+        home.mkdir()
+        (home / "ori_state.db").write_bytes(b"")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "ori_state.db").write_bytes(b"")
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        with caplog.at_level(logging.WARNING, logger="ori.config"):
+            cfg = Config.load(yaml_path)
+
+        assert cfg.database_path == str(home / "ori_state.db")
+        assert not [r for r in caplog.records if "database.path" in r.getMessage()]
+
+    def test_a_relative_store_path_resolves_beside_the_config(
+        self, tmp_path, monkeypatch
+    ):
+        """Otherwise the store a command opens depends on where it was run."""
+        home = tmp_path / "data"
+        home.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        assert Config.load(yaml_path).database_path == str(home / "ori_state.db")
+
+    def test_an_absolute_store_path_is_taken_exactly_as_declared(self, tmp_path):
+        """An absolute path is the operator's own, and is not rewritten."""
+        elsewhere = tmp_path / "mount" / ".." / "mount" / "ori_state.db"
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: {elsewhere}
+            """,
+        )
+
+        assert Config.load(yaml_path).database_path == str(elsewhere)
+
+    def _encrypted_posture_config(self, home, prefix, monkeypatch):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        return _write_yaml(
+            home,
+            _sign_config_yaml(
+                f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              config_signature:
+                require_signed: true
+              skills:
+                require_signed: true
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "{prefix}"
+            database:
+              path: ori_state.db
+            """,
+                private_key,
+            ),
+        )
+
+    def test_the_encrypted_store_requirement_is_met_from_any_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """A config inside the encrypted prefix declares an encrypted store."""
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        yaml_path = self._encrypted_posture_config(
+            encrypted_dir, encrypted_dir, monkeypatch
+        )
+        monkeypatch.chdir(outside)
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.database_path == str(encrypted_dir / "ori_state.db")
+
+    def test_standing_in_the_encrypted_directory_does_not_satisfy_the_requirement(
+        self, tmp_path, monkeypatch
+    ):
+        """The gate is a fact about the declared store, not about the caller."""
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        yaml_path = self._encrypted_posture_config(outside, encrypted_dir, monkeypatch)
+        monkeypatch.chdir(encrypted_dir)
+
+        with pytest.raises(ConfigValidationError, match="encrypted_path_prefixes"):
             Config.load(yaml_path)
 
     def test_production_posture_allows_loopback_gateway_without_site_tls(

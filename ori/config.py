@@ -747,7 +747,9 @@ class Config:
         os_sandbox = _parse_os_sandbox(data.get("os_sandbox"))
         state_cfg = _parse_state(data.get("state"))
         evidence_cfg = _parse_evidence(data.get("evidence"))
-        database_path = _parse_database_path(data.get("database"))
+        database_path = _resolve_database_path(
+            _parse_database_path(data.get("database")), path
+        )
         logging_cfg = _parse_logging(data.get("logging"))
         _validate_coap_sensor_allowlist(sensors, actions.coap)
         _warn_gateway_network_posture(gateway)
@@ -3120,6 +3122,11 @@ def _parse_state_encryption(data: dict[str, Any]) -> StateEncryptionConfig:
     )
 
 
+#: SQLite's private in-memory database. It names no file, so it is not a path
+#: to resolve.
+_IN_MEMORY_STORE = ":memory:"
+
+
 def _parse_database_path(data: Any) -> str:
     if data is None:
         return "ori_state.db"
@@ -3129,6 +3136,39 @@ def _parse_database_path(data: Any) -> str:
     if not path:
         raise ConfigValidationError("database.path must not be empty.")
     return path
+
+
+def _resolve_database_path(declared: str, config_path: str) -> str:
+    """Resolve a relative store path against the configuration that declared it.
+
+    A relative path otherwise resolves against the caller's working directory,
+    which makes both the store a command opens and the production
+    encrypted-storage check a property of where a process was started.
+    """
+    if declared == _IN_MEMORY_STORE:
+        return declared
+    candidate = Path(declared).expanduser()
+    if candidate.is_absolute():
+        return str(candidate)
+    home = Path(config_path).expanduser().resolve(strict=False).parent
+    resolved = Path(os.path.normpath(home / candidate))
+    legacy = Path(declared)
+    if legacy.is_file() and not resolved.exists():
+        # Opening the resolved store creates it, so a deployment that relied on
+        # the working directory would come up on an empty one. A file of that
+        # name in the working directory is a coincidence as often as it is that
+        # deployment, so this reports rather than refuses.
+        logger.warning(
+            "[config] database.path %r resolves to %s, which does not exist, "
+            "while a file of that name exists at %s. A relative database.path "
+            "is resolved against the directory holding the configuration, not "
+            "the working directory. If that file is this device's store, move "
+            "it beside the configuration or declare database.path absolutely.",
+            declared,
+            resolved,
+            legacy.resolve(strict=False),
+        )
+    return str(resolved)
 
 
 def _parse_logging(data: Any) -> LoggingConfig:

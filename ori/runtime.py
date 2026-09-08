@@ -689,8 +689,7 @@ class OriRuntime:
             self._status_indicator = status_indicator
 
         # ── Step B: Open StateStore ───────────────────────────────────────────
-        db_path: str = config.raw.get("database", {}).get("path", "ori_state.db")
-        self._state_store = StateStore(db_path=db_path)
+        self._state_store = StateStore(db_path=config.database_path)
         await self._state_store.open()
         await self._load_remote_command_lockout_state()
 

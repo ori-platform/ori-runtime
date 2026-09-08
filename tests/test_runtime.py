@@ -1161,6 +1161,69 @@ def minimal_config(tmp_path: Path) -> Path:
     return cfg
 
 
+@pytest.mark.asyncio
+async def test_the_runtime_opens_the_store_beside_its_config(tmp_path, monkeypatch):
+    """The runtime and the commissioning bridge must open the same store.
+
+    A relative path is what every generated configuration declares, so a
+    runtime resolving it against its working directory would build its durable
+    state somewhere the ceremony commands do not read.
+    """
+    _patch_external(monkeypatch)
+    home = tmp_path / "data"
+    (home / "skills").mkdir(parents=True)
+    (home / "ori.yaml").write_text(
+        textwrap.dedent(f"""\
+            device:
+              id: test-device-01
+              name: Test Device
+              location: Test Lab
+            sensors:
+              - id: cpu-sensor
+                type: cpu_percent
+                protocol: psutil
+                poll_interval_ms: 100
+            skills: []
+            reasoning:
+              default_tier: rule
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+              relay:
+                enabled: false
+            skills_dir: {str(home / "skills")}
+            database:
+              path: ori_state.db
+        """),
+        encoding="utf-8",
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    runtime = OriRuntime(config_path=str(home / "ori.yaml"))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not (home / "ori_state.db").exists():
+            if start_task.done():
+                break
+            await asyncio.sleep(0.05)
+        assert (home / "ori_state.db").exists(), (
+            "the runtime never opened a store beside its configuration: "
+            f"{start_task.exception() if start_task.done() else ''}"
+        )
+        assert not (elsewhere / "ori_state.db").exists()
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
 def _patch_external(monkeypatch):
     """Patch all external I/O so tests run without hardware or credentials."""
     monkeypatch.setattr(

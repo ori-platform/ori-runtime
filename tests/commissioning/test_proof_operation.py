@@ -839,7 +839,7 @@ def test_only_a_matched_attestation_is_reported_as_a_success(
     from ori import cli_bridge
 
     async def fake_state(config: Any) -> Any:
-        return object(), None, Path("present")
+        return object(), None
 
     for attestation, expected_ok, expected_code in (
         ("matched", True, None),
