@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -101,7 +102,7 @@ def signed_fault_message(
 def verify(case_name: str, **overrides):
     case = CASES[case_name]
     envelope = case["input"]
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "anchor_device_id": envelope["device_id"],
         "anchor_public_key_b64": PUBLIC_KEY_B64,
         "anchor_posture": envelope["posture"],
@@ -412,7 +413,9 @@ class TestGoldenFaultVectors:
         # can hold is not a shape the firmware could have emitted; the
         # receiver must refuse it rather than accept a wider contract.
         result = verify_fault_message(
-            signed_fault_message(**{field: "x" * (FAULT_TOKEN_MAX_LEN + 1)}),
+            signed_fault_message(
+                **{field: "x" * (FAULT_TOKEN_MAX_LEN + 1)}  # type: ignore[arg-type]
+            ),
             anchor_device_id=SEALED_DEVICE,
             anchor_public_key_b64=PUBLIC_KEY_B64,
             anchor_posture="sealed_flash",
@@ -427,7 +430,7 @@ class TestGoldenFaultVectors:
     @pytest.mark.parametrize("bad", ["relay/0", "bad token", "relay:0", "réf"])
     def test_token_outside_fleet_alphabet_rejected(self, field: str, bad: str) -> None:
         result = verify_fault_message(
-            signed_fault_message(**{field: bad}),
+            signed_fault_message(**{field: bad}),  # type: ignore[arg-type]
             anchor_device_id=SEALED_DEVICE,
             anchor_public_key_b64=PUBLIC_KEY_B64,
             anchor_posture="sealed_flash",
@@ -442,7 +445,8 @@ class TestGoldenFaultVectors:
     def test_token_at_max_length_accepted(self, field: str) -> None:
         result = verify_fault_message(
             signed_fault_message(
-                code="sensor_fault", **{field: "x" * FAULT_TOKEN_MAX_LEN}
+                code="sensor_fault",
+                **{field: "x" * FAULT_TOKEN_MAX_LEN},  # type: ignore[arg-type]
             ),
             anchor_device_id=SEALED_DEVICE,
             anchor_public_key_b64=PUBLIC_KEY_B64,
@@ -1276,6 +1280,7 @@ class TestLifecycleMigration:
         await store.open()
         try:
             row = await store.get_firmware_device("ori-fw-legacy01")
+            assert row is not None
             assert row["anchor_epoch_id"].startswith("sha256:")
             assert row["key_epoch_id"].startswith("sha256:")
             # Approval and freshness are preserved by the migration.
@@ -1283,6 +1288,7 @@ class TestLifecycleMigration:
             assert row["last_seq"] == 500
 
             history = await store.list_firmware_anchor_history("ori-fw-legacy01")
+            assert history is not None
             assert len(history) == 1
             assert history[0]["state"] == "active"
             assert history[0]["anchor_epoch_id"] == row["anchor_epoch_id"]

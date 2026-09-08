@@ -23,6 +23,7 @@ by command-level tests in tests/firmware/test_provisioner.py.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 import yaml
@@ -73,6 +74,10 @@ class _StubConfig:
         self.gateway = _StubGateway(broker_url)
 
 
+#: Structural double for the declared parameter type.
+_stubconfig: Any = _StubConfig
+
+
 @pytest.mark.parametrize(
     "broker_url",
     [
@@ -90,7 +95,7 @@ def test_credentialed_loopback_broker_logs_no_security_error(broker_url, caplog)
     it matched no prefix and was reported as an unauthenticated public broker.
     """
     with caplog.at_level(logging.WARNING):
-        _warn_gateway_security_posture(_StubConfig(broker_url))
+        _warn_gateway_security_posture(_stubconfig(broker_url))
 
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert errors == [], f"false security ERROR for loopback broker: {errors}"
@@ -99,7 +104,7 @@ def test_credentialed_loopback_broker_logs_no_security_error(broker_url, caplog)
 def test_non_loopback_broker_without_auth_still_logs_error(caplog):
     """The fix must not silence the alarm it exists to make accurate."""
     with caplog.at_level(logging.WARNING):
-        _warn_gateway_security_posture(_StubConfig("mqtt://user:pass@10.0.0.5:1883"))
+        _warn_gateway_security_posture(_stubconfig("mqtt://user:pass@10.0.0.5:1883"))
 
     errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert errors, "a real public unauthenticated broker must still raise ERROR"

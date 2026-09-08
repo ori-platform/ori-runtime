@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import json
 import secrets
+from typing import Any, cast
 
 import pytest
 
@@ -83,7 +84,10 @@ def test_runtime_seq_zero_and_out_of_range_refused(runtime_seq: object) -> None:
     # liveness message is only meaningful in a strictly increasing series.
     with pytest.raises(FirmwareLivenessError):
         build_liveness_bytes(
-            boot_id=1, capability_hash=HASH, device_id=DEVICE, runtime_seq=runtime_seq
+            boot_id=1,
+            capability_hash=HASH,
+            device_id=DEVICE,
+            runtime_seq=cast(Any, runtime_seq),
         )
 
 
@@ -91,7 +95,10 @@ def test_runtime_seq_zero_and_out_of_range_refused(runtime_seq: object) -> None:
 def test_boot_id_zero_and_out_of_range_refused(boot_id: object) -> None:
     with pytest.raises(FirmwareLivenessError):
         build_liveness_bytes(
-            boot_id=boot_id, capability_hash=HASH, device_id=DEVICE, runtime_seq=1
+            boot_id=cast(Any, boot_id),
+            capability_hash=HASH,
+            device_id=DEVICE,
+            runtime_seq=1,
         )
 
 

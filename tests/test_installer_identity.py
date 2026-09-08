@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from ori.installer import identity
@@ -37,7 +39,7 @@ class _Operator:
         return "\n".join(self.prompts + self.messages)
 
 
-def _collect(operator: _Operator, **overrides: object) -> object:
+def _collect(operator: _Operator, **overrides: object) -> Any:
     options = InstallerInputOptions(**overrides)  # type: ignore[arg-type]
     return collect_installer_config(
         options, prompt=operator.prompt, write=operator.write
@@ -71,7 +73,9 @@ def test_a_stock_image_hostname_gets_a_suffix(hostname: str) -> None:
     assert suggestion is not None
     assert suggestion.generated_suffix is True
     assert suggestion.device_id != identity.normalise(hostname)
-    assert identity.suggest(hostname).device_id != suggestion.device_id
+    resuggested = identity.suggest(hostname)
+    assert resuggested is not None
+    assert resuggested.device_id != suggestion.device_id
 
 
 def test_a_suggested_id_always_satisfies_the_device_id_rules() -> None:

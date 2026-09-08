@@ -11,6 +11,8 @@ reach a pin, so nothing there can prove a guard against reaching one.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from ori.actions.relay import RelayAction
@@ -58,7 +60,9 @@ async def test_actuating_a_relay_records_instead_of_driving() -> None:
     assert relay.is_active is True
     await relay.release()
     assert relay.is_active is False
-    assert relay._device.history == ["on", "off"]
+    device: Any = relay._device
+    assert device is not None
+    assert device.history == ["on", "off"]
 
 
 def test_the_opt_in_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -34,6 +35,10 @@ class _FakePostureTracker:
         self.recorded.append(timestamp_ms if timestamp_ms is not None else 0)
 
 
+#: Structural double for the declared parameter type.
+_fakeposturetracker: Any = _FakePostureTracker
+
+
 def _auth(
     *, max_skew_ms: int = 5_000, replay_ttl_ms: int = 5_000
 ) -> GatewayMessageAuthenticator:
@@ -56,7 +61,7 @@ def _subscriber(
 ):
     return MqttGatewayHeartbeatSubscriber(
         broker_url=broker_url,
-        posture_tracker=posture_tracker or _FakePostureTracker(),
+        posture_tracker=posture_tracker or _fakeposturetracker(),
         device_id=device_id,
         authenticator=authenticator,
         client_factory=client_factory or (lambda **_: _FakeClient()),
@@ -129,7 +134,7 @@ class _FakeClient:
 
 
 async def test_valid_heartbeat_calls_record_gateway_heartbeat():
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
@@ -142,7 +147,7 @@ async def test_valid_heartbeat_calls_record_gateway_heartbeat():
 
 async def test_degraded_status_still_updates_posture():
     """A gateway reporting 'degraded' is still alive — posture must be updated."""
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
@@ -154,7 +159,7 @@ async def test_degraded_status_still_updates_posture():
 
 async def test_unknown_status_still_updates_posture():
     """Forward-compatibility: unknown status values must not suppress posture update."""
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
@@ -172,7 +177,7 @@ async def test_missing_timestamp_ms_falls_back_to_now(monkeypatch):
     """When timestamp_ms is absent the subscriber uses the local clock."""
     monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 42_000)
 
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
@@ -186,7 +191,7 @@ async def test_missing_timestamp_ms_falls_back_to_now(monkeypatch):
 async def test_non_numeric_timestamp_ms_falls_back_to_now(monkeypatch):
     monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 99_000)
 
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
@@ -198,7 +203,7 @@ async def test_non_numeric_timestamp_ms_falls_back_to_now(monkeypatch):
 
 
 async def test_malformed_json_silently_discarded():
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
@@ -210,7 +215,7 @@ async def test_malformed_json_silently_discarded():
 
 async def test_non_dict_json_silently_discarded():
     """A JSON array or scalar must be discarded — only objects are valid."""
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
@@ -223,7 +228,7 @@ async def test_non_dict_json_silently_discarded():
 
 
 async def test_empty_payload_silently_discarded():
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
 
@@ -249,7 +254,7 @@ def test_message_before_loop_set_logs_warning(caplog):
 
 async def test_auth_disabled_accepts_unsigned_heartbeat():
     """No authenticator set → unsigned heartbeats update posture without auth block."""
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker, authenticator=None)
     sub._loop = asyncio.get_running_loop()
 
@@ -267,7 +272,7 @@ async def test_auth_enabled_accepts_valid_signed_heartbeat():
         raw, message_type=_HEARTBEAT_MESSAGE_TYPE, signed_at_ms=_now_ms()
     )
 
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker, authenticator=_auth())
     sub._loop = asyncio.get_running_loop()
 
@@ -279,7 +284,7 @@ async def test_auth_enabled_accepts_valid_signed_heartbeat():
 
 async def test_auth_enabled_rejects_unsigned_heartbeat(caplog):
     """Auth enabled but no auth block in payload → discarded with WARNING."""
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker, authenticator=_auth())
     sub._loop = asyncio.get_running_loop()
 
@@ -300,7 +305,7 @@ async def test_auth_enabled_rejects_tampered_payload(caplog):
     )
     signed["uptime_s"] = 9999.0  # tamper after signing
 
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker, authenticator=_auth())
     sub._loop = asyncio.get_running_loop()
 
@@ -322,7 +327,7 @@ async def test_auth_enabled_rejects_replayed_heartbeat(caplog):
     )
     signed_bytes = json.dumps(signed).encode()
 
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker, authenticator=authenticator)
     sub._loop = asyncio.get_running_loop()
 
@@ -347,7 +352,7 @@ async def test_auth_enabled_rejects_stale_heartbeat(caplog):
         raw, message_type=_HEARTBEAT_MESSAGE_TYPE, signed_at_ms=0
     )
 
-    tracker = _FakePostureTracker()
+    tracker = _fakeposturetracker()
     sub = _subscriber(tracker, authenticator=authenticator)
     sub._loop = asyncio.get_running_loop()
 
@@ -414,11 +419,11 @@ async def test_serve_until_tls_applies_context():
         tls_contexts.append(ctx)
         original_tls_set(ctx)
 
-    fake.tls_set_context = _capture_tls
+    cast(Any, fake).tls_set_context = _capture_tls
 
     sub = MqttGatewayHeartbeatSubscriber(
         broker_url="mqtts://localhost",
-        posture_tracker=_FakePostureTracker(),
+        posture_tracker=_fakeposturetracker(),
         device_id="dev-01",
         client_factory=lambda **_: fake,
     )
@@ -474,6 +479,6 @@ def test_paho_unavailable_raises():
         with pytest.raises(RuntimeError, match="paho-mqtt is not installed"):
             MqttGatewayHeartbeatSubscriber(
                 broker_url="mqtt://localhost",
-                posture_tracker=_FakePostureTracker(),
+                posture_tracker=_fakeposturetracker(),
                 device_id="dev-01",
             )

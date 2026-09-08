@@ -13,6 +13,7 @@ import secrets
 import socket
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from cryptography import x509
@@ -63,8 +64,8 @@ def _ca_material(common_name: str) -> tuple[bytes, bytes]:
                 key_agreement=False,
                 key_cert_sign=True,
                 crl_sign=True,
-                encipher_only=None,
-                decipher_only=None,
+                encipher_only=cast(Any, None),
+                decipher_only=cast(Any, None),
             ),
             True,
         )
@@ -424,7 +425,7 @@ async def test_runtime_starts_operator_with_runtime_owned_material(
     runtime._state_store = StateStore(db_path=":memory:")
     await runtime._state_store.open()
     socket_path = f"/tmp/ori-op-{os.getpid()}-{id(runtime)}.sock"
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         firmware_mqtt_provisioning={
             "enabled": True,
             "socket_path": socket_path,
@@ -463,7 +464,7 @@ async def test_runtime_refuses_a_different_command_provisioning_root(
     runtime = OriRuntime(config_path="unused.yaml")
     runtime._state_store = StateStore(db_path=":memory:")
     await runtime._state_store.open()
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         firmware_mqtt_provisioning={
             "enabled": True,
             "provisioner_key_env": "ORI_TEST_MQTT_PA",

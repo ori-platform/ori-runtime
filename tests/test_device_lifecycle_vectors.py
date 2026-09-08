@@ -185,14 +185,15 @@ async def run_step(store: StateStore, step: dict) -> None:
 
     if op == "register":
         outcome = await store.upsert_firmware_device_anchor(
-            device_id=DEVICE_ID, **anchor_call_fields(step["anchor"])
+            device_id=DEVICE_ID,
+            **anchor_call_fields(step["anchor"]),  # type: ignore[arg-type]  # type: ignore[arg-type]
         )
     elif op == "reprovision":
         outcome = await store.reprovision_firmware_device(
             device_id=DEVICE_ID,
             actor=ACTOR,
             reason=REASON,
-            **anchor_call_fields(step["anchor"]),
+            **anchor_call_fields(step["anchor"]),  # type: ignore[arg-type]
         )
     elif op == "promote":
         outcome = await store.approve_firmware_device(
@@ -214,6 +215,7 @@ async def run_step(store: StateStore, step: dict) -> None:
         outcome = await store.allocate_firmware_command_seq(DEVICE_ID)
     elif op == "assert_active":
         row = await store.get_firmware_device(DEVICE_ID)
+        assert row is not None
         expected = anchor_epoch_id(device_id=DEVICE_ID, **_epoch_input(step["anchor"]))
         assert row["anchor_epoch_id"] == expected, (
             f"active anchor should still be {step['anchor']}"

@@ -6,6 +6,7 @@ import json
 import os
 import socket
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -106,7 +107,7 @@ async def test_health_socket_refuses_non_socket_existing_path(tmp_path):
 
 @pytest.mark.asyncio
 async def test_runtime_health_snapshot_shape():
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     now = now_ms()
     runtime._device_id = "dev-01"
     runtime._runtime_started_at_ms = now - 5_000

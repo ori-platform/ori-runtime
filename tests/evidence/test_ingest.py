@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import json
 import pathlib
+from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -436,7 +437,7 @@ def _custody_case(name: str):
 
 
 def _verify_custody(artifact, **overrides):
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "device_id": DEVICE,
         "custody_keys": _custody_registry(),
         "expected_digest": artifact["envelope_digest"],
@@ -696,7 +697,9 @@ def test_an_unrecognised_version_is_rejected_before_anything_is_trusted(
     artifact = dict(case(name, "valid")["artifact"])
     artifact["v"] = 2
     with pytest.raises(IngestRejectedError) as raised:
-        verifier(artifact, device_id=DEVICE, registry=registry, **kwargs)
+        verifier(  # type: ignore[arg-type]
+            artifact, device_id=DEVICE, registry=registry, **kwargs
+        )
     assert raised.value.reason == REJECT_UNRECOGNISED_VERSION
 
 
@@ -715,7 +718,12 @@ def test_an_undefined_field_is_rejected(registry, name):
         else verify_epoch_confirmation
     )
     with pytest.raises(IngestRejectedError):
-        verifier(artifact, device_id=DEVICE, registry=registry, **kwargs)
+        verifier(
+            artifact,
+            device_id=DEVICE,
+            registry=registry,
+            **kwargs,  # type: ignore[arg-type]
+        )
 
 
 def test_a_free_text_rejection_reason_cannot_be_constructed():

@@ -46,6 +46,8 @@ from ori.config import (
     Config,
     ConfigValidationError,
     SensorConfig,
+    anchor_to_config,
+    hardened_posture_declared,
     requires_production_posture,
 )
 from ori.firmware_mqtt_operator import (
@@ -392,8 +394,14 @@ class OriRuntime:
             current working directory.
     """
 
-    def __init__(self, config_path: str = "ori.yaml") -> None:
+    def __init__(
+        self, config_path: str = "ori.yaml", *, dotenv_loaded: bool = False
+    ) -> None:
         self._config_path = config_path
+        #: Whether a `.env` was autoloaded before this configuration could be
+        #: read. The decision had to be made first; startup confirms it against
+        #: the posture the document turns out to declare.
+        self._dotenv_loaded = dotenv_loaded
         self._config: Config | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
         self._adapters: list[BaseAdapter] = []
@@ -512,6 +520,7 @@ class OriRuntime:
             skills_dir = self._skills_dir or str(
                 Path(self._config_path).parent / "skills"
             )
+            skills_dir = anchor_to_config(skills_dir, self._config_path)
             loaded = self._skill_loader.load_all(skills_dir)
 
             # Safety-first fallback: do not replace a working handler graph
@@ -595,6 +604,18 @@ class OriRuntime:
         # ── Step A: Load and validate config ─────────────────────────────────
         try:
             config = Config.load(self._config_path)
+            # The autoload had to decide before this document could be read, so
+            # its answer is confirmed against the posture the document turns
+            # out to declare. This closes a document whose posture is itself
+            # expanded, and one replaced between the two reads.
+            if self._dotenv_loaded and requires_production_posture(
+                device=config.device, security=config.security
+            ):
+                raise ConfigValidationError(
+                    "a .env was loaded through ORI_AUTOLOAD_DOTENV before this "
+                    "configuration declared hardened posture; its values may "
+                    "have supplied signed fields. Use the unit's EnvironmentFile."
+                )
             _validate_required_runtime_capabilities(config, self._config_path)
         except ConfigValidationError:
             logger.exception("[runtime] config validation failed — aborting")
@@ -1256,9 +1277,18 @@ class OriRuntime:
         self._deduplicator = EventDeduplicator()
 
         # ── Step F: Load skills and register handlers ─────────────────────────
-        skills_dir: str = config.raw.get(
-            "skills_dir",
-            str(Path(self._config_path).parent / "skills"),
+        # A relative value would otherwise resolve against the working
+        # directory, which the unit points at a runtime directory systemd
+        # empties on every stop. Skills that vanish take their triggers with
+        # them, and a skill can carry Tier D coverage.
+        skills_dir: str = anchor_to_config(
+            str(
+                config.raw.get(
+                    "skills_dir",
+                    str(Path(self._config_path).parent / "skills"),
+                )
+            ),
+            self._config_path,
         )
         self._skills_dir = skills_dir
         skills_security = config.security.get("skills")
@@ -5288,14 +5318,27 @@ def _sync_power_state_from_reading(indicator: LEDIndicator, reading: Any) -> Non
         indicator.set_power_state(PowerState.MAINS)
 
 
-def _maybe_autoload_dotenv(config_path: str) -> None:
+def _maybe_autoload_dotenv(config_path: str) -> bool:
     """Load .env when explicitly enabled via ORI_AUTOLOAD_DOTENV=true.
 
     This is a development convenience toggle. Production remains explicit-env
     by default (no implicit .env loading).
     """
     if not is_truthy(os.environ.get("ORI_AUTOLOAD_DOTENV", "")):
-        return
+        return False
+
+    # A signature covers the document before expansion, so a file that supplies
+    # what `${VAR}` fields expand to decides the value of a signed field
+    # without invalidating the signature. The data directory is writable by the
+    # service; the unit's EnvironmentFile is not, which is where a hardened
+    # deployment's environment belongs.
+    if hardened_posture_declared(config_path):
+        logger.warning(
+            "[runtime] ORI_AUTOLOAD_DOTENV is refused under staging or "
+            "production posture: a .env beside the configuration would supply "
+            "values for signed fields. Use the unit's EnvironmentFile."
+        )
+        return False
 
     try:
         from dotenv import load_dotenv
@@ -5303,27 +5346,22 @@ def _maybe_autoload_dotenv(config_path: str) -> None:
         logger.warning(
             "[runtime] ORI_AUTOLOAD_DOTENV is enabled but python-dotenv is not installed"
         )
-        return
+        return False
 
-    config_dir = Path(config_path).resolve().parent
-    candidates = [config_dir / ".env", Path.cwd() / ".env"]
-    loaded_any = False
-    seen: set[str] = set()
-
-    for candidate in candidates:
-        key = str(candidate.resolve())
-        if key in seen:
-            continue
-        seen.add(key)
-        if candidate.is_file():
-            load_dotenv(dotenv_path=candidate, override=False)
-            loaded_any = True
-            logger.info("[runtime] loaded environment from %s", candidate)
-
-    if not loaded_any:
-        logger.info(
-            "[runtime] ORI_AUTOLOAD_DOTENV enabled but no .env file found near config/cwd"
-        )
+    # Beside the configuration only. The unit works in a runtime directory
+    # systemd empties on every stop, so a file found there is not this
+    # installation's environment, and these values are expanded into the
+    # configuration the runtime then trusts.
+    candidate = Path(config_path).resolve().parent / ".env"
+    if candidate.is_file():
+        load_dotenv(dotenv_path=candidate, override=False)
+        logger.info("[runtime] loaded environment from %s", candidate)
+        return True
+    logger.info(
+        "[runtime] ORI_AUTOLOAD_DOTENV enabled but no .env file beside %s",
+        config_path,
+    )
+    return False
 
 
 def _local_llm_requested(reasoning_cfg: Any) -> bool:
@@ -6531,9 +6569,9 @@ def main() -> None:
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
 
-    _maybe_autoload_dotenv(args.config)
+    dotenv_loaded = _maybe_autoload_dotenv(args.config)
 
-    runtime = OriRuntime(config_path=args.config)
+    runtime = OriRuntime(config_path=args.config, dotenv_loaded=dotenv_loaded)
     asyncio.run(runtime.start())
 
 

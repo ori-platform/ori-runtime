@@ -10,6 +10,7 @@ import os
 import pwd
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -113,7 +114,7 @@ def test_the_installed_doctor_is_run_by_absolute_path(
     recorded: list[list[str]] = []
     real_run = subprocess.run
 
-    def _record(command: list[str], **kwargs: object) -> object:
+    def _record(command: list[str], **kwargs: object) -> Any:
         recorded.append(command)
         return real_run(command, **kwargs)  # type: ignore[arg-type]
 
@@ -807,7 +808,7 @@ def _install_release_for_real(root: Path, diagnose_as: str) -> tuple[Path, objec
     return release, identity
 
 
-def _as_reported(checks: list[object]) -> list[dict[str, object]]:
+def _as_reported(checks: list[Any]) -> list[dict[str, object]]:
     """Render real DoctorCheck objects the way doctor's JSON report does."""
     return [
         {
@@ -833,7 +834,7 @@ def test_a_real_user_scope_install_passes_the_real_gate(tmp_path: Path) -> None:
     root = tmp_path / "ori"
     _release, identity = _install_release_for_real(root, "user")
 
-    reported = _as_reported(doctor.check_permissions(identity))
+    reported = _as_reported(doctor.check_permissions(cast(Any, identity)))
     code = next(c for c in reported if c["name"] == "permissions.code")
 
     assert code["status"] == "WARN"
@@ -858,7 +859,7 @@ def test_a_real_system_scope_install_is_blocked_when_code_is_writable(
     root = tmp_path / "ori"
     _release, identity = _install_release_for_real(root, "system")
 
-    reported = _as_reported(doctor.check_permissions(identity))
+    reported = _as_reported(doctor.check_permissions(cast(Any, identity)))
     code = next(c for c in reported if c["name"] == "permissions.code")
 
     assert code["status"] == "FAIL"

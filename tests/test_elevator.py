@@ -5,6 +5,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -67,6 +68,7 @@ class FakeSkill:
     prompts: dict = field(default_factory=dict)
     _actions: dict = field(default_factory=dict)
     actions: dict = field(default_factory=dict)
+    hooks: Any = None
 
     def get_default_actions(self, sensor_type: str) -> list[str]:
         return self._actions.get(sensor_type, [])
@@ -958,7 +960,7 @@ class TestReason:
 
     def test_sanitize_prompt_input_coerces_float_to_string(self):
         elevator = IntelligenceElevator()
-        assert elevator._sanitize_prompt_input(12.5) == "12.5"
+        assert elevator._sanitize_prompt_input(cast(Any, 12.5)) == "12.5"
 
     async def test_rule_engine_result_has_empty_prompt(self):
         """Rule engine (Tier D, bypass_llm=True) must leave prompt as empty string."""
@@ -1484,8 +1486,10 @@ class TestReasonAndDispatch:
             )
 
             actions = await store.get_action_log()
+            conn = store._conn
+            assert conn is not None
             row = await store._run(
-                lambda: store._conn.execute(
+                lambda: conn.execute(
                     "SELECT correlation_id FROM reasoning_log"
                 ).fetchone()
             )
@@ -1550,8 +1554,10 @@ class TestReasonAndDispatch:
 
             actions = await store.get_action_log()
             correlations = {row["correlation_id"] for row in actions}
+            conn = store._conn
+            assert conn is not None
             row = await store._run(
-                lambda: store._conn.execute(
+                lambda: conn.execute(
                     "SELECT reasoning_status, response, correlation_id FROM reasoning_log"
                 ).fetchone()
             )
@@ -1614,8 +1620,10 @@ class TestReasonAndDispatch:
             action_correlation_ids = {
                 row["correlation_id"] for row in by_action.values()
             }
+            conn = store._conn
+            assert conn is not None
             row = await store._run(
-                lambda: store._conn.execute(
+                lambda: conn.execute(
                     "SELECT reasoning_status, response, model, correlation_id FROM reasoning_log"
                 ).fetchone()
             )
@@ -1671,8 +1679,10 @@ class TestReasonAndDispatch:
             action_correlation_ids = {
                 row["correlation_id"] for row in by_action.values()
             }
+            conn = store._conn
+            assert conn is not None
             row = await store._run(
-                lambda: store._conn.execute(
+                lambda: conn.execute(
                     "SELECT reasoning_status, response, correlation_id FROM reasoning_log"
                 ).fetchone()
             )

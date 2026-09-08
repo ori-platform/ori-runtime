@@ -34,6 +34,12 @@ def _reading(
     )
 
 
+def _reading_of(event: OriEvent) -> SensorReading:
+    """The reading `_event` always sets, narrowed for the type checker."""
+    assert event.reading is not None
+    return event.reading
+
+
 def _event(value: float = 5.0, timestamp_ms: int | None = None) -> OriEvent:
     r = _reading(value=value)
     if timestamp_ms is not None:
@@ -178,10 +184,10 @@ class TestRejectionMemory:
         event = _event(value=5.0)
         skill = _FakeSkill()
         pattern_key = store._build_rejection_pattern_key(
-            event.reading.sensor_type,
+            _reading_of(event).sensor_type,
             "overcurrent_trip",
             "open_safety_circuit",
-            event.reading.value,
+            _reading_of(event).value,
             event.timestamp,
         )
         await store.store_rejection(
@@ -190,8 +196,8 @@ class TestRejectionMemory:
             proposed_action="open_safety_circuit",
             operator_response="scheduled overnight run",
             device_id=event.device_id,
-            sensor_type=event.reading.sensor_type,
-            value_bucket=round(event.reading.value * 2) / 2.0,
+            sensor_type=_reading_of(event).sensor_type,
+            value_bucket=round(_reading_of(event).value * 2) / 2.0,
             time_of_day_hour=2,
             day_of_week=3,
             expiry_days=30,
@@ -217,10 +223,10 @@ class TestRejectionMemory:
         event = _event(value=5.0)
         skill = _FakeSkill()
         pattern_key = store._build_rejection_pattern_key(
-            event.reading.sensor_type,
+            _reading_of(event).sensor_type,
             "overcurrent_trip",
             "open_safety_circuit",
-            event.reading.value,
+            _reading_of(event).value,
             event.timestamp,
         )
         await store.store_rejection(
@@ -229,8 +235,8 @@ class TestRejectionMemory:
             proposed_action="open_safety_circuit",
             operator_response="old rejection",
             device_id=event.device_id,
-            sensor_type=event.reading.sensor_type,
-            value_bucket=round(event.reading.value * 2) / 2.0,
+            sensor_type=_reading_of(event).sensor_type,
+            value_bucket=round(_reading_of(event).value * 2) / 2.0,
             time_of_day_hour=2,
             day_of_week=3,
             expiry_days=1,
@@ -257,10 +263,10 @@ class TestRejectionMemory:
     async def test_rejection_context_in_prompt(self, store, monkeypatch):
         event = _event(value=5.0)
         pattern_key = store._build_rejection_pattern_key(
-            event.reading.sensor_type,
+            _reading_of(event).sensor_type,
             "overcurrent_trip",
             "open_safety_circuit",
-            event.reading.value,
+            _reading_of(event).value,
             event.timestamp,
         )
         await store.store_rejection(
@@ -269,8 +275,8 @@ class TestRejectionMemory:
             proposed_action="open_safety_circuit",
             operator_response="scheduled run",
             device_id=event.device_id,
-            sensor_type=event.reading.sensor_type,
-            value_bucket=round(event.reading.value * 2) / 2.0,
+            sensor_type=_reading_of(event).sensor_type,
+            value_bucket=round(_reading_of(event).value * 2) / 2.0,
             time_of_day_hour=2,
             day_of_week=3,
             expiry_days=30,
@@ -364,10 +370,10 @@ class TestRejectionMemory:
             result=res,
         )
         key = store._build_rejection_pattern_key(
-            evt.reading.sensor_type,
+            _reading_of(evt).sensor_type,
             "overcurrent_trip",
             "open_safety_circuit",
-            evt.reading.value,
+            _reading_of(evt).value,
             evt.timestamp,
         )
         row = await store.lookup_rejection(key)

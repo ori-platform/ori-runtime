@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -241,7 +242,7 @@ json.dump({"schema_version": 1, "ok": True, "status": "healthy",\n           "an
 
 
 def _args(**overrides: object) -> argparse.Namespace:
-    base = dict(
+    base: dict[str, Any] = dict(
         bundle="/b.tar.gz",
         signature="/b.sig",
         expected_version=None,

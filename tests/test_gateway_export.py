@@ -557,6 +557,7 @@ async def test_mqtt_server_subscribes_to_device_request_topic(store):
 
         def connect(self, host, port, keepalive):
             self.connected = (host, port, keepalive)
+            assert self.on_connect is not None
             self.on_connect(self, None, None, 0)
 
         def loop_start(self):

@@ -59,6 +59,7 @@ def test_open_blocks_reads():
     cb._record_failure()
     assert cb.state == CircuitState.OPEN
     # Patch monotonic so time has NOT elapsed
+    assert cb.opened_at is not None
     with patch("ori.hal.base.time.monotonic", return_value=cb.opened_at + 10):
         assert cb._allow_read() is False
 
@@ -68,6 +69,7 @@ def test_open_to_half_open_after_timeout():
     cb._record_failure()
     assert cb.state == CircuitState.OPEN
     # Advance monotonic past the recovery timeout
+    assert cb.opened_at is not None
     with patch("ori.hal.base.time.monotonic", return_value=cb.opened_at + 61):
         allowed = cb._allow_read()
     assert allowed is True

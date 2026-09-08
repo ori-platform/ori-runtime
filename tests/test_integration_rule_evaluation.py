@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -37,7 +38,7 @@ def _request(
     *,
     sensor_type: str = "current_clamp",
     unit: str = "ampere",
-    **kwargs: object,
+    **kwargs: Any,
 ) -> RuleEvaluationRequest:
     return RuleEvaluationRequest(
         sensor_id="main-circuit-current",

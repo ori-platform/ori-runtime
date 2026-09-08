@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,6 +28,12 @@ from ori.security.remote_commands.policy import (
     command_result,
 )
 from ori.state.store import StateStore
+
+
+def _await_args(mock: Any) -> Any:
+    """The call a mock recorded, narrowed for the type checker."""
+    assert mock.await_args is not None
+    return mock.await_args
 
 
 @pytest.fixture
@@ -519,7 +526,7 @@ async def test_sms_handler_invokes_runtime_command_handler(store, fixed_now):
 
     assert ok is True
     handler.assert_awaited_once()
-    handled = handler.await_args.args[0]
+    handled = _await_args(handler).args[0]
     assert handled.command_id == "sms-handler"
     assert handled.command == "UPDATE_CONFIG"
 
@@ -548,7 +555,7 @@ async def test_sms_handler_sends_execution_feedback(store, fixed_now):
 
     assert ok is True
     action.send.assert_awaited_once()
-    message, to_number = action.send.await_args.args
+    message, to_number = _await_args(action.send).args
     assert to_number == "+2348012345678"
     assert "executed" in message
     assert "sms-exec" in message
@@ -583,7 +590,7 @@ async def test_sms_handler_sends_dry_run_feedback(store, fixed_now):
     )
 
     assert ok is True
-    message, to_number = action.send.await_args.args
+    message, to_number = _await_args(action.send).args
     assert to_number == "+2348012345678"
     assert "DRY RUN" in message
     assert "sms-dry-run" in message
@@ -613,7 +620,7 @@ async def test_sms_handler_sends_precondition_feedback(store, fixed_now):
     )
 
     assert ok is True
-    message, _to_number = action.send.await_args.args
+    message, _to_number = _await_args(action.send).args
     assert "precondition failed" in message
     assert "sms-precondition" in message
 
@@ -641,7 +648,7 @@ async def test_sms_handler_sends_audit_only_feedback(store, fixed_now):
     )
 
     assert ok is True
-    message, _to_number = action.send.await_args.args
+    message, _to_number = _await_args(action.send).args
     assert "audit-only" in message
 
 
@@ -660,7 +667,7 @@ async def test_sms_handler_sends_generic_rejection_feedback(store, fixed_now):
 
     assert ok is False
     action.send.assert_awaited_once()
-    message, to_number = action.send.await_args.args
+    message, to_number = _await_args(action.send).args
     assert to_number == "+2348012345678"
     assert "rejected" in message
     assert "missing_signature" not in message
@@ -693,7 +700,7 @@ async def test_sms_rejection_feedback_is_throttled_after_repeated_failures(
     assert ok is False
     action.send.assert_not_awaited()
     incident_handler.assert_awaited_once()
-    decision = incident_handler.await_args.args[0]
+    decision = _await_args(incident_handler).args[0]
     assert decision.channel == "sms"
     assert decision.from_number == from_number
     assert decision.rejection_count == 6
@@ -936,7 +943,7 @@ async def test_sms_rejection_feedback_still_sends_at_threshold_boundary(
     assert ok is False
     action.send.assert_awaited_once()
     assert await store.get_remote_command_security_incidents() == []
-    message, to_number = action.send.await_args.args
+    message, to_number = _await_args(action.send).args
     assert to_number == from_number
     assert "rejected" in message
     assert (
@@ -983,7 +990,7 @@ async def test_accepted_sms_command_feedback_is_not_rejection_throttled(
 
     assert ok is True
     action.send.assert_awaited_once()
-    message, to_number = action.send.await_args.args
+    message, to_number = _await_args(action.send).args
     assert to_number == from_number
     assert "executed" in message
     assert "sms-accepted-throttle" in message
@@ -1107,7 +1114,7 @@ async def test_whatsapp_invokes_runtime_command_handler(store, fixed_now):
 
     assert reply == "NO"
     handler.assert_awaited_once()
-    handled = handler.await_args.args[0]
+    handled = _await_args(handler).args[0]
     assert handled.command_id == "wa-handler"
     assert handled.channel == "whatsapp"
 
