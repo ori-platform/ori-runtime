@@ -4631,6 +4631,34 @@ class TestAlertOutbox:
         assert snapshot["config_authority"]["unsigned_value_source"] is expected
         assert (snapshot.get("status") == "degraded") is expected
 
+    async def test_a_sensor_refusing_its_windows_degrades_the_device(self, tmp_path):
+        """Connected and not measuring is not healthy.
+
+        The per-sensor field has carried this since #508, but the aggregate
+        `status` a fleet view keys on did not, so a device withholding every
+        window read green. A sensor that never connected already degrades for
+        the reason that applies here word for word: something it was told to
+        measure is not being measured.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._configured_sensors = [
+            SimpleNamespace(
+                id="load-current",
+                type="ads1115_current",
+                protocol="i2c",
+                poll_interval_ms=1000,
+            )
+        ]
+        runtime._connected_sensor_ids = {"load-current"}
+        runtime._sensor_last_seen_ms = {"load-current": 1_800_000_000_000}
+        runtime._measurement_degraded = {"load-current"}
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["sensors"][0]["measurement_degraded"] is True
+        assert snapshot["sensors"][0]["connected"] is True
+        assert snapshot["status"] == "degraded"
+
     async def test_health_snapshot_omits_safety_zones_without_a_registry(
         self, tmp_path
     ):
