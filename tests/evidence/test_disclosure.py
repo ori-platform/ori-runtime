@@ -1222,6 +1222,10 @@ PASSAGE_AUDITS = {
     "docs/MQTT_SECURITY.md": 0,
     "docs/SMS_WEBHOOK_SECURITY.md": 0,
     "docs/RASPBERRY_PI_SUPPORT.md": 0,
+    # Names the evidence chain as a destination measurement loss does not yet
+    # reach, so it is passage-audited rather than exempted: the day it gains a
+    # record, the passage describing it is audited without anyone remembering.
+    "docs/MEASUREMENT_SUPERVISION.md": 0,
     "docs/ALERT_DELIVERY_SETUP.md": 0,
     "docs/android-runtime-mobile.md": 0,
     "docs/alpha-release-notes.md": 0,

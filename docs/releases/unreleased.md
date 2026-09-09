@@ -249,6 +249,29 @@ candidate or release is cut.
   behaviour changes: `mains_frequency_hz` was always a declared fact the
   runtime cannot verify, and this says what it costs to get wrong and where
   the floor sits underneath it.
+- A configuration mismatch found while connecting to an ADS1115 now refuses the
+  chip for the life of the process rather than only the sensor. The bus claim is
+  released on a failed connect and `ori.yaml` checks sensor ids for uniqueness
+  rather than addresses, so a second sensor naming the same chip configured one
+  that had just been refused — the writing contest the measurement-time
+  quarantine exists to prevent. A readback that could not be performed still
+  latches nothing, because a bus failure is evidence of nothing.
+- A sensor that connected and then refuses a run of measurement windows now
+  degrades the device's aggregate health. The per-sensor field has carried it
+  since the loss was first made visible, but `status` did not, so a fleet view
+  keyed on it read green while a channel went unmeasured — the same shape as a
+  configured sensor that never connected, which has always degraded for the
+  reason that applies here word for word.
+- What the runtime does when it cannot establish a trustworthy measurement is
+  written down in `docs/MEASUREMENT_SUPERVISION.md`, including the part that is
+  uncomfortable to say plainly: a device reporting a withheld measurement is not
+  protecting that channel, by design, and escalation tells a person that a
+  channel is unprotected rather than protecting it. The document also records
+  why a timed self-restart and watchdog-health coupling are both refused, why a
+  configuration mismatch at connect is skipped rather than quarantined and what
+  any reconnect design must say about it, the pair-scoped supervision mechanism
+  that waits on the Stage 5 cutover, and the four prerequisites a reset-based
+  response would have to meet before it could be considered.
 
 ## Fixed
 

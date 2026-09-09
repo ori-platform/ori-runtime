@@ -729,7 +729,9 @@ class I2CAdapter(BaseAdapter):
             )
             self._select_ads1115_channel_single_shot()
             self._ads.mode = _ads1x15.Mode.CONTINUOUS
-            self._verify_ads1115_channel(AdapterConnectionError)
+            self._verify_ads1115_channel(
+                AdapterConnectionError, remedy=self._CONNECT_REFUSAL_REMEDY
+            )
             # — the mode switch above, and the readback that just confirmed
             # it — leaves the chip's register pointer at CONFIG. The driver's
             # continuous-mode read is a "fast" read that does not move the
@@ -938,7 +940,21 @@ class I2CAdapter(BaseAdapter):
                 f"confirm its channel: {type(exc).__name__}: {exc}"
             ) from exc
         if fault is not None:
-            raise error(f"{fault}{remedy}")
+            message = f"{fault}{remedy}"
+            # Quarantined, not merely refused. Releasing the bus claim on a
+            # failed connect lets a second adapter for this chip try, and
+            # `ori.yaml` accepts two sensors at one address because it checks
+            # ids for uniqueness and not addresses — so without this the second
+            # writes a chip the first just refused, which is the configuration
+            # contest the measurement path's quarantine exists to prevent.
+            #
+            # Every cause justifies refusing the chip, which is what makes this
+            # safe despite the fault being ambiguous here: a device that is not
+            # an ADS1115 should not be driven, a write that did not take means
+            # the chip is not accepting configuration, and a competing writer is
+            # the case the quarantine was built for.
+            self._quarantine_ads1115(message)
+            raise error(message)
 
     # What an operator can act on, and the posture it states. The refusal is
     # not retried and the chip is not written again: a reading that refuses is
@@ -953,6 +969,16 @@ class I2CAdapter(BaseAdapter):
         "; configuration changed after startup, so the measurement is withheld "
         "until runtime restart — investigate a competing writer, a brownout or "
         "a reset"
+    )
+
+    # The same fault found at connect names different causes, because the
+    # readback that catches it is also what identifies the part: nothing has
+    # yet established that this address holds an ADS1115 at all. A
+    # measurement-time mismatch has that excluded by a successful connect.
+    _CONNECT_REFUSAL_REMEDY = (
+        "; the chip is refused for the life of this process — the device at "
+        "this address may not be an ADS1115, the configuration write may not "
+        "have taken, or something else may be writing the chip"
     )
 
     def _sample_ads1115_volts(self) -> float:
