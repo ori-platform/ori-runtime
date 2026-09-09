@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import grp
 import json
 import os
 import pwd
@@ -26,6 +27,7 @@ import yaml
 from ori.installer import identity
 from ori.installer.trusted_paths import trust_failure
 from ori.security.release_bundles import ExtractedReleaseBundle, distribution_version
+from ori.utils.path_utils import shown
 
 _VERSION_RE = re.compile(
     r"^(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)"
@@ -657,6 +659,26 @@ def _has_control_character(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
+_FILE_KINDS: tuple[tuple[Callable[[int], bool], str], ...] = (
+    (stat.S_ISFIFO, "named pipe"),
+    (stat.S_ISSOCK, "socket"),
+    (stat.S_ISCHR, "character device"),
+    (stat.S_ISBLK, "block device"),
+    (stat.S_ISDIR, "directory"),
+)
+
+
+def _describe_special_file(path: Path, mode: int) -> str:
+    """Name what was found and where, without letting the name speak for itself.
+
+    A refusal an operator cannot act on sends them looking, and the likeliest
+    causes are artefacts of the runtime having run. The name is repr-quoted
+    because it reaches a terminal and a path is not this installer's to trust.
+    """
+    kind = next((label for test, label in _FILE_KINDS if test(mode)), "special file")
+    return f"{kind} {str(path)!r}"
+
+
 def _unsafe_unit_value(value: str) -> bool:
     return (
         any(character.isspace() for character in value) or "%" in value or "@" in value
@@ -870,6 +892,11 @@ def _health_bridge_response(
     if health.get("critical", False) is not False:
         return "failed", None
     return "healthy", health
+
+
+#: Groups owning the device nodes a runtime drives. Granted through the unit,
+#: never through the account: the installer adopts an account exactly as found.
+DEVICE_GROUPS: tuple[str, ...] = ("gpio", "i2c")
 
 
 class SystemdServiceManager:
@@ -1113,6 +1140,7 @@ class SystemdServiceManager:
         section = ""
         users: list[str] = []
         targets: list[str] = []
+        groups: list[str] = []
         for raw_line in rendered.splitlines():
             if raw_line.rstrip().endswith("\\"):
                 raise LinuxInstallError(
@@ -1129,6 +1157,8 @@ class SystemdServiceManager:
             key, value = line.split("=", 1)
             if section == "Service" and key.strip() == "User":
                 users.append(value.strip())
+            if section == "Service" and key.strip() == "SupplementaryGroups":
+                groups.append(value.strip())
             if section == "Install" and key.strip() == "WantedBy":
                 targets.append(value.strip())
         expected_target = (
@@ -1146,6 +1176,19 @@ class SystemdServiceManager:
             raise LinuxInstallError(
                 "service_start_failed", "service unit identity does not match profile"
             )
+        if self._profile.scope == "user" and groups:
+            raise LinuxInstallError(
+                "service_start_failed",
+                "service unit grants device groups outside a system profile",
+            )
+        for line in groups:
+            for name in line.split():
+                if name not in DEVICE_GROUPS:
+                    raise LinuxInstallError(
+                        "service_start_failed",
+                        f"service unit names a group that is not a device "
+                        f"group: {name!r}",
+                    )
 
     def _systemctl(self) -> list[str]:
         return (
@@ -1175,6 +1218,21 @@ class SystemdServiceManager:
         return result
 
 
+def host_device_groups(
+    resolver: Callable[[str], object] | None = None,
+) -> tuple[str, ...]:
+    """The device groups this host defines, in a stable order."""
+    lookup = resolver if resolver is not None else grp.getgrnam
+    present: list[str] = []
+    for name in DEVICE_GROUPS:
+        try:
+            lookup(name)
+        except KeyError:
+            continue
+        present.append(name)
+    return tuple(present)
+
+
 def render_systemd_unit(
     template: str,
     *,
@@ -1183,6 +1241,7 @@ def render_systemd_unit(
     data_dir: Path,
     config_path: Path,
     env_file: Path,
+    device_groups: Sequence[str] = (),
 ) -> str:
     """Render a shell-free unit without mixing user and system semantics."""
     paths = {
@@ -1214,21 +1273,32 @@ def render_systemd_unit(
             "systemd config path must be inside the writable data directory",
         )
 
-    if "@ORI_USER_DIRECTIVE@" not in rendered or "@ORI_WANTED_BY@" not in rendered:
-        raise LinuxInstallError(
-            "service_start_failed", "service template is missing profile markers"
-        )
+    for marker in ("@ORI_USER_DIRECTIVE@", "@ORI_DEVICE_GROUPS@", "@ORI_WANTED_BY@"):
+        if marker not in rendered:
+            raise LinuxInstallError(
+                "service_start_failed", f"service template is missing {marker}"
+            )
     if profile.scope == "user":
         user_directive = ""
         wanted_by = "default.target"
+        groups_directive = ""
     elif profile.scope == "system" and profile.service_user is not None:
         user_directive = f"User={profile.service_user}"
         wanted_by = "multi-user.target"
+        names = list(device_groups)
+        for name in names:
+            if name not in DEVICE_GROUPS:
+                raise LinuxInstallError(
+                    "service_start_failed",
+                    f"device group name is not a device group: {name!r}",
+                )
+        groups_directive = f"SupplementaryGroups={' '.join(names)}" if names else ""
     else:
         raise LinuxInstallError(
             "service_start_failed", "service profile is inconsistent"
         )
     rendered = rendered.replace("@ORI_USER_DIRECTIVE@", user_directive)
+    rendered = rendered.replace("@ORI_DEVICE_GROUPS@", groups_directive)
     rendered = rendered.replace("@ORI_WANTED_BY@", wanted_by)
     if re.search(r"@[A-Z0-9_]+@", rendered):
         raise LinuxInstallError(
@@ -1852,7 +1922,11 @@ def _owned_tree_plan(
                 continue
             if not path.is_file():
                 raise LinuxInstallError(
-                    "unsafe_install_root", "special files are forbidden"
+                    "unsafe_install_root",
+                    "special files are forbidden in the install root: "
+                    f"{_describe_special_file(path, path_stat.st_mode)}. "
+                    "Stop the service, remove that file, and run this again: "
+                    "a running runtime recreates the ones it made.",
                 )
             existing_mode = path_stat.st_mode
             mode = executable_mode if existing_mode & 0o100 else regular_mode
@@ -1950,10 +2024,21 @@ def _apply_permission_plan(plan: Sequence[_PermissionChange]) -> None:
 
 
 def _set_owned_mode(change: _PermissionChange, uid: int, gid: int, mode: int) -> None:
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    # O_NONBLOCK because the service owns this tree and is still running: a
+    # regular file validated during planning can be a pipe by the time it is
+    # opened, and opening a pipe for reading waits for a writer that never
+    # comes. The checks below are what refuse the substitution; without this
+    # flag they are unreachable and the installer stalls as root.
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
     descriptor = os.open(change.path, flags)
     try:
         current = os.fstat(descriptor)
+        # Both checks are needed, and neither subsumes the other. An inode
+        # number is reused immediately after unlink on the filesystems Linux
+        # installs run on, so a regular file replaced by a pipe keeps the
+        # number the plan recorded and only the type says it changed.
+        if not (stat.S_ISREG(current.st_mode) or stat.S_ISDIR(current.st_mode)):
+            raise OSError("permission target is no longer a regular file")
         if current.st_dev != change.device or current.st_ino != change.inode:
             raise OSError("permission target changed after validation")
         try:
@@ -2471,6 +2556,7 @@ def install_composed_release(
         data_dir=layout.data,
         config_path=config_path,
         env_file=env_file,
+        device_groups=host_device_groups(),
     )
     release_preparer = preparer or OfflineReleasePreparer(bundle=bundle)
     verifier = health_verifier or RuntimeHealthVerifier(
@@ -2594,14 +2680,14 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
             if not stat.S_ISREG(info.st_mode):
                 raise LinuxInstallError(
                     "offline_install_failed",
-                    f"unexpected special file in release venv bin: {entry.name}",
+                    f"unexpected special file in release venv bin: {shown(entry.name)}",
                 )
             if not info.st_mode & 0o111:
                 continue
             data = entry.read_bytes()
         except OSError as exc:
             raise LinuxInstallError(
-                "offline_install_failed", f"cannot inspect {entry.name}"
+                "offline_install_failed", f"cannot inspect {shown(entry.name)}"
             ) from exc
 
         break_at = data.find(b"\n")
@@ -2612,7 +2698,7 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
             if staging_reference in data:
                 raise LinuxInstallError(
                     "offline_install_failed",
-                    f"{entry.name} references the staging path without a shebang",
+                    f"{shown(entry.name)} references the staging path without a shebang",
                 )
             continue
 
@@ -2626,7 +2712,7 @@ def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
             if staging_reference in data:
                 raise LinuxInstallError(
                     "offline_install_failed",
-                    f"{entry.name} points at an unexpected staging interpreter",
+                    f"{shown(entry.name)} points at an unexpected staging interpreter",
                 )
             continue
         _rewrite_preserving_mode(
@@ -2688,7 +2774,7 @@ def _rewrite_preserving_mode(path: Path, content: bytes, mode: int) -> None:
         os.replace(temporary, path)
     except OSError as exc:
         raise LinuxInstallError(
-            "offline_install_failed", f"cannot rebind {path.name}"
+            "offline_install_failed", f"cannot rebind {shown(path.name)}"
         ) from exc
     finally:
         if descriptor >= 0:
@@ -2737,12 +2823,12 @@ def _assert_no_staging_references(bin_dir: Path, staging_reference: bytes) -> No
             data = entry.read_bytes()
         except OSError as exc:
             raise LinuxInstallError(
-                "offline_install_failed", f"cannot reread {entry.name}"
+                "offline_install_failed", f"cannot reread {shown(entry.name)}"
             ) from exc
         if staging_reference in data:
             raise LinuxInstallError(
                 "offline_install_failed",
-                f"{entry.name} still references the staging directory",
+                f"{shown(entry.name)} still references the staging directory",
             )
 
 
@@ -3134,12 +3220,12 @@ def _ensure_private_directory(path: Path) -> _CreatedDirectory | None:
         info = os.fstat(descriptor)
         if not stat.S_ISDIR(info.st_mode):  # O_DIRECTORY also enforces this.
             raise LinuxInstallError(
-                "unsafe_install_root", f"{path.name} is not a directory"
+                "unsafe_install_root", f"{shown(path.name)} is not a directory"
             )
         descriptor_identity = (info.st_dev, info.st_ino)
         if created_identity is not None and descriptor_identity != created_identity:
             raise LinuxInstallError(
-                "unsafe_install_root", f"{path.name} changed during preparation"
+                "unsafe_install_root", f"{shown(path.name)} changed during preparation"
             )
 
         mode = stat.S_IMODE(info.st_mode)
@@ -3147,7 +3233,8 @@ def _ensure_private_directory(path: Path) -> _CreatedDirectory | None:
             # Never silently adopt a pre-existing directory another account
             # can modify. Its exact mode is evidence that entries are replaceable.
             raise LinuxInstallError(
-                "unsafe_install_root", f"{path.name} is writable by another account"
+                "unsafe_install_root",
+                f"{shown(path.name)} is writable by another account",
             )
         if created or mode & 0o007:
             # Pin created directories despite umask/default ACLs, and tighten
@@ -3156,13 +3243,14 @@ def _ensure_private_directory(path: Path) -> _CreatedDirectory | None:
             info = os.fstat(descriptor)
             if stat.S_IMODE(info.st_mode) != 0o700:
                 raise LinuxInstallError(
-                    "unsafe_install_root", f"{path.name} could not be made private"
+                    "unsafe_install_root",
+                    f"{shown(path.name)} could not be made private",
                 )
 
         current = os.stat(path, follow_symlinks=False)
         if (current.st_dev, current.st_ino) != descriptor_identity:
             raise LinuxInstallError(
-                "unsafe_install_root", f"{path.name} changed during preparation"
+                "unsafe_install_root", f"{shown(path.name)} changed during preparation"
             )
         completed = True
         if created:
@@ -3190,22 +3278,22 @@ def _private_directory_error_detail(
     """Explain a kernel refusal; pathname inspection here is diagnostic only."""
     if created and isinstance(error, PermissionError):
         return (
-            f"{path.name} was created but is not accessible; "
+            f"{shown(path.name)} was created but is not accessible; "
             "owner-stripping umasks are unsupported"
         )
     if created:
-        return f"{path.name} could not be verified after creation"
+        return f"{shown(path.name)} could not be verified after creation"
     try:
         info = os.stat(path, follow_symlinks=False)
     except FileNotFoundError:
-        return f"{path.name} parent is unavailable"
+        return f"{shown(path.name)} parent is unavailable"
     except OSError:
-        return f"{path.name} could not be prepared"
+        return f"{shown(path.name)} could not be prepared"
     if stat.S_ISLNK(info.st_mode):
-        return f"{path.name} must not be a symlink"
+        return f"{shown(path.name)} must not be a symlink"
     if not stat.S_ISDIR(info.st_mode):
-        return f"{path.name} is not a directory"
-    return f"{path.name} could not be prepared"
+        return f"{shown(path.name)} is not a directory"
+    return f"{shown(path.name)} could not be prepared"
 
 
 def _remove_created_directory(path: Path, identity: tuple[int, int] | None) -> None:

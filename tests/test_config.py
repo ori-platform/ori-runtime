@@ -3,6 +3,8 @@
 
 import ast
 import base64
+import json
+import logging
 import os
 import pathlib
 import subprocess
@@ -1001,6 +1003,63 @@ class TestLoadExample:
         )
         assert cfg.security["config_signature"]["signed_at_ms"] == 1_800_000_000_000
 
+    def test_config_load_refuses_a_signature_from_a_published_key(
+        self, tmp_path, monkeypatch
+    ):
+        """A published key must not admit a configuration through the real loader.
+
+        `device.rated_capacity_amps` scales the Tier D trip point, and production
+        posture requires a verified signature -- so a key anyone can sign with
+        would satisfy a mandated control while moving where the runtime trips.
+        """
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+        published = Ed25519PrivateKey.from_private_bytes(bytes.fromhex("5" * 64))
+        raw_public = published.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        assert raw_public in PUBLISHED_TEST_KEYS, "this test needs a refused key"
+        monkeypatch.setenv(
+            "ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64",
+            base64.b64encode(raw_public).decode("ascii"),
+        )
+
+        yaml_path = _write_yaml(
+            tmp_path,
+            _sign_config_yaml(
+                """
+                device:
+                  id: dev-01
+                  name: Test
+                  location: Lagos
+                  rated_capacity_amps: 400.0
+                sensors: []
+                skills: []
+                reasoning: {}
+                gateway: {}
+                actions:
+                  primary_alert_channel: sms
+                  sms:
+                    enabled: false
+                  relay:
+                    enabled: false
+                    gpio_pin: 26
+                security:
+                  config_signature:
+                    require_signed: true
+                """,
+                published,
+            ),
+        )
+
+        with pytest.raises(ConfigValidationError) as refusal:
+            Config.load(yaml_path)
+        assert "private seed is published" in str(refusal.value)
+        assert "ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64" in str(refusal.value)
+
     def test_signed_config_is_checked_before_env_expansion(self, tmp_path, monkeypatch):
         private_key, public_key_b64 = _ed25519_keypair()
         monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
@@ -1273,6 +1332,666 @@ class TestLoadExample:
         )
 
         with pytest.raises(ConfigValidationError, match="require_signed"):
+            Config.load(yaml_path)
+
+    def test_the_log_and_evidence_paths_anchor_to_the_config(
+        self, tmp_path, monkeypatch
+    ):
+        """The service works in a runtime directory, not where it keeps state.
+
+        The evidence key is sealed on first use, so a second working directory
+        would seal a second device identity for one device.
+        """
+        home = tmp_path / "data"
+        home.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            logging:
+              file: ori.log
+            evidence:
+              enabled: false
+              db_path: ori_evidence.db
+              key_path: ori_evidence.key
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.logging.file == str(home / "ori.log")
+        assert cfg.evidence.db_path == str(home / "ori_evidence.db")
+        assert cfg.evidence.key_path == str(home / "ori_evidence.key")
+
+    def test_absolute_log_and_evidence_paths_are_left_alone(self, tmp_path):
+        mount = tmp_path / "mount"
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            logging:
+              file: {mount / "ori.log"}
+            evidence:
+              enabled: false
+              key_path: {mount / "ori_evidence.key"}
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.logging.file == str(mount / "ori.log")
+        assert cfg.evidence.key_path == str(mount / "ori_evidence.key")
+
+    def test_every_relative_filesystem_setting_anchors_to_the_config(
+        self, tmp_path, monkeypatch
+    ):
+        """The unit works in a runtime directory systemd empties on every stop.
+
+        A health socket bound there is unreachable, and a TLS material path
+        resolved there is a file the broker connection will not find.
+        """
+        home = tmp_path / "data"
+        home.mkdir()
+        elsewhere = tmp_path / "runtime-dir"
+        elsewhere.mkdir()
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: rule
+              model_path: models
+            gateway:
+              enabled: false
+              broker_url: ""
+              tls:
+                enabled: false
+                ca_certfile: tls/ca.pem
+                certfile: tls/client.pem
+                keyfile: tls/client.key
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            health_socket:
+              enabled: true
+              path: health.sock
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.health_socket["path"] == str(home / "health.sock")
+        assert cfg.gateway.tls["ca_certfile"] == str(home / "tls" / "ca.pem")
+        assert cfg.gateway.tls["certfile"] == str(home / "tls" / "client.pem")
+        assert cfg.gateway.tls["keyfile"] == str(home / "tls" / "client.key")
+        assert cfg.reasoning.model_path == str(home / "models")
+
+    def test_absolute_filesystem_settings_are_left_alone(self, tmp_path):
+        mount = tmp_path / "mount"
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: rule
+              model_path: {mount / "models"}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            health_socket:
+              enabled: true
+              path: {mount / "health.sock"}
+            """,
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.health_socket["path"] == str(mount / "health.sock")
+        assert cfg.reasoning.model_path == str(mount / "models")
+
+    def _device_config(self, home, *, sensors: str = "", gsm: str = "") -> str:
+        home.mkdir(exist_ok=True)
+        return _write_yaml(
+            home,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors:{sensors or " []"}
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+{gsm}
+            """,
+        )
+
+    def test_a_relative_serial_port_is_refused(self, tmp_path, monkeypatch):
+        """It names a node the host owns, not a file beside the config.
+
+        Anchoring it would invent a device path; leaving it relative would make
+        it follow a runtime directory systemd empties on every stop.
+        """
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: meter
+                type: energy
+                protocol: serial
+                poll_interval_ms: 1000
+                port: ttyUSB0""",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConfigValidationError, match="absolute device path"):
+            Config.load(yaml_path)
+
+    def test_a_serial_port_may_not_be_a_url(self, tmp_path):
+        """`serial` opens with `Serial()`, which takes a port name only.
+
+        Admitting one here would move the failure to the first read.
+        """
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: meter
+                type: energy
+                protocol: serial
+                poll_interval_ms: 1000
+                port: socket://127.0.0.1:7000""",
+        )
+
+        with pytest.raises(ConfigValidationError, match="absolute device path"):
+            Config.load(yaml_path)
+
+    def test_a_usb_serial_device_path_may_be_a_url(self, tmp_path):
+        """`usb_serial` hands anything with a scheme to `serial_for_url`."""
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: meter
+                type: energy
+                protocol: usb_serial
+                poll_interval_ms: 1000
+                device_path: socket://127.0.0.1:7000""",
+        )
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.sensors[0].metadata["device_path"] == "socket://127.0.0.1:7000"
+
+    def test_an_absolute_device_path_is_taken_as_declared(self, tmp_path):
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: meter
+                type: energy
+                protocol: serial
+                poll_interval_ms: 1000
+                port: /dev/ttyUSB0""",
+        )
+
+        assert Config.load(yaml_path).sensors[0].metadata["port"] == "/dev/ttyUSB0"
+
+    def test_a_relative_gsm_modem_port_is_refused(self, tmp_path, monkeypatch):
+        """The modem is opened with `Serial()` too."""
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            gsm="""                transport: gsm
+                gsm:
+                  enabled: true
+                  port: ttyAMA0""",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConfigValidationError, match="absolute device path"):
+            Config.load(yaml_path)
+
+    def test_a_relative_smart_device_is_refused(self, tmp_path, monkeypatch):
+        """It reaches `smartctl` as an argv element, which takes a path."""
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: disk
+                type: disk_health
+                protocol: smart
+                poll_interval_ms: 60000
+                device: disk0""",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConfigValidationError, match="absolute device path"):
+            Config.load(yaml_path)
+
+    def test_a_smart_device_that_would_arrive_as_an_option_is_refused(self, tmp_path):
+        """`smartctl` would read a leading dash as one of its own flags."""
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: disk
+                type: disk_health
+                protocol: smart
+                poll_interval_ms: 60000
+                device: -d""",
+        )
+
+        with pytest.raises(ConfigValidationError, match="absolute device path"):
+            Config.load(yaml_path)
+
+    def test_an_absolute_smart_device_is_taken_as_declared(self, tmp_path):
+        yaml_path = self._device_config(
+            tmp_path / "data",
+            sensors="""
+              - id: disk
+                type: disk_health
+                protocol: smart
+                poll_interval_ms: 60000
+                device: /dev/sda""",
+        )
+
+        assert Config.load(yaml_path).sensors[0].metadata["device"] == "/dev/sda"
+
+    @pytest.mark.parametrize(
+        "placement",
+        [
+            "                mqtt:\n                  tls:\n                    ca_certfile: tls/ca.pem",
+            "                mqtt_tls_ca_certfile: tls/ca.pem",
+            "                tls_ca_certfile: tls/ca.pem",
+            "                mqtt:\n                  mqtt_tls_ca_certfile: tls/ca.pem",
+            "                mqtt:\n                  tls_ca_certfile: tls/ca.pem",
+        ],
+    )
+    def test_every_accepted_tls_spelling_anchors(
+        self, placement: str, tmp_path, monkeypatch
+    ):
+        """Whichever spelling an operator used, the value must be anchored.
+
+        The schema canonicalises the deprecated spellings into `mqtt.tls.*`
+        before the anchoring runs. This holds that path end to end, so a change
+        that stopped canonicalising would surface here rather than as material
+        resolved against a runtime directory systemd empties on every stop.
+        """
+        home = tmp_path / "data"
+        yaml_path = self._device_config(
+            home,
+            sensors=f"""
+              - id: broker
+                type: temperature
+                protocol: mqtt
+                poll_interval_ms: 1000
+                broker_host: 127.0.0.1
+                topic: sensors/temp
+{placement}""",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        cfg = Config.load(yaml_path)
+
+        found = json.dumps(cfg.sensors[0].metadata)
+        assert str(home / "tls" / "ca.pem") in found
+        assert '"tls/ca.pem"' not in found
+
+    def test_the_in_memory_store_is_not_a_path_to_resolve(self, tmp_path):
+        """SQLite's private database names no file."""
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ":memory:"
+            """,
+        )
+
+        assert Config.load(yaml_path).database_path == ":memory:"
+
+    def test_a_store_only_the_working_directory_could_find_is_reported(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Coming up on an empty store would strand the binding in the old one.
+
+        Reported and not refused: a file of that name in the working directory
+        is a coincidence as often as it is this device's store.
+        """
+        home = tmp_path / "data"
+        home.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "ori_state.db").write_bytes(b"")
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        with caplog.at_level(logging.WARNING, logger="ori.config"):
+            cfg = Config.load(yaml_path)
+
+        assert cfg.database_path == str(home / "ori_state.db")
+        warned = "\n".join(
+            r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+        )
+        assert str(elsewhere / "ori_state.db") in warned
+        assert str(home / "ori_state.db") in warned
+
+    def test_the_ambiguity_warning_escapes_the_names_it_reports(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """This warning reaches a terminal and a log line like any refusal."""
+        home = tmp_path / "data"
+        home.mkdir()
+        elsewhere = tmp_path / "cwd\x1b[2K\nFORGED"
+        elsewhere.mkdir()
+        (elsewhere / "ori_state.db").write_bytes(b"")
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        with caplog.at_level(logging.WARNING, logger="ori.config"):
+            Config.load(yaml_path)
+
+        warned = "\n".join(
+            r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+        )
+        assert "\x1b[2K" not in warned
+        assert "\nFORGED" not in warned
+        assert "\\x1b[2K" in warned
+
+    def test_each_name_the_ambiguity_warning_reports_is_escaped(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """One hostile argument cannot prove the other two are escaped.
+
+        The warning names the declared value, where it resolved to, and where a
+        file of that name was found. A regression limited to any one of them
+        would pass a test that made only another hostile.
+        """
+        home = tmp_path / "data\x1b[2KRESOLVED"
+        home.mkdir()
+        elsewhere = tmp_path / "cwd\x1b[2KLEGACY"
+        elsewhere.mkdir()
+        # YAML refuses a raw control character in a scalar, so the declared
+        # value reaches the loader the way it actually could: through
+        # expansion, where the document is clean and the environment is not.
+        declared = "store\x1b[2KDECLARED.db"
+        monkeypatch.setenv("ORI_TEST_DB_PATH", declared)
+        (elsewhere / declared).write_bytes(b"")
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ${ORI_TEST_DB_PATH}
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        with caplog.at_level(logging.WARNING, logger="ori.config"):
+            Config.load(yaml_path)
+
+        warned = "\n".join(
+            r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+        )
+        assert "\x1b[2K" not in warned
+        for fragment in ("DECLARED", "RESOLVED", "LEGACY"):
+            assert f"\\x1b[2K{fragment}" in warned, fragment
+
+    def test_a_store_beside_the_config_is_used_without_complaint(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The report fires on ambiguity alone, not on every relative path."""
+        home = tmp_path / "data"
+        home.mkdir()
+        (home / "ori_state.db").write_bytes(b"")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "ori_state.db").write_bytes(b"")
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        with caplog.at_level(logging.WARNING, logger="ori.config"):
+            cfg = Config.load(yaml_path)
+
+        assert cfg.database_path == str(home / "ori_state.db")
+        assert not [r for r in caplog.records if "database.path" in r.getMessage()]
+
+    def test_a_relative_store_path_resolves_beside_the_config(
+        self, tmp_path, monkeypatch
+    ):
+        """Otherwise the store a command opens depends on where it was run."""
+        home = tmp_path / "data"
+        home.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        yaml_path = _write_yaml(
+            home,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway: {}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+            """,
+        )
+        monkeypatch.chdir(elsewhere)
+
+        assert Config.load(yaml_path).database_path == str(home / "ori_state.db")
+
+    def test_an_absolute_store_path_is_taken_exactly_as_declared(self, tmp_path):
+        """An absolute path is the operator's own, and is not rewritten."""
+        elsewhere = tmp_path / "mount" / ".." / "mount" / "ori_state.db"
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            database:
+              path: {elsewhere}
+            """,
+        )
+
+        assert Config.load(yaml_path).database_path == str(elsewhere)
+
+    def _encrypted_posture_config(self, home, prefix, monkeypatch):
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        return _write_yaml(
+            home,
+            _sign_config_yaml(
+                f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            sensors: []
+            skills: []
+            reasoning: {{}}
+            gateway: {{}}
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              enforce_production_posture: true
+              config_signature:
+                require_signed: true
+              skills:
+                require_signed: true
+            state:
+              encryption:
+                mode: filesystem_required
+                encrypted_path_prefixes:
+                  - "{prefix}"
+            database:
+              path: ori_state.db
+            """,
+                private_key,
+            ),
+        )
+
+    def test_the_encrypted_store_requirement_is_met_from_any_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """A config inside the encrypted prefix declares an encrypted store."""
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        yaml_path = self._encrypted_posture_config(
+            encrypted_dir, encrypted_dir, monkeypatch
+        )
+        monkeypatch.chdir(outside)
+
+        cfg = Config.load(yaml_path)
+
+        assert cfg.database_path == str(encrypted_dir / "ori_state.db")
+
+    def test_standing_in_the_encrypted_directory_does_not_satisfy_the_requirement(
+        self, tmp_path, monkeypatch
+    ):
+        """The gate is a fact about the declared store, not about the caller."""
+        encrypted_dir = tmp_path / "encrypted"
+        encrypted_dir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        yaml_path = self._encrypted_posture_config(outside, encrypted_dir, monkeypatch)
+        monkeypatch.chdir(encrypted_dir)
+
+        with pytest.raises(ConfigValidationError, match="encrypted_path_prefixes"):
             Config.load(yaml_path)
 
     def test_production_posture_allows_loopback_gateway_without_site_tls(

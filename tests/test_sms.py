@@ -9,6 +9,7 @@ at the module level via monkeypatch so no live credentials are required.
 
 import sys
 import types
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -23,7 +24,7 @@ def _make_at_stub(
     status: str = "Success", message_id: str = "ATXid-123"
 ) -> types.ModuleType:
     """Build a minimal africastalking module stub that returns *status*."""
-    stub = types.ModuleType("africastalking")
+    stub: Any = types.ModuleType("africastalking")
 
     class _SMS:
         @staticmethod
@@ -46,7 +47,7 @@ def _make_at_stub(
 
 
 def _make_at_stub_empty_recipients() -> types.ModuleType:
-    stub = types.ModuleType("africastalking")
+    stub: Any = types.ModuleType("africastalking")
     stub.SMS = type(
         "_SMS",
         (),
@@ -61,7 +62,7 @@ def _make_at_stub_empty_recipients() -> types.ModuleType:
 
 
 def _make_at_stub_raises() -> types.ModuleType:
-    stub = types.ModuleType("africastalking")
+    stub: Any = types.ModuleType("africastalking")
 
     class _SMS:
         @staticmethod
@@ -150,7 +151,7 @@ async def test_send_passes_message_and_number_to_sdk(monkeypatch):
     send_calls: list[tuple] = []
     init_calls: list[tuple] = []
 
-    stub = types.ModuleType("africastalking")
+    stub: Any = types.ModuleType("africastalking")
 
     class _SMS:
         @staticmethod
@@ -185,7 +186,7 @@ async def test_send_uses_at_sender_id_env_var(monkeypatch):
     monkeypatch.setenv("AT_SENDER_ID", "MYAPP")
     calls: list[str] = []
 
-    stub = types.ModuleType("africastalking")
+    stub: Any = types.ModuleType("africastalking")
 
     class _SMS:
         @staticmethod

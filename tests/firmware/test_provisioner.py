@@ -167,6 +167,7 @@ def _confirm(bench, device_id="ori-fw-bench0001"):
         await store.open()
         try:
             dev = await store.get_firmware_device(device_id)
+            assert dev is not None
             await store.resolve_firmware_confirmation(
                 device_id, dev["anchor_epoch_id"], status="confirmed", at_ms=now_ms()
             )
@@ -657,3 +658,138 @@ class TestTheCliClaimsNoPublicationItDoesNotPerform:
         out = capsys.readouterr().out.lower()
         assert "prepare-approval" in out
         assert "publish the retained approval" not in out
+
+
+class TestPublishedSeedsAreRefused:
+    """A signing seed this repository publishes authenticates nobody.
+
+    The refused set holds public keys, so this boundary derives the key from the
+    seed rather than carrying a second list. These drive the loader every
+    runtime consumer uses, so a new consumer inherits the refusal.
+    """
+
+    def test_a_published_seed_is_refused(self) -> None:
+        import base64 as _b64
+
+        from ori.gateway.firmware_commands import (
+            FirmwareCommandError,
+            load_raw_ed25519_seed_from_env,
+        )
+
+        os.environ["ORI_TEST_PUBLISHED_SEED"] = _b64.b64encode(bytes(range(32))).decode(
+            "ascii"
+        )
+        try:
+            with pytest.raises(FirmwareCommandError) as refusal:
+                load_raw_ed25519_seed_from_env(
+                    "ORI_TEST_PUBLISHED_SEED", label="firmware provisioner key"
+                )
+        finally:
+            del os.environ["ORI_TEST_PUBLISHED_SEED"]
+        assert "publishes as test material" in str(refusal.value)
+        assert "ORI_TEST_PUBLISHED_SEED" in str(refusal.value)
+
+    def test_every_published_key_that_a_seed_can_reach_is_refused(self) -> None:
+        """One refused seed does not establish that the derived set is consulted."""
+        import base64 as _b64
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+        from ori.gateway.firmware_commands import (
+            FirmwareCommandError,
+            load_raw_ed25519_seed_from_env,
+        )
+        from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+        refused = 0
+        for digit in "0123456789abcdef":
+            seed = bytes.fromhex(digit * 64)
+            public = (
+                Ed25519PrivateKey.from_private_bytes(seed)
+                .public_key()
+                .public_bytes(Encoding.Raw, PublicFormat.Raw)
+            )
+            if public not in PUBLISHED_TEST_KEYS:
+                continue
+            refused += 1
+            os.environ["ORI_TEST_SEED_SWEEP"] = _b64.b64encode(seed).decode("ascii")
+            try:
+                with pytest.raises(FirmwareCommandError):
+                    load_raw_ed25519_seed_from_env(
+                        "ORI_TEST_SEED_SWEEP", label="firmware provisioner key"
+                    )
+            finally:
+                del os.environ["ORI_TEST_SEED_SWEEP"]
+        assert refused >= 16, "the guessable seed class must be reachable here"
+
+    def test_a_seed_that_was_never_published_is_accepted(self) -> None:
+        """The guard refuses published material, not every seed it has not seen."""
+        import base64 as _b64
+        import secrets
+
+        from ori.gateway.firmware_commands import load_raw_ed25519_seed_from_env
+
+        fresh = secrets.token_bytes(32)
+        os.environ["ORI_TEST_FRESH_SEED"] = _b64.b64encode(fresh).decode("ascii")
+        try:
+            loaded = load_raw_ed25519_seed_from_env(
+                "ORI_TEST_FRESH_SEED", label="firmware provisioner key"
+            )
+        finally:
+            del os.environ["ORI_TEST_FRESH_SEED"]
+        assert loaded == fresh
+
+    def test_a_seed_whose_key_cannot_be_derived_is_refused(self, monkeypatch) -> None:
+        """A check that cannot be made must not pass.
+
+        Derivation failing is not input-driven -- every 32-byte value is a valid
+        seed -- so this is the branch where the guard could silently stop
+        guarding. It must refuse rather than fall through.
+        """
+        import base64 as _b64
+
+        from ori.gateway import firmware_commands as fc
+
+        def _explode(_seed: bytes) -> bool:
+            raise RuntimeError("cryptography unavailable")
+
+        monkeypatch.setattr(fc, "is_published_seed", _explode)
+        os.environ["ORI_TEST_UNDERIVABLE"] = _b64.b64encode(bytes(range(32))).decode(
+            "ascii"
+        )
+        try:
+            with pytest.raises(fc.FirmwareCommandError) as refusal:
+                fc.load_raw_ed25519_seed_from_env(
+                    "ORI_TEST_UNDERIVABLE", label="firmware provisioner key"
+                )
+        finally:
+            del os.environ["ORI_TEST_UNDERIVABLE"]
+        assert "refused rather than trusted" in str(refusal.value)
+
+    def test_the_provisioning_cli_refuses_a_published_seed(self, tmp_path) -> None:
+        """`read_seed` feeds `cmd_prepare_approval`, which signs approvals.
+
+        This is a production signing entry point that does not go through the
+        environment loader, so guarding that loader alone left it open.
+        """
+        import base64 as _b64
+
+        from ori.firmware_provisioner import ProvisionerError, read_seed
+
+        seed_file = tmp_path / "provisioner_seed.b64"
+        seed_file.write_text(_b64.b64encode(bytes(range(32))).decode("ascii"))
+        with pytest.raises(ProvisionerError) as refusal:
+            read_seed(seed_file, "provisioner seed")
+        assert "publishes as test material" in str(refusal.value)
+
+    def test_the_provisioning_cli_accepts_a_fresh_seed(self, tmp_path) -> None:
+        import base64 as _b64
+        import secrets as _secrets
+
+        from ori.firmware_provisioner import read_seed
+
+        fresh = _secrets.token_bytes(32)
+        seed_file = tmp_path / "fresh_seed.b64"
+        seed_file.write_text(_b64.b64encode(fresh).decode("ascii"))
+        assert read_seed(seed_file, "provisioner seed") == fresh

@@ -9,6 +9,7 @@ import base64
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 import pytest
 from cryptography import x509
@@ -61,8 +62,8 @@ def _ca_material(
                 key_agreement=False,
                 key_cert_sign=is_ca,
                 crl_sign=is_ca,
-                encipher_only=None,
-                decipher_only=None,
+                encipher_only=cast(Any, None),
+                decipher_only=cast(Any, None),
             ),
             True,
         )
@@ -249,7 +250,7 @@ async def test_workflow_issues_minimal_client_certificate_and_install_request(
         client_ca_key.public_key().verify(
             certificate.signature,
             certificate.tbs_certificate_bytes,
-            ec.ECDSA(certificate.signature_hash_algorithm),
+            ec.ECDSA(cast(Any, certificate.signature_hash_algorithm)),
         )
         assert (
             certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
@@ -267,7 +268,7 @@ async def test_workflow_issues_minimal_client_certificate_and_install_request(
         assert certificate.public_key().public_bytes(
             serialization.Encoding.DER,
             serialization.PublicFormat.SubjectPublicKeyInfo,
-        ) == transport_key.public_key().public_bytes(
+        ) == cast(Any, transport_key).public_key().public_bytes(
             serialization.Encoding.DER,
             serialization.PublicFormat.SubjectPublicKeyInfo,
         )

@@ -67,6 +67,8 @@ from typing import Any
 
 from ori.security.firmware.commands import build_provisioning_approval_bytes
 from ori.security.firmware.telemetry import FirmwareVerificationError
+from ori.security.published_test_keys import is_published_seed
+from ori.utils.path_utils import shown
 
 # The shared corpus that ties these bytes to the C verifier in
 # ori-edge-firmware; the same bytes its test_provisioning.c accepts.
@@ -113,10 +115,10 @@ def _write_secret(path: Path, seed: bytes) -> None:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
         raise ProvisionerError(
-            f"{path} already exists; refusing to overwrite an authority key"
+            f"{shown(path)} already exists; refusing to overwrite an authority key"
         ) from exc
     except OSError as exc:
-        raise ProvisionerError(f"cannot write {path}: {exc}") from exc
+        raise ProvisionerError(f"cannot write {shown(path)}: {exc}") from exc
     with os.fdopen(fd, "w", encoding="ascii") as fh:
         # Canonical base64: the form load_raw_ed25519_seed_from_env
         # reads. Writing hex here would generate keys the runtime cannot
@@ -128,15 +130,28 @@ def read_seed(path: Path, label: str) -> bytes:
     try:
         raw = path.read_text(encoding="ascii").strip()
     except OSError as exc:
-        raise ProvisionerError(f"cannot read {label} at {path}: {exc}") from exc
+        raise ProvisionerError(f"cannot read {label} at {shown(path)}: {exc}") from exc
     try:
         seed = base64.b64decode(raw.encode("ascii"), validate=True)
     except Exception as exc:
         raise ProvisionerError(
-            f"{label} at {path} must be canonical base64 (the form the runtime loads)"
+            f"{label} at {shown(path)} must be canonical base64 (the form the runtime loads)"
         ) from exc
     if len(seed) != 32:
         raise ProvisionerError(f"{label} must be 32 bytes ({len(seed)} found)")
+    try:
+        published = is_published_seed(seed)
+    except Exception as exc:
+        raise ProvisionerError(
+            f"{label} at {shown(path)} could not be checked against the published-key "
+            "set, so it is refused rather than trusted"
+        ) from exc
+    if published:
+        raise ProvisionerError(
+            f"{label} at {shown(path)} holds a seed this repository publishes as test "
+            "material, so anyone with a clone signs the same provisioning "
+            "approvals. Generate a signing key that has never left the producer."
+        )
     return seed
 
 
@@ -184,8 +199,11 @@ def cmd_keygen(args: argparse.Namespace) -> int:
     _write_secret(out / "provisioner_seed.b64", seed_auth)
     _write_secret(out / "runtime_command_seed.b64", seed_rt)
 
-    print(f"authority seed      : {out / 'provisioner_seed.b64'}  (0600, keep offline)")
-    print(f"runtime command seed: {out / 'runtime_command_seed.b64'}  (0600)")
+    print(
+        f"authority seed      : {shown(out / 'provisioner_seed.b64')}"
+        "  (0600, keep offline)"
+    )
+    print(f"runtime command seed: {shown(out / 'runtime_command_seed.b64')}  (0600)")
     print()
     print("Load into the runtime environment (canonical base64):")
     print(
@@ -221,7 +239,9 @@ def _load_manifest_message(path: str) -> dict[str, Any]:
     try:
         message = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ProvisionerError(f"cannot read manifest message {path}: {exc}") from exc
+        raise ProvisionerError(
+            f"cannot read manifest message {shown(path)}: {exc}"
+        ) from exc
     if not isinstance(message, dict) or not isinstance(message.get("manifest"), dict):
         raise ProvisionerError("message has no manifest object")
     return message
@@ -422,7 +442,7 @@ def cmd_prepare_approval(args: argparse.Namespace) -> int:
     )
     if args.out:
         Path(args.out).write_bytes(message)
-        print(f"approval written to {args.out}")
+        print(f"approval written to {shown(args.out)}")
     else:
         sys.stdout.write(message.decode("utf-8") + "\n")
     print(

@@ -16,6 +16,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
 COMMISSIONING_ANCHOR_ENV = "ORI_COMMISSIONING_ANCHOR_PUBLIC_KEY_B64"
 COMMISSIONING_ANCHOR_PREVIOUS_ENV = "ORI_COMMISSIONING_ANCHOR_PREVIOUS_PUBLIC_KEY_B64"
 
@@ -44,6 +46,17 @@ def _decode_anchor(name: str, text: str) -> bytes:
         raise AnchorError(f"{name} does not hold a 32-byte Ed25519 public key")
     if base64.b64encode(raw).decode("ascii") != text:
         raise AnchorError(f"{name} is not canonically encoded")
+    if raw in PUBLISHED_TEST_KEYS:
+        raise AnchorError(
+            f"{name} names a key whose private seed is published test "
+            "material in this repository, so anyone holding a clone can forge a "
+            "binding this device would accept -- including one claiming both "
+            "proof legs, which licenses autonomous actuation. Generate a "
+            "commissioning key that has never left the producer and write its "
+            "public half here instead. This is refused at every deployment "
+            "profile: a development runtime drives the same relay as a "
+            "production one."
+        )
     return raw
 
 
@@ -98,7 +111,12 @@ def provisioning_anchor(
         raw = base64.b64decode(text, validate=True)
     except (binascii.Error, ValueError):
         return None
-    return raw if len(raw) == 32 else None
+    if len(raw) != 32 or raw in PUBLISHED_TEST_KEYS:
+        # A published key is not authority, so it is not a provisioning anchor
+        # either. The path that verifies with it refuses loudly; here it reads
+        # as absent, because an absent anchor cannot collide with one.
+        return None
+    return raw
 
 
 def anchor_collision(

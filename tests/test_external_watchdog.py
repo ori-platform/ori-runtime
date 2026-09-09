@@ -25,7 +25,14 @@ def _patch_external(monkeypatch):
             )
         ),
     )
-    monkeypatch.setattr("ori.actions.sms.SMSAction.send", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "ori.actions.sms.SMSAction.submit",
+        AsyncMock(
+            return_value=AlertSendReceipt.accepted_without_provider_receipt(
+                channel="sms"
+            )
+        ),
+    )
 
 
 def _write_runtime_config(tmp_path: Path, hal_block: str = "") -> Path:

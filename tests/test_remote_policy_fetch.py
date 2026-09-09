@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import time
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -16,13 +17,17 @@ from ori.policy.remote_fetch import (
 )
 from ori.skills.signing import canonical_signed_payload
 
-try:
+if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-except Exception:  # pragma: no cover - environment without cryptography support
-    Ed25519PrivateKey = None
-    Encoding = None
-    PublicFormat = None
+else:  # pragma: no cover - environment without cryptography support
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    except Exception:
+        Ed25519PrivateKey = None
+        Encoding = None
+        PublicFormat = None
 
 
 def _base_config(public_key_b64: str) -> dict:

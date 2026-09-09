@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 from ori.installer import launcher
 from ori.installer.linux import LinuxInstallError
+from ori.utils.path_utils import shown
 
 DOCTOR_TIMEOUT_S = 120
 
@@ -80,7 +81,7 @@ def install_launcher(
     except launcher.LauncherConflictError as exc:
         return False, str(exc), _noop
     except OSError as exc:
-        return False, f"could not write {path}: {exc}", _noop
+        return False, f"could not write {shown(path)}: {exc}", _noop
 
     if previous is None:
 

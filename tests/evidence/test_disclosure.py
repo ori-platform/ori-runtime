@@ -40,7 +40,7 @@ import re
 import subprocess
 import tomllib
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 import pytest
 
@@ -882,7 +882,7 @@ _TEXT_SCAN_SUFFIXES = {
 }
 
 
-def _text_scan_paths() -> list[pathlib.Path]:
+def _text_scan_paths() -> Iterator[pathlib.Path]:
     for root in ("ori", "tests", "docs", "scripts"):
         base = REPO_ROOT / root
         if not base.is_dir():

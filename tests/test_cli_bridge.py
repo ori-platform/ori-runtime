@@ -103,7 +103,7 @@ def _read_stdout_json(capsys) -> dict:
     return json.loads(captured.out)
 
 
-async def _seed_state_store(path: Path) -> None:
+async def _seed_state_store(path: Path, action: str = "trip_relay") -> None:
     store = StateStore(str(path))
     await store.open()
     try:
@@ -123,7 +123,7 @@ async def _seed_state_store(path: Path) -> None:
         )
         await store.log_action_for_event(
             ActionResult(
-                action_name="trip_relay",
+                action_name=action,
                 tier="D",
                 executed=True,
                 approved=None,
@@ -267,10 +267,11 @@ def test_cli_bridge_health_snapshot_preserves_device_policy_caps(monkeypatch, ca
 
 
 def test_cli_bridge_state_action_log_reads_runtime_store(tmp_path, monkeypatch, capsys):
+    config_path = _relative_store_config(tmp_path / "data")
+    asyncio.run(_seed_state_store(tmp_path / "data" / "ori_state.db"))
     monkeypatch.chdir(tmp_path)
-    asyncio.run(_seed_state_store(tmp_path / "ori_state.db"))
 
-    rc = cli_bridge.main(["state", "action-log", "limit=5"])
+    rc = cli_bridge.main(["state", "action-log", "--path", str(config_path), "limit=5"])
 
     payload = _read_stdout_json(capsys)
     assert rc == 0
@@ -283,10 +284,11 @@ def test_cli_bridge_state_action_log_reads_runtime_store(tmp_path, monkeypatch, 
 
 
 def test_cli_bridge_state_history_requires_sensor_id(tmp_path, monkeypatch, capsys):
+    config_path = _relative_store_config(tmp_path / "data")
+    asyncio.run(_seed_state_store(tmp_path / "data" / "ori_state.db"))
     monkeypatch.chdir(tmp_path)
-    asyncio.run(_seed_state_store(tmp_path / "ori_state.db"))
 
-    rc = cli_bridge.main(["state", "history", "limit=5"])
+    rc = cli_bridge.main(["state", "history", "--path", str(config_path), "limit=5"])
 
     payload = _read_stdout_json(capsys)
     assert rc == 2
@@ -299,10 +301,20 @@ def test_cli_bridge_state_history_requires_sensor_id(tmp_path, monkeypatch, caps
 def test_cli_bridge_state_history_reads_bounded_sensor_history(
     tmp_path, monkeypatch, capsys
 ):
+    config_path = _relative_store_config(tmp_path / "data")
+    asyncio.run(_seed_state_store(tmp_path / "data" / "ori_state.db"))
     monkeypatch.chdir(tmp_path)
-    asyncio.run(_seed_state_store(tmp_path / "ori_state.db"))
 
-    rc = cli_bridge.main(["state", "history", "sensor_id=pir_01", "limit=5"])
+    rc = cli_bridge.main(
+        [
+            "state",
+            "history",
+            "--path",
+            str(config_path),
+            "sensor_id=pir_01",
+            "limit=5",
+        ]
+    )
 
     payload = _read_stdout_json(capsys)
     assert rc == 0
@@ -322,10 +334,13 @@ def test_cli_bridge_state_history_reads_bounded_sensor_history(
 
 
 def test_cli_bridge_state_rejects_unknown_filter(tmp_path, monkeypatch, capsys):
+    config_path = _relative_store_config(tmp_path / "data")
+    asyncio.run(_seed_state_store(tmp_path / "data" / "ori_state.db"))
     monkeypatch.chdir(tmp_path)
-    asyncio.run(_seed_state_store(tmp_path / "ori_state.db"))
 
-    rc = cli_bridge.main(["state", "action-log", "table=sensor_history"])
+    rc = cli_bridge.main(
+        ["state", "action-log", "--path", str(config_path), "table=sensor_history"]
+    )
 
     payload = _read_stdout_json(capsys)
     assert rc == 2
@@ -335,15 +350,70 @@ def test_cli_bridge_state_rejects_unknown_filter(tmp_path, monkeypatch, capsys):
 
 
 def test_cli_bridge_state_rejects_missing_database(tmp_path, monkeypatch, capsys):
+    """A read must refuse an absent store, not build one and answer from it."""
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    monkeypatch.chdir(tmp_path)
+
+    rc = cli_bridge.main(["state", "action-log", "--path", str(config_path)])
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 2
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "state_store_unavailable"
+    assert "does not exist" in payload["error"]["detail"]
+    assert str(home / "ori_state.db") in payload["error"]["detail"]
+    assert not (home / "ori_state.db").exists()
+    assert not (tmp_path / "ori_state.db").exists()
+
+
+def test_cli_bridge_state_separates_an_absent_store_from_one_that_is_not_a_file(
+    tmp_path, monkeypatch, capsys
+):
+    """A directory in the store's place is a wrong path, not a fresh device."""
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    (home / "ori_state.db").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    cli_bridge.main(["state", "action-log", "--path", str(config_path)])
+
+    detail = _read_stdout_json(capsys)["error"]["detail"]
+    assert "is not a file" in detail
+    assert "does not exist" not in detail
+
+
+def test_cli_bridge_state_read_requires_the_installation_it_reads(
+    tmp_path, monkeypatch, capsys
+):
+    """Without a configuration the command cannot know whose store it opened."""
+    asyncio.run(_seed_state_store(tmp_path / "ori_state.db"))
     monkeypatch.chdir(tmp_path)
 
     rc = cli_bridge.main(["state", "action-log"])
 
     payload = _read_stdout_json(capsys)
     assert rc == 2
-    assert payload["ok"] is False
-    assert payload["error"]["code"] == "state_store_unavailable"
-    assert not (tmp_path / "ori_state.db").exists()
+    assert payload["error"]["code"] == "invalid_arguments"
+    assert "--path" in payload["error"]["detail"]
+
+
+def test_cli_bridge_state_reads_the_store_the_config_names_not_the_cwd(
+    tmp_path, monkeypatch, capsys
+):
+    """A store sitting in the caller's directory must not answer for another."""
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    asyncio.run(_seed_state_store(home / "ori_state.db"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    asyncio.run(_seed_state_store(elsewhere / "ori_state.db", action="close_gas_valve"))
+    monkeypatch.chdir(elsewhere)
+
+    cli_bridge.main(["state", "action-log", "--path", str(config_path)])
+
+    payload = _read_stdout_json(capsys)
+    assert payload["result"][0]["action_name"] == "trip_relay"
 
 
 def test_cli_bridge_skills_validate_reports_invalid_skill(tmp_path, capsys):
@@ -754,7 +824,11 @@ def _commissioning_config(
 
 def _bench_envelope(**overrides):
     """A binding with both proof legs unless a test overrides one."""
-    from tests.commissioning.signing import local_gpio_binding, sign_envelope
+    from tests.commissioning.signing import (
+        EPHEMERAL_SEED,
+        local_gpio_binding,
+        sign_envelope,
+    )
 
     overrides.setdefault("proof_method", "actuate_and_observe")
     overrides.setdefault("control_proof_method", "commanded_and_observed")
@@ -765,14 +839,144 @@ def _bench_envelope(**overrides):
         active_high=False,
         **overrides,
     )
-    return sign_envelope(binding, "7" * 64)
+    return sign_envelope(binding, EPHEMERAL_SEED)
 
 
-def _anchor(monkeypatch, seed: str = "7" * 64) -> None:
+def _other_seed() -> str:
+    from tests.commissioning.signing import EPHEMERAL_SEED_OTHER
+
+    return EPHEMERAL_SEED_OTHER
+
+
+def _anchor(monkeypatch, seed: str | None = None) -> None:
     from ori.security.commissioning.anchors import COMMISSIONING_ANCHOR_ENV
-    from tests.commissioning.signing import public_key_b64
+    from tests.commissioning.signing import EPHEMERAL_SEED, public_key_b64
 
-    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(seed))
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(seed or EPHEMERAL_SEED))
+
+
+def _relative_store_config(home: Path) -> Path:
+    """A configuration declaring its store the way every generated one does."""
+    home.mkdir(parents=True, exist_ok=True)
+    body = textwrap.dedent("""\
+        device:
+          id: bench-01
+          name: Bench
+          location: Test Lab
+          deployment_profile: development
+        sensors:
+          - id: load-current
+            type: cpu_percent
+            protocol: psutil
+            poll_interval_ms: 1000
+        skills: []
+        reasoning:
+          default_tier: rule
+        actions:
+          relay:
+            enabled: false
+            gpio_pin: 26
+        database:
+          path: ori_state.db
+        logging:
+          level: INFO
+          file: ori.log
+        """)
+    config_path = home / "ori.yaml"
+    config_path.write_text(body, encoding="utf-8")
+    return config_path
+
+
+def test_the_bridge_looks_for_the_store_beside_the_config_not_the_caller(
+    tmp_path, monkeypatch, capsys
+):
+    """`--path` names an installation, so the answer cannot depend on the cwd."""
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    rc = cli_bridge.main(["commissioning", "proof-export", "--path", str(config_path)])
+
+    error = _read_stdout_json(capsys)["error"]
+    assert rc != 0
+    assert error["code"] == "no_provisional_binding"
+    assert str(home / "ori_state.db") in error["detail"]
+    assert str(elsewhere) not in error["detail"]
+
+
+def test_a_store_beside_the_config_is_found_from_any_directory(
+    tmp_path, monkeypatch, capsys
+):
+    """A present store stops the refusal, and no second store is created."""
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    (home / "ori_state.db").write_bytes(b"")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    cli_bridge.main(["commissioning", "proof-export", "--path", str(config_path)])
+
+    error = _read_stdout_json(capsys)["error"]
+    assert "no state store" not in error["detail"]
+    # Opening a store applies the DDL, so a store materialising here is the
+    # command having built the runtime's durable state in the wrong place.
+    assert not (elsewhere / "ori_state.db").exists()
+
+
+async def _retain_own_binding(config_path: Path) -> None:
+    """An in-force binding this device itself holds."""
+    from ori.config import Config
+
+    config = Config.load(str(config_path))
+    store = cli_bridge._commissioning_store(config)
+    await store.open()
+    try:
+        await store.retain_commissioned_binding(
+            binding_seq=3,
+            canonical_hash="sha256:" + "b" * 64,
+            device_id=config.device.id,
+            inventory_generation=1,
+            signer_id="commissioning-test",
+            supersedes=None,
+            canonical_json="{}",
+            signature="ed25519:" + base64.b64encode(b"\x00" * 64).decode(),
+            zones_json=json.dumps(
+                [
+                    {
+                        **_legacy_zone(),
+                        "control_proof_method": "commanded_and_observed",
+                        "control_proof_performed_at_ms": 1800000000000,
+                    }
+                ]
+            ),
+        )
+    finally:
+        await store.close()
+
+
+def test_inventory_reads_the_binding_beside_the_config_from_any_directory(
+    tmp_path, monkeypatch, capsys
+):
+    """The baseline a producer chains onto cannot depend on the caller's cwd.
+
+    Reporting no accepted binding when one is held invites a first-sequence
+    document over a device that already holds one.
+    """
+    home = tmp_path / "data"
+    config_path = _relative_store_config(home)
+    asyncio.run(_retain_own_binding(config_path))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    cli_bridge.main(["commissioning", "inventory", "--path", str(config_path)])
+
+    result = _read_stdout_json(capsys)["result"]
+    assert result["accepted_binding_seq"] == 3
+    assert result["accepted_binding_hash"] == "sha256:" + "b" * 64
 
 
 def test_cli_bridge_commissioning_inventory_reports_the_candidate_set(tmp_path, capsys):
@@ -858,7 +1062,7 @@ def test_cli_bridge_commissioning_deliver_refuses_by_stage_and_writes_nothing(
 
     config_path = _commissioning_config(tmp_path)
     # The anchor configured is not the key that signed the document.
-    _anchor(monkeypatch, seed="6" * 64)
+    _anchor(monkeypatch, seed=_other_seed())
     source = tmp_path / "binding.json"
     source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
 
@@ -953,7 +1157,7 @@ def test_cli_bridge_commissioning_deliver_separates_an_absent_anchor_from_a_wron
     absent = _deliver_refusal(tmp_path, monkeypatch, capsys)
 
     # The anchor configured is not the key that signed the document.
-    _anchor(monkeypatch, seed="6" * 64)
+    _anchor(monkeypatch, seed=_other_seed())
     mismatched = _deliver_refusal(tmp_path, monkeypatch, capsys)
 
     assert absent["code"] == mismatched["code"] == "unknown_signer"
@@ -1279,9 +1483,11 @@ async def _retain_legacy_binding(config_path: Path) -> None:
     store = cli_bridge._commissioning_store(config)
     await store.open()
     try:
+        conn = store._conn
+        assert conn is not None
         await store._run_write(
             lambda: (
-                store._conn.execute(
+                conn.execute(
                     "INSERT INTO commissioned_binding (binding_seq, canonical_hash, "
                     "device_id, inventory_generation, signer_id, supersedes, "
                     "canonical_json, signature, zones_json, accepted_at_ms, "
@@ -1293,7 +1499,7 @@ async def _retain_legacy_binding(config_path: Path) -> None:
                         json.dumps([_legacy_zone()]),
                     ),
                 ),
-                store._conn.commit(),
+                conn.commit(),
             )
         )
     finally:
@@ -1566,3 +1772,151 @@ def test_an_exiting_command_is_not_swallowed(
     monkeypatch.setattr(cli_bridge, "_commissioning_inventory", exiting)
     with pytest.raises(SystemExit):
         cli_bridge.run_bridge(["commissioning", "inventory", "--path", "ori.yaml"])
+
+
+def test_cli_bridge_commissioning_deliver_refuses_a_published_anchor(
+    tmp_path, monkeypatch, capsys
+):
+    """`deliver` loads anchors on its own path, so it needs its own coverage.
+
+    Nothing is staged: an operator who reached this refusal has an anchor whose
+    private half anyone can read, and accepting the document would license
+    actuation on a forgeable authority.
+    """
+    import base64
+
+    from ori.security.commissioning.anchors import COMMISSIONING_ANCHOR_ENV
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+    from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+    published = base64.b64encode(next(iter(PUBLISHED_TEST_KEYS))).decode("ascii")
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, published)
+
+    config_path = _commissioning_config(tmp_path)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(_bench_envelope()), encoding="utf-8")
+
+    rc = cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+    payload = _read_stdout_json(capsys)
+
+    assert rc == 2 and payload["ok"] is False
+    assert payload["error"]["code"] == "anchor_error"
+    assert "private seed is published" in payload["error"]["detail"]
+    assert not (tmp_path / BINDING_RELATIVE_PATH).exists()
+
+
+def _community_skill_yaml(name: str) -> str:
+    return textwrap.dedent(
+        f"""
+        name: {name}
+        version: 0.1.0
+        author: community
+        signature: ed25519:AAAA
+        sensors_required:
+          - type: usb_power
+        triggers:
+          - name: warm
+            condition: value > 1
+            action_tier: A
+        actions:
+          available:
+            - name: log_to_dashboard
+              tier: A
+          defaults:
+            warm: [log_to_dashboard]
+        """
+    )
+
+
+def test_cli_bridge_skills_list_attributes_one_anchor_fault_to_the_anchor(
+    tmp_path, monkeypatch, capsys
+):
+    """One misconfiguration, not one faulty skill per community skill.
+
+    A consumer counting `errors` on a device with N community skills would
+    otherwise read one published anchor as N skills that need fixing.
+    """
+    import base64
+
+    from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+    published = base64.b64encode(next(iter(PUBLISHED_TEST_KEYS))).decode("ascii")
+    monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", published)
+
+    skills_dir = tmp_path / "skills"
+    for index in range(2):
+        skill_dir = skills_dir / f"community-{index}"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "skill.yaml").write_text(
+            _community_skill_yaml(f"community-{index}"), encoding="utf-8"
+        )
+
+    rc = cli_bridge.main(["skills", "list", "--skills-dir", str(skills_dir)])
+    payload = _read_stdout_json(capsys)
+
+    assert rc == 0
+    result = payload["result"]
+    assert result["community_anchor"]["usable"] is False
+    assert "private seed is published" in result["community_anchor"]["detail"]
+    assert {error["code"] for error in result["errors"]} == {"community_anchor_error"}
+
+
+def test_cli_bridge_skills_list_reports_a_usable_anchor_as_usable(
+    tmp_path, monkeypatch, capsys
+):
+    """`usable` is the deployment's answer, not a summary of what was found.
+
+    A device with no community skills at all still reports whether it could
+    admit one.
+    """
+    monkeypatch.setenv(
+        "ORI_HUB_ROOT_PUBLIC_KEY_B64", base64.b64encode(b"k" * 32).decode("ascii")
+    )
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    rc = cli_bridge.main(["skills", "list", "--skills-dir", str(skills_dir)])
+    payload = _read_stdout_json(capsys)
+
+    assert rc == 0
+    assert payload["result"]["community_anchor"] == {"usable": True, "detail": None}
+
+
+@pytest.mark.parametrize(
+    "anchor", ["not-a-key", base64.b64encode(b"x" * 16).decode("ascii")]
+)
+def test_cli_bridge_skills_list_calls_a_malformed_anchor_unusable(
+    tmp_path, monkeypatch, capsys, anchor
+):
+    """An anchor that decodes to nothing refuses every skill on the device.
+
+    Reporting it usable beside those refusals puts the reassuring answer in
+    the field automation branches on and the disqualifying one in a per-skill
+    detail nobody aggregates.
+    """
+    monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", anchor)
+    skills_dir = tmp_path / "skills"
+    for index in range(2):
+        skill_dir = skills_dir / f"community-{index}"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "skill.yaml").write_text(
+            _community_skill_yaml(f"community-{index}"), encoding="utf-8"
+        )
+
+    rc = cli_bridge.main(["skills", "list", "--skills-dir", str(skills_dir)])
+    payload = _read_stdout_json(capsys)
+
+    assert rc == 0
+    result = payload["result"]
+    assert result["community_anchor"]["usable"] is False
+    assert "ORI_HUB_ROOT_PUBLIC_KEY_B64" in result["community_anchor"]["detail"]
+    assert {error["code"] for error in result["errors"]} == {"community_anchor_error"}

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -37,6 +38,10 @@ class _FakeWriter:
 
     async def wait_closed(self) -> None:
         return None
+
+
+#: Structural double for the declared parameter type.
+_fakewriter: Any = _FakeWriter
 
 
 @pytest.mark.asyncio
@@ -77,7 +82,7 @@ async def test_handle_client_rejects_disallowed_source_before_parsing():
     )
     server._read_request = AsyncMock()
     reader = asyncio.StreamReader()
-    writer = _FakeWriter(peername=("198.51.100.10", 12345))
+    writer = _fakewriter(peername=("198.51.100.10", 12345))
 
     await server._handle_client(reader, writer)
 
@@ -161,7 +166,7 @@ async def test_handle_client_returns_401_when_token_invalid():
         )
     )
     reader = asyncio.StreamReader()
-    writer = _FakeWriter()
+    writer = _fakewriter()
 
     await server._handle_client(reader, writer)
 
@@ -187,7 +192,7 @@ async def test_handle_client_returns_200_for_valid_request():
         )
     )
     reader = asyncio.StreamReader()
-    writer = _FakeWriter()
+    writer = _fakewriter()
 
     await server._handle_client(reader, writer)
 
@@ -215,7 +220,7 @@ async def test_handle_client_rejects_query_token_fallback():
         )
     )
     reader = asyncio.StreamReader()
-    writer = _FakeWriter()
+    writer = _fakewriter()
 
     await server._handle_client(reader, writer)
 
@@ -247,7 +252,7 @@ async def test_handle_client_rejects_unsigned_hmac_webhook_before_parsing():
         )
     )
     reader = asyncio.StreamReader()
-    writer = _FakeWriter()
+    writer = _fakewriter()
 
     await server._handle_client(reader, writer)
 
@@ -291,7 +296,7 @@ async def test_handle_client_accepts_signed_hmac_webhook():
         )
     )
     reader = asyncio.StreamReader()
-    writer = _FakeWriter()
+    writer = _fakewriter()
 
     await server._handle_client(reader, writer)
 

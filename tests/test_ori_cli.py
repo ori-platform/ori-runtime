@@ -8,10 +8,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -146,6 +148,87 @@ def test_json_mode_keeps_stdout_a_single_valid_document(
     assert json.loads(captured.out) == {"result": {"valid": True}}
 
 
+def test_an_invalid_config_at_a_hostile_path_prints_nothing_a_terminal_obeys(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The outer line and the validation detail are separate producers.
+
+    Escaping the line the CLI writes is not enough: the detail comes from the
+    loader, through the bridge, and carries the path the loader was given.
+    Driven end to end with a real invalid config rather than a mocked detail,
+    because a benign mock cannot see that seam.
+    """
+    home = tmp_path / "root\x1b[2K\nFAIL forged"
+    home.mkdir()
+    config = home / "ori.yaml"
+    # Unparseable, so the loader's own message names the path. A document that
+    # merely fails validation produces a detail with no path in it, which
+    # would leave this proving only the line the CLI writes itself.
+    config.write_text("device: {\n", encoding="utf-8")
+
+    assert cli.main(["config", "validate", "--path", str(config)]) != 0
+
+    printed = capsys.readouterr()
+    human = printed.out + printed.err
+    assert "\x1b[2K" not in human
+    assert "\nFAIL forged" not in human
+    assert "\\x1b[2K" in human
+
+
+def test_the_json_detail_is_the_same_prose_the_terminal_gets(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`detail` is a message, not a machine-readable path field.
+
+    A consumer that recovered a path by parsing this sentence was never
+    reliable, which is the same mistake `ori doctor` made with
+    `offending_path` and no longer makes. So the path in it is escaped for the
+    terminal in both forms rather than kept raw for one of them, and JSON
+    escaping is applied on top by the encoder.
+    """
+    home = tmp_path / "root\x1b[2Khidden"
+    home.mkdir()
+    config = home / "ori.yaml"
+    config.write_text("device: {\n", encoding="utf-8")
+
+    cli.main(["config", "validate", "--path", str(config), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    detail = payload["error"]["detail"]
+
+    cli.main(["config", "validate", "--path", str(config)])
+    human = capsys.readouterr().out
+
+    assert "\x1b" not in detail
+    assert "\\x1b" in detail
+    # The same sentence reaches both, rather than one being escaped for a
+    # terminal and the other kept raw for a reader that would have to parse it.
+    assert detail in human
+
+
+def test_the_provisioner_names_a_bad_seed_path_escaped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The provisioner is an operator CLI and its refusals name a path.
+
+    A seed file is read from a location an operator passes, and the refusal
+    reaches a terminal through the top-level error printer.
+    """
+    from ori import firmware_provisioner
+
+    home = tmp_path / "keys\x1b[2K\nFAIL forged"
+    home.mkdir()
+    seed = home / "provisioner_seed.b64"
+    seed.write_text("not base64!!", encoding="ascii")
+
+    with pytest.raises(firmware_provisioner.ProvisionerError) as raised:
+        firmware_provisioner.read_seed(seed, "authority seed")
+
+    detail = str(raised.value)
+    assert "\x1b[2K" not in detail
+    assert "\nFAIL forged" not in detail
+    assert "\\x1b[2K" in detail
+
+
 def test_human_mode_prints_a_summary_not_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -241,7 +324,7 @@ json.dump({"schema_version": 1, "ok": True, "status": "healthy",\n           "an
 
 
 def _args(**overrides: object) -> argparse.Namespace:
-    base = dict(
+    base: dict[str, Any] = dict(
         bundle="/b.tar.gz",
         signature="/b.sig",
         expected_version=None,
@@ -902,8 +985,33 @@ def test_path_guidance_gives_the_exact_export_command(tmp_path: Path) -> None:
     path = tmp_path / ".local" / "bin" / "ori"
     guidance = launcher.path_guidance(path, ["/usr/bin", "/bin"])
     assert guidance is not None
-    assert f'export PATH="{path.parent}:$PATH"' in guidance
+    # The directory is quoted and `$PATH` is not, so it still expands.
+    assert f'export PATH={path.parent}:"$PATH"' in guidance
     assert "~/.profile" in guidance
+
+
+def test_path_guidance_cannot_be_broken_out_of(tmp_path: Path) -> None:
+    """This line is copied into a shell, so the directory is quoted for one.
+
+    Quoting the whole `directory:$PATH` would stop `$PATH` expanding and leave
+    the operator with a PATH containing only this directory, so only the
+    directory is quoted.
+    """
+    hostile = tmp_path / 'bin";rm -rf ~;echo "'
+    guidance = launcher.path_guidance(hostile / "ori", ["/usr/bin"])
+
+    assert guidance is not None
+    export = next(
+        line for line in guidance.splitlines() if line.strip().startswith("export ")
+    )
+    words = shlex.split(export)
+
+    assert words[0] == "export"
+    assert "rm" not in words
+    assert words[1] == f"PATH={hostile}:$PATH"
+    # Quoting the whole assignment would give the same tokens and a dead
+    # expansion, so the expansion is asserted to sit outside the quotes.
+    assert ':"$PATH"' in export
 
 
 def test_no_path_guidance_when_the_command_will_already_resolve(

@@ -15,7 +15,7 @@ import base64
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -37,12 +37,13 @@ from ori.security.commissioning.proof_operation import (
 )
 from ori.state.store import StateStore
 from tests.commissioning.signing import (
+    EPHEMERAL_SEED,
     local_gpio_binding,
     public_key_b64,
     sign_envelope,
 )
 
-SEED = "7" * 64
+SEED = EPHEMERAL_SEED
 DEVICE = "bench-01"
 SENSOR = "load-current"
 PIN = 26
@@ -838,7 +839,7 @@ def test_only_a_matched_attestation_is_reported_as_a_success(
     from ori import cli_bridge
 
     async def fake_state(config: Any) -> Any:
-        return object(), None, Path("present")
+        return object(), None
 
     for attestation, expected_ok, expected_code in (
         ("matched", True, None),
@@ -953,7 +954,7 @@ async def test_only_the_proof_operation_moves_a_pin_through_the_bridge(
 
     op = proof_operation.ProofOperation(
         store=_NullProofStore(),
-        driver=object(),
+        driver=cast(Any, object()),
         provisional=_accepted(),
         in_force=None,
         hardened=False,
@@ -1318,7 +1319,7 @@ async def test_a_late_failure_keeps_the_observation_the_operator_gave(
     import sqlite3
 
     flaky = Flaky(store)
-    op, driver, _ = _operation(flaky, monkeypatch)
+    op, driver, _ = _operation(cast(Any, flaky), monkeypatch)
     with pytest.raises(sqlite3.OperationalError):
         await _run(op, outcome="open_protected_circuit")
 
@@ -1444,7 +1445,7 @@ def test_the_terminal_is_never_acquired_only_used(
     def recording(path: str, flags: int, *args: object) -> int:
         if path == proof_operation.TTY_PATH:
             opened.append(flags)
-        return real_open(path, flags, *args)
+        return real_open(path, flags, *args)  # type: ignore[arg-type]
 
     master, slave = pty.openpty()
     monkeypatch.setattr(proof_operation, "TTY_PATH", os.ttyname(slave))

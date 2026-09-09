@@ -7,7 +7,7 @@ import math
 import os
 import re
 import stat
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from ipaddress import ip_network
 from pathlib import Path
@@ -35,7 +35,7 @@ from ori.security.remote_commands.commands import normalize_remote_command_sende
 from ori.security.remote_commands.lockout import normalize_remote_command_lockout_config
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
-from ori.utils.path_utils import path_is_relative_to
+from ori.utils.path_utils import path_is_relative_to, shown
 
 logger = logging.getLogger(__name__)
 
@@ -319,13 +319,15 @@ def _load_config_document(text: str, path: str, *, expand_env: bool = False) -> 
         return yaml.load(text, Loader=loader)
     except _ConfigDocumentLimitError as exc:
         raise ConfigValidationError(
-            f"Config file '{path}' exceeds document limits: {exc}"
+            f"Config file {shown(path)} exceeds document limits: {exc}"
         ) from exc
     except yaml.YAMLError as exc:
-        raise ConfigValidationError(f"YAML parse error in '{path}': {exc}") from exc
+        raise ConfigValidationError(
+            f"YAML parse error in {shown(path)}: {exc}"
+        ) from exc
     except Exception as exc:
         raise ConfigValidationError(
-            f"Config file '{path}' could not be parsed: {type(exc).__name__}: {exc}"
+            f"Config file {shown(path)} could not be parsed: {type(exc).__name__}: {exc}"
         ) from exc
 
 
@@ -360,16 +362,18 @@ def read_config_bytes(path: str, *, max_bytes: int = _MAX_CONFIG_BYTES) -> bytes
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise ConfigValidationError(
-                f"Config file '{path}' is a symbolic link, which is refused. "
+                f"Config file {shown(path)} is a symbolic link, which is refused. "
                 "Point the configuration path at the file itself."
             ) from exc
-        raise ConfigValidationError(f"Cannot read config file '{path}': {exc}") from exc
+        raise ConfigValidationError(
+            f"Cannot read config file {shown(path)}: {exc}"
+        ) from exc
 
     try:
         status = os.fstat(descriptor)
         if not stat.S_ISREG(status.st_mode):
             raise ConfigValidationError(
-                f"Config file '{path}' is not a regular file. A FIFO, device or "
+                f"Config file {shown(path)} is not a regular file. A FIFO, device or "
                 "directory cannot be a configuration document."
             )
         # Read one byte past the cap rather than trusting the size `fstat`
@@ -385,13 +389,15 @@ def read_config_bytes(path: str, *, max_bytes: int = _MAX_CONFIG_BYTES) -> bytes
             chunks.append(chunk)
             total += len(chunk)
     except OSError as exc:
-        raise ConfigValidationError(f"Cannot read config file '{path}': {exc}") from exc
+        raise ConfigValidationError(
+            f"Cannot read config file {shown(path)}: {exc}"
+        ) from exc
     finally:
         os.close(descriptor)
 
     if total > max_bytes:
         raise ConfigValidationError(
-            f"Config file '{path}' is larger than the {max_bytes} byte "
+            f"Config file {shown(path)} is larger than the {max_bytes} byte "
             "limit for a configuration document."
         )
     return b"".join(chunks)
@@ -410,7 +416,7 @@ def _read_config_text(path: str) -> str:
         return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ConfigValidationError(
-            f"Config file '{path}' is not valid UTF-8: {exc}"
+            f"Config file {shown(path)} is not valid UTF-8: {exc}"
         ) from exc
 
 
@@ -681,7 +687,7 @@ class Config:
             raise
         except Exception as exc:
             raise ConfigValidationError(
-                f"Config file '{path}' could not be interpreted: "
+                f"Config file {shown(path)} could not be interpreted: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
 
@@ -693,7 +699,7 @@ class Config:
 
         if not isinstance(raw_unexpanded, dict):
             raise ConfigValidationError(
-                f"Config file '{path}' must be a YAML mapping at the top level."
+                f"Config file {shown(path)} must be a YAML mapping at the top level."
             )
 
         try:
@@ -717,7 +723,7 @@ class Config:
 
         if not isinstance(data, dict):
             raise ConfigValidationError(
-                f"Config file '{path}' must be a YAML mapping at the top level."
+                f"Config file {shown(path)} must be a YAML mapping at the top level."
             )
 
         device = _parse_device(data.get("device", {}))
@@ -754,8 +760,75 @@ class Config:
         os_sandbox = _parse_os_sandbox(data.get("os_sandbox"))
         state_cfg = _parse_state(data.get("state"))
         evidence_cfg = _parse_evidence(data.get("evidence"))
-        database_path = _parse_database_path(data.get("database"))
+        database_path = _resolve_database_path(
+            _parse_database_path(data.get("database")), path
+        )
         logging_cfg = _parse_logging(data.get("logging"))
+        # The runtime writes these, so where they land must be the installation
+        # the configuration describes rather than wherever it was started. The
+        # evidence key is sealed on first use, so a second working directory
+        # would seal a second device identity for one device.
+        logging_cfg = replace(
+            logging_cfg, file=anchor_to_config(logging_cfg.file, path)
+        )
+        evidence_cfg = replace(
+            evidence_cfg,
+            db_path=anchor_to_config(evidence_cfg.db_path, path),
+            key_path=anchor_to_config(evidence_cfg.key_path, path),
+        )
+        reasoning = replace(
+            reasoning, model_path=anchor_to_config(reasoning.model_path, path)
+        )
+        for section, keys in (
+            (health_socket, ("path",)),
+            (gateway.tls, ("ca_certfile", "certfile", "keyfile")),
+        ):
+            if not isinstance(section, dict):
+                continue
+            for key in keys:
+                declared = section.get(key)
+                if isinstance(declared, str):
+                    # An empty value means unset, and the anchor returns it
+                    # unchanged rather than resolving to the config directory.
+                    section[key] = anchor_to_config(declared, path)
+
+        # A sensor carries its own transport material and device endpoint.
+        # The schema canonicalises every deprecated TLS spelling into
+        # `mqtt.tls.*` before this runs, so anchoring the canonical name covers
+        # each of them; a sweep over the aliases as well anchored nothing.
+        for sensor in sensors:
+            mqtt_cfg = sensor.metadata.get("mqtt")
+            tls = mqtt_cfg.get("tls") if isinstance(mqtt_cfg, dict) else None
+            if isinstance(tls, dict):
+                for key in ("ca_certfile", "certfile", "keyfile"):
+                    declared = tls.get(key)
+                    if isinstance(declared, str):
+                        tls[key] = anchor_to_config(declared, path)
+
+            # `usb_serial` opens a URL through `serial_for_url`; `serial` does
+            # not, so what each may name is checked against its own consumer.
+            endpoint = {
+                "serial": "port",
+                "usb_serial": "device_path",
+                # Passed verbatim as an argv element to `smartctl`, which takes
+                # a device path and no URL form. Requiring it absolute also
+                # keeps a value that begins with `-` from arriving as an option.
+                "smart": "device",
+            }.get(sensor.protocol)
+            declared = sensor.metadata.get(endpoint) if endpoint else None
+            if endpoint and isinstance(declared, str):
+                sensor.metadata[endpoint] = _checked_device_endpoint(
+                    declared,
+                    f"sensors[{sensor.id}].{endpoint}",
+                    urls_supported=sensor.protocol == "usb_serial",
+                )
+
+        gsm = actions.sms.get("gsm") if isinstance(actions.sms, dict) else None
+        if isinstance(gsm, dict) and isinstance(gsm.get("port"), str):
+            # The modem is opened with `Serial()`, which takes a port name.
+            gsm["port"] = _checked_device_endpoint(
+                gsm["port"], "actions.sms.gsm.port", urls_supported=False
+            )
         _validate_coap_sensor_allowlist(sensors, actions.coap)
         _warn_gateway_network_posture(gateway)
         _validate_production_security_posture(
@@ -1024,6 +1097,38 @@ def _expand_env_vars(text: str) -> str:
         return os.environ.get(var, match.group(0))
 
     return _ENV_VAR_RE.sub(_replace, text)
+
+
+def config_env_placeholders(config_path: str) -> frozenset[str] | None:
+    """Every environment variable this document's values name, before expansion.
+
+    Answers what the document asks the environment for, which is what decides
+    whether a file supplying variables supplied anything to *this* document.
+    Collected from values only, because expansion never reaches a key.
+
+    Returns ``None`` when the document cannot be read, which is unknown rather
+    than none: a caller deciding whether an unsigned source contributed must
+    not read silence as proof that it did not.
+    """
+    try:
+        raw = _load_config_document(_read_config_text(config_path), config_path)
+    except Exception:
+        return None
+
+    names: set[str] = set()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, str):
+            names.update(_ENV_VAR_RE.findall(node))
+        elif isinstance(node, dict):
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value)
+
+    _walk(raw)
+    return frozenset(names)
 
 
 # ─── Section parsers ──────────────────────────────────────────────────────────
@@ -2517,6 +2622,42 @@ def _parse_security(data: Any) -> dict:
     return out
 
 
+def hardened_posture_declared(config_path: str) -> bool:
+    """Whether a document asks for hardened posture, read before it is expanded.
+
+    Anything that must decide before `Config.load` cannot ask the loaded
+    configuration what posture it is in, because the values that expansion
+    depends on are supplied by exactly the decisions being made. The document
+    is admitted through the same reader the loader uses and read for the two
+    fields that settle it. A document that cannot be read is treated as
+    hardened: the caller is choosing whether to widen its own trust, and an
+    unreadable answer is not a reason to widen it.
+    """
+    try:
+        raw = _load_config_document(_read_config_text(config_path), config_path)
+    except Exception:
+        return True
+    if not isinstance(raw, dict):
+        return True
+    device = raw.get("device")
+    security = raw.get("security")
+    profile = ""
+    if isinstance(device, dict):
+        profile = str(device.get("deployment_profile", "") or "").strip().lower()
+    enforce_raw = ""
+    enforce = False
+    if isinstance(security, dict):
+        enforce = security.get("enforce_production_posture") is True
+        enforce_raw = str(security.get("enforce_production_posture", "") or "")
+    # A field that is itself expanded says nothing yet about the posture, and
+    # what it expands to is exactly what the caller is deciding whether to
+    # supply. Read unexpanded, `${ORI_POSTURE}` is neither staging nor
+    # production, so it would answer no to the question it decides.
+    if "${" in profile or "${" in enforce_raw:
+        return True
+    return profile in {"staging", "production"} or enforce
+
+
 def requires_production_posture(
     *, device: DeviceConfig, security: dict[str, Any]
 ) -> bool:
@@ -3148,6 +3289,11 @@ def _parse_state_encryption(data: dict[str, Any]) -> StateEncryptionConfig:
     )
 
 
+#: SQLite's private in-memory database. It names no file, so it is not a path
+#: to resolve.
+_IN_MEMORY_STORE = ":memory:"
+
+
 def _parse_database_path(data: Any) -> str:
     if data is None:
         return "ori_state.db"
@@ -3157,6 +3303,79 @@ def _parse_database_path(data: Any) -> str:
     if not path:
         raise ConfigValidationError("database.path must not be empty.")
     return path
+
+
+def _checked_device_endpoint(value: str, field: str, *, urls_supported: bool) -> str:
+    """Refuse a device endpoint that names neither a node nor a reachable URL.
+
+    A device path is not resolved against the configuration the way a data file
+    is: it names something the host owns, and there is no directory it would be
+    relative to. Left relative it would follow the working directory, which the
+    unit points at a runtime directory systemd empties on every stop.
+
+    Whether a URL is accepted is the consumer's own rule rather than a shared
+    one. `usb_serial` hands anything containing `://` to `serial_for_url`, so
+    it can reach a bridge; `serial` and the GSM modem call `Serial()` directly,
+    which takes a port name only. Admitting a URL where it cannot be opened
+    would move the failure from config load to the first read.
+    """
+    if not value:
+        return value
+    if urls_supported and "://" in value:
+        return value
+    if not Path(value).expanduser().is_absolute():
+        supported = " or a URL its transport can open" if urls_supported else ""
+        raise ConfigValidationError(
+            f"{field} must be an absolute device path{supported}: {value!r}"
+        )
+    return value
+
+
+def anchor_to_config(declared: str, config_path: str) -> str:
+    """Anchor a relative path to the directory holding the configuration.
+
+    A relative path otherwise resolves against the working directory of
+    whatever process loaded the configuration, so the file a deployment reads
+    or writes would be a property of where it was started.
+    """
+    if not declared:
+        return declared
+    candidate = Path(declared).expanduser()
+    if candidate.is_absolute():
+        return str(candidate)
+    home = Path(config_path).expanduser().resolve(strict=False).parent
+    return str(Path(os.path.normpath(home / candidate)))
+
+
+def _resolve_database_path(declared: str, config_path: str) -> str:
+    """Resolve a relative store path against the configuration that declared it.
+
+    A relative path otherwise resolves against the caller's working directory,
+    which makes both the store a command opens and the production
+    encrypted-storage check a property of where a process was started.
+    """
+    if declared == _IN_MEMORY_STORE:
+        return declared
+    if Path(declared).expanduser().is_absolute():
+        return anchor_to_config(declared, config_path)
+    resolved = Path(anchor_to_config(declared, config_path))
+    legacy = Path(declared)
+    if legacy.is_file() and not resolved.exists():
+        # Opening the resolved store creates it, so a deployment that relied on
+        # the working directory would come up on an empty one. A file of that
+        # name in the working directory is a coincidence as often as it is that
+        # deployment, so this reports rather than refuses.
+        logger.warning(
+            "[config] database.path %s resolves to %s, which does not exist, "
+            "while a file of that name exists at %s. A relative database.path "
+            "is resolved against the directory holding the configuration, not "
+            "the working directory. If that file is this device's store, move "
+            "it beside the configuration or declare database.path absolutely.",
+            shown(declared),
+            shown(resolved),
+            shown(legacy.resolve(strict=False)),
+        )
+    return str(resolved)
 
 
 def _parse_logging(data: Any) -> LoggingConfig:

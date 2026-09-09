@@ -399,12 +399,12 @@ async def _seed_row(store: StateStore, table: str, zones_json: str) -> None:
             "supersedes, canonical_json, signature, zones_json, verified_at_ms) "
             "VALUES (1, 3, ?, ?, 1, 's', NULL, '{}', 'ed25519:x', ?, 1000)"
         )
+    conn = store._conn
+    assert conn is not None
     await store._run_write(
         lambda: (
-            store._conn.execute(
-                sql, ("sha256:" + "e" * 64, CTX["device_id"], zones_json)
-            ),
-            store._conn.commit(),
+            conn.execute(sql, ("sha256:" + "e" * 64, CTX["device_id"], zones_json)),
+            conn.commit(),
         )
     )
 
@@ -651,3 +651,28 @@ async def test_a_foreign_provisional_record_is_not_overwritten_by_migration(
     assert "retained_binding_not_in_force" in state.problems
     assert await store.get_commissioned_binding_in_force() is None
     assert 3 in [h["binding_seq"] for h in await store.commissioned_binding_history()]
+
+
+async def test_a_refused_bindings_path_is_escaped_in_the_warning(
+    tmp_path: Path, store: StateStore, caplog: Any
+) -> None:
+    """A refusal is read at the moment an operator distrusts least.
+
+    The path in it is the configuration directory's, which is built from
+    values the configuration signature does not cover, so it is rendered
+    rather than handed to the terminal to act on.
+    """
+    data_path = tmp_path / "site\x1b[2K"
+    data_path.mkdir()
+    target = data_path / BINDING_RELATIVE_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("{ not a document")
+
+    with caplog.at_level("WARNING"):
+        state = await _load(data_path, store)
+
+    assert state.last_verdict is not None
+    assert state.last_verdict.reason == "malformed"
+    emitted = "\n".join(record.getMessage() for record in caplog.records)
+    assert "\x1b" not in emitted
+    assert "\\x1b[2K" in emitted

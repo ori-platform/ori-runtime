@@ -25,9 +25,11 @@ import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from shlex import quote
 from typing import Any, Callable, Sequence
 
 from ori.utils import terminal
+from ori.utils.path_utils import shown
 
 PASS = terminal.PASS
 WARN = terminal.WARN
@@ -114,7 +116,7 @@ def assert_execution_allowed(identity: InstallIdentity) -> None:
     if identity.scope == "user":
         raise UnsafeExecutionError(
             "refusing to execute a user-scope installation as root: "
-            f"{identity.active_release} is writable by its owner. "
+            f"{shown(identity.active_release)} is writable by its owner. "
             "Re-run without sudo, as the user who owns the installation."
         )
     # A `system` label is a claim, not a guarantee: it can be supplied
@@ -175,7 +177,7 @@ def check_paths(identity: InstallIdentity) -> list[DoctorCheck]:
             status=PASS,
             message=(
                 f"Ori {identity.version} installed in {identity.scope} scope at "
-                f"{identity.install_root}"
+                f"{shown(identity.install_root)}"
             ),
             details=identity.as_dict(),
         )
@@ -189,7 +191,7 @@ def check_config(identity: InstallIdentity, runner: CommandRunner) -> list[Docto
             DoctorCheck(
                 name="config.present",
                 status=FAIL,
-                message=f"Config not found at {identity.config_path}",
+                message=f"Config not found at {shown(identity.config_path)}",
                 mandatory=True,
                 remedy="Reinstall, or restore the config from backup.",
             )
@@ -199,9 +201,9 @@ def check_config(identity: InstallIdentity, runner: CommandRunner) -> list[Docto
             DoctorCheck(
                 name="config.readable",
                 status=FAIL,
-                message=f"Config is not readable: {identity.config_path}",
+                message=f"Config is not readable: {shown(identity.config_path)}",
                 mandatory=True,
-                remedy=f"Check ownership and mode on {identity.config_path}.",
+                remedy=f"Check ownership and mode on {shown(identity.config_path)}.",
             )
         ]
     result = _run(
@@ -231,7 +233,7 @@ def check_config(identity: InstallIdentity, runner: CommandRunner) -> list[Docto
             status=FAIL,
             message="Config failed validation.",
             mandatory=True,
-            remedy=f"Run: ori config validate --path {identity.config_path}",
+            remedy=f"Run: ori config validate --path {quote(str(identity.config_path))}",
             details={"detail": _error_detail(result.stdout)},
         )
     ]
@@ -584,9 +586,11 @@ def _reachable(
         return DoctorCheck(
             name=name,
             status=FAIL,
-            message=(f"{service.name} cannot search {blocked} on the way to {target}."),
+            message=(
+                f"{service.name} cannot search {shown(blocked)} on the way to {shown(target)}."
+            ),
             mandatory=True,
-            remedy=f"Grant search access: chmod o+x {blocked}",
+            remedy=f"Grant search access: chmod o+x {quote(str(blocked))}",
             details={"blocked_at": str(blocked)},
         )
     missing = [
@@ -616,7 +620,7 @@ def check_permissions(identity: InstallIdentity) -> list[DoctorCheck]:
             DoctorCheck(
                 name="permissions.data",
                 status=FAIL,
-                message=f"Data directory is missing: {identity.data_path}",
+                message=f"Data directory is missing: {shown(identity.data_path)}",
                 mandatory=True,
                 remedy="Reinstall to recreate it.",
             )
@@ -630,7 +634,7 @@ def check_permissions(identity: InstallIdentity) -> list[DoctorCheck]:
                 status=FAIL,
                 message="Cannot resolve the account the service runs as.",
                 mandatory=True,
-                remedy=f"Check User= in {identity.unit_path} and that it exists.",
+                remedy=f"Check User= in {shown(identity.unit_path)} and that it exists.",
             )
         ]
     if identity.scope == "system" and service.uid == 0:
@@ -640,7 +644,7 @@ def check_permissions(identity: InstallIdentity) -> list[DoctorCheck]:
                 status=FAIL,
                 message=f"System service runs as root ({service.name}).",
                 mandatory=True,
-                remedy=f"Set User=ori-runtime in {identity.unit_path}.",
+                remedy=f"Set User=ori-runtime in {shown(identity.unit_path)}.",
                 details={"service_user": service.name, "uid": service.uid},
             )
         ]
@@ -663,9 +667,9 @@ def check_permissions(identity: InstallIdentity) -> list[DoctorCheck]:
             service,
             needs=EXECUTE,
             directory=True,
-            ok_message=f"{service.name} can reach {identity.install_root}.",
-            bad_message=f"{service.name} cannot search {identity.install_root}.",
-            remedy=f"Grant search access: chmod o+x {identity.install_root}",
+            ok_message=f"{service.name} can reach {shown(identity.install_root)}.",
+            bad_message=f"{service.name} cannot search {shown(identity.install_root)}.",
+            remedy=f"Grant search access: chmod o+x {quote(str(identity.install_root))}",
         ),
         _reachable(
             "permissions.config",
@@ -673,8 +677,8 @@ def check_permissions(identity: InstallIdentity) -> list[DoctorCheck]:
             service,
             needs=READ,
             ok_message=f"{service.name} can read the config.",
-            bad_message=f"{service.name} cannot read {identity.config_path}.",
-            remedy=f"chown {service.name} {identity.config_path} and chmod 0640 it.",
+            bad_message=f"{service.name} cannot read {shown(identity.config_path)}.",
+            remedy=f"chown {service.name} {quote(str(identity.config_path))} and chmod 0640 it.",
         ),
         _reachable(
             "permissions.interpreter",
@@ -682,8 +686,8 @@ def check_permissions(identity: InstallIdentity) -> list[DoctorCheck]:
             service,
             needs=READ | EXECUTE,
             ok_message=f"{service.name} can execute the release interpreter.",
-            bad_message=f"{service.name} cannot execute {interpreter}.",
-            remedy=f"Check mode on {interpreter}; it must be readable and executable.",
+            bad_message=f"{service.name} cannot execute {shown(interpreter)}.",
+            remedy=f"Check mode on {shown(interpreter)}; it must be readable and executable.",
         ),
         _reachable(
             "permissions.data",
@@ -692,8 +696,8 @@ def check_permissions(identity: InstallIdentity) -> list[DoctorCheck]:
             needs=WRITE | EXECUTE,
             directory=True,
             ok_message=f"{service.name} can write its data directory.",
-            bad_message=f"{service.name} cannot write {identity.data_path}.",
-            remedy=f"chown -R {service.name} {identity.data_path} and chmod 0700 it.",
+            bad_message=f"{service.name} cannot write {shown(identity.data_path)}.",
+            remedy=f"chown -R {service.name} {quote(str(identity.data_path))} and chmod 0700 it.",
         ),
         _code_integrity(identity, service),
     ]
@@ -701,8 +705,13 @@ def check_permissions(identity: InstallIdentity) -> list[DoctorCheck]:
 
 def _integrity_violation(
     identity: InstallIdentity, service: ServiceIdentity
-) -> str | None:
-    """Return why the release is not immutable to ``service``, or None.
+) -> tuple[Path, str] | None:
+    """Return the path that is not immutable to ``service`` and why, or None.
+
+    The path is returned beside the reason rather than embedded in it. The
+    reported path was previously recovered by splitting the sentence on its
+    first space, which a path containing one would have broken, and which
+    escaping the name for the terminal would break too.
 
     Write permission lives on the inode being modified, so a read-only release
     directory says nothing about the files inside it: a 0666 module under a
@@ -721,7 +730,7 @@ def _integrity_violation(
     try:
         layout = InstallLayout.resolve(identity.install_root)
     except LinuxInstallError as exc:
-        return f"{identity.install_root} is not a usable install root ({exc})"
+        return identity.install_root, f"is not a usable install root ({exc})"
 
     stack = [identity.active_release]
     while stack:
@@ -729,12 +738,12 @@ def _integrity_violation(
         try:
             entries = sorted(current.iterdir())
         except OSError as exc:
-            return f"{current} could not be listed ({exc.strerror})"
+            return current, f"could not be listed ({exc.strerror})"
         for entry in entries:
             try:
                 info = entry.lstat()
             except OSError as exc:
-                return f"{entry} could not be inspected ({exc.strerror})"
+                return entry, f"could not be inspected ({exc.strerror})"
 
             if stat.S_ISLNK(info.st_mode):
                 # Symlinks carry no meaningful mode of their own; the installer
@@ -745,20 +754,20 @@ def _integrity_violation(
                         layout, entry, require_internal=entry.is_dir()
                     )
                 except LinuxInstallError as exc:
-                    return f"{entry} is not a permitted release symlink ({exc})"
+                    return entry, f"is not a permitted release symlink ({exc})"
                 continue
 
             if stat.S_ISDIR(info.st_mode):
                 if _mode_allows(info, service, WRITE):
-                    return f"{entry} is writable by {service.name}"
+                    return entry, f"is writable by {service.name}"
                 stack.append(entry)
                 continue
 
             if not stat.S_ISREG(info.st_mode):
-                return f"{entry} is a special file, which a release must not contain"
+                return entry, "is a special file, which a release must not contain"
 
             if _mode_allows(info, service, WRITE):
-                return f"{entry} is writable by {service.name}"
+                return entry, f"is writable by {service.name}"
     return None
 
 
@@ -798,10 +807,11 @@ def _code_integrity(identity: InstallIdentity, service: ServiceIdentity) -> Doct
             details={"scope": identity.scope},
         )
 
+    release = quote(str(identity.active_release))
     remedy = (
         f"Make the release read-only to the service: "
-        f"chown -R root:root {identity.active_release} && "
-        f"chmod -R go-w {identity.active_release}"
+        f"chown -R root:root {release} && "
+        f"chmod -R go-w {release}"
     )
     if not service.groups_complete:
         return DoctorCheck(
@@ -809,7 +819,7 @@ def _code_integrity(identity: InstallIdentity, service: ServiceIdentity) -> Doct
             status=FAIL,
             message=(
                 f"Could not establish that {service.name} is unable to modify "
-                f"{identity.active_release}: its supplementary group membership "
+                f"{shown(identity.active_release)}: its supplementary group membership "
                 "could not be resolved, and an unresolved group may grant write "
                 "access."
             ),
@@ -819,8 +829,9 @@ def _code_integrity(identity: InstallIdentity, service: ServiceIdentity) -> Doct
         )
 
     if _mode_allows_path(identity.active_release, service, WRITE):
-        violation: str | None = (
-            f"{identity.active_release} is writable by {service.name}"
+        violation: tuple[Path, str] | None = (
+            identity.active_release,
+            f"is writable by {service.name}",
         )
     else:
         violation = _integrity_violation(identity, service)
@@ -834,16 +845,18 @@ def _code_integrity(identity: InstallIdentity, service: ServiceIdentity) -> Doct
             remedy=remedy,
             details={"release": str(identity.active_release)},
         )
+    offending, reason = violation
     return DoctorCheck(
         name="permissions.code",
         status=FAIL,
         message=(
             f"The verified release is not immutable to {service.name}: "
-            f"{violation}. The service could rewrite the code it executes."
+            f"{shown(offending)} {reason}. The service could rewrite the code "
+            "it executes."
         ),
         mandatory=True,
         remedy=remedy,
-        details={"offending_path": violation.split(" ", 1)[0]},
+        details={"offending_path": str(offending)},
     )
 
 
@@ -1168,7 +1181,10 @@ def run(
         # when something is already wrong; ending in a traceback makes it one
         # more thing that is wrong.
         print(
-            f"could not inspect the installation ({exc.filename or exc}): "
+            # `exc.filename` is the raw name; `str(exc)` would already be
+            # escaped, but this reads the attribute directly.
+            f"could not inspect the installation "
+            f"({shown(exc.filename) if exc.filename else exc}): "
             f"{exc.strerror or exc}. Pass --scope user or --scope system "
             "explicitly.",
             file=sys.stderr,

@@ -86,8 +86,10 @@ class TestLifecycle:
     async def test_open_creates_tables(self, tmp_path):
         s = StateStore(db_path=str(tmp_path / "lifecycle.db"))
         await s.open()
+        conn = s._conn
+        assert conn is not None
         tables = await s._run(
-            lambda: s._conn.execute(
+            lambda: conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
             ).fetchall()
         )

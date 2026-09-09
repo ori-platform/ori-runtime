@@ -18,6 +18,7 @@ from ori.hal.base import (
     resolve_baud_rate,
 )
 from ori.network.events import SensorReading
+from ori.utils.path_utils import shown
 from ori.utils.termux import parse_termux_usb_output
 from ori.utils.time_utils import now_ms
 
@@ -226,7 +227,7 @@ class UsbSerialAdapter(BaseAdapter):
 
         logger.info(
             "UsbSerialAdapter: connected device_path=%s transport=%s sensor_type=%s",
-            self._device_path,
+            shown(self._device_path),
             self._transport,
             self._sensor_type,
         )
@@ -293,8 +294,8 @@ class UsbSerialAdapter(BaseAdapter):
                 await asyncio.to_thread(self._serial.close)
         except Exception:
             logger.warning(
-                "UsbSerialAdapter: exception during close on '%s'",
-                self._device_path,
+                "UsbSerialAdapter: exception during close on %s",
+                shown(self._device_path),
             )
         finally:
             self._serial = None

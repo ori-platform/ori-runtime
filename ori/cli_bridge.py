@@ -55,13 +55,12 @@ from ori.security.commissioning.profiles import (
     load_shipped_profile_set,
 )
 from ori.skills.loader import Skill, SkillLoader, SkillValidationError
-from ori.skills.sandbox import SkillSecurityError
+from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
 from ori.state.store import StateStore
 from ori.utils.bool_utils import is_truthy
 
 _SCHEMA_VERSION = 1
 _DEFAULT_HEALTH_TIMEOUT_MS = 3000
-_DEFAULT_STATE_DB_PATH = "ori_state.db"
 _MAX_STATE_LIMIT = 1000
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _LEGACY_COMMANDS = {
@@ -635,6 +634,11 @@ def _skills_result(
     unactivatable = [
         skill for skill in skills if not skill.get("activation", {"ok": True})["ok"]
     ]
+    # One deployment fact, published once. Every community skill in the
+    # listing carries `community_anchor_error` when this is unusable, and a
+    # consumer reading only the per-skill errors would count one
+    # misconfiguration as N faulty skills.
+    anchor_fault = loader.community_anchor_fault()
     return {
         "valid": not errors and not unactivatable,
         # Also conjunctive. A skill that failed to parse or validate is not
@@ -648,6 +652,10 @@ def _skills_result(
         "unactivatable_count": len(unactivatable),
         "skills": skills,
         "errors": errors,
+        "community_anchor": {
+            "usable": anchor_fault is None,
+            "detail": anchor_fault,
+        },
     }
 
 
@@ -694,6 +702,11 @@ def _summarize_skill(skill: Skill, skill_dir: Path) -> dict[str, Any]:
 
 
 def _skill_error_code(exc: Exception) -> str:
+    # Before the SkillSecurityError branch it is a subclass of: an anchor a
+    # deployment configured wrongly is not a fault in the skill that happened
+    # to be read when it was noticed.
+    if isinstance(exc, SkillAnchorError):
+        return "community_anchor_error"
     if isinstance(exc, SkillSecurityError):
         return "skill_security_error"
     if isinstance(exc, SkillValidationError):
@@ -738,13 +751,14 @@ async def _read_health_snapshot(socket_path: str, timeout_ms: int) -> dict[str, 
 
 
 async def _read_state_action_log(args: list[str]) -> list[dict[str, Any]]:
+    config, args = _state_config(args, command="state action-log")
     filters = _parse_state_filters(
         args,
         command="state action-log",
         allowed={"limit"},
     )
     limit = _state_limit(filters.get("limit"), default=50)
-    store = _state_store_from_default_path()
+    store = _state_store_from_config(config)
     await store.open()
     try:
         return await store.get_action_log(limit=limit)
@@ -753,6 +767,7 @@ async def _read_state_action_log(args: list[str]) -> list[dict[str, Any]]:
 
 
 async def _read_state_history(args: list[str]) -> list[dict[str, Any]]:
+    config, args = _state_config(args, command="state history")
     filters = _parse_state_filters(
         args,
         command="state history",
@@ -765,13 +780,20 @@ async def _read_state_history(args: list[str]) -> list[dict[str, Any]]:
             "state history requires sensor_id",
         )
     limit = _state_limit(filters.get("limit"), default=100)
-    store = _state_store_from_default_path()
+    store = _state_store_from_config(config)
     await store.open()
     try:
         readings = await store.get_history(sensor_id=sensor_id, limit=limit)
     finally:
         await store.close()
     return [_sensor_reading_to_dict(reading) for reading in readings]
+
+
+def _state_config(args: list[str], *, command: str) -> tuple[Config, list[str]]:
+    """The installation a state read names, and the filters left after it."""
+    path = _required_option(args, "--path", command)
+    index = args.index("--path")
+    return Config.load(path), args[:index] + args[index + 2 :]
 
 
 def _parse_state_filters(
@@ -829,8 +851,7 @@ def _state_limit(raw: str | None, *, default: int) -> int:
 
 def _commissioning_store(config: Config) -> StateStore:
     """The store the runtime itself opens, resolved the way the runtime does."""
-    db_path = str(config.raw.get("database", {}).get("path", _DEFAULT_STATE_DB_PATH))
-    return StateStore(db_path=db_path)
+    return StateStore(db_path=config.database_path)
 
 
 def _declared_actuators(config: Config) -> list[dict[str, Any]]:
@@ -862,9 +883,7 @@ async def _in_force_binding(config: Config) -> AcceptedBinding | None:
     loader reads it; reporting it here would let a producer chain a revision
     onto a document this device never accepted.
     """
-    db_path = Path(
-        str(config.raw.get("database", {}).get("path", _DEFAULT_STATE_DB_PATH))
-    )
+    db_path = Path(config.database_path)
     if not db_path.is_file():
         # A device that has never started has no store, and asking it a
         # question must not build one. Opening the store applies the DDL, so
@@ -1013,12 +1032,14 @@ async def _commissioning_deliver(
 
 
 async def _proof_state(config: Config):
-    """The provisional and in-force bindings this device holds, and its posture."""
-    db_path = Path(
-        str(config.raw.get("database", {}).get("path", _DEFAULT_STATE_DB_PATH))
-    )
+    """The provisional and in-force bindings this device holds."""
+    db_path = Path(config.database_path)
     if not db_path.is_file():
-        return None, None, None
+        raise BridgeError(
+            "no_provisional_binding",
+            f"no state store at {db_path}, so this device holds no "
+            "provisional binding there",
+        )
     store = _commissioning_store(config)
     await store.open()
     try:
@@ -1032,7 +1053,7 @@ async def _proof_state(config: Config):
             return None
         return accepted_from_row(row)
 
-    return held(provisional_row), held(in_force_row), db_path
+    return held(provisional_row), held(in_force_row)
 
 
 async def _commissioning_prove_command(
@@ -1056,12 +1077,7 @@ async def _commissioning_prove_command(
     )
 
     config = Config.load(config_path)
-    provisional, in_force, db_path = await _proof_state(config)
-    if db_path is None:
-        raise BridgeError(
-            "no_provisional_binding",
-            "this device has no state store, so it holds no provisional binding.",
-        )
+    provisional, in_force = await _proof_state(config)
     store = _commissioning_store(config)
     await store.open()
     try:
@@ -1120,12 +1136,7 @@ async def _commissioning_proof_export(config_path: str) -> dict[str, Any]:
     )
 
     config = Config.load(config_path)
-    provisional, _, db_path = await _proof_state(config)
-    if db_path is None:
-        raise BridgeError(
-            "no_provisional_binding",
-            "this device has no state store, so it holds no provisional binding.",
-        )
+    provisional, _ = await _proof_state(config)
     store = _commissioning_store(config)
     await store.open()
     try:
@@ -1197,17 +1208,23 @@ def _write_staged_binding(target: Path, payload: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _state_store_from_default_path() -> StateStore:
-    path = Path(_DEFAULT_STATE_DB_PATH)
+def _state_store_from_config(config: Config) -> StateStore:
+    """The store the named installation declares, refused rather than created.
+
+    A read that opened a missing store would apply the DDL and answer from the
+    empty database it had just built, which reads as a device that has recorded
+    nothing rather than as a lookup that went somewhere else.
+    """
+    path = Path(config.database_path)
     if not path.exists():
         raise BridgeError(
             "state_store_unavailable",
-            f"state database does not exist: {_DEFAULT_STATE_DB_PATH}",
+            f"state database does not exist: {path}",
         )
     if not path.is_file():
         raise BridgeError(
             "state_store_unavailable",
-            f"state database path is not a file: {_DEFAULT_STATE_DB_PATH}",
+            f"state database path is not a file: {path}",
         )
     return StateStore(str(path))
 

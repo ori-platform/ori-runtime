@@ -5,15 +5,17 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import pwd
+import shlex
 import socket
 import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Sequence
+from typing import Any, Sequence
 
 import pytest
 
@@ -153,6 +155,122 @@ def test_an_untrusted_component_is_named(tmp_path: Path, not_root: None) -> None
 
     assert failure is not None
     assert any(reason in failure for reason in _TRUST_REASONS), failure
+
+
+def test_an_untrusted_component_cannot_carry_control_characters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The walk reports whichever parent failed, and any of them may be hostile.
+
+    A directory a less-privileged account created in a shared location is
+    named by this message, which an operator reads in a terminal at exactly
+    the moment something is already wrong with the path. Every other component
+    is made trustworthy so the hostile one is the component reported.
+    """
+    hostile = tmp_path / "stage\x1b[2K\nFAIL forged"
+
+    def lstat(path):
+        writable = str(path) == str(hostile)
+        return SimpleNamespace(
+            st_uid=0,
+            st_mode=stat.S_IFDIR | (0o775 if writable else 0o755),
+        )
+
+    monkeypatch.setattr(trusted_paths.os, "lstat", lstat)
+
+    failure = doctor._interpreter_trust_failure(hostile / "python")
+
+    assert failure is not None
+    assert "is writable by another account" in failure
+    assert "\x1b" not in failure
+    assert "\n" not in failure
+    assert "\\x1b" in failure and "\\n" in failure
+
+
+def test_the_inspection_backstop_escapes_the_name_it_reports(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`exc.filename` is the raw name, unlike `str(exc)` which is already escaped.
+
+    This is the path doctor takes when something is already wrong, which is
+    exactly when the name it prints is least likely to be one an operator
+    chose.
+    """
+    from ori.installer import paths as installer_paths
+
+    hostile = "/tmp/root\x1b[2K\nFAIL forged"
+
+    def explode(**_kwargs):
+        raise OSError(5, "Input/output error", hostile)
+
+    monkeypatch.setattr(installer_paths, "resolve_identity", explode)
+
+    assert doctor.run(scope=None, root=None) == 2
+
+    printed = capsys.readouterr().err
+    assert "\x1b[2K" not in printed
+    assert "\\x1b" in printed and "\\n" in printed
+
+
+def test_the_summary_header_escapes_the_paths_it_prints(tmp_path: Path) -> None:
+    """Every path-shaped summary line passes through one renderer.
+
+    The header prints six of them, and an install root is not always a name an
+    operator chose. Escaping in the renderer covers them together rather than
+    at each line.
+    """
+    hostile = tmp_path / "root\x1b[2K\nFAIL forged"
+
+    report = doctor.render_report([], _identity(hostile), stream=io.StringIO())
+
+    # Each fragment asserted on its own. A renderer that stripped the escape
+    # but left the newline would satisfy a weaker check, because the colour
+    # reset sits between the forged text and the line break.
+    assert "\x1b[2K" not in report
+    assert "\nFAIL forged" not in report
+    assert "\\x1b[2K" in report and "\\nFAIL forged" in report
+
+
+def test_a_remedy_command_cannot_be_broken_out_of(
+    tmp_path: Path, not_root: None
+) -> None:
+    """A remedy is pasted into a shell, which makes it the worse of the two.
+
+    Escaping for a terminal is not enough here. An operator copies this line
+    and runs it, so a newline in the path would end the command and run what
+    follows as the next one. Remedies are quoted for a shell, and the path
+    stays a single argument.
+    """
+    hostile = tmp_path / "data\nrm -rf ~"
+    identity = doctor.InstallIdentity(
+        scope="system",
+        version="2.3.1",
+        install_root=tmp_path,
+        active_release=tmp_path / "releases" / "2.3.1",
+        config_path=hostile / "ori.yaml",
+        data_path=hostile,
+        health_socket=hostile / "health.sock",
+        unit_path=tmp_path / "unit" / "ori-runtime.service",
+        service_user=pwd.getpwuid(os.getuid()).pw_name,
+    )
+    hostile.mkdir()
+
+    remedies = [
+        check.remedy
+        for check in doctor.check_permissions(identity)
+        if check.remedy and ("chown" in check.remedy or "chmod" in check.remedy)
+    ]
+
+    naming = [r for r in remedies if str(hostile) in r]
+
+    assert naming, "no remedy names the hostile path"
+    for remedy in naming:
+        words = shlex.split(remedy)
+        # The path is one argument. It still spans two printed lines, because
+        # a quoted newline is one, but nothing in it is a word the shell would
+        # run: unquoted it would have ended the command and started another.
+        assert any(str(hostile) in word for word in words), remedy
+        assert "rm" not in words, remedy
 
 
 def test_a_group_writable_component_is_untrusted(
@@ -358,6 +476,56 @@ def test_a_writable_file_under_a_read_only_release_fails(
         assert code.mandatory is True
         assert code.details["offending_path"] == str(payload)
         assert "not immutable" in code.message
+    finally:
+        _unseal(tmp_path)
+
+
+def test_a_control_character_in_a_release_name_reaches_no_terminal(
+    tmp_path: Path, not_root: None
+) -> None:
+    """The name is not always one an operator chose, and it reaches a terminal.
+
+    An escape sequence erases the line it is printed on, a newline forges what
+    reads as a separate diagnostic, and a bidi mark reverses the rest of the
+    message. Driven through the real check rather than the helper.
+    """
+    _layout(tmp_path)
+    hostile = _release(tmp_path) / "payload\x1b[2K\nFAIL forged\u202e.py"
+    hostile.write_text("# code\n")
+    _sealed(tmp_path)
+    hostile.chmod(0o666)
+    try:
+        code = _checks(tmp_path)["permissions.code"]
+        assert code.status == terminal.FAIL
+        # Nothing the name carries survives into the message.
+        assert "\x1b" not in code.message
+        assert "\n" not in code.message
+        assert "\u202e" not in code.message
+        assert "\\x1b" in code.message and "\\n" in code.message
+        # The structured field still carries the real name for a machine.
+        assert code.details["offending_path"] == str(hostile)
+    finally:
+        _unseal(tmp_path)
+
+
+def test_a_path_with_a_space_is_reported_whole(tmp_path: Path, not_root: None) -> None:
+    """The offending path is carried beside its reason, not split out of it.
+
+    Recovering it from the sentence by its first space truncated any release
+    path that contained one, in a field meant to be read by a machine.
+    """
+    _layout(tmp_path)
+    spaced = _release(tmp_path) / "a directory with spaces"
+    spaced.mkdir()
+    payload = spaced / "ori_payload.py"
+    payload.write_text("# code\n")
+    _sealed(tmp_path)
+    payload.chmod(0o666)
+    try:
+        code = _checks(tmp_path)["permissions.code"]
+        assert code.status == terminal.FAIL
+        assert code.details["offending_path"] == str(payload)
+        assert " " in code.details["offending_path"]
     finally:
         _unseal(tmp_path)
 
@@ -682,10 +850,12 @@ def test_mode_evaluation_uses_the_owner_class_first() -> None:
         st_uid = 1000
         st_gid = 50
 
+    _stat: Any = _Stat
+
     service = doctor.ServiceIdentity("svc", 1000, frozenset({50}))
-    assert doctor._mode_allows(_Stat(), service, doctor.READ) is False
+    assert doctor._mode_allows(_stat(), service, doctor.READ) is False
     other = doctor.ServiceIdentity("other", 1001, frozenset({50}))
-    assert doctor._mode_allows(_Stat(), other, doctor.READ) is True
+    assert doctor._mode_allows(_stat(), other, doctor.READ) is True
 
 
 # --- classification and reporting ----------------------------------------

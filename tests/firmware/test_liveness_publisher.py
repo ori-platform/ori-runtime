@@ -567,6 +567,7 @@ async def test_a_stalled_publication_is_abandoned_not_waited_on() -> None:
     class _HangingService(_FakeService):
         async def publish_runtime_liveness(self, **kwargs) -> bytes:
             await asyncio.Event().wait()
+            raise AssertionError("unreachable: the wait never returns")
 
     service = _HangingService([_device("ori-fw-a")])
     scheduler = FirmwareLivenessScheduler(service, per_device_timeout_s=0.05)

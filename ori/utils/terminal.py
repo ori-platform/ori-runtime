@@ -17,6 +17,8 @@ import os
 import sys
 from typing import IO, Final
 
+from ori.utils.path_utils import shown
+
 # Bright variants (90-97) are universally supported by current terminals and
 # stay legible on both dark and light backgrounds. Plain white is deliberately
 # absent: bright white is close to invisible on a light background, so headings
@@ -74,7 +76,15 @@ def heading(text: str, *, stream: IO[str] | None = None) -> str:
 
 
 def path(text: str, *, stream: IO[str] | None = None) -> str:
-    return style(text, CYAN, stream=stream)
+    """Render a filesystem name for an operator, escaped as well as coloured.
+
+    This is the one boundary every path-shaped summary line already passes
+    through, so escaping here covers them together. A whole-message boundary
+    could not: prose carries newlines that are meant to be newlines, and only
+    the caller knows which fragment came from the filesystem. A path is that
+    fragment by construction.
+    """
+    return style(shown(text), CYAN, stream=stream)
 
 
 def warning(text: str, *, stream: IO[str] | None = None) -> str:

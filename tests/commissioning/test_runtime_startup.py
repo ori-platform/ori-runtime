@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from ori.actions.alert_delivery import AlertSendReceipt
 from ori.config import Config, ConfigValidationError
 from ori.runtime import OriRuntime
 from ori.security.commissioning.anchors import (
@@ -33,12 +34,14 @@ from ori.security.commissioning.loader import (
 )
 from ori.state.store import StateStore
 from tests.commissioning.signing import (
+    EPHEMERAL_SEED,
+    EPHEMERAL_SEED_OTHER,
     local_gpio_binding,
     public_key_b64,
     sign_envelope,
 )
 
-SEED = "5" * 64
+SEED = EPHEMERAL_SEED
 DEVICE = "bench-runtime-01"
 SENSOR = "cpu-sensor"
 
@@ -96,9 +99,21 @@ def _write_binding(tmp_path: Path, **overrides: Any) -> None:
 
 def _patch_external(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "ori.actions.whatsapp.TwilioProvider.send", AsyncMock(return_value=True)
+        "ori.actions.whatsapp.TwilioProvider.send_template",
+        AsyncMock(
+            return_value=AlertSendReceipt.accepted_without_provider_receipt(
+                channel="whatsapp"
+            )
+        ),
     )
-    monkeypatch.setattr("ori.actions.sms.SMSAction.send", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "ori.actions.sms.SMSAction.submit",
+        AsyncMock(
+            return_value=AlertSendReceipt.accepted_without_provider_receipt(
+                channel="sms"
+            )
+        ),
+    )
 
 
 async def _start_expecting_refusal(runtime: OriRuntime) -> None:
@@ -192,7 +207,7 @@ async def test_a_refused_binding_is_reported_by_stage_and_licenses_nothing(
 ) -> None:
     _patch_external(monkeypatch)
     # The anchor configured is not the key that signed the document.
-    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64("6" * 64))
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(EPHEMERAL_SEED_OTHER))
     _write_binding(tmp_path)
     runtime = OriRuntime(config_path=str(_write_config(tmp_path)))
     observed: dict[str, Any] = {}
@@ -492,9 +507,11 @@ async def test_a_retained_binding_with_an_unproven_leg_is_retired_on_load(
     await store.open()
     runtime._state_store = store
     try:
+        conn = store._conn
+        assert conn is not None
         await store._run_write(
             lambda: (
-                store._conn.execute(
+                conn.execute(
                     "INSERT INTO commissioned_binding (binding_seq, canonical_hash, "
                     "device_id, inventory_generation, signer_id, supersedes, "
                     "canonical_json, signature, zones_json, accepted_at_ms, "
@@ -534,7 +551,7 @@ async def test_a_retained_binding_with_an_unproven_leg_is_retired_on_load(
                         ),
                     ),
                 ),
-                store._conn.commit(),
+                conn.commit(),
             )
         )
         await runtime._load_commissioning(
@@ -632,3 +649,27 @@ async def test_a_binding_file_that_breaks_the_decoder_does_not_stop_the_runtime(
     assert block["last_verdict"]["reason"] == "malformed"
     assert block["actuation_licensed"] is False
     assert observed["health"]["status"] == "degraded"
+
+
+async def test_a_published_anchor_stops_the_start_before_any_binding_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Startup loads anchors independently of the bridge, so it is covered here.
+
+    The refusal lands where `anchor_collision` does -- at configuration load,
+    before a binding is opened -- because a forgeable authority is not a
+    property of any particular document.
+    """
+    import base64
+
+    from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+    _patch_external(monkeypatch)
+    published = base64.b64encode(next(iter(PUBLISHED_TEST_KEYS))).decode("ascii")
+    monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, published)
+    _write_binding(tmp_path)
+    runtime = OriRuntime(config_path=str(_write_config(tmp_path)))
+
+    with pytest.raises(ConfigValidationError) as refusal:
+        await _start_expecting_refusal(runtime)
+    assert "private seed is published" in str(refusal.value)

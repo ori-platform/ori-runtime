@@ -243,6 +243,7 @@ def test_the_trigger_admits_tags_only_the_authority_can_refuse() -> None:
     handling here would be dead weight and should be revisited with it.
     """
     triggers = _workflow().get("on") or _workflow().get(True)
+    assert triggers is not None
     patterns = triggers["push"]["tags"]
 
     assert any("-" in pattern for pattern in patterns), (

@@ -26,7 +26,7 @@ if [[ -z "${changed_files}" ]]; then
   exit 0
 fi
 
-capability_touched="$(echo "${changed_files}" | grep -E '^(ori/reasoning/|ori/actions/|ori/runtime\.py$|ori/skills/loader\.py$|ori/config\.py$)' || true)"
+capability_touched="$(echo "${changed_files}" | grep -E '^(ori/reasoning/|ori/actions/|ori/security/|ori/runtime\.py$|ori/skills/loader\.py$|ori/config\.py$)' || true)"
 matrix_touched="$(echo "${changed_files}" | grep -E '^docs/CAPABILITY_MATRIX\.md$' || true)"
 bypass_requested=""
 

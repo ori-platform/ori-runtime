@@ -19,6 +19,7 @@ missing was something to call it again.
 from __future__ import annotations
 
 import asyncio
+from typing import Any, cast
 
 import pytest
 
@@ -244,7 +245,7 @@ def _subscriber_with_hook(on_connected):
     """A subscriber built without touching MQTT or the network."""
     from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
 
-    subscriber = object.__new__(MqttFirmwareTelemetrySubscriber)
+    subscriber: Any = object.__new__(MqttFirmwareTelemetrySubscriber)
     subscriber._topic = "ori/fw/+/telemetry"
     subscriber._qos = 1
     subscriber._on_connected = on_connected
@@ -263,7 +264,7 @@ class _Client:
 def test_successful_connect_schedules_the_hook_on_the_loop():
     """`_on_connect` runs on the MQTT client's thread, never the event loop."""
     calls: list[int] = []
-    subscriber = _subscriber_with_hook(lambda: calls.append(1))
+    subscriber: Any = _subscriber_with_hook(lambda: calls.append(1))
     client = _Client()
 
     subscriber._on_connect(client, None, None, 0)
@@ -278,7 +279,7 @@ def test_successful_connect_schedules_the_hook_on_the_loop():
 def test_failed_connect_does_not_schedule_the_hook():
     """A refused connection is not a restored link."""
     calls: list[int] = []
-    subscriber = _subscriber_with_hook(lambda: calls.append(1))
+    subscriber: Any = _subscriber_with_hook(lambda: calls.append(1))
     client = _Client()
 
     subscriber._on_connect(client, None, None, 5)
@@ -289,7 +290,7 @@ def test_failed_connect_does_not_schedule_the_hook():
 
 
 def test_connect_without_a_hook_is_harmless():
-    subscriber = _subscriber_with_hook(None)
+    subscriber: Any = _subscriber_with_hook(None)
     client = _Client()
     subscriber._on_connect(client, None, None, 0)
     assert client.subscribed == [("ori/fw/+/telemetry", 1)]
@@ -334,7 +335,7 @@ def test_liveness_stack_forwards_the_callback_to_the_subscriber():
     try:
         sentinel = object()
         runtime_module._build_firmware_liveness_stack(
-            _StubConfig(), None, None, None, sentinel
+            _stubconfig(), cast(Any, None), cast(Any, None), None, cast(Any, sentinel)
         )
     finally:
         runtime_module._build_firmware_telemetry_subscriber = original
@@ -350,6 +351,10 @@ class _StubGatewayCfg:
 
 class _StubConfig:
     gateway = _StubGatewayCfg()
+
+
+#: Structural double for the declared parameter type.
+_stubconfig: Any = _StubConfig
 
 
 # --- the configured interval reaches the worker ----------------------------

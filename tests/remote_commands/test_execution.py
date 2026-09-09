@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -69,7 +70,7 @@ def test_command_requests_dry_run_from_args():
 
 
 async def test_audit_only_command_is_logged_without_execution(store):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(device_policy={"enabled": True})
     runtime._dispatcher = object()
@@ -88,7 +89,7 @@ async def test_audit_only_command_is_logged_without_execution(store):
 
 
 async def test_audit_only_command_with_dry_run_stays_audit_only(store):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(device_policy={"enabled": True})
     runtime._dispatcher = object()
@@ -104,7 +105,7 @@ async def test_audit_only_command_with_dry_run_stays_audit_only(store):
 
 
 async def test_unsupported_command_with_dry_run_stays_unsupported(store):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(device_policy={"enabled": True})
     runtime._dispatcher = object()
@@ -120,7 +121,7 @@ async def test_unsupported_command_with_dry_run_stays_unsupported(store):
 
 
 async def test_refresh_policy_requires_enabled_device_policy(store):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(device_policy={"enabled": False})
     runtime._dispatcher = object()
@@ -136,7 +137,7 @@ async def test_refresh_policy_requires_enabled_device_policy(store):
 
 
 async def test_refresh_policy_executes_existing_verified_policy_path(store):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(device_policy={"enabled": True})
     runtime._dispatcher = object()
@@ -154,7 +155,7 @@ async def test_refresh_policy_executes_existing_verified_policy_path(store):
 
 
 async def test_refresh_policy_dry_run_is_logged_without_refresh(store):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(device_policy={"enabled": True})
     runtime._dispatcher = object()
@@ -175,7 +176,7 @@ async def test_refresh_policy_dry_run_is_logged_without_refresh(store):
 
 
 async def test_lockout_risk_does_not_block_when_enforcement_disabled(store):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(device_policy={"enabled": True})
     runtime._dispatcher = object()
@@ -209,7 +210,7 @@ async def test_lockout_risk_does_not_block_when_enforcement_disabled(store):
 
 
 async def test_lockout_enforcement_blocks_critical_sender(store):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(device_policy={"enabled": True})
     runtime._dispatcher = object()
@@ -248,7 +249,7 @@ async def test_lockout_enforcement_blocks_critical_sender(store):
 
 
 async def test_unsupported_command_is_logged_without_execution(store):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(device_policy={"enabled": True})
     runtime._dispatcher = object()
@@ -268,7 +269,7 @@ async def test_unsupported_command_is_logged_without_execution(store):
 async def test_executable_policy_without_handler_is_logged_as_mismatch(
     store, monkeypatch
 ):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(device_policy={"enabled": True})
     runtime._dispatcher = object()
@@ -289,7 +290,7 @@ async def test_executable_policy_without_handler_is_logged_as_mismatch(
 
 
 async def test_apply_policy_requires_reference_args(store):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(
         device=SimpleNamespace(id="dev-01"),
@@ -343,7 +344,7 @@ def _make_skill(
 
 
 def _runtime_with_skill(skill: Skill, store: StateStore) -> OriRuntime:
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(
         device=SimpleNamespace(id="dev-01"),
@@ -766,7 +767,7 @@ async def test_set_threshold_complex_tier_d_condition_fails_closed(store):
 
 
 async def test_apply_policy_fetches_hash_verifies_and_applies(store, monkeypatch):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(
         device=SimpleNamespace(id="dev-01"),
@@ -824,7 +825,7 @@ async def test_apply_policy_fetches_hash_verifies_and_applies(store, monkeypatch
 
 
 async def test_apply_policy_dry_run_does_not_fetch_or_apply(store, monkeypatch):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(
         device=SimpleNamespace(id="dev-01"),
@@ -865,7 +866,7 @@ async def test_apply_policy_dry_run_does_not_fetch_or_apply(store, monkeypatch):
 
 
 async def test_apply_policy_dry_run_validates_reference_args(store, monkeypatch):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(
         device=SimpleNamespace(id="dev-01"),
@@ -904,7 +905,7 @@ async def test_apply_policy_dry_run_validates_reference_args(store, monkeypatch)
 
 
 async def test_apply_policy_hash_mismatch_is_rejected_and_logged(store, monkeypatch):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(
         device=SimpleNamespace(id="dev-01"),
@@ -953,7 +954,7 @@ async def test_apply_policy_hash_mismatch_is_rejected_and_logged(store, monkeypa
 
 
 async def test_apply_policy_requires_device_policy_enabled(store):
-    runtime = OriRuntime(config_path="ori.yaml")
+    runtime: Any = OriRuntime(config_path="ori.yaml")
     runtime._state_store = store
     runtime._config = SimpleNamespace(
         device=SimpleNamespace(id="dev-01"),

@@ -3,6 +3,7 @@
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -100,7 +101,7 @@ def _skill_tier_d() -> FakeSkill:
     )
 
 
-def _cfg(enabled: bool = True) -> object:
+def _cfg(enabled: bool = True) -> Any:
     return type(
         "C",
         (object,),
@@ -176,6 +177,7 @@ class TestEnergyAwareThrottle:
             tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
         assert tier == "rule"
         emit.assert_awaited_once()
+        assert emit.await_args is not None
         assert emit.await_args.kwargs["level"] == "low"
 
     @pytest.mark.asyncio
@@ -186,6 +188,7 @@ class TestEnergyAwareThrottle:
             tier = await elevator.select_tier(_event(), _skill_tier_a(), store)
         assert tier == "rule"
         emit.assert_awaited_once()
+        assert emit.await_args is not None
         assert emit.await_args.kwargs["level"] == "critical"
 
     @pytest.mark.asyncio

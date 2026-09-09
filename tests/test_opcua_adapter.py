@@ -1,6 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -84,7 +85,7 @@ class TestOpcUaAdapter:
     @pytest.mark.asyncio
     async def test_connect_stores_config(self):
         adapter = OpcUaAdapter()
-        _FakeClient.default_node_value = 12.3
+        cast(Any, _FakeClient).default_node_value = 12.3
 
         with (
             patch("ori.hal.opcua_adapter._ASYNCUA_AVAILABLE", True),
@@ -107,7 +108,7 @@ class TestOpcUaAdapter:
     @pytest.mark.asyncio
     async def test_read_float_value(self):
         adapter = OpcUaAdapter()
-        _FakeClient.default_node_value = 42.75
+        cast(Any, _FakeClient).default_node_value = 42.75
 
         with (
             patch("ori.hal.opcua_adapter._ASYNCUA_AVAILABLE", True),
@@ -123,7 +124,7 @@ class TestOpcUaAdapter:
     @pytest.mark.asyncio
     async def test_read_int_value(self):
         adapter = OpcUaAdapter()
-        _FakeClient.default_node_value = _DataValue(123)
+        cast(Any, _FakeClient).default_node_value = _DataValue(123)
 
         with (
             patch("ori.hal.opcua_adapter._ASYNCUA_AVAILABLE", True),
@@ -137,7 +138,7 @@ class TestOpcUaAdapter:
     @pytest.mark.asyncio
     async def test_read_boolean(self):
         adapter = OpcUaAdapter()
-        _FakeClient.default_node_value = _DataValue(True)
+        cast(Any, _FakeClient).default_node_value = _DataValue(True)
 
         with (
             patch("ori.hal.opcua_adapter._ASYNCUA_AVAILABLE", True),
@@ -151,7 +152,7 @@ class TestOpcUaAdapter:
     @pytest.mark.asyncio
     async def test_circuit_breaker_integration(self):
         adapter = OpcUaAdapter()
-        _FakeClient.default_node_value = 10.0
+        cast(Any, _FakeClient).default_node_value = 10.0
 
         with (
             patch("ori.hal.opcua_adapter._ASYNCUA_AVAILABLE", True),

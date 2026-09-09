@@ -4,7 +4,8 @@
 
 Test tooling only. The real producer is ori-cli; this exists so the runtime's
 consumer can be exercised against documents whose signing key the test
-controls, using the corpus's published test seed or a fresh one.
+controls. The seed is generated per run and never committed: the runtime
+refuses every key whose private half this repository publishes.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,14 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from ori.security.commissioning.anchors import COMMISSIONING_ANCHOR_ENV
 from ori.security.commissioning.binding import canonical_bytes
+
+#: Generated per run and never committed. A seed written into a tracked file
+#: is published, and the runtime refuses every key derived from one.
+EPHEMERAL_SEED: str = secrets.token_hex(32)
+
+#: A second real key, for asserting that a valid anchor which did not sign
+#: the document is refused as an unknown signer rather than as a bad anchor.
+EPHEMERAL_SEED_OTHER: str = secrets.token_hex(32)
 
 
 def private_key(seed_hex: str) -> Ed25519PrivateKey:
@@ -179,7 +189,7 @@ def commission_relay(
     sensor_id: str,
     gpio_pin: int = 26,
     active_high: bool = False,
-    seed_hex: str = "7" * 64,
+    seed_hex: str = EPHEMERAL_SEED,
     **overrides: Any,
 ) -> Path:
     """Write an accepted binding beside *config_path* and configure its anchor.

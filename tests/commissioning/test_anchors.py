@@ -17,6 +17,7 @@ from ori.security.commissioning.anchors import (
     anchor_collision,
     load_commissioning_anchors,
 )
+from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 
 
 def _key() -> bytes:
@@ -115,3 +116,39 @@ def test_collision_is_compared_as_key_material_across_generations() -> None:
     assert anchor_collision(anchors, previous)
     assert not anchor_collision(anchors, None)
     assert not anchor_collision(load_commissioning_anchors({}), provisioning)
+
+
+def test_a_published_test_key_is_refused_as_the_current_anchor() -> None:
+    """Its private seed ships in this repository, so it authenticates nobody."""
+    published = _b64(next(iter(PUBLISHED_TEST_KEYS)))
+    with pytest.raises(AnchorError) as refusal:
+        load_commissioning_anchors({COMMISSIONING_ANCHOR_ENV: published})
+    assert COMMISSIONING_ANCHOR_ENV in str(refusal.value)
+    assert "private seed is published" in str(refusal.value)
+
+
+def test_a_published_test_key_is_refused_in_the_previous_slot() -> None:
+    """A verify-only generation still accepts documents, so it is not exempt."""
+    published = _b64(next(iter(PUBLISHED_TEST_KEYS)))
+    with pytest.raises(AnchorError) as refusal:
+        load_commissioning_anchors(
+            {
+                COMMISSIONING_ANCHOR_ENV: _b64(_key()),
+                COMMISSIONING_ANCHOR_PREVIOUS_ENV: published,
+            }
+        )
+    assert COMMISSIONING_ANCHOR_PREVIOUS_ENV in str(refusal.value)
+
+
+def test_every_published_test_key_is_refused() -> None:
+    """One refused key does not establish that the set is consulted."""
+    for raw in PUBLISHED_TEST_KEYS:
+        with pytest.raises(AnchorError):
+            load_commissioning_anchors({COMMISSIONING_ANCHOR_ENV: _b64(raw)})
+
+
+def test_a_key_that_was_never_published_is_still_accepted() -> None:
+    """The guard refuses published material, not every key it has not seen."""
+    fresh = _key()
+    anchors = load_commissioning_anchors({COMMISSIONING_ANCHOR_ENV: _b64(fresh)})
+    assert anchors.current == fresh

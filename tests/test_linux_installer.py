@@ -15,6 +15,7 @@ import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest import mock
 
 import pytest
@@ -33,6 +34,7 @@ from ori.installer.linux import (
     SystemdServiceProfile,
     apply_system_service_permissions,
     ensure_service_account,
+    host_device_groups,
     install_composed_release,
     install_release,
     provision_runtime_config,
@@ -382,7 +384,7 @@ def test_creation_provenance_race_refuses_existing_entry_and_rolls_back_only_our
         *,
         dir_fd: int | None = None,
     ) -> None:
-        if Path(candidate) == layout.data:
+        if Path(cast(Any, candidate)) == layout.data:
             real_mkdir(candidate, mode, dir_fd=dir_fd)
             os.chmod(candidate, 0o775, dir_fd=dir_fd)
             raise FileExistsError(17, "simulated concurrent creation", str(candidate))
@@ -390,7 +392,9 @@ def test_creation_provenance_race_refuses_existing_entry_and_rolls_back_only_our
 
     monkeypatch.setattr(installer_linux.os, "mkdir", mkdir_with_race)
 
-    with pytest.raises(LinuxInstallError, match="data is writable by another account"):
+    with pytest.raises(
+        LinuxInstallError, match="'data' is writable by another account"
+    ):
         install_release(
             layout=layout,
             version="2.3.0",
@@ -799,7 +803,7 @@ def test_composed_reinstall_integrates_config_dac_and_live_health_socket(
         bundle = ExtractedReleaseBundle(
             Path(root), "2.3.0", "linux-x86_64-python3.12", "3.12", 1
         )
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "layout": layout,
             "bundle": bundle,
             "values": InstallerConfigInput("ori-01", "Office", "Lagos"),
@@ -1282,7 +1286,7 @@ def test_same_version_is_idempotent_and_downgrade_requires_opt_in(
     tmp_path: Path,
 ) -> None:
     layout = InstallLayout.resolve(tmp_path / "ori")
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         layout=layout,
         prepare=_prepare,
         validate=_validate,
@@ -1332,7 +1336,7 @@ def test_noncanonical_version_is_rejected_with_stable_error(tmp_path: Path) -> N
 
 def test_prerelease_numeric_identifiers_use_semver_ordering(tmp_path: Path) -> None:
     layout = InstallLayout.resolve(tmp_path / "ori")
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         layout=layout,
         prepare=_prepare,
         validate=_validate,
@@ -2230,6 +2234,148 @@ def test_system_permissions_fail_closed_for_non_root_and_data_symlink(
     assert layout.root.stat().st_mode & 0o777 == 0o755
 
 
+def test_a_file_that_becomes_a_pipe_after_validation_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The service owns this tree and is still running when the walk happens.
+
+    Two things have to hold for this to be caught. The open must not block,
+    or the installer waits as root for a writer that never comes. And the file
+    type must be checked, because an inode number is reused immediately after
+    unlink on the filesystems Linux installs run on, so the recorded inode
+    still matches and only the type says the file changed.
+    """
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    layout.data.mkdir()
+    target = layout.data / "state.json"
+    target.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+    monkeypatch.setattr("ori.installer.linux.os.fchmod", lambda *_args: None)
+
+    real_apply = installer_linux._apply_permission_plan
+
+    def swap_between_planning_and_applying(plan):
+        # The plan holds a regular file it validated. Replace it the way
+        # the running service could, then let the apply proceed.
+        target.unlink()
+        os.mkfifo(target)
+        real_apply(plan)
+
+    monkeypatch.setattr(
+        "ori.installer.linux._apply_permission_plan",
+        swap_between_planning_and_applying,
+    )
+
+    with pytest.raises(LinuxInstallError) as raised:
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+
+    assert raised.value.code == "service_start_failed"
+
+
+def test_a_refused_special_file_is_named_with_its_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The likeliest causes are artefacts of the runtime having run."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    layout.data.mkdir()
+    fifo = layout.data / "unexpected.pipe"
+    os.mkfifo(fifo)
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+
+    with pytest.raises(LinuxInstallError) as raised:
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+
+    assert "named pipe" in raised.value.detail
+    assert str(fifo) in raised.value.detail
+
+
+def test_a_refused_special_file_says_how_to_clear_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live runtime recreates the artefacts it made, so naming is not enough."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    layout.data.mkdir()
+    os.mkfifo(layout.data / "unexpected.pipe")
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+
+    with pytest.raises(LinuxInstallError) as raised:
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+
+    assert "Stop the service" in raised.value.detail
+
+
+def test_a_refused_name_cannot_speak_for_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The path reaches a terminal and is not the installer's to trust."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    layout.releases.mkdir(parents=True)
+    layout.data.mkdir()
+    os.mkfifo(layout.data / "pipe\nExecStart=evil")
+    monkeypatch.setattr("ori.installer.linux.os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "ori.installer.linux.pwd.getpwnam",
+        lambda _name: SimpleNamespace(pw_uid=1001, pw_gid=1002),
+    )
+    monkeypatch.setattr("ori.installer.linux.os.fchown", lambda *_args: None)
+
+    with pytest.raises(LinuxInstallError) as raised:
+        apply_system_service_permissions(layout, SystemdServiceProfile.system())
+
+    assert "\n" not in raised.value.detail
+    assert "\\n" in raised.value.detail
+
+
+def test_a_system_unit_works_outside_the_directory_it_must_not_litter(
+    tmp_path: Path,
+) -> None:
+    """GPIO drops a notification pipe in the working directory, and the install
+    root admits regular files only."""
+    rendered = render_systemd_unit(
+        _service_template(),
+        profile=SystemdServiceProfile.system(),
+        root=Path("/opt/ori"),
+        data_dir=Path("/opt/ori/data"),
+        config_path=Path("/opt/ori/data/ori.yaml"),
+        env_file=Path("/etc/ori/runtime.env"),
+    )
+    assert "RuntimeDirectory=ori" in rendered
+    assert "WorkingDirectory=%t/ori" in rendered
+    assert "WorkingDirectory=/opt/ori/data" not in rendered
+    # The data directory stays writable: it is where the runtime keeps state.
+    assert "ReadWritePaths=/opt/ori/data" in rendered
+
+
+def test_a_user_unit_also_works_outside_its_data_directory(tmp_path: Path) -> None:
+    """A user install writes into a home directory it must not litter either."""
+    rendered = _rendered_unit(tmp_path, SystemdServiceProfile.user())
+
+    working = [
+        line for line in rendered.splitlines() if line.startswith("WorkingDirectory=")
+    ]
+
+    assert "RuntimeDirectory=ori" in rendered
+    assert working == ["WorkingDirectory=%t/ori"]
+
+
 def test_system_permissions_allow_only_configured_runtime_socket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2269,6 +2415,192 @@ def test_system_permissions_allow_only_configured_runtime_socket(
         finally:
             health_socket.close()
             unexpected_socket.close()
+
+
+def test_a_system_unit_grants_the_device_groups_the_host_defines() -> None:
+    """The service account cannot open a gpiochip without the owning group."""
+    rendered = render_systemd_unit(
+        _service_template(),
+        profile=SystemdServiceProfile.system(),
+        root=Path("/opt/ori"),
+        data_dir=Path("/opt/ori/data"),
+        config_path=Path("/opt/ori/data/ori.yaml"),
+        env_file=Path("/etc/ori/runtime.env"),
+        device_groups=("gpio", "i2c"),
+    )
+    assert "SupplementaryGroups=gpio i2c" in rendered
+
+
+def test_a_host_without_those_groups_gets_no_directive() -> None:
+    """systemd refuses to start a unit naming a group that does not exist."""
+    rendered = render_systemd_unit(
+        _service_template(),
+        profile=SystemdServiceProfile.system(),
+        root=Path("/opt/ori"),
+        data_dir=Path("/opt/ori/data"),
+        config_path=Path("/opt/ori/data/ori.yaml"),
+        env_file=Path("/etc/ori/runtime.env"),
+        device_groups=(),
+    )
+    assert "SupplementaryGroups" not in rendered
+
+
+def test_a_user_unit_names_no_supplementary_groups() -> None:
+    """A user unit runs as someone who already has their own groups."""
+    rendered = render_systemd_unit(
+        _service_template(),
+        profile=SystemdServiceProfile.user(),
+        root=Path("/opt/ori"),
+        data_dir=Path("/opt/ori/data"),
+        config_path=Path("/opt/ori/data/ori.yaml"),
+        env_file=Path("/etc/ori/runtime.env"),
+        device_groups=("gpio", "i2c"),
+    )
+    assert "SupplementaryGroups" not in rendered
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "gpio\nExecStartPre=/bin/sh",  # the value lands in a unit file
+        "wheel",  # a real group, but not a device group
+        "docker",
+        "",
+    ],
+)
+def test_a_group_that_is_not_a_device_group_is_refused(name: str) -> None:
+    """The allowlist is the constant, not the shape of the name."""
+    with pytest.raises(LinuxInstallError, match="not a device group"):
+        render_systemd_unit(
+            _service_template(),
+            profile=SystemdServiceProfile.system(),
+            root=Path("/opt/ori"),
+            data_dir=Path("/opt/ori/data"),
+            config_path=Path("/opt/ori/data/ori.yaml"),
+            env_file=Path("/etc/ori/runtime.env"),
+            device_groups=(name,),
+        )
+
+
+def test_host_device_groups_reports_only_what_the_host_defines() -> None:
+    defined = {"gpio"}
+
+    def resolver(name: str) -> object:
+        if name in defined:
+            return object()
+        raise KeyError(name)
+
+    assert host_device_groups(resolver) == ("gpio",)
+    assert host_device_groups(_raise_key) == ()
+
+
+def test_a_composed_system_install_writes_the_grant_into_the_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upgrade renders through this same call, so it regains the grant too."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    written: list[str] = []
+
+    class Preparer:
+        def prepare(self, release: Path) -> None:
+            interpreter = release / "venv" / "bin" / "python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.write_bytes(b"python")
+            interpreter.chmod(0o700)
+
+        def validate(self, _release: Path) -> None:
+            return None
+
+    class Health:
+        def verify(self, _release: Path) -> dict[str, object]:
+            return {"device_id": "ori-01", "critical": False}
+
+    class Manager:
+        def install_unit(self, rendered: str) -> Callable[[], None]:
+            written.append(rendered)
+            return lambda: None
+
+        def restart(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def enable(self) -> BootPersistence:
+            return BootPersistence(True, "enabled")
+
+        def boot_persistence(self) -> BootPersistence:
+            return BootPersistence(True, "enabled")
+
+    monkeypatch.setattr(
+        "ori.installer.linux.provision_runtime_config",
+        lambda **_kwargs: lambda: None,
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux.apply_system_service_permissions",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "ori.installer.linux.grp.getgrnam",
+        lambda name: object() if name in {"gpio", "i2c"} else _raise_key(name),
+    )
+    install_composed_release(
+        layout=layout,
+        bundle=ExtractedReleaseBundle(
+            tmp_path, "2.3.0", "linux-aarch64-python3.12", "3.12", 1
+        ),
+        values=InstallerConfigInput("ori-01", "Office", "Lagos"),
+        service_profile=SystemdServiceProfile.system(),
+        service_manager=Manager(),  # type: ignore[arg-type]
+        unit_template=_service_template(),
+        env_file=layout.data / "runtime.env",
+        preparer=Preparer(),  # type: ignore[arg-type]
+        health_verifier=Health(),  # type: ignore[arg-type]
+    )
+    assert written and "SupplementaryGroups=gpio i2c" in written[0]
+
+
+def _raise_key(name: str) -> object:
+    raise KeyError(name)
+
+
+def test_a_user_unit_carrying_device_groups_is_refused_at_install(
+    tmp_path: Path,
+) -> None:
+    """The renderer is not the only thing that decides what the unit may grant."""
+    unit = (tmp_path / "units" / "ori-runtime.service").resolve()
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.user(),
+        unit_path=unit,
+        runner=lambda command: subprocess.CompletedProcess(command, 0, "", ""),
+        effective_uid=1001,
+    )
+    rendered = _rendered_unit(tmp_path, SystemdServiceProfile.user()).replace(
+        "[Service]", "[Service]\nSupplementaryGroups=gpio i2c", 1
+    )
+    with pytest.raises(LinuxInstallError, match="outside a system profile"):
+        manager.install_unit(rendered)
+    assert not unit.exists()
+
+
+@pytest.mark.parametrize("named", ["gpio ../../root", "wheel", "gpio wheel"])
+def test_a_system_unit_naming_a_non_device_group_is_refused_at_install(
+    named: str, tmp_path: Path
+) -> None:
+    """A unit reaching the installer from anywhere is held to the same list."""
+    unit = (tmp_path / "units" / "ori-runtime.service").resolve()
+    manager = SystemdServiceManager(
+        profile=SystemdServiceProfile.system(),
+        unit_path=unit,
+        runner=lambda command: subprocess.CompletedProcess(command, 0, "", ""),
+        effective_uid=0,
+    )
+    rendered = _rendered_unit(tmp_path, SystemdServiceProfile.system()).replace(
+        "[Service]", f"[Service]\nSupplementaryGroups={named}", 1
+    )
+    with pytest.raises(LinuxInstallError, match="not a device group"):
+        manager.install_unit(rendered)
+    assert not unit.exists()
 
 
 def test_system_upgrade_preserves_access_and_reapplies_permissions(

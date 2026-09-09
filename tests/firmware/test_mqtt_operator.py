@@ -9,9 +9,11 @@ import asyncio
 import base64
 import json
 import os
+import secrets
 import socket
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from cryptography import x509
@@ -35,7 +37,8 @@ DEVICE_ID = "ori-fw-7c9f2b3a"
 ANCHOR_EPOCH = "sha256:" + "aa" * 32
 CAPABILITY_HASH = "sha256:" + "bb" * 32
 KEY_EPOCH = "sha256:" + "cc" * 32
-PA_SEED = b"\x22" * 32
+PA_SEED = secrets.token_bytes(32)  # never a committed seed: the runtime refuses those
+_OTHER_PA_SEED = secrets.token_bytes(32)  # a different provisioning root
 NOW = datetime(2026, 7, 23, 12, 0, tzinfo=UTC)
 CONTRACT = "ori.runtime.firmware-mqtt-operator"
 
@@ -61,8 +64,8 @@ def _ca_material(common_name: str) -> tuple[bytes, bytes]:
                 key_agreement=False,
                 key_cert_sign=True,
                 crl_sign=True,
-                encipher_only=None,
-                decipher_only=None,
+                encipher_only=cast(Any, None),
+                decipher_only=cast(Any, None),
             ),
             True,
         )
@@ -422,7 +425,7 @@ async def test_runtime_starts_operator_with_runtime_owned_material(
     runtime._state_store = StateStore(db_path=":memory:")
     await runtime._state_store.open()
     socket_path = f"/tmp/ori-op-{os.getpid()}-{id(runtime)}.sock"
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         firmware_mqtt_provisioning={
             "enabled": True,
             "socket_path": socket_path,
@@ -456,12 +459,12 @@ async def test_runtime_refuses_a_different_command_provisioning_root(
     monkeypatch.setenv("ORI_TEST_MQTT_PA", base64.b64encode(PA_SEED).decode("ascii"))
     monkeypatch.setenv(
         "ORI_TEST_COMMAND_PA",
-        base64.b64encode(b"\x33" * 32).decode("ascii"),
+        base64.b64encode(_OTHER_PA_SEED).decode("ascii"),
     )
     runtime = OriRuntime(config_path="unused.yaml")
     runtime._state_store = StateStore(db_path=":memory:")
     await runtime._state_store.open()
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         firmware_mqtt_provisioning={
             "enabled": True,
             "provisioner_key_env": "ORI_TEST_MQTT_PA",

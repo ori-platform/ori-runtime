@@ -10,6 +10,7 @@ import json
 import sys
 import types
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import pytest
 
@@ -547,7 +548,7 @@ async def test_twilio_provider_rate_limit_backoff_skips_immediate_repoll(monkeyp
             def list(**_kwargs):
                 return []
 
-    twilio_rest_mod.Client = _FakeClient
+    cast(Any, twilio_rest_mod).Client = _FakeClient
     monkeypatch.setitem(sys.modules, "twilio", twilio_mod)
     monkeypatch.setitem(sys.modules, "twilio.rest", twilio_rest_mod)
 

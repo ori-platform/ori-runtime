@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -63,7 +64,7 @@ class TestGoldenCommandVectors:
 
 class TestFailClosedBuild:
     def test_rejects_what_the_device_would_refuse(self) -> None:
-        good = dict(
+        good: dict[str, Any] = dict(
             action="relay_open",
             capability_hash="sha256:" + "ab" * 32,
             channel="relay0",

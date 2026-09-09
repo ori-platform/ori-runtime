@@ -121,7 +121,24 @@ def device_policy_from_payload(
             payload.get("alert_whatsapp_monthly_cap"),
             "alert_whatsapp_monthly_cap",
         ),
+        alerts=_alert_preferences(payload.get("alerts")),
     )
+
+
+def _alert_preferences(value: Any) -> dict[str, bool]:
+    """Customer alert toggles from a verified payload.
+
+    Absent, malformed, or carrying keys this runtime does not know: none of
+    those is a decision to switch a notice off, so each yields no toggle rather
+    than an error. Refusing the whole policy over an unrecognised alert key
+    would let a product-side addition strand a device on its last policy;
+    `DevicePolicy` keeps only the known boolean entries.
+    """
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(name): bool(flag) for name, flag in value.items() if isinstance(flag, bool)
+    }
 
 
 def _build_config(raw: dict[str, Any]) -> RemotePolicyFetchConfig:

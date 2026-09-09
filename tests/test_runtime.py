@@ -12,11 +12,12 @@ import base64
 import json
 import logging
 import os
+import sys
 import textwrap
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -32,6 +33,7 @@ from ori.config import (
     ConfigValidationError,
     GatewayConfig,
     TelemetryExportConfig,
+    config_env_placeholders,
 )
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
@@ -66,6 +68,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
 )
 from ori.security.remote_commands.throttle import RemoteCommandThrottleDecision
+from ori.skills.loader import CommunitySkillAdmission, SkillLoader
 from ori.skills.signing import canonical_signed_payload
 from ori.state.store import StateStore
 from tests.commissioning.signing import commission_relay
@@ -75,13 +78,22 @@ from tests.conftest import (
     run_runtime_until,
 )
 
-try:
+if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-except Exception:  # pragma: no cover - environment without cryptography support
-    Ed25519PrivateKey = None
-    Encoding = None
-    PublicFormat = None
+else:  # pragma: no cover - environment without cryptography support
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+        )
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            PublicFormat,
+        )
+    except Exception:
+        Ed25519PrivateKey = None
+        Encoding = None
+        PublicFormat = None
 
 
 async def _end_loop_once_warned(runtime, *, timeout: float = 15.0) -> None:
@@ -137,7 +149,7 @@ def _capability_config(
 
 def test_build_gateway_message_auth_uses_configured_env_secret(monkeypatch):
     monkeypatch.setenv("GATEWAY_SHARED_SECRET", "site-local-secret")
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         gateway=GatewayConfig(
             enabled=True,
             broker_url="mqtt://broker.local",
@@ -157,7 +169,7 @@ def test_build_gateway_message_auth_uses_configured_env_secret(monkeypatch):
 
 def test_remote_command_secret_env_names_are_not_logged(monkeypatch, caplog):
     monkeypatch.delenv("ORI_REMOTE_COMMAND_HMAC_SECRET", raising=False)
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         device=SimpleNamespace(id="device-01"),
         security={
             "remote_commands": {
@@ -185,7 +197,7 @@ def test_resolve_setup_notification_channels_deduplicates_primary():
 
 
 def test_setup_success_message_is_bounded_and_notification_only():
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         device=SimpleNamespace(
             id="phone-01",
             location="Temidayo Site",
@@ -215,7 +227,7 @@ def test_setup_success_message_is_bounded_and_notification_only():
 
 @pytest.mark.parametrize("location", ["", "   ", "\n\t"])
 def test_setup_success_message_falls_back_for_empty_location(location):
-    config = SimpleNamespace(device=SimpleNamespace(location=location))
+    config: Any = SimpleNamespace(device=SimpleNamespace(location=location))
 
     message = _setup_success_message(
         config=config,
@@ -230,7 +242,7 @@ def test_setup_success_message_falls_back_for_empty_location(location):
 
 
 def test_setup_success_message_truncates_only_normalized_location():
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         device=SimpleNamespace(location="  Abuja\n" + "very-long-site " * 100)
     )
 
@@ -355,7 +367,7 @@ async def test_setup_success_notification_sends_enabled_channels():
     runtime._last_alert_timestamps_by_trigger = {}
     runtime._runtime_started_at_ms = 1_700_000_000_000
     sender = FakeAlertSender()
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         device=SimpleNamespace(
             id="phone-01",
             location="Temidayo Site",
@@ -370,7 +382,7 @@ async def test_setup_success_notification_sends_enabled_channels():
         ),
     )
 
-    await runtime._send_setup_success_notifications(config, sender)
+    await runtime._send_setup_success_notifications(config, cast(Any, sender))
 
     assert [call["channel"] for call in sender.calls] == ["sms", "whatsapp"]
     assert all(call["to_number"] == "+2348000000000" for call in sender.calls)
@@ -392,7 +404,7 @@ async def test_setup_success_notification_queues_failed_delivery():
         async def send_exact(self, *, alert, to_number, channel):
             return AlertSendReceipt.refused(channel=channel)
 
-    runtime = OriRuntime()
+    runtime: Any = OriRuntime()
     runtime._operator_contact = "+2348000000000"
     runtime._connected_sensor_ids = {"temperature-1"}
     runtime._loaded_skills = [
@@ -409,7 +421,7 @@ async def test_setup_success_notification_queues_failed_delivery():
         get_skill_state=AsyncMock(return_value=None),
         set_skill_state=AsyncMock(return_value=None),
     )
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         device=SimpleNamespace(location="Abuja"),
         sensors=[SimpleNamespace(id="temperature-1", type="temperature")],
         actions=SimpleNamespace(
@@ -423,7 +435,7 @@ async def test_setup_success_notification_queues_failed_delivery():
     await runtime._send_setup_success_notifications(config, FailingAlertSender())
 
     runtime._state_store.enqueue_alert.assert_awaited_once()
-    queued = runtime._state_store.enqueue_alert.await_args.kwargs
+    queued = runtime._state_store.enqueue_alert.await_args.kwargs  # type: ignore[union-attr]
     assert queued["channel"] == "sms"
     assert queued["action_tier"] == "A"
     assert queued["trigger_name"] == "runtime_setup_complete"
@@ -450,7 +462,7 @@ async def test_start_telemetry_export_subscribes_wildcard_handler(monkeypatch):
     monkeypatch.setattr("ori.runtime.HttpTelemetryExporter", FakeExporter)
     runtime = OriRuntime()
     event_bus = EventBus()
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         device=SimpleNamespace(id="phone-01"),
         telemetry_export=TelemetryExportConfig(
             enabled=True,
@@ -476,7 +488,7 @@ def _sms_webhook_posture_config(
     host: str,
     signature_mode: str = "token_only",
     allowed_source_cidrs: list[str] | None = None,
-) -> SimpleNamespace:
+) -> Any:
     return SimpleNamespace(
         actions=SimpleNamespace(
             sms={
@@ -526,7 +538,7 @@ def test_sms_webhook_security_posture_accepts_public_signed_allowlisted(caplog):
 def test_build_gateway_message_auth_accepts_previous_env_secret(monkeypatch):
     monkeypatch.setenv("GATEWAY_SHARED_SECRET", "current-secret")
     monkeypatch.setenv("GATEWAY_PREVIOUS_SHARED_SECRET", "previous-secret")
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         gateway=GatewayConfig(
             enabled=True,
             broker_url="mqtt://broker.local",
@@ -570,7 +582,7 @@ def test_build_gateway_message_auth_accepts_previous_env_secret(monkeypatch):
 
 def test_build_gateway_message_auth_rejects_missing_env_secret(monkeypatch):
     monkeypatch.delenv("GATEWAY_SHARED_SECRET", raising=False)
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         gateway=GatewayConfig(
             enabled=True,
             broker_url="mqtt://broker.local",
@@ -594,7 +606,7 @@ def test_build_gateway_message_auth_rejects_missing_env_secret(monkeypatch):
 def test_build_gateway_message_auth_redacts_previous_env_secret(monkeypatch, caplog):
     monkeypatch.setenv("GATEWAY_SHARED_SECRET", "current-secret")
     monkeypatch.delenv("GATEWAY_PREVIOUS_SHARED_SECRET", raising=False)
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         gateway=GatewayConfig(
             enabled=True,
             broker_url="mqtt://broker.local",
@@ -621,7 +633,7 @@ def test_build_gateway_message_auth_redacts_previous_env_secret(monkeypatch, cap
 def test_build_remote_command_verifier_passes_previous_env_secret(monkeypatch):
     monkeypatch.setenv("ORI_REMOTE_COMMAND_HMAC_SECRET", "current-secret")
     monkeypatch.setenv("ORI_REMOTE_COMMAND_PREVIOUS_HMAC_SECRET", "previous-secret")
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         device=SimpleNamespace(id="dev-01"),
         security={
             "remote_commands": {
@@ -642,7 +654,7 @@ def test_build_remote_command_verifier_passes_previous_env_secret(monkeypatch):
 
 def test_build_gateway_message_encryptor_uses_gateway_secret(monkeypatch):
     monkeypatch.setenv("GATEWAY_SHARED_SECRET", "site-local-secret")
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         gateway=GatewayConfig(
             enabled=True,
             broker_url="mqtt://broker.local",
@@ -661,7 +673,7 @@ def test_build_gateway_message_encryptor_uses_gateway_secret(monkeypatch):
 
 def test_build_gateway_message_encryptor_rejects_missing_env_secret(monkeypatch):
     monkeypatch.delenv("GATEWAY_SHARED_SECRET", raising=False)
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         gateway=GatewayConfig(
             enabled=True,
             broker_url="mqtt://broker.local",
@@ -682,7 +694,7 @@ def test_build_gateway_message_encryptor_rejects_missing_env_secret(monkeypatch)
 
 
 def test_build_gateway_message_encryptor_requires_auth_enabled():
-    config = SimpleNamespace(
+    config: Any = SimpleNamespace(
         gateway=GatewayConfig(
             enabled=True,
             broker_url="mqtt://broker.local",
@@ -714,7 +726,7 @@ async def _stop_and_join(runtime, start_task: asyncio.Task) -> None:
 @pytest.mark.asyncio
 async def test_a_failed_sensor_connect_does_not_take_the_runtime_down(
     minimal_config, monkeypatch
-):
+) -> Any:
     """A sensor that cannot connect is skipped; the runtime keeps running.
 
     This is the boundary a hardened refusal was briefly placed at, and the
@@ -805,9 +817,11 @@ async def test_a_sensor_that_never_connects_reaches_the_operator(
 
     sent: list[dict] = []
 
-    async def _send(self, *, message, to_number, preferred_channel=None, **kwargs):
-        sent.append({"message": message, "to_number": to_number})
-        return True
+    async def _send(self, *, alert, to_number, preferred_channel=None, **kwargs):
+        sent.append({"message": alert.sms_body, "to_number": to_number})
+        return AlertSendReceipt.accepted_without_provider_receipt(
+            channel=preferred_channel or "sms"
+        )
 
     monkeypatch.setattr(AlertFailoverSender, "send", _send)
 
@@ -900,9 +914,11 @@ async def test_a_failed_connect_reaches_the_pair_that_depends_on_it(
 
     sent: list[str] = []
 
-    async def _send(self, *, message, to_number, preferred_channel=None, **kwargs):
-        sent.append(message)
-        return True
+    async def _send(self, *, alert, to_number, preferred_channel=None, **kwargs):
+        sent.append(alert.sms_body)
+        return AlertSendReceipt.accepted_without_provider_receipt(
+            channel=preferred_channel or "sms"
+        )
 
     monkeypatch.setattr(AlertFailoverSender, "send", _send)
 
@@ -1167,6 +1183,427 @@ def minimal_config(tmp_path: Path) -> Path:
     return cfg
 
 
+@pytest.mark.asyncio
+async def test_the_runtime_opens_the_store_beside_its_config(tmp_path, monkeypatch):
+    """The runtime and the commissioning bridge must open the same store.
+
+    A relative path is what every generated configuration declares, so a
+    runtime resolving it against its working directory would build its durable
+    state somewhere the ceremony commands do not read.
+    """
+    _patch_external(monkeypatch)
+    home = tmp_path / "data"
+    (home / "skills").mkdir(parents=True)
+    (home / "ori.yaml").write_text(
+        textwrap.dedent(f"""\
+            device:
+              id: test-device-01
+              name: Test Device
+              location: Test Lab
+            sensors:
+              - id: cpu-sensor
+                type: cpu_percent
+                protocol: psutil
+                poll_interval_ms: 100
+            skills: []
+            reasoning:
+              default_tier: rule
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+              relay:
+                enabled: false
+            skills_dir: {str(home / "skills")}
+            database:
+              path: ori_state.db
+        """),
+        encoding="utf-8",
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    runtime = OriRuntime(config_path=str(home / "ori.yaml"))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not (home / "ori_state.db").exists():
+            if start_task.done():
+                break
+            await asyncio.sleep(0.05)
+        assert (home / "ori_state.db").exists(), (
+            "the runtime never opened a store beside its configuration: "
+            f"{start_task.exception() if start_task.done() else ''}"
+        )
+        assert not (elsewhere / "ori_state.db").exists()
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+async def test_a_relative_skills_dir_survives_a_runtime_working_directory(
+    tmp_path, monkeypatch
+):
+    """Skills that vanish take their triggers with them.
+
+    The unit points the working directory at a runtime directory systemd
+    empties on every stop, so a relative skills_dir resolved there would find
+    nothing and report a healthy runtime with no coverage.
+    """
+    _patch_external(monkeypatch)
+    home = tmp_path / "data"
+    skill_dir = home / "skills" / "test-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "skill.yaml").write_text(
+        textwrap.dedent("""\
+            name: test-skill
+            version: 0.1.0
+            author: test
+            sensors_required:
+              - type: cpu_percent
+            triggers:
+              - name: high_cpu
+                condition: "value > 90"
+                action_tier: A
+                cooldown_seconds: 0
+                escalate_to: rule
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                high_cpu: [alert_whatsapp]
+        """),
+        encoding="utf-8",
+    )
+    (home / "ori.yaml").write_text(
+        textwrap.dedent("""\
+            device:
+              id: test-device-01
+              name: Test Device
+              location: Test Lab
+            sensors:
+              - id: cpu-sensor
+                type: cpu_percent
+                protocol: psutil
+                poll_interval_ms: 100
+            skills:
+              - name: test-skill
+                version: "0.1.0"
+                config: {}
+            reasoning:
+              default_tier: rule
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+              relay:
+                enabled: false
+            skills_dir: skills
+            database:
+              path: ori_state.db
+        """),
+        encoding="utf-8",
+    )
+    elsewhere = tmp_path / "runtime-dir"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    runtime = OriRuntime(config_path=str(home / "ori.yaml"))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and runtime._skills_dir is None:
+            if start_task.done():
+                break
+            await asyncio.sleep(0.05)
+        # The directory the loader was handed, taken from the running runtime
+        # rather than from the parsed configuration, because the seam that
+        # broke is between the two.
+        skills_dir = runtime._skills_dir
+        assert skills_dir is not None, (
+            "the runtime never resolved a skills directory: "
+            f"{start_task.exception() if start_task.done() else ''}"
+        )
+        assert skills_dir == str(home / "skills")
+        assert Path(skills_dir).is_dir()
+        assert (Path(skills_dir) / "test-skill" / "skill.yaml").is_file()
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+async def test_startup_refuses_a_dotenv_loaded_before_a_hardened_document(
+    tmp_path, monkeypatch
+):
+    """The autoload decides before the document that settles it can be read.
+
+    A document can declare development, be replaced, and load as hardened; or
+    it can declare a posture that only expansion resolves. Either way the trust
+    was widened before the answer existed, so startup confirms it afterwards
+    rather than assuming the earlier answer held.
+    """
+    _patch_external(monkeypatch)
+    home = tmp_path / "data"
+    home.mkdir()
+    (home / "ori.yaml").write_text(
+        textwrap.dedent("""\
+            device:
+              id: test-device-01
+              name: Test Device
+              location: Test Lab
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: rule
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+        """),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "ori.runtime.requires_production_posture", lambda **_kwargs: True
+    )
+
+    runtime = OriRuntime(
+        config_path=str(home / "ori.yaml"), dotenv_variables=frozenset()
+    )
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        # Bounded: a startup that does not refuse runs its loop forever, and an
+        # unbounded await would hang rather than report the missing refusal.
+        with pytest.raises(ConfigValidationError, match="ORI_AUTOLOAD_DOTENV"):
+            await asyncio.wait_for(start_task, timeout=10.0)
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+async def test_startup_accepts_a_dotenv_under_a_document_that_stays_development(
+    tmp_path, monkeypatch
+):
+    """The confirmation must not refuse the deployments the toggle is for."""
+    _patch_external(monkeypatch)
+    home = tmp_path / "data"
+    home.mkdir()
+    (home / "ori.yaml").write_text(
+        textwrap.dedent("""\
+            device:
+              id: test-device-01
+              name: Test Device
+              location: Test Lab
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: rule
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+        """),
+        encoding="utf-8",
+    )
+    runtime = OriRuntime(
+        config_path=str(home / "ori.yaml"), dotenv_variables=frozenset()
+    )
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and runtime._config is None:
+            if start_task.done():
+                break
+            await asyncio.sleep(0.05)
+        assert runtime._config is not None, (
+            "startup refused a development document: "
+            f"{start_task.exception() if start_task.done() else ''}"
+        )
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+async def test_a_hardened_document_without_a_dotenv_still_starts(tmp_path, monkeypatch):
+    """The confirmation is about the .env, not about being hardened.
+
+    Refusing every hardened startup would make the check a posture gate, which
+    is not what it is for.
+    """
+    _patch_external(monkeypatch)
+    home = tmp_path / "data"
+    home.mkdir()
+    (home / "ori.yaml").write_text(
+        textwrap.dedent("""\
+            device:
+              id: test-device-01
+              name: Test Device
+              location: Test Lab
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: rule
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+        """),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "ori.runtime.requires_production_posture", lambda **_kwargs: True
+    )
+
+    runtime = OriRuntime(config_path=str(home / "ori.yaml"), dotenv_variables=None)
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and runtime._config is None:
+            if start_task.done():
+                break
+            await asyncio.sleep(0.05)
+        assert runtime._config is not None, (
+            "startup refused a hardened document that loaded no .env: "
+            f"{start_task.exception() if start_task.done() else ''}"
+        )
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+async def test_startup_reads_the_documents_placeholders_and_escapes_its_banner(
+    tmp_path, monkeypatch, caplog
+):
+    """Two things startup owes the report, neither provable from a snapshot.
+
+    The placeholder scan is what tells the config-authority report whether a
+    loaded `.env` decided anything, so a startup that never populates it makes
+    every such report conservative for the wrong reason. And the banner prints
+    three configuration-supplied names, each of which reaches an operator's
+    terminal through whatever `${VAR}` expanded into it.
+    """
+    _patch_external(monkeypatch)
+    monkeypatch.setenv("ORI_BANNER_SITE", "Ikeja\x1b[2K")
+    home = tmp_path / "data"
+    home.mkdir()
+    (home / "ori.yaml").write_text(
+        textwrap.dedent("""\
+            device:
+              id: test-device-01
+              name: Test Device
+              location: "${ORI_BANNER_SITE}"
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: rule
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+            database:
+              path: ori_state.db
+        """),
+        encoding="utf-8",
+    )
+
+    runtime = OriRuntime(config_path=str(home / "ori.yaml"))
+    with caplog.at_level("INFO"):
+        start_task = asyncio.create_task(runtime.start())
+        try:
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and runtime._config is None:
+                if start_task.done():
+                    break
+                await asyncio.sleep(0.05)
+            assert runtime._config is not None
+        finally:
+            await _stop_and_join(runtime, start_task)
+
+    assert runtime._config_env_placeholders == frozenset({"ORI_BANNER_SITE"})
+    banner = [
+        record.getMessage()
+        for record in caplog.records
+        if "config loaded" in record.getMessage()
+    ]
+    assert banner, "startup did not log the banner this test is about"
+    assert "\x1b" not in banner[0]
+    assert "\\x1b[2K" in banner[0]
+
+
+def test_main_carries_the_autoload_result_into_the_runtime(monkeypatch):
+    """The confirmation is only reachable if the entry point wires it through.
+
+    A default of False on the constructor means a caller that forgets it gets
+    a runtime that never confirms, and nothing else would say so.
+    """
+    from ori import runtime as runtime_module
+
+    captured: dict[str, object] = {}
+
+    class _Runtime:
+        def __init__(
+            self,
+            config_path: str,
+            *,
+            dotenv_variables: frozenset[str] | None = None,
+        ) -> None:
+            captured["config_path"] = config_path
+            captured["dotenv_variables"] = dotenv_variables
+
+        async def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(runtime_module, "OriRuntime", _Runtime)
+    monkeypatch.setattr(
+        runtime_module, "_maybe_autoload_dotenv", lambda _path: frozenset({"SEEN"})
+    )
+    monkeypatch.setattr(sys, "argv", ["ori-runtime", "--config", "/tmp/ori.yaml"])
+
+    runtime_module.main()
+
+    assert captured == {
+        "config_path": "/tmp/ori.yaml",
+        "dotenv_variables": frozenset({"SEEN"}),
+    }
+
+
 def _patch_external(monkeypatch):
     """Patch all external I/O so tests run without hardware or credentials."""
     monkeypatch.setattr(
@@ -1177,7 +1614,14 @@ def _patch_external(monkeypatch):
             )
         ),
     )
-    monkeypatch.setattr("ori.actions.sms.SMSAction.send", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "ori.actions.sms.SMSAction.submit",
+        AsyncMock(
+            return_value=AlertSendReceipt.accepted_without_provider_receipt(
+                channel="sms"
+            )
+        ),
+    )
 
 
 def _treat_scratch_skills_as_packaged(monkeypatch):
@@ -1451,7 +1895,7 @@ class TestLocalSLMWiring:
     def test_build_local_llm_returns_none_when_model_missing(self, tmp_path: Path):
         cfg_path = tmp_path / "ori.yaml"
         cfg_path.write_text("device: {}\n", encoding="utf-8")
-        reasoning_cfg = SimpleNamespace(
+        reasoning_cfg: Any = SimpleNamespace(
             local_model="missing-model",
             model_path=str(tmp_path / "models"),
             local_context_window=2048,
@@ -1470,7 +1914,7 @@ class TestLocalSLMWiring:
 
         cfg_path = tmp_path / "ori.yaml"
         cfg_path.write_text("device: {}\n", encoding="utf-8")
-        reasoning_cfg = SimpleNamespace(
+        reasoning_cfg: Any = SimpleNamespace(
             local_model="qwen2.5-0.5b-instruct-q4_k_m",
             model_path=str(model_dir),
             local_context_window=4096,
@@ -1527,7 +1971,7 @@ class TestLocalSLMWiring:
         assert captured["gateway_reasoner"] is None
 
     def test_build_gateway_reasoner_returns_none_when_gateway_disabled(self):
-        cfg = SimpleNamespace(
+        cfg: Any = SimpleNamespace(
             gateway=SimpleNamespace(enabled=False, broker_url="", reasoning={}),
             device=SimpleNamespace(id="test-device-01"),
         )
@@ -1554,7 +1998,7 @@ class TestLocalSLMWiring:
                 captured["message_auth"] = message_auth
 
         monkeypatch.setattr("ori.runtime.MqttGatewayReasoner", _FakeGatewayReasoner)
-        cfg = SimpleNamespace(
+        cfg: Any = SimpleNamespace(
             gateway=SimpleNamespace(
                 enabled=True,
                 broker_url="mqtt://broker.local:1884",
@@ -1576,7 +2020,7 @@ class TestLocalSLMWiring:
         }
 
     def test_build_runtime_node_heartbeat_returns_none_when_gateway_disabled(self):
-        cfg = SimpleNamespace(
+        cfg: Any = SimpleNamespace(
             gateway=SimpleNamespace(
                 enabled=False,
                 broker_url="",
@@ -1588,7 +2032,7 @@ class TestLocalSLMWiring:
         assert _build_runtime_node_heartbeat_publisher(cfg, lambda: {}) is None
 
     def test_build_runtime_node_heartbeat_returns_none_when_disabled(self):
-        cfg = SimpleNamespace(
+        cfg: Any = SimpleNamespace(
             gateway=SimpleNamespace(
                 enabled=True,
                 broker_url="mqtt://broker.local",
@@ -1627,7 +2071,7 @@ class TestLocalSLMWiring:
         def provider():
             return {"status": "healthy"}
 
-        cfg = SimpleNamespace(
+        cfg: Any = SimpleNamespace(
             gateway=SimpleNamespace(
                 enabled=True,
                 broker_url="mqtt://broker.local:1884",
@@ -1687,6 +2131,179 @@ class TestDotenvAutoload:
 
         _maybe_autoload_dotenv(str(cfg))
         assert os.environ.get("ORI_AUTOLOAD_SMOKE") == "already_set"
+
+    def test_a_dotenv_in_the_working_directory_is_ignored(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The unit works in a runtime directory systemd empties on every stop.
+
+        These values are expanded into the configuration the runtime then
+        trusts, so a file found beside the process rather than beside the
+        configuration is not this installation's environment.
+        """
+        home = tmp_path / "data"
+        home.mkdir()
+        cfg = home / "ori.yaml"
+        cfg.write_text("device: {}\n", encoding="utf-8")
+        elsewhere = tmp_path / "runtime-dir"
+        elsewhere.mkdir()
+        (elsewhere / ".env").write_text(
+            "ORI_AUTOLOAD_SMOKE=from_the_working_directory\n", encoding="utf-8"
+        )
+
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        monkeypatch.delenv("ORI_AUTOLOAD_SMOKE", raising=False)
+        monkeypatch.chdir(elsewhere)
+
+        _maybe_autoload_dotenv(str(cfg))
+
+        assert os.environ.get("ORI_AUTOLOAD_SMOKE") is None
+
+    @pytest.mark.parametrize(
+        "posture",
+        [
+            "  deployment_profile: production\n",
+            "  deployment_profile: staging\n",
+        ],
+    )
+    def test_a_hardened_document_refuses_the_autoload(
+        self, posture: str, tmp_path: Path, monkeypatch
+    ):
+        """A signature covers the document before the values are substituted.
+
+        A file the service can write would otherwise decide what a signed
+        `${VAR}` field holds, and the signature would still verify.
+        """
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text("device:\n" + posture, encoding="utf-8")
+        (tmp_path / ".env").write_text(
+            "ORI_AUTOLOAD_SMOKE=from_dotenv\n", encoding="utf-8"
+        )
+
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        monkeypatch.delenv("ORI_AUTOLOAD_SMOKE", raising=False)
+
+        _maybe_autoload_dotenv(str(cfg))
+
+        assert os.environ.get("ORI_AUTOLOAD_SMOKE") is None
+
+    def test_an_opted_in_development_document_refuses_it_too(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """`enforce_production_posture` is how a development box opts in."""
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text(
+            "device:\n  deployment_profile: development\n"
+            "security:\n  enforce_production_posture: true\n",
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text(
+            "ORI_AUTOLOAD_SMOKE=from_dotenv\n", encoding="utf-8"
+        )
+
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        monkeypatch.delenv("ORI_AUTOLOAD_SMOKE", raising=False)
+
+        _maybe_autoload_dotenv(str(cfg))
+
+        assert os.environ.get("ORI_AUTOLOAD_SMOKE") is None
+
+    def test_a_document_that_is_not_a_mapping_refuses_it(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """It parses, so nothing raises, and it still declares no posture."""
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text("- not\n- a mapping\n", encoding="utf-8")
+        (tmp_path / ".env").write_text(
+            "ORI_AUTOLOAD_SMOKE=from_dotenv\n", encoding="utf-8"
+        )
+
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        monkeypatch.delenv("ORI_AUTOLOAD_SMOKE", raising=False)
+
+        _maybe_autoload_dotenv(str(cfg))
+
+        assert os.environ.get("ORI_AUTOLOAD_SMOKE") is None
+
+    def test_a_document_that_cannot_be_read_refuses_it(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """An unreadable answer is not a reason to widen what is trusted."""
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text("device: [not, a, mapping\n", encoding="utf-8")
+        (tmp_path / ".env").write_text(
+            "ORI_AUTOLOAD_SMOKE=from_dotenv\n", encoding="utf-8"
+        )
+
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        monkeypatch.delenv("ORI_AUTOLOAD_SMOKE", raising=False)
+
+        _maybe_autoload_dotenv(str(cfg))
+
+        assert os.environ.get("ORI_AUTOLOAD_SMOKE") is None
+
+    def test_an_expanded_posture_field_refuses_the_autoload(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Read unexpanded, `${ORI_POSTURE}` is neither staging nor production.
+
+        It would answer no to the question it decides, and the `.env` would
+        then be what supplies production.
+        """
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text(
+            "device:\n  deployment_profile: ${ORI_POSTURE}\n", encoding="utf-8"
+        )
+        (tmp_path / ".env").write_text(
+            "ORI_AUTOLOAD_SMOKE=from_dotenv\nORI_POSTURE=production\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        monkeypatch.delenv("ORI_AUTOLOAD_SMOKE", raising=False)
+
+        _maybe_autoload_dotenv(str(cfg))
+
+        assert os.environ.get("ORI_AUTOLOAD_SMOKE") is None
+
+    def test_an_expanded_enforcement_flag_refuses_the_autoload(
+        self, tmp_path: Path, monkeypatch
+    ):
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text(
+            "device:\n  deployment_profile: development\n"
+            "security:\n  enforce_production_posture: ${ORI_ENFORCE}\n",
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text(
+            "ORI_AUTOLOAD_SMOKE=from_dotenv\n", encoding="utf-8"
+        )
+
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        monkeypatch.delenv("ORI_AUTOLOAD_SMOKE", raising=False)
+
+        _maybe_autoload_dotenv(str(cfg))
+
+        assert os.environ.get("ORI_AUTOLOAD_SMOKE") is None
+
+    def test_a_development_document_still_loads_it(self, tmp_path: Path, monkeypatch):
+        """The refusals must not have made the toggle useless."""
+        cfg = tmp_path / "ori.yaml"
+        cfg.write_text("device:\n  deployment_profile: development\n", encoding="utf-8")
+        (tmp_path / ".env").write_text(
+            "ORI_AUTOLOAD_SMOKE=from_dotenv\n", encoding="utf-8"
+        )
+
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        monkeypatch.delenv("ORI_AUTOLOAD_SMOKE", raising=False)
+
+        # What it returns is what the file introduced, not that it existed:
+        # `override=False` decides nothing the environment already carried.
+        assert _maybe_autoload_dotenv(str(cfg)) == frozenset({"ORI_AUTOLOAD_SMOKE"})
+        assert os.environ.get("ORI_AUTOLOAD_SMOKE") == "from_dotenv"
+        # The return value is what startup confirms against the posture the
+        # document turns out to declare; nothing is left in the environment.
+        assert "_ORI_DOTENV_AUTOLOADED" not in os.environ
 
 
 class TestAdapterProtocol:
@@ -2078,6 +2695,7 @@ class TestSkillReload:
 
             assert runtime._event_bus is not None
             loader = runtime._skill_loader
+            assert loader is not None
             expected = len(runtime._skill_subscriptions)
             assert expected == 64, f"expected 8 x 8 handlers, got {expected}"
 
@@ -2195,7 +2813,7 @@ class TestShutdown:
     async def test_shutdown_drains_tier_d_tasks(self, minimal_config, monkeypatch):
         """Runtime must await dispatcher-tracked Tier D tasks before shutdown."""
         _patch_external(monkeypatch)
-        runtime = OriRuntime(config_path=str(minimal_config))
+        runtime: Any = OriRuntime(config_path=str(minimal_config))
         completed: list[bool] = []
 
         async def _tier_d_work():
@@ -2303,10 +2921,12 @@ class TestSensorPolling:
             async def read(self, sensor_id: str) -> SensorReading:
                 raise AssertionError("read() should not be called")
 
+        _nevercalledadapter: Any = _NeverCalledAdapter
+
         bus = AsyncMock()
-        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        sensor_cfg: Any = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
         with caplog.at_level(logging.ERROR):
-            await runtime._poll_sensor(_NeverCalledAdapter(), sensor_cfg, bus, "dev-01")
+            await runtime._poll_sensor(_nevercalledadapter(), sensor_cfg, bus, "dev-01")
         assert "state_store unavailable for sensor poll task" in caplog.text
 
     async def test_sensor_read_error_does_not_crash_runtime(
@@ -2390,9 +3010,9 @@ class TestSensorPolling:
                     f"I2CAdapter: refused a current window on '{sensor_id}': clipped"
                 )
 
-        sensor_cfg = SimpleNamespace(id="load-current", poll_interval_ms=1)
+        sensor_cfg: Any = SimpleNamespace(id="load-current", poll_interval_ms=1)
         await runtime._poll_sensor(
-            _RefusingAdapter(), sensor_cfg, AsyncMock(), "dev-01"
+            cast(Any, _RefusingAdapter()), sensor_cfg, AsyncMock(), "dev-01"
         )
 
         assert "load-current" in runtime._measurement_degraded
@@ -2457,9 +3077,9 @@ class TestSensorPolling:
                     runtime._shutdown_event.set()
                 raise MeasurementRefusedError("refused a current window: clipped")
 
-        sensor_cfg = SimpleNamespace(id="load-current", poll_interval_ms=1)
+        sensor_cfg: Any = SimpleNamespace(id="load-current", poll_interval_ms=1)
         await runtime._poll_sensor(
-            _RefusingAdapter(), sensor_cfg, AsyncMock(), "dev-01"
+            cast(Any, _RefusingAdapter()), sensor_cfg, AsyncMock(), "dev-01"
         )
 
         assert await store.get_measurement_degradation() == {"load-current": False}
@@ -2500,10 +3120,10 @@ class TestSensorPolling:
                     runtime._shutdown_event.set()
                 raise MeasurementRefusedError("refused a current window: clipped")
 
-        sensor_cfg = SimpleNamespace(id="load-current", poll_interval_ms=1)
+        sensor_cfg: Any = SimpleNamespace(id="load-current", poll_interval_ms=1)
         # Must return normally rather than propagating the store failure.
         await runtime._poll_sensor(
-            _RefusingAdapter(), sensor_cfg, AsyncMock(), "dev-01"
+            cast(Any, _RefusingAdapter()), sensor_cfg, AsyncMock(), "dev-01"
         )
         assert attempts >= MEASUREMENT_REFUSALS_BEFORE_DEGRADED + 2, (
             "polling stopped when persistence failed"
@@ -2579,8 +3199,10 @@ class TestSensorPolling:
                     runtime._shutdown_event.set()
                 raise AdapterReadError("I2CAdapter: bus read failed")
 
-        sensor_cfg = SimpleNamespace(id="load-current", poll_interval_ms=1)
-        await runtime._poll_sensor(_FailingAdapter(), sensor_cfg, AsyncMock(), "dev-01")
+        _failingadapter: Any = _FailingAdapter
+
+        sensor_cfg: Any = SimpleNamespace(id="load-current", poll_interval_ms=1)
+        await runtime._poll_sensor(_failingadapter(), sensor_cfg, AsyncMock(), "dev-01")
 
         assert runtime._measurement_degraded == set()
         assert runtime._measurement_refusals == {}
@@ -2606,8 +3228,10 @@ class TestSensorPolling:
                 return reading
 
         bus = AsyncMock()
-        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
-        await runtime._poll_sensor(_OneShotAdapter(), sensor_cfg, bus, "dev-01")
+        sensor_cfg: Any = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        await runtime._poll_sensor(
+            cast(Any, _OneShotAdapter()), sensor_cfg, bus, "dev-01"
+        )
 
         event = bus.publish.call_args.args[0]
         assert isinstance(event.fingerprint, str)
@@ -2634,13 +3258,13 @@ class TestSensorPolling:
                 return reading
 
         bus = AsyncMock()
-        sensor_cfg = SimpleNamespace(
+        sensor_cfg: Any = SimpleNamespace(
             id="cpu-sensor",
             poll_interval_ms=1,
             calibration={"min_value": 0.0, "max_value": 100.0},
         )
         await runtime._poll_sensor(
-            _OneShotAdapter(),
+            cast(Any, _OneShotAdapter()),
             sensor_cfg,
             bus,
             "dev-01",
@@ -2664,7 +3288,7 @@ class TestSensorPolling:
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = AsyncMock()
         bus = AsyncMock()
-        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        sensor_cfg: Any = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
 
         async def _run_once(reading: SensorReading) -> OriEvent:
             runtime._shutdown_event = asyncio.Event()
@@ -2674,7 +3298,9 @@ class TestSensorPolling:
                     runtime._shutdown_event.set()
                     return reading
 
-            await runtime._poll_sensor(_OneShotAdapter(), sensor_cfg, bus, "dev-01")
+            await runtime._poll_sensor(
+                cast(Any, _OneShotAdapter()), sensor_cfg, bus, "dev-01"
+            )
             return bus.publish.call_args.args[0]
 
         first = await _run_once(
@@ -2722,13 +3348,13 @@ class TestSensorPolling:
         )
 
         runtime._send_or_queue_alert.assert_awaited_once()
-        kwargs = runtime._send_or_queue_alert.await_args.kwargs
+        kwargs = runtime._send_or_queue_alert.await_args.kwargs  # type: ignore[union-attr]
         assert kwargs["trigger_name"] == "sensor_stale_warning"
         assert kwargs["channel"] == "sms"
         assert "sensor-x" in kwargs["message"]
 
     async def test_deduplicator_suppresses_identical_readings_within_5_seconds(self):
-        runtime = OriRuntime(config_path="ori.yaml")
+        runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._shutdown_event = asyncio.Event()
 
         class _Store:
@@ -2759,7 +3385,7 @@ class TestSensorPolling:
 
         runtime._state_store = _Store()
         bus = _Bus()
-        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        sensor_cfg: Any = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
         readings = [
             SensorReading(
                 sensor_id="cpu-sensor",
@@ -2794,7 +3420,7 @@ class TestSensorPolling:
         assert len(runtime._state_store.events) == 2
 
     async def test_deduplicator_allows_identical_readings_after_6_seconds(self):
-        runtime = OriRuntime(config_path="ori.yaml")
+        runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._shutdown_event = asyncio.Event()
 
         class _Store:
@@ -2825,7 +3451,7 @@ class TestSensorPolling:
 
         runtime._state_store = _Store()
         bus = _Bus()
-        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        sensor_cfg: Any = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
         readings = [
             SensorReading(
                 sensor_id="cpu-sensor",
@@ -2919,7 +3545,7 @@ class TestSensorPolling:
                 return reading
 
         bus = _Bus()
-        sensor_cfg = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
+        sensor_cfg: Any = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
         readings = [
             SensorReading(
                 sensor_id="cpu-sensor",
@@ -2944,9 +3570,9 @@ class TestSensorPolling:
         try:
             with patch("ori.network.deduplicator.now_ms", side_effect=[1_000, 2_000]):
                 await runtime._poll_sensor(
-                    _SequenceAdapter(readings),
+                    cast(Any, _SequenceAdapter(readings)),
                     sensor_cfg,
-                    bus,
+                    cast(Any, bus),
                     "dev-01",
                     EventDeduplicator(),
                 )
@@ -2969,6 +3595,8 @@ class TestCompactionLoop:
             def cleanup(self) -> None:
                 cleanup_calls["count"] += 1
 
+        _dedup: Any = _Dedup
+
         async def _compact(*_args, **_kwargs) -> None:
             runtime._shutdown_event.set()
 
@@ -2984,7 +3612,7 @@ class TestCompactionLoop:
             "ori.runtime.asyncio.wait_for",
             new=AsyncMock(side_effect=_fake_wait_for),
         ):
-            await runtime._compaction_loop(_Dedup())
+            await runtime._compaction_loop(_dedup())
 
         runtime._state_store.compact_history.assert_awaited_once_with(
             max_backward_skew_ms=3600000
@@ -3439,6 +4067,43 @@ class TestWebhookServerStartup:
         cls.assert_not_called()
 
 
+def _ed25519_keypair():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private_key = Ed25519PrivateKey.generate()
+    public_key_b64 = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    ).decode("ascii")
+    return private_key, public_key_b64
+
+
+def _sign_config_yaml(content: str, private_key) -> str:
+    """A signed document, as the provisioning backend produces one."""
+    import yaml
+
+    from ori.security.config_signatures import (
+        CONFIG_SIGNATURE_SCHEMA,
+        canonical_config_signature_payload,
+    )
+
+    raw = yaml.safe_load(textwrap.dedent(content))
+    raw["config_signature"] = {
+        "schema": CONFIG_SIGNATURE_SCHEMA,
+        "signer_id": "product-provisioning-test",
+        "signed_at_ms": 1_800_000_000_000,
+        "signature": "ed25519:",
+    }
+    signature = private_key.sign(canonical_config_signature_payload(raw))
+    raw["config_signature"]["signature"] = "ed25519:" + base64.b64encode(
+        signature
+    ).decode("ascii")
+    return yaml.safe_dump(raw, sort_keys=False)
+
+
 class TestAlertOutbox:
     async def test_send_or_queue_alert_queues_when_send_fails(self, tmp_path):
         runtime = OriRuntime(config_path="ori.yaml")
@@ -3517,7 +4182,7 @@ class TestAlertOutbox:
             await runtime._state_store.close()
 
     async def test_send_or_queue_alert_never_caps_tier_d(self, tmp_path):
-        runtime = OriRuntime(config_path="ori.yaml")
+        runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "alert-cap-tier-d.db"))
         await runtime._state_store.open()
         dispatcher = ActionDispatcher()
@@ -3557,7 +4222,7 @@ class TestAlertOutbox:
     async def test_send_or_queue_alert_ignores_alert_count_persistence_failure(
         self, tmp_path
     ):
-        runtime = OriRuntime(config_path="ori.yaml")
+        runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "alert-count-failure.db"))
         await runtime._state_store.open()
         dispatcher = ActionDispatcher()
@@ -3598,7 +4263,7 @@ class TestAlertOutbox:
             await runtime._state_store.close()
 
     async def test_remote_command_incident_emits_tier_a_alert(self, tmp_path):
-        runtime = OriRuntime(config_path="ori.yaml")
+        runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "remote-lockout.db"))
         await runtime._state_store.open()
         runtime._primary_alert_channel = "sms"
@@ -3629,7 +4294,7 @@ class TestAlertOutbox:
             await runtime._handle_remote_command_incident(decision)
 
             runtime._send_or_queue_alert.assert_awaited_once()
-            kwargs = runtime._send_or_queue_alert.await_args.kwargs
+            kwargs = runtime._send_or_queue_alert.await_args.kwargs  # type: ignore[union-attr]
             assert kwargs["channel"] == "sms"
             assert kwargs["recipient"] == "+2340000000000"
             assert kwargs["action_tier"] == "A"
@@ -3645,7 +4310,7 @@ class TestAlertOutbox:
     async def test_load_remote_command_lockout_state_from_persisted_incidents(
         self, tmp_path, monkeypatch
     ):
-        runtime = OriRuntime(config_path="ori.yaml")
+        runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "remote-lockout-load.db"))
         await runtime._state_store.open()
         now = 1_780_000_000_000
@@ -3688,7 +4353,7 @@ class TestAlertOutbox:
             await runtime._state_store.close()
 
     def _bare_health_runtime(self, tmp_path) -> OriRuntime:
-        runtime = OriRuntime(config_path="ori.yaml")
+        runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._device_id = "dev-01"
         runtime._config = SimpleNamespace(
             gateway=SimpleNamespace(enabled=False, broker_url="", broker_posture={}),
@@ -3698,8 +4363,295 @@ class TestAlertOutbox:
                 )
             ),
             database_path=str(tmp_path / "ori_state.db"),
+            security={},
         )
         return runtime
+
+    async def test_health_snapshot_reports_community_skills_the_anchor_dropped(
+        self, tmp_path
+    ):
+        """A device running none of its community skills is not healthy.
+
+        Authority failed closed, so this is degraded rather than critical —
+        but the only signal before this was a log line, and a fleet view
+        reading `status` saw nothing wrong.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._skill_loader = SimpleNamespace(
+            community_admission=lambda: CommunitySkillAdmission(
+                anchor_usable=False,
+                anchor_fault="the anchor is published test material",
+                refused_skills=2,
+            )
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["community_skills"] == {
+            "available": True,
+            "anchor_usable": False,
+            "anchor_fault": "the anchor is published test material",
+            "refused_skills": 2,
+        }
+        assert snapshot["status"] == "degraded"
+
+    async def test_an_unusable_anchor_alone_does_not_degrade_a_device(self, tmp_path):
+        """The shipped anchor is unconfigured, so every device carries one.
+
+        Degrading on the anchor rather than on what it dropped would report
+        the whole fleet as unhealthy for a capability it is not using.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._skill_loader = SimpleNamespace(
+            community_admission=lambda: CommunitySkillAdmission(
+                anchor_usable=False,
+                anchor_fault="community skill verification trust anchor is not configured",
+                refused_skills=0,
+            )
+        )
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["community_skills"]["anchor_usable"] is False
+        assert snapshot.get("status") != "degraded"
+
+    async def test_health_snapshot_reports_a_dotenv_that_supplied_signed_fields(
+        self, tmp_path
+    ):
+        """A signature covers the document before expansion.
+
+        With a `.env` supplying what `${VAR}` fields expanded to, it verifies
+        and says nothing about the values the runtime is running on. Hardened
+        posture refuses the autoload; a development deployment that asked for
+        a signature keeps running and is told.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._dotenv_variables = frozenset({"SEEN"})
+        runtime._config_env_placeholders = frozenset({"SEEN"})
+        runtime._config.security = {
+            "config_signature": {"required": True, "verified": True}
+        }
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["config_authority"] == {
+            "available": True,
+            "signature_required": True,
+            "signature_verified": True,
+            "dotenv_loaded": True,
+            "unsigned_value_source": True,
+        }
+        assert snapshot["status"] == "degraded"
+
+    async def test_a_dotenv_that_supplied_nothing_the_document_names_is_not_a_source(
+        self, tmp_path
+    ):
+        """The file's existence is not a supplied value.
+
+        `load_dotenv` runs with `override=False` and a document that names
+        none of the variables it introduced expands identically with or
+        without it. Degrading there is a device reported unhealthy with
+        nothing wrong, which is the failure the count rule avoids on the
+        other half of this report.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._dotenv_variables = frozenset({"UNRELATED"})
+        runtime._config_env_placeholders = frozenset({"OWNER_PHONE_NUMBER"})
+        runtime._config.security = {
+            "config_signature": {"required": True, "verified": True}
+        }
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["config_authority"]["dotenv_loaded"] is True
+        assert snapshot["config_authority"]["unsigned_value_source"] is False
+        assert snapshot.get("status") != "degraded"
+
+    async def test_an_unread_document_leaves_a_loaded_dotenv_assumed_to_decide(
+        self, tmp_path
+    ):
+        """Unknown is not none.
+
+        Until the document has been read there is nothing to intersect, and a
+        report must not clear a loaded file on the strength of not yet knowing
+        what the document asks for.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._dotenv_variables = frozenset({"ANYTHING"})
+        runtime._config_env_placeholders = None
+        runtime._config.security = {
+            "config_signature": {"required": True, "verified": True}
+        }
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["config_authority"]["unsigned_value_source"] is True
+        assert snapshot["status"] == "degraded"
+
+    async def test_a_dotenv_alone_does_not_degrade_an_unsigned_deployment(
+        self, tmp_path
+    ):
+        """Undermining a signature requires there to be one.
+
+        A development device that signs nothing is using the toggle exactly as
+        documented, and degrading on it would make the report unreadable where
+        it matters.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._dotenv_variables = frozenset({"SEEN"})
+        runtime._config_env_placeholders = frozenset({"SEEN"})
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["config_authority"]["dotenv_loaded"] is True
+        assert snapshot["config_authority"]["unsigned_value_source"] is False
+        assert snapshot.get("status") != "degraded"
+
+    async def test_a_signature_present_but_not_required_still_counts(self, tmp_path):
+        """A signature is verified whenever one is present, required or not.
+
+        A deployment that signs its configuration has stated what decides its
+        values, whether or not it also demands one.
+        """
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        runtime._dotenv_variables = frozenset({"SEEN"})
+        runtime._config_env_placeholders = frozenset({"SEEN"})
+        runtime._config.security = {
+            "config_signature": {"required": False, "verified": True}
+        }
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["config_authority"]["unsigned_value_source"] is True
+        assert snapshot["status"] == "degraded"
+
+    async def test_neither_authority_report_claims_an_answer_before_it_has_one(
+        self, tmp_path
+    ):
+        """A snapshot taken before startup finished reports what it knows.
+
+        `signature_required: false` read off a document nobody has parsed is a
+        claim, and an unusable anchor with no fault to name is one a consumer
+        would try to act on.
+        """
+        runtime: Any = OriRuntime(config_path="ori.yaml")
+        runtime._device_id = "dev-01"
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["community_skills"]["available"] is False
+        assert snapshot["config_authority"]["available"] is False
+        assert snapshot.get("status") != "degraded"
+
+    async def test_the_community_report_is_joined_to_a_real_skill_loader(
+        self, tmp_path
+    ):
+        """The stubs above agree with the loader by construction, not by proof.
+
+        This drives the real `SkillLoader` over a real community skill so a
+        rename on either side of `community_admission()` fails here rather
+        than reaching a device as a report that never populates.
+        """
+        skills_dir = tmp_path / "skills" / "community-one"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "skill.yaml").write_text(
+            textwrap.dedent(
+                """
+                name: community-one
+                version: 0.1.0
+                author: community
+                signature: ed25519:AAAA
+                sensors_required:
+                  - type: usb_power
+                triggers:
+                  - name: warm
+                    condition: value > 1
+                    action_tier: A
+                actions:
+                  available:
+                    - name: log_to_dashboard
+                      tier: A
+                  defaults:
+                    warm: [log_to_dashboard]
+                """
+            ),
+            encoding="utf-8",
+        )
+        runtime: Any = self._bare_health_runtime(tmp_path)
+        loader = SkillLoader()
+        loader.load_all(str(tmp_path / "skills"))
+        runtime._skill_loader = loader
+
+        snapshot = await runtime._build_health_snapshot()
+
+        assert snapshot["community_skills"]["available"] is True
+        assert snapshot["community_skills"]["refused_skills"] == 1
+        assert snapshot["community_skills"]["anchor_usable"] is False
+        assert snapshot["status"] == "degraded"
+
+    @pytest.mark.parametrize(
+        ("location", "expected"),
+        [
+            ("${ORI_JOIN_SITE}", True),
+            ("Lagos", False),
+        ],
+    )
+    async def test_the_config_authority_report_is_joined_end_to_end(
+        self, tmp_path, monkeypatch, location, expected
+    ):
+        """The real autoload, the real loader, and the real placeholder scan.
+
+        A signed development document is the reachable case — a signature
+        present in a document is verified whether or not one is required. Both
+        rows use the same `.env`; only the document changes, so what is being
+        proven is that the report follows whether the file decided a value and
+        not whether the file exists.
+        """
+        private_key, public_key_b64 = _ed25519_keypair()
+        monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
+        monkeypatch.setenv("ORI_AUTOLOAD_DOTENV", "true")
+        config_path = tmp_path / "ori.yaml"
+        config_path.write_text(
+            _sign_config_yaml(
+                f"""
+                device:
+                  id: dev-01
+                  name: Test
+                  location: "{location}"
+                  deployment_profile: development
+                sensors: []
+                skills: []
+                reasoning: {{}}
+                gateway: {{}}
+                actions:
+                  primary_alert_channel: sms
+                  sms:
+                    enabled: false
+                """,
+                private_key,
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text("ORI_JOIN_SITE=Ikeja\n", encoding="utf-8")
+
+        os.environ.pop("ORI_JOIN_SITE", None)
+        try:
+            supplied = _maybe_autoload_dotenv(str(config_path))
+            runtime: Any = self._bare_health_runtime(tmp_path)
+            runtime._dotenv_variables = supplied
+            runtime._config = Config.load(str(config_path))
+            runtime._config_env_placeholders = config_env_placeholders(str(config_path))
+
+            snapshot = await runtime._build_health_snapshot()
+        finally:
+            os.environ.pop("ORI_JOIN_SITE", None)
+
+        assert supplied == frozenset({"ORI_JOIN_SITE"})
+        assert snapshot["config_authority"]["signature_verified"] is True
+        assert snapshot["config_authority"]["signature_required"] is False
+        assert snapshot["config_authority"]["dotenv_loaded"] is True
+        assert snapshot["config_authority"]["unsigned_value_source"] is expected
+        assert (snapshot.get("status") == "degraded") is expected
 
     async def test_health_snapshot_omits_safety_zones_without_a_registry(
         self, tmp_path
@@ -3707,7 +4659,7 @@ class TestAlertOutbox:
         """`runtime-health/v2` types the field as an array and reads absence
         as unknown, so a device with no registry must omit the key rather than
         carry a null a consumer would iterate."""
-        runtime = self._bare_health_runtime(tmp_path)
+        runtime: Any = self._bare_health_runtime(tmp_path)
 
         snapshot = await runtime._build_health_snapshot()
 
@@ -3719,7 +4671,7 @@ class TestAlertOutbox:
         """An empty array is a device with no eligible pair, which is not the
         same statement as absence. The pairs themselves are produced and
         proven in `tests/safety/test_registry.py`; this is the wiring."""
-        runtime = self._bare_health_runtime(tmp_path)
+        runtime: Any = self._bare_health_runtime(tmp_path)
         runtime._safety_registry = SimpleNamespace(
             health_snapshot=lambda: {},
             safety_zones=lambda: [],
@@ -3745,7 +4697,7 @@ class TestAlertOutbox:
         undertaken to protect is not being protected — and commissioning
         problems already degrade for the same class of fact one step earlier.
         """
-        runtime = self._bare_health_runtime(tmp_path)
+        runtime: Any = self._bare_health_runtime(tmp_path)
         runtime._safety_registry = SimpleNamespace(
             health_snapshot=lambda: {},
             safety_zones=lambda: [self._zone("active", "unprotected")],
@@ -3759,7 +4711,7 @@ class TestAlertOutbox:
         assert snapshot.get("critical") is not True
 
     async def test_an_active_protected_pair_leaves_the_snapshot_healthy(self, tmp_path):
-        runtime = self._bare_health_runtime(tmp_path)
+        runtime: Any = self._bare_health_runtime(tmp_path)
         runtime._safety_registry = SimpleNamespace(
             health_snapshot=lambda: {},
             safety_zones=lambda: [self._zone("active", "protected")],
@@ -3783,7 +4735,7 @@ class TestAlertOutbox:
         Degrading on those would leave every device carrying a candidate
         profile permanently degraded — which is every device today.
         """
-        runtime = self._bare_health_runtime(tmp_path)
+        runtime: Any = self._bare_health_runtime(tmp_path)
         runtime._safety_registry = SimpleNamespace(
             health_snapshot=lambda: {},
             safety_zones=lambda: [self._zone(activation, "unprotected")],
@@ -3798,7 +4750,7 @@ class TestAlertOutbox:
     ):
         encrypted_dir = tmp_path / "encrypted"
         encrypted_dir.mkdir()
-        runtime = OriRuntime(config_path="ori.yaml")
+        runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._device_id = "dev-01"
         database_path = encrypted_dir / "ori_state.db"
         runtime._config = SimpleNamespace(
@@ -3815,6 +4767,7 @@ class TestAlertOutbox:
                 )
             ),
             database_path=str(database_path),
+            security={},
         )
 
         snapshot = await runtime._build_health_snapshot()
@@ -3830,7 +4783,7 @@ class TestAlertOutbox:
         assert str(encrypted_dir) not in json.dumps(posture)
 
     async def test_health_snapshot_reports_gateway_broker_posture(self):
-        runtime = OriRuntime(config_path="ori.yaml")
+        runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._device_id = "dev-01"
         runtime._config = SimpleNamespace(
             gateway=SimpleNamespace(
@@ -3851,6 +4804,7 @@ class TestAlertOutbox:
                 )
             ),
             database_path="ori_state.db",
+            security={},
         )
 
         snapshot = await runtime._build_health_snapshot()
@@ -3875,7 +4829,7 @@ class TestAlertOutbox:
             ):
                 raise RuntimeError("incident query failed")
 
-        runtime = OriRuntime(config_path="ori.yaml")
+        runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._state_store = _FailingIncidentStore()
         runtime._remote_command_lockout_states["sms:+2348012345678"] = {
             "channel": "sms",
@@ -3902,7 +4856,7 @@ class TestAlertOutbox:
         now = 1_780_000_000_000
         monkeypatch.setattr("ori.runtime.now_ms", lambda: now)
         store = _CapturingIncidentStore()
-        runtime = OriRuntime(config_path="ori.yaml")
+        runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._state_store = store
         runtime._remote_command_lockout_config = {
             "risk_window_ms": 120_000,
@@ -3976,7 +4930,7 @@ class TestRemoteDevicePolicy:
             "ori.runtime.fetch_remote_device_policy_bundle", _fake_fetch
         )
 
-        cfg = SimpleNamespace(
+        cfg: Any = SimpleNamespace(
             device=SimpleNamespace(id="dev-01"),
             device_policy={
                 "enabled": True,
@@ -4018,7 +4972,7 @@ class TestRemoteDevicePolicy:
             "ori.runtime.fetch_remote_device_policy_bundle", _fake_fetch
         )
 
-        cfg = SimpleNamespace(
+        cfg: Any = SimpleNamespace(
             device=SimpleNamespace(id="dev-02"),
             device_policy={
                 "enabled": True,
@@ -4073,7 +5027,7 @@ class TestRemoteDevicePolicy:
             signature=str(payload["signature"]),
             raw_payload=raw_payload,
         )
-        cfg = SimpleNamespace(
+        cfg: Any = SimpleNamespace(
             device=SimpleNamespace(id="dev-cache-01"),
             device_policy={"public_key_b64": public_key_b64},
         )
@@ -4109,7 +5063,7 @@ class TestRemoteDevicePolicy:
             signature=str(payload["signature"]),
             raw_payload=raw_payload,
         )
-        cfg = SimpleNamespace(
+        cfg: Any = SimpleNamespace(
             device=SimpleNamespace(id="dev-cache-02"),
             device_policy={"public_key_b64": wrong_public_key_b64},
         )
@@ -4169,7 +5123,7 @@ class TestRemoteDevicePolicy:
             "ori.runtime.fetch_remote_device_policy_bundle",
             _fake_fetch,
         )
-        cfg = SimpleNamespace(
+        cfg: Any = SimpleNamespace(
             device=SimpleNamespace(id="dev-refresh-01"),
             device_policy={
                 "enabled": True,
@@ -4215,7 +5169,7 @@ class TestRemoteDevicePolicy:
             "ori.runtime.fetch_remote_device_policy_bundle",
             _fake_fetch,
         )
-        cfg = SimpleNamespace(
+        cfg: Any = SimpleNamespace(
             device=SimpleNamespace(id="dev-refresh-02"),
             device_policy={
                 "enabled": True,

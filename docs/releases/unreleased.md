@@ -82,3 +82,239 @@ candidate or release is cut.
   not driven and registers no relay action. Every logged physical action
   records the `binding_seq` in force, and health reports the actuator's coil
   state and last command.
+
+- The release-owned safety registry is wired and reports per-pair protection
+  posture on the health surface. Release-shipped profiles activate from
+  commissioned zones, and each conjunct of a protection claim is checked where
+  the claim is made rather than inferred from an earlier check. Every shipped
+  profile remains a candidate, so no zone is bound to an active runtime-owned
+  pair on any real device yet.
+- A measurement loss that does not resolve escalates rather than being reported
+  once. The transition notice is followed by a reminder to the primary contact
+  at six hours and the secondary at twelve, then daily, on the existing audited
+  outbox. It is Tier A throughout, carries no physical authority, and has no
+  give-up condition: a still-unprotected channel must not become permanently
+  silent. Escalation tells a person a channel is unprotected; it never restores
+  protection, and no message says otherwise.
+- An alert a customer has switched off is withheld, and the suppression is
+  recorded in `action_log` as `suppressed` so it is distinguishable from a
+  delivery that failed.
+
+## Changed
+
+- `SIGTERM` and `SIGINT` are ordered against startup rather than racing it, so a
+  stop signal arriving mid-start is honoured at a checkpoint instead of leaving
+  a half-initialised runtime.
+- A signed configuration binds what it means and bounds how it is read: a
+  hostile document is refused rather than raising out of the loader, a repeated
+  key is refused, and a document nested past the recursion limit cannot stop the
+  runtime.
+- A relative `database.path` resolves against the directory holding the
+  configuration that declared it, rather than against the working directory of
+  whatever process loaded it. Every generated configuration declares
+  `ori_state.db` relative, so the runtime, the commissioning bridge and the
+  production encrypted-storage check previously each answered according to
+  where they were started: a ceremony command run from outside the data
+  directory reported that the device held no state store while the store and
+  its binding sat intact beside the configuration, and the requirement that
+  `database.path` live under `state.encryption.encrypted_path_prefixes` could
+  be satisfied or defeated by standing in the right directory. An installed
+  deployment is unaffected, because its unit sets `WorkingDirectory` to the
+  data directory that holds its configuration. A deployment that relied on the
+  working directory to select its store, or to satisfy that posture check, now
+  resolves and is judged against the configuration instead. Where a store
+  exists only where the working directory would have found one, config load
+  reports both paths, since opening the resolved store creates it and the
+  device would otherwise come up on an empty one while its commissioned
+  binding sits in the other. That is reported and not refused: a file of that
+  name in the working directory is a coincidence as often as it is the
+  device's store. An absolute `database.path` is taken exactly as declared,
+  and `:memory:` names no file so it is not resolved.
+- `state action-log` and `state history` take `--path` and read the store the
+  named installation declares. They previously opened `ori_state.db` beside the
+  caller and read no configuration at all, so they could not reach a deployment
+  that declared any other `database.path`, and a read in a directory with no
+  store created an empty one and reported an empty action log — a device that
+  appeared to have taken no actions rather than a lookup that went elsewhere.
+  An absent store is now refused and named, and a refusal distinguishes a store
+  that is missing from a path that is not a file.
+- Installer and doctor output no longer prints a filesystem name raw. A
+  refusal is produced when something about a path is already wrong, which is
+  when an operator reads most carefully and distrusts least, and the name in it
+  is not always one they chose: a walk over a path's parents reports whichever
+  component failed, and a directory listing reports whatever it found. An
+  escape sequence that erases the line it is printed on, a newline that forges
+  a second diagnostic, a carriage return that overwrites the first and a bidi
+  mark that reverses the rest all now arrive escaped.
+- An error `detail` stays one message rather than becoming two. It is prose
+  for an operator, not a machine-readable path field, so the path in it is
+  escaped in the JSON form too; a consumer recovering a path by parsing that
+  sentence was never reliable, which is the mistake `offending_path` made.
+- A remedy is quoted for a shell rather than escaped for a terminal, because it
+  is a command an operator copies and runs. A path containing a newline would
+  otherwise have ended that command and run what followed as the next one. The
+  path stays a single argument.
+- A configuration error names its path escaped as well. The loader wrote
+  `'{path}'`, which looks quoted and is not escaped, and `ori config validate`
+  appends that message to a line of its own, so escaping only the outer line
+  left the name it reports untouched. The same treatment reaches the config
+  installer, the firmware provisioner, the inverter profile doctor and the
+  phone doctor's report header.
+- `ori doctor` reports the offending release path whole. The machine-readable
+  `offending_path` was recovered by splitting the human sentence on its first
+  space, so any release path containing one was reported truncated.
+- The service works in a runtime directory of its own rather than in the
+  directory it keeps state in. A GPIO library creates its notification pipe in
+  the working directory and never removes it, and the install root admits
+  regular files only, so a device that had driven GPIO refused its own
+  reinstall with `special files are forbidden` and no indication of what had
+  been found or where. systemd creates the runtime directory and removes it
+  when the service stops, so an artefact any library leaves there is gone by
+  the time an installer looks, whichever library and whichever platform. A
+  refusal now names the offending path and its file type, so a device carrying
+  one from an earlier release says which file to remove rather than sending an
+  operator looking. That refusal is also what keeps a pipe from stalling an
+  install indefinitely: the permission walk opens each file it plans to change,
+  and opening a pipe waits for a writer that never comes, so it opens
+  non-blocking and checks what it opened. Both halves are needed. An inode
+  number is reused immediately after `unlink` on the filesystems these installs
+  run on, so a regular file the walk validated and a pipe that replaced it
+  carry the same number, and only the file type says anything changed.
+- A device endpoint must name an absolute path, or a URL where its transport
+  can open one. `sensors[*].port` on `protocol: serial` and
+  `actions.sms.gsm.port` are opened with `Serial()`, which takes a port name,
+  so neither accepts a URL; `sensors[*].device_path` on `protocol: usb_serial`
+  is handed to `serial_for_url` and still accepts `socket://` and the other
+  forms that reaches. `sensors[*].device` on `protocol: smart` reaches
+  `smartctl` as an argument, so it must be absolute too, which also keeps a
+  value beginning with `-` from arriving there as an option. A device path is not anchored to the configuration the
+  way a data file is, because it names a node the host owns rather than a file
+  beside the document; left relative it would follow the working directory,
+  which is now a runtime directory systemd empties on every stop. This is a
+  deliberate compatibility change, not the tightening of something that could
+  never have worked: a relative name does reach a device through a symlink in
+  the working directory, and a deployment doing that must now name the device
+  absolutely. The refusal happens at config load and names the field, rather
+  than surfacing as a failed read later.
+- `ORI_AUTOLOAD_DOTENV` is refused under staging or production posture, and
+  under a development deployment that has opted into hardened posture. A
+  configuration signature covers the document before `${VAR}` fields are
+  expanded, so a `.env` in the data directory the service can write would
+  decide what a signed field holds while the signature still verified. A
+  hardened deployment's environment belongs in the unit's `EnvironmentFile`,
+  which the service cannot write. The posture is read from the document
+  directly, since the decision has to be made before the configuration that
+  would answer it is loaded, and a document that cannot be read is treated as
+  hardened. A posture field that is itself expanded is treated as hardened too:
+  unexpanded it says nothing about the posture, while what it expands to is
+  exactly what is being decided. Startup then confirms that decision against
+  the posture the loaded document declares, and refuses when a `.env` was
+  loaded before a document that turns out to be hardened.
+- `ORI_AUTOLOAD_DOTENV` otherwise reads a `.env` beside the configuration only.
+  It also read one beside the process, which the unit now points at a runtime directory
+  systemd empties on every stop; those values are expanded into the
+  configuration the runtime then trusts, so a file found next to the process is
+  not this installation's environment. A development workflow that ran
+  `--config /elsewhere/ori.yaml` while relying on a `.env` in the current
+  directory must move that file beside the configuration or export the
+  variables; an installed service is unaffected, since its unit reads
+  `EnvironmentFile`.
+- `health_socket.path`, `reasoning.model_path` and the `gateway.tls` material
+  resolve against the directory holding the configuration when declared
+  relative, as the store, log, evidence and skills paths do. A socket bound in
+  the working directory would be unreachable at the path an operator was told
+  to use, and TLS material resolved there would not be found at all. The
+  firmware provisioning socket and CA paths already had to be absolute when
+  that section is enabled, and still do.
+- `logging.file`, `evidence.db_path` and `evidence.key_path` resolve against
+  the directory holding the configuration, as `database.path` and the skills
+  directory already do. The evidence key is sealed on first use, so a runtime
+  reading one configuration from two working directories would seal two device
+  identities for one device.
+- `SECURITY.md` names Raspberry Pi OS Trixie as the production-supported Pi
+  platform and Bookworm as a published bundle that is not a certified target,
+  which is what `docs/linux-install.md` and the capability matrix already said.
+  The installer now recognises Trixie, so `detect_platform` no longer returns
+  nothing on the platform the matrix certifies.
+
+## Fixed
+
+- Telemetry stops exporting to an endpoint that has refused this device. A
+  terminal refusal is classified narrowly — status, media type, absent
+  authentication challenge and an exact detail — so a captive portal or proxy
+  cannot suspend a device permanently, and the condition is observable through
+  its own counter without touching the health verdict.
+- The ADS1115 path measures what it claims: the channel is selected and verified
+  before every measurement, the window is certified at both ends, every sample
+  is pointered, a chip whose configuration changed under the runtime is
+  quarantined, and the adapter survives a driver reporting an unusable platform
+  instead of crashing on an import that raises something other than ImportError.
+- The adapter lifecycle is serialised so a close cannot straddle a connect, and
+  the contract sits on `BaseAdapter` rather than being restated per adapter.
+- The installer stages the Blinka platform library beside the pin factory, so a
+  Pi resolves its GPIO factory from inside the release tree.
+- The bootstrap keeps stdout for the installer's document, so `--json` is a
+  single JSON document rather than prose interleaved with it.
+- `ori doctor` no longer reports USB readiness for a deployment that declares no
+  USB.
+- A device whose community trust anchor can verify nothing no longer reports
+  healthy while every community skill it was configured with silently fails to
+  load. The anchor is a property of the deployment rather than of the skill
+  being read when it is noticed, so it is answered once before any skill
+  directory is opened, and every way it can fail is decided there rather than
+  only the two shapes that had a guard of their own. Health carries
+  `community_skills`, `skills list` carries `community_anchor`, and the
+  refusals are reported once against the anchor instead of once per skill under
+  an identical detail. Reporting and attribution are separate: an anchor that is
+  a well-formed key but not the Hub's cannot be blamed, because its refusal is a
+  signature failure indistinguishable from a tampered manifest, but the count of
+  community skills the device failed to admit carries it either way. **A device carrying any non-first-party skill directory
+  will now report `degraded`** where it previously reported healthy, since the
+  anchor a build ships with is unconfigured; no skill's admission changes,
+  because none was being admitted.
+- A `.env` loaded through `ORI_AUTOLOAD_DOTENV` beside a signed configuration is
+  reported. The signature covers the document before expansion, so the file
+  decides the effective value of a signed field without invalidating it.
+  Staging and production refuse the autoload outright; a development deployment
+  carrying a signature keeps running and reports `config_authority`, whose
+  `unsigned_value_source` degrades the device while it holds. Both halves are
+  measured: the autoload reports which variables it actually introduced, since
+  `override=False` decides nothing the environment already carried, and the
+  document is scanned for the variables its values name, so a `.env` the
+  document never references is not reported as having supplied anything.
+- Filesystem and configuration names in the runtime's log output are escaped
+  rather than handed to a terminal to act on. A skill directory holds whatever
+  was put in it, and a configuration scalar carries whatever `${VAR}` expanded
+  into it, so neither is necessarily a name an operator chose.
+
+## Security
+
+- A trust anchor whose private key this repository publishes is refused, at
+  every deployment profile. This repository commits Ed25519 seeds as test
+  material, and three verification paths across two trust boundaries accepted a
+  public key derived from one: the commissioning anchor, loaded independently
+  at runtime startup and by `commissioning deliver`, and the
+  configuration-signature trust anchor. A device configured with such a key
+  accepted documents signed by anyone holding a clone — a commissioned binding
+  claiming both proof legs, which licenses actuation through the commissioned
+  seam, or a signed configuration carrying `device.rated_capacity_amps`, the
+  input that scales the Tier D trip point. The refusal covers the verify-only
+  previous commissioning slot, and `provisioning_anchor` reads such a key as
+  absent. A device carrying one now refuses to start rather than starting on a
+  forgeable authority, which is upgrade-breaking and costs detection as well as
+  actuation; rotate to a key that has never left the producer. No installer,
+  document or example ever configured one. Coordinated as
+  `GHSA-rv38-92xc-7xq8`.
+
+- The same refusal covers every other boundary that treats a key as authority.
+  `verify_signed_payload` is the shared verifier for community skills, offline
+  Tier C approval tokens and device policy, so one check covers all three and a
+  later caller inherits it. The skill loader refuses the same material again at
+  admission, where it can name whether the anchor came from the constructor or
+  the environment.
+- A firmware signing seed this repository publishes is refused where one is
+  read: the environment loader every runtime consumer uses, and `read_seed` in
+  the provisioning CLI, which signs approvals without going through that loader.
+  Those boundaries receive the private half, so the public key is derived and
+  checked against the same list rather than a second one being kept in step. A
+  seed whose key cannot be derived is refused rather than trusted.

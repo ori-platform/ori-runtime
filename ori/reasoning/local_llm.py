@@ -7,6 +7,7 @@ import os
 import re
 
 from ori.network.events import ReasoningResult
+from ori.utils.path_utils import shown
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -143,8 +144,8 @@ class LocalLLM:
             if self._llm is not None:
                 return
             logger.info(
-                "LocalLLM: loading model '%s' (n_ctx=%d) …",
-                self._model_path,
+                "LocalLLM: loading model %s (n_ctx=%d) …",
+                shown(self._model_path),
                 self._context_window,
             )
             self._llm = await asyncio.to_thread(self._load_model)

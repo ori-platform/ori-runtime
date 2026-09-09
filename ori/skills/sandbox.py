@@ -38,6 +38,18 @@ class SkillSecurityError(Exception):
     """Raised when a hooks file violates security constraints."""
 
 
+class SkillAnchorError(SkillSecurityError):
+    """Raised when the deployment cannot verify any community skill.
+
+    The community trust anchor belongs to the deployment, not to a skill, so
+    an unusable one refuses every community skill for a reason none of them
+    caused. It subclasses :class:`SkillSecurityError` so every handler that
+    already fails closed on a security refusal keeps doing so; the subclass
+    only lets a caller attribute the refusal to the anchor instead of
+    reporting one misconfiguration once per skill.
+    """
+
+
 def load_hooks_restricted(hooks_path: str) -> NoReturn:
     """Refuse to execute *hooks_path* in the runtime interpreter.
 

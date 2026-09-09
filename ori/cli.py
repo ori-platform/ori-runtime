@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import IO, Any, Sequence
 
 from ori.utils import terminal
+from ori.utils.path_utils import shown
 
 
 def _version() -> str:
@@ -373,7 +374,8 @@ def _resolve(args: argparse.Namespace) -> tuple[Any, str] | int:
         # code did not anticipate, and a diagnostic command must report it
         # rather than end in a traceback.
         print(
-            f"ori: could not inspect the installation ({exc.filename or exc}): "
+            f"ori: could not inspect the installation "
+            f"({shown(exc.filename) if exc.filename else exc}): "
             f"{exc.strerror or exc}. Pass --scope user or --scope system "
             "explicitly.",
             file=sys.stderr,
@@ -420,7 +422,9 @@ def _run_config_validate(args: argparse.Namespace) -> int:
     stream = _out(args)
     if status == 0:
         _emit(
-            args, payload, terminal.success(f"Config is valid: {path}", stream=stream)
+            args,
+            payload,
+            terminal.success(f"Config is valid: {shown(path)}", stream=stream),
         )
         return EXIT_OK
     detail = payload.get("error", {})
@@ -428,7 +432,7 @@ def _run_config_validate(args: argparse.Namespace) -> int:
     _emit(
         args,
         payload,
-        terminal.failure(f"Config is not valid: {path}", stream=stream)
+        terminal.failure(f"Config is not valid: {shown(path)}", stream=stream)
         + f"\n  {message}",
     )
     return EXIT_FAILED

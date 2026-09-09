@@ -31,6 +31,7 @@ from ori.security.commissioning.binding import (
     verify_binding_envelope,
 )
 from ori.security.commissioning.profiles import ProfileSet
+from ori.utils.path_utils import shown
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -390,7 +391,7 @@ async def load_commissioning_state(
         state.last_verdict = Verdict("parses", "malformed", None, now_ms())
         logger.warning(
             "[commissioning] %s is not a readable document; binding in force unchanged",
-            path,
+            shown(path),
         )
         return state
 
@@ -419,7 +420,7 @@ async def load_commissioning_state(
         )
         logger.warning(
             "[commissioning] binding at %s refused at %s: %s; binding in force unchanged",
-            path,
+            shown(path),
             refusal.stage,
             refusal.reason,
         )
@@ -437,7 +438,7 @@ async def load_commissioning_state(
         logger.exception(
             "[commissioning] binding at %s could not be verified; binding in force "
             "unchanged",
-            path,
+            shown(path),
         )
         return state
 

@@ -53,6 +53,9 @@ from ori.config import (
     Config,
     ConfigValidationError,
     SensorConfig,
+    anchor_to_config,
+    config_env_placeholders,
+    hardened_posture_declared,
     requires_production_posture,
 )
 from ori.firmware_mqtt_operator import (
@@ -95,13 +98,14 @@ from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading, compute_fingerprint
 from ori.network.sms_webhook import SMSWebhookServer
+from ori.policy.alert_classes import alert_class_for_trigger
 from ori.policy.remote_fetch import (
     RemotePolicyFetchError,
     device_policy_from_payload,
     fetch_remote_device_policy_bundle,
     fetch_remote_device_policy_bundle_by_reference,
 )
-from ori.reasoning.action_dispatcher import ActionDispatcher
+from ori.reasoning.action_dispatcher import ALERT_SUPPRESSED, ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
 from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfig
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
@@ -201,7 +205,7 @@ from ori.state.store import StateStore, TripJournal
 from ori.telemetry.http_export import HttpTelemetryExporter
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
-from ori.utils.path_utils import path_is_relative_to
+from ori.utils.path_utils import path_is_relative_to, shown
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -398,8 +402,22 @@ class OriRuntime:
             current working directory.
     """
 
-    def __init__(self, config_path: str = "ori.yaml") -> None:
+    def __init__(
+        self,
+        config_path: str = "ori.yaml",
+        *,
+        dotenv_variables: frozenset[str] | None = None,
+    ) -> None:
         self._config_path = config_path
+        #: What a `.env` autoloaded before this configuration could be read, or
+        #: ``None`` if none was. The decision had to be made first; startup
+        #: confirms it against the posture the document turns out to declare.
+        self._dotenv_variables = dotenv_variables
+        #: Which variables the document's values name, read once after it is
+        #: loaded. ``None`` until then, and read as unknown, because a report
+        #: cannot say a file supplied nothing while it does not know what the
+        #: document asks for.
+        self._config_env_placeholders: frozenset[str] | None = None
         self._config: Config | None = None
         self._shutdown_event: asyncio.Event = asyncio.Event()
         self._adapters: list[BaseAdapter] = []
@@ -455,6 +473,9 @@ class OriRuntime:
         self._firmware_command_service: FirmwareCommandService | None = None
         self._firmware_liveness_scheduler: FirmwareLivenessScheduler | None = None
         self._telemetry_exporter: HttpTelemetryExporter | None = None
+        # Startup and stop must not run at once; these order them.
+        self._startup_complete = False
+        self._stop_requested_during_startup = False
         self._evidence_attestor: FirstPartyEvidenceAttestor | None = None
         self._evidence_inbound_subscriber: MqttEvidenceInboundSubscriber | None = None
         self._evidence_outbound_publisher: MqttEvidenceOutboundPublisher | None = None
@@ -517,6 +538,7 @@ class OriRuntime:
             skills_dir = self._skills_dir or str(
                 Path(self._config_path).parent / "skills"
             )
+            skills_dir = anchor_to_config(skills_dir, self._config_path)
             loaded = self._skill_loader.load_all(skills_dir)
 
             # Safety-first fallback: do not replace a working handler graph
@@ -524,7 +546,7 @@ class OriRuntime:
             if not loaded and self._loaded_skills:
                 logger.warning(
                     "[runtime] skill reload found 0 valid skills in %s — keeping existing handlers",
-                    skills_dir,
+                    shown(skills_dir),
                 )
                 return False
 
@@ -566,7 +588,7 @@ class OriRuntime:
                 "[runtime] skills reloaded — skills=%d triggers=%d source=%s",
                 len(self._loaded_skills),
                 sum(len(s.triggers) for s in self._loaded_skills),
-                skills_dir,
+                shown(skills_dir),
             )
             return True
 
@@ -600,7 +622,20 @@ class OriRuntime:
         # ── Step A: Load and validate config ─────────────────────────────────
         try:
             config = Config.load(self._config_path)
+            # The autoload had to decide before this document could be read, so
+            # its answer is confirmed against the posture the document turns
+            # out to declare. This closes a document whose posture is itself
+            # expanded, and one replaced between the two reads.
+            if self._dotenv_variables is not None and requires_production_posture(
+                device=config.device, security=config.security
+            ):
+                raise ConfigValidationError(
+                    "a .env was loaded through ORI_AUTOLOAD_DOTENV before this "
+                    "configuration declared hardened posture; its values may "
+                    "have supplied signed fields. Use the unit's EnvironmentFile."
+                )
             _validate_required_runtime_capabilities(config, self._config_path)
+            self._config_env_placeholders = config_env_placeholders(self._config_path)
         except ConfigValidationError:
             logger.exception("[runtime] config validation failed — aborting")
             raise
@@ -660,9 +695,9 @@ class OriRuntime:
 
         logger.info(
             "[runtime] config loaded — device=%s location=%s deployment=%s",
-            config.device.id,
-            config.device.location,
-            config.device.deployment_type,
+            shown(config.device.id),
+            shown(config.device.location),
+            shown(config.device.deployment_type),
         )
         self._device_id = str(config.device.id)
         self._device_location = str(config.device.location or "site")
@@ -696,8 +731,7 @@ class OriRuntime:
             self._status_indicator = status_indicator
 
         # ── Step B: Open StateStore ───────────────────────────────────────────
-        db_path: str = config.raw.get("database", {}).get("path", "ori_state.db")
-        self._state_store = StateStore(db_path=db_path)
+        self._state_store = StateStore(db_path=config.database_path)
         await self._state_store.open()
         await self._load_remote_command_lockout_state()
 
@@ -1060,13 +1094,16 @@ class OriRuntime:
         await self._maybe_refresh_remote_device_policy_once(config, dispatcher)
 
         # alert_whatsapp executor
-        async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> bool:
+        async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> bool | str:
             msg = _message_from_context(ctx, action, channel="whatsapp")
             action_tier = _resolve_action_declared_tier(ctx, action)
             trigger_name = _resolve_trigger_name(ctx)
+            skill_name, first_party = _resolve_skill_identity(ctx)
             original_ts = _resolve_original_ts(ctx)
             return await self._send_or_queue_alert(
                 channel="whatsapp",
+                skill_name=skill_name,
+                skill_is_first_party=first_party,
                 message=msg,
                 recipient=_operator_contact,
                 action_tier=action_tier,
@@ -1078,13 +1115,16 @@ class OriRuntime:
         dispatcher.register_executor("alert_whatsapp", _exec_alert_whatsapp)
 
         # alert_sms executor
-        async def _exec_alert_sms(action: str, ctx: SkillContext) -> bool:
+        async def _exec_alert_sms(action: str, ctx: SkillContext) -> bool | str:
             msg = _message_from_context(ctx, action, channel="sms")
             action_tier = _resolve_action_declared_tier(ctx, action)
             trigger_name = _resolve_trigger_name(ctx)
+            skill_name, first_party = _resolve_skill_identity(ctx)
             original_ts = _resolve_original_ts(ctx)
             return await self._send_or_queue_alert(
                 channel="sms",
+                skill_name=skill_name,
+                skill_is_first_party=first_party,
                 message=msg,
                 recipient=_operator_contact,
                 action_tier=action_tier,
@@ -1260,9 +1300,18 @@ class OriRuntime:
         self._deduplicator = EventDeduplicator()
 
         # ── Step F: Load skills and register handlers ─────────────────────────
-        skills_dir: str = config.raw.get(
-            "skills_dir",
-            str(Path(self._config_path).parent / "skills"),
+        # A relative value would otherwise resolve against the working
+        # directory, which the unit points at a runtime directory systemd
+        # empties on every stop. Skills that vanish take their triggers with
+        # them, and a skill can carry Tier D coverage.
+        skills_dir: str = anchor_to_config(
+            str(
+                config.raw.get(
+                    "skills_dir",
+                    str(Path(self._config_path).parent / "skills"),
+                )
+            ),
+            self._config_path,
         )
         self._skills_dir = skills_dir
         skills_security = config.security.get("skills")
@@ -1301,11 +1350,14 @@ class OriRuntime:
         )
 
         # ── Register signal handlers ──────────────────────────────────────────
+        # Registered here rather than at the end of startup, because a device
+        # that cannot be stopped for the whole of startup is worse than one
+        # that stops untidily, and startup includes adapter connects that can
+        # block on hardware. What the handler does depends on how far startup
+        # has got: see `_request_stop`.
         loop = asyncio.get_running_loop()
-        loop.add_signal_handler(
-            signal.SIGTERM, lambda: asyncio.create_task(self.stop())
-        )
-        loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(self.stop()))
+        loop.add_signal_handler(signal.SIGTERM, self._request_stop)
+        loop.add_signal_handler(signal.SIGINT, self._request_stop)
         if hasattr(signal, "SIGHUP"):
             loop.add_signal_handler(
                 signal.SIGHUP, lambda: asyncio.create_task(self.reload_skills())
@@ -1505,6 +1557,9 @@ class OriRuntime:
                     name="status-signaling",
                 )
             )
+        if await self._stop_if_requested_during_startup():
+            return
+
         webhook_task = await self._start_sms_webhook_if_enabled(config)
         if webhook_task is not None:
             self._background_tasks.append(webhook_task)
@@ -1614,6 +1669,9 @@ class OriRuntime:
                     )
                 )
 
+        if await self._stop_if_requested_during_startup():
+            return
+
         await self._start_firmware_mqtt_operator_if_enabled(config)
 
         node_heartbeat = _build_runtime_node_heartbeat_publisher(
@@ -1628,6 +1686,9 @@ class OriRuntime:
                     name="runtime-node-heartbeat",
                 )
             )
+
+        if await self._stop_if_requested_during_startup():
+            return
 
         await self._start_health_socket_if_enabled(config)
 
@@ -1646,6 +1707,9 @@ class OriRuntime:
         if status_indicator is not None:
             status_indicator.set_runtime_state(RuntimeHealthState.NORMAL)
 
+        if await self._stop_if_requested_during_startup():
+            return
+
         await self._send_setup_success_notifications(config, alert_sender)
 
         # Block here until stop() sets the shutdown event
@@ -1655,7 +1719,71 @@ class OriRuntime:
                     self._safety_registry.run_retry_loop(self._shutdown_event)
                 )
             )
+        if await self._complete_startup():
+            await self.stop()
+            return
+
         await self._shutdown_event.wait()
+
+    async def _complete_startup(self) -> bool:
+        """Hand the stop signal from startup's checkpoints to the handler.
+
+        Returns True when a request arrived during startup and is this
+        caller's to honour.
+
+        The flag is raised before the request is read, so a signal landing
+        between the two is taken by the handler rather than falling into an
+        instant that neither path owns. Reading first and raising after would
+        leave exactly that gap, and a stop dropped there is a device that
+        ignores its operator once per boot.
+        """
+        self._startup_complete = True
+        return self._stop_requested_during_startup and not self._shutdown_event.is_set()
+
+    def _request_stop(self) -> None:
+        """Handle SIGTERM or SIGINT, deciding what the signal means right now.
+
+        After startup has finished, a signal stops the runtime, which is the
+        whole of its meaning. During startup it cannot: `stop()` closes the
+        state store, the adapters and every server, and startup is still
+        constructing and using them. Running the two concurrently is how a
+        resource is closed under a step that is mid-way through using it, and
+        the failure surfaces deep inside whichever step lost the race.
+
+        So during startup the request is recorded and startup unwinds at its
+        next checkpoint, which serialises the two rather than making `stop()`
+        defensive against every order they could interleave in.
+
+        A second signal is taken as an instruction rather than a repetition.
+        Startup can block in an adapter connect that never answers, which is
+        exactly when an operator sends the first signal and exactly when no
+        checkpoint is coming. An operator who has asked twice is left with a
+        way out, at the cost of the untidy teardown the first signal avoids.
+        """
+        if self._startup_complete or self._stop_requested_during_startup:
+            if not self._startup_complete:
+                logger.warning(
+                    "[runtime] second stop signal during startup; tearing down "
+                    "now without waiting for a checkpoint"
+                )
+            asyncio.create_task(self.stop())
+            return
+        self._stop_requested_during_startup = True
+        logger.info(
+            "[runtime] stop requested during startup; unwinding at the next "
+            "checkpoint. Signal again to tear down immediately."
+        )
+
+    async def _stop_if_requested_during_startup(self) -> bool:
+        """A startup checkpoint: stop here if a signal asked us to.
+
+        Returns True when the caller should abandon the rest of startup.
+        """
+        if not self._stop_requested_during_startup:
+            return False
+        logger.info("[runtime] startup interrupted by a stop request")
+        await self.stop()
+        return True
 
     async def stop(self) -> None:
         """Graceful shutdown. Called by SIGTERM/SIGINT signal handlers."""
@@ -2500,7 +2628,7 @@ class OriRuntime:
 
         self._health_socket_server = server
         self._health_socket_path = bound_path
-        logger.info("[runtime] health socket ready at %s", bound_path)
+        logger.info("[runtime] health socket ready at %s", shown(bound_path))
 
     async def _start_firmware_mqtt_operator_if_enabled(
         self,
@@ -2592,7 +2720,9 @@ class OriRuntime:
             raise
         self._firmware_mqtt_operator_server = server
         self._firmware_mqtt_operator_socket_path = bound_path
-        logger.info("[runtime] firmware MQTT operator service ready at %s", bound_path)
+        logger.info(
+            "[runtime] firmware MQTT operator service ready at %s", shown(bound_path)
+        )
 
     def _configure_alert_outbox(self, alert_outbox_cfg: dict[str, Any]) -> None:
         cfg = alert_outbox_cfg if isinstance(alert_outbox_cfg, dict) else {}
@@ -3018,6 +3148,9 @@ class OriRuntime:
                 }
             )
 
+        community_skills_health = self._community_skills_health()
+        config_authority_health = self._config_authority_health()
+
         safety_state: dict[str, Any] | None = (
             self._safety_registry.health_snapshot()
             if self._safety_registry is not None
@@ -3093,6 +3226,8 @@ class OriRuntime:
             },
             "evidence": await self._evidence_health(),
             "commissioning": self._commissioning_health(),
+            "community_skills": community_skills_health,
+            "config_authority": config_authority_health,
             "firmware_liveness": firmware_liveness_health,
             "telemetry_export": self._telemetry_export_health(),
         }
@@ -3117,6 +3252,25 @@ class OriRuntime:
             # `degradation_reasons` because that vocabulary is closed and
             # carries none for this (ori-platform/ori-specs#171); the sensor
             # itself reports `connected: false` in the meantime.
+            snapshot["status"] = "degraded"
+        if community_skills_health["refused_skills"]:
+            # An anchor the deployment cannot verify with drops every
+            # community skill on the device. Authority still failed closed, so
+            # this is degraded rather than critical — but a device running
+            # none of the skills it was configured with is not healthy, and
+            # until now the only signal was one log line per dropped skill.
+            #
+            # The count, not the anchor, is what degrades. The default anchor
+            # is unconfigured, so a device carrying only first-party skills
+            # would otherwise report degraded with nothing wrong.
+            snapshot["status"] = "degraded"
+        if config_authority_health["unsigned_value_source"]:
+            # A signature covers the document before expansion. When a .env
+            # supplied what `${VAR}` fields expanded to, the signature still
+            # verifies and says nothing about the values the runtime is
+            # actually running on. Hardened posture refuses the autoload
+            # outright; a development deployment that asked for a signature
+            # gets to keep running, and gets told.
             snapshot["status"] = "degraded"
         if getattr(self, "_evidence_posture_problems", ()):
             # Evidence trust not established is degraded, not critical: the
@@ -3168,6 +3322,73 @@ class OriRuntime:
             firmware_liveness_degraded=bool(firmware_liveness_health["degraded"]),
         )
         return snapshot
+
+    def _community_skills_health(self) -> dict[str, Any]:
+        """Whether community skills can be verified here, and what was dropped.
+
+        Reported from one load rather than answered live: pairing this load's
+        count with a later reading of the anchor would describe a state the
+        device was never in.
+        """
+        if self._skill_loader is None:
+            # Before skills are loaded there is no answer, and an unusable
+            # anchor with no fault to name is a contradiction a consumer would
+            # try to act on. `available` is how the rest of this snapshot says
+            # a subsystem has not reported yet.
+            return {
+                "available": False,
+                "anchor_usable": False,
+                "anchor_fault": None,
+                "refused_skills": 0,
+            }
+        admission = self._skill_loader.community_admission()
+        return {
+            "available": True,
+            "anchor_usable": admission.anchor_usable,
+            "anchor_fault": admission.anchor_fault,
+            "refused_skills": admission.refused_skills,
+        }
+
+    def _config_authority_health(self) -> dict[str, Any]:
+        """What decided the configuration values this runtime is running on.
+
+        ``unsigned_value_source`` is the fact worth acting on: a signature was
+        asked for, and a file outside what it covers supplied the values of
+        fields inside it.
+        """
+        signature: dict[str, Any] = {}
+        if self._config is not None:
+            candidate = self._config.security.get("config_signature")
+            if isinstance(candidate, dict):
+                signature = candidate
+        required = bool(signature.get("required", False))
+        verified = bool(signature.get("verified", False))
+        supplied = self._dotenv_variables
+        referenced = self._config_env_placeholders
+        # The file's existence is not a supplied value. `load_dotenv` runs with
+        # `override=False`, so it decides nothing the environment already
+        # carried, and a document naming no variable it supplied expands to the
+        # same values with or without it. Reporting on existence degraded a
+        # device whose `.env` changed nothing about what it was running.
+        #
+        # Unknown is not the same as none: until the document has been read
+        # there is nothing to intersect, and a file that was loaded is then
+        # assumed to have decided something.
+        decided = supplied is not None and (
+            referenced is None or bool(supplied & referenced)
+        )
+        return {
+            # Reporting "no signature required" from a document that has not
+            # been read yet is a claim, not a reading.
+            "available": self._config is not None,
+            "signature_required": required,
+            "signature_verified": verified,
+            "dotenv_loaded": supplied is not None,
+            # A .env on a deployment that signs nothing undermines no
+            # authority; it is the ordinary development convenience the toggle
+            # is documented as. What is reportable is the combination.
+            "unsigned_value_source": decided and (required or verified),
+        }
 
     def _firmware_liveness_health(self) -> dict[str, Any]:
         scheduler = self._firmware_liveness_scheduler
@@ -4330,18 +4551,48 @@ class OriRuntime:
         alert_sender: AlertFailoverSender,
         allow_failover: bool = True,
         outbound_alert: OutboundAlert | None = None,
-    ) -> bool:
+        skill_name: str = "",
+        skill_is_first_party: bool = False,
+    ) -> bool | str:
         """Durably record an alert, then attempt provider acceptance.
 
         Returns True if the provider accepted it or a durable retry obligation
-        exists. Provider acceptance is not handset delivery.
+        exists, False if neither holds, or `ALERT_SUPPRESSED` when a customer
+        preference withheld the notice. Suppression is deliberate non-action,
+        not a failed attempt. Provider acceptance is not handset delivery.
         """
-        alert_ts = now_ms()
-        self._last_alert_timestamps_by_channel[channel] = alert_ts
-        if trigger_name:
-            self._last_alert_timestamps_by_trigger[trigger_name] = alert_ts
+        if not self._policy_permits_alert_class(
+            skill_name,
+            trigger_name,
+            action_tier=action_tier,
+            first_party=skill_is_first_party,
+        ):
+            logger.info(
+                "[runtime] %s alert suppressed by customer preference "
+                "skill=%s trigger=%s class=%s",
+                channel,
+                skill_name,
+                trigger_name,
+                alert_class_for_trigger(
+                    skill_name, trigger_name, first_party=skill_is_first_party
+                ),
+            )
+            await self._record_preference_disabled_alert(
+                channel=channel,
+                alert_class=alert_class_for_trigger(
+                    skill_name, trigger_name, first_party=skill_is_first_party
+                ),
+                trigger_name=trigger_name,
+                action_tier=action_tier,
+                original_ts=original_ts,
+            )
+            return ALERT_SUPPRESSED
 
         if not recipient:
+            # Checked after the preference, because a notice the customer
+            # switched off was not going to be sent to anyone. Reporting it as
+            # a missing recipient would record a configuration fault the
+            # deployment does not have.
             logger.warning(
                 "[runtime] %s alert skipped: operator_contact not configured", channel
             )
@@ -4397,6 +4648,15 @@ class OriRuntime:
                     channel,
                 )
                 return True
+
+        # Stamped only once a send is actually attempted. These timestamps are
+        # published in the health snapshot, and a customer preference or a cap
+        # that stopped the alert would otherwise report activity that never
+        # happened.
+        alert_ts = now_ms()
+        self._last_alert_timestamps_by_channel[channel] = alert_ts
+        if trigger_name:
+            self._last_alert_timestamps_by_trigger[trigger_name] = alert_ts
 
         try:
             if allow_failover:
@@ -4489,7 +4749,7 @@ class OriRuntime:
         alert_sender: AlertFailoverSender,
         recipient: str = "",
     ) -> bool:
-        """Mandatory notices: delivery or durable queue, structurally outside
+        """Mandatory notices: acceptance or durable queue, structurally outside
         DevicePolicy — no external-alert gate is consulted and no
         policy-counted counter moves.
 
@@ -4513,43 +4773,148 @@ class OriRuntime:
             return False
         channel = self._primary_alert_channel
         alert_ts = now_ms()
+        alert = build_outbound_alert(
+            intent=AlertIntent.TIER_A_ALERT,
+            sms_body=message,
+            template_variables=(
+                trigger_name or "configured risk",
+                self._device_location or self._device_id or "site",
+                _format_alert_timestamp(alert_ts, self._device_timezone),
+            ),
+        )
+        alert_id = _build_alert_id(
+            channel=channel,
+            recipient=recipient,
+            alert=alert,
+            action_tier="A",
+            trigger_name=trigger_name,
+            original_ts=alert_ts,
+        )
+        inserted = False
+        if self._state_store is not None:
+            inserted = await self._state_store.enqueue_alert(
+                alert_id=alert_id,
+                channel=channel,
+                recipient=recipient,
+                message=alert.sms_body,
+                intent=alert.intent.value,
+                template_variables=alert.template_variables,
+                action_tier="A",
+                trigger_name=trigger_name,
+                original_ts=alert_ts,
+            )
+            if not inserted:
+                return True
+
         self._last_alert_timestamps_by_channel[channel] = alert_ts
         self._last_alert_timestamps_by_trigger[trigger_name] = alert_ts
-        delivered = False
         try:
-            delivered = await alert_sender.send(
-                message=message,
-                to_number=recipient,
-                preferred_channel=channel,
+            receipt = _coerce_alert_send_receipt(
+                await alert_sender.send(
+                    alert=alert,
+                    to_number=recipient,
+                    preferred_channel=channel,
+                ),
+                fallback_channel=channel,
             )
         except Exception:
             logger.exception(
                 "[safety] %s notice send failed; falling back to outbox", channel
             )
-        if delivered:
+            receipt = AlertSendReceipt.refused(channel=channel, error="sender_raised")
+        if receipt.accepted:
+            if self._state_store is not None:
+                await self._state_store.mark_alert_accepted(
+                    alert_id,
+                    accepted_channel=receipt.channel,
+                    provider_message_id=receipt.provider_message_id,
+                    provider_status=receipt.provider_status or "accepted",
+                    accepted_at_ms=receipt.accepted_at_ms or now_ms(),
+                    delivered_at_ms=receipt.delivered_at_ms,
+                )
             return True
+        if inserted:
+            return True
+        logger.error("[safety] notice submission failed and StateStore is unavailable")
+        return False
+
+    def _policy_permits_alert_class(
+        self,
+        skill_name: str,
+        trigger_name: str,
+        *,
+        action_tier: str = "A",
+        first_party: bool = False,
+    ) -> bool:
+        """Whether a customer preference leaves this trigger's notice on.
+
+        Reached only from `_send_or_queue_alert`. Mandatory notices travel
+        `_send_or_queue_safety_alert`, which does not call this and must not.
+        No policy means no preference, so the notice stands.
+        """
+        if str(action_tier).upper() == "D":
+            return True
+        alert_class = alert_class_for_trigger(
+            skill_name, trigger_name, first_party=first_party
+        )
+        if alert_class is None:
+            return True
+        if self._dispatcher is None:
+            return True
+        return self._dispatcher.permits_alert_class(
+            alert_class, action_tier=action_tier
+        )
+
+    async def _record_preference_disabled_alert(
+        self,
+        *,
+        channel: str,
+        alert_class: str | None,
+        trigger_name: str,
+        action_tier: str,
+        original_ts: int,
+    ) -> None:
+        """Record that a notice was withheld by preference, and send nothing.
+
+        Bounded to one row per channel, class and month, like the cap counter
+        beside it. Keying by event timestamp instead would add a row per
+        suppression, and a class with no cooldown suppressing at the poll rate
+        would grow the state store without limit for a record nothing reads
+        back yet.
+        """
         if self._state_store is None:
-            logger.error(
-                "[safety] notice delivery failed and StateStore is unavailable"
+            return
+        key = _preference_disabled_key(channel, alert_class, original_ts)
+        try:
+            raw = await self._state_store.get_skill_state(
+                "__runtime_alert_preferences__", key
             )
-            return False
-        alert_id = _build_alert_id(
-            channel=channel,
-            recipient=recipient,
-            message=message,
-            action_tier="A",
-            trigger_name=trigger_name,
-            original_ts=alert_ts,
-        )
-        return await self._state_store.enqueue_alert(
-            alert_id=alert_id,
-            channel=channel,
-            recipient=recipient,
-            message=message,
-            action_tier="A",
-            trigger_name=trigger_name,
-            original_ts=alert_ts,
-        )
+            try:
+                previous = json.loads(raw) if raw else {}
+            except ValueError:
+                previous = {}
+            count = int(previous.get("count", 0) or 0) + 1
+            await self._state_store.set_skill_state(
+                "__runtime_alert_preferences__",
+                key,
+                json.dumps(
+                    {
+                        "outcome": "disabled",
+                        "reason": "customer_preference",
+                        "channel": channel,
+                        "alert_class": alert_class,
+                        "action_tier": action_tier,
+                        "count": count,
+                        "last_trigger_name": trigger_name,
+                        "last_suppressed_ms": now_ms(),
+                    },
+                    sort_keys=True,
+                ),
+            )
+        except Exception:
+            logger.exception(
+                "[runtime] failed to record a preference-disabled alert outcome"
+            )
 
     async def _policy_permits_external_alert(
         self,
@@ -5067,6 +5432,19 @@ def _count_active_triggers(
     return active_count
 
 
+def _resolve_skill_identity(ctx: SkillContext) -> tuple[str, bool]:
+    """The skill's name and whether the loader marked it first-party.
+
+    `first_party` is set by the loader from the packaged roots and never read
+    from `skill.yaml`, so a skill cannot claim it. Anything that cannot be
+    resolved reads as community, which resolves to no class.
+    """
+    skill = getattr(ctx, "skill", None) if ctx else None
+    name = getattr(skill, "name", "") if skill is not None else ""
+    first_party = bool(getattr(skill, "first_party", False))
+    return (str(name or "").strip(), first_party)
+
+
 def _resolve_trigger_name(ctx: SkillContext) -> str:
     if ctx and isinstance(getattr(ctx, "trigger_name", ""), str):
         trigger_name = ctx.trigger_name.strip()
@@ -5148,6 +5526,17 @@ def _coerce_alert_send_receipt(
             channel=fallback_channel
         )
     return AlertSendReceipt.refused(channel=fallback_channel, error="sender_refused")
+
+
+def _preference_disabled_key(
+    channel: str, alert_class: str | None, timestamp_ms: int
+) -> str:
+    month = dt.datetime.fromtimestamp(
+        max(0, int(timestamp_ms)) / 1000,
+        tz=dt.UTC,
+    ).strftime("%Y-%m")
+    normalized = str(channel or "").strip().lower() or "unknown"
+    return f"disabled:{normalized}:{alert_class or 'unclassified'}:{month}"
 
 
 def _alert_policy_count_key(channel: str, timestamp_ms: int) -> str:
@@ -5272,14 +5661,33 @@ def _sync_power_state_from_reading(indicator: LEDIndicator, reading: Any) -> Non
         indicator.set_power_state(PowerState.MAINS)
 
 
-def _maybe_autoload_dotenv(config_path: str) -> None:
+def _maybe_autoload_dotenv(config_path: str) -> frozenset[str] | None:
     """Load .env when explicitly enabled via ORI_AUTOLOAD_DOTENV=true.
 
     This is a development convenience toggle. Production remains explicit-env
     by default (no implicit .env loading).
+
+    Returns ``None`` when no file was loaded, and otherwise the variable names
+    this file actually introduced — which is not the same as the names it
+    contains, because `override=False` leaves anything the environment already
+    carries alone. A report that treated the file's existence as a supplied
+    value degraded a device whose `.env` decided nothing.
     """
     if not is_truthy(os.environ.get("ORI_AUTOLOAD_DOTENV", "")):
-        return
+        return None
+
+    # A signature covers the document before expansion, so a file that supplies
+    # what `${VAR}` fields expand to decides the value of a signed field
+    # without invalidating the signature. The data directory is writable by the
+    # service; the unit's EnvironmentFile is not, which is where a hardened
+    # deployment's environment belongs.
+    if hardened_posture_declared(config_path):
+        logger.warning(
+            "[runtime] ORI_AUTOLOAD_DOTENV is refused under staging or "
+            "production posture: a .env beside the configuration would supply "
+            "values for signed fields. Use the unit's EnvironmentFile."
+        )
+        return None
 
     try:
         from dotenv import load_dotenv
@@ -5287,27 +5695,24 @@ def _maybe_autoload_dotenv(config_path: str) -> None:
         logger.warning(
             "[runtime] ORI_AUTOLOAD_DOTENV is enabled but python-dotenv is not installed"
         )
-        return
+        return None
 
-    config_dir = Path(config_path).resolve().parent
-    candidates = [config_dir / ".env", Path.cwd() / ".env"]
-    loaded_any = False
-    seen: set[str] = set()
-
-    for candidate in candidates:
-        key = str(candidate.resolve())
-        if key in seen:
-            continue
-        seen.add(key)
-        if candidate.is_file():
-            load_dotenv(dotenv_path=candidate, override=False)
-            loaded_any = True
-            logger.info("[runtime] loaded environment from %s", candidate)
-
-    if not loaded_any:
-        logger.info(
-            "[runtime] ORI_AUTOLOAD_DOTENV enabled but no .env file found near config/cwd"
-        )
+    # Beside the configuration only. The unit works in a runtime directory
+    # systemd empties on every stop, so a file found there is not this
+    # installation's environment, and these values are expanded into the
+    # configuration the runtime then trusts.
+    candidate = Path(config_path).resolve().parent / ".env"
+    if candidate.is_file():
+        before = frozenset(os.environ)
+        load_dotenv(dotenv_path=candidate, override=False)
+        supplied = frozenset(os.environ) - before
+        logger.info("[runtime] loaded environment from %s", shown(candidate))
+        return supplied
+    logger.info(
+        "[runtime] ORI_AUTOLOAD_DOTENV enabled but no .env file beside %s",
+        shown(config_path),
+    )
+    return None
 
 
 def _local_llm_requested(reasoning_cfg: Any) -> bool:
@@ -5489,13 +5894,13 @@ def _build_local_llm(
         logger.warning(
             "[runtime] local SLM unavailable for model=%s. Ensure llama-cpp-python "
             "is installed and model file is accessible.",
-            model_file,
+            shown(model_file),
         )
         return None
 
     logger.info(
         "[runtime] local SLM enabled — model=%s n_ctx=%d",
-        model_file,
+        shown(model_file),
         context_window,
     )
     return local_llm
@@ -6515,9 +6920,9 @@ def main() -> None:
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
 
-    _maybe_autoload_dotenv(args.config)
+    dotenv_variables = _maybe_autoload_dotenv(args.config)
 
-    runtime = OriRuntime(config_path=args.config)
+    runtime = OriRuntime(config_path=args.config, dotenv_variables=dotenv_variables)
     asyncio.run(runtime.start())
 
 

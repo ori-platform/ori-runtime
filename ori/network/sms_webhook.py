@@ -13,6 +13,7 @@ from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
 from ori.security.webhook_signatures import WebhookSignatureVerifier
+from ori.utils.path_utils import shown
 
 logger = logging.getLogger(__name__)
 
@@ -82,10 +83,10 @@ class SMSWebhookServer:
             self._handle_client, self._host, self._port
         )
         logger.info(
-            "SMSWebhookServer: listening on %s:%d%s",
-            self._host,
+            "SMSWebhookServer: listening on host=%s port=%d path=%s",
+            shown(self._host),
             self.port,
-            self._path,
+            shown(self._path),
         )
 
     async def stop(self) -> None:

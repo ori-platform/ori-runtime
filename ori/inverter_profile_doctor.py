@@ -18,6 +18,7 @@ from ori.hal.inverter_profiles import (
     load_profile,
 )
 from ori.hal.inverter_vendor_targets import list_vendor_targets
+from ori.utils.path_utils import shown
 
 # Pre-release draft schema. No installer/customer evidence has been captured
 # against this contract yet, so breaking changes may still refine v1. Once the
@@ -148,13 +149,13 @@ def _read_evidence_bundle(path: Path) -> dict[str, Any]:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise InverterProfileError(
-            f"unable to read evidence file {path}: {exc}"
+            f"unable to read evidence file {shown(path)}: {exc}"
         ) from exc
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise InverterProfileError(
-            f"invalid JSON evidence file {path}: {exc.msg}"
+            f"invalid JSON evidence file {shown(path)}: {exc.msg}"
         ) from exc
     if not isinstance(data, dict):
         raise InverterProfileError("evidence file must contain a JSON object")
@@ -624,7 +625,7 @@ def _print_evidence(summary: dict[str, Any], json_output: bool) -> int:
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0 if summary["evidence_pass"] else 1
 
-    print(f"Evidence file: {summary['evidence_file']}")
+    print(f"Evidence file: {shown(summary['evidence_file'])}")
     print(f"Profile: {summary['profile']} ({summary['profile_status']})")
     identity = summary["identity"]
     print(
