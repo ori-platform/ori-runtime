@@ -237,6 +237,19 @@ candidate or release is cut.
   The installer now recognises Trixie, so `detect_platform` no longer returns
   nothing on the platform the matrix certifies.
 
+- The accuracy floor of the ADS1115 current path is stated and held by test.
+  A sampling window is a fixed span of time rather than a whole number of
+  cycles — 860 samples a second does not divide a 50 Hz period, and the loop
+  stops on a deadline — so at the geometry the bench measured it runs slightly
+  past two cycles and carries about 2% worst-case error on correctly
+  configured hardware. A supply drifting within its band does not add to that
+  and can read better; declaring the wrong band does dominate it, at about 7%.
+  Every one of those errors is worse downward than upward, and an under-report
+  is a safety threshold reached late, so the bounds are not symmetric. No
+  behaviour changes: `mains_frequency_hz` was always a declared fact the
+  runtime cannot verify, and this says what it costs to get wrong and where
+  the floor sits underneath it.
+
 ## Fixed
 
 - Telemetry stops exporting to an endpoint that has refused this device. A

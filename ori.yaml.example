@@ -64,7 +64,12 @@ sensors:
       # is a current-output type and needs a burden resistor, after which the
       # figure is the burden's volts per ampere.
       sensitivity_v_per_amp: 0.0333
-      # The supply frequency the sampling window is aligned to.
+      # The supply frequency, which sets the length of the sampling window.
+      # Nothing in the runtime can check it. Declaring the wrong band — 60 for
+      # a 50 Hz supply — reads up to about 7% low, and low is the direction
+      # that matters: an under-report is a safety threshold reached late or not
+      # at all. Declare what the supply actually is; a few hertz of drift
+      # within the right band is not what this is guarding against.
       mains_frequency_hz: 50
       # Optional deterministic gateway-escalation guardrails.
       # When gateway reasoning transport is available, readings outside these
