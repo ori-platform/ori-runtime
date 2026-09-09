@@ -1210,15 +1210,97 @@ class TestAds1115ChannelSelection:
         await second.close()
 
     async def test_a_failed_connect_does_not_keep_the_claim(self, monkeypatch):
-        _pinned_driver(monkeypatch, chip_mux=0, honours_pin_in_single=False)
+        """The claim is released even though the connect raised.
+
+        Driven by a chip that never completes a conversion rather than by a
+        configuration mismatch: a mismatch quarantines the chip, so a second
+        adapter would be refused by that instead and this would prove nothing
+        about the claim.
+        """
+        _pinned_driver(monkeypatch, chip_mux=0, completes=False)
         first = I2CAdapter()
-        with pytest.raises(AdapterConnectionError):
+        with pytest.raises(AdapterConnectionError, match="never completed"):
             await first.connect(_config(sensor_type="ads1115_current", channel=0))
         _pinned_driver(monkeypatch, chip_mux=0)
         second = I2CAdapter()
         await second.connect(_config(sensor_type="ads1115_current", channel=0))
         assert second.is_connected
         await second.close()
+
+    async def test_a_mismatch_at_connect_refuses_the_chip_not_only_the_sensor(
+        self, monkeypatch
+    ):
+        """Releasing the claim would otherwise let a second adapter write it.
+
+        `ori.yaml` checks sensor ids for uniqueness and not addresses, so two
+        `ads1115_current` sensors can name one chip. Without the quarantine the
+        second adapter configures a chip the first just refused, which is the
+        writing contest the measurement path's quarantine exists to prevent.
+        Every cause of a connect-time mismatch justifies refusing the chip, so
+        latching on an ambiguous fault is still the right answer.
+        """
+        _pinned_driver(monkeypatch, chip_mux=0, honours_pin_in_single=False)
+        first = I2CAdapter()
+        with pytest.raises(AdapterConnectionError):
+            await first.connect(_config(sensor_type="ads1115_current", channel=0))
+
+        # A driver that would otherwise connect cleanly.
+        _pinned_driver(monkeypatch, chip_mux=0)
+        second = I2CAdapter()
+        with pytest.raises(AdapterConnectionError) as refusal:
+            await second.connect(_config(sensor_type="ads1115_current", channel=0))
+
+        assert "may not be an ADS1115" in str(refusal.value)
+        assert not second.is_connected
+
+    async def test_a_readback_that_cannot_be_performed_does_not_quarantine(
+        self, monkeypatch
+    ):
+        """A bus that failed mid-readback establishes nothing about the chip.
+
+        The quarantine is a statement that this chip must not be driven. A
+        read that could not be performed is not evidence of a competing
+        writer, a wrong part or a write that did not take — it is evidence of
+        nothing — so it refuses this connect and latches no chip. This is the
+        same distinction the measurement path draws, and it is the one a
+        latch-everything reading of the rule would lose.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+
+        original = i2c_module.I2CAdapter._ads1115_configuration_fault
+
+        def _bus_failure(self):
+            raise OSError(121, "Remote I/O error")
+
+        monkeypatch.setattr(
+            i2c_module.I2CAdapter, "_ads1115_configuration_fault", _bus_failure
+        )
+        with pytest.raises(AdapterConnectionError, match="could not read back"):
+            await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        monkeypatch.setattr(
+            i2c_module.I2CAdapter, "_ads1115_configuration_fault", original
+        )
+
+        assert i2c_module._ADS1115_QUARANTINE == {}
+        assert created, "the driver was never constructed, so nothing was read back"
+
+    async def test_a_connect_that_fails_before_the_readback_does_not_quarantine(
+        self, monkeypatch
+    ):
+        """A chip that never answers is not evidence that anything took it.
+
+        The quarantine says this chip is not to be driven by this process. A
+        bus that did not answer establishes nothing about the chip, so it must
+        not latch — the same distinction the measurement path draws between a
+        configuration fault and a readback that could not be performed.
+        """
+        _pinned_driver(monkeypatch, chip_mux=0, completes=False)
+        adapter = I2CAdapter()
+        with pytest.raises(AdapterConnectionError, match="never completed"):
+            await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+
+        assert i2c_module._ADS1115_QUARANTINE == {}
 
     async def test_a_chip_that_never_completes_a_conversion_is_refused_not_hung(
         self, monkeypatch

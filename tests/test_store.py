@@ -1055,6 +1055,7 @@ class TestAlertOutbox:
 
         await legacy_store.open()
         try:
+            assert legacy_store._conn is not None
             row = legacy_store._conn.execute(
                 "SELECT status, accepted_channel, provider_status, "
                 "accepted_at_ms, delivered_at_ms FROM alert_outbox "

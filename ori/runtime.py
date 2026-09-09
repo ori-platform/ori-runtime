@@ -317,6 +317,11 @@ MEASUREMENT_NOTIFY_MAX_ATTEMPTS = 5
 #
 # The cadence keeps message volume to two primary messages and then one daily
 # escalation, rather than repeating to everybody every day.
+#
+# `docs/MEASUREMENT_SUPERVISION.md` carries what this schedule is part of and
+# what it deliberately is not: the pair-scoped supervision this precedes, the
+# connect-time contention case, and what a reset-based response would have to
+# prove first.
 MEASUREMENT_REMINDER_AFTER_MS = 6 * 60 * 60 * 1000
 MEASUREMENT_ESCALATE_AFTER_MS = 12 * 60 * 60 * 1000
 MEASUREMENT_ESCALATION_REPEAT_MS = 24 * 60 * 60 * 1000
@@ -3244,6 +3249,17 @@ class OriRuntime:
             # runtime looks healthy. Contributed rather than assigned, so this
             # never clears a critical condition another subsystem has raised.
             snapshot["critical"] = True
+            snapshot["status"] = "degraded"
+        if self._measurement_degraded:
+            # A sensor that connected and then refused a run of windows is not
+            # measuring either, and the reasoning one branch below applies to it
+            # word for word. Reported per sensor since #508 and absent from the
+            # aggregate until now, so a fleet view keyed on `status` read green
+            # while a channel went unmeasured — which is the condition
+            # `docs/MEASUREMENT_SUPERVISION.md` exists to make impossible to
+            # miss. Degraded rather than critical, and it names no
+            # `degradation_reasons` token because that vocabulary is closed and
+            # carries none for this (ori-platform/ori-specs#171).
             snapshot["status"] = "degraded"
         if self._unconnected_sensors:
             # A configured sensor that never connected is not a healthy

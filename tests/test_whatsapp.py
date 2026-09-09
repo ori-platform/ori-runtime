@@ -331,6 +331,7 @@ async def test_provenance_listener_retains_provider_record():
         from_number="whatsapp:+234111", timeout_seconds=30
     )
 
+    assert response is not None
     assert response == InboundApprovalResponse(
         body="YES-AB12CD34",
         channel="whatsapp",
@@ -453,7 +454,7 @@ async def test_twilio_business_send_uses_content_sid_and_never_body(monkeypatch)
         def __init__(self, *_args, **_kwargs):
             self.messages = _Messages()
 
-    twilio_rest_mod.Client = _FakeClient
+    setattr(twilio_rest_mod, "Client", _FakeClient)
     monkeypatch.setitem(sys.modules, "twilio", twilio_mod)
     monkeypatch.setitem(sys.modules, "twilio.rest", twilio_rest_mod)
 
@@ -509,7 +510,7 @@ async def test_twilio_delivery_receipt_retains_provider_status(monkeypatch):
         def __init__(self, *_args, **_kwargs):
             self.messages = _Messages()
 
-    twilio_rest_mod.Client = _FakeClient
+    setattr(twilio_rest_mod, "Client", _FakeClient)
     monkeypatch.setitem(sys.modules, "twilio", twilio_mod)
     monkeypatch.setitem(sys.modules, "twilio.rest", twilio_rest_mod)
 

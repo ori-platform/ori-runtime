@@ -24,7 +24,44 @@ class WindowRefusedError(Exception):
 
 @dataclass(frozen=True)
 class WindowSpec:
-    """What a window must satisfy to be a measurement."""
+    """What a window must satisfy to be a measurement.
+
+    A window is a fixed span of time, not a whole number of cycles. The loop
+    paces at the conversion interval and stops on a deadline, and 860 samples
+    a second does not divide a 50 Hz period, so the window runs a little past
+    two cycles however correctly everything is configured. The mean is then
+    not quite the bias and the root mean square not quite the amplitude.
+
+    At the geometry the bench measured — 36 samples over 41.09 ms against a
+    40.00 ms nominal — that floor is about 2%, and it is under every reading
+    this path produces. `test_ac_measurement.py` holds it, along with the two
+    facts that make it easy to reason about wrongly:
+
+    - **A supply drifting inside its band does not add to it.** Where the
+      window stops relative to a cycle is what decides the error, so 47 Hz can
+      land closer to whole cycles than 50 Hz does and read better. Across
+      45–53 Hz the error stays under 5% and moves in both directions.
+    - **Declaring the wrong band does dominate it.** ``mains_frequency_hz`` is
+      a declared fact that nothing here can check, and it sets the window
+      length: two cycles at 60 Hz is 33 ms, which spans 1.67 cycles of a 50 Hz
+      supply. That reaches about 7%, several times the geometry's own floor,
+      and it is the only frequency error worth an operator's attention.
+
+    **Every one of these is worse downward than upward.** The worst case is an
+    under-report, which is a Tier D threshold reached later than it should be
+    or not at all, so these bounds are not symmetric and must not be quoted as
+    though they were.
+
+    Deriving the frequency from the samples would close the wrong-band case,
+    and is not done here yet. A matched filter over the two candidate bands
+    would classify reliably at the amplitudes involved; what is undecided is
+    what to do with a disagreement. Refusing the window removes protection to
+    correct a few percent, which is the wrong trade — accumulating disagreement
+    into the existing degraded-health and bounded-notice path removes none, and
+    is the option to weigh once a clamp on a live load has shown what the noise
+    actually looks like. Until then the declaration is a commissioning
+    obligation and this is what getting it wrong costs.
+    """
 
     mains_frequency_hz: float
     window_cycles: int
