@@ -107,6 +107,202 @@ def test_the_result_does_not_depend_on_where_sampling_began(phase: float) -> Non
     assert result.rms_volts == pytest.approx(1.0 / math.sqrt(2), rel=1e-3)
 
 
+# What the bench measured the paced loop actually delivering: 36 samples over
+# 41.09 ms against a 40.00 ms nominal, five trials identical
+# (docs/evidence/2026-09-03-pi4-ads1115-characterisation.md). The ratio matters
+# because the error below is decided by where the window stops relative to a
+# cycle, so a window modelled as exactly nominal measures a geometry the
+# hardware does not produce.
+_BENCH_OVERRUN = 1.027
+_DATA_RATE = 860
+_SAMPLE_INTERVAL = 1.0 / _DATA_RATE
+
+
+def _paced_window(*, declared_hz: float, cycles: int = 2) -> tuple[int, float]:
+    """Sample count and elapsed time, as `_read_ads1115_current` produces them.
+
+    The loop paces at the conversion interval and stops on a deadline, so the
+    count is whatever fits and the window ends mid-cycle unless the rate
+    happens to divide the period. At 860 SPS and 50 Hz it does not.
+    """
+    nominal = cycles / declared_hz
+    deadline = nominal * _BENCH_OVERRUN
+    count, elapsed = 0, 0.0
+    while elapsed < deadline:
+        count += 1
+        elapsed += _SAMPLE_INTERVAL
+    return count, nominal * _BENCH_OVERRUN
+
+
+def _worst_error_across_start_phases(
+    *, true_hz: float, declared_hz: float, amplitude: float = 0.5, bias: float = 1.65
+) -> float:
+    """The largest fractional RMS error over every phase the window can start at.
+
+    Swept rather than taken at one phase, because nothing aligns the window to
+    the waveform: the error is whatever the arbitrary start gives, so a single
+    phase reports one point of a spread.
+    """
+    count, elapsed = _paced_window(declared_hz=declared_hz)
+    spec = WindowSpec(
+        mains_frequency_hz=declared_hz,
+        window_cycles=2,
+        min_samples=16,
+        full_scale_volts=3.3,
+        clip_margin_volts=0.05,
+        overrun_tolerance=1.5,
+    )
+    true_rms = amplitude / math.sqrt(2)
+    worst = 0.0
+    for step in range(360):
+        phase = 2 * math.pi * step / 360
+        samples = [
+            bias
+            + amplitude
+            * math.sin(2 * math.pi * true_hz * (i * _SAMPLE_INTERVAL) + phase)
+            for i in range(count)
+        ]
+        measured = summarise_window(samples, elapsed, spec).rms_volts
+        worst = max(worst, abs(measured / true_rms - 1.0))
+    return worst
+
+
+def test_the_modelled_window_is_the_one_the_bench_measured() -> None:
+    """The bounds below are properties of a geometry, so the geometry is pinned.
+
+    Every error in this file is decided by where the window stops relative to
+    a cycle, so a model that is a sample or a millisecond out measures a
+    different machine. These two numbers come from five identical trials in
+    `docs/evidence/2026-09-03-pi4-ads1115-characterisation.md`; if the adapter's
+    pacing changes, this fails first and says so, rather than the bounds
+    drifting quietly to describe hardware nobody has run.
+    """
+    count, elapsed = _paced_window(declared_hz=50.0)
+
+    assert count == 36
+    assert elapsed == pytest.approx(0.04109, abs=0.0002)
+
+
+def test_even_a_correct_declaration_carries_a_bounded_error() -> None:
+    """The window does not span whole cycles, and the declaration cannot fix it.
+
+    860 samples a second does not divide a 50 Hz period, and the sampling loop
+    stops on a time deadline rather than at a zero crossing, so the window runs
+    a little past two cycles. The mean is then not quite the bias and the root
+    mean square not quite the amplitude. This is the floor under every reading
+    the path produces, present on correctly configured hardware, and it is
+    larger than what misdeclaring the frequency within a band costs.
+    """
+    inherent = _worst_error_across_start_phases(true_hz=50.0, declared_hz=50.0)
+    assert 0.015 < inherent < 0.03
+
+
+def test_declaring_the_wrong_band_costs_materially_more() -> None:
+    """The one case worth an operator's attention: 50 Hz declared as 60.
+
+    Two cycles at 60 Hz is 33 ms, which spans only 1.67 cycles of a 50 Hz
+    supply — a partial cycle far larger than the geometry's own, and the only
+    frequency error in this file that dominates it.
+    """
+    inherent = _worst_error_across_start_phases(true_hz=50.0, declared_hz=50.0)
+    misdeclared = _worst_error_across_start_phases(true_hz=50.0, declared_hz=60.0)
+
+    assert 0.04 < misdeclared < 0.09
+    assert misdeclared > inherent * 2
+
+
+def test_within_band_wander_is_bounded_and_not_always_worse() -> None:
+    """A supply that drifts changes the error rather than adding to it.
+
+    Where the window stops relative to a cycle is what decides the error, so a
+    supply a few hertz off can land closer to a whole number of cycles than the
+    nominal one does and read *better*. Stated because the opposite is the
+    intuitive assumption, and a bound derived from it would be wrong.
+    """
+    inherent = _worst_error_across_start_phases(true_hz=50.0, declared_hz=50.0)
+    across_band = {
+        hz: _worst_error_across_start_phases(true_hz=hz, declared_hz=50.0)
+        for hz in (45.0, 47.0, 49.0, 51.0, 53.0)
+    }
+
+    assert max(across_band.values()) < 0.05
+    # Both directions are present, which is also what stops this test passing
+    # while measuring nothing: a helper that ignored `true_hz` would put every
+    # entry equal to `inherent` and satisfy neither.
+    assert any(error > inherent for error in across_band.values())
+    assert any(error < inherent for error in across_band.values())
+
+
+def test_the_worst_case_is_always_an_under_report() -> None:
+    """The direction matters more than the magnitude.
+
+    A reading below the truth is a Tier D threshold reached later than it
+    should be, or not at all. #398 puts it plainly: a spurious trip is safe and
+    annoying, a missed trip is a fire. Every frequency error this file measures
+    is worse downward than upward, so the bounds above are not symmetric and
+    must not be quoted as though they were.
+    """
+    for true_hz, declared_hz in ((50.0, 50.0), (50.0, 60.0), (60.0, 50.0)):
+        count, elapsed = _paced_window(declared_hz=declared_hz)
+        spec = WindowSpec(
+            mains_frequency_hz=declared_hz,
+            window_cycles=2,
+            min_samples=16,
+            full_scale_volts=3.3,
+            clip_margin_volts=0.05,
+            overrun_tolerance=1.5,
+        )
+        true_rms = 0.5 / math.sqrt(2)
+        errors = []
+        for step in range(360):
+            phase = 2 * math.pi * step / 360
+            samples = [
+                1.65
+                + 0.5 * math.sin(2 * math.pi * true_hz * (i * _SAMPLE_INTERVAL) + phase)
+                for i in range(count)
+            ]
+            errors.append(
+                summarise_window(samples, elapsed, spec).rms_volts / true_rms - 1.0
+            )
+        assert abs(min(errors)) > max(errors), (
+            f"{true_hz} Hz declared {declared_hz} Hz reports high, not low"
+        )
+
+
+def test_the_overrun_budget_follows_the_declared_frequency() -> None:
+    """A 60 Hz window is shorter, so its allowance for running late is shorter.
+
+    The budget is `window_cycles / mains_frequency_hz` times the tolerance, and
+    always has been. Nothing held it: every other test here declares 50 Hz, so
+    a constant in place of the declared frequency changed no result, and a
+    60 Hz deployment would have inherited a 50 Hz allowance — a fifth more
+    slack than its window is entitled to — without a test noticing. The same
+    elapsed time is accepted at 50 Hz and refused at 60.
+    """
+    samples = _sine(amplitude=0.5, count=64)
+    elapsed = 0.055
+    at_50 = WindowSpec(
+        mains_frequency_hz=50.0,
+        window_cycles=2,
+        min_samples=16,
+        full_scale_volts=3.3,
+        clip_margin_volts=0.05,
+        overrun_tolerance=1.5,
+    )
+    at_60 = WindowSpec(
+        mains_frequency_hz=60.0,
+        window_cycles=2,
+        min_samples=16,
+        full_scale_volts=3.3,
+        clip_margin_volts=0.05,
+        overrun_tolerance=1.5,
+    )
+
+    summarise_window(samples, elapsed, at_50)
+    with pytest.raises(WindowRefusedError, match="against a nominal"):
+        summarise_window(samples, elapsed, at_60)
+
+
 def test_a_clipped_waveform_is_refused_rather_than_under_reported() -> None:
     """Clipping removes the peaks, so RMS reads low — an under-report.
 
