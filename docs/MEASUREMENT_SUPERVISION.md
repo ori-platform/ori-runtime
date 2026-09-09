@@ -100,17 +100,22 @@ Three facts decide it, and two of them cut against the intuitive reading:
   writer. A *measurement*-time mismatch has the first three excluded already,
   because connect proved this chip ran this adapter's exact configuration word.
   Timing precision is not evidential specificity.
-- **The skip is not a latch, and does not do what the quarantine does.** The
-  quarantine is keyed `(bus, address)` in a module-global and refuses every
-  later adapter for that chip. The connect-time skip records a sensor id in
-  `_unconnected_sensors` and protects nothing about the chip: the bus claim is
-  released on a failed connect, which `test_a_failed_connect_does_not_keep_the_claim`
-  exercises deliberately. A configuration naming two `ads1115_current` sensors at
-  one address is accepted — sensor ids are checked for uniqueness, addresses are
-  not — so the second adapter connects and writes a chip the first just refused.
-  That is a narrow gap rather than a design: `ori.yaml.example` and the
-  architecture both say one ADS1115 serves one sensor, so it is reachable only
-  from a configuration the documentation already discourages.
+- **A connect-time mismatch latches the chip, not the sensor.** It did not
+  until recently, and the difference mattered: the quarantine is keyed
+  `(bus, address)` and refuses every later adapter, while the sensor skip
+  records an id in `_unconnected_sensors` and protects nothing about the chip.
+  The bus claim is released on a failed connect, and `ori.yaml` checks sensor
+  ids for uniqueness rather than addresses, so a configuration naming two
+  `ads1115_current` sensors at one address had the second adapter configuring a
+  chip the first had just refused. The ambiguity above is what makes latching on
+  it correct rather than merely convenient: a device that is not an ADS1115
+  should not be driven, a write that did not take means the chip is not
+  accepting configuration, and a competing writer is the case the quarantine was
+  built for — every reading of the fault justifies refusing the chip.
+- **A readback that could not be performed still does not latch.** A bus failure
+  mid-readback is evidence of nothing: not a competing writer, not a wrong part,
+  not a failed write. It refuses that connect and quarantines no chip, which is
+  the same line the measurement path draws.
 - **Retrying would be the writing contest.** Any design that reconnects on a
   schedule turns a connect-time mismatch into repeated writes to a chip
   something else may also be writing. That is the failure mode the quarantine
@@ -122,9 +127,10 @@ it is built:
 1. How it tells a competing writer apart from a wrong or misbehaving part,
    given that the connect-time readback cannot, and that the wrong part is the
    likelier of the two.
-2. Whether a connect-time mismatch latches for the chip rather than for the
-   sensor, closing the second-adapter gap above, and if not, why a second write
-   to a contested chip is acceptable.
+2. What clears the latch. It is process-scoped today, so a restart clears it
+   whether or not the cause is gone — which is deliberate while a person is
+   expected to intervene, and is a decision a reconnect design revisits rather
+   than inherits.
 3. What it does about every *other* active pair on the device while a reconnect
    is in progress, since a reconnect writes a shared bus.
 

@@ -249,6 +249,13 @@ candidate or release is cut.
   behaviour changes: `mains_frequency_hz` was always a declared fact the
   runtime cannot verify, and this says what it costs to get wrong and where
   the floor sits underneath it.
+- A configuration mismatch found while connecting to an ADS1115 now refuses the
+  chip for the life of the process rather than only the sensor. The bus claim is
+  released on a failed connect and `ori.yaml` checks sensor ids for uniqueness
+  rather than addresses, so a second sensor naming the same chip configured one
+  that had just been refused — the writing contest the measurement-time
+  quarantine exists to prevent. A readback that could not be performed still
+  latches nothing, because a bus failure is evidence of nothing.
 - A sensor that connected and then refuses a run of measurement windows now
   degrades the device's aggregate health. The per-sensor field has carried it
   since the loss was first made visible, but `status` did not, so a fleet view
