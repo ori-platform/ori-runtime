@@ -58,6 +58,14 @@ from ori.utils.time_utils import now_ms
 ALERT_SUPPRESSED: Final = "suppressed"
 SUPPRESSED_ACTION_TAKEN: Final = "suppressed"
 
+#: Recorded when a dispatched action has no registered executor. `executed` is
+#: false for it, like any other non-execution, but the cause is a configuration
+#: fault rather than a runtime one: nothing was attempted because there was
+#: nothing to attempt. An operator reading `action_log` fixes a missing executor
+#: differently from an executor that ran and failed, so the two must not
+#: collapse into one indistinguishable row.
+NO_EXECUTOR_ACTION_TAKEN: Final = "no_executor"
+
 logger = logging.getLogger(__name__)
 
 _YES_TOKENS = frozenset({"yes", "y", "approve", "go", "ok", "confirm"})
@@ -74,6 +82,31 @@ _TIER_RANK: dict[str, int] = {
 }
 _INPUT_ATTESTATION_GRADES = frozenset({"attested", "attested_dev", "unattested"})
 _INPUT_POSTURES = frozenset({"development", "sealed_flash", "hardware_key"})
+
+
+def _action_taken(
+    action: str,
+    *,
+    executed: bool,
+    suppressed: bool,
+    missing_executor: bool,
+) -> str:
+    """What actually happened, which is not always what was asked for.
+
+    Naming the action is a claim that it was taken, so it is made only when an
+    executor ran and reported success. The two non-execution causes stay
+    distinguishable because they need different remedies: a suppressed action
+    was a deliberate non-action, a missing executor is a capability the
+    deployment does not have, and a bare empty string is an executor that ran
+    and failed.
+    """
+    if executed:
+        return action
+    if suppressed:
+        return SUPPRESSED_ACTION_TAKEN
+    if missing_executor:
+        return NO_EXECUTOR_ACTION_TAKEN
+    return ""
 
 
 def _generate_proposal_id(length: int = 8) -> str:
@@ -833,10 +866,11 @@ class ActionDispatcher:
     ) -> ActionResult:
         """Execute *action* without any approval step.
 
-        If an executor is registered for *action*, it is called. If no
-        executor exists, non-safety actions are logged as intent-only
-        compatibility behaviour. Tier D actions fail loudly instead: a missing
-        safety executor means the physical safety action did not happen.
+        If an executor is registered for *action*, it is called. A missing
+        executor is a non-execution at every tier: the intent is recorded and
+        nothing is reported as taken, because there was nothing to attempt.
+        Tier D additionally fails loudly and escalates — a missing safety
+        executor means the physical safety action did not happen.
 
         Args:
             action: Action name to execute.
@@ -844,8 +878,11 @@ class ActionDispatcher:
             context: Skill execution context.
 
         Returns:
-            :class:`~ori.network.events.ActionResult` with ``executed=True``
-            on success and ``executed=False`` if the executor raised.
+            :class:`~ori.network.events.ActionResult`. ``executed`` is true only
+            when an executor ran and returned something other than ``False``;
+            ``action_taken`` names the action when it did, and otherwise says
+            which kind of non-execution occurred — a deliberate suppression, a
+            missing executor, or an executor that ran and failed.
         """
         # Tier D provenance, enforced independently of dispatch. This method is
         # the one that actually invokes executors, and it is reachable directly,
@@ -903,8 +940,14 @@ class ActionDispatcher:
             await self._log_action(refusal, context)
             return refusal
 
-        executed = True
+        # False until an executor runs and reports success. Starting from True
+        # meant a missing executor reported the action as taken: below Tier D
+        # nothing corrected it, so an approved Tier C action with no executor
+        # sealed a signed attestation that a safety circuit had been opened
+        # while nothing was driven.
+        executed = False
         suppressed = False
+        missing_executor = False
         try:
             executor = self._executors.get(action)
             if executor is not None:
@@ -917,21 +960,31 @@ class ActionDispatcher:
                     # Deliberate non-action: nothing was attempted and nothing
                     # went wrong, which is not what a bare False records.
                     suppressed = True
-                    executed = False
-                elif maybe_ok is False:
-                    executed = False
+                elif maybe_ok is not False:
+                    executed = True
             else:
+                missing_executor = True
                 if tier == ActionTier.SAFETY_CRITICAL:
-                    executed = False
                     logger.critical(
                         "ActionDispatcher: Tier D executor is not registered for action=%r. "
                         "No physical safety action was taken.",
                         action,
                     )
+                elif capability(action) is not None:
+                    # A governed action names something the runtime is supposed
+                    # to be able to do. Reaching dispatch without an executor is
+                    # a capability the deployment advertises and does not have,
+                    # which DEBUG is the wrong level to say.
+                    logger.error(
+                        "ActionDispatcher: no executor registered for governed "
+                        "action=%r (tier=%s) — nothing was executed",
+                        action,
+                        tier,
+                    )
                 elif self._log_action_decisions:
-                    logger.debug(
+                    logger.info(
                         "ActionDispatcher: no executor registered for action=%r — "
-                        "logging intent only",
+                        "intent recorded, nothing executed",
                         action,
                     )
         except (Exception, asyncio.CancelledError) as exc:
@@ -978,8 +1031,11 @@ class ActionDispatcher:
             tier=tier,
             executed=executed,
             approved=None,  # no approval step for A/B/D
-            action_taken=(
-                action if executed else (SUPPRESSED_ACTION_TAKEN if suppressed else "")
+            action_taken=_action_taken(
+                action,
+                executed=executed,
+                suppressed=suppressed,
+                missing_executor=missing_executor,
             ),
             timestamp=now_ms(),
         )

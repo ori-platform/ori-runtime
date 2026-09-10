@@ -19,6 +19,7 @@ from ori.network.events import (
 )
 from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.action_dispatcher import (
+    NO_EXECUTOR_ACTION_TAKEN,
     ActionDispatcher,
     _classify_approval_response,
 )
@@ -198,10 +199,12 @@ class TestParseApprovalResponse:
 class TestTierA:
     async def test_executes_immediately(self):
         d = ActionDispatcher()
+        d.register_executor("alert_whatsapp", AsyncMock(return_value=True))
         result = await d.dispatch(
             "alert_whatsapp", ActionTier.INFORMATIONAL, _context(), _result()
         )
         assert result.executed is True
+        assert result.action_taken == "alert_whatsapp"
 
     async def test_approved_is_none(self):
         d = ActionDispatcher()
@@ -232,13 +235,14 @@ class TestTierA:
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
         mock_exec.assert_awaited_once_with("alert_whatsapp", ctx)
 
-    async def test_no_executor_still_returns_executed_true(self):
-        """No executor registered → logs intent only, but executed=True."""
+    async def test_no_executor_reports_that_nothing_executed(self):
+        """A missing executor is a non-execution, and says which kind it is."""
         d = ActionDispatcher()
         result = await d.dispatch(
             "unknown_action", ActionTier.INFORMATIONAL, _context(), _result()
         )
-        assert result.executed is True
+        assert result.executed is False
+        assert result.action_taken == NO_EXECUTOR_ACTION_TAKEN
 
     async def test_logged_to_state_store(self):
         store = _mock_store()
@@ -317,7 +321,7 @@ class TestTierD:
             )
 
         assert result.executed is False
-        assert result.action_taken == ""
+        assert result.action_taken == NO_EXECUTOR_ACTION_TAKEN
         critical_messages = [
             str(call.args) for call in mock_logger.critical.call_args_list
         ]
@@ -390,12 +394,94 @@ class TestTierD:
         assert call_args.args[0] == "emergency_cutoff"
 
 
+# ─── A missing executor is a non-execution at every tier ─────────────────────
+
+
+class TestMissingExecutorNeverReportsExecution:
+    """`executed` must mean an executor ran and reported success.
+
+    Below Tier D it did not. A Tier C action with no executor returned
+    `executed=True, approved=True` after the operator approved it, and Tier C is
+    on the evidence-signing path, so that row sealed into the chain as a signed
+    attestation that a safety circuit had been opened while nothing was driven.
+    """
+
+    @pytest.mark.parametrize(
+        ("action", "tier"),
+        [
+            ("alert_whatsapp", ActionTier.INFORMATIONAL),
+            ("switch_power_source", ActionTier.SOFT_PHYSICAL),
+            ("open_safety_circuit", ActionTier.HARD_PHYSICAL),
+            ("emergency_cutoff", ActionTier.SAFETY_CRITICAL),
+        ],
+    )
+    async def test_no_executor_reports_not_executed(self, action, tier):
+        d = ActionDispatcher(config={"approval_require_scoped_replies": "false"})
+        with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="YES")):
+            result = await d.dispatch(
+                action,
+                tier,
+                _context(),
+                _result(action_tier=tier),
+                approval_timeout_seconds=5,
+            )
+
+        assert result.executed is False
+        assert result.action_taken != action
+
+    async def test_approved_tier_c_without_executor_is_not_recorded_as_taken(self):
+        """The case that sealed a false attestation: approval is not execution."""
+        d = ActionDispatcher(config={"approval_require_scoped_replies": "false"})
+        with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="YES")):
+            result = await d.dispatch(
+                "open_safety_circuit",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(action_tier="C"),
+                approval_timeout_seconds=5,
+            )
+
+        assert result.approved is True
+        assert result.executed is False
+        assert result.action_taken == NO_EXECUTOR_ACTION_TAKEN
+
+    async def test_missing_executor_is_distinguishable_from_a_failing_one(self):
+        """Different faults, different remedies, so they must not collapse."""
+        absent = ActionDispatcher()
+        failing = ActionDispatcher()
+        failing.register_executor("switch_power_source", AsyncMock(return_value=False))
+
+        absent_result = await absent.dispatch(
+            "switch_power_source", ActionTier.SOFT_PHYSICAL, _context(), _result()
+        )
+        failing_result = await failing.dispatch(
+            "switch_power_source", ActionTier.SOFT_PHYSICAL, _context(), _result()
+        )
+
+        assert absent_result.executed is False
+        assert failing_result.executed is False
+        assert absent_result.action_taken == NO_EXECUTOR_ACTION_TAKEN
+        assert failing_result.action_taken != NO_EXECUTOR_ACTION_TAKEN
+
+    async def test_a_registered_executor_still_reports_execution(self):
+        """The mutation that would make the rest of this class vacuous."""
+        d = ActionDispatcher()
+        d.register_executor("switch_power_source", AsyncMock(return_value=True))
+        result = await d.dispatch(
+            "switch_power_source", ActionTier.SOFT_PHYSICAL, _context(), _result()
+        )
+
+        assert result.executed is True
+        assert result.action_taken == "switch_power_source"
+
+
 # ─── Tier B — dispatches without approval unless requires_approval is set ────
 
 
 class TestTierBWithoutApproval:
     async def test_executes_without_approval_by_default(self):
         d = ActionDispatcher()
+        d.register_executor("switch_power_source", AsyncMock(return_value=True))
         ctx = _context(skill_config={})
         result = await d.dispatch(
             "switch_power_source", ActionTier.SOFT_PHYSICAL, ctx, _result()
@@ -533,6 +619,7 @@ class TestTierC:
 
     async def test_tier_c_with_yes_response_executes_action(self):
         d = ActionDispatcher()
+        d.register_executor("open_safety_circuit", AsyncMock(return_value=True))
         mock_sender = AsyncMock()
         d._alert_sender = mock_sender
         d._config = {"operator_contact": "+234800000000"}
@@ -940,6 +1027,7 @@ class TestTierC:
                 "local_console_channel_id": "local_console",
             }
         )
+        d.register_executor("open_safety_circuit", AsyncMock(return_value=True))
         d.update_capability_posture(
             CapabilityPosture(
                 sms_available=False,
