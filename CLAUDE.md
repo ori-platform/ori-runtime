@@ -132,11 +132,45 @@ Tier C  HARD PHYSICAL        Approval workflow. Always. No exception.
         → action executes or is cancelled.
         The agent does the diagnosis. The human approves the surgery.
 
-Tier D  SAFETY-CRITICAL      Always autonomous. Highest priority. Overrides all.
+Tier D  SAFETY-CRITICAL      Always autonomous. Attempted before lower work.
         Cannot be disabled. Cannot be overridden. Fires before any LLM.
         Dangerous overcurrent, temperature above safe limit, hazardous gas.
         bypass_llm: true is set automatically for all Tier D triggers.
 ```
+
+**The letter is two decisions, not a single scale.** Reading A→D as increasing
+severity gets three things wrong, and every one of them has produced a defect.
+
+- **Consequence class** — `informational`, `soft`, `hard` — is what the action
+  does to the world. Whether opening a circuit is reversible is a fact about
+  site wiring, established per channel at commissioning, so a skill author
+  cannot hold it and the runtime registry owns it. That is a stronger reason
+  than untrusted input: it holds for a scrupulous author.
+- **Authority basis** — `autonomous`, `operator_approval`, `safety_condition` —
+  is what licenses one dispatch.
+
+The letters are the pairs that exist: A is informational and autonomous; B is
+soft, autonomous or approved per deployment; C is hard and approved; D is hard
+under a release-owned safety condition, pre-authorised because no human is
+available in the time the condition allows.
+
+Three consequences follow, and they are rules rather than curiosities:
+
+- **A and D are both autonomous.** A notification accompanying a trip must
+  never inherit the trip's authority, so any rule taking a maximum over tiers
+  must exempt informational actions. On the two axes there is nothing to
+  exempt — consequence class does not travel between actions.
+- **`requires_approval` moves a Tier B action along the authority axis** without
+  changing its letter, which is why the letter alone never decided whether a
+  soft action waits for a human.
+- **A Tier D floor is a category error.** D is not more consequence than C; it
+  is the same consequence under a different licence, and no registry entry is in
+  a position to assert a licence. `emergency_cutoff` is registered at a hard
+  floor and reaches D only through a safety condition — the model, not a
+  workaround.
+
+`skills-package/v3.md` in `ori-specs` carries this and its reasoning, and
+`evidence/v2.md` already records the authority basis on every attested action.
 
 **The runtime owns the floor, and owns Tier D outright.** `skill.yaml` is
 untrusted input — it is the thing this framework constrains. Be precise about
@@ -156,8 +190,31 @@ which half of the tier decision the runtime holds:
   skill's `actions.available` list is capped at Tier C for the same reason.
 
 A general capability grant — binding skill identity, trigger, action and
-permitted maximum tier — is the contract that would replace the provenance rule.
-It is specs work, not a runtime patch.
+permitted maximum tier — governs **Tier A to C only, and must never be able to
+confer Tier D**. Provenance is not a stopgap awaiting that contract; for Tier D
+it is the answer. An issuer that could grant Tier D would give autonomous safety
+authority an expiry, a revocation path and a holder the runtime never reviewed —
+which is why `device_policy.py` returns for Tier D before it consults expiry at
+all. Safety authority that can go stale contradicts the 2 a.m. outage this
+runtime exists for.
+
+**Provenance is containment, not the final model.** It is the answer against a
+capability grant, and it is not the end state. First-party provenance says only
+that the runtime trusts code it shipped — which restricts the *author* without
+the runtime *owning the decision*, and leaves the safety envelope a property of
+which skills happen to be installed, expressed as untyped numbers in manifest
+YAML. The end state is `safety-profile/v1.md`: release-owned typed conditions
+bound to a commissioned zone, activated by ratification, with the safety
+registry as the sole Tier D path once the cutover in #324 lands. Every packaged
+`action_tier: D` declaration is legacy against that contract.
+
+Nothing deployment-supplied ever reaches a profile. `safety-profile/v1.md` is
+explicit that a profile has no deployment-supplied parameters: a value in a
+runtime configuration document is not an input to any profile, commissioning
+supplies the zone but may not author a condition kind, multiplier, threshold or
+outcome, and no remote command, DevicePolicy or entitlement may alter one. A
+capacity is a safety parameter, so it arrives only through the commissioned
+binding.
 
 The floor is enforced
 at skill load, at dispatch, and again in `_execute_immediately`; the trigger

@@ -10,7 +10,8 @@ execution path based on its action tier:
 - **Tier B** (Soft Physical): execute immediately *unless* ``requires_approval``
   is ``True`` in the skill config, in which case run the approval workflow.
 - **Tier C** (Hard Physical): approval workflow **always**.  No exception.
-- **Tier D** (Safety-Critical): execute immediately, highest priority.
+- **Tier D** (Safety-Critical): execute immediately, attempted before
+  lower-authority work and subject to the resource gate.
 
 Every dispatch attempt produces an :class:`~ori.network.events.ActionResult`
 and is logged to the ``action_log`` table — even on failure.  A failed action

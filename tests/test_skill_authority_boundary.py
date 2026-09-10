@@ -481,9 +481,10 @@ class TestTierDRequiresFirstPartyProvenance:
     other check in the loader passes for a correctly signed community skill
     that declares an always-true Tier D trigger on a relay action — the
     signature proves who wrote it, not that the runtime granted it that
-    authority. Until a capability grant binding skill identity, trigger, action
-    and permitted maximum tier exists, Tier D is confined to skills shipped and
-    released with the runtime.
+    authority. Tier D is therefore confined to skills shipped and released with
+    the runtime. A capability grant does not change that — such a grant governs
+    Tier A to C and can never confer Tier D — and the model that replaces this
+    containment is the release-owned safety registry, not a grant.
     """
 
     def _tier_d_yaml(self) -> str:
