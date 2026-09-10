@@ -27,7 +27,7 @@ Ori is an agent that reasons about physical signals and acts on them.
 Tier A actions  — always autonomous (alerts, logs)
 Tier B actions  — soft physical; explicit approval or post-action policy required
 Tier C actions  — approval required (relay/contactor-controlled shutdowns)
-Tier D actions  — always autonomous, highest priority (safety cutoffs)
+Tier D actions  — always autonomous, attempted before lower-authority work (safety cutoffs)
 ```
 
 Every function, class, and test must be written with this framing in mind.

@@ -1575,11 +1575,20 @@ which the loader sets from the packaged skill roots and never reads from YAML.
 Escalation into Tier D from a skill's `actions.available` list is capped at
 Tier C for the same reason. Packaged first-party Tier D skills are unaffected.
 
-This is containment, not the final model. The general answer is a runtime-owned
-capability grant binding skill identity, trigger, action and permitted maximum
-tier, so a community skill can hold Tier D when the runtime has explicitly
-granted it. That is contract work and belongs in `ori-specs`; the provenance
-rule holds the boundary until it exists.
+This is containment, not the final model — but the general answer is not a
+capability grant. A grant binding skill identity, trigger, action and permitted
+maximum tier governs **Tier A to C only and can never confer Tier D**: any
+issuer gives autonomous safety authority an expiry, a revocation path and a
+holder the runtime never reviewed, which is why `device_policy.py` returns for
+Tier D before it consults expiry at all. `capability-grant/v1.md` in `ori-specs`
+states this and enforces it with a reject vector for a grant claiming Tier D.
+
+The general answer is `safety-profile/v1.md`: release-owned typed conditions
+bound to a commissioned zone, carrying no deployment-supplied parameters, with
+the safety registry as the sole Tier D path after the cutover. No community
+skill holds Tier D under that model either — the question it answers is not
+which package may act, but whether a package participates in the decision at
+all, and it does not.
 
 Absence of the attribute is absence of the grant. An earlier revision of this
 decision defaulted a missing `first_party` to trusted, reasoning that objects

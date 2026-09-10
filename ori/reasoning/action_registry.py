@@ -39,8 +39,14 @@ registers appears below.
 
 from dataclasses import dataclass
 
-# Tier ordering. Higher rank means more operator authority is required before
-# the action can take effect.
+# Tier ordering. A through C rank by consequence class — how much of the world
+# the action changes, and how reversibly — which is what a floor compares
+# against. D is not a fourth consequence class: it is Tier C's consequence under
+# a different licence, and it ranks above C only so that a declaration of D
+# satisfies a floor of C. Reading this as "higher rank means more operator
+# authority" is false at exactly one point, and it is the point that matters:
+# Tier D removes the operator entirely. No entry may hold a D floor, for the
+# reason recorded below.
 _TIER_ORDER: dict[str, int] = {"A": 1, "B": 2, "C": 3, "D": 4}
 
 

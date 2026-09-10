@@ -337,8 +337,8 @@ def _anchor_fault(trust_anchor_b64: str, source: str) -> str | None:
             f"{source} names a key whose private seed is "
             "published test material in this repository, so anyone holding a "
             "clone can sign a community skill this runtime would accept. A "
-            "forged skill cannot reach Tier D, which is granted by provenance "
-            "to skills shipped with the runtime, but it can declare Tier B "
+            "forged skill cannot reach Tier D, which today is confined to "
+            "skills shipped with the runtime, but it can declare Tier B "
             "triggers that act without approval. Generate a Hub signing key "
             "that has never left the producer and configure its public half "
             "instead."
@@ -470,7 +470,9 @@ class Skill:
     hooks: Any = None  # loaded module or None
     # Whether this skill ships with the runtime. Set by SkillLoader from the
     # packaged skill roots; never read from skill.yaml, so a skill cannot claim
-    # it. Tier D authority depends on it.
+    # it. Tier D is never package-granted: this flag contains the legacy package
+    # path until the release-owned safety profile replaces it, at which point
+    # packages do not participate in the Tier D decision at all.
     first_party: bool = False
 
     def get_default_actions_for_trigger(self, trigger_name: str) -> list[str]:
@@ -1607,10 +1609,13 @@ class SkillLoader:
             # it that authority — so a correctly signed community skill could
             # otherwise declare an always-true Tier D trigger on a relay action
             # and obtain autonomous physical actuation, with every other check
-            # in this file passing. Until a capability grant binding skill
-            # identity, trigger, action and permitted maximum tier exists, Tier
-            # D is confined to skills that ship with the runtime and are
-            # reviewed and released with it.
+            # in this file passing. Tier D is therefore confined to skills that
+            # ship with the runtime and are reviewed and released with it. A
+            # capability grant binding skill identity, trigger, action and
+            # permitted maximum tier does not change that: such a grant governs
+            # Tier A to C and must never confer Tier D, because an issuer able
+            # to grant it gives safety authority an expiry and a revocation
+            # path. Provenance is the answer here, not a placeholder for one.
             if action_tier == "D" and not first_party:
                 raise SkillSecurityError(
                     f"Skill '{skill_name}' trigger '{name}' declares Tier D, but "

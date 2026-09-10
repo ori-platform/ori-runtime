@@ -29,8 +29,8 @@ def dispatcher():
 def context():
     event = MagicMock(spec=OriEvent)
     event.device_id = "test-device"
-    # A real SkillContext rather than a mock of one: Tier D authority is
-    # granted by provenance, and `first_party` has to be genuinely True — a
+    # A real SkillContext rather than a mock of one: the legacy Tier D path is
+    # confined by provenance, and `first_party` has to be genuinely True — a
     # MagicMock attribute does not satisfy the explicit `is True` check, which
     # is the point of checking identity rather than truthiness.
     return SkillContext(
