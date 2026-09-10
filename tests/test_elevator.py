@@ -1590,8 +1590,13 @@ class TestReasonAndDispatch:
         store = StateStore(db_path=str(tmp_path / "tier-b-failure.db"))
         await store.open()
         try:
+
+            async def ok_executor(_action, _context):
+                return True
+
             dispatcher = ActionDispatcher()
             dispatcher.register_executor("switch_power_source", fail_executor)
+            dispatcher.register_executor("alert_whatsapp", ok_executor)
             local_llm = AsyncMock()
             local_llm.reason.return_value = ReasoningResult(
                 text="This should not run.",
