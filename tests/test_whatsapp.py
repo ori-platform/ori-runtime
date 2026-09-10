@@ -236,6 +236,38 @@ async def test_free_form_reply_refuses_expired_inbound_window():
     assert provider.session_replies == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("received_offset_ms", "expected_sent"),
+    [
+        (5 * 60 * 1000, True),
+        (5 * 60 * 1000 + 1, False),
+        (-(24 * 60 * 60 * 1000 - 1), True),
+        (-(24 * 60 * 60 * 1000), False),
+    ],
+)
+async def test_free_form_reply_enforces_clock_skew_and_window_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    received_offset_ms: int,
+    expected_sent: bool,
+):
+    device_now_ms = 1_780_000_000_000
+    monkeypatch.setattr("ori.actions.whatsapp.now_ms", lambda: device_now_ms)
+    provider = _OKProvider()
+    action = WhatsAppAction(provider=provider, templates=_TEMPLATES)
+    inbound = _inbound(received_at_ms=device_now_ms + received_offset_ms)
+
+    sent = await action.send_reply(
+        WhatsAppSessionReply(body="bounded", in_reply_to=inbound),
+        "whatsapp:+234111",
+    )
+
+    assert sent is expected_sent
+    assert provider.session_replies == (
+        [("whatsapp:+234111", "bounded")] if expected_sent else []
+    )
+
+
 # ── WhatsAppAction.send_approval_request ─────────────────────────────────────
 
 

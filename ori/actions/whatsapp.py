@@ -79,6 +79,7 @@ Reply YES-{proposal_id} to approve  |  Reply NO-{proposal_id} to cancel
 Auto-cancel in {timeout} seconds if no response."""
 
 _WHATSAPP_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000
+_WHATSAPP_MAX_CLOCK_SKEW_MS = 5 * 60 * 1000
 _DELIVERED_STATUSES = frozenset({"delivered", "read"})
 _TERMINAL_FAILURE_STATUSES = frozenset({"failed", "undelivered", "canceled"})
 
@@ -485,7 +486,10 @@ class WhatsAppAction:
                 "WhatsAppAction.send_reply: destination is not the inbound sender"
             )
             return False
-        if age_ms < 0 or age_ms >= _WHATSAPP_REPLY_WINDOW_MS:
+        if (
+            age_ms < -_WHATSAPP_MAX_CLOCK_SKEW_MS
+            or max(age_ms, 0) >= _WHATSAPP_REPLY_WINDOW_MS
+        ):
             logger.warning(
                 "WhatsAppAction.send_reply: inbound reply window is not open sid=%s",
                 inbound.provider_message_id,
