@@ -12,10 +12,18 @@ Primary usage:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
+from ori.actions.alert_delivery import (
+    AlertDeliveryReceipt,
+    AlertSendReceipt,
+    InboundApprovalResponse,
+    OutboundAlert,
+)
 from ori.reasoning.capability_posture import CapabilityPosture
 
 logger = logging.getLogger(__name__)
@@ -99,54 +107,97 @@ class AlertFailoverSender:
 
     async def send(
         self,
-        message: str,
+        alert: OutboundAlert,
         to_number: str,
         *,
         preferred_channel: str | None = None,
-    ) -> bool:
-        """Send via primary transport; fall back to secondary on failure."""
+    ) -> AlertSendReceipt:
+        """Submit via the preferred transport; fail over on refusal."""
         for channel_name, sender in self._ordered_senders(preferred_channel):
             channel_contact = self._normalize_for_channel(channel_name, to_number)
             try:
-                ok = await sender.send(message=message, to_number=channel_contact)
+                receipt = cast(
+                    AlertSendReceipt,
+                    await sender.submit(alert=alert, to_number=channel_contact),
+                )
             except Exception:
                 logger.exception(
                     "AlertFailoverSender: send failed on channel=%s",
                     channel_name,
                 )
-                ok = False
-            if ok:
-                return True
-        return False
+                receipt = AlertSendReceipt.refused(
+                    channel=channel_name, error="sender_raised"
+                )
+            if receipt.accepted:
+                return receipt
+        return AlertSendReceipt.refused(
+            channel=str(preferred_channel or self._primary_channel),
+            error="all_channels_refused",
+        )
 
     async def send_exact(
         self,
-        message: str,
+        alert: OutboundAlert,
         to_number: str,
         *,
         channel: str,
-    ) -> bool:
-        """Send on exactly one channel without failover."""
+    ) -> AlertSendReceipt:
+        """Submit on exactly one channel without failover."""
         channel_name = str(channel or "").strip().lower()
         if channel_name not in {"sms", "whatsapp"}:
             logger.warning("AlertFailoverSender: unknown exact channel=%r", channel)
-            return False
+            return AlertSendReceipt.refused(
+                channel=channel_name, error="unknown_channel"
+            )
         if not self._channel_available(channel_name):
-            return False
+            return AlertSendReceipt.refused(
+                channel=channel_name, error="channel_unavailable"
+            )
 
         sender = self._sms_sender if channel_name == "sms" else self._whatsapp_sender
         if sender is None:
-            return False
+            return AlertSendReceipt.refused(
+                channel=channel_name, error="sender_unavailable"
+            )
 
         channel_contact = self._normalize_for_channel(channel_name, to_number)
         try:
-            return bool(await sender.send(message=message, to_number=channel_contact))
+            return cast(
+                AlertSendReceipt,
+                await sender.submit(alert=alert, to_number=channel_contact),
+            )
         except Exception:
             logger.exception(
                 "AlertFailoverSender: exact send failed on channel=%s",
                 channel_name,
             )
-            return False
+            return AlertSendReceipt.refused(channel=channel_name, error="sender_raised")
+
+    async def get_delivery_receipt(
+        self,
+        *,
+        channel: str,
+        provider_message_id: str,
+    ) -> AlertDeliveryReceipt | None:
+        """Fetch a later provider status when the selected sender supports it."""
+
+        channel_name = str(channel or "").strip().lower()
+        sender = self._sms_sender if channel_name == "sms" else self._whatsapp_sender
+        getter = getattr(sender, "get_delivery_receipt", None)
+        if not callable(getter):
+            return None
+        receipt_getter = cast(
+            Callable[[str], Awaitable[AlertDeliveryReceipt | None]], getter
+        )
+        try:
+            return await receipt_getter(provider_message_id)
+        except Exception:
+            logger.exception(
+                "AlertFailoverSender: delivery receipt fetch failed channel=%s sid=%s",
+                channel_name,
+                provider_message_id,
+            )
+            return None
 
     async def listen_for_response(
         self,
@@ -154,11 +205,18 @@ class AlertFailoverSender:
         timeout_seconds: int,
         *,
         preferred_channel: str | None = None,
-    ) -> str | None:
+    ) -> str | InboundApprovalResponse | None:
         """Wait for first response from either transport listener."""
         listeners: list[tuple[str, Any]] = []
         for channel_name, sender in self._ordered_senders(preferred_channel):
-            listener = getattr(sender, "listen_for_response", None)
+            provenance_listener = inspect.getattr_static(
+                sender, "listen_for_approval_response", None
+            )
+            listener = (
+                getattr(sender, "listen_for_approval_response")
+                if callable(provenance_listener)
+                else getattr(sender, "listen_for_response", None)
+            )
             if callable(listener):
                 listeners.append((channel_name, listener))
 
@@ -166,7 +224,7 @@ class AlertFailoverSender:
             return None
 
         deadline = time.monotonic() + max(1, int(timeout_seconds))
-        pending: set[asyncio.Task[str | None]] = set()
+        pending: set[asyncio.Task[str | InboundApprovalResponse | None]] = set()
         for channel_name, listener in listeners:
             channel_contact = self._normalize_for_channel(channel_name, from_number)
             pending.add(
@@ -217,12 +275,12 @@ class AlertFailoverSender:
         listener: Any,
         from_number: str,
         timeout_seconds: int,
-    ) -> str | None:
+    ) -> str | InboundApprovalResponse | None:
         # cast rather than coerce: the listener is caller-supplied and untyped,
         # and this is a typing correction, not a behaviour change.
         try:
             return cast(
-                "str | None",
+                "str | InboundApprovalResponse | None",
                 await listener(
                     from_number=from_number,
                     timeout_seconds=timeout_seconds,
@@ -230,7 +288,10 @@ class AlertFailoverSender:
             )
         except TypeError:
             try:
-                return cast("str | None", await listener(from_number, timeout_seconds))
+                return cast(
+                    "str | InboundApprovalResponse | None",
+                    await listener(from_number, timeout_seconds),
+                )
             except Exception:
                 logger.exception(
                     "AlertFailoverSender: %s listener failed",

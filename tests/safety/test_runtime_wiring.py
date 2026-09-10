@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from ori.actions.alert_delivery import AlertSendReceipt
 from ori.config import ConfigValidationError
 from ori.runtime import OriRuntime
 from ori.security.commissioning.anchors import COMMISSIONING_ANCHOR_ENV
@@ -106,9 +107,21 @@ def _patch_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, ratified: bool
 ) -> None:
     monkeypatch.setattr(
-        "ori.actions.whatsapp.TwilioProvider.send", AsyncMock(return_value=True)
+        "ori.actions.whatsapp.TwilioProvider.send_template",
+        AsyncMock(
+            return_value=AlertSendReceipt.accepted_without_provider_receipt(
+                channel="whatsapp"
+            )
+        ),
     )
-    monkeypatch.setattr("ori.actions.sms.SMSAction.send", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "ori.actions.sms.SMSAction.submit",
+        AsyncMock(
+            return_value=AlertSendReceipt.accepted_without_provider_receipt(
+                channel="sms"
+            )
+        ),
+    )
     monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(SEED))
     monkeypatch.chdir(tmp_path)
     if ratified:
@@ -475,9 +488,13 @@ async def test_safety_notice_survives_a_denying_device_policy(
     async def _deny(self, *, channel, action_tier):
         return False
 
-    async def _spy_send(self, *, message, to_number, preferred_channel):
-        sent.append(message)
-        return True
+    async def _spy_send(self, *, alert, to_number, preferred_channel):
+        from ori.actions.alert_delivery import AlertSendReceipt
+
+        sent.append(alert.sms_body)
+        return AlertSendReceipt.accepted_without_provider_receipt(
+            channel=preferred_channel
+        )
 
     async def _count(self, channel, *, action_tier):
         counted.append(action_tier)

@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from ori.actions.alert_delivery import AlertSendReceipt
 from ori.config import Config, ConfigValidationError
 from ori.runtime import OriRuntime
 from ori.security.commissioning.anchors import (
@@ -98,9 +99,21 @@ def _write_binding(tmp_path: Path, **overrides: Any) -> None:
 
 def _patch_external(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "ori.actions.whatsapp.TwilioProvider.send", AsyncMock(return_value=True)
+        "ori.actions.whatsapp.TwilioProvider.send_template",
+        AsyncMock(
+            return_value=AlertSendReceipt.accepted_without_provider_receipt(
+                channel="whatsapp"
+            )
+        ),
     )
-    monkeypatch.setattr("ori.actions.sms.SMSAction.send", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "ori.actions.sms.SMSAction.submit",
+        AsyncMock(
+            return_value=AlertSendReceipt.accepted_without_provider_receipt(
+                channel="sms"
+            )
+        ),
+    )
 
 
 async def _start_expecting_refusal(runtime: OriRuntime) -> None:

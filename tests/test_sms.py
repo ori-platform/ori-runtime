@@ -14,12 +14,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from ori.actions.alert_delivery import AlertIntent, OutboundAlert
 from ori.actions.sms import SMSAction
 
 # ── AT SDK stub ───────────────────────────────────────────────────────────────
 
 
-def _make_at_stub(status: str = "Success") -> types.ModuleType:
+def _make_at_stub(
+    status: str = "Success", message_id: str = "ATXid-123"
+) -> types.ModuleType:
     """Build a minimal africastalking module stub that returns *status*."""
     stub: Any = types.ModuleType("africastalking")
 
@@ -28,7 +31,13 @@ def _make_at_stub(status: str = "Success") -> types.ModuleType:
         def send(message, recipients, sender_id):
             return {
                 "SMSMessageData": {
-                    "Recipients": [{"status": status, "number": recipients[0]}]
+                    "Recipients": [
+                        {
+                            "status": status,
+                            "number": recipients[0],
+                            "messageId": message_id,
+                        }
+                    ]
                 }
             }
 
@@ -63,6 +72,14 @@ def _make_at_stub_raises() -> types.ModuleType:
     stub.SMS = _SMS
     stub.initialize = lambda username, api_key: None
     return stub
+
+
+def _alert() -> OutboundAlert:
+    return OutboundAlert(
+        intent=AlertIntent.TIER_A_ALERT,
+        sms_body="Alert: overcurrent.",
+        template_variables=("overcurrent", "Ikeja", "Wednesday 23:00"),
+    )
 
 
 # ── Degraded mode (no credentials) ───────────────────────────────────────────
@@ -108,6 +125,23 @@ async def test_send_returns_true_on_success(monkeypatch):
     action = SMSAction()
     ok = await action.send("Alert: overcurrent.", "+2341234567890")
     assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_submit_retains_provider_acceptance_id(monkeypatch):
+    monkeypatch.setenv("AT_API_KEY", "test-key")
+    monkeypatch.setitem(
+        sys.modules, "africastalking", _make_at_stub(message_id="ATXid-accepted")
+    )
+    action = SMSAction()
+
+    receipt = await action.submit(_alert(), "+2341234567890")
+
+    assert receipt.accepted is True
+    assert receipt.channel == "sms"
+    assert receipt.provider_message_id == "ATXid-accepted"
+    assert receipt.provider_status == "success"
+    assert receipt.accepted_at_ms is not None
 
 
 @pytest.mark.asyncio
@@ -280,6 +314,43 @@ async def test_ingest_incoming_webhook_rejects_invalid_payload(monkeypatch):
     ok = await action.ingest_incoming_webhook({"from": "", "text": ""})
     assert ok is False
     assert not store.store_incoming_message.called
+
+
+@pytest.mark.asyncio
+async def test_ingest_incoming_webhook_routes_delivery_report(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(
+        record_alert_delivery_status_by_provider_id=AsyncMock(return_value=True)
+    )
+    action = SMSAction(state_store=store)
+
+    ok = await action.ingest_incoming_webhook(
+        {"id": "ATXid-delivered", "status": "Delivered", "phoneNumber": "+2340"}
+    )
+
+    assert ok is True
+    store.record_alert_delivery_status_by_provider_id.assert_awaited_once()
+    kwargs = store.record_alert_delivery_status_by_provider_id.await_args.kwargs
+    assert kwargs["channel"] == "sms"
+    assert kwargs["provider_message_id"] == "ATXid-delivered"
+    assert kwargs["provider_status"] == "delivered"
+    assert kwargs["delivered_at_ms"] is not None
+    assert kwargs["terminal_failure"] is False
+
+
+@pytest.mark.asyncio
+async def test_ingest_delivery_report_refuses_unknown_provider_id(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(
+        record_alert_delivery_status_by_provider_id=AsyncMock(return_value=False)
+    )
+    action = SMSAction(state_store=store)
+
+    ok = await action.ingest_delivery_report(
+        {"id": "ATXid-unknown", "status": "Delivered"}
+    )
+
+    assert ok is False
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from ori.actions.alert_delivery import (
+    AlertDeliveryReceipt,
+    AlertIntent,
+    AlertSendReceipt,
+)
 from ori.actions.alert_failover import AlertFailoverSender
 from ori.config import (
     Config,
@@ -335,18 +340,18 @@ async def test_setup_success_notification_sends_enabled_channels():
         def __init__(self):
             self.calls = []
 
-        async def send(self, *, message, to_number, preferred_channel=None):
+        async def send(self, *, alert, to_number, preferred_channel=None):
             raise AssertionError("setup notifications must use exact-channel send")
 
-        async def send_exact(self, *, message, to_number, channel):
+        async def send_exact(self, *, alert, to_number, channel):
             self.calls.append(
                 {
-                    "message": message,
+                    "alert": alert,
                     "to_number": to_number,
                     "channel": channel,
                 }
             )
-            return True
+            return AlertSendReceipt.accepted_without_provider_receipt(channel=channel)
 
     runtime = OriRuntime()
     runtime._operator_contact = "+2348000000000"
@@ -382,21 +387,22 @@ async def test_setup_success_notification_sends_enabled_channels():
     assert [call["channel"] for call in sender.calls] == ["sms", "whatsapp"]
     assert all(call["to_number"] == "+2348000000000" for call in sender.calls)
     assert all(
-        "1 sensor connected and 1 rule active" in call["message"]
+        "1 sensor connected and 1 rule active" in call["alert"].sms_body
         for call in sender.calls
     )
-    assert all("cannot intervene" in call["message"] for call in sender.calls)
+    assert all(call["alert"].intent is AlertIntent.STARTUP for call in sender.calls)
+    assert all("cannot intervene" in call["alert"].sms_body for call in sender.calls)
     assert runtime._last_alert_timestamps_by_trigger["runtime_setup_complete"] > 0
 
 
 @pytest.mark.asyncio
 async def test_setup_success_notification_queues_failed_delivery():
     class FailingAlertSender:
-        async def send(self, *, message, to_number, preferred_channel=None):
+        async def send(self, *, alert, to_number, preferred_channel=None):
             raise AssertionError("setup notifications must use exact-channel send")
 
-        async def send_exact(self, *, message, to_number, channel):
-            return False
+        async def send_exact(self, *, alert, to_number, channel):
+            return AlertSendReceipt.refused(channel=channel)
 
     runtime: Any = OriRuntime()
     runtime._operator_contact = "+2348000000000"
@@ -811,9 +817,11 @@ async def test_a_sensor_that_never_connects_reaches_the_operator(
 
     sent: list[dict] = []
 
-    async def _send(self, *, message, to_number, preferred_channel=None, **kwargs):
-        sent.append({"message": message, "to_number": to_number})
-        return True
+    async def _send(self, *, alert, to_number, preferred_channel=None, **kwargs):
+        sent.append({"message": alert.sms_body, "to_number": to_number})
+        return AlertSendReceipt.accepted_without_provider_receipt(
+            channel=preferred_channel or "sms"
+        )
 
     monkeypatch.setattr(AlertFailoverSender, "send", _send)
 
@@ -906,9 +914,11 @@ async def test_a_failed_connect_reaches_the_pair_that_depends_on_it(
 
     sent: list[str] = []
 
-    async def _send(self, *, message, to_number, preferred_channel=None, **kwargs):
-        sent.append(message)
-        return True
+    async def _send(self, *, alert, to_number, preferred_channel=None, **kwargs):
+        sent.append(alert.sms_body)
+        return AlertSendReceipt.accepted_without_provider_receipt(
+            channel=preferred_channel or "sms"
+        )
 
     monkeypatch.setattr(AlertFailoverSender, "send", _send)
 
@@ -1597,9 +1607,21 @@ def test_main_carries_the_autoload_result_into_the_runtime(monkeypatch):
 def _patch_external(monkeypatch):
     """Patch all external I/O so tests run without hardware or credentials."""
     monkeypatch.setattr(
-        "ori.actions.whatsapp.TwilioProvider.send", AsyncMock(return_value=True)
+        "ori.actions.whatsapp.TwilioProvider.send_template",
+        AsyncMock(
+            return_value=AlertSendReceipt.accepted_without_provider_receipt(
+                channel="whatsapp"
+            )
+        ),
     )
-    monkeypatch.setattr("ori.actions.sms.SMSAction.send", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "ori.actions.sms.SMSAction.submit",
+        AsyncMock(
+            return_value=AlertSendReceipt.accepted_without_provider_receipt(
+                channel="sms"
+            )
+        ),
+    )
 
 
 def _treat_scratch_skills_as_packaged(monkeypatch):
@@ -5214,7 +5236,7 @@ class TestRemoteDevicePolicy:
         finally:
             await runtime._state_store.close()
 
-    async def test_alert_delivery_loop_delivers_queued_alert(self, tmp_path):
+    async def test_alert_delivery_loop_records_provider_acceptance(self, tmp_path):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "outbox-deliver.db"))
         await runtime._state_store.open()
@@ -5231,10 +5253,12 @@ class TestRemoteDevicePolicy:
         )
 
         async def _send_and_stop(
-            *, message: str, to_number: str, preferred_channel: str | None = None
-        ) -> bool:
+            *, alert, to_number: str, preferred_channel: str | None = None
+        ) -> AlertSendReceipt:
             runtime._shutdown_event.set()
-            return True
+            return AlertSendReceipt.accepted_without_provider_receipt(
+                channel=preferred_channel or "sms"
+            )
 
         alert_sender = AsyncMock()
         alert_sender.send.side_effect = _send_and_stop
@@ -5243,6 +5267,109 @@ class TestRemoteDevicePolicy:
             await runtime._alert_delivery_loop(alert_sender)
             remaining = await runtime._state_store.get_retryable_alerts(limit=10)
             assert remaining == []
+            assert runtime._state_store._conn is not None
+            stored = runtime._state_store._conn.execute(
+                "SELECT status, delivered_at_ms FROM alert_outbox "
+                "WHERE alert_id = 'deliver-1'"
+            ).fetchone()
+            assert stored["status"] == "accepted"
+            assert stored["delivered_at_ms"] is None
+        finally:
+            await runtime._state_store.close()
+
+    async def test_delivery_receipt_advances_handset_delivery_fact(self, tmp_path):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "outbox-receipt.db"))
+        await runtime._state_store.open()
+        await runtime._state_store.enqueue_alert(
+            alert_id="receipt-1",
+            channel="whatsapp",
+            recipient="whatsapp:+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+        await runtime._state_store.mark_alert_accepted(
+            "receipt-1",
+            accepted_channel="whatsapp",
+            provider_message_id="SM" + "a" * 32,
+            provider_status="queued",
+            accepted_at_ms=2000,
+        )
+        sender = AsyncMock()
+        sender.get_delivery_receipt = AsyncMock(
+            return_value=AlertDeliveryReceipt(
+                provider_message_id="SM" + "a" * 32,
+                provider_status="delivered",
+                observed_at_ms=3000,
+                delivered_at_ms=2900,
+            )
+        )
+
+        try:
+            await runtime._reconcile_alert_delivery_receipts(sender)
+
+            assert runtime._state_store._conn is not None
+            row = runtime._state_store._conn.execute(
+                "SELECT status, provider_status, accepted_at_ms, delivered_at_ms "
+                "FROM alert_outbox WHERE alert_id = 'receipt-1'"
+            ).fetchone()
+            assert dict(row) == {
+                "status": "accepted",
+                "provider_status": "delivered",
+                "accepted_at_ms": 2000,
+                "delivered_at_ms": 2900,
+            }
+        finally:
+            await runtime._state_store.close()
+
+    async def test_terminal_receipt_failure_respects_non_tier_d_retry_limit(
+        self, tmp_path
+    ):
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = StateStore(str(tmp_path / "outbox-terminal.db"))
+        runtime._alert_outbox_max_non_tier_d_attempts = 1
+        await runtime._state_store.open()
+        await runtime._state_store.enqueue_alert(
+            alert_id="terminal-1",
+            channel="whatsapp",
+            recipient="whatsapp:+2340000000000",
+            message="msg",
+            action_tier="A",
+            trigger_name="high_draw",
+            original_ts=1234,
+        )
+        await runtime._state_store.mark_alert_accepted(
+            "terminal-1",
+            accepted_channel="whatsapp",
+            provider_message_id="SM" + "b" * 32,
+            provider_status="queued",
+            accepted_at_ms=2000,
+        )
+        sender = AsyncMock()
+        sender.get_delivery_receipt = AsyncMock(
+            return_value=AlertDeliveryReceipt(
+                provider_message_id="SM" + "b" * 32,
+                provider_status="undelivered",
+                observed_at_ms=3000,
+                terminal_failure=True,
+            )
+        )
+
+        try:
+            await runtime._reconcile_alert_delivery_receipts(sender)
+
+            assert runtime._state_store._conn is not None
+            row = runtime._state_store._conn.execute(
+                "SELECT status, attempt_count, delivered_at_ms "
+                "FROM alert_outbox WHERE alert_id = 'terminal-1'"
+            ).fetchone()
+            assert dict(row) == {
+                "status": "abandoned",
+                "attempt_count": 1,
+                "delivered_at_ms": None,
+            }
         finally:
             await runtime._state_store.close()
 
@@ -5265,10 +5392,10 @@ class TestRemoteDevicePolicy:
         await runtime._state_store.mark_alert_attempt_failed("tierd-1")
 
         async def _fail_and_stop(
-            *, message: str, to_number: str, preferred_channel: str | None = None
-        ) -> bool:
+            *, alert, to_number: str, preferred_channel: str | None = None
+        ) -> AlertSendReceipt:
             runtime._shutdown_event.set()
-            return False
+            return AlertSendReceipt.refused(channel=preferred_channel or "sms")
 
         alert_sender = AsyncMock()
         alert_sender.send.side_effect = _fail_and_stop
@@ -5301,10 +5428,10 @@ class TestRemoteDevicePolicy:
             await runtime._state_store.mark_alert_attempt_failed("aband-1")
 
         async def _fail_and_stop(
-            *, message: str, to_number: str, preferred_channel: str | None = None
-        ) -> bool:
+            *, alert, to_number: str, preferred_channel: str | None = None
+        ) -> AlertSendReceipt:
             runtime._shutdown_event.set()
-            return False
+            return AlertSendReceipt.refused(channel=preferred_channel or "sms")
 
         alert_sender = AsyncMock()
         alert_sender.send.side_effect = _fail_and_stop

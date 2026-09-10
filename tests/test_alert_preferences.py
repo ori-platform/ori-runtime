@@ -21,6 +21,7 @@ from typing import cast
 
 import pytest
 
+from ori.actions.alert_delivery import AlertSendReceipt, OutboundAlert
 from ori.policy import alert_classes
 from ori.policy.alert_classes import (
     ALERT_CLASSES,
@@ -252,11 +253,17 @@ async def test_a_safety_notice_that_consulted_a_preference_would_raise() -> None
     sent: list[dict] = []
 
     class _Sender:
-        async def send(self, *, message, to_number, preferred_channel):
+        async def send(self, *, alert, to_number, preferred_channel):
             sent.append(
-                {"message": message, "to": to_number, "channel": preferred_channel}
+                {
+                    "message": alert.sms_body,
+                    "to": to_number,
+                    "channel": preferred_channel,
+                }
             )
-            return True
+            return AlertSendReceipt.accepted_without_provider_receipt(
+                channel=preferred_channel
+            )
 
     delivered = await runtime._send_or_queue_safety_alert(
         message="SAFETY measurement_loss: zone z1 lost its measurement",
@@ -292,9 +299,13 @@ class _RecordingSender:
     def __init__(self) -> None:
         self.sent: list[str] = []
 
-    async def send(self, *, message, to_number, preferred_channel):
-        self.sent.append(message)
-        return True
+    async def send(
+        self, *, alert: OutboundAlert, to_number: str, preferred_channel: str
+    ) -> AlertSendReceipt:
+        self.sent.append(alert.sms_body)
+        return AlertSendReceipt.accepted_without_provider_receipt(
+            channel=preferred_channel
+        )
 
 
 SKILL = "energy-anomaly-detector"
