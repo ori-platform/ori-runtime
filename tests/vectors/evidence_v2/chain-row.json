@@ -20,36 +20,99 @@
         "payload": {
           "kind": "runtime_action",
           "attestation": "at_emission",
-          "action_log_id": 1
+          "action_log_id": 1,
+          "authority": {
+            "kind": "tier_c_approval",
+            "proposal_id": "AB12CD34"
+          }
         },
         "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
         "schema_version": "ori.evidence.v2",
         "sequence_num": 1
       },
-      "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
-      "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
-      "event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867",
-      "signature": "ed25519:y4hKnrXbxHWOlhTrTG5yxT4uB2EEl8X+IvqY0SF3Wll5s+Xq5m8wjLO9k3OjObmfuanHIoGoya8k0V3o7VzWBg=="
+      "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+      "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+      "event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca",
+      "signature": "ed25519:LcB68ytTwzn0fKWe1dkAT+C4jL8hlar31kC+Kp74LToS4CO0QUdewAo/2slorGTTdJ33BsGnsbN5PoVxAKptBA=="
     },
     {
       "envelope": {
         "device_id": "energy-monitor-ikeja-01",
-        "emitted_at_ms": 1751500900000,
+        "emitted_at_ms": 1751500800000,
         "event_id": "621262cc-45ed-5940-b355-35758976455b",
         "event_type": "SAFETY_ACTION_EXECUTED",
         "payload": {
           "kind": "runtime_action",
           "attestation": "reconciled_late",
-          "action_log_id": 2
+          "action_log_id": 2,
+          "authority": {
+            "kind": "tier_d_legacy_skill",
+            "skill_name": "energy-anomaly-detector",
+            "skill_version": "0.2.1",
+            "trigger_name": "dangerous_overcurrent"
+          }
         },
-        "prev_event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867",
+        "prev_event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca",
         "schema_version": "ori.evidence.v2",
         "sequence_num": 2
       },
-      "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500900000,\"event_id\":\"621262cc-45ed-5940-b355-35758976455b\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":2,\"attestation\":\"reconciled_late\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":2}",
-      "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303930303030302c226576656e745f6964223a2236323132363263632d343565642d353934302d623335352d333537353839373634353562222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a322c226174746573746174696f6e223a227265636f6e63696c65645f6c617465222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2230653861646434623638633032656136376436383539613337323165376633353138353963306434333737346136386264303032323938303162393633383637222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a327d",
-      "event_hash": "94217d7b81c1a8a65dbd12e528bf2be3d37dcbde1f3509deb12d4c91336edcee",
-      "signature": "ed25519:9PWI1J4H5bLNvmDAdIUpPcSOxnTQywoiJOC5Lv4v6PQuMQGc3/0U5MI03lyuCQmgtH6H0ceX1c/C0ALpx8hhDg=="
+      "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"621262cc-45ed-5940-b355-35758976455b\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":2,\"attestation\":\"reconciled_late\",\"authority\":{\"kind\":\"tier_d_legacy_skill\",\"skill_name\":\"energy-anomaly-detector\",\"skill_version\":\"0.2.1\",\"trigger_name\":\"dangerous_overcurrent\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":2}",
+      "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2236323132363263632d343565642d353934302d623335352d333537353839373634353562222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a322c226174746573746174696f6e223a227265636f6e63696c65645f6c617465222c22617574686f72697479223a7b226b696e64223a22746965725f645f6c65676163795f736b696c6c222c22736b696c6c5f6e616d65223a22656e657267792d616e6f6d616c792d6465746563746f72222c22736b696c6c5f76657273696f6e223a22302e322e31222c22747269676765725f6e616d65223a2264616e6765726f75735f6f76657263757272656e74227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2230306437323365323034316433343236313665326263316365623862623066366130643561333731626163613463373363323261653934343032396135396361222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a327d",
+      "event_hash": "cd5c324dd0bb6c24d7aad38fcc9429c0028d926e8985de556757fc42597e40ea",
+      "signature": "ed25519:EID4K7cGuBjYrTclgaSN/Zl0Jz3+Yh/e2Dzq2WWVcSfOEKTJp1QytzfMInPjKgvdR0VKPYUVgrsSYpNc8aV7Aw=="
+    },
+    {
+      "envelope": {
+        "device_id": "energy-monitor-ikeja-01",
+        "emitted_at_ms": 1751500800000,
+        "event_id": "00000002-0000-5000-8000-000000000002",
+        "event_type": "SAFETY_ACTION_EXECUTED",
+        "payload": {
+          "kind": "runtime_action",
+          "attestation": "at_emission",
+          "action_log_id": 3,
+          "authority": {
+            "kind": "tier_d_profile",
+            "profile_id": "electrical.overcurrent.v1",
+            "zone_id": "zone-main-incomer",
+            "binding_seq": 4
+          }
+        },
+        "prev_event_hash": "cd5c324dd0bb6c24d7aad38fcc9429c0028d926e8985de556757fc42597e40ea",
+        "schema_version": "ori.evidence.v2",
+        "sequence_num": 3
+      },
+      "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"00000002-0000-5000-8000-000000000002\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":3,\"attestation\":\"at_emission\",\"authority\":{\"binding_seq\":4,\"kind\":\"tier_d_profile\",\"profile_id\":\"electrical.overcurrent.v1\",\"zone_id\":\"zone-main-incomer\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"cd5c324dd0bb6c24d7aad38fcc9429c0028d926e8985de556757fc42597e40ea\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":3}",
+      "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230303030303030322d303030302d353030302d383030302d303030303030303030303032222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a332c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b2262696e64696e675f736571223a342c226b696e64223a22746965725f645f70726f66696c65222c2270726f66696c655f6964223a22656c656374726963616c2e6f76657263757272656e742e7631222c227a6f6e655f6964223a227a6f6e652d6d61696e2d696e636f6d6572227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2263643563333234646430626236633234643761616433386663633934323963303032386439323665383938356465353536373537666334323539376534306561222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a337d",
+      "event_hash": "3bb0e007c8ad0c441e9da2622f25d8729d580c49b6f6c3b0abe2c354dd6a9880",
+      "signature": "ed25519:wShIRKfp085wTNt/VuWEd6Bz80SobRy14QY1knNujLVBh2C7vnL3Vo/eor0OY+6MPCUFlNe4HCOC/lVCDSQ1Cg=="
+    },
+    {
+      "envelope": {
+        "device_id": "energy-monitor-ikeja-01",
+        "emitted_at_ms": 1751500800000,
+        "event_id": "00000003-0000-5000-8000-000000000003",
+        "event_type": "SAFETY_ACTION_EXECUTED",
+        "payload": {
+          "kind": "runtime_action",
+          "attestation": "at_emission",
+          "action_log_id": 4,
+          "authority": {
+            "kind": "tier_d_qualification",
+            "profile_id": "electrical.overcurrent.v1",
+            "zone_id": "zone-main-incomer",
+            "binding_seq": 4,
+            "fixture_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        },
+        "prev_event_hash": "3bb0e007c8ad0c441e9da2622f25d8729d580c49b6f6c3b0abe2c354dd6a9880",
+        "schema_version": "ori.evidence.v2",
+        "sequence_num": 4
+      },
+      "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"00000003-0000-5000-8000-000000000003\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":4,\"attestation\":\"at_emission\",\"authority\":{\"binding_seq\":4,\"fixture_hash\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"kind\":\"tier_d_qualification\",\"profile_id\":\"electrical.overcurrent.v1\",\"zone_id\":\"zone-main-incomer\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"3bb0e007c8ad0c441e9da2622f25d8729d580c49b6f6c3b0abe2c354dd6a9880\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":4}",
+      "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230303030303030332d303030302d353030302d383030302d303030303030303030303033222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a342c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b2262696e64696e675f736571223a342c22666978747572655f68617368223a227368613235363a62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262222c226b696e64223a22746965725f645f7175616c696669636174696f6e222c2270726f66696c655f6964223a22656c656374726963616c2e6f76657263757272656e742e7631222c227a6f6e655f6964223a227a6f6e652d6d61696e2d696e636f6d6572227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2233626230653030376338616430633434316539646132363232663235643837323964353830633439623666366333623061626532633335346464366139383830222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a347d",
+      "event_hash": "7cb8de79edd0fce930f68d6889eeda0560ae4e7510b31b08a50238c954b5047e",
+      "signature": "ed25519:GhP3JBHi1Jy7TX6tXsIHYBJPHwLtUgj2XWuR+UReMAiQUhw0pzVw4mh3JvRNCAnDwBJRur7E8n+I9Iv8wk9YBw=="
     }
   ],
   "rejection_cases": [
@@ -68,29 +131,33 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "reconciled_late",
-            "action_log_id": 2
+            "action_log_id": 2,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
-          "prev_event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867",
+          "prev_event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 5
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500900000,\"event_id\":\"621262cc-45ed-5940-b355-35758976455b\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":2,\"attestation\":\"reconciled_late\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":5}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303930303030302c226576656e745f6964223a2236323132363263632d343565642d353934302d623335352d333537353839373634353562222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a322c226174746573746174696f6e223a227265636f6e63696c65645f6c617465222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2230653861646434623638633032656136376436383539613337323165376633353138353963306434333737346136386264303032323938303162393633383637222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a357d",
-        "event_hash": "4ffb6c80275b82ff9472d4d76a0be855478af86719c2ffa3a378ed09e49d226e",
-        "signature": "ed25519:eC5WXeTed1CbxH42WSfD5t9vixrxP8YatjsOfPo4m17bNQhpatQ2T23yb8hrBjwZqY4bzPHWDcFYAxdtzQWiAA==",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500900000,\"event_id\":\"621262cc-45ed-5940-b355-35758976455b\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":2,\"attestation\":\"reconciled_late\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":5}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303930303030302c226576656e745f6964223a2236323132363263632d343565642d353934302d623335352d333537353839373634353562222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a322c226174746573746174696f6e223a227265636f6e63696c65645f6c617465222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2230306437323365323034316433343236313665326263316365623862623066366130643561333731626163613463373363323261653934343032396135396361222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a357d",
+        "event_hash": "2b8987409d31c9f134f8062c3b7aaf6d2919d4772d496b3a1e6fae2dfac601d9",
+        "signature": "ed25519:9U0tvwZDXouWLku+MZ8heYjXvMSJDBc7giDYsfZSzRtErXjPofZSABc2LVr8JAdOut/aMMoMpLPzNzf0PdbGDA==",
         "row_columns": {
           "seq": 5,
           "event_id": "621262cc-45ed-5940-b355-35758976455b",
           "event_type": "SAFETY_ACTION_EXECUTED",
           "device_id": "energy-monitor-ikeja-01",
           "emitted_at_ms": 1751500900000,
-          "prev_event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867"
+          "prev_event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca"
         },
-        "payload_json": "{\"action_log_id\":2,\"attestation\":\"reconciled_late\",\"kind\":\"runtime_action\"}"
+        "payload_json": "{\"action_log_id\":2,\"attestation\":\"reconciled_late\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 2,
-        "expected_prev_event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867"
+        "expected_prev_event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca"
       }
     },
     {
@@ -108,16 +175,20 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "reconciled_late",
-            "action_log_id": 2
+            "action_log_id": 2,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 2
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500900000,\"event_id\":\"621262cc-45ed-5940-b355-35758976455b\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":2,\"attestation\":\"reconciled_late\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":2}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303930303030302c226576656e745f6964223a2236323132363263632d343565642d353934302d623335352d333537353839373634353562222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a322c226174746573746174696f6e223a227265636f6e63696c65645f6c617465222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a327d",
-        "event_hash": "e4b5e66e228db286bb8ab842e7ea45ca2945cbf7db481e601ab2dde710cce748",
-        "signature": "ed25519:EmAvNYRAaaCtqz0S9VvFdX8m3VGSK4KzFERBNvhRe0mdEkqxfoGdPrC9whitnK/dEIkNcOqUnxGt43PBKOoNCg==",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500900000,\"event_id\":\"621262cc-45ed-5940-b355-35758976455b\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":2,\"attestation\":\"reconciled_late\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":2}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303930303030302c226576656e745f6964223a2236323132363263632d343565642d353934302d623335352d333537353839373634353562222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a322c226174746573746174696f6e223a227265636f6e63696c65645f6c617465222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a327d",
+        "event_hash": "f898f74da0d83a7dd159b93beeb3c8a19985e1b88cdd1a442d38e9c78a0e8439",
+        "signature": "ed25519:Cvs97mk/8RnQgbYl05guikx/bQNArcoqgQSSxJ3JMlQsAcspOLbWz1EveMguXpi4s1n+9Frsr7Gy7CQzUOc9Ag==",
         "row_columns": {
           "seq": 2,
           "event_id": "621262cc-45ed-5940-b355-35758976455b",
@@ -126,11 +197,11 @@
           "emitted_at_ms": 1751500900000,
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
         },
-        "payload_json": "{\"action_log_id\":2,\"attestation\":\"reconciled_late\",\"kind\":\"runtime_action\"}"
+        "payload_json": "{\"action_log_id\":2,\"attestation\":\"reconciled_late\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 2,
-        "expected_prev_event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867"
+        "expected_prev_event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca"
       }
     },
     {
@@ -148,16 +219,20 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "at_emission",
-            "action_log_id": 1
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 1
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
         "event_hash": "7b4c9b96060680f60b714b15d6a45222ac11ae6e88ccb34dca964f0fd9aad791",
-        "signature": "ed25519:y4hKnrXbxHWOlhTrTG5yxT4uB2EEl8X+IvqY0SF3Wll5s+Xq5m8wjLO9k3OjObmfuanHIoGoya8k0V3o7VzWBg==",
+        "signature": "ed25519:LcB68ytTwzn0fKWe1dkAT+C4jL8hlar31kC+Kp74LToS4CO0QUdewAo/2slorGTTdJ33BsGnsbN5PoVxAKptBA==",
         "row_columns": {
           "seq": 1,
           "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
@@ -166,7 +241,7 @@
           "emitted_at_ms": 1751500800000,
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
         },
-        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"}"
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 1,
@@ -188,15 +263,19 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "at_emission",
-            "action_log_id": 1
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 1
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
-        "event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca",
         "signature": "ed25519:KwvOcYfEzeNBnk+evGBA7Z7MCP/h7cUy1Ek2ojS1wLP9pUuEB5JH4krs0vHN8LPS2RN9GOd5cDma3NwUwNb+Cg==",
         "row_columns": {
           "seq": 1,
@@ -206,7 +285,7 @@
           "emitted_at_ms": 1751500800000,
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
         },
-        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"}"
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 1,
@@ -228,16 +307,20 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "at_emission",
-            "action_log_id": 1
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 7
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":7}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a377d",
-        "event_hash": "8e1047c998c0b502d7987610e0696a0587feec561767dbf3259c56aeb43469e1",
-        "signature": "ed25519:Wk3cVD/yTHDOefYxM1n61zzyUsDlMDrin3mtbi2JMAYBhze/0sv3tV7tLpKrEal7+XCftFMHVl99PHfW9M8bAA==",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":7}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a377d",
+        "event_hash": "ece9ee97dfecd092da3c0acede273580024c7a95f4473cd2b22a61e96e42a963",
+        "signature": "ed25519:fDtEviO17E/YcVuPk+JntELjR7+U2V4Y8cBY1Xn5Xprf8avKNoi6mUiJeFiU0ePYWIY0ctRAUnmCz8CV2RFxBA==",
         "row_columns": {
           "seq": 1,
           "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
@@ -246,7 +329,7 @@
           "emitted_at_ms": 1751500800000,
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
         },
-        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"}"
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 1,
@@ -268,16 +351,20 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "at_emission",
-            "action_log_id": 1
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "0000000000000000000000000000000000000000000000000000000000000000",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 1
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2230303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
-        "event_hash": "9dbd8f8cb48153a5b2330dab1e76bfa2a3d1f2812847f0ebb62a5404e4166f79",
-        "signature": "ed25519:IJf5kdtF09StJuroJOkC6C08V5w1g0eNNizCueLFxbIMfcyK0CKUwhVM/nuCBQkTdT5Ynn6KNUCMpMiFtKKCBw==",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2230303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "17add464ada302f6efa0ef96f59563cfb87cdb1b81477a7abb4f186174752575",
+        "signature": "ed25519:kSfz8bi+zJnRqjJ/Eb8YQH5TcWQTa71AeNAOnUTcwgNEs6bLQLwmHRFuw85xUd5OfqNTKWxahkHCywg5XENXAQ==",
         "row_columns": {
           "seq": 1,
           "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
@@ -286,7 +373,7 @@
           "emitted_at_ms": 1751500800000,
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
         },
-        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"}"
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 1,
@@ -308,16 +395,20 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "at_emission",
-            "action_log_id": 1
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 1
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
-        "event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867",
-        "signature": "ed25519:y4hKnrXbxHWOlhTrTG5yxT4uB2EEl8X+IvqY0SF3Wll5s+Xq5m8wjLO9k3OjObmfuanHIoGoya8k0V3o7VzWBg==",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca",
+        "signature": "ed25519:LcB68ytTwzn0fKWe1dkAT+C4jL8hlar31kC+Kp74LToS4CO0QUdewAo/2slorGTTdJ33BsGnsbN5PoVxAKptBA==",
         "row_columns": {
           "seq": 1,
           "event_id": "0e9f4c6b-98d7-42e0-a905-1055d2253bb5",
@@ -326,7 +417,7 @@
           "emitted_at_ms": 1751500800000,
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
         },
-        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"}"
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 1,
@@ -348,16 +439,20 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "at_emission",
-            "action_log_id": 1
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 1
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
-        "event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867",
-        "signature": "ed25519:y4hKnrXbxHWOlhTrTG5yxT4uB2EEl8X+IvqY0SF3Wll5s+Xq5m8wjLO9k3OjObmfuanHIoGoya8k0V3o7VzWBg==",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca",
+        "signature": "ed25519:LcB68ytTwzn0fKWe1dkAT+C4jL8hlar31kC+Kp74LToS4CO0QUdewAo/2slorGTTdJ33BsGnsbN5PoVxAKptBA==",
         "row_columns": {
           "seq": 1,
           "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
@@ -366,7 +461,7 @@
           "emitted_at_ms": 1751500800000,
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
         },
-        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"}"
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 1,
@@ -388,16 +483,20 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "at_emission",
-            "action_log_id": 1
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 1
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
-        "event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867",
-        "signature": "ed25519:y4hKnrXbxHWOlhTrTG5yxT4uB2EEl8X+IvqY0SF3Wll5s+Xq5m8wjLO9k3OjObmfuanHIoGoya8k0V3o7VzWBg==",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca",
+        "signature": "ed25519:LcB68ytTwzn0fKWe1dkAT+C4jL8hlar31kC+Kp74LToS4CO0QUdewAo/2slorGTTdJ33BsGnsbN5PoVxAKptBA==",
         "row_columns": {
           "seq": 1,
           "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
@@ -406,7 +505,7 @@
           "emitted_at_ms": 1751500800000,
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
         },
-        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"}"
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 1,
@@ -428,16 +527,20 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "at_emission",
-            "action_log_id": 1
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 1
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
-        "event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867",
-        "signature": "ed25519:y4hKnrXbxHWOlhTrTG5yxT4uB2EEl8X+IvqY0SF3Wll5s+Xq5m8wjLO9k3OjObmfuanHIoGoya8k0V3o7VzWBg==",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca",
+        "signature": "ed25519:LcB68ytTwzn0fKWe1dkAT+C4jL8hlar31kC+Kp74LToS4CO0QUdewAo/2slorGTTdJ33BsGnsbN5PoVxAKptBA==",
         "row_columns": {
           "seq": 1,
           "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
@@ -446,7 +549,7 @@
           "emitted_at_ms": 1751599999999,
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
         },
-        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"}"
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 1,
@@ -468,16 +571,20 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "at_emission",
-            "action_log_id": 1
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
           "schema_version": "verity.v1",
           "sequence_num": 1
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"verity.v1\",\"sequence_num\":1}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a227665726974792e7631222c2273657175656e63655f6e756d223a317d",
-        "event_hash": "1de366078fa82a5fde2e27f4f58490f93306fa11528696d666e6810eea30ed49",
-        "signature": "ed25519:jwAk0bbq+S8NhaUlS7IvBb9akwbw8M7Wc0rt/4Vrj/SnzjBTrW7y6iIRbyvSV41qulFLurKKGSrjEhgDoZDVBw==",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"verity.v1\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a227665726974792e7631222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "3d2536c01869e8ddb135c2b05b7316fa5c108f33fdf2efbb666ca56c41b9c4be",
+        "signature": "ed25519:XSbbs/T2PPqcdZA1xCqk7sycsOYKyJAOgbjHkCTySqiyu91oBa7QfEL4v34ap3jDGEIX/1BC8ObO9o0ax6NhCQ==",
         "row_columns": {
           "seq": 1,
           "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
@@ -486,7 +593,7 @@
           "emitted_at_ms": 1751500800000,
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
         },
-        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"}"
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 1,
@@ -508,16 +615,20 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "at_emission",
-            "action_log_id": 1
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 1
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
-        "event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867",
-        "signature": "ed25519:y4hKnrXbxHWOlhTrTG5yxT4uB2EEl8X+IvqY0SF3Wll5s+Xq5m8wjLO9k3OjObmfuanHIoGoya8k0V3o7VzWBg==",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "00d723e2041d342616e2bc1ceb8bb0f6a0d5a371baca4c73c22ae944029a59ca",
+        "signature": "ed25519:LcB68ytTwzn0fKWe1dkAT+C4jL8hlar31kC+Kp74LToS4CO0QUdewAo/2slorGTTdJ33BsGnsbN5PoVxAKptBA==",
         "payload_json": "{\"kind\":\"runtime_action\",\"attestation\":\"at_emission\",\"action_log_id\":999}",
         "row_columns": {
           "seq": 1,
@@ -548,17 +659,21 @@
           "payload": {
             "kind": "runtime_action",
             "attestation": "at_emission",
-            "action_log_id": 1
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34"
+            }
           },
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
           "schema_version": "ori.evidence.v2",
           "sequence_num": 1,
           "extra": true
         },
-        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"extra\":true,\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
-        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c226578747261223a747275652c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
-        "event_hash": "ef98a21cff3afbfd1a2901cb08c1ef2a2ed09172c39b6ca6da91850b456937e7",
-        "signature": "ed25519:HMkjcb+5cNJg/BCLU2XA5ML1sAVXTxV8xK3Z1YX+vrt429nPO4F/qByK+oV0IXkmAOFyLdiIZD2YQ3l+RtSVDA==",
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"extra\":true,\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c226578747261223a747275652c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "cc120a4662aa4fa9ba331d74181b27794b604ebc23d1f831526191568f487721",
+        "signature": "ed25519:PBIZ/pFgyY3qTuP/D6oK76n1D10QDFqICqupoP30o/d78Fq9ddiILa4fD3flFSP5rY6zhIuyxDlUyFz8p/wxAw==",
         "row_columns": {
           "seq": 1,
           "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
@@ -567,7 +682,268 @@
           "emitted_at_ms": 1751500800000,
           "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
         },
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
+      },
+      "chain_context": {
+        "expected_sequence_num": 1,
+        "expected_prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
+      }
+    },
+    {
+      "rule": 14,
+      "name": "runtime_action payload carries no authority",
+      "expected": "reject",
+      "authenticator": "valid",
+      "note": "Every other rule holds. The payload names a runtime action and declares no licensing authority, which is the absence rule 14 exists to catch.",
+      "row": {
+        "envelope": {
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000,
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "payload": {
+            "kind": "runtime_action",
+            "attestation": "at_emission",
+            "action_log_id": 1
+          },
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "schema_version": "ori.evidence.v2",
+          "sequence_num": 1
+        },
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "0e8add4b68c02ea67d6859a3721e7f351859c0d43774a68bd00229801b963867",
+        "signature": "ed25519:y4hKnrXbxHWOlhTrTG5yxT4uB2EEl8X+IvqY0SF3Wll5s+Xq5m8wjLO9k3OjObmfuanHIoGoya8k0V3o7VzWBg==",
+        "row_columns": {
+          "seq": 1,
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000
+        },
         "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"kind\":\"runtime_action\"}"
+      },
+      "chain_context": {
+        "expected_sequence_num": 1,
+        "expected_prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
+      }
+    },
+    {
+      "rule": 15,
+      "name": "authority is not an object",
+      "expected": "reject",
+      "authenticator": "valid",
+      "note": "The field is present, so rule 14 passes. It is a string, so no kind can be selected and no field rule is reachable.",
+      "row": {
+        "envelope": {
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000,
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "payload": {
+            "kind": "runtime_action",
+            "attestation": "at_emission",
+            "action_log_id": 1,
+            "authority": "tier_c_approval"
+          },
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "schema_version": "ori.evidence.v2",
+          "sequence_num": 1
+        },
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":\"tier_c_approval\",\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a22746965725f635f617070726f76616c222c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "17961d4947d56d3f4d650c645aaa72e012f3dcf27f07f6f563af5f6faceb2ffa",
+        "signature": "ed25519:NojRnbM6NOJ2mPnxkGkn60qC6ayAjyNJ0Wcg5g84e94TIOG9BS+WyjlsTnM+JqwbESvbUI4xhESMyVf9fH1aAw==",
+        "row_columns": {
+          "seq": 1,
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000
+        },
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":\"tier_c_approval\",\"kind\":\"runtime_action\"}"
+      },
+      "chain_context": {
+        "expected_sequence_num": 1,
+        "expected_prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
+      }
+    },
+    {
+      "rule": 16,
+      "name": "authority kind is outside the vocabulary",
+      "expected": "reject",
+      "authenticator": "valid",
+      "note": "A well-formed object carrying a well-formed proposal_id. Only the kind is unrecognised, so no field rule is reachable.",
+      "row": {
+        "envelope": {
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000,
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "payload": {
+            "kind": "runtime_action",
+            "attestation": "at_emission",
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_e_invented",
+              "proposal_id": "AB12CD34"
+            }
+          },
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "schema_version": "ori.evidence.v2",
+          "sequence_num": 1
+        },
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_e_invented\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f655f696e76656e746564222c2270726f706f73616c5f6964223a224142313243443334227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "33113b254d2f15550dff745ad9cc7f220763871bf71438170eb900fb93610adb",
+        "signature": "ed25519:nnBjLSPd4yrQ8dGScKIfbfA6JGoELJRVEi0Tt9hhErgYoVlF61/n/6xHU8r0gPi6ZZ83QQCCweHRIuUrD8tRDQ==",
+        "row_columns": {
+          "seq": 1,
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000
+        },
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_e_invented\",\"proposal_id\":\"AB12CD34\"},\"kind\":\"runtime_action\"}"
+      },
+      "chain_context": {
+        "expected_sequence_num": 1,
+        "expected_prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
+      }
+    },
+    {
+      "rule": 17,
+      "name": "a field the kind requires is absent",
+      "expected": "reject",
+      "authenticator": "valid",
+      "note": "The kind is recognised and every present field is valid; profile_id is missing, which is rule 17 and not rule 18.",
+      "row": {
+        "envelope": {
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000,
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "payload": {
+            "kind": "runtime_action",
+            "attestation": "at_emission",
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_d_profile",
+              "zone_id": "zone-main-incomer",
+              "binding_seq": 4
+            }
+          },
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "schema_version": "ori.evidence.v2",
+          "sequence_num": 1
+        },
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"binding_seq\":4,\"kind\":\"tier_d_profile\",\"zone_id\":\"zone-main-incomer\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b2262696e64696e675f736571223a342c226b696e64223a22746965725f645f70726f66696c65222c227a6f6e655f6964223a227a6f6e652d6d61696e2d696e636f6d6572227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "7d8821e26eaacec540c4970b3fe4cd9049aadd029cb3494dc1e2755da8b92db8",
+        "signature": "ed25519:GAjIFuzTRroOBOXriK4OXt4+pQUyBggIhJ2bELe5p+z6ryimDwXItkPQyxDpbywhCrHsnuR7iNPpj0+OTVnhBw==",
+        "row_columns": {
+          "seq": 1,
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000
+        },
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"binding_seq\":4,\"kind\":\"tier_d_profile\",\"zone_id\":\"zone-main-incomer\"},\"kind\":\"runtime_action\"}"
+      },
+      "chain_context": {
+        "expected_sequence_num": 1,
+        "expected_prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
+      }
+    },
+    {
+      "rule": 18,
+      "name": "a required field fails its grammar",
+      "expected": "reject",
+      "authenticator": "valid",
+      "note": "The field set is exact and the kind recognised. profile_id fails its owning grammar on case alone, which is the narrowest way to break only rule 18.",
+      "row": {
+        "envelope": {
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000,
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "payload": {
+            "kind": "runtime_action",
+            "attestation": "at_emission",
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_d_profile",
+              "profile_id": "Electrical.Overcurrent.V1",
+              "zone_id": "zone-main-incomer",
+              "binding_seq": 4
+            }
+          },
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "schema_version": "ori.evidence.v2",
+          "sequence_num": 1
+        },
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"binding_seq\":4,\"kind\":\"tier_d_profile\",\"profile_id\":\"Electrical.Overcurrent.V1\",\"zone_id\":\"zone-main-incomer\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b2262696e64696e675f736571223a342c226b696e64223a22746965725f645f70726f66696c65222c2270726f66696c655f6964223a22456c656374726963616c2e4f76657263757272656e742e5631222c227a6f6e655f6964223a227a6f6e652d6d61696e2d696e636f6d6572227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "4d754063dc8dc35e8d6662105209a6c95c2f77176e6280fac4dbbdddea0f7345",
+        "signature": "ed25519:+Y3qx5E0h8YtV8ElA16wwoTejDK6S+9bEsCDZQOXBUvq1o8hOYyQv0mPaOBWwPKRkAdfnuZFkO0MuoYPZk9FCw==",
+        "row_columns": {
+          "seq": 1,
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000
+        },
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"binding_seq\":4,\"kind\":\"tier_d_profile\",\"profile_id\":\"Electrical.Overcurrent.V1\",\"zone_id\":\"zone-main-incomer\"},\"kind\":\"runtime_action\"}"
+      },
+      "chain_context": {
+        "expected_sequence_num": 1,
+        "expected_prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61"
+      }
+    },
+    {
+      "rule": 19,
+      "name": "authority carries a field its kind does not permit",
+      "expected": "reject",
+      "authenticator": "valid",
+      "note": "proposal_id is well formed, so rule 18 passes and the only fault is the zone_id this kind does not permit.",
+      "row": {
+        "envelope": {
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000,
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "payload": {
+            "kind": "runtime_action",
+            "attestation": "at_emission",
+            "action_log_id": 1,
+            "authority": {
+              "kind": "tier_c_approval",
+              "proposal_id": "AB12CD34",
+              "zone_id": "zone-main-incomer"
+            }
+          },
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "schema_version": "ori.evidence.v2",
+          "sequence_num": 1
+        },
+        "canonical_json": "{\"device_id\":\"energy-monitor-ikeja-01\",\"emitted_at_ms\":1751500800000,\"event_id\":\"0f8bedda-5214-50f0-8d92-ba387ff55b19\",\"event_type\":\"SAFETY_ACTION_EXECUTED\",\"payload\":{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\",\"zone_id\":\"zone-main-incomer\"},\"kind\":\"runtime_action\"},\"prev_event_hash\":\"84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61\",\"schema_version\":\"ori.evidence.v2\",\"sequence_num\":1}",
+        "canonical_hex": "7b226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c22656d69747465645f61745f6d73223a313735313530303830303030302c226576656e745f6964223a2230663862656464612d353231342d353066302d386439322d626133383766663535623139222c226576656e745f74797065223a225341464554595f414354494f4e5f4558454355544544222c227061796c6f6164223a7b22616374696f6e5f6c6f675f6964223a312c226174746573746174696f6e223a2261745f656d697373696f6e222c22617574686f72697479223a7b226b696e64223a22746965725f635f617070726f76616c222c2270726f706f73616c5f6964223a224142313243443334222c227a6f6e655f6964223a227a6f6e652d6d61696e2d696e636f6d6572227d2c226b696e64223a2272756e74696d655f616374696f6e227d2c22707265765f6576656e745f68617368223a2238343838303633363034316333373135333936313039613363623533633739383464306464666432333464303061373135383563653337316566623164613631222c22736368656d615f76657273696f6e223a226f72692e65766964656e63652e7632222c2273657175656e63655f6e756d223a317d",
+        "event_hash": "d02f43512339f0f4033c6acd0aff608d3e20b5e14054f90236f2b7fb0b2bbcae",
+        "signature": "ed25519:F4MS8aARDCRqETjS0m2/tziUUcHVK587jufdypE6LL20ockn4dLGupValb+4aN16/MInbaIkfO14cjt13rQ5BQ==",
+        "row_columns": {
+          "seq": 1,
+          "prev_event_hash": "84880636041c3715396109a3cb53c7984d0ddfd234d00a71585ce371efb1da61",
+          "event_id": "0f8bedda-5214-50f0-8d92-ba387ff55b19",
+          "event_type": "SAFETY_ACTION_EXECUTED",
+          "device_id": "energy-monitor-ikeja-01",
+          "emitted_at_ms": 1751500800000
+        },
+        "payload_json": "{\"action_log_id\":1,\"attestation\":\"at_emission\",\"authority\":{\"kind\":\"tier_c_approval\",\"proposal_id\":\"AB12CD34\",\"zone_id\":\"zone-main-incomer\"},\"kind\":\"runtime_action\"}"
       },
       "chain_context": {
         "expected_sequence_num": 1,
