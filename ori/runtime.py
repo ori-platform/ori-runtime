@@ -135,7 +135,11 @@ from ori.security.evidence.custody_keys import (
     CustodyKeyRegistry,
     CustodyKeyRegistryError,
 )
-from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
+from ori.security.evidence.first_party import (
+    AUTHORITY_UNAVAILABLE_REASON,
+    AuthorityUnavailableError,
+    FirstPartyEvidenceAttestor,
+)
 from ori.security.evidence.ledger import DEFAULT_CHECKPOINT_INTERVAL_S
 from ori.security.firmware.confirmation import (
     CONFIRMED as _FIRMWARE_CONFIRMED,
@@ -2798,9 +2802,28 @@ class OriRuntime:
                 continue
             # reconciled=True stamps the signed payload as late evidence —
             # a verifier must never mistake it for emission-time signing.
-            seq = await self._evidence_attestor.attest_action(
-                dict(row), reconciled=True
-            )
+            try:
+                seq = await self._evidence_attestor.attest_action(
+                    dict(row), reconciled=True
+                )
+            except AuthorityUnavailableError as exc:
+                # A row from before the licence was recorded, or one whose
+                # snapshot disagrees with its own columns. Neither improves by
+                # being retried, so it leaves the reconciliation set instead of
+                # being attempted on every pass.
+                logger.error(
+                    "[evidence] refusing to attest action id=%s tier=%s: %s",
+                    row.get("id"),
+                    row.get("tier"),
+                    exc,
+                )
+                await self._state_store.set_action_attestation(
+                    int(row["id"]),
+                    status="refused",
+                    attestation_seq=None,
+                    reason=AUTHORITY_UNAVAILABLE_REASON,
+                )
+                continue
             status = "reconciled" if seq is not None else "failed"
             try:
                 await self._state_store.set_action_attestation(

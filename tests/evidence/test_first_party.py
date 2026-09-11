@@ -47,6 +47,15 @@ def _action_row(action_log_id: int = 42, **overrides) -> dict:  # noqa: D401
         "trigger_name": "dangerous_overcurrent",
         "sensor_id": "load-current",
         "timestamp": 1787000000000,
+        # The licence this action was dispatched under, replayed at sealing.
+        # Rows without it are refused rather than signed, so a fixture that
+        # omits it is testing the refusal rather than the seal.
+        "authority_json": (
+            '{"kind":"tier_d_legacy_skill",'
+            '"skill_name":"energy-anomaly-detector",'
+            '"skill_version":"0.2.1",'
+            '"trigger_name":"dangerous_overcurrent"}'
+        ),
     }
     row.update(overrides)
     return row

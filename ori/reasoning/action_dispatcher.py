@@ -45,6 +45,10 @@ from ori.reasoning.action_registry import (
 )
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
+from ori.security.evidence.first_party import (
+    AUTHORITY_UNAVAILABLE_REASON,
+    AuthorityUnavailableError,
+)
 from ori.security.evidence.policy import tier_requires_attestation
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_commands.commands import extract_remote_command_payload
@@ -107,6 +111,62 @@ def _action_taken(
     if missing_executor:
         return NO_EXECUTOR_ACTION_TAKEN
     return ""
+
+
+def _authority_snapshot_json(
+    action_result: ActionResult,
+    context: SkillContext,
+    *,
+    trigger_name: str,
+    binding_seq: int | None,
+) -> str | None:
+    """The licence this dispatch acted under, as canonical JSON, or None.
+
+    Built here because this is the only place that holds all of it at once: the
+    skill that declared the trigger, the trigger that matched, and the proposal
+    an operator answered. It is persisted with the action row so reconciliation
+    after a restart replays this decision rather than rebuilding one from
+    whatever is loaded then.
+
+    Only Tier C and Tier D rows reach the evidence chain, so only they carry a
+    snapshot. Returning None for the rest is not an omission: an action that
+    produces no `runtime_action` evidence has no authority object to carry.
+    """
+    tier = str(action_result.tier or "").upper()
+    if not tier_requires_attestation(tier):
+        return None
+
+    if tier == ActionTier.HARD_PHYSICAL:
+        proposal_id = str(action_result.proposal_id or "")
+        if not proposal_id:
+            return None
+        authority: dict[str, Any] = {
+            "kind": "tier_c_approval",
+            "proposal_id": proposal_id,
+        }
+    else:
+        skill = getattr(context, "skill", None)
+        skill_name = str(getattr(skill, "name", "") or "")
+        skill_version = str(getattr(skill, "version", "") or "")
+        if not (skill_name and skill_version and trigger_name):
+            return None
+        # `tier_d_legacy_skill` is the truthful kind while a packaged skill's
+        # declaration is what licenses the trip. It is not a protection claim,
+        # and a verifier is required not to read it as one; the profile and
+        # qualification kinds become emittable when the safety registry is the
+        # Tier D path.
+        authority = {
+            "kind": "tier_d_legacy_skill",
+            "skill_name": skill_name,
+            "skill_version": skill_version,
+            "trigger_name": trigger_name,
+        }
+        if binding_seq is not None:
+            # Recorded on the row rather than in the authority: no defined kind
+            # pairs a binding sequence with a skill declaration, and inventing
+            # a field here would be a grammar this runtime does not own.
+            pass
+    return json.dumps(authority, sort_keys=True, separators=(",", ":"))
 
 
 def _generate_proposal_id(length: int = 8) -> str:
@@ -1904,7 +1964,13 @@ class ActionDispatcher:
                 event_context.get("correlation_id") or ""
             )
 
-        trigger_name = context.event.sensor_id if context.event else ""
+        # The trigger that matched, not the sensor that reported. The evidence
+        # payload names this field `trigger_name`, and a verifier reading a
+        # `tier_d_legacy_skill` authority needs the trigger a skill declared;
+        # the sensor id answers a different question and is carried separately.
+        trigger_name = str(getattr(context, "trigger_name", "") or "")
+        if not trigger_name and context.event is not None:
+            trigger_name = str(context.event.sensor_id or "")
         attest = bool(
             self._evidence_attestor is not None
             and tier_requires_attestation(action_result.tier)
@@ -1942,6 +2008,9 @@ class ActionDispatcher:
             if firmware_registration is not None
             else ""
         )
+        authority_json = _authority_snapshot_json(
+            action_result, context, trigger_name=trigger_name, binding_seq=None
+        )
         binding_seq: int | None = None
         capability = ACTION_REGISTRY.get(action_result.action_name)
         if (
@@ -1974,6 +2043,7 @@ class ActionDispatcher:
                     input_firmware_registration=firmware_registration_json,
                     attestation_pending=attest,
                     binding_seq=binding_seq,
+                    authority_json=authority_json,
                 )
             else:
                 action_row_id = await store.log_action(
@@ -2083,7 +2153,26 @@ class ActionDispatcher:
                 store, input_firmware_device_id, firmware_registration
             ):
                 return
-            seq = await self._evidence_attestor.attest_action(row)
+            try:
+                seq = await self._evidence_attestor.attest_action(row)
+            except AuthorityUnavailableError as exc:
+                # Terminal, not transient. Retrying cannot recover a licence
+                # that was never recorded, and re-selecting the row would log
+                # once per reconciliation pass for the life of the device.
+                logger.error(
+                    "ActionDispatcher: refusing to attest action_log id=%s tier=%s: %s",
+                    action_row_id,
+                    row.get("tier"),
+                    exc,
+                )
+                if hasattr(store, "set_action_attestation"):
+                    await store.set_action_attestation(
+                        action_row_id,
+                        status="refused",
+                        attestation_seq=None,
+                        reason=AUTHORITY_UNAVAILABLE_REASON,
+                    )
+                return
             status = "signed" if seq is not None else "failed"
             if hasattr(store, "set_action_attestation"):
                 await store.set_action_attestation(

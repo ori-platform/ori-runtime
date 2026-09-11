@@ -23,6 +23,7 @@ so a chain that will not open can never become the reason a relay failed.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -302,6 +303,10 @@ class FirstPartyEvidenceAttestor:
             return None
         action_log_id = int(action_row.get("id", 0))
         event_id = self.attestation_event_id(action_log_id)
+        # AuthorityUnavailableError is deliberately not caught here. Returning
+        # None means "this did not sign, retry it"; a row whose licence cannot
+        # be recovered will never sign however often it is retried, and the two
+        # outcomes need different terminal states. The caller distinguishes them.
         payload = _action_payload(action_row, reconciled=reconciled)
         emitted_at_ms = int(action_row.get("timestamp", 0))
         try:
@@ -450,11 +455,79 @@ class FirstPartyEvidenceAttestor:
         self._executor.close(teardown=_teardown)
 
 
+#: Stored on the action row when attestation is refused for good. A closed
+#: value rather than free text, so an operator query can find every row in this
+#: state without matching prose.
+AUTHORITY_UNAVAILABLE_REASON = "authority_unavailable_for_reconciliation"
+
+
+class AuthorityUnavailableError(Exception):
+    """A row's licence cannot be recovered, so it must not be sealed.
+
+    Raised rather than returning a payload without `authority`, because
+    `evidence/v2` requires the field: a row emitted without it is one a verifier
+    must treat as licensing-unknown and must not present as a protection action.
+    Refusing to sign leaves the action row intact and the gap visible, which is
+    the honest outcome for a row whose authority was never recorded.
+    """
+
+
+def _authority_snapshot(action_row: dict[str, Any]) -> dict[str, Any]:
+    """The licence this action was dispatched under, replayed from the row.
+
+    Never reconstructed. The skill, profile or binding loaded now may not be the
+    one that licensed the action, and after a restart it frequently is not, so
+    anything derived from present state would be a different claim wearing the
+    same field name.
+    """
+    raw = action_row.get("authority_json")
+    if raw in (None, ""):
+        raise AuthorityUnavailableError(
+            "the action row carries no authority snapshot, so the licence that "
+            "permitted it cannot be recovered"
+        )
+    try:
+        authority = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise AuthorityUnavailableError(
+            f"the action row's authority snapshot is not readable JSON ({exc})"
+        ) from exc
+    if not isinstance(authority, dict) or not isinstance(authority.get("kind"), str):
+        raise AuthorityUnavailableError(
+            "the action row's authority snapshot is not a kinded object"
+        )
+
+    # Where the snapshot and a query column both name the same fact they must
+    # agree. A disagreement means one of them was written from something other
+    # than the decision being sealed, and sealing either would publish a licence
+    # nothing in the row supports.
+    for field, column in (
+        ("proposal_id", "proposal_id"),
+        ("binding_seq", "binding_seq"),
+    ):
+        if field in authority and action_row.get(column) not in (None, ""):
+            if str(authority[field]) != str(action_row[column]):
+                raise AuthorityUnavailableError(
+                    f"the authority snapshot's {field} disagrees with the row's "
+                    f"{column} column"
+                )
+    if "trigger_name" in authority and action_row.get("trigger_name"):
+        if str(authority["trigger_name"]) != str(action_row["trigger_name"]):
+            raise AuthorityUnavailableError(
+                "the authority snapshot's trigger_name disagrees with the row's "
+                "trigger_name column"
+            )
+    return authority
+
+
 def _action_payload(action_row: dict[str, Any], *, reconciled: bool) -> dict[str, Any]:
     """Build the signed payload for one action row.
 
     Field names and spellings are what a verifier reads, so they are contract
     surface rather than internal detail.
+
+    Raises:
+        AuthorityUnavailableError: when the row's licence cannot be replayed.
     """
     payload: dict[str, Any] = {
         "kind": "runtime_action",
@@ -473,6 +546,7 @@ def _action_payload(action_row: dict[str, Any], *, reconciled: bool) -> dict[str
             action_row.get("input_attestation_grade", "unattested") or "unattested"
         ),
         "input_posture": str(action_row.get("input_posture", "") or ""),
+        "authority": _authority_snapshot(action_row),
     }
     device_id = str(action_row.get("input_firmware_device_id", "") or "")
     boot_id = action_row.get("input_firmware_boot_id")

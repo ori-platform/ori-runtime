@@ -217,6 +217,11 @@ def test_every_evidence_message_resolves_statically():
 
 REVIEWED_OPERATOR_MESSAGES = frozenset(
     {
+        # Reviewed: an action_log id, a tier letter, and a reason drawn from
+        # this module's own closed set describing why a licence could not be
+        # replayed. No private component, endpoint, key or holder appears, and
+        # the reason text is written here rather than taken from an exception.
+        "[evidence] refusing to attest action id=%s tier=%s: %s",
         # INFO and above. Reviewed: counts, a sanitised exception type, and
         # this device's own local path and own anchor — nothing about who else
         # holds a copy.
