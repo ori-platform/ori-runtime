@@ -164,12 +164,8 @@ async def test_grid_overvoltage_remains_tier_d_when_generator_action_is_availabl
     assert result.action_tier == "D"
     assert result.trigger_name == "voltage_overvoltage"
     assert result.bypass_llm is True
-    assert result.proposed_action == "switch_to_generator"
-    assert result.default_actions == (
-        "switch_to_generator",
-        "alert_whatsapp",
-        "log_to_dashboard",
-    )
+    assert result.proposed_action == "alert_whatsapp"
+    assert result.default_actions == ("alert_whatsapp", "log_to_dashboard")
 
 
 @pytest.mark.asyncio
@@ -191,12 +187,12 @@ async def test_grid_sag_switches_to_inverter_as_tier_b_when_context_allows() -> 
     assert result.matched is True
     assert result.action_tier == "B"
     assert result.trigger_name == "grid_sag_switch_to_inverter"
-    assert result.proposed_action == "switch_to_inverter"
-    assert result.default_actions == (
-        "switch_to_inverter",
-        "alert_whatsapp",
-        "log_to_dashboard",
-    )
+    # The trigger still fires and still names the supply movement in its
+    # reasoning; what it no longer does is claim to have performed it. The
+    # runtime holds no source-transfer capability, so the shipped default is
+    # informational until a deployment binds one.
+    assert result.proposed_action == "alert_whatsapp"
+    assert result.default_actions == ("alert_whatsapp", "log_to_dashboard")
 
 
 @pytest.mark.asyncio
@@ -220,12 +216,8 @@ async def test_grid_outage_switches_to_generator_as_tier_b_when_context_allows()
     assert result.matched is True
     assert result.action_tier == "B"
     assert result.trigger_name == "grid_outage_switch_to_generator"
-    assert result.proposed_action == "switch_to_generator"
-    assert result.default_actions == (
-        "switch_to_generator",
-        "alert_whatsapp",
-        "log_to_dashboard",
-    )
+    assert result.proposed_action == "alert_whatsapp"
+    assert result.default_actions == ("alert_whatsapp", "log_to_dashboard")
 
 
 @pytest.mark.asyncio

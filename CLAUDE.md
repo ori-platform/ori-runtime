@@ -669,6 +669,43 @@ actions:
     daily_report: [alert_whatsapp]
 ```
 
+**An action declared above Tier A must exist in the runtime's action registry.**
+Registry membership is a closed, decidable fact, so it is answered at skill load
+rather than when the trigger fires — which for a Tier D trigger is the worst
+moment to learn that the only protective action in the list was never something
+the runtime could perform. A declaration the registry does not hold is refused.
+
+Tier A is exempt, and deliberately: a skill may name its own informational
+action, which actuates nothing and whose intent dispatch records. The boundary
+is the claim to change the world, not the absence of an entry.
+
+**Giving the runtime a new capability is a runtime change**, not a skill one.
+The guarantee runs in one direction only: `register_executor()` refuses an
+action with no registry entry, so nothing can become *executable* without
+becoming *governed* in the same change. The converse does not hold — a registry
+entry is governed and potentially executable, not executable. `emergency_cutoff`,
+`open_safety_circuit` and `switch_power_source` are registered with no executor
+bound, so a skill may declare them, pass load-time validation, reach dispatch and
+have nothing happen. That is reported honestly rather than as success, and which
+of them should gain an executor is an open decision.
+
+The registry is owned by the reviewed release; no deployment, entitlement or
+remote command adds to it.
+
+**A skill whose physical action is not yet bound ships its notifications only.**
+Several bundled skills do exactly this. They retain informational default
+actions, so where a trigger reaches dispatch and a configured notification
+executor succeeds, the operator can be alerted to what should happen; what the
+skill does not do is declare that it happened. That is the supported way to ship
+a trigger whose physical action awaits commissioning.
+
+**There is no deployment override of a skill's action lists.** A `skills:` entry
+in `ori.yaml` carries `name`, `version` and `config`, and nothing else; no
+setting replaces `actions.defaults`. Binding a protective action to a trigger is
+a change to the runtime and to the site's commissioned binding. Any comment or
+document suggesting a configuration route to actuation is describing a mechanism
+that does not exist.
+
 ---
 
 ## The ori.yaml Format — Device Configuration

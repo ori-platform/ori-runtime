@@ -1490,7 +1490,32 @@ class SkillLoader:
                         f"it. Declare 'tier: {floor}' or higher."
                     )
                 continue
-            if floor is None or tier_rank(declared) >= tier_rank(floor):
+            if floor is None:
+                # An ungoverned name cannot actuate: `register_executor` refuses
+                # an action with no registry entry, so nothing can ever be bound
+                # to it. Declaring one at Tier A is legitimate — a skill may
+                # name its own informational action, and dispatch records the
+                # intent. Declaring one at B, C or D is a claim to change the
+                # world that the runtime has no way to honour, and a trigger
+                # defaulting to it reads as protection while being incapable of
+                # it. Registry membership is a closed, decidable fact, so this
+                # is refused at load rather than discovered when the trigger
+                # fires — which for a Tier D trigger is the worst possible
+                # moment to find out.
+                if tier_rank(declared) > tier_rank("A"):
+                    raise SkillValidationError(
+                        f"Skill {skill_name!r}: action {action_name!r} is "
+                        f"declared as Tier {declared}, but the runtime has no "
+                        f"capability by that name and can never execute it. "
+                        f"Declare an action the runtime holds, or declare this "
+                        f"one as Tier A if it is informational. Giving the "
+                        f"runtime this capability is a runtime change, not a "
+                        f"configuration one: nothing in `ori.yaml` replaces a "
+                        f"skill's action lists. Until the capability exists, a "
+                        f"skill declares its notifications only."
+                    )
+                continue
+            if tier_rank(declared) >= tier_rank(floor):
                 continue
             entry_capability = capability(action_name)
             summary = entry_capability.summary if entry_capability else action_name

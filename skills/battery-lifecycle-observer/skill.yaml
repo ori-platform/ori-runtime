@@ -83,13 +83,19 @@ actions:
       tier: A
     - name: log_to_dashboard
       tier: A
-    - name: switch_to_grid
-      tier: D
   defaults:
     battery_deep_discharge_risk: [alert_whatsapp, log_to_dashboard]
     battery_cycle_stress: [alert_whatsapp, log_to_dashboard]
     olax_voltage_decay_degraded: [alert_whatsapp, log_to_dashboard]
-    battery_emergency_cutoff: [switch_to_grid, alert_whatsapp, log_to_dashboard]
+    # Detection and alert only. This trigger takes no physical action, and the
+    # runtime has no capability that transfers a battery system to another
+    # supply: source selection needs interlocks, transition timing and a proven
+    # terminal outcome that no commissioned binding expresses today.
+    #
+    # Isolating a circuit is not a substitute. `trip_relay` opens a protected
+    # circuit, which is a different physical act with a different consequence,
+    # and commissioning cannot turn one into the other.
+    battery_emergency_cutoff: [alert_whatsapp, log_to_dashboard]
 
 config:
   timezone: Africa/Lagos

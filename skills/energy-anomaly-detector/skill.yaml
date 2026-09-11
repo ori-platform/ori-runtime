@@ -153,30 +153,35 @@ actions:
       tier: A
     - name: log_to_dashboard
       tier: A
-    # Tier D relay actions: override in deployment config after wiring is verified.
-    # See dangerous_overcurrent default comment below.
-    - name: switch_to_generator
-      tier: B
-    - name: switch_to_grid
-      tier: B
-    - name: switch_to_inverter
-      tier: B
   defaults:
     sustained_overdraw: [alert_whatsapp, log_to_dashboard]
     sudden_load_spike: [alert_whatsapp, log_to_dashboard]
     unstable_power_draw: [alert_whatsapp, log_to_dashboard]
-    # Tier D executes immediately (no LLM, no approval), but this bundled default
-    # remains informational so the skill is safe on deployments without relay
-    # hardware (e.g. phone/gateway-only or Pi without a wired relay).
+    # Tier D executes immediately, with no LLM and no approval, and this bundled
+    # default is informational: the skill must be safe on a deployment with no
+    # relay wired, which includes phone and gateway-only installations.
     #
-    # For edge-node energy cutoffs, override this action list in deployment config
-    # after relay wiring is physically verified and mapped in `actions.relay`.
-    # Example override: [trip_relay, alert_whatsapp, log_to_dashboard]
+    # Binding a protective action to this trigger is a change to the runtime and
+    # to the site's commissioned binding, not an edit to deployment
+    # configuration. `ori.yaml` carries a skill's `config` and cannot replace its
+    # action lists.
     dangerous_overcurrent: [alert_whatsapp, log_to_dashboard]
-    voltage_overvoltage: [switch_to_generator, alert_whatsapp, log_to_dashboard]
-    grid_phcn_restored: [switch_to_grid, alert_whatsapp, log_to_dashboard]
-    grid_sag_switch_to_inverter: [switch_to_inverter, alert_whatsapp, log_to_dashboard]
-    grid_outage_switch_to_generator: [switch_to_generator, alert_whatsapp, log_to_dashboard]
+    # The four source-transfer triggers below are detection and alert only, for
+    # the same reason as dangerous_overcurrent and one more. Each describes a
+    # supply condition whose response is to move the building between grid,
+    # generator and inverter, and the runtime holds no capability that does so.
+    # Source selection is not circuit isolation: it needs admissible source
+    # states, break-before-make rules, transition timing and a proven terminal
+    # outcome, none of which the commissioned binding expresses today.
+    #
+    # These triggers retain informational default actions. If a trigger reaches
+    # dispatch and a configured notification executor succeeds, the operator can
+    # be alerted about the proposed source movement. The skill does not claim
+    # the movement occurred, and no deployment setting changes that.
+    voltage_overvoltage: [alert_whatsapp, log_to_dashboard]
+    grid_phcn_restored: [alert_whatsapp, log_to_dashboard]
+    grid_sag_switch_to_inverter: [alert_whatsapp, log_to_dashboard]
+    grid_outage_switch_to_generator: [alert_whatsapp, log_to_dashboard]
 
 config:
   min_quality: 0.8
