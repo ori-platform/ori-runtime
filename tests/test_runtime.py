@@ -925,14 +925,23 @@ async def test_a_failed_connect_reaches_the_pair_that_depends_on_it(
     runtime = OriRuntime(config_path=str(minimal_config))
     start_task = asyncio.create_task(runtime.start())
     try:
+        # Wait for the notice, not for a proxy set before it. The sensor id
+        # lands in `_unconnected_sensors` *before* the pair is told, so a loop
+        # that stops at the flag can reach the assertion below while the notice
+        # is still in flight — passing on an idle machine and failing under
+        # load. Waiting for the thing being asserted removes the race rather
+        # than widening the window it hides in.
         deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not runtime._unconnected_sensors:
+        while time.monotonic() < deadline and not any(
+            "measurement_loss" in message for message in sent
+        ):
             if start_task.done():
                 break
             await asyncio.sleep(0.05)
         assert not start_task.done(), (
             f"startup aborted: {start_task.exception() if start_task.done() else ''}"
         )
+        assert runtime._unconnected_sensors, "the sensor never failed to connect"
 
         snapshot = await runtime._build_health_snapshot()
         zones = snapshot.get("safety_zones")
