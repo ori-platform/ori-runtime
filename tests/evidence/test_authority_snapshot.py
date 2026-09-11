@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -391,10 +392,18 @@ class TestTheProductionCallersRefuse:
             # The real production method, bound to a stand-in carrying only the
             # collaborators it uses. Nothing about the transition is reimplemented
             # here; a stand-in for the method itself would test the test.
-            runtime = SimpleNamespace(
-                _evidence_attestor=attestor,
-                _state_store=store,
-                _firmware_source_confirmed=AsyncMock(return_value=True),
+            # A stand-in carrying only the collaborators the method reaches,
+            # cast because that is exactly what it is: the method is called
+            # unbound so the production transition runs, and constructing a real
+            # runtime would pull in adapters, sockets and a reconciliation loop
+            # that have nothing to do with the property under test.
+            runtime = cast(
+                OriRuntime,
+                SimpleNamespace(
+                    _evidence_attestor=attestor,
+                    _state_store=store,
+                    _firmware_source_confirmed=AsyncMock(return_value=True),
+                ),
             )
             reconcile = OriRuntime._reconcile_pending_attestations
 
