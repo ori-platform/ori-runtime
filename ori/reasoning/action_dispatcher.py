@@ -1964,13 +1964,16 @@ class ActionDispatcher:
                 event_context.get("correlation_id") or ""
             )
 
-        # The trigger that matched, not the sensor that reported. The evidence
-        # payload names this field `trigger_name`, and a verifier reading a
-        # `tier_d_legacy_skill` authority needs the trigger a skill declared;
-        # the sensor id answers a different question and is carried separately.
-        trigger_name = str(getattr(context, "trigger_name", "") or "")
-        if not trigger_name and context.event is not None:
-            trigger_name = str(context.event.sensor_id or "")
+        # The trigger that matched, kept apart from the sensor that reported.
+        # `matched_trigger` is empty when no trigger name reached this dispatch,
+        # and authority construction takes only that: a licence naming a sensor
+        # id as its trigger would invent provenance from a different field,
+        # which is the defect this path had. The legacy row/display value keeps
+        # its historical fallback so nothing else changes shape.
+        matched_trigger = str(getattr(context, "trigger_name", "") or "")
+        trigger_name = matched_trigger or (
+            str(context.event.sensor_id or "") if context.event is not None else ""
+        )
         attest = bool(
             self._evidence_attestor is not None
             and tier_requires_attestation(action_result.tier)
@@ -2009,7 +2012,7 @@ class ActionDispatcher:
             else ""
         )
         authority_json = _authority_snapshot_json(
-            action_result, context, trigger_name=trigger_name, binding_seq=None
+            action_result, context, trigger_name=matched_trigger, binding_seq=None
         )
         binding_seq: int | None = None
         capability = ACTION_REGISTRY.get(action_result.action_name)

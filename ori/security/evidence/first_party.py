@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import unicodedata
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -458,7 +460,7 @@ class FirstPartyEvidenceAttestor:
 #: Stored on the action row when attestation is refused for good. A closed
 #: value rather than free text, so an operator query can find every row in this
 #: state without matching prose.
-AUTHORITY_UNAVAILABLE_REASON = "authority_unavailable_for_reconciliation"
+AUTHORITY_UNAVAILABLE_REASON = "authority_unavailable"
 
 
 class AuthorityUnavailableError(Exception):
@@ -470,6 +472,100 @@ class AuthorityUnavailableError(Exception):
     Refusing to sign leaves the action row intact and the gap visible, which is
     the honest outcome for a row whose authority was never recorded.
     """
+
+
+#: Exact field sets per authority kind, from `evidence/v2`. Every field is
+#: required and no other is permitted, so there is no extension point.
+_AUTHORITY_KINDS: dict[str, frozenset[str]] = {
+    "tier_c_approval": frozenset({"proposal_id"}),
+    "tier_d_profile": frozenset({"profile_id", "zone_id", "binding_seq"}),
+    "tier_d_qualification": frozenset(
+        {"profile_id", "zone_id", "binding_seq", "fixture_hash"}
+    ),
+    "tier_d_legacy_skill": frozenset({"skill_name", "skill_version", "trigger_name"}),
+}
+
+#: Which licence may stand for which tier. Tier C is an operator's scoped
+#: approval; Tier D is a release-owned safety condition, in one of the three
+#: forms the contract defines. No tier admits another's licence, and no other
+#: tier reaches the evidence path at all.
+_KINDS_BY_TIER: dict[str, frozenset[str]] = {
+    "C": frozenset({"tier_c_approval"}),
+    "D": frozenset({"tier_d_profile", "tier_d_qualification", "tier_d_legacy_skill"}),
+}
+
+_PROPOSAL_ID = re.compile(r"^[A-Z0-9]{8}$")
+_PROFILE_ID = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+\.v[1-9][0-9]*$")
+_SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_FIXTURE_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
+_INTEGER_MAX = 9007199254740991
+
+
+def _identity_clean(value: str) -> bool:
+    return all(
+        unicodedata.category(ch) not in _FORBIDDEN_CATEGORIES and ch != "\x7f"
+        for ch in value
+    )
+
+
+def _authority_field_fault(field: str, value: Any) -> str | None:
+    """Why *value* fails *field*'s grammar, or None when it holds.
+
+    Presence is not enough. A snapshot naming the right fields with a null, an
+    empty list and a string where an integer belongs satisfies a presence check
+    and is refused by any conforming verifier, so it is refused here instead of
+    being signed and discounted later.
+    """
+    if field == "binding_seq":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return "binding_seq is not an integer"
+        if not 1 <= value <= _INTEGER_MAX:
+            return f"binding_seq {value} is outside 1..{_INTEGER_MAX}"
+        return None
+    if not isinstance(value, str):
+        return f"{field} is not a string"
+    if field == "proposal_id" and not _PROPOSAL_ID.match(value):
+        return "proposal_id does not match ^[A-Z0-9]{8}$"
+    if field == "profile_id" and not _PROFILE_ID.match(value):
+        return "profile_id fails its owning grammar"
+    if field == "fixture_hash" and not _FIXTURE_HASH.match(value):
+        return "fixture_hash is not sha256: plus 64 lowercase hex"
+    if field == "zone_id" and not value.strip():
+        return "zone_id is empty after trimming"
+    if field == "skill_name":
+        if len(value) > 64:
+            return "skill_name exceeds 64 characters"
+        if not _SKILL_NAME.match(value):
+            return "skill_name fails the manifest name charset"
+    if field in {"skill_version", "trigger_name"}:
+        if not value.strip():
+            return f"{field} is empty"
+        if field == "skill_version" and len(value) > 32:
+            return "skill_version exceeds 32 characters"
+        if not _identity_clean(value):
+            return f"{field} carries a forbidden character category"
+    return None
+
+
+def _authority_grammar_fault(authority: dict[str, Any]) -> str | None:
+    """The first rule this authority object breaks, in contract order."""
+    kind = authority.get("kind")
+    if not isinstance(kind, str) or kind not in _AUTHORITY_KINDS:
+        return f"kind {kind!r} is absent, not a string, or outside the vocabulary"
+    required = _AUTHORITY_KINDS[kind]
+    present = set(authority) - {"kind"}
+    missing = sorted(required - present)
+    if missing:
+        return f"kind {kind!r} is missing {missing}"
+    for field in sorted(required):
+        fault = _authority_field_fault(field, authority[field])
+        if fault is not None:
+            return fault
+    foreign = sorted(present - required)
+    if foreign:
+        return f"kind {kind!r} carries fields it does not permit: {foreign}"
+    return None
 
 
 def _authority_snapshot(action_row: dict[str, Any]) -> dict[str, Any]:
@@ -492,9 +588,31 @@ def _authority_snapshot(action_row: dict[str, Any]) -> dict[str, Any]:
         raise AuthorityUnavailableError(
             f"the action row's authority snapshot is not readable JSON ({exc})"
         ) from exc
-    if not isinstance(authority, dict) or not isinstance(authority.get("kind"), str):
+    if not isinstance(authority, dict):
         raise AuthorityUnavailableError(
-            "the action row's authority snapshot is not a kinded object"
+            "the action row's authority snapshot is not an object"
+        )
+    fault = _authority_grammar_fault(authority)
+    if fault is not None:
+        raise AuthorityUnavailableError(
+            f"the action row's authority snapshot is non-conforming: {fault}"
+        )
+
+    # A grammatically valid licence is not thereby the right licence. Without
+    # this, a Tier D action carrying a well-formed `tier_c_approval` seals
+    # cryptographic evidence that an operator approved a trip no operator was
+    # ever asked about — a falsified attribution in the record that exists to
+    # be trustworthy about exactly this.
+    tier = str(action_row.get("tier", "")).upper()
+    permitted = _KINDS_BY_TIER.get(tier)
+    if permitted is None:
+        raise AuthorityUnavailableError(
+            f"tier {tier!r} carries no authority on the evidence path"
+        )
+    if authority["kind"] not in permitted:
+        raise AuthorityUnavailableError(
+            f"a Tier {tier} action cannot be licensed by {authority['kind']!r}; "
+            f"that tier admits {sorted(permitted)}"
         )
 
     # Where the snapshot and a query column both name the same fact they must
