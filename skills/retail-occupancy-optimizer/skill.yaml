@@ -58,13 +58,18 @@ actions:
       tier: A
     - name: log_to_dashboard
       tier: A
-    - name: request_hvac_eco_mode
-      tier: C
-    - name: shed_noncritical_loads
-      tier: B
   defaults:
-    empty_business_hours_high_power: [request_hvac_eco_mode, alert_whatsapp, log_to_dashboard]
-    empty_off_hours_load_shed: [shed_noncritical_loads, alert_whatsapp, log_to_dashboard]
+    # Both triggers describe a load the site is paying for and does not need,
+    # and the response is a physical one the runtime has no capability for: it
+    # holds no HVAC setpoint action and no load-shedding action. Naming one here
+    # would promise a saving the skill cannot deliver, so these ship as
+    # notifications and the operator decides.
+    #
+    # Detection and alert only. Binding a physical response would be a change to
+    # the runtime and to the site's commissioned binding; it is not something a
+    # deployment setting can select.
+    empty_business_hours_high_power: [alert_whatsapp, log_to_dashboard]
+    empty_off_hours_load_shed: [alert_whatsapp, log_to_dashboard]
 
 config:
   timezone: Africa/Lagos
