@@ -26,9 +26,10 @@ each action at its own tier, floored by the registry entry, is the natural
 reading — and the registry deliberately refuses to hold a Tier D floor:
 
 > No entry may set a Tier D floor. The registry exists to add operator
-> authority, and Tier D is the one tier that removes it. `emergency_cutoff` is
-> registered at C for exactly this reason, even though its only legitimate use
-> is Tier D.
+> authority, and Tier D is the one tier that removes it. `trip_relay` is
+> registered at C for exactly this reason: a skill may propose it for
+> approval, and it reaches D only when a safety condition licenses the outcome
+> it resolves to.
 
 So an action's own tier, floored by the registry, cannot reach D. Applying that
 rule sends the safety trip into the approval workflow and waits for a human,
@@ -117,8 +118,8 @@ or not at all.
 | D | `terminate_process` | B | no | **B** | ancillary, keeps its own authority |
 | D | `alert_whatsapp` | A | — | **A** | a notice is a notice |
 | C | `alert_whatsapp` | A | — | **A** | fixes the plan that could not notify anybody |
-| C | `open_safety_circuit` | C | — | **C** | approval workflow, always |
-| C | `switch_power_source` | B | — | **B** | a reversible action is not promoted by a hard incident |
+| C | `trip_relay` | C | — | **C** | approval workflow, always |
+| C | `terminate_process` | B | — | **B** | a reversible action is not promoted by a hard incident |
 | A | `terminate_process` | B | — | **B** | the registry floor still raises |
 
 ### Consequence class is resolved against the binding, not the name alone
@@ -558,21 +559,20 @@ what this paragraph is for.
 An action row's `executed` must mean that an executor ran and reported success.
 Below Tier D it does not.
 
-`open_safety_circuit` carries a registry floor of C, is marked physical, and has
-no executor registered by `OriRuntime.start()`. Dispatched at Tier C with the
-operator replying YES, it returns `executed=True`, `approved=True`,
-`action_taken='open_safety_circuit'` — and that row is sealed into the chain as
-a signed, tamper-evident attestation that the installer-wired safety circuit was
-opened, when nothing was driven. `switch_power_source` at Tier B does the same
-without the seal. Tier D alone reports it honestly, with `executed=False` and a
-CRITICAL log line.
+When this contract was written, a registry entry with no executor — there were
+three — dispatched at Tier C with the operator replying YES returned
+`executed=True`, `approved=True`, and that row was sealed into the chain as a
+signed attestation that a circuit was opened when nothing was driven. Tier D
+alone reported it honestly.
 
-Three registry entries have no executor — `emergency_cutoff`,
-`open_safety_circuit`, `switch_power_source` — and no skill that ships with the
-runtime names any of them. The canonical `skill.yaml` example in `CLAUDE.md`
-names two, and the guidance to override a Tier D trigger's defaults in
-deployment configuration once relay wiring is verified sends an operator to
-write exactly such a declaration.
+Two things closed that. `executed` now means an executor ran and reported
+success, at every tier. And the registry no longer holds a physical name with
+nothing behind it: the three entries were retired rather than given executors,
+because a physical capability is an outcome on a commissioned zone, not a name.
+The names that remain are the legacy set `safety-profile/v1` carries as
+normative vocabulary, each resolving to one protected-circuit outcome; new
+physical capability arrives as an outcome defined in the specs and bound by
+commissioning, never as a registry name.
 
 Tracked separately. The contract depends on it, because sealing on the action
 tier buys nothing if the field being sealed is not true.

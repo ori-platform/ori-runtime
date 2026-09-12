@@ -687,10 +687,10 @@ async def test_a_tier_d_action_reporting_itself_suppressed_still_escalates() -> 
     async def _suppressing(action: str, ctx) -> str:
         return ALERT_SUPPRESSED
 
-    dispatcher.register_executor("emergency_cutoff", _suppressing)
+    dispatcher.register_executor("trip_relay", _suppressing)
 
     ctx, res = _dispatch_inputs()
-    result = await dispatcher.dispatch("emergency_cutoff", "D", ctx, res)
+    result = await dispatcher.dispatch("trip_relay", "D", ctx, res)
 
     assert result.executed is False
     assert result.action_taken == ""

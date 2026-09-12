@@ -2071,3 +2071,60 @@ gap a verifier reads as a missing row.
 disagreement means one of them was written from something other than the
 decision being sealed, and publishing either would assert a licence the row does
 not support.
+
+## 2026-09-12 — Physical capability is an outcome on a zone, never an action name
+
+Three registry entries governed physical actions with no executor behind them.
+The question filed against them was whether each should gain one. That was the
+wrong question, and answering it either way would have invited the next one.
+
+**The architecture was already decided, in three merged contracts, and the
+action-name layer is not part of it.** `safety-profile/v1` says a profile
+commands an outcome and never an actuator-specific verb, and that the legacy
+names survive the profile migration only as the runtime's internal executor
+names behind the outcome resolver. `commissioned-safety-binding/v1` owns every
+site fact — which actuator, what its mapping resolves an outcome to, what was
+proven. The registry-owned Tier D path already dispatches by outcome on a zone
+and carries no action name at all. What kept being redesigned was the
+transitional layer, because it was the one in front of us.
+
+**So the rule is: a physical capability is an outcome on a commissioned zone.**
+A release defines outcomes and their authority floors; commissioning binds an
+outcome to a resource at a site. No new physical action name enters the action
+registry. A new physical capability is written into the specs as an outcome
+first, and the runtime learns to resolve it through the seam — which is what
+keeps commissioning a site from requiring a runtime release.
+
+Three consequences settled the filed question without deciding it name by name:
+
+- `emergency_cutoff` and `open_safety_circuit` named an outcome that already had
+  a governed path, appeared in no contract, no vector and no shipped skill, and
+  were retired.
+- `switch_power_source` named an outcome the contracts cannot yet express — a
+  supply transfer is not one circuit opening, and its interlocks and sequencing
+  belong in commissioning evidence — and was retired. It returns, if it does, as
+  an outcome under the source-transfer question the safety-profile contract
+  already holds open.
+- `close_gas_valve` stays. It is normative vocabulary in the vendored legacy
+  set, and the contract states its retirement: it becomes
+  `open_protected_circuit` on the valve's zone when the gas condition migrates
+  into its profile under the ratification-gated cutover. Renaming it to
+  `trip_relay` now — identical physics, truthful name — was proposed and
+  refused: it would be a second migration path the contract does not describe,
+  a change to a shipped Tier D declaration the contract says needs
+  ratification, and an amendment to a normative vector.
+
+**Two invariants hold in both directions.** An executor cannot be registered for
+an ungoverned name, and a physical name cannot be governed without an executor
+the runtime registers. Both are checked from the source rather than a running
+device, because whether one device can drive an outcome is a different fact —
+per zone, answered by the health surface's protection claim.
+
+**Two things this decision deliberately leaves to the specs.** Skill-facing
+physical vocabulary as outcomes on zones — how a Tier C proposal names what it
+wants isolated, on which zone, and how that is approved and recorded — is a
+contract to write before any new physical action is added. And an
+operator-facing label for a zone, which is where a name like "refrigeration
+isolation circuit" belongs, is a binding amendment if it is ever wanted; the
+trigger name and profile identifier already carry why an outcome was commanded.
+
