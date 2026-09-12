@@ -200,10 +200,14 @@ class TestEnergyAwareThrottle:
             _event(value=5.0), _skill_tier_d(), store, dispatcher
         )
 
+        # The subject is the throttle, not the letter: a safety-critical
+        # incident still reaches dispatch on a 5% battery. The tier is the
+        # action's own — `open_safety_circuit` drives no commissioned outcome
+        # and has no executor, so the incident does not confer Tier D on it.
         dispatcher.dispatch.assert_called_once()
         kwargs = dispatcher.dispatch.call_args.kwargs
         assert kwargs["action"] == "open_safety_circuit"
-        assert kwargs["tier"] == "D"
+        assert kwargs["tier"] == "C"
 
     @pytest.mark.asyncio
     async def test_alert_emitted_on_throttle(self):

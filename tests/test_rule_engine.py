@@ -370,10 +370,25 @@ class TestCooldown:
     @pytest.mark.asyncio
     async def test_rule_suppressed_within_cooldown(self):
         engine = RuleEngine()
-        rules = [_rule(condition="value > 10.0", cooldown_seconds=60)]
-        await engine.evaluate(_event(value=15.0), rules)
-        result = await engine.evaluate(_event(value=15.0), rules)
+        rule = _rule(name="r", condition="value > 10.0", cooldown_seconds=60)
+        assert (await engine.evaluate(_event(value=15.0), [rule])).matched is True
+        engine.record_fire("r")
+        result = await engine.evaluate(_event(value=15.0), [rule])
         assert result.matched is False
+
+    @pytest.mark.asyncio
+    async def test_evaluation_alone_charges_no_cooldown(self):
+        """A trigger that matched and then lost arbitration has not fired.
+
+        Consumption belongs to the plan builder, against the outcome the
+        trigger actually reached. Charging it here is what made a trigger that
+        never acted spend its cooldown.
+        """
+        engine = RuleEngine()
+        rule = _rule(name="r", condition="value > 10.0", cooldown_seconds=60)
+        for _ in range(3):
+            assert (await engine.evaluate(_event(value=15.0), [rule])).matched is True
+        assert engine.in_cooldown("r", 60) is False
 
     @pytest.mark.asyncio
     async def test_rule_fires_again_after_cooldown_expires(self):
@@ -416,11 +431,19 @@ class TestCooldown:
                 action_tier="B",
             ),
         ]
-        await engine.evaluate(_event(value=15.0), rules)
-        # r1 is on cooldown → falls through to r2
-        result = await engine.evaluate(_event(value=15.0), rules)
-        assert result.matched is True
-        assert result.rule_name == "r2"
+        assert [
+            r.rule_name for r in await engine.evaluate_all(_event(15.0), rules)
+        ] == [
+            "r1",
+            "r2",
+        ]
+        engine.record_fire("r1")
+        # Only r1 is charged; r2's window is its own.
+        assert engine.in_cooldown("r1", 60) is True
+        assert engine.in_cooldown("r2", 60) is False
+        assert [
+            r.rule_name for r in await engine.evaluate_all(_event(15.0), rules)
+        ] == ["r2"]
 
 
 # ─── EvalContext ──────────────────────────────────────────────────────────────

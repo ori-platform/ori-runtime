@@ -179,7 +179,15 @@ async def _evaluate_with_skill(
         skill.triggers,
         context=context,
         state_store=state_store,
+        scope=skill.name,
     )
+    if rule_result.matched and rule_result.rule_name:
+        # This path has no dispatch plan to charge against: one evaluation
+        # through this API is the trigger firing, as far as this consumer is
+        # concerned. Consumption is stated here rather than left inside the
+        # engine, where it charged triggers that matched and never acted.
+        rule_engine.record_fire(rule_result.rule_name, skill.name)
+
     latency_ms = max(0, int((time.perf_counter() - start) * 1000))
 
     return _result_from_rule(

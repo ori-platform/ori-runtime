@@ -1131,8 +1131,15 @@ class TestReasonAndDispatch:
         call = mock_dispatcher.dispatch.call_args
         assert call[1]["action"] == "alert_whatsapp"
 
-    async def test_action_tier_from_result_passed_to_dispatcher(self):
-        """The tier passed to dispatcher comes from ReasoningResult, not hardcoded."""
+    async def test_an_action_that_drives_nothing_does_not_reach_tier_d(self):
+        """Tier D is granted to a commissioned outcome, not to a plan.
+
+        `emergency_cutoff` carries a registry entry, no executor, and no zone
+        mapping it to a protected-circuit outcome. A Tier D incident does not
+        confer its authority on it: it runs at its own, capped at Tier C. An
+        action inheriting the incident's tier is what sealed notifications into
+        the evidence chain as safety-critical actions.
+        """
         mock_dispatcher = AsyncMock()
         skill = _tier_d_skill()
         skill.actions = {
@@ -1146,7 +1153,25 @@ class TestReasonAndDispatch:
         )
 
         call = mock_dispatcher.dispatch.call_args
-        assert call[1]["tier"] == "D"
+        assert call[1]["tier"] == "C"
+
+    async def test_a_notification_never_inherits_a_trip_s_authority(self):
+        """A and D are both autonomous, so a maximum over tiers is not conservative."""
+        mock_dispatcher = AsyncMock()
+        skill = _tier_d_skill()
+        skill.actions = {
+            "available": [{"name": "alert_whatsapp", "tier": "A"}],
+            "defaults": {"dangerous_overcurrent": ["alert_whatsapp"]},
+        }
+        elevator = IntelligenceElevator()
+
+        await elevator.reason_and_dispatch(
+            _event(value=5.0), skill, None, mock_dispatcher
+        )
+
+        call = mock_dispatcher.dispatch.call_args
+        assert call[1]["action"] == "alert_whatsapp"
+        assert call[1]["tier"] == "A"
 
     async def test_approval_timeout_from_trigger_passed_to_dispatcher(self):
         mock_dispatcher = AsyncMock()

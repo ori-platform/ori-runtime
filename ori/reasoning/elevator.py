@@ -42,6 +42,7 @@ from ori.reasoning.rule_engine import (
     RESERVED_CONTEXT_NAMES,
     RuleEngine,
     RuleEngineSafetyError,
+    RuleResult,
 )
 from ori.utils.time_utils import now_ms
 
@@ -160,13 +161,37 @@ def _complexity_score(
     return sum(scores) / len(scores)
 
 
+def _record_planned_outcome(planned: Any, outcome: Any) -> None:
+    """Write back what one action actually reached, for cooldown accounting.
+
+    Read from the dispatcher's own result rather than assumed at scheduling
+    time: an action can be admitted into this path and still be refused at the
+    resource gate, and a trigger refused there has not had its turn.
+    """
+    from ori.reasoning.dispatch_plan import DispatchOutcome
+
+    taken = str(getattr(outcome, "action_taken", "") or "")
+    if taken.startswith("refused_"):
+        planned.outcome = DispatchOutcome.FULLY_REFUSED
+        planned.refusal = taken[len("refused_") :]
+    elif taken == "coalesced":
+        planned.outcome = DispatchOutcome.JOINED_ATTEMPT
+    elif getattr(outcome, "approved", None) is not None:
+        # An operator was asked. Asking again immediately is the noise cooldown
+        # exists to stop, whatever the answer was.
+        planned.outcome = DispatchOutcome.PROPOSAL_OPENED
+    else:
+        planned.outcome = DispatchOutcome.ATTEMPTED
+
+
 class IntelligenceElevator:
     """Selects the cheapest reasoning tier and returns a :class:`~ori.network.events.ReasoningResult`.
 
     Tier selection order (cheapest first):
 
     1. **Rule engine** — microseconds, always evaluated first.
-       If a Tier D rule fires, returns immediately without LLM.
+       A Tier D match is attempted before any reasoning task is scheduled, and
+       needs no model.
     2. **Local SLM** — 3–8 seconds, offline capable.
     3. **Gateway LLM** — 1–3 seconds, LAN/MQTT gateway required.
 
@@ -479,10 +504,15 @@ class IntelligenceElevator:
             for signal in signals
         )
 
-    async def _evaluate_rules_with_hooks(
+    async def evaluate_matches_with_hooks(
         self, event: OriEvent, skill: Any, state_store: Any
     ):
-        """Build context with derived hook variables, and evaluate against RuleEngine."""
+        """Every trigger of *skill* that matches *event*, with the hook context.
+
+        Exhaustive on purpose. Returning one match let declaration order decide
+        which tier fired, so a Tier D trip declared below a Tier A notice on the
+        same condition never reached dispatch.
+        """
         rules = getattr(skill, "triggers", [])
         ctx: dict[str, Any] = {}
         if hasattr(skill, "config") and isinstance(skill.config, dict):
@@ -509,10 +539,24 @@ class IntelligenceElevator:
                     getattr(skill, "name", "unknown"),
                 )
 
-        rule_result = await self._rule_engine.evaluate(
-            event, rules, context=ctx, state_store=state_store
+        matches = await self._rule_engine.evaluate_all(
+            event,
+            rules,
+            context=ctx,
+            state_store=state_store,
+            scope=str(getattr(skill, "name", "") or ""),
         )
-        return rule_result, hook_ctx
+        return matches, hook_ctx
+
+    async def _evaluate_rules_with_hooks(
+        self, event: OriEvent, skill: Any, state_store: Any
+    ):
+        """The first match only, for callers that want one answer."""
+        matches, hook_ctx = await self.evaluate_matches_with_hooks(
+            event, skill, state_store
+        )
+        first = matches[0] if matches else RuleResult(matched=False, action_tier="A")
+        return first, hook_ctx
 
     async def select_tier(
         self,
@@ -1353,14 +1397,38 @@ class IntelligenceElevator:
                 )
             correlation_id = self._ensure_correlation_id(event)
 
-            pre_rule_result, _ = await self._evaluate_rules_with_hooks(
-                event, skill, state_store
+            supplied = None
+            if isinstance(getattr(event, "context", None), dict):
+                supplied = event.context.get("__rule_result")
+
+            if supplied is not None:
+                # The plan builder already evaluated this event and decided this
+                # trigger matched. Evaluating again would re-read a cooldown the
+                # plan has since charged and suppress the very trigger whose
+                # turn this is.
+                matches = [supplied]
+            else:
+                matches, _ = await self.evaluate_matches_with_hooks(
+                    event, skill, state_store
+                )
+            pre_rule_result = (
+                matches[0] if matches else RuleResult(matched=False, action_tier="A")
             )
             if handler_trigger_name:
-                if not pre_rule_result.matched:
+                # Whether this handler's own trigger matched, not whether it won
+                # a comparison against one arbitrarily chosen match. Selecting a
+                # winner by name against the single first match is what dropped
+                # a Tier C proposal and a Tier D trip silently whenever a Tier A
+                # trigger on the same condition was declared above them.
+                mine = [m for m in matches if m.rule_name == handler_trigger_name]
+                if not mine:
+                    logger.debug(
+                        "IntelligenceElevator: trigger=%r did not match this "
+                        "event; nothing to dispatch",
+                        handler_trigger_name,
+                    )
                     return
-                if pre_rule_result.rule_name != handler_trigger_name:
-                    return
+                pre_rule_result = mine[0]
 
             if (
                 pre_rule_result.matched
@@ -1507,17 +1575,51 @@ class IntelligenceElevator:
                         approval_timeout_seconds = int(raw_timeout)
                     except (TypeError, ValueError):
                         approval_timeout_seconds = 300
+            plan = None
+            if isinstance(getattr(event, "context", None), dict):
+                plan = event.context.get("__trigger_plan")
+            planned_by_action = {
+                planned.action: planned
+                for planned in getattr(plan, "actions", []) or []
+            }
+
             for action in actions:
-                dispatch_tier = result.action_tier
-                if not rule_res.matched:
+                planned = planned_by_action.get(action)
+                if planned is not None:
+                    if planned.tier_d_granted:
+                        # Already attempted at the discovery barrier, before any
+                        # reasoning was scheduled. Dispatching it again here
+                        # would be a second physical act for one condition.
+                        continue
+                    if not planned.admitted:
+                        continue
+                    dispatch_tier = planned.dispatch_tier
+                elif not rule_res.matched:
                     dispatch_tier = self._action_tiers(skill).get(action, "A")
-                await dispatcher.dispatch(
+                else:
+                    # No coordinator built a plan for this call. The tier is
+                    # still the action's own rather than the incident's: an
+                    # action that inherited its trigger's tier is why a Tier C
+                    # plan could not notify anyone and a Tier D plan sealed
+                    # notifications into the evidence chain as safety actions.
+                    fallback_tier = self._fallback_action_tier(
+                        skill=skill,
+                        action=action,
+                        rule_result=rule_res,
+                        incident_tier=result.action_tier,
+                    )
+                    if fallback_tier is None:
+                        continue
+                    dispatch_tier = fallback_tier
+                outcome = await dispatcher.dispatch(
                     action=action,
                     tier=dispatch_tier,
                     context=context,
                     result=result,
                     approval_timeout=approval_timeout_seconds,
                 )
+                if planned is not None:
+                    _record_planned_outcome(planned, outcome)
 
             # Persist reasoning result
             if state_store is not None and hasattr(state_store, "log_reasoning"):
@@ -1599,6 +1701,47 @@ class IntelligenceElevator:
                 skill_name,
                 event.sensor_id,
             )
+
+    def _fallback_action_tier(
+        self,
+        *,
+        skill: Any,
+        action: str,
+        rule_result: Any,
+        incident_tier: str,
+    ) -> str | None:
+        """The authority one action runs under when no coordinator planned it.
+
+        The same two-axis rule the coordinator applies, minus the parts only an
+        event-wide view can decide: without a discovery barrier nothing here can
+        establish that this is the licensed protective act for the condition, so
+        the Tier D branch is not reachable and the result is capped at C.
+
+        Returns None when the action is refused at admission. A refusal is not a
+        weak tier — dispatching a refused action at the tier the refusal left
+        behind would run an ungoverned or unbound action as though it were
+        informational.
+        """
+        from ori.reasoning.dispatch_plan import assign_action_tier
+
+        planned = assign_action_tier(
+            action=action,
+            incident_tier=str(incident_tier or "A"),
+            declared_tier=self._action_tiers(skill).get(action, "A"),
+            bypass_llm=bool(getattr(rule_result, "bypass_llm", False)),
+            first_party=bool(getattr(skill, "first_party", False)),
+            declared_actions=(),
+            binding=None,
+            has_executor=False,
+        )
+        if planned.refusal:
+            logger.warning(
+                "IntelligenceElevator: not dispatching action=%r — %s",
+                action,
+                planned.refusal,
+            )
+            return None
+        return planned.dispatch_tier
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 

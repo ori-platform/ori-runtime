@@ -334,14 +334,44 @@ class RuleEngine:
       successive fires of this rule
 
     **Tier D handling:** Any rule with ``bypass_llm=True`` and
-    ``action_tier='D'`` is treated as safety-critical.  The engine returns
-    immediately upon encountering the first such rule that matches — it does
-    not continue evaluating remaining rules.
+    ``action_tier='D'`` is treated as safety-critical. The engine does not
+    arbitrate between matches and does not stop at one: it reports every rule
+    whose condition holds, and which of them takes effect is decided by the
+    dispatch plan against the runtime's own registry and the commissioned
+    binding. Stopping at the first match made declaration order the arbiter,
+    which put a safety trip behind whatever a skill author listed above it.
     """
 
     def __init__(self) -> None:
         # rule_name → last-fired timestamp
         self._cooldowns: dict[str, _CooldownRecord] = {}
+
+    @staticmethod
+    def _cooldown_key(rule_name: str, scope: str) -> str:
+        """Cooldowns belong to a trigger of a skill, not to a name.
+
+        One engine serves every skill, and trigger names come from `skill.yaml`,
+        so two skills may each declare `high_temp`. Keyed on the name alone, one
+        skill firing silences the other's unrelated trigger.
+        """
+        return f"{scope}\x1f{rule_name}" if scope else rule_name
+
+    def in_cooldown(
+        self, rule_name: str, cooldown_seconds: int, scope: str = ""
+    ) -> bool:
+        """Whether *rule_name* in *scope* is inside its cooldown window."""
+        if cooldown_seconds <= 0:
+            return False
+        record = self._cooldowns.get(self._cooldown_key(rule_name, scope))
+        if record is None:
+            return False
+        return (now_ms() - record.last_fired_ms) < cooldown_seconds * 1000
+
+    def record_fire(self, rule_name: str, scope: str = "") -> None:
+        """Charge the cooldown. The plan builder is the only caller."""
+        self._cooldowns[self._cooldown_key(rule_name, scope)] = _CooldownRecord(
+            last_fired_ms=now_ms()
+        )
 
     async def evaluate(
         self,
@@ -349,8 +379,35 @@ class RuleEngine:
         rules: list[Any],
         context: dict[str, Any] | None = None,
         state_store: Any = None,
+        scope: str = "",
     ) -> RuleResult:
         """Evaluate *rules* against *event* and return the first match.
+
+        Retained for callers that want one answer. It does not decide dispatch:
+        returning the first match in declaration order lets a skill author
+        choose whether a safety trip happens by choosing where to put it in a
+        list, which is why the dispatch path uses :meth:`evaluate_all`.
+        """
+        results = await self.evaluate_all(event, rules, context, state_store, scope)
+        return results[0] if results else RuleResult(matched=False, action_tier="A")
+
+    async def evaluate_all(
+        self,
+        event: OriEvent,
+        rules: list[Any],
+        context: dict[str, Any] | None = None,
+        state_store: Any = None,
+        scope: str = "",
+    ) -> list[RuleResult]:
+        """Every rule in *rules* that matches *event*, in declaration order.
+
+        Order is preserved for readability only; nothing downstream may decide
+        authority from it. Cooldown suppresses a match here but is **not**
+        consumed: a trigger that matched and then lost arbitration has not
+        fired, and charging it at evaluation time is why such a trigger
+        currently spends a cooldown it never used. :meth:`record_fire` is the
+        one place consumption happens, called by the plan builder against the
+        outcome the trigger actually reached.
 
         Args:
             event: The incoming sensor event.
@@ -362,7 +419,8 @@ class RuleEngine:
                 passed to :class:`EvalContext` for history helpers.
 
         Returns:
-            A :class:`RuleResult`.  ``matched=False`` means no rule fired.
+            Every matching :class:`RuleResult`. An empty list means no rule
+            fired.
 
         Raises:
             :exc:`RuleEngineSafetyError`: if any rule condition contains a
@@ -441,6 +499,7 @@ class RuleEngine:
         eval_ctx = EvalContext(base_ctx, history_cache)
         namespace = eval_ctx.as_dict()
 
+        matches: list[RuleResult] = []
         for rule in rules:
             name: str = _rule_get(rule, "name", "<unnamed>")
             condition: str = _rule_get(rule, "condition", "")
@@ -479,22 +538,13 @@ class RuleEngine:
             if not matched:
                 continue
 
-            # Check cooldown
-            if cooldown_s > 0:
-                rec = self._cooldowns.get(name)
-                if (
-                    rec is not None
-                    and (now_ms() - rec.last_fired_ms) < cooldown_s * 1000
-                ):
-                    logger.debug(
-                        "RuleEngine: rule %r suppressed by cooldown (%ds)",
-                        name,
-                        cooldown_s,
-                    )
-                    continue
-
-            # Record fire time
-            self._cooldowns[name] = _CooldownRecord(last_fired_ms=now_ms())
+            if self.in_cooldown(name, cooldown_s, scope):
+                logger.debug(
+                    "RuleEngine: rule %r suppressed by cooldown (%ds)",
+                    name,
+                    cooldown_s,
+                )
+                continue
 
             logger.info(
                 "RuleEngine: rule %r matched (tier=%s, bypass_llm=%s)",
@@ -503,16 +553,18 @@ class RuleEngine:
                 bypass_llm,
             )
 
-            return RuleResult(
-                matched=True,
-                rule_name=name,
-                escalate_to=escalate_to,
-                bypass_llm=bypass_llm,
-                reasoning_policy=reasoning_policy,
-                requires_approval=requires_approval,
-                action=action,
-                action_tier=action_tier,
-                confidence=1.0,
+            matches.append(
+                RuleResult(
+                    matched=True,
+                    rule_name=name,
+                    escalate_to=escalate_to,
+                    bypass_llm=bypass_llm,
+                    reasoning_policy=reasoning_policy,
+                    requires_approval=requires_approval,
+                    action=action,
+                    action_tier=action_tier,
+                    confidence=1.0,
+                )
             )
 
-        return RuleResult(matched=False, action_tier="A")
+        return matches
