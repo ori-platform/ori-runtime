@@ -1986,3 +1986,88 @@ This decision stands on its own and does not close
 `ori-platform/ori-runtime#510`, whose remaining scope is the pair-scoped
 supervision mechanism, its health and evidence state, the reset qualification
 boundary, and the connect-time contention case.
+
+## 2026-09-12 — The tier letter is two decisions, and reading it as one scale produced defects
+
+`A` through `D` looks like a severity scale, and the framework was reasoned
+about as one for long enough to produce three defects. It is not a scale. Each
+letter is a pair drawn from two independent axes.
+
+**Consequence class** — `informational`, `soft`, `hard` — is what the action
+does to the world. Whether opening a circuit is reversible is a fact about site
+wiring, established per channel at commissioning, so no skill author is in a
+position to hold it and the runtime registry owns it. That reason is stronger
+than "the manifest is untrusted input": it holds for a scrupulous author with
+no intent to overreach, which is why the boundary does not move when signing
+improves.
+
+**Authority basis** — `autonomous`, `operator_approval`, `safety_condition` —
+is what licenses one dispatch. The letters are the pairs that exist: A is
+informational and autonomous; B is soft, autonomous or approved per deployment;
+C is hard and approved; D is hard under a release-owned safety condition,
+pre-authorised because no human is reachable in the time the condition allows.
+
+Three consequences follow, and each corrects something that had already gone
+wrong:
+
+- **A and D are both autonomous, so a maximum over tiers is not conservative.**
+  A dispatch rule taking the greatest tier in a set granted Tier D to every
+  non-informational action alongside a trip, and would have let a notification
+  accompanying a cutoff inherit the cutoff's authority. On the two axes there is
+  nothing to exempt, because consequence class does not travel between actions.
+- **`requires_approval` moves a Tier B action along the authority axis** without
+  changing its letter. The letter alone therefore never decided whether a soft
+  action waits for a human, which is why reading the letter as the whole answer
+  kept producing surprises.
+- **A Tier D floor is a category error.** D is not more consequence than C; it
+  is the same consequence under a different licence, and no registry entry is in
+  a position to assert a licence. `emergency_cutoff` is registered at a hard
+  floor and reaches D only through a safety condition. That is the model
+  working, not a workaround for a registry that cannot express D.
+
+The axes are corrected into `skills-package/v3` in place rather than raised to a
+new contract version. A version exists to let implementations disagree about
+which one they follow; there is no implementation of the preceding version to
+protect, so a new number would record a disagreement nobody is having while
+leaving the wrong reasoning standing as the current contract.
+
+## 2026-09-12 — An action's licence is captured when the row is written, never derived at sealing
+
+`evidence/v2` requires every attested `runtime_action` to name what permitted
+it. The value cannot be built at sealing time. Attestation reconciliation runs
+after a restart and seals from the stored row alone, and the skill, profile or
+binding loaded by then may not be the one that licensed the action — frequently
+it is not, because the restart is why the row is being reconciled. Anything
+derived from present state would be a different claim wearing the same field
+name.
+
+**So the complete typed licence is captured when the action row is first
+written, as canonical JSON, and replayed verbatim.** A snapshot rather than a
+set of columns because the kinds carry different fields — a proposal; a skill
+name, version and trigger; a profile, zone and binding sequence; a fixture hash
+— and columns would mean a migration per kind. The action log already holds
+exactly this shape for firmware registration input, for the same reason.
+
+**A row whose licence was never captured is refused, not sealed.** Historical
+rows migrate to null rather than to an empty object: there is nothing truthful
+to record, and a snapshot claiming something would be worse than one admitting
+nothing was recorded. Signing such a row anyway would consume a sequence number
+and read as evidence at a glance while being something a verifier must discount.
+The refusal is terminal and carries a closed reason, deliberately outside the
+selection the reconciliation loop retries — a transient failure must be retried
+and an unrecoverable one must not, or the loop logs the same row for the life of
+the device and buries the failures it exists to repair.
+
+**Grammatical validity is not truthfulness, and the two must both be checked.**
+A well-formed licence that belongs to a different tier is the harder case: a
+Tier D cutoff carrying a valid operator approval would seal a claim, under the
+device key, that a human approved a trip nobody was asked about. Tier C admits
+only an operator approval; Tier D admits only the safety-condition kinds; any
+other tier carries no licence on the evidence path at all. The check runs before
+the chain is touched, so a refusal allocates no sequence number and leaves no
+gap a verifier reads as a missing row.
+
+**Where the snapshot and a query column name the same fact they must agree.** A
+disagreement means one of them was written from something other than the
+decision being sealed, and publishing either would assert a licence the row does
+not support.
