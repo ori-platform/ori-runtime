@@ -115,6 +115,20 @@ CREATE TABLE IF NOT EXISTS action_log (
     input_firmware_registration TEXT NOT NULL DEFAULT '',
     correlation_id    TEXT    NOT NULL DEFAULT '',
     trigger_name      TEXT    NOT NULL,
+    -- The complete typed authority that licensed this action, as canonical
+    -- JSON matching one `evidence/v2` variant, captured when the row is first
+    -- written. NULL on rows created before the column existed, and on rows
+    -- that produce no runtime_action evidence.
+    --
+    -- Reconciliation replays this snapshot; it never rebuilds an authority
+    -- from whichever skill, profile or binding is loaded after a restart,
+    -- because those may have moved on and the licence is a fact about the
+    -- moment the action was dispatched. A row whose snapshot is absent cannot
+    -- be sealed conformantly and is refused rather than invented.
+    authority_json    TEXT,
+    -- Why attestation reached a terminal state, when it did. Empty while a row
+    -- is pending, signed, reconciled, or transiently failed.
+    attestation_reason TEXT   NOT NULL DEFAULT '',
     timestamp         INTEGER NOT NULL
 );
 
@@ -928,6 +942,23 @@ class StateStore:
             conn,
             "action_log",
             "proposal_id",
+            "TEXT    NOT NULL DEFAULT ''",
+        )
+        # Nullable with no default, deliberately. An empty string or `{}` would
+        # be a snapshot claiming something, and there is nothing truthful to
+        # claim for a row written before the column existed: the licence was
+        # never recorded and cannot be recovered. NULL says exactly that, and
+        # the attestation path refuses such a row rather than sealing it.
+        self._add_column_if_missing_on_conn(
+            conn,
+            "action_log",
+            "authority_json",
+            "TEXT",
+        )
+        self._add_column_if_missing_on_conn(
+            conn,
+            "action_log",
+            "attestation_reason",
             "TEXT    NOT NULL DEFAULT ''",
         )
         # A bench device commissioned on an earlier build of this branch holds
@@ -2161,6 +2192,7 @@ class StateStore:
         input_firmware_registration: str = "",
         attestation_pending: bool = False,
         binding_seq: int | None = None,
+        authority_json: str | None = None,
     ) -> int:
         """Persist action result with sensor/device context for reporting.
 
@@ -2168,6 +2200,13 @@ class StateStore:
         approval provenance, stored in the SAME insert as the action row so
         a crash cannot leave a pending action whose provenance was to be
         written by a later transaction.
+
+        ``authority_json`` is the licence that permitted this action, captured
+        here for the same reason and a stronger one: reconciliation after a
+        restart must replay the authority that was in force when the action was
+        dispatched, and the skill, profile or binding loaded afterwards may be a
+        different one. None where the action produces no runtime_action
+        evidence.
         """
         return await self._run_write(
             self._log_action_sync,
@@ -2185,6 +2224,7 @@ class StateStore:
                 "input_firmware_registration": input_firmware_registration,
                 "attestation_pending": attestation_pending,
                 "binding_seq": binding_seq,
+                "authority_json": authority_json,
             },
         )
 
@@ -2215,8 +2255,8 @@ class StateStore:
                  input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
                  input_firmware_registration,
                  correlation_id, trigger_name, timestamp, attestation_status,
-                 binding_seq)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 binding_seq, authority_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 result.action_name,
@@ -2245,6 +2285,7 @@ class StateStore:
                     if context_fields.get("binding_seq") is not None
                     else None
                 ),
+                context_fields.get("authority_json"),
             ),
         )
         self._conn.commit()
@@ -2256,10 +2297,15 @@ class StateStore:
         *,
         status: str,
         attestation_seq: int | None = None,
+        reason: str = "",
     ) -> None:
         """Record the evidence-signing outcome for one action_log row."""
         await self._run_write(
-            self._set_action_attestation_sync, action_id, status, attestation_seq
+            self._set_action_attestation_sync,
+            action_id,
+            status,
+            attestation_seq,
+            reason,
         )
 
     def _set_action_attestation_sync(
@@ -2267,19 +2313,27 @@ class StateStore:
         action_id: int,
         status: str,
         attestation_seq: int | None,
+        reason: str = "",
     ) -> None:
         assert self._conn is not None
-        if status not in {"pending", "signed", "failed", "reconciled"}:
+        if status not in {"pending", "signed", "failed", "reconciled", "refused"}:
             raise ValueError(f"invalid attestation status: {status!r}")
         self._conn.execute(
-            "UPDATE action_log SET attestation_status = ?, attestation_seq = ? "
-            "WHERE id = ?",
-            (status, attestation_seq, action_id),
+            "UPDATE action_log SET attestation_status = ?, attestation_seq = ?, "
+            "attestation_reason = ? WHERE id = ?",
+            (status, attestation_seq, reason, action_id),
         )
         self._conn.commit()
 
     async def get_actions_needing_attestation(self, limit: int = 500) -> list[dict]:
-        """Rows whose evidence signing did not complete (pending/failed)."""
+        """Rows whose evidence signing did not complete and may yet succeed.
+
+        `refused` is deliberately not among them. It marks a row that cannot be
+        attested however many times it is retried — its licence was never
+        recorded and cannot be recovered — and re-selecting it would retry a
+        failure forever and log once per pass, burying the transient failures
+        this loop exists to repair.
+        """
         return await self._run_read(self._get_actions_needing_attestation_sync, limit)
 
     def _get_actions_needing_attestation_sync(
@@ -2292,7 +2346,8 @@ class StateStore:
                    sensor_type, input_attestation_grade, input_posture, correlation_id,
                    input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
                    input_firmware_registration,
-                   trigger_name, timestamp, attestation_status
+                   trigger_name, timestamp, attestation_status, authority_json,
+                   binding_seq
             FROM action_log
             WHERE attestation_status IN ('pending', 'failed')
             ORDER BY id

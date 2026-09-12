@@ -27,6 +27,8 @@ import hashlib
 import json
 import math
 import pathlib
+import re
+import unicodedata
 import uuid
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -335,7 +337,7 @@ ENVELOPE_TO_COLUMN = {
 
 
 def _rules_violated(case: dict, public_key) -> set[int]:
-    """Independently derive which of the thirteen rules this artifact breaks.
+    """Independently derive which of the nineteen rules this artifact breaks.
 
     Written from the contract, not from the case's own claim about itself. A
     check that trusted `case["rule"]` would confirm the label rather than the
@@ -376,14 +378,92 @@ def _rules_violated(case: dict, public_key) -> set[int]:
         broken.add(12)
     if set(envelope) - ENVELOPE_FIELDS:
         broken.add(13)
+    authority_rule = _authority_rule_violated(envelope.get("payload"))
+    if authority_rule is not None:
+        broken.add(authority_rule)
     return broken
 
 
+#: Exact field sets per authority kind, restated from the contract in the same
+#: spirit as everything else here: importing the producer's own grammar would
+#: check it against itself, and the question is whether it agrees with these
+#: bytes.
+AUTHORITY_KINDS = {
+    "tier_c_approval": {"proposal_id"},
+    "tier_d_profile": {"profile_id", "zone_id", "binding_seq"},
+    "tier_d_qualification": {"profile_id", "zone_id", "binding_seq", "fixture_hash"},
+    "tier_d_legacy_skill": {"skill_name", "skill_version", "trigger_name"},
+}
+
+
+def _authority_field_ok(field: str, value: object) -> bool:
+    if field == "binding_seq":
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 1 <= value <= 9007199254740991
+        )
+    if not isinstance(value, str):
+        return False
+    if field == "proposal_id":
+        return re.fullmatch(r"[A-Z0-9]{8}", value) is not None
+    if field == "profile_id":
+        return (
+            re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+\.v[1-9][0-9]*", value)
+            is not None
+        )
+    if field == "fixture_hash":
+        return re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+    if field == "zone_id":
+        return bool(value.strip())
+    if field == "skill_name":
+        return (
+            len(value) <= 64
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value) is not None
+        )
+    if field == "skill_version":
+        return bool(value.strip()) and len(value) <= 32 and _identity_clean(value)
+    if field == "trigger_name":
+        return bool(value.strip()) and _identity_clean(value)
+    return True
+
+
+def _identity_clean(value: str) -> bool:
+    return all(
+        unicodedata.category(ch) not in {"Cc", "Cf", "Zl", "Zp", "Cs"} and ch != "\x7f"
+        for ch in value
+    )
+
+
+def _authority_rule_violated(payload: object) -> int | None:
+    """The first authority rule this payload breaks, in the contract's order."""
+    if not isinstance(payload, dict) or payload.get("kind") != "runtime_action":
+        return None
+    if "authority" not in payload:
+        return 14
+    authority = payload["authority"]
+    if not isinstance(authority, dict):
+        return 15
+    kind = authority.get("kind")
+    if not isinstance(kind, str) or kind not in AUTHORITY_KINDS:
+        return 16
+    required = AUTHORITY_KINDS[kind]
+    present = set(authority) - {"kind"}
+    if required - present:
+        return 17
+    for field in sorted(required):
+        if not _authority_field_ok(field, authority[field]):
+            return 18
+    if present - required:
+        return 19
+    return None
+
+
 def test_every_rejection_rule_has_a_case():
-    """Thirteen rules, thirteen concrete rows. A rule without one is untested."""
+    """Nineteen rules, nineteen concrete rows. A rule without one is untested."""
     covered = {case["rule"] for case in load("chain-row.json")["rejection_cases"]}
-    assert covered == set(range(1, 14)), (
-        f"rules without a case: {set(range(1, 14)) - covered}"
+    assert covered == set(range(1, 20)), (
+        f"rules without a case: {set(range(1, 20)) - covered}"
     )
 
 

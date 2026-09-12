@@ -320,6 +320,13 @@ async def _seal_one(attestor: FirstPartyEvidenceAttestor) -> dict:
             "executed": 1,
             "action_taken": "emergency_cutoff",
             "timestamp": 1787000000000,
+            "trigger_name": "dangerous_overcurrent",
+            "authority_json": (
+                '{"kind":"tier_d_legacy_skill",'
+                '"skill_name":"energy-anomaly-detector",'
+                '"skill_version":"0.2.1",'
+                '"trigger_name":"dangerous_overcurrent"}'
+            ),
         }
     )
     assert seq is not None
