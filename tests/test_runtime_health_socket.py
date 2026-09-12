@@ -2,11 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import errno
 import json
 import os
 import socket
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -280,3 +282,452 @@ async def test_health_snapshot_includes_alert_outbox_backlog(tmp_path):
         assert snapshot["alert_outbox"]["oldest_queued_age_ms"] >= 0
     finally:
         await runtime._state_store.close()
+
+
+# ── the developer fallback ───────────────────────────────────────────────────
+
+
+_PACKAGED_DEFAULT = "/run/ori/health.sock"
+
+
+def _raising(exc: BaseException):
+    """A `_prepare_socket_path` that fails the way a given host fails."""
+
+    def _prepare(socket_path: str) -> str:
+        if socket_path == _PACKAGED_DEFAULT:
+            raise exc
+        return socket_path
+
+    return _prepare
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        PermissionError(13, "Permission denied", "/run/ori"),
+        FileNotFoundError(2, "No such file or directory", "/run/ori"),
+        OSError(30, "Read-only file system", "/run"),
+        NotADirectoryError(20, "Not a directory", "/run/ori"),
+    ],
+    ids=["permission", "run-absent", "read-only", "not-a-directory"],
+)
+@pytest.mark.asyncio
+async def test_the_fallback_fires_however_an_unusable_path_presents(
+    failure, monkeypatch
+):
+    """One condition, four errnos.
+
+    The packaged default path being unusable on this host arrives as
+    `PermissionError` under a non-root account, `FileNotFoundError` where
+    `/run` does not exist, and `OSError(EROFS)` where it exists read-only.
+    Catching only the first meant the fallback written for exactly this case
+    never fired on a developer machine, and the health surface was lost for the
+    life of the process.
+    """
+    _require_unix_socket_bindable()
+    server = RuntimeHealthSocketServer(
+        socket_path=_PACKAGED_DEFAULT,
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "dev-01"},
+    )
+    fallback = _short_socket_path("fallback")
+    monkeypatch.setattr(
+        "ori.runtime_health_socket._HEALTH_SOCKET_DEFAULT_DEV_FALLBACK_PATH",
+        fallback,
+    )
+    monkeypatch.setattr(server, "_prepare_socket_path", _raising(failure))
+
+    bound = await server.start()
+    try:
+        assert bound == fallback
+        assert (await _read_json_line(bound, b"GET_HEALTH\n"))["ok"] is True
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_a_second_runtime_cannot_take_a_path_the_first_is_serving():
+    """Driven with two real servers, because the injected version proved nothing.
+
+    An earlier form of this test raised `EADDRINUSE` from a patched
+    `_prepare_socket_path` and asserted it propagated. That method unlinked any
+    existing socket before binding, so the error it injected could not occur:
+    a second runtime took the pathname from a live first one, which stayed
+    running and unreachable while anything reading health got the newcomer.
+    The refusal has to be observed against a real listener or it is a claim
+    about a mock.
+    """
+    _require_unix_socket_bindable()
+    path = _short_socket_path("collision")
+    first = RuntimeHealthSocketServer(
+        socket_path=path,
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "first"},
+    )
+    await first.start()
+    try:
+        second = RuntimeHealthSocketServer(
+            socket_path=path,
+            mode=0o660,
+            snapshot_provider=lambda: {"device_id": "second"},
+        )
+        with pytest.raises(OSError) as raised:
+            await second.start()
+        assert raised.value.errno == errno.EADDRINUSE
+
+        # The point of refusing: the first runtime is still the one answering.
+        served = await _read_json_line(path, b"GET_HEALTH\n")
+        assert served["health"]["device_id"] == "first"
+    finally:
+        await first.close()
+
+
+@pytest.mark.asyncio
+async def test_a_busy_packaged_default_does_not_fall_back_to_another_path():
+    """The errno filter, on the one path the fallback applies to.
+
+    The refusal is injected here because `/run/ori/health.sock` cannot be bound
+    on a developer machine — that the implementation really produces this errno
+    against a live listener is proven separately, on a real pathname, by
+    `test_a_second_runtime_cannot_take_a_path_the_first_is_serving`. What this
+    covers is what the fallback does with it: answering a second runtime by
+    quietly serving health somewhere else would leave the first holding the
+    socket a fleet reads while the second reports itself healthy elsewhere.
+    """
+    server = RuntimeHealthSocketServer(
+        socket_path=_PACKAGED_DEFAULT,
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "dev-01"},
+    )
+    server._prepare_socket_path = _raising(  # type: ignore[method-assign]
+        OSError(errno.EADDRINUSE, "already serving", _PACKAGED_DEFAULT)
+    )
+
+    with pytest.raises(OSError) as raised:
+        await server.start()
+    assert raised.value.errno == errno.EADDRINUSE
+
+
+@pytest.mark.parametrize(
+    "outcome,expected_live",
+    [
+        (ConnectionRefusedError(errno.ECONNREFUSED, "refused"), False),
+        (FileNotFoundError(errno.ENOENT, "gone"), False),
+        (TimeoutError("peer accepted and said nothing"), True),
+        (PermissionError(errno.EACCES, "denied"), True),
+        (OSError(errno.EPROTOTYPE, "something unexpected"), True),
+    ],
+    ids=["refused", "vanished", "timeout", "denied", "unexpected"],
+)
+def test_only_a_refused_connection_proves_a_socket_is_stale(
+    outcome, expected_live, monkeypatch
+):
+    """Guessing wrong in one direction unlinks a socket a device is serving on.
+
+    Guessing wrong in the other produces a refusal an operator can see and
+    clear, so every outcome that is not a refusal is read as a live listener.
+    """
+    from ori.runtime_health_socket import _socket_has_a_listener
+
+    class _Probe:
+        def settimeout(self, _seconds):
+            return None
+
+        def connect(self, _path):
+            raise outcome
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(socket, "socket", lambda *a, **k: _Probe())
+    assert _socket_has_a_listener(Path("/tmp/whatever.sock")) is expected_live
+
+
+@pytest.mark.asyncio
+async def test_a_stale_socket_file_with_no_listener_is_replaced():
+    """The control. Refusing every existing socket file would strand a device.
+
+    A socket left by a runtime that was killed has no listener, and a device
+    that cannot rebind after an unclean stop has lost its health surface until
+    someone deletes a file by hand.
+    """
+    _require_unix_socket_bindable()
+    path = _short_socket_path("stale")
+    abandoned = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    abandoned.bind(path)
+    abandoned.close()  # the file remains; nothing is listening
+    assert os.path.exists(path)
+
+    server = RuntimeHealthSocketServer(
+        socket_path=path,
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "restarted"},
+    )
+    bound = await server.start()
+    try:
+        served = await _read_json_line(bound, b"GET_HEALTH\n")
+        assert served["health"]["device_id"] == "restarted"
+    finally:
+        await server.close()
+
+
+@pytest.mark.parametrize("path_kind", ["configured", "fallback"])
+@pytest.mark.asyncio
+async def test_a_failure_after_binding_leaves_nothing_running(path_kind, monkeypatch):
+    """Startup is transactional past the bind, on both attempts.
+
+    `_server` used to be assigned the moment the listener existed and `chmod`
+    applied afterwards, so a `chmod` that failed raised out of `start()` with a
+    live listener nobody held: the caller discards the object on the exception,
+    `close()` is never reached, and the socket kept serving on permissions that
+    were never applied.
+    """
+    _require_unix_socket_bindable()
+    target = _short_socket_path(f"partial-{path_kind}")
+    if path_kind == "configured":
+        server = RuntimeHealthSocketServer(
+            socket_path=target,
+            mode=0o660,
+            snapshot_provider=lambda: {"device_id": "dev-01"},
+        )
+    else:
+        server = RuntimeHealthSocketServer(
+            socket_path=_PACKAGED_DEFAULT,
+            mode=0o660,
+            snapshot_provider=lambda: {"device_id": "dev-01"},
+        )
+        monkeypatch.setattr(
+            "ori.runtime_health_socket._HEALTH_SOCKET_DEFAULT_DEV_FALLBACK_PATH",
+            target,
+        )
+        monkeypatch.setattr(
+            server,
+            "_prepare_socket_path",
+            _raising(FileNotFoundError(errno.ENOENT, "absent", "/run/ori")),
+        )
+
+    real_chmod = os.chmod
+
+    def refuse_chmod(path, mode, *args, **kwargs):
+        if str(path) == target:
+            raise PermissionError(errno.EPERM, "Operation not permitted", str(path))
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", refuse_chmod)
+
+    with pytest.raises(PermissionError):
+        await server.start()
+
+    assert not os.path.exists(target), "the socket file outlived the failed start"
+    with pytest.raises(OSError):
+        await asyncio.open_unix_connection(path=target)
+
+
+@pytest.mark.asyncio
+async def test_a_path_that_is_not_the_packaged_default_never_falls_back(
+    monkeypatch,
+):
+    """The guard's scope is unchanged: a configured path is the operator's.
+
+    The fallback path here is deliberately usable, so a runtime that ignored
+    the guard would bind it and return successfully. The refusal is therefore
+    evidence about the guard rather than about a second failure.
+    """
+    _require_unix_socket_bindable()
+    configured = "/some/configured/health.sock"
+    server = RuntimeHealthSocketServer(
+        socket_path=configured,
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "dev-01"},
+    )
+    monkeypatch.setattr(
+        "ori.runtime_health_socket._HEALTH_SOCKET_DEFAULT_DEV_FALLBACK_PATH",
+        _short_socket_path("unused-fallback"),
+    )
+
+    def _fail_configured(socket_path: str) -> str:
+        if socket_path == configured:
+            raise FileNotFoundError(2, "No such file or directory", socket_path)
+        return socket_path
+
+    monkeypatch.setattr(server, "_prepare_socket_path", _fail_configured)
+
+    with pytest.raises(FileNotFoundError):
+        await server.start()
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_that_cannot_start_the_socket_says_so_and_keeps_going(
+    caplog, monkeypatch
+):
+    """A lost health surface must not look like a device that is not answering.
+
+    The runtime cannot report itself degraded through the surface that failed,
+    and the snapshot is the only reporter of several conditions — a sensor that
+    stopped measuring, a trust anchor that verifies nothing, a signed field an
+    unsigned source supplied. So the log line is the only thing distinguishing
+    such a device from one that is simply unreachable, and a traceback at
+    default severity is not that line.
+    """
+    runtime = OriRuntime.__new__(OriRuntime)
+    runtime._health_socket_server = None
+    runtime._health_socket_path = ""
+
+    config = cast(
+        "Any",
+        SimpleNamespace(
+            health_socket={
+                "enabled": True,
+                "path": "/run/ori/health.sock",
+                "mode": 0o660,
+            }
+        ),
+    )
+
+    async def refuse(self):
+        raise PermissionError(errno.EPERM, "Operation not permitted", "/run/ori")
+
+    monkeypatch.setattr(RuntimeHealthSocketServer, "start", refuse)
+
+    with caplog.at_level("DEBUG"):
+        # Returns rather than raising: every other surface is unaffected, so a
+        # failed health socket must not take the runtime down with it.
+        await OriRuntime._start_health_socket_if_enabled(runtime, config)
+
+    assert runtime._health_socket_server is None
+    critical = [r for r in caplog.records if r.levelname == "CRITICAL"]
+    assert critical, [(r.levelname, r.message) for r in caplog.records]
+    assert "no health surface" in critical[-1].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_a_departing_runtime_does_not_delete_a_replacement_s_socket():
+    """The overlapping restart, driven with two real servers.
+
+    A runtime that has stopped listening but has not yet cleaned up leaves a
+    window in which a replacement detects the stale file, binds its own and
+    starts answering. Cleanup that removes whatever socket holds the pathname
+    then deletes the newcomer's live socket, leaving a running device with no
+    health surface and nothing anywhere reporting why.
+    """
+    _require_unix_socket_bindable()
+    path = _short_socket_path("handover")
+
+    departing = RuntimeHealthSocketServer(
+        socket_path=path,
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "departing"},
+    )
+    await departing.start()
+
+    # Stop serving without cleaning up: the pathname is now stale, and the
+    # departing runtime's `close()` is still to come.
+    assert departing._server is not None
+    departing._server.close()
+    await departing._server.wait_closed()
+    departing._server = None
+
+    replacement = RuntimeHealthSocketServer(
+        socket_path=path,
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "replacement"},
+    )
+    bound = await replacement.start()
+    try:
+        served = await _read_json_line(bound, b"GET_HEALTH\n")
+        assert served["health"]["device_id"] == "replacement"
+
+        await departing.close()
+
+        assert os.path.exists(path), "the departing runtime removed a live socket"
+        still = await _read_json_line(bound, b"GET_HEALTH\n")
+        assert still["health"]["device_id"] == "replacement"
+    finally:
+        await replacement.close()
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_still_removes_its_own_socket_on_close():
+    """The control. Ownership must not become a licence to leave files behind.
+
+    A socket left by every clean shutdown is the stale file the next start has
+    to reason about, and the reasoning is a connection probe — cheap, but not
+    something to require on every restart because cleanup stopped working.
+    """
+    _require_unix_socket_bindable()
+    path = _short_socket_path("own-cleanup")
+    server = RuntimeHealthSocketServer(
+        socket_path=path,
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "dev-01"},
+    )
+    bound = await server.start()
+    assert os.path.exists(bound)
+    await server.close()
+    assert not os.path.exists(bound)
+
+
+@pytest.mark.parametrize("occupant", ["regular-file", "nothing", "another-socket"])
+def test_cleanup_with_no_bound_identity_removes_nothing(occupant):
+    """A server that never bound owns nothing, and must delete nothing.
+
+    Without the explicit no-identity guard, a `None` identity compares equal to
+    what a **non-socket** path reports, so cleanup fell through and unlinked an
+    ordinary file that happened to sit at the pathname — a file this module has
+    no business touching, deleted by a server that never started.
+    """
+    from ori.runtime_health_socket import _remove_socket_file
+
+    # A short pathname: AF_UNIX has a length limit a pytest tmp_path exceeds.
+    target = Path(_short_socket_path(f"unowned-{occupant}"))
+    target.unlink(missing_ok=True)
+    try:
+        if occupant == "regular-file":
+            target.write_text("not a socket")
+        elif occupant == "another-socket":
+            held = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            held.bind(str(target))
+            held.close()
+
+        _remove_socket_file(str(target), None)
+
+        assert target.exists() is (occupant != "nothing")
+    finally:
+        target.unlink(missing_ok=True)
+
+
+def test_cleanup_leaves_a_stale_socket_that_is_not_the_one_this_server_bound():
+    """Identity, isolated from the listener check that usually answers first.
+
+    A live replacement is protected by the listener probe whatever the identity
+    says. This is the case the probe cannot answer: a socket file at the
+    pathname with nothing listening, which is nonetheless not the file this
+    server created. Deleting it would be this runtime reaching past its own
+    shutdown to remove somebody else's artefact.
+
+    The differing identity is constructed rather than produced by a second
+    bind. Asking the filesystem for one is not reliable: on Linux an inode is
+    reused the moment its file is unlinked, and a handover fast enough to
+    finish inside the timestamp granularity was measured returning a
+    byte-identical triple for two different sockets. That is a real limit of
+    stat identity and the reason the listener check is the guarantee — but it
+    makes a test that needs two distinguishable identities flaky, and a flaky
+    test proves nothing on the runs where it passes.
+    """
+    from ori.runtime_health_socket import _remove_socket_file, _socket_identity
+
+    path = Path(_short_socket_path("not-ours"))
+    path.unlink(missing_ok=True)
+    try:
+        theirs = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        theirs.bind(str(path))
+        theirs.close()  # a socket file at the pathname, with no listener
+
+        occupant = _socket_identity(str(path))
+        assert occupant is not None
+        never_bound_here = (occupant[0], occupant[1], occupant[2] - 1)
+
+        _remove_socket_file(str(path), never_bound_here)
+        assert path.exists(), "cleanup removed a socket this server never bound"
+    finally:
+        path.unlink(missing_ok=True)

@@ -2708,7 +2708,20 @@ class OriRuntime:
         try:
             bound_path = await server.start()
         except Exception:
-            logger.exception("[runtime] failed to start health socket service")
+            # Said at CRITICAL rather than as a traceback and a shrug. This
+            # runtime keeps serving every other surface, and the conditions the
+            # snapshot is the only reporter of — a sensor that stopped
+            # measuring, a trust anchor that verifies nothing, a signed field
+            # an unsigned source supplied — now have nowhere to be read. From a
+            # fleet's side that device is indistinguishable from one that is
+            # not answering at all, so the log line is the only thing that
+            # distinguishes them.
+            logger.critical(
+                "[runtime] health socket did not start; this runtime is "
+                "running with no health surface and can report nothing about "
+                "its own posture. Every other surface is unaffected.",
+                exc_info=True,
+            )
             return
 
         self._health_socket_server = server
