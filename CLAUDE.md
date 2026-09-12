@@ -241,26 +241,50 @@ execution is being specified in `ori-specs` before implementation.
 Sensor reading arrives
     │
     ▼
-RULE ENGINE — First: Is this Tier D?
-    YES → Execute Tier D action immediately. No LLM. Full stop.
-    NO  → Evaluate normal rules
-          Rule matched, bypass_llm: true → Execute Tier D action, return
-          Rule matched, bypass_llm: false → Escalate to SLM with tier hint
-          No rule matched → Escalate to LOCAL SLM
+DISCOVERY BARRIER — one event, every eligible skill, evaluated exhaustively
+    Eligible means the skill declares this reading's sensor type; the bus was
+    that boundary before, and dropping it let a current or gas condition match
+    an unrelated channel. Every trigger whose condition holds is collected,
+    across those skills, before any action is dispatched and before any
+    reasoning is scheduled.
+    Declaration order decides nothing. A trigger in cooldown does not match;
+    cooldown is charged later, against the outcome the trigger reached.
     │
     ▼
-LOCAL SLM — Returns reasoning text. Confidence is telemetry-only and
-            currently 0.0 for base completion backends.
+THE PLAN — each matched trigger's actions, each at its own authority
+    informational(action)              → A
+    the licensed protective outcome,
+      with every clause of the grant   → D
+    otherwise            min(C, max(registry floor, declared tier))
+    Nothing inherits authority from the incident. An action the registry does
+    not govern, and one needing a commissioned zone that has none, are refused
+    here rather than dispatched and left to fail at a missing executor.
     │
     ▼
-ACTION DISPATCHER
+TIER D FIRST — attempted across the whole discovery set
+    Before any reasoning task is scheduled anywhere in it. Tier A notices still
+    run, and an opposing act already running is not interrupted. What it does
+    foreclose lasts for the event, not just while its executor runs: the record
+    stays held after the act completes, so the same event's lower-authority
+    opposite is refused rather than admitted against an empty gate.
+    │
+    ▼
+LOCAL SLM — for what remains. Returns reasoning text. Confidence is
+            telemetry-only and currently 0.0 for base completion backends.
+    │
+    ▼
+ACTION DISPATCHER — admits against the resource, then routes on the tier
+    Contention is decided on the resource an action drives, never its name.
+    The same outcome coalesces into one act; the opposite conflicts.
     Tier A → Execute informational action immediately
     Tier B → Execute soft physical action before explanation when
              reasoning_policy: post_action, or use approval workflow
     Tier C → Run approval workflow. Send WhatsApp/SMS. Wait for scoped
              YES-<proposal_id> or NO-<proposal_id>.
-    Tier D → Already handled above. Never reaches dispatcher.
+    Tier D → Execute immediately. No approval, and no model was consulted.
 ```
+
+`docs/DISPATCH_PLAN.md` carries this and its reasoning.
 
 ---
 

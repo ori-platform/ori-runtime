@@ -108,8 +108,15 @@ from ori.policy.remote_fetch import (
 from ori.reasoning.action_dispatcher import ALERT_SUPPRESSED, ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
 from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfig
+from ori.reasoning.dispatch_coordinator import DispatchCoordinator
+from ori.reasoning.dispatch_plan import (
+    CLOSE_PROTECTED_CIRCUIT,
+    OPEN_PROTECTED_CIRCUIT,
+    BindingView,
+)
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM, local_llm_backend_available
+from ori.reasoning.resource_gate import ResourceGate
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.safety.commander import ActuatorOutcomeCommander
 from ori.safety.registry import SafetyRegistry
@@ -442,6 +449,7 @@ class OriRuntime:
         self._skills_dir: str | None = None
         self._loaded_skills: list[Any] = []
         self._skill_subscriptions: list[tuple[str, Any]] = []
+        self._dispatch_coordinator: DispatchCoordinator | None = None
         self._skill_reload_lock: asyncio.Lock | None = None
         self._deduplicator: EventDeduplicator | None = None
         self._capability_posture_tracker: CapabilityPostureTracker | None = None
@@ -1162,6 +1170,15 @@ class OriRuntime:
 
         dispatcher.register_executor("terminate_process", _exec_terminate_process)
 
+        def _process_resource(ctx: SkillContext) -> dict[str, Any]:
+            """The process this dispatch will terminate, not the sensor that reported."""
+            pid, name = _process_target_from_context(ctx)
+            if pid is None or not name:
+                return {}
+            return {"target": f"{pid}:{name}"}
+
+        dispatcher.register_resource_resolver("terminate_process", _process_resource)
+
         async def _exec_reset_kernel_subsystem(action: str, ctx: SkillContext) -> bool:
             subsystem = _kernel_subsystem_from_context(ctx)
             if not subsystem:
@@ -1179,6 +1196,15 @@ class OriRuntime:
 
         dispatcher.register_executor(
             "reset_kernel_subsystem", _exec_reset_kernel_subsystem
+        )
+
+        def _subsystem_resource(ctx: SkillContext) -> dict[str, Any]:
+            """The subsystem this dispatch will reset."""
+            subsystem = _kernel_subsystem_from_context(ctx)
+            return {"target": subsystem} if subsystem else {}
+
+        dispatcher.register_resource_resolver(
+            "reset_kernel_subsystem", _subsystem_resource
         )
 
         async def _exec_coap_command(action: str, ctx: SkillContext) -> bool:
@@ -1202,6 +1228,39 @@ class OriRuntime:
             return ok
 
         dispatcher.register_executor("coap_command", _exec_coap_command)
+
+        def _coap_resource(ctx: SkillContext) -> dict[str, Any]:
+            """The URI and payload this dispatch will actually command.
+
+            Resolved through the same function the executor uses, so the act
+            that is admitted is the act that runs. A resolver reading a static
+            configuration key instead made every configured command one act on
+            one resource, and the second of two different commands coalesced
+            into the first.
+            """
+            command_name, payload_override = _coap_command_from_context(ctx)
+            if not command_name:
+                return {}
+            command = (config.actions.coap.get("commands") or {}).get(command_name)
+            if not isinstance(command, dict):
+                return {}
+            uri = str(command.get("uri", "") or "")
+            if not uri:
+                return {}
+            payload = (
+                payload_override
+                if payload_override is not None
+                else str(command.get("payload", "") or "")
+            )
+            return {
+                "coap_uri": uri,
+                "coap_parameters": (
+                    ("method", str(command.get("method", "POST"))),
+                    ("payload", str(payload)),
+                ),
+            }
+
+        dispatcher.register_resource_resolver("coap_command", _coap_resource)
 
         # log_to_dashboard — override built-in with device_id from config
         async def _exec_log_to_dashboard(action: str, *_: Any) -> None:
@@ -1329,12 +1388,29 @@ class OriRuntime:
             if isinstance(skills_security, dict)
             else False
         )
+        # One admission point for physical acts, and one discovery barrier for
+        # events. The gate is handed to the dispatcher rather than consulted
+        # here, so an action is admitted at the last point before an executor
+        # runs whichever caller reached it.
+        binding_view = self._binding_view()
+        gate = ResourceGate()
+        dispatcher.bind_resource_gate(gate, binding_view)
+        dispatch_coordinator = DispatchCoordinator(
+            elevator=elevator,
+            dispatcher=dispatcher,
+            state_store=self._state_store,
+            gate=gate,
+        )
+        dispatch_coordinator.set_binding(binding_view)
+        self._dispatch_coordinator = dispatch_coordinator
+
         loader = SkillLoader(
             elevator=elevator,
             state_store=self._state_store,
             dispatcher=dispatcher,
             os_sandbox_config=config.os_sandbox,
             require_signed=skills_require_signed,
+            coordinator=dispatch_coordinator,
         )
         self._skill_loader = loader
         await self.reload_skills()
@@ -3542,6 +3618,27 @@ class OriRuntime:
             "tier_d_critical_warning_threshold": self._alert_outbox_tier_d_critical_threshold,
             "batch_size": self._alert_outbox_batch_size,
         }
+
+    def _binding_view(self) -> BindingView | None:
+        """What the commissioned binding establishes about driving this device.
+
+        The binding records which coil state each outcome corresponds to; it
+        records no reversibility field, so the runtime takes the conservative
+        consequence class for a protected-circuit outcome rather than inferring
+        one. The shape admits a per-zone value when the contract carries one.
+        """
+        actuator = getattr(self, "_commissioned_actuator", None)
+        if actuator is None:
+            return None
+        zone = actuator.zone
+        return BindingView(
+            zone_identity_key=zone.identity_key,
+            binding_revision=str(actuator.binding_seq),
+            consequence_by_outcome={
+                OPEN_PROTECTED_CIRCUIT: "hard",
+                CLOSE_PROTECTED_CIRCUIT: "hard",
+            },
+        )
 
     def _unregister_skill_handlers(self) -> None:
         # Routed through the loader so the subscription budget is credited

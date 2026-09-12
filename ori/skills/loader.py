@@ -10,10 +10,14 @@ Usage::
     for skill in skills:
         loader.register(skill, event_bus)
 
-The EventBus handler registered for each trigger returns in microseconds:
-it checks cooldown synchronously, then fires
-``asyncio.create_task(elevator.reason_and_dispatch(...))`` and returns.
-All I/O (LLM inference, network, GPIO) runs inside the background task.
+The EventBus handler registered for each trigger returns in microseconds. With
+a dispatch coordinator configured it hands the event to the event-wide barrier,
+where the first handler to arrive evaluates every registered skill once and the
+rest return; reasoning is scheduled there, and cooldown is charged there
+against the outcome each trigger actually reached. Without one, the handler
+checks cooldown itself and fires
+``asyncio.create_task(elevator.reason_and_dispatch(...))``. Either way all I/O
+— LLM inference, network, GPIO — runs inside a background task.
 """
 
 import asyncio
@@ -566,10 +570,16 @@ class SkillLoader:
         os_sandbox_config: dict[str, Any] | None = None,
         community_trust_anchor_public_key_b64: str | None = None,
         require_signed: bool = False,
+        coordinator: Any = None,
     ) -> None:
         self._elevator = elevator
         self._state_store = state_store
         self._dispatcher = dispatcher
+        # When present, every handler funnels one event into a single
+        # evaluation of every registered skill. Without it each handler
+        # evaluates its own skill and schedules its own reasoning, so "Tier D
+        # is attempted first" holds only within a skill.
+        self._coordinator = coordinator
         self._os_sandbox_config = (
             dict(os_sandbox_config) if isinstance(os_sandbox_config, dict) else {}
         )
@@ -1050,11 +1060,12 @@ class SkillLoader:
         """Bound the work this manifest will create once it is registered.
 
         Syntax limits bound the document; these bound the runtime. Registration
-        creates one handler per trigger × required sensor type, and each handler
-        schedules a reasoning task on the same event loop Tier D safety
-        processing runs on, so the product is the number that matters — not
-        either factor alone. A skill declaring 60 triggers and 30 sensors passes
-        both individual caps and asks for 1,800 subscriptions.
+        creates one handler per trigger × required sensor type on the same event
+        loop Tier D safety processing runs on, so the product is the number that
+        matters — not either factor alone. A skill declaring 60 triggers and 30
+        sensors passes both individual caps and asks for 1,800 subscriptions.
+        The barrier means only one of those handlers does the work for a given
+        event, which bounds the reasoning fan-out but not the subscriptions.
         """
         triggers = raw.get("triggers") or []
         sensors = raw.get("sensors_required") or []
@@ -1335,14 +1346,12 @@ class SkillLoader:
     def register(self, skill: Skill, event_bus: Any) -> list[tuple[str, Any]]:
         """Wire EventBus handlers for every trigger in *skill*.
 
-        One handler is registered per (trigger, sensor_type) pair.  The handler:
-
-        1. Checks the cooldown for the trigger synchronously.
-        2. Evaluates whether the rule engine would even consider this trigger
-           (sensor-type matching is handled at EventBus routing level).
-        3. Fires ``asyncio.create_task(elevator.reason_and_dispatch(...))``
-           and **returns immediately** — the handler adds zero latency to
-           EventBus delivery for subsequent subscribers.
+        One handler is registered per (trigger, sensor_type) pair, and the skill
+        is added to the coordinator's discovery set when one is configured.
+        Every handler returns immediately, adding no latency to EventBus
+        delivery for subsequent subscribers: with a coordinator it funnels the
+        event into the barrier, which decides once for the whole event; without
+        one it checks its trigger's cooldown and schedules reasoning itself.
 
         Args:
             skill: A loaded and validated :class:`Skill`.
@@ -1369,6 +1378,9 @@ class SkillLoader:
                 f"{_MAX_TOTAL_SUBSCRIPTIONS} subscriptions "
                 f"({self._registered_subscriptions} already registered)."
             )
+
+        if self._coordinator is not None:
+            self._coordinator.add_skill(skill)
 
         tracker = _CooldownTracker()
         subscriptions: list[tuple[str, Callable[[OriEvent], Awaitable[None]]]] = []
@@ -1413,6 +1425,13 @@ class SkillLoader:
         ``event_bus.unsubscribe`` directly, or the accounting drifts the same
         way again.
         """
+        if self._coordinator is not None and subscriptions:
+            # The runtime replaces its handler graph wholesale, so removing
+            # handlers removes the skills they represent. A skill left in the
+            # discovery set after its handlers are gone would keep being
+            # evaluated by whatever handler remains.
+            self._coordinator.clear_skills()
+
         removed = 0
         for sensor_type, handler in subscriptions:
             if event_bus is not None:
@@ -1890,7 +1909,11 @@ class SkillLoader:
     ) -> Callable[[OriEvent], Awaitable[None]]:
         """Return a coroutine function suitable for EventBus subscription.
 
-        The returned handler:
+        With a coordinator configured the handler hands the event to the
+        event-wide barrier and returns; the barrier owns evaluation, ordering
+        and cooldown, so this handler decides nothing about its own trigger.
+
+        Without one it keeps the standalone behaviour:
 
         - Checks cooldown **synchronously** and returns in microseconds if in
           cooldown.
@@ -1912,7 +1935,18 @@ class SkillLoader:
         state_store = self._state_store
         dispatcher = self._dispatcher
 
+        coordinator = self._coordinator
+
         async def handler(event: OriEvent) -> None:
+            if coordinator is not None:
+                # The barrier decides once, for the whole event, across every
+                # registered skill. The first handler to arrive performs that
+                # evaluation and the rest return; cooldown is charged there,
+                # against the outcome each trigger actually reached, rather
+                # than here before the condition is known to match.
+                await coordinator.handle_event(event)
+                return
+
             if not tracker.can_fire(trigger.name, trigger.cooldown_seconds):
                 logger.debug(
                     "SkillLoader: trigger=%r in cooldown — skipping event_id=%s",

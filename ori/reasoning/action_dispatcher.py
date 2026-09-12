@@ -44,7 +44,12 @@ from ori.reasoning.action_registry import (
     is_valid_tier,
 )
 from ori.reasoning.capability_posture import CapabilityPosture
+from ori.reasoning.dispatch_plan import (
+    is_informational as plan_is_informational,
+)
+from ori.reasoning.dispatch_plan import resource_identity
 from ori.reasoning.elevator import SkillContext
+from ori.reasoning.resource_gate import Admission, Contributor
 from ori.security.evidence.first_party import (
     AUTHORITY_UNAVAILABLE_REASON,
     AuthorityUnavailableError,
@@ -408,6 +413,14 @@ class ActionDispatcher:
         self._status_indicator = status_indicator
         self._logger_action = LoggerAction()
         self._inflight_tier_d_tasks: set[asyncio.Task[Any]] = set()
+        # The gate is consulted here, at the last point before an executor runs,
+        # rather than by whatever built the plan. A check that holds only
+        # because an earlier check held is not a boundary: an action reaching
+        # this method from any caller is admitted against the resource it
+        # drives, or it does not run.
+        self._resource_gate: Any = None
+        self._binding_view: Any = None
+        self._resource_resolvers: dict[str, Any] = {}
         self._executors: dict[str, Any] = {
             # Built-in fallback for test environments.
             # OriRuntime.start() overwrites this with a closure
@@ -416,6 +429,49 @@ class ActionDispatcher:
         }
 
     # ── Public API ────────────────────────────────────────────────────────────
+
+    def bind_resource_gate(self, gate: Any, binding: Any = None) -> None:
+        """Admit physical acts through *gate*, resolved against *binding*."""
+        self._resource_gate = gate
+        self._binding_view = binding
+
+    def register_resource_resolver(self, action: str, resolver: Any) -> None:
+        """Say what *action* drives on this device, resolved per dispatch.
+
+        An action whose target is chosen at dispatch time — a CoAP command named
+        by the event, a process named by a hook — cannot have its resource read
+        from static configuration. The resolver is registered beside the
+        executor so one resolution answers both what will be driven and what was
+        admitted; a second, independent guess is how every configured CoAP
+        command came to be treated as one act.
+        """
+        self._resource_resolvers[action] = resolver
+
+    def _resource_for(self, action: str, context: Any) -> Any:
+        """What *action* drives here, or None when it drives nothing."""
+        if self._resource_gate is None:
+            return None
+        binding = self._binding_view
+        parts: dict[str, Any] = {}
+        resolver = self._resource_resolvers.get(action)
+        if resolver is not None:
+            try:
+                resolved = resolver(context)
+            except Exception:
+                logger.exception(
+                    "ActionDispatcher: resource resolver failed for action=%r", action
+                )
+                resolved = None
+            if isinstance(resolved, dict):
+                parts = resolved
+        return resource_identity(
+            action,
+            zone_identity_key=getattr(binding, "zone_identity_key", None),
+            binding_revision=str(getattr(binding, "binding_revision", "") or ""),
+            target=str(parts.get("target", "") or ""),
+            coap_uri=str(parts.get("coap_uri", "") or ""),
+            coap_parameters=tuple(parts.get("coap_parameters", ()) or ()),
+        )
 
     def register_executor(self, action_name: str, executor: Any) -> None:
         """Register a callable for *action_name*.
@@ -783,7 +839,111 @@ class ActionDispatcher:
                         action,
                     )
 
+        # Resource admission. Contention is decided on the resource an action
+        # drives, never on its name: two names can be one act, and one name can
+        # be two acts on different zones.
+        identity = self._resource_for(action, context)
+        gate = self._resource_gate
+        if identity is None and gate is not None and not plan_is_informational(action):
+            # The gate is configured and this action's resource could not be
+            # established. Executing anyway is the one shape of failure this
+            # boundary exists to prevent: an action that looks arbitrated and is
+            # not. Only an action the registry proves inert legitimately has no
+            # resource.
+            logger.error(
+                "ActionDispatcher: refusing action=%r at Tier %s — its resource "
+                "could not be resolved, so it cannot be admitted against one",
+                action,
+                tier,
+            )
+            unresolved = ActionResult(
+                action_name=action,
+                tier=tier,
+                executed=False,
+                approved=None,
+                action_taken="refused_unresolved_resource",
+                timestamp=now_ms(),
+            )
+            await self._log_action(unresolved, context)
+            return unresolved
+
+        gate_token: Any = None
+        # Bound before the branch that sets it: it is read below under a
+        # `gate_token is not None` guard that happens to short-circuit today,
+        # and a reader should not have to prove that to know this is safe.
+        awaits_operator = False
+        if identity is not None and gate is not None:
+            contributor = Contributor(
+                skill_name=str(
+                    getattr(getattr(context, "skill", None), "name", "") or ""
+                ),
+                trigger_name=str(getattr(context, "trigger_name", "") or ""),
+                action=action,
+                dispatch_tier=tier,
+                correlation_id=str(getattr(result, "correlation_id", "") or ""),
+                tier_d_granted=tier == ActionTier.SAFETY_CRITICAL,
+            )
+            awaits_operator = tier == ActionTier.HARD_PHYSICAL or (
+                tier == ActionTier.SOFT_PHYSICAL
+                and self._tier_b_requires_approval(context)
+            )
+            decision = await gate.request(
+                identity, tier, contributor, awaits_operator=awaits_operator
+            )
+
+            if decision.admission == Admission.JOINED:
+                # One physical act stands for several contributors. Execution is
+                # merged; licensing is not, and this contributor keeps its own.
+                holder = decision.token
+                if holder is not None:
+                    await holder.done.wait()
+                joined = ActionResult(
+                    action_name=action,
+                    tier=tier,
+                    executed=bool(getattr(holder, "result", False)),
+                    approved=None,
+                    action_taken="coalesced",
+                    timestamp=now_ms(),
+                )
+                await self._log_action(joined, context)
+                return joined
+
+            if not decision.may_execute:
+                if decision.safety_conflict:
+                    # Nothing acts, so nothing is protected. Reported as its own
+                    # condition rather than as a routine refusal, which would let
+                    # a device that protects nothing look like one that decided.
+                    logger.critical(
+                        "ActionDispatcher: unresolved safety conflict on the "
+                        "resource driven by action=%r — opposing Tier D outcomes "
+                        "and neither can act",
+                        action,
+                    )
+                else:
+                    logger.warning(
+                        "ActionDispatcher: refusing action=%r at Tier %s — %s",
+                        action,
+                        tier,
+                        decision.reason,
+                    )
+                refusal = ActionResult(
+                    action_name=action,
+                    tier=tier,
+                    executed=False,
+                    approved=None,
+                    action_taken=f"refused_{decision.reason}",
+                    timestamp=now_ms(),
+                )
+                await self._log_action(refusal, context)
+                return refusal
+
+            gate_token = decision.token
+
+        inner_task: asyncio.Task[ActionResult] | None = None
         try:
+            if gate is not None and gate_token is not None and not awaits_operator:
+                await gate.mark_running(gate_token)
+
             if tier == ActionTier.SAFETY_CRITICAL:
                 if self._status_indicator is not None:
                     self._status_indicator.set_tier_d_firing()
@@ -810,6 +970,7 @@ class ActionDispatcher:
                         result,
                         safe_default_action,
                         timeout_value,
+                        gate_token=gate_token,
                     )
                 else:
                     action_result = await self._execute_immediately(
@@ -825,6 +986,7 @@ class ActionDispatcher:
                     result,
                     safe_default_action,
                     timeout_value,
+                    gate_token=gate_token,
                 )
 
             else:
@@ -871,8 +1033,38 @@ class ActionDispatcher:
             ):
                 self._status_indicator.clear_tier_d_firing()
 
+        if gate is not None and gate_token is not None:
+            if inner_task is not None and not inner_task.done():
+                # The await was cancelled and the executor was shielded, so it
+                # is still driving. Retiring here would free the resource while
+                # a command is in flight, and the next arrival could issue the
+                # opposite command to the same actuator. The command is
+                # uncertain — not accepted, not failed — which is the state that
+                # keeps an opposing outcome out until the driver reports.
+                await gate.mark_uncertain(gate_token)
+                inner_task.add_done_callback(
+                    lambda finished: self._retire_when_settled(gate_token, finished)
+                )
+            else:
+                await gate.retire(
+                    gate_token, bool(getattr(action_result, "executed", False))
+                )
+
         await self._log_action(action_result, context)
         return action_result
+
+    def _retire_when_settled(self, token: Any, finished: Any) -> None:
+        """Clear an uncertain command once its shielded executor finally reports."""
+        if self._resource_gate is None:
+            return
+        try:
+            accepted = bool(getattr(finished.result(), "executed", False))
+        except Exception:
+            accepted = False
+        task = asyncio.ensure_future(
+            self._resource_gate.resolve_uncertain(token, accepted)
+        )
+        self._track_tier_d_task(task)
 
     @staticmethod
     def _tier_b_requires_approval(context: Any) -> bool:
@@ -1108,6 +1300,7 @@ class ActionDispatcher:
         result: ReasoningResult,
         safe_default_action: str,
         approval_timeout_seconds: int,
+        gate_token: Any = None,
     ) -> ActionResult:
         """Send an approval request and wait for YES/NO from the operator.
 
@@ -1329,10 +1522,30 @@ class ActionDispatcher:
                 channel=str(self._config.get("primary_alert_channel", "sms")),
                 error="escalation_not_required",
             )
+            refused_late = False
+            if approved and gate_token is not None and self._resource_gate is not None:
+                if not await self._resource_gate.reply_admitted(gate_token):
+                    # A higher authority took this resource while the operator
+                    # was deciding. Acting now would undo the act that displaced
+                    # this proposal, which for a Tier D trip means closing a
+                    # circuit a safety condition had just opened.
+                    logger.warning(
+                        "ActionDispatcher: refusing a late approval for action=%r "
+                        "proposal=%s — the resource is no longer this proposal's "
+                        "to drive",
+                        action,
+                        proposal_id,
+                    )
+                    approved = False
+                    refused_late = True
+
             if approved:
                 inner = await self._execute_immediately(action, tier, context)
                 action_taken = inner.action_taken
                 executed = inner.executed
+            elif refused_late:
+                action_taken = "refused_late_approval"
+                executed = False
             else:
                 # NO, None, or timeout → safe default
                 inner = await self._execute_immediately(
