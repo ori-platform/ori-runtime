@@ -137,10 +137,10 @@ def _tier_b_post_action_skill() -> FakeSkill:
         ],
         actions={
             "available": [
-                {"name": "switch_power_source", "tier": "B"},
+                {"name": "coap_command", "tier": "B"},
                 {"name": "alert_whatsapp", "tier": "A"},
             ],
-            "defaults": {"soft_switch": ["alert_whatsapp", "switch_power_source"]},
+            "defaults": {"soft_switch": ["alert_whatsapp", "coap_command"]},
         },
     )
 
@@ -529,7 +529,7 @@ class TestReason:
                     "name": "needs_gateway",
                     "condition": "value > 3.0",
                     "action_tier": "C",
-                    "action": "open_safety_circuit",
+                    "action": "terminate_process",
                     "escalate_to": "gateway",
                     "bypass_llm": False,
                     "cooldown_seconds": 0,
@@ -549,7 +549,7 @@ class TestReason:
         assert result.tier == "gateway"
         assert result.model == "stub"
         assert result.action_tier == "C"
-        assert result.proposed_action == "open_safety_circuit"
+        assert result.proposed_action == "terminate_process"
         assert "gateway unavailable" in result.text
         ctx = event.context[GATEWAY_ESCALATION_CONTEXT_KEY]
         assert ctx["selected"] is True
@@ -571,7 +571,7 @@ class TestReason:
                     "name": "needs_gateway",
                     "condition": "value > 3.0",
                     "action_tier": "C",
-                    "action": "open_safety_circuit",
+                    "action": "terminate_process",
                     "escalate_to": "gateway",
                     "bypass_llm": False,
                     "cooldown_seconds": 0,
@@ -592,7 +592,7 @@ class TestReason:
         assert result.tier == "gateway"
         assert result.model == "stub"
         assert result.action_tier == "C"
-        assert result.proposed_action == "open_safety_circuit"
+        assert result.proposed_action == "terminate_process"
         assert "gateway unavailable" in result.text
 
     async def test_causal_memory_hit_short_circuits_local_llm(self):
@@ -1012,14 +1012,14 @@ class TestReason:
                     "name": "anomalous_draw",
                     "condition": "value > 3.0",
                     "action_tier": "C",
-                    "action": "open_safety_circuit",
+                    "action": "terminate_process",
                     "bypass_llm": False,
                     "cooldown_seconds": 0,
                 }
             ],
             actions={
-                "available": [{"name": "open_safety_circuit", "tier": "C"}],
-                "defaults": {"anomalous_draw": ["open_safety_circuit"]},
+                "available": [{"name": "terminate_process", "tier": "C"}],
+                "defaults": {"anomalous_draw": ["terminate_process"]},
             },
         )
 
@@ -1027,7 +1027,7 @@ class TestReason:
 
         assert result.model == "stub"
         assert result.action_tier == "C"
-        assert result.proposed_action == "open_safety_circuit"
+        assert result.proposed_action == "terminate_process"
 
     async def test_matched_rule_survives_local_inference_failure(self):
         """An exception inside inference must not weaken the rule decision."""
@@ -1042,15 +1042,15 @@ class TestReason:
                     "name": "anomalous_draw",
                     "condition": "value > 3.0",
                     "action_tier": "B",
-                    "action": "switch_power_source",
+                    "action": "coap_command",
                     "requires_approval": True,
                     "bypass_llm": False,
                     "cooldown_seconds": 0,
                 }
             ],
             actions={
-                "available": [{"name": "switch_power_source", "tier": "B"}],
-                "defaults": {"anomalous_draw": ["switch_power_source"]},
+                "available": [{"name": "coap_command", "tier": "B"}],
+                "defaults": {"anomalous_draw": ["coap_command"]},
             },
         )
 
@@ -1059,7 +1059,7 @@ class TestReason:
         local_llm.reason.assert_awaited_once()
         assert result.model == "stub"
         assert result.action_tier == "B"
-        assert result.proposed_action == "switch_power_source"
+        assert result.proposed_action == "coap_command"
 
     async def test_ordinary_gateway_failure_falls_back_to_local_slm(self):
         """Gateway reached by escalation signals settles to the local SLM.
@@ -1134,8 +1134,9 @@ class TestReasonAndDispatch:
     async def test_an_action_that_drives_nothing_does_not_reach_tier_d(self):
         """Tier D is granted to a commissioned outcome, not to a plan.
 
-        `emergency_cutoff` carries a registry entry, no executor, and no zone
-        mapping it to a protected-circuit outcome. A Tier D incident does not
+        `coap_command` is a governed physical action that resolves to no
+        protected-circuit outcome on a commissioned zone, so the grant's
+        outcome clause fails whatever the incident. A Tier D incident does not
         confer its authority on it: it runs at its own, capped at Tier C. An
         action inheriting the incident's tier is what sealed notifications into
         the evidence chain as safety-critical actions.
@@ -1143,8 +1144,8 @@ class TestReasonAndDispatch:
         mock_dispatcher = AsyncMock()
         skill = _tier_d_skill()
         skill.actions = {
-            "available": [{"name": "emergency_cutoff", "tier": "D"}],
-            "defaults": {"dangerous_overcurrent": ["emergency_cutoff"]},
+            "available": [{"name": "coap_command", "tier": "D"}],
+            "defaults": {"dangerous_overcurrent": ["coap_command"]},
         }
         elevator = IntelligenceElevator()
 
@@ -1206,7 +1207,7 @@ class TestReasonAndDispatch:
         mock_dispatcher = AsyncMock()
         skill = FakeSkill(
             actions={
-                "available": [{"name": "open_safety_circuit", "tier": "C"}],
+                "available": [{"name": "terminate_process", "tier": "C"}],
                 "defaults": {},
             },
         )
@@ -1220,7 +1221,7 @@ class TestReasonAndDispatch:
             latency_ms=0,
             confidence=0.0,
             action_tier="C",
-            proposed_action="open_safety_circuit",
+            proposed_action="terminate_process",
         )
 
         with (
@@ -1263,9 +1264,9 @@ class TestReasonAndDispatch:
                     }
                 ],
                 actions={
-                    "available": [{"name": "open_safety_circuit", "tier": "C"}],
+                    "available": [{"name": "terminate_process", "tier": "C"}],
                     "defaults": {
-                        "overcurrent_shutdown_candidate": ["open_safety_circuit"]
+                        "overcurrent_shutdown_candidate": ["terminate_process"]
                     },
                 },
             )
@@ -1313,7 +1314,7 @@ class TestReasonAndDispatch:
             assert row["history_window"][0]["value"] == pytest.approx(4.2)
             assert row["skill_name"] == "energy-anomaly-detector"
             assert row["trigger_name"] == "overcurrent_shutdown_candidate"
-            assert row["proposed_action"] == "open_safety_circuit"
+            assert row["proposed_action"] == "terminate_process"
             assert row["operator_decision"] == "approved"
             assert row["operator_response"] == "YES-AB12CD34"
             assert row["approval_timeout_seconds"] == 30
@@ -1373,8 +1374,8 @@ class TestReasonAndDispatch:
                 }
             ],
             actions={
-                "available": [{"name": "open_safety_circuit", "tier": "C"}],
-                "defaults": {"critical_fault": ["open_safety_circuit"]},
+                "available": [{"name": "terminate_process", "tier": "C"}],
+                "defaults": {"critical_fault": ["terminate_process"]},
             },
         )
         skill.hooks = _DowngradingHooks()
@@ -1432,8 +1433,8 @@ class TestReasonAndDispatch:
                 }
             ],
             actions={
-                "available": [{"name": "open_safety_circuit", "tier": "C"}],
-                "defaults": {"critical_fault": ["open_safety_circuit"]},
+                "available": [{"name": "terminate_process", "tier": "C"}],
+                "defaults": {"critical_fault": ["terminate_process"]},
             },
         )
         skill.hooks = _FailingHooks()
@@ -1528,7 +1529,7 @@ class TestReasonAndDispatch:
         local_llm = AsyncMock()
 
         async def reason_after_action(_prompt: str) -> ReasoningResult:
-            assert calls and calls[0] == ("switch_power_source", "B")
+            assert calls and calls[0] == ("coap_command", "B")
             return ReasoningResult(
                 text="Grid voltage dipped below safe operating range.",
                 tier="local_slm",
@@ -1552,7 +1553,7 @@ class TestReasonAndDispatch:
         )
 
         assert calls == [
-            ("switch_power_source", "B"),
+            ("coap_command", "B"),
             ("alert_whatsapp", "A"),
         ]
         logged = store.log_reasoning.call_args.kwargs["result"]
@@ -1569,7 +1570,7 @@ class TestReasonAndDispatch:
         await store.open()
         try:
             dispatcher = ActionDispatcher()
-            dispatcher.register_executor("switch_power_source", successful_executor)
+            dispatcher.register_executor("coap_command", successful_executor)
             dispatcher.register_executor("alert_whatsapp", successful_executor)
             elevator = IntelligenceElevator(local_llm=local_llm)
 
@@ -1620,7 +1621,7 @@ class TestReasonAndDispatch:
                 return True
 
             dispatcher = ActionDispatcher()
-            dispatcher.register_executor("switch_power_source", fail_executor)
+            dispatcher.register_executor("coap_command", fail_executor)
             dispatcher.register_executor("alert_whatsapp", ok_executor)
             local_llm = AsyncMock()
             local_llm.reason.return_value = ReasoningResult(
@@ -1645,8 +1646,8 @@ class TestReasonAndDispatch:
             by_action = {row["action_name"]: row for row in actions}
             assert by_action["alert_whatsapp"]["tier"] == "A"
             assert by_action["alert_whatsapp"]["executed"] is True
-            assert by_action["switch_power_source"]["tier"] == "B"
-            assert by_action["switch_power_source"]["executed"] is False
+            assert by_action["coap_command"]["tier"] == "B"
+            assert by_action["coap_command"]["executed"] is False
             action_correlation_ids = {
                 row["correlation_id"] for row in by_action.values()
             }
@@ -1678,9 +1679,7 @@ class TestReasonAndDispatch:
         await store.open()
         try:
             dispatcher = ActionDispatcher()
-            dispatcher.register_executor(
-                "switch_power_source", successful_physical_action
-            )
+            dispatcher.register_executor("coap_command", successful_physical_action)
             dispatcher.register_executor("alert_whatsapp", failed_notification)
             local_llm = AsyncMock()
             local_llm.reason.return_value = ReasoningResult(
@@ -1702,8 +1701,8 @@ class TestReasonAndDispatch:
 
             actions = await store.get_action_log()
             by_action = {row["action_name"]: row for row in actions}
-            assert by_action["switch_power_source"]["tier"] == "B"
-            assert by_action["switch_power_source"]["executed"] is True
+            assert by_action["coap_command"]["tier"] == "B"
+            assert by_action["coap_command"]["executed"] is True
             assert by_action["alert_whatsapp"]["tier"] == "A"
             assert by_action["alert_whatsapp"]["executed"] is False
             action_correlation_ids = {

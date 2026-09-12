@@ -533,7 +533,7 @@ class WhatsAppAction:
             result: The :class:`~ori.network.events.ReasoningResult` from the
                 Intelligence Elevator.
             action: Human-readable description of the proposed action
-                (e.g. ``"open_safety_circuit"``).
+                (e.g. ``"trip_relay"``).
             timeout_seconds: Seconds before the request auto-cancels.
             to_number: Destination WhatsApp number
                 (e.g. ``"whatsapp:+234XXXXXXXXXX"``).

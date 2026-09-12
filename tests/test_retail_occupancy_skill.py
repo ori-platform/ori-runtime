@@ -378,8 +378,8 @@ def test_post_action_trigger_requires_tier_a_followup(tmp_path):
     # A governed non-informational action, so the copy fails on the Tier A
     # followup rule under test rather than on the earlier rule that an action
     # the runtime cannot execute may not be declared above Tier A.
-    raw["actions"]["available"].append({"name": "switch_power_source", "tier": "B"})
-    raw["actions"]["defaults"]["empty_off_hours_load_shed"] = ["switch_power_source"]
+    raw["actions"]["available"].append({"name": "coap_command", "tier": "B"})
+    raw["actions"]["defaults"]["empty_off_hours_load_shed"] = ["coap_command"]
     yaml_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(SkillValidationError, match="no Tier A default action"):

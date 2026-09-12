@@ -43,12 +43,9 @@ _COMMISSIONED_OUTCOMES: dict[str, str] = {
     "release_relay": CLOSE_PROTECTED_CIRCUIT,
 }
 
-# `emergency_cutoff` and `open_safety_circuit` are deliberately absent. They
-# carry a registry entry and no executor, and no zone maps them to a
-# protected-circuit outcome, so naming one here would assert a binding that
-# does not exist and let an action that drives nothing reach Tier D. They take
-# the ordinary branch instead, capped at Tier C. Which of them should gain an
-# executor is an open decision, not something this map may pre-empt.
+# This map is the registry's physical set, and it grows only when the specs
+# add an outcome. A name here with no executor behind it would let an action
+# that drives nothing reach Tier D, so the two must stay identical.
 
 # Actions that change host state and resolve through no commissioned zone. They
 # take their registry floor and are unaffected by the binding rules below.

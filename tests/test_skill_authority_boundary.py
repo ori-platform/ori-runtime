@@ -205,6 +205,48 @@ class TestEveryExecutableActionIsGoverned:
             "entry in action_registry.py. An executable action must be governed."
         )
 
+    def test_every_physical_capability_has_an_executor_the_runtime_registers(self):
+        """The converse of the test above, and the one that used to fail silently.
+
+        A registry entry marked physical with no `register_executor` call
+        behind it is a capability the runtime advertises and does not have: a
+        skill declares it, passes load-time validation, reaches dispatch, and
+        nothing happens. Three such names were retired rather than bound,
+        because physical capability is an outcome on a commissioned zone and
+        not a name; this keeps the set from growing back.
+
+        Release-wide by construction — it reads the source, not a running
+        device. Whether a given device can actually drive the outcome is a
+        separate, per-device fact: the commissioned-outcome executors register
+        only when a zone is accepted, and the health surface's per-pair
+        protection claim is what answers it.
+        """
+        source = (
+            Path(__file__).resolve().parents[1] / "ori" / "runtime.py"
+        ).read_text()
+        tree = ast.parse(source)
+
+        registered: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute) or func.attr != "register_executor":
+                continue
+            if node.args and isinstance(node.args[0], ast.Constant):
+                value = node.args[0].value
+                if isinstance(value, str):
+                    registered.add(value)
+
+        physical = {name for name, entry in ACTION_REGISTRY.items() if entry.physical}
+        unbacked = sorted(physical - registered)
+        assert not unbacked, (
+            f"action_registry.py governs physical actions {unbacked} that "
+            "OriRuntime never registers an executor for. A physical capability "
+            "is an outcome on a zone, not a name: add the outcome in the specs "
+            "and bind it, or do not govern it."
+        )
+
     def test_registering_an_ungoverned_executor_is_refused(self):
         dispatcher = ActionDispatcher()
 

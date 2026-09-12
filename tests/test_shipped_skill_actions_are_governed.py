@@ -3,9 +3,10 @@
 
 """A shipped skill may not declare a state-changing action the registry lacks.
 
-This proves governed membership, not executability. A registry entry means the
-runtime knows the action and assigns it a floor; whether an executor is bound is
-a separate condition, and three entries currently have none.
+This proves governed membership. A registry entry means the runtime knows the
+action and assigns it a floor; that every physical entry also has an executor the
+runtime registers is a separate invariant, checked from the source elsewhere, so
+governed and executable can no longer drift apart.
 
 A trigger's default actions are read as what the device does when the condition
 holds. Naming an action with no registry entry reads as protection while being
@@ -142,8 +143,8 @@ def test_ungoverned_informational_action_still_loads(tmp_path):
 
 def test_a_governed_action_above_tier_a_still_loads(tmp_path):
     """The mutation that would make the refusal above vacuous."""
-    skill_dir = _write_skill(tmp_path, action="switch_power_source", tier="B")
+    skill_dir = _write_skill(tmp_path, action="coap_command", tier="B")
 
     skill = _load(skill_dir)
 
-    assert skill.get_default_actions_for_trigger("probe") == ["switch_power_source"]
+    assert skill.get_default_actions_for_trigger("probe") == ["coap_command"]

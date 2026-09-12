@@ -95,8 +95,8 @@ def _skill_tier_d() -> FakeSkill:
             }
         ],
         actions={
-            "available": [{"name": "open_safety_circuit", "tier": "D"}],
-            "defaults": {"dangerous_overcurrent": ["open_safety_circuit"]},
+            "available": [{"name": "terminate_process", "tier": "D"}],
+            "defaults": {"dangerous_overcurrent": ["terminate_process"]},
         },
     )
 
@@ -202,11 +202,11 @@ class TestEnergyAwareThrottle:
 
         # The subject is the throttle, not the letter: a safety-critical
         # incident still reaches dispatch on a 5% battery. The tier is the
-        # action's own — `open_safety_circuit` drives no commissioned outcome
-        # and has no executor, so the incident does not confer Tier D on it.
+        # action's own — `terminate_process` resolves to no commissioned
+        # outcome, so the incident does not confer Tier D on it and it caps at C.
         dispatcher.dispatch.assert_called_once()
         kwargs = dispatcher.dispatch.call_args.kwargs
-        assert kwargs["action"] == "open_safety_circuit"
+        assert kwargs["action"] == "terminate_process"
         assert kwargs["tier"] == "C"
 
     @pytest.mark.asyncio

@@ -137,11 +137,11 @@ class TestParseApprovalResponse:
     async def test_string_false_scoped_reply_config_allows_legacy_bare_yes(self):
         d = ActionDispatcher(config={"approval_require_scoped_replies": "false"})
         exec_mock = AsyncMock()
-        d.register_executor("open_safety_circuit", exec_mock)
+        d.register_executor("close_gas_valve", exec_mock)
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="YES")):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -266,9 +266,9 @@ class TestTierD:
     async def test_executes_immediately(self):
         mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher()
-        d.register_executor("emergency_cutoff", mock_exec)
+        d.register_executor("trip_relay", mock_exec)
         result = await d.dispatch(
-            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+            "trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result()
         )
         assert result.executed is True
         mock_exec.assert_awaited_once()
@@ -276,36 +276,36 @@ class TestTierD:
     async def test_approved_is_none(self):
         mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher()
-        d.register_executor("emergency_cutoff", mock_exec)
+        d.register_executor("trip_relay", mock_exec)
         result = await d.dispatch(
-            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+            "trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result()
         )
         assert result.approved is None
 
     async def test_tier_d_in_result(self):
         mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher()
-        d.register_executor("emergency_cutoff", mock_exec)
+        d.register_executor("trip_relay", mock_exec)
         result = await d.dispatch(
-            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+            "trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result()
         )
         assert result.tier == ActionTier.SAFETY_CRITICAL
 
     async def test_registered_executor_called(self):
         mock_exec = AsyncMock()
         d = ActionDispatcher()
-        d.register_executor("emergency_cutoff", mock_exec)
+        d.register_executor("trip_relay", mock_exec)
         ctx = _context()
-        await d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result())
+        await d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result())
         mock_exec.assert_awaited_once()
 
     async def test_bypasses_approval_workflow(self):
         mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher()
-        d.register_executor("emergency_cutoff", mock_exec)
+        d.register_executor("trip_relay", mock_exec)
         with patch.object(d, "_approval_workflow", new=AsyncMock()) as mock_wf:
             await d.dispatch(
-                "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+                "trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result()
             )
         mock_wf.assert_not_awaited()
 
@@ -344,12 +344,10 @@ class TestTierD:
             await release.wait()
 
         d = ActionDispatcher()
-        d.register_executor("emergency_cutoff", _capturing_executor)
+        d.register_executor("trip_relay", _capturing_executor)
 
         dispatch_task = asyncio.create_task(
-            d.dispatch(
-                "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
-            )
+            d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result())
         )
         await started.wait()
         assert running_flags == [True]
@@ -368,14 +366,14 @@ class TestTierD:
             raise RuntimeError("relay hardware fault")
 
         d = ActionDispatcher(config={"operator_contact": "+234000000000"})
-        d.register_executor("emergency_cutoff", _failing_executor)
+        d.register_executor("trip_relay", _failing_executor)
 
         with (
             patch.object(d, "_emergency_sms", new=AsyncMock()) as mock_sms,
             patch("ori.reasoning.action_dispatcher.logger") as mock_logger,
         ):
             result = await d.dispatch(
-                "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+                "trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result()
             )
 
         assert result.executed is False
@@ -391,7 +389,7 @@ class TestTierD:
         # _emergency_sms must have been awaited with the action name and device_id
         mock_sms.assert_awaited_once()
         call_args = mock_sms.call_args
-        assert call_args.args[0] == "emergency_cutoff"
+        assert call_args.args[0] == "trip_relay"
 
 
 # ─── A missing executor is a non-execution at every tier ─────────────────────
@@ -410,9 +408,9 @@ class TestMissingExecutorNeverReportsExecution:
         ("action", "tier"),
         [
             ("alert_whatsapp", ActionTier.INFORMATIONAL),
-            ("switch_power_source", ActionTier.SOFT_PHYSICAL),
-            ("open_safety_circuit", ActionTier.HARD_PHYSICAL),
-            ("emergency_cutoff", ActionTier.SAFETY_CRITICAL),
+            ("coap_command", ActionTier.SOFT_PHYSICAL),
+            ("close_gas_valve", ActionTier.HARD_PHYSICAL),
+            ("trip_relay", ActionTier.SAFETY_CRITICAL),
         ],
     )
     async def test_no_executor_reports_not_executed(self, action, tier):
@@ -434,7 +432,7 @@ class TestMissingExecutorNeverReportsExecution:
         d = ActionDispatcher(config={"approval_require_scoped_replies": "false"})
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="YES")):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -449,13 +447,13 @@ class TestMissingExecutorNeverReportsExecution:
         """Different faults, different remedies, so they must not collapse."""
         absent = ActionDispatcher()
         failing = ActionDispatcher()
-        failing.register_executor("switch_power_source", AsyncMock(return_value=False))
+        failing.register_executor("coap_command", AsyncMock(return_value=False))
 
         absent_result = await absent.dispatch(
-            "switch_power_source", ActionTier.SOFT_PHYSICAL, _context(), _result()
+            "coap_command", ActionTier.SOFT_PHYSICAL, _context(), _result()
         )
         failing_result = await failing.dispatch(
-            "switch_power_source", ActionTier.SOFT_PHYSICAL, _context(), _result()
+            "coap_command", ActionTier.SOFT_PHYSICAL, _context(), _result()
         )
 
         assert absent_result.executed is False
@@ -466,13 +464,13 @@ class TestMissingExecutorNeverReportsExecution:
     async def test_a_registered_executor_still_reports_execution(self):
         """The mutation that would make the rest of this class vacuous."""
         d = ActionDispatcher()
-        d.register_executor("switch_power_source", AsyncMock(return_value=True))
+        d.register_executor("coap_command", AsyncMock(return_value=True))
         result = await d.dispatch(
-            "switch_power_source", ActionTier.SOFT_PHYSICAL, _context(), _result()
+            "coap_command", ActionTier.SOFT_PHYSICAL, _context(), _result()
         )
 
         assert result.executed is True
-        assert result.action_taken == "switch_power_source"
+        assert result.action_taken == "coap_command"
 
 
 # ─── Tier B — dispatches without approval unless requires_approval is set ────
@@ -481,10 +479,10 @@ class TestMissingExecutorNeverReportsExecution:
 class TestTierBWithoutApproval:
     async def test_executes_without_approval_by_default(self):
         d = ActionDispatcher()
-        d.register_executor("switch_power_source", AsyncMock(return_value=True))
+        d.register_executor("coap_command", AsyncMock(return_value=True))
         ctx = _context(skill_config={})
         result = await d.dispatch(
-            "switch_power_source", ActionTier.SOFT_PHYSICAL, ctx, _result()
+            "coap_command", ActionTier.SOFT_PHYSICAL, ctx, _result()
         )
         assert result.executed is True
         assert result.approved is None
@@ -493,18 +491,16 @@ class TestTierBWithoutApproval:
         d = ActionDispatcher()
         ctx = _context(skill_config={"requires_approval": False})
         result = await d.dispatch(
-            "switch_power_source", ActionTier.SOFT_PHYSICAL, ctx, _result()
+            "coap_command", ActionTier.SOFT_PHYSICAL, ctx, _result()
         )
         assert result.approved is None
 
     async def test_executor_called_for_tier_b(self):
         mock_exec = AsyncMock()
         d = ActionDispatcher()
-        d.register_executor("switch_power_source", mock_exec)
+        d.register_executor("coap_command", mock_exec)
         ctx = _context()
-        await d.dispatch(
-            "switch_power_source", ActionTier.SOFT_PHYSICAL, ctx, _result()
-        )
+        await d.dispatch("coap_command", ActionTier.SOFT_PHYSICAL, ctx, _result())
         mock_exec.assert_awaited_once()
 
 
@@ -521,17 +517,17 @@ class TestTierBWithApproval:
             "_approval_workflow",
             new=AsyncMock(
                 return_value=ActionResult(
-                    action_name="switch_power_source",
+                    action_name="coap_command",
                     tier=ActionTier.SOFT_PHYSICAL,
                     executed=True,
                     approved=True,
-                    action_taken="switch_power_source",
+                    action_taken="coap_command",
                     timestamp=_ms(),
                 )
             ),
         ) as mock_wf:
             result = await d.dispatch(
-                "switch_power_source",
+                "coap_command",
                 ActionTier.SOFT_PHYSICAL,
                 ctx,
                 _result(),
@@ -558,17 +554,17 @@ class TestTierBWithApproval:
             "_approval_workflow",
             new=AsyncMock(
                 return_value=ActionResult(
-                    action_name="switch_power_source",
+                    action_name="coap_command",
                     tier=ActionTier.SOFT_PHYSICAL,
                     executed=True,
                     approved=True,
-                    action_taken="switch_power_source",
+                    action_taken="coap_command",
                     timestamp=_ms(),
                 )
             ),
         ) as mock_wf:
             result = await d.dispatch(
-                "switch_power_source",
+                "coap_command",
                 ActionTier.SOFT_PHYSICAL,
                 ctx,
                 _result(),
@@ -582,9 +578,7 @@ class TestTierBWithApproval:
         ctx = _context(skill_config={})
 
         with patch.object(d, "_approval_workflow", new=AsyncMock()) as mock_wf:
-            await d.dispatch(
-                "switch_power_source", ActionTier.SOFT_PHYSICAL, ctx, _result()
-            )
+            await d.dispatch("coap_command", ActionTier.SOFT_PHYSICAL, ctx, _result())
 
         mock_wf.assert_not_awaited()
 
@@ -602,7 +596,7 @@ class TestTierC:
             "_approval_workflow",
             new=AsyncMock(
                 return_value=ActionResult(
-                    action_name="open_safety_circuit",
+                    action_name="close_gas_valve",
                     tier=ActionTier.HARD_PHYSICAL,
                     executed=False,
                     approved=False,
@@ -612,14 +606,14 @@ class TestTierC:
             ),
         ) as mock_wf:
             await d.dispatch(
-                "open_safety_circuit", ActionTier.HARD_PHYSICAL, ctx, _result()
+                "close_gas_valve", ActionTier.HARD_PHYSICAL, ctx, _result()
             )
 
         mock_wf.assert_awaited_once()
 
     async def test_tier_c_with_yes_response_executes_action(self):
         d = ActionDispatcher()
-        d.register_executor("open_safety_circuit", AsyncMock(return_value=True))
+        d.register_executor("close_gas_valve", AsyncMock(return_value=True))
         mock_sender = AsyncMock()
         d._alert_sender = mock_sender
         d._config = {"operator_contact": "+234800000000"}
@@ -637,7 +631,7 @@ class TestTierC:
             ),
         ):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -646,7 +640,7 @@ class TestTierC:
 
         assert result.approved is True
         assert result.executed is True
-        assert result.action_taken == "open_safety_circuit"
+        assert result.action_taken == "close_gas_valve"
 
     async def test_tier_c_with_no_response_executes_safe_default(self):
         d = ActionDispatcher()
@@ -654,7 +648,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -676,7 +670,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=slow_listen):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -706,7 +700,7 @@ class TestTierC:
                 new=AsyncMock(side_effect=fake_wait_for),
             ):
                 result = await d.dispatch(
-                    "open_safety_circuit",
+                    "close_gas_valve",
                     ActionTier.HARD_PHYSICAL,
                     ctx,
                     _result(),
@@ -735,7 +729,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=slow_listen):
             await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -764,7 +758,7 @@ class TestTierC:
             ),
         ):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -789,7 +783,7 @@ class TestTierC:
             ),
         ):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -809,7 +803,7 @@ class TestTierC:
                 config={"operator_contact": "+234800000000"},
             )
             exec_mock = AsyncMock()
-            d.register_executor("open_safety_circuit", exec_mock)
+            d.register_executor("close_gas_valve", exec_mock)
 
             with (
                 patch(
@@ -823,7 +817,7 @@ class TestTierC:
                 ),
             ):
                 result = await d.dispatch(
-                    "open_safety_circuit",
+                    "close_gas_valve",
                     ActionTier.HARD_PHYSICAL,
                     _context(),
                     _result(action_tier="C"),
@@ -866,7 +860,7 @@ class TestTierC:
             ),
         ):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -897,7 +891,7 @@ class TestTierC:
             ),
         ):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -918,7 +912,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
             await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -999,7 +993,7 @@ class TestTierC:
             ),
         ):
             result = await dispatcher.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(action_tier="C"),
@@ -1027,7 +1021,7 @@ class TestTierC:
                 "local_console_channel_id": "local_console",
             }
         )
-        d.register_executor("open_safety_circuit", AsyncMock(return_value=True))
+        d.register_executor("close_gas_valve", AsyncMock(return_value=True))
         d.update_capability_posture(
             CapabilityPosture(
                 sms_available=False,
@@ -1059,7 +1053,7 @@ class TestTierC:
             ) as remote_listener,
         ):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -1070,7 +1064,7 @@ class TestTierC:
         remote_listener.assert_not_awaited()
         assert result.approved is True
         assert result.operator_response == "LOCAL:YES-AB12CD34"
-        assert result.action_taken == "open_safety_circuit"
+        assert result.action_taken == "close_gas_valve"
 
     async def test_tier_c_local_console_no_response_runs_safe_default(self):
         d = ActionDispatcher(
@@ -1101,7 +1095,7 @@ class TestTierC:
             new=AsyncMock(return_value=None),
         ):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -1148,7 +1142,7 @@ class TestTierC:
                 },
             )
             exec_mock = AsyncMock()
-            d.register_executor("open_safety_circuit", exec_mock)
+            d.register_executor("close_gas_valve", exec_mock)
 
             with (
                 patch("ori.reasoning.action_dispatcher.now_ms", return_value=10_000),
@@ -1158,7 +1152,7 @@ class TestTierC:
                 ),
             ):
                 result = await d.dispatch(
-                    "open_safety_circuit",
+                    "close_gas_valve",
                     ActionTier.HARD_PHYSICAL,
                     _context(),
                     _result(action_tier="C"),
@@ -1204,7 +1198,7 @@ class TestTierC:
 
             with patch("ori.reasoning.action_dispatcher.now_ms", return_value=10_000):
                 result = await d.dispatch(
-                    "open_safety_circuit",
+                    "close_gas_valve",
                     ActionTier.HARD_PHYSICAL,
                     _context(),
                     _result(action_tier="C"),
@@ -1246,7 +1240,7 @@ class TestTierC:
             ) as local_listener,
         ):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -1359,7 +1353,7 @@ class TestApprovalMessageFormat:
             device_id="dev-lagos-01",
             timestamp_ms=1_700_000_000_000,
             result=_result(text="AC unit drawing 40% above baseline."),
-            action="open_safety_circuit",
+            action="close_gas_valve",
             timeout_seconds=300,
             device_timezone="Africa/Lagos",
         )
@@ -1371,7 +1365,7 @@ class TestApprovalMessageFormat:
             device_id="dev-01",
             timestamp_ms=_ms(),
             result=_result(text="Dangerous overcurrent detected."),
-            action="emergency_cutoff",
+            action="trip_relay",
             timeout_seconds=60,
         )
         assert "Dangerous overcurrent detected." in msg
@@ -1382,10 +1376,10 @@ class TestApprovalMessageFormat:
             device_id="dev-01",
             timestamp_ms=_ms(),
             result=_result(),
-            action="open_safety_circuit",
+            action="close_gas_valve",
             timeout_seconds=300,
         )
-        assert "open_safety_circuit" in msg
+        assert "close_gas_valve" in msg
 
     def test_contains_confidence_percentage(self):
         d = ActionDispatcher()
@@ -1428,7 +1422,7 @@ class TestApprovalMessageFormat:
             device_id="dev-01",
             timestamp_ms=_ms(),
             result=_result(text="Overcurrent detected."),
-            action="open_safety_circuit",
+            action="close_gas_valve",
             timeout_seconds=300,
         )
         assert "OBSERVATION:" in msg
@@ -1454,7 +1448,7 @@ class TestApprovalMessageFormat:
             device_id="dev-01",
             timestamp_ms=_ms(),
             result=result,
-            action="open_safety_circuit",
+            action="close_gas_valve",
             timeout_seconds=300,
         )
         assert "Detailed explanation of the fault pattern." in msg
@@ -1579,7 +1573,7 @@ class TestUnknownTier:
     async def test_lowercase_tier_routes_to_the_real_tier(self):
         """Case is not authority: 'd' must reach the Tier D path."""
         d = ActionDispatcher()
-        result = await d.dispatch("emergency_cutoff", "d", _context(), _result())
+        result = await d.dispatch("trip_relay", "d", _context(), _result())
         assert result.tier == ActionTier.SAFETY_CRITICAL
 
 
@@ -1595,12 +1589,10 @@ class TestCancellationHandling:
             await asyncio.sleep(0.1)
             executor_ran.set()
 
-        d.register_executor("emergency_cutoff", _mock_exec)
+        d.register_executor("trip_relay", _mock_exec)
 
         task = asyncio.create_task(
-            d.dispatch(
-                "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
-            )
+            d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result())
         )
         await asyncio.sleep(0.05)
         task.cancel()
@@ -1640,11 +1632,11 @@ class TestCancellationHandling:
         async def _mock_exec(action, ctx):
             raise asyncio.CancelledError()
 
-        d.register_executor("emergency_cutoff", _mock_exec)
+        d.register_executor("trip_relay", _mock_exec)
 
         with caplog.at_level(logging.WARNING):
             result = await d.dispatch(
-                "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+                "trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result()
             )
 
         assert result.executed is False
@@ -1680,7 +1672,7 @@ class TestStatusSignalingHooks:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
             await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -1694,7 +1686,7 @@ class TestStatusSignalingHooks:
         status = _StatusSpy()
         d = ActionDispatcher(status_indicator=status)
         await d.dispatch(
-            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, _context(), _result()
+            "trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result()
         )
         assert ("tier_d_set", None) in status.calls
         assert ("tier_d_clear", None) in status.calls
@@ -1775,14 +1767,14 @@ class TestOfflineTokenApproval:
             },
         )
         exec_mock = AsyncMock()
-        d.register_executor("open_safety_circuit", exec_mock)
+        d.register_executor("close_gas_valve", exec_mock)
         with patch.object(
             d,
             "_listen_for_local_console_response",
             new=AsyncMock(return_value="TOKEN:abc"),
         ):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -1816,7 +1808,7 @@ class TestOfflineTokenApproval:
             new=AsyncMock(return_value="TOKEN:abc"),
         ):
             result = await d.dispatch(
-                "open_safety_circuit",
+                "close_gas_valve",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -1849,11 +1841,11 @@ class TestFirmwareProvenanceAtomicity:
             # log_action_for_event is the single insert. The snapshot is a
             # parameter of THAT call, not a follow-up update.
             result = ActionResult(
-                action_name="emergency_cutoff",
+                action_name="trip_relay",
                 tier="D",
                 executed=True,
                 approved=None,
-                action_taken="emergency_cutoff",
+                action_taken="trip_relay",
                 timestamp=1_760_000_000_000,
             )
             action_id = await store.log_action_for_event(
@@ -1914,7 +1906,7 @@ class TestSnapshotBuildFailureIsContained:
         # attestation is attempted -- we only assert the action was logged
         # despite the snapshot build failing.
         await d.dispatch(
-            "emergency_cutoff",
+            "trip_relay",
             ActionTier.SAFETY_CRITICAL,
             ctx,
             _result(action_tier="D"),
@@ -1967,10 +1959,10 @@ class TestTierDIsIndependentOfEvidence:
         ctx, _store = self._attesting_context()
         mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher(evidence_attestor=_ExplodingAttestor())
-        d.register_executor("emergency_cutoff", mock_exec)
+        d.register_executor("trip_relay", mock_exec)
 
         result = await d.dispatch(
-            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result()
+            "trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result()
         )
 
         assert attempted == ["attest"], "attestation was never attempted"
@@ -1997,10 +1989,10 @@ class TestTierDIsIndependentOfEvidence:
         ctx, store = self._attesting_context()
         mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher(evidence_attestor=_SilentAttestor())
-        d.register_executor("emergency_cutoff", mock_exec)
+        d.register_executor("trip_relay", mock_exec)
 
         result = await d.dispatch(
-            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result()
+            "trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result()
         )
 
         assert attempted == ["attest"]
@@ -2011,10 +2003,10 @@ class TestTierDIsIndependentOfEvidence:
         ctx, _store = self._attesting_context()
         mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher(evidence_attestor=None)
-        d.register_executor("emergency_cutoff", mock_exec)
+        d.register_executor("trip_relay", mock_exec)
 
         result = await d.dispatch(
-            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result()
+            "trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result()
         )
 
         assert result.executed is True
@@ -2046,9 +2038,9 @@ class TestTierDIsIndependentOfEvidence:
 
         ctx, _store = self._attesting_context()
         d = ActionDispatcher(evidence_attestor=_OrderingAttestor())
-        d.register_executor("emergency_cutoff", _executor)
+        d.register_executor("trip_relay", _executor)
 
-        await d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result())
+        await d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result())
 
         assert "attest" in order, "attestation was never attempted"
         assert order[0] == "execute", order
@@ -2101,12 +2093,10 @@ class TestWhichTiersReachEvidence:
             evidence_attestor=self._attestor(seen),
             config={"approval_timeout_seconds": 0},
         )
-        d.register_executor("open_safety_circuit", AsyncMock(return_value=True))
+        d.register_executor("close_gas_valve", AsyncMock(return_value=True))
         d.register_executor("log_to_dashboard", AsyncMock(return_value=True))
 
-        await d.dispatch(
-            "open_safety_circuit", ActionTier.HARD_PHYSICAL, ctx, _result()
-        )
+        await d.dispatch("close_gas_valve", ActionTier.HARD_PHYSICAL, ctx, _result())
 
         assert seen, "a Tier C action never reached the evidence path"
         tiers = [tier for tier, _reconciled in seen]
@@ -2120,8 +2110,8 @@ class TestWhichTiersReachEvidence:
         seen: list = []
         ctx, _store = self._ctx()
         d = ActionDispatcher(evidence_attestor=self._attestor(seen))
-        d.register_executor("emergency_cutoff", AsyncMock(return_value=True))
-        await d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result())
+        d.register_executor("trip_relay", AsyncMock(return_value=True))
+        await d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result())
         assert ("D", False) in seen, "a Tier D action was not attested"
 
     @pytest.mark.parametrize(
@@ -2132,11 +2122,9 @@ class TestWhichTiersReachEvidence:
         ctx, _store = self._ctx()
         d = ActionDispatcher(evidence_attestor=self._attestor(seen))
         d.register_executor("alert_whatsapp", AsyncMock(return_value=True))
-        d.register_executor("switch_power_source", AsyncMock(return_value=True))
+        d.register_executor("coap_command", AsyncMock(return_value=True))
         action = (
-            "alert_whatsapp"
-            if tier == ActionTier.INFORMATIONAL
-            else "switch_power_source"
+            "alert_whatsapp" if tier == ActionTier.INFORMATIONAL else "coap_command"
         )
         await d.dispatch(action, tier, ctx, _result())
         assert seen == [], f"tier {tier} reached the evidence path"
@@ -2177,9 +2165,9 @@ class TestAttestationFailureIsRecordedNotSilent:
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=store)
 
         d = ActionDispatcher(evidence_attestor=_Failing())
-        d.register_executor("emergency_cutoff", AsyncMock(return_value=True))
+        d.register_executor("trip_relay", AsyncMock(return_value=True))
         result = await d.dispatch(
-            "emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result()
+            "trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result()
         )
 
         assert result.executed is True
@@ -2210,8 +2198,8 @@ class TestAttestationFailureIsRecordedNotSilent:
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=store)
 
         d = ActionDispatcher(evidence_attestor=_Silent())
-        d.register_executor("emergency_cutoff", AsyncMock(return_value=True))
-        await d.dispatch("emergency_cutoff", ActionTier.SAFETY_CRITICAL, ctx, _result())
+        d.register_executor("trip_relay", AsyncMock(return_value=True))
+        await d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result())
 
         statuses = [
             call.kwargs.get("status")

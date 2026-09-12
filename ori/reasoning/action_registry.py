@@ -115,10 +115,13 @@ ACTION_REGISTRY: dict[str, ActionCapability] = {
         summary="commands an actuator on a constrained device",
     ),
     # ── Hard physical (Tier C floor) ──────────────────────────────────────
-    # Relay- and contactor-controlled circuits. A skill may declare these at
-    # Tier D to obtain autonomous safety-critical dispatch, which is why the
-    # floor is C rather than an exact match — but it may never place them
-    # below the approval workflow.
+    # The three actuator-specific names the runtime registers, each resolving
+    # to exactly one protected-circuit outcome through the zone's commissioned
+    # mapping. `safety-profile/v1` carries this set as normative legacy
+    # vocabulary; the names survive the profile migration only as internal
+    # executor names behind the outcome resolver. The floor is C rather than
+    # an exact match because a skill may propose these for approval, and never
+    # below the workflow.
     "trip_relay": ActionCapability(
         minimum_tier="C",
         physical=True,
@@ -137,33 +140,24 @@ ACTION_REGISTRY: dict[str, ActionCapability] = {
         safe_default_eligible=False,
         summary="closes the fail-safe gas valve",
     ),
-    "open_safety_circuit": ActionCapability(
-        minimum_tier="C",
-        physical=True,
-        safe_default_eligible=False,
-        summary="opens the installer-wired safety circuit",
-    ),
-    "emergency_cutoff": ActionCapability(
-        minimum_tier="C",
-        physical=True,
-        safe_default_eligible=False,
-        summary="cuts power at the safety contactor",
-    ),
-    "switch_power_source": ActionCapability(
-        minimum_tier="B",
-        physical=True,
-        safe_default_eligible=False,
-        summary="switches the active power source",
-    ),
 }
 
 # No entry may set a Tier D floor. The registry exists to add operator
 # authority, and Tier D is the one tier that removes it — an action raised to
 # Tier D fires immediately with no approval. A floor of C sends an understated
 # declaration into the approval workflow; a floor of D would send it straight
-# past. Tier D is reached only from a trigger the operator wrote, evaluated by
-# the rule engine. `emergency_cutoff` is registered at C for exactly this
-# reason, even though its only legitimate use is Tier D.
+# past. Tier D is reached only through a licensed protective outcome on a
+# commissioned zone. `trip_relay` is registered at C for exactly this reason:
+# a skill may propose it for approval, and it reaches D only when a safety
+# condition licenses the outcome it resolves to.
+#
+# Every physical entry below has an executor the runtime registers when a
+# commissioned zone is accepted. A name governed here with nothing behind it
+# is a capability the runtime advertises and does not have: a skill declares
+# it, passes load-time validation, reaches dispatch, and nothing happens. New
+# physical capability is not added here as a name — it arrives as an outcome on
+# a zone, defined in the specs first, which is what keeps commissioning a site
+# from requiring a runtime release.
 # Checked with a raise rather than `assert`, which `python -O` removes.
 _TIER_D_FLOORS = sorted(
     name for name, entry in ACTION_REGISTRY.items() if entry.minimum_tier == "D"

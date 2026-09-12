@@ -339,12 +339,12 @@ class TestLoadOne:
                 reasoning_policy: post_action
             actions:
               available:
-                - name: switch_power_source
+                - name: coap_command
                   tier: B
                 - name: alert_whatsapp
                   tier: A
               defaults:
-                over_threshold: [switch_power_source, alert_whatsapp]
+                over_threshold: [coap_command, alert_whatsapp]
             """,
         )
         loader = _first_party_loader()
@@ -370,10 +370,10 @@ class TestLoadOne:
                 requires_approval: true
             actions:
               available:
-                - name: switch_power_source
+                - name: coap_command
                   tier: B
               defaults:
-                over_threshold: [switch_power_source]
+                over_threshold: [coap_command]
             """,
         )
         loader = _first_party_loader()
@@ -978,10 +978,10 @@ class TestValidation:
                 action_tier: B
             actions:
               available:
-                - name: switch_power_source
+                - name: coap_command
                   tier: B
               defaults:
-                over_threshold: [switch_power_source]
+                over_threshold: [coap_command]
             """,
         )
         loader = _first_party_loader()
@@ -1009,10 +1009,10 @@ class TestValidation:
                 reasoning_policy: post_action
             actions:
               available:
-                - name: switch_power_source
+                - name: coap_command
                   tier: B
               defaults:
-                over_threshold: [switch_power_source]
+                over_threshold: [coap_command]
             """,
         )
         loader = _first_party_loader()

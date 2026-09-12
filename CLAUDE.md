@@ -165,8 +165,8 @@ Three consequences follow, and they are rules rather than curiosities:
   soft action waits for a human.
 - **A Tier D floor is a category error.** D is not more consequence than C; it
   is the same consequence under a different licence, and no registry entry is in
-  a position to assert a licence. `emergency_cutoff` is registered at a hard
-  floor and reaches D only through a safety condition — the model, not a
+  a position to assert a licence. `trip_relay` is registered at a hard floor
+  and reaches D only through a safety condition — the model, not a
   workaround.
 
 `skills-package/v3.md` in `ori-specs` carries this and its reasoning, and
@@ -625,15 +625,15 @@ triggers:
     escalate_to: local_slm
     action_tier: A
 
-  # Tier B: Soft physical — switch source, explain after action
-  - name: source_switch_recommended
-    condition: "grid_voltage < 180 and inverter_battery > 0.4"
+  # Tier B: Soft — a reversible host-state action, explain after action
+  - name: runaway_process
+    condition: "cpu_percent > 95 and process_target_resolvable == 1"
     cooldown_seconds: 60
     escalate_to: rule
     action_tier: B
     reasoning_policy: post_action
 
-  # Tier C: Hard physical — propose relay/contactor-controlled shutdown, await approval
+  # Tier C: Hard physical — propose isolating the commissioned circuit, await approval
   - name: critical_fault
     condition: "load_current > rated_capacity * 3.0"
     cooldown_seconds: 0
@@ -642,7 +642,9 @@ triggers:
     approval_timeout_seconds: 300
     safe_default_action: log_to_dashboard
 
-  # Tier D: Safety-critical — immediate autonomous cutoff
+  # Tier D: Safety-critical — the condition is observed here; the protective
+  # outcome is not a skill action. Until this condition migrates into a
+  # release-owned safety profile, its defaults are notifications only.
   - name: dangerous_overcurrent
     condition: "load_current > rated_capacity * 5.0"
     bypass_llm: true
@@ -671,27 +673,31 @@ actions:
     - name: log_to_dashboard
       tier: A
 
-    - name: switch_power_source
+    - name: terminate_process
       tier: B
-      requires_approval: false # true = operator must approve each switch
+      requires_approval: false # true = operator must approve each termination
 
-    - name: open_safety_circuit
+    - name: trip_relay
       tier: C
       approval_message: |
-        PROPOSED: Open the installer-wired safety circuit.
+        PROPOSED: Isolate the commissioned circuit.
         REASON: {result.text}
         Reply YES to approve or NO to cancel.
 
-    - name: emergency_cutoff
-      tier: D
-
   defaults:
     anomalous_draw: [alert_whatsapp, log_to_dashboard]
-    source_switch_recommended: [switch_power_source, alert_sms]
-    critical_fault: [open_safety_circuit]
-    dangerous_overcurrent: [emergency_cutoff]
+    runaway_process: [terminate_process, alert_sms]
+    critical_fault: [trip_relay]
+    dangerous_overcurrent: [alert_whatsapp, log_to_dashboard]
     daily_report: [alert_whatsapp]
 ```
+
+Every action above Tier A in that example is one the runtime can execute:
+`terminate_process` resolves a host process, and `trip_relay` resolves to
+`open_protected_circuit` on the commissioned zone. There is no Tier D action in
+the list because a package holds none — a Tier D trigger's protective outcome
+comes from a safety profile once the condition migrates, and until then the
+trigger observes and notifies.
 
 **An action declared above Tier A must exist in the runtime's action registry.**
 Registry membership is a closed, decidable fact, so it is answered at skill load
@@ -703,15 +709,25 @@ Tier A is exempt, and deliberately: a skill may name its own informational
 action, which actuates nothing and whose intent dispatch records. The boundary
 is the claim to change the world, not the absence of an entry.
 
-**Giving the runtime a new capability is a runtime change**, not a skill one.
-The guarantee runs in one direction only: `register_executor()` refuses an
-action with no registry entry, so nothing can become *executable* without
-becoming *governed* in the same change. The converse does not hold — a registry
-entry is governed and potentially executable, not executable. `emergency_cutoff`,
-`open_safety_circuit` and `switch_power_source` are registered with no executor
-bound, so a skill may declare them, pass load-time validation, reach dispatch and
-have nothing happen. That is reported honestly rather than as success, and which
-of them should gain an executor is an open decision.
+**Physical capability is an outcome on a zone, never a name.** Two guarantees
+hold in both directions. `register_executor()` refuses an action with no
+registry entry, so nothing becomes *executable* without becoming *governed* in
+the same change; and every physical registry entry has an executor the runtime
+registers — the commissioned-outcome actions when a zone is accepted,
+`coap_command` on its own — so nothing is *governed* that the runtime cannot
+perform. An entry with nothing behind it is a capability the
+runtime advertises and does not have — a skill declares it, passes load-time
+validation, reaches dispatch, and nothing happens — and the registry held three
+such names until they were retired.
+
+So no new physical action name is added to the registry. A new physical
+capability arrives as an *outcome* — defined in `ori-specs` first, bound to a
+resource by the commissioned binding — and the three actuator-specific names
+that remain are the legacy set `safety-profile/v1` carries as normative
+vocabulary, surviving the profile migration only as internal executor names
+behind the outcome resolver. That is what keeps commissioning a new site from
+requiring a runtime release: a release defines outcomes and their floors, and
+commissioning binds one to a resource.
 
 The registry is owned by the reviewed release; no deployment, entitlement or
 remote command adds to it.
