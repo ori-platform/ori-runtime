@@ -40,12 +40,25 @@ _HEALTH_SOCKET_DEFAULT_DEV_FALLBACK_PATH = "/tmp/ori-health.sock"
 _HEALTH_SOCKET_ALLOWED_REQUESTS = {"", "GET_HEALTH"}
 
 
-def _socket_identity(socket_path: str) -> tuple[int, int] | None:
-    """The device and inode of the socket at *socket_path*, or None.
+def _socket_identity(socket_path: str) -> tuple[int, int, int] | None:
+    """Device, inode and creation time of the socket at *socket_path*, or None.
 
     A pathname is not an identity. Two runtimes can hold the same one in
     succession, and the file at it after a restart is a different object that
     happens to have the same name.
+
+    Nor is device and inode alone: Linux reuses an inode number immediately
+    after the file holding it is unlinked, so a replacement binding the same
+    pathname was measured taking the departing socket's exact inode. macOS did
+    not, which is why the host suite agreed with a rule the hosted runner
+    refuted on all three interpreters.
+
+    The creation time narrows it and does not close it. A handover fast enough
+    to finish inside the filesystem's timestamp granularity was measured
+    producing a byte-identical triple for two different sockets, so this is a
+    best-effort discriminator rather than a proof of ownership. What actually
+    protects a running replacement is the listener check in
+    :func:`_remove_socket_file`, which does not depend on identity at all.
     """
     try:
         st = Path(socket_path).lstat()
@@ -53,10 +66,12 @@ def _socket_identity(socket_path: str) -> tuple[int, int] | None:
         return None
     if not stat.S_ISSOCK(st.st_mode):
         return None
-    return (st.st_dev, st.st_ino)
+    return (st.st_dev, st.st_ino, st.st_ctime_ns)
 
 
-def _remove_socket_file(socket_path: str, identity: tuple[int, int] | None) -> None:
+def _remove_socket_file(
+    socket_path: str, identity: tuple[int, int, int] | None
+) -> None:
     """Remove *socket_path* only while it is still the file *identity* named.
 
     Checking that the pathname holds *a* socket is not enough. A runtime that
@@ -70,6 +85,15 @@ def _remove_socket_file(socket_path: str, identity: tuple[int, int] | None) -> N
     if identity is None:
         return
     if _socket_identity(socket_path) != identity:
+        return
+    # This, not the comparison above, is the guarantee. A stat identity was
+    # measured tying on Linux for a handover fast enough to reuse the inode
+    # inside the filesystem's timestamp granularity, so it narrows the case and
+    # cannot settle it. The property actually worth protecting is simpler than
+    # ownership and needs no identity: never remove a socket some process is
+    # answering on, whoever created it. Our own listener is closed before
+    # cleanup runs, so this does not refuse our own file.
+    if _socket_has_a_listener(Path(socket_path)):
         return
     Path(socket_path).unlink(missing_ok=True)
 
@@ -116,7 +140,7 @@ class RuntimeHealthSocketServer:
         self._server: asyncio.AbstractServer | None = None
         self._bound_path: str = self._socket_path
         # Device and inode of the socket file this server actually bound.
-        self._bound_identity: tuple[int, int] | None = None
+        self._bound_identity: tuple[int, int, int] | None = None
 
     @property
     def bound_path(self) -> str:
@@ -171,19 +195,23 @@ class RuntimeHealthSocketServer:
         """
         bound = await asyncio.to_thread(self._prepare_socket_path, socket_path)
         server = await asyncio.start_unix_server(self._handle_client, path=bound)
-        # Taken the moment the file exists, so everything that later removes it
+        # Taken the moment the file exists, so a failure applying the mode
         # removes the file this server bound rather than whatever holds the name.
-        identity = await asyncio.to_thread(_socket_identity, bound)
+        provisional = await asyncio.to_thread(_socket_identity, bound)
         try:
             await asyncio.to_thread(os.chmod, bound, self._mode)
         except BaseException:
             server.close()
             await server.wait_closed()
-            await asyncio.to_thread(_remove_socket_file, bound, identity)
+            await asyncio.to_thread(_remove_socket_file, bound, provisional)
             raise
         self._server = server
         self._bound_path = bound
-        self._bound_identity = identity
+        # Re-read after the mode is applied: `chmod` is a metadata change, so it
+        # moves the inode's ctime. Holding the earlier reading meant the
+        # identity never matched again and a runtime stopped removing its own
+        # socket on shutdown, leaving a stale file for every clean stop.
+        self._bound_identity = await asyncio.to_thread(_socket_identity, bound)
         return bound
 
     async def close(self) -> None:

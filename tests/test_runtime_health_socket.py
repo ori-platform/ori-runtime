@@ -694,3 +694,40 @@ def test_cleanup_with_no_bound_identity_removes_nothing(occupant):
         assert target.exists() is (occupant != "nothing")
     finally:
         target.unlink(missing_ok=True)
+
+
+def test_cleanup_leaves_a_stale_socket_that_is_not_the_one_this_server_bound():
+    """Identity, isolated from the listener check that usually answers first.
+
+    A live replacement is protected by the listener probe whatever the identity
+    says. This is the case the probe cannot answer: a socket file at the
+    pathname with nothing listening, which is nonetheless not the file this
+    server created. Deleting it would be this runtime reaching past its own
+    shutdown to remove somebody else's artefact.
+
+    The differing identity is constructed rather than produced by a second
+    bind. Asking the filesystem for one is not reliable: on Linux an inode is
+    reused the moment its file is unlinked, and a handover fast enough to
+    finish inside the timestamp granularity was measured returning a
+    byte-identical triple for two different sockets. That is a real limit of
+    stat identity and the reason the listener check is the guarantee — but it
+    makes a test that needs two distinguishable identities flaky, and a flaky
+    test proves nothing on the runs where it passes.
+    """
+    from ori.runtime_health_socket import _remove_socket_file, _socket_identity
+
+    path = Path(_short_socket_path("not-ours"))
+    path.unlink(missing_ok=True)
+    try:
+        theirs = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        theirs.bind(str(path))
+        theirs.close()  # a socket file at the pathname, with no listener
+
+        occupant = _socket_identity(str(path))
+        assert occupant is not None
+        never_bound_here = (occupant[0], occupant[1], occupant[2] - 1)
+
+        _remove_socket_file(str(path), never_bound_here)
+        assert path.exists(), "cleanup removed a socket this server never bound"
+    finally:
+        path.unlink(missing_ok=True)
