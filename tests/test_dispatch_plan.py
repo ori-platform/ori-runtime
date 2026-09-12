@@ -11,7 +11,6 @@ declaration order deciding the outcome is the defect.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -1358,8 +1357,10 @@ class TestACancelledTripDoesNotFreeTheResource:
         )
         await started.wait()
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        # Let the cancellation settle without re-raising it: the point is what
+        # the gate does with a shielded executor that is still driving, not how
+        # the awaiting frame ends.
+        await asyncio.gather(task, return_exceptions=True)
 
         assert gate.state_of(ZONE) == HolderState.UNCERTAIN
 
