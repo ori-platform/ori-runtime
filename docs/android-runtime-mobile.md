@@ -56,7 +56,7 @@ sensors:
 telemetry_export:
   enabled: true
   endpoint: "https://provisioning.example.invalid/runtime/telemetry"
-  api_key_env: ORI_ENERGY_DEVICE_API_KEY
+  api_key_env: ORI_DEVICE_API_KEY
 ```
 
 Direct `/dev/ttyUSB*` access remains a Termux/development path. The APK

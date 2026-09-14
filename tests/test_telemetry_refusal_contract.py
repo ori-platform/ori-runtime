@@ -36,7 +36,7 @@ VECTOR_PATH = VECTOR_DIR / "telemetry_refusals.json"
 CONTRACT = json.loads(VECTOR_PATH.read_text())
 CASES = {case["name"]: case for case in CONTRACT["cases"]}
 
-API_KEY_ENV = "ORI_ENERGY_DEVICE_API_KEY"
+API_KEY_ENV = "ORI_DEVICE_API_KEY"
 
 # What the exporter must do with each recorded refusal.
 #   "suspend" — stop posting, discard the batch, count it under refused_events
@@ -123,7 +123,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, endpoint: _Endpoint) -> None:
 def test_contract_is_the_vendored_artifact_at_the_pinned_revision() -> None:
     """The vendored bytes are the ones the manifest pins, not a local edit."""
     manifest = json.loads((VECTOR_DIR / "MANIFEST.json").read_text())
-    assert manifest["source_repository"] == "ori-platform/ori-energy"
+    assert manifest["source_repository"] == "the product API repository (private)"
     assert len(manifest["source_commit"]) == 40
     recorded = manifest["files"][VECTOR_PATH.name]
     assert hashlib.sha256(VECTOR_PATH.read_bytes()).hexdigest() == recorded, (

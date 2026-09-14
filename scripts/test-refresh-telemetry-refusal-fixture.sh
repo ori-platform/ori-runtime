@@ -69,7 +69,7 @@ PY
 }
 
 drive() {
-  ORI_SKIP_FETCH=1 ORI_ENERGY_DIR="${SRC}" \
+  ORI_SKIP_FETCH=1 ORI_PRODUCT_API_DIR="${SRC}" \
     bash "${WORK}/dest/scripts/$(basename "${SCRIPT}")" 2>&1
 }
 

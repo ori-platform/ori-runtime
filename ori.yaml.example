@@ -412,7 +412,7 @@ telemetry_export:
   # never affects Tier B/C/D action authority.
   enabled: false
   endpoint: "https://provisioning.example.invalid/runtime/telemetry"
-  api_key_env: ORI_ENERGY_DEVICE_API_KEY
+  api_key_env: ORI_DEVICE_API_KEY
   flush_interval_s: 30
   batch_size: 50
   timeout_ms: 3000

@@ -504,7 +504,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 | Phase             | Status           | Milestone                                                                 |
 | ----------------- | ---------------- | ------------------------------------------------------------------------- |
 | Runtime core      | ✅ Stable v2.4    | Production posture, typed integration boundary, and evidence Layer 2 hooks |
-| Product wedge     | ✅ Shipping       | Ori Energy demo/API integration, private APK path, and Phone Starter flows |
+| Product wedge     | ✅ Shipping       | Product demo/API integration, private APK path, and Phone Starter flows    |
 | Evidence hardware | 🔨 In Progress   | Evidence Layer 1 contract and `ori-edge-firmware` bootstrap                |
 | Safety kernel     | 🗓️ Planned       | Rust-owned Tier D kernel after shadow-mode evidence, not a broad rewrite   |
 | Growth            | 🗓️ Planned       | Skills Hub, Edge Node hardware, ori-cloud, and enterprise pilots           |

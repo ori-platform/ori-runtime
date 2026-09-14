@@ -223,7 +223,7 @@ class TestLoadExample:
             cfg.telemetry_export.endpoint
             == "https://provisioning.example.invalid/runtime/telemetry"
         )
-        assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
+        assert cfg.telemetry_export.api_key_env == "ORI_DEVICE_API_KEY"
         assert cfg.telemetry_export.batch_size == 50
 
     def _custody_yaml(self, tmp_path, custody_block: str):
@@ -4856,7 +4856,7 @@ class TestLoadPhoneExample:
             "serial_number": "",
         }
         assert cfg.telemetry_export.enabled is False
-        assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
+        assert cfg.telemetry_export.api_key_env == "ORI_DEVICE_API_KEY"
         assert cfg.health_socket["path"] == (
             "/data/data/com.termux/files/home/.ori/health.sock"
         )
@@ -5055,7 +5055,7 @@ actions:
                 "telemetry_export:\n"
                 "  enabled: true\n"
                 "  endpoint: https://api.example.test/runtime/telemetry\n"
-                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+                "  api_key_env: ORI_DEVICE_API_KEY\n"
                 "  flush_interval_s: 5\n"
                 "  batch_size: 10\n"
                 "  timeout_ms: 2500\n"
@@ -5067,7 +5067,7 @@ actions:
 
         assert cfg.telemetry_export.enabled is True
         assert cfg.telemetry_export.endpoint.endswith("/runtime/telemetry")
-        assert cfg.telemetry_export.api_key_env == "ORI_ENERGY_DEVICE_API_KEY"
+        assert cfg.telemetry_export.api_key_env == "ORI_DEVICE_API_KEY"
         assert cfg.telemetry_export.flush_interval_s == 5.0
         assert cfg.telemetry_export.batch_size == 10
         assert cfg.telemetry_export.timeout_ms == 2500
@@ -5080,7 +5080,7 @@ actions:
                 "telemetry_export:\n"
                 "  enabled: true\n"
                 "  endpoint: ''\n"
-                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+                "  api_key_env: ORI_DEVICE_API_KEY\n"
             ),
         )
 
@@ -5094,7 +5094,7 @@ actions:
                 "telemetry_export:\n"
                 "  enabled: true\n"
                 "  endpoint: http://api.example.test/runtime/telemetry\n"
-                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+                "  api_key_env: ORI_DEVICE_API_KEY\n"
             ),
         )
 
@@ -5108,7 +5108,7 @@ actions:
                 "telemetry_export:\n"
                 "  enabled: true\n"
                 "  endpoint: http://127.0.0.1:8000/runtime/telemetry\n"
-                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+                "  api_key_env: ORI_DEVICE_API_KEY\n"
             ),
         )
 
@@ -5137,7 +5137,7 @@ actions:
                 "telemetry_export:\n"
                 "  enabled: true\n"
                 "  endpoint: https://api.example.test/runtime/telemetry\n"
-                "  api_key_env: ORI_ENERGY_DEVICE_API_KEY\n"
+                "  api_key_env: ORI_DEVICE_API_KEY\n"
                 "  batch_size: 20\n"
                 "  max_queue_size: 10\n"
             ),

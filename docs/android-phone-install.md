@@ -118,7 +118,7 @@ Edit `ori.yaml`:
 After registering the device through provisioning, enable telemetry:
 
 ```sh
-export ORI_ENERGY_DEVICE_API_KEY="device-api-key-from-apps-api"
+export ORI_DEVICE_API_KEY="device-api-key-from-provisioning"
 ```
 
 Then set:
@@ -127,7 +127,7 @@ Then set:
 telemetry_export:
   enabled: true
   endpoint: "https://provisioning.example.invalid/runtime/telemetry"
-  api_key_env: ORI_ENERGY_DEVICE_API_KEY
+  api_key_env: ORI_DEVICE_API_KEY
 ```
 
 For APK/provisioned deployments, the runtime config should also be signed by
@@ -305,7 +305,8 @@ cat > ~/.termux/boot/start-ori.sh <<'EOF'
 #!/data/data/com.termux/files/usr/bin/sh
 termux-wake-lock
 cd "$HOME/ori"
-export ORI_ENERGY_DEVICE_API_KEY="set-this-through-support-provisioning"
+# Export the key under the name telemetry_export.api_key_env gives in ori.yaml.
+export ORI_DEVICE_API_KEY="set-this-through-support-provisioning"
 ori-runtime --config ori.yaml >> "$HOME/ori-runtime.log" 2>&1
 EOF
 chmod +x ~/.termux/boot/start-ori.sh
