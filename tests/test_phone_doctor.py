@@ -79,7 +79,7 @@ gateway:
 telemetry_export:
   enabled: {str(telemetry_enabled).lower()}
   endpoint: "https://provisioning.example.invalid/runtime/telemetry"
-  api_key_env: ORI_ENERGY_DEVICE_API_KEY
+  api_key_env: ORI_DEVICE_API_KEY
 
 health_socket:
   enabled: true
@@ -319,22 +319,19 @@ def test_phone_doctor_fails_when_phone_relay_is_enabled(tmp_path, monkeypatch):
 
 def test_phone_doctor_requires_api_key_when_telemetry_enabled(tmp_path, monkeypatch):
     config_path = _write_phone_config(tmp_path, telemetry_enabled=True)
-    monkeypatch.delenv("ORI_ENERGY_DEVICE_API_KEY", raising=False)
+    monkeypatch.delenv("ORI_DEVICE_API_KEY", raising=False)
     monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
     monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
 
     checks = phone_doctor.run_phone_doctor(config_path)
 
     assert _status_by_name(checks)["config.telemetry_export"] == "fail"
-    assert (
-        "ORI_ENERGY_DEVICE_API_KEY"
-        in _message_by_name(checks)["config.telemetry_export"]
-    )
+    assert "ORI_DEVICE_API_KEY" in _message_by_name(checks)["config.telemetry_export"]
 
 
 def test_phone_doctor_accepts_api_key_when_telemetry_enabled(tmp_path, monkeypatch):
     config_path = _write_phone_config(tmp_path, telemetry_enabled=True)
-    monkeypatch.setenv("ORI_ENERGY_DEVICE_API_KEY", "test-key")
+    monkeypatch.setenv("ORI_DEVICE_API_KEY", "test-key")
     monkeypatch.setattr(phone_doctor, "_find_direct_serial_devices", lambda: [])
     monkeypatch.setattr(phone_doctor, "_list_termux_usb_devices", lambda: [])
 

@@ -60,10 +60,10 @@ gateway:
 telemetry_export:
   # Phone deployments can push real sensor readings to a provisioned telemetry
   # endpoint. Leave disabled until the device is registered and the API key is
-  # provisioned in the runtime environment as ORI_ENERGY_DEVICE_API_KEY.
+  # provisioned in the runtime environment as ORI_DEVICE_API_KEY.
   enabled: false
   endpoint: "https://provisioning.example.invalid/runtime/telemetry"
-  api_key_env: ORI_ENERGY_DEVICE_API_KEY
+  api_key_env: ORI_DEVICE_API_KEY
   flush_interval_s: 30
   batch_size: 50
   timeout_ms: 3000

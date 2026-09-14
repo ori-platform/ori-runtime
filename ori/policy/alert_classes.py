@@ -14,8 +14,7 @@ contract forbids, and the name is not an identity. Trigger names come from
 `skill.yaml`, which is untrusted input, so any skill declaring a trigger of the
 same name would inherit the customer's toggle. An entry therefore needs a
 first-party skill and trigger together, and the product has to state which pair
-each of its customer-facing classes names. Tracked as
-ori-platform/ori-energy#92.
+each of its customer-facing classes names.
 
 Absence of an entry is always enablement. That is the direction a gap has to
 fail in: an unmapped trigger keeps notifying, whereas a wrong guess silences

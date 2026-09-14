@@ -467,7 +467,7 @@ async def test_start_telemetry_export_subscribes_wildcard_handler(monkeypatch):
         telemetry_export=TelemetryExportConfig(
             enabled=True,
             endpoint="https://api.example.test/runtime/telemetry",
-            api_key_env="ORI_ENERGY_DEVICE_API_KEY",
+            api_key_env="ORI_DEVICE_API_KEY",
         ),
     )
 

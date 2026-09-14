@@ -50,7 +50,7 @@ def _config(**overrides) -> TelemetryExportConfig:
     values = {
         "enabled": True,
         "endpoint": "https://api.example.test/runtime/telemetry",
-        "api_key_env": "ORI_ENERGY_DEVICE_API_KEY",
+        "api_key_env": "ORI_DEVICE_API_KEY",
         "flush_interval_s": 30.0,
         "batch_size": 2,
         "timeout_ms": 3000,
@@ -122,7 +122,7 @@ async def test_handle_event_drops_when_queue_is_full():
 
 @pytest.mark.asyncio
 async def test_flush_once_posts_hmac_signed_batch(monkeypatch):
-    monkeypatch.setenv("ORI_ENERGY_DEVICE_API_KEY", "device-secret")
+    monkeypatch.setenv("ORI_DEVICE_API_KEY", "device-secret")
     _FakeAsyncClient.requests = []
     _FakeAsyncClient.fail = False
     monkeypatch.setattr(
@@ -181,7 +181,7 @@ def test_runtime_telemetry_rejects_noncanonical_numbers(value: float) -> None:
 
 @pytest.mark.asyncio
 async def test_flush_once_requeues_when_post_fails(monkeypatch):
-    monkeypatch.setenv("ORI_ENERGY_DEVICE_API_KEY", "device-secret")
+    monkeypatch.setenv("ORI_DEVICE_API_KEY", "device-secret")
     _FakeAsyncClient.requests = []
     _FakeAsyncClient.fail = True
     monkeypatch.setattr(
@@ -201,7 +201,7 @@ async def test_flush_once_requeues_when_post_fails(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_flush_once_requeues_when_api_key_missing(monkeypatch, caplog):
-    monkeypatch.delenv("ORI_ENERGY_DEVICE_API_KEY", raising=False)
+    monkeypatch.delenv("ORI_DEVICE_API_KEY", raising=False)
     exporter = HttpTelemetryExporter(device_id="phone-01", config=_config())
     await exporter.handle_event(_event())
 
@@ -209,7 +209,7 @@ async def test_flush_once_requeues_when_api_key_missing(monkeypatch, caplog):
 
     assert sent == 0
     assert len(exporter._drain_batch()) == 1
-    assert "ORI_ENERGY_DEVICE_API_KEY" not in caplog.text
+    assert "ORI_DEVICE_API_KEY" not in caplog.text
     assert "configured API key environment variable is not set" in caplog.text
 
 

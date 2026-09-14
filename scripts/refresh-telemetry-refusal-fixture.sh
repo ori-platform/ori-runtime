@@ -16,8 +16,8 @@
 # local-edit digest in tests/test_telemetry_refusal_contract.py.
 #
 # Usage:
-#   ORI_ENERGY_DIR=/path/to/checkout bash scripts/refresh-telemetry-refusal-fixture.sh
-#   ORI_VECTORS_APPLY=1 ORI_ENERGY_DIR=... bash scripts/refresh-telemetry-refusal-fixture.sh
+#   ORI_PRODUCT_API_DIR=/path/to/checkout bash scripts/refresh-telemetry-refusal-fixture.sh
+#   ORI_VECTORS_APPLY=1 ORI_PRODUCT_API_DIR=... bash scripts/refresh-telemetry-refusal-fixture.sh
 
 set -euo pipefail
 
@@ -28,12 +28,12 @@ DEST_DIR="${REPO}/tests/vectors/telemetry_refusals"
 DEST="${DEST_DIR}/telemetry_refusals.json"
 MANIFEST="${DEST_DIR}/MANIFEST.json"
 
-if [ -z "${ORI_ENERGY_DIR:-}" ]; then
-  echo "ORI_ENERGY_DIR must point at a checkout of the product API repository." >&2
+if [ -z "${ORI_PRODUCT_API_DIR:-}" ]; then
+  echo "ORI_PRODUCT_API_DIR must point at a checkout of the product API repository." >&2
   echo "It is private, so this check cannot clone it." >&2
   exit 2
 fi
-SRC_REPO="${ORI_ENERGY_DIR}"
+SRC_REPO="${ORI_PRODUCT_API_DIR}"
 
 if [ "${ORI_SKIP_FETCH:-0}" != "1" ]; then
   # Without this the check resolves whatever the clone last saw, and a stale
@@ -142,7 +142,7 @@ fi
 if [ "${APPLY}" != "1" ]; then
   echo
   echo "Re-vendor with:"
-  echo "  ORI_VECTORS_APPLY=1 ORI_ENERGY_DIR=${SRC_REPO} bash scripts/refresh-telemetry-refusal-fixture.sh"
+  echo "  ORI_VECTORS_APPLY=1 ORI_PRODUCT_API_DIR=${SRC_REPO} bash scripts/refresh-telemetry-refusal-fixture.sh"
   echo "Review the diff before committing: a changed status or meaning is a"
   echo "contract change and the runtime's classification may no longer be right."
   exit 1

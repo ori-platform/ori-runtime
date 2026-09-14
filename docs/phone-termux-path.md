@@ -62,7 +62,8 @@ Use `ori.yaml.phone.example` as the USB starter profile:
 - `gateway.enabled: false` unless the phone is explicitly bridged to a local
   gateway.
 - `telemetry_export.enabled: true` only after the phone has been registered and
-  `ORI_ENERGY_DEVICE_API_KEY` has been provisioned in Termux.
+  its device API key has been provisioned in Termux, under the variable
+  `telemetry_export.api_key_env` names.
 
 Use the inverter profiles when the customer already has supported WiFi/LAN
 inverter telemetry:
@@ -206,7 +207,7 @@ The runtime verifies backend-generated configs before loading them. Signed
 configs carry a top-level `config_signature` block with
 `schema: ori.config_signature.v1`, `signer_id`, `signed_at_ms`, and an
 `ed25519:<base64>` signature. The signature covers the unexpanded YAML body, so
-placeholders such as `${ORI_ENERGY_DEVICE_API_KEY}` can remain placeholders
+placeholders such as `${ORI_DEVICE_API_KEY}` can remain placeholders
 until the APK/Termux environment supplies their values. The verification public
 key must be provisioned outside the YAML through
 `ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64` (or a trusted env name selected by the
