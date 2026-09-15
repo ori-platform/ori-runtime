@@ -199,8 +199,9 @@ staged file for a missing one.
 The payload registry pins the release signing key under its own key id and
 purpose, `android_runtime_payload`. The same key signs the Linux bundles under a
 different purpose, and a signature from one protocol never verifies under the
-other. A registry holding a key whose seed the conformance corpus publishes is
-refused at load.
+other. A registry holding a key whose private seed is published test material --
+the conformance corpus's keys among them, and every other key
+`ori/security/published_test_keys.py` records -- is refused at load.
 
 The envelope's `stripped` is measured from the payload's section headers, not
 taken from the build setting, and a release refuses to sign a payload that is

@@ -35,6 +35,7 @@ from typing import Any, NoReturn
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.security.release_bundles import ReleaseKey
 
 SIGNATURE_SCHEMA = "ori.android_runtime_payload_signature.v1"
@@ -59,17 +60,6 @@ STAGES = (
     "integrity",
     "abi",
     "content",
-)
-
-# The public keys of every seed the conformance corpus publishes. Anyone with a
-# clone of ori-specs can sign under them, so no registry holding one loads.
-PUBLISHED_TEST_PUBLIC_KEYS = frozenset(
-    {
-        "dPyio7OJ+xpk2b9SzA3UwpZPOATAz3x1XoUTxtuBmNw=",
-        "bw8O6z+/+SXGbQPhnc5I1e3J/+5RzSaucd055W9/3aI=",
-        "i7BOHBuD3d8xH1vN33xQ7ePAgC9H7HluKhMc9BKY2fM=",
-        "P3cI1fXMK8YztZ0rOi7ZLnR5IgxvCK3iCL682FgKuTs=",
-    }
 )
 
 SHELL_INTERPRETER = b"system/bin/sh"
@@ -182,11 +172,14 @@ def load_payload_key_registry(source: bytes | Path) -> dict[str, ReleaseKey]:
             _refuse("registry", "untrusted_release_key", f"{key_id} status")
         if _decode_public_key(entry["public_key_b64"]) is None:
             _refuse("registry", "untrusted_release_key", f"{key_id} public key")
-        if entry["public_key_b64"] in PUBLISHED_TEST_PUBLIC_KEYS:
+        raw = base64.b64decode(entry["public_key_b64"], validate=True)
+        if raw in PUBLISHED_TEST_KEYS:
+            # Every seed this repository or the corpus publishes, not only the
+            # corpus's four: one list, kept by ori/security/published_test_keys.
             _refuse(
                 "registry",
                 "untrusted_release_key",
-                f"{key_id} is a published conformance test key",
+                f"{key_id} is a key whose private seed is published test material",
             )
         keys[key_id] = ReleaseKey(
             key_id=key_id,

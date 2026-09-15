@@ -25,7 +25,6 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from ori.security.android_payloads import (
-    PUBLISHED_TEST_PUBLIC_KEYS,
     STAGES,
     TARGETS,
     AndroidPayloadError,
@@ -40,6 +39,7 @@ from ori.security.android_payloads import (
     sign_payload_fields,
     verify_payload,
 )
+from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.security.release_bundles import SIGNATURE_DOMAIN as BUNDLE_DOMAIN
 from ori.security.release_bundles import ReleaseKey, load_release_key_registry
 
@@ -142,9 +142,17 @@ def test_every_registry_case_loads_or_is_refused_as_recorded(
     assert refused.value.reason == "untrusted_release_key"
 
 
-def test_the_refused_test_keys_are_exactly_the_corpus_keys() -> None:
+def test_every_key_the_corpus_publishes_is_refused_at_registry_load() -> None:
     """A key the corpus publishes and the loader admits is a forgery anyone can make."""
-    assert set(CORPUS["known_test_public_keys_b64"]) == PUBLISHED_TEST_PUBLIC_KEYS
+    published = CORPUS["known_test_public_keys_b64"]
+    assert published, "the corpus lists no test keys, so this guard checks nothing"
+    for key in published:
+        assert base64.b64decode(key) in PUBLISHED_TEST_KEYS, key
+        document = json.loads(SHIPPED_REGISTRY.read_text())
+        document["keys"][0]["public_key_b64"] = key
+        with pytest.raises(AndroidPayloadError) as refused:
+            load_payload_key_registry(json.dumps(document).encode())
+        assert refused.value.reason == "untrusted_release_key"
 
 
 def test_the_payload_key_is_the_release_key_under_its_own_purpose_and_id() -> None:
