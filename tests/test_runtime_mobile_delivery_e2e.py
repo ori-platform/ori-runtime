@@ -17,6 +17,8 @@ response rule meet.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -72,12 +74,19 @@ def _crc16_modbus(frame: bytes) -> int:
 
 
 class _FakePzem(threading.Thread):
-    """Answers each read with a valid Modbus frame carrying a new value."""
+    """Answers each read with a valid Modbus frame carrying a new value.
+
+    `mode` may be changed while the payload runs: `answer`, `silent` (the
+    request is read and nothing is sent, as a meter without mains behaves) or
+    `bad_crc`.
+    """
 
     daemon = True
 
-    def __init__(self) -> None:
+    def __init__(self, mode: str = "answer") -> None:
         super().__init__()
+        self.mode = mode
+        self.requests = 0
         self.sock = socket.socket()
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(("127.0.0.1", 0))
@@ -101,11 +110,24 @@ class _FakePzem(threading.Thread):
                         return
                 except OSError:
                     return
+                self.requests += 1
+                if self.mode == "silent" or (
+                    self.mode == "alternate" and self.requests % 2 == 0
+                ):
+                    # Hold the request unanswered. The payload times out and
+                    # closes; the next poll opens a new connection.
+                    continue
                 self.served += 1
                 frame = bytes([0x01, 0x03, 0x04]) + struct.pack(
                     ">I", 1000 + self.served
                 )
-                conn.sendall(frame + struct.pack("<H", _crc16_modbus(frame)))
+                crc = _crc16_modbus(frame)
+                if self.mode == "bad_crc":
+                    crc ^= 0xFFFF
+                try:
+                    conn.sendall(frame + struct.pack("<H", crc))
+                except OSError:
+                    return
 
 
 class _Receiver(threading.Thread):
@@ -113,10 +135,16 @@ class _Receiver(threading.Thread):
 
     daemon = True
 
-    def __init__(self, script: list[tuple[str, Any]]) -> None:
+    def __init__(
+        self,
+        script: list[tuple[str, Any]],
+        status_script: list[tuple[str, Any]] | None = None,
+    ) -> None:
         super().__init__()
         self.script = list(script)
+        self.status_script = list(status_script or [])
         self.calls: list[dict] = []
+        self.status_calls: list[dict] = []
         self.stored: dict[str, float] = {}
         # Until this monotonic time every request is dropped unanswered, as an
         # endpoint the network cannot reach behaves.
@@ -129,18 +157,23 @@ class _Receiver(threading.Thread):
 
             def do_POST(self) -> None:  # noqa: N802
                 length = int(self.headers.get("Content-Length", "0"))
-                body = json.loads(self.rfile.read(length) or b"{}")
+                raw = self.rfile.read(length) or b"{}"
+                if time.monotonic() < case.down_until:
+                    self.close_connection = True
+                    return
+                if self.path.endswith("/sensor-status"):
+                    self._sensor_status(raw)
+                    return
+                body = json.loads(raw)
                 events = body.get("events", [])
                 case.calls.append(
                     {
                         "sequence": body.get("sequence"),
                         "count": len(events),
                         "accept_encoding": self.headers.get("Accept-Encoding"),
+                        **_request_headers(self.headers),
                     }
                 )
-                if time.monotonic() < case.down_until:
-                    self.close_connection = True
-                    return
                 kind, payload = cast(
                     "tuple[str, Any]",
                     case.script.pop(0) if case.script else ("accept", None),
@@ -237,6 +270,66 @@ class _Receiver(threading.Thread):
                 else:  # pragma: no cover - a case named an answer that is not scripted
                     raise AssertionError(kind)
 
+            def _sensor_status(self, raw: bytes) -> None:
+                snapshot = json.loads(raw)
+                expected = hmac.new(
+                    b"e2e-secret",
+                    self.headers.get("X-Ori-Timestamp-Ms", "").encode() + b"." + raw,
+                    hashlib.sha256,
+                ).hexdigest()
+                case.status_calls.append(
+                    {
+                        "at": time.monotonic(),
+                        "raw": raw,
+                        "snapshot": snapshot,
+                        "signed": self.headers.get("X-Ori-Signature")
+                        == f"v1={expected}",
+                        **_request_headers(self.headers),
+                    }
+                )
+                kind, payload = cast(
+                    "tuple[str, Any]",
+                    case.status_script.pop(0)
+                    if case.status_script
+                    else ("accept", None),
+                )
+                if kind == "accept":
+                    self._json(
+                        200,
+                        {
+                            "status": "accepted",
+                            "accepted_sensors": len(snapshot["sensors"]),
+                            "rejected_sensors": [],
+                        },
+                    )
+                elif kind == "http":
+                    self._raw(int(payload), "text/plain", b"not here")
+                elif kind == "suspend":
+                    self._json(403, {"detail": "device is suspended"})
+                elif kind == "partial":
+                    sensors = snapshot["sensors"]
+                    self._json(
+                        200,
+                        {
+                            "status": "partial",
+                            "accepted_sensors": len(sensors) - 1,
+                            "rejected_sensors": [
+                                {
+                                    "sensor_id": sensors[0]["sensor_id"],
+                                    "reason": "unknown_state",
+                                }
+                            ],
+                        },
+                    )
+                elif kind == "drop":
+                    self.close_connection = True
+                elif kind == "raw":
+                    self.wfile.write(payload)
+                    self.wfile.flush()
+                    self.close_connection = True
+                else:  # pragma: no cover - a case named an answer that is not scripted
+                    raise AssertionError(kind)
+
             def _raw(self, status: int, content_type: str, body: bytes) -> None:
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
@@ -254,7 +347,22 @@ class _Receiver(threading.Thread):
         self.server.serve_forever()
 
 
-def _signed_config(path: Path, pzem_port: int, endpoint: str, queue: int) -> str:
+def _request_headers(headers) -> dict[str, str | None]:
+    return {
+        "authorization": headers.get("Authorization"),
+        "content_type": headers.get("Content-Type"),
+        "device_id": headers.get("X-Ori-Device-Id"),
+    }
+
+
+def _signed_config(
+    path: Path,
+    pzem_port: int,
+    endpoint: str,
+    queue: int,
+    flush_interval_s: float = 30.0,
+    extra_sensors: list[dict] | None = None,
+) -> str:
     """A config the payload will accept, signed per ori.config_signature.v1."""
     config = {
         "device": {"id": "phone-e2e-01", "deployment_type": "phone"},
@@ -266,7 +374,8 @@ def _signed_config(path: Path, pzem_port: int, endpoint: str, queue: int) -> str
                 "device_path": f"socket://127.0.0.1:{pzem_port}",
                 "poll_interval_ms": 200,
                 "timeout_ms": 400,
-            }
+            },
+            *(extra_sensors or []),
         ],
         "telemetry_export": {
             "enabled": True,
@@ -275,6 +384,7 @@ def _signed_config(path: Path, pzem_port: int, endpoint: str, queue: int) -> str
             "timeout_ms": 700,
             "batch_size": 1,
             "max_queue_size": queue,
+            "flush_interval_s": flush_interval_s,
         },
     }
     key = ed25519.Ed25519PrivateKey.generate()
@@ -341,19 +451,51 @@ def _drive(
     seconds: float,
     queue: int = 50,
     *,
+    status_script: list | None = None,
+    pzem_mode: str = "answer",
+    unplugged: bool = False,
+    flush_interval_s: float = 30.0,
+    schedule: list[tuple[float, str]] | None = None,
     down_for: float = 0.0,
+    extra_sensors: list[dict] | None = None,
 ):
-    pzem = _FakePzem()
+    pzem = _FakePzem(pzem_mode)
     pzem.start()
-    receiver = _Receiver(script)
+    port = pzem.port
+    if unplugged:
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+        closed.close()
+    receiver = _Receiver(script, status_script)
     receiver.down_until = time.monotonic() + down_for
     receiver.start()
     config = tmp_path / "ori.yaml"
     anchor = _signed_config(
-        config, pzem.port, f"http://127.0.0.1:{receiver.port}/runtime/telemetry", queue
+        config,
+        port,
+        f"http://127.0.0.1:{receiver.port}/runtime/telemetry",
+        queue,
+        flush_interval_s,
+        extra_sensors,
     )
+    for delay, mode in schedule or []:
+        timer = threading.Timer(delay, lambda mode=mode: setattr(pzem, "mode", mode))
+        timer.daemon = True
+        timer.start()
     running, code, output = _run(payload, config, anchor, seconds)
     return running, code, output, receiver, pzem, _counters(output)
+
+
+def _states(receiver: _Receiver) -> list[tuple[str, str]]:
+    """Each snapshot's (state, reason) for the one declared sensor, in order."""
+    return [
+        (
+            call["snapshot"]["sensors"][0]["state"],
+            call["snapshot"]["sensors"][0]["reason"],
+        )
+        for call in receiver.status_calls
+    ]
 
 
 @pytest.mark.slow
@@ -389,6 +531,10 @@ def test_the_poll_loop_actually_posts(payload: Path, tmp_path: Path) -> None:
     assert len(receiver.calls) >= 2, "the loop posted more than once"
     assert receiver.stored, "the receiver holds readings"
     assert counters["delivered"] == len(receiver.stored)
+    for call in receiver.calls + receiver.status_calls:
+        assert call["authorization"] == "Bearer e2e-secret", call
+        assert call["content_type"] == "application/json", call
+        assert call["device_id"] == "phone-e2e-01", call
 
 
 @pytest.mark.slow
@@ -547,6 +693,147 @@ def test_a_configuration_refusal_exits_distinguishably_from_a_stop(
     assert not running, "an unsigned config is refused at start-up"
     assert code == 2, f"a start-up refusal exits 2, not {code}: {output[-500:]}"
     assert "signed config" in output
+
+
+@pytest.mark.slow
+def test_a_silent_meter_is_reported_as_not_answering_once(
+    payload: Path, tmp_path: Path
+) -> None:
+    """The bench fault: adapter attached, meter silent, and nothing said so.
+
+    One snapshot, not one per poll: repeated failures of one class are not an
+    edge, and the interval is longer than the run.
+    """
+    running, _code, _out, receiver, _pzem, counters = _drive(
+        payload, tmp_path, [], 3.0, pzem_mode="silent"
+    )
+
+    assert running
+    assert receiver.calls == [], "a silent meter posts no readings"
+    assert _states(receiver) == [("never_read", "no_response")], _states(receiver)
+    call = receiver.status_calls[0]
+    assert call["signed"], "the snapshot is signed with the device key"
+    entry = call["snapshot"]["sensors"][0]
+    assert entry["sensor_id"] == "phone-main-power"
+    assert "last_success_ms" not in entry, "absent, never null, on never_read"
+    sent_at = call["snapshot"]["sent_at_ms"]
+    assert abs(sent_at - time.time() * 1000) < 60_000, sent_at
+    for leak in (b"socket://", b"127.0.0.1", b"e2e-secret", b"Modbus", b"timeout"):
+        assert leak not in call["raw"], f"the snapshot carries {leak!r}"
+    assert counters["status_accepted"] == 1, counters
+
+
+@pytest.mark.slow
+def test_an_unplugged_adapter_is_a_different_class_from_a_silent_meter(
+    payload: Path, tmp_path: Path
+) -> None:
+    """A cable and a meter send an installer to different places."""
+    running, _code, _out, receiver, _pzem, _counters_ = _drive(
+        payload, tmp_path, [], 2.5, unplugged=True
+    )
+
+    assert running
+    assert _states(receiver) == [("never_read", "interface_absent")], _states(receiver)
+
+
+@pytest.mark.slow
+def test_a_corrupted_answer_is_an_integrity_failure(
+    payload: Path, tmp_path: Path
+) -> None:
+    running, _code, _out, receiver, _pzem, _counters_ = _drive(
+        payload, tmp_path, [], 2.5, pzem_mode="bad_crc"
+    )
+
+    assert running
+    assert receiver.calls == []
+    assert _states(receiver) == [("never_read", "integrity_failed")], _states(receiver)
+
+
+@pytest.mark.slow
+def test_a_meter_that_stops_and_resumes_is_reported_both_ways(
+    payload: Path, tmp_path: Path
+) -> None:
+    """Worked, then stopped, then worked: three changes, each reported.
+
+    A change is sent once five seconds have passed since the previous snapshot,
+    so the stop and the recovery are spaced to show each one and nothing else.
+    """
+    running, _code, _out, receiver, _pzem, _counters_ = _drive(
+        payload,
+        tmp_path,
+        [("accept", None)] * 400,
+        13.5,
+        schedule=[(1.0, "silent"), (6.5, "answer")],
+    )
+
+    assert running
+    states = _states(receiver)
+    assert states[0] == ("reading", "none"), states
+    assert ("failing", "no_response") in states, states
+    assert states[-1] == ("reading", "none"), states
+    failing = next(
+        call["snapshot"]["sensors"][0]
+        for call in receiver.status_calls
+        if call["snapshot"]["sensors"][0]["state"] == "failing"
+    )
+    assert failing["last_success_ms"] > 0, "a failing sensor says when it last read"
+    assert len(states) == 3, f"one snapshot per edge and none between: {states}"
+
+
+@pytest.mark.slow
+def test_a_receiver_without_the_status_route_costs_one_request_per_interval(
+    payload: Path, tmp_path: Path
+) -> None:
+    """A 404 on the status route discards the snapshot and grows nothing.
+
+    Readings are unaffected, and the snapshot is not re-sent on every poll: the
+    poll interval is 200 ms and the flush interval one second.
+    """
+    running, _code, output, receiver, _pzem, counters = _drive(
+        payload,
+        tmp_path,
+        [("accept", None)] * 200,
+        4.0,
+        status_script=[("http", 404)] * 200,
+        flush_interval_s=1.0,
+    )
+
+    assert running
+    assert receiver.stored, "readings are delivered whatever the status route says"
+    assert counters["suspended"] == "false", counters
+    assert "export suspended" not in output
+    assert 2 <= len(receiver.status_calls) <= 6, (
+        f"{len(receiver.status_calls)} status posts in four seconds"
+    )
+    assert counters["status_discarded"] >= 2, counters
+    assert counters["status_accepted"] == 0, counters
+
+
+@pytest.mark.slow
+def test_a_terminal_refusal_on_the_status_route_suspends_readings_too(
+    payload: Path, tmp_path: Path
+) -> None:
+    """The refusal is about the credential, so it covers both routes.
+
+    The flush interval is one second, so a payload that kept sending status
+    while suspended would post again within the run.
+    """
+    running, _code, output, receiver, pzem, counters = _drive(
+        payload,
+        tmp_path,
+        [("accept", None)] * 200,
+        3.0,
+        status_script=[("suspend", None)],
+        flush_interval_s=1.0,
+    )
+
+    assert running, "a suspension stops export, not the process"
+    assert "sensor-status route" in output
+    assert counters["suspended"] == "true", counters
+    assert len(receiver.status_calls) == 1, "a suspended payload sends no status"
+    assert counters["status_discarded"] == 1, "a refused snapshot was not accepted"
+    assert len(receiver.calls) <= 1, "and no readings after the refusal"
+    assert pzem.served > len(receiver.calls), "the meter kept being read"
 
 
 @pytest.mark.slow
@@ -740,6 +1027,107 @@ def test_a_body_shorter_than_its_declared_length_is_no_answer(
     assert counters["retained"] > 0, counters
 
 
+@pytest.mark.slow
+def test_a_meter_answering_every_other_poll_does_not_post_every_poll(
+    payload: Path, tmp_path: Path
+) -> None:
+    """Every poll is a change. Spaced, seven seconds is two snapshots at most."""
+    running, _code, _out, receiver, pzem, _counters_ = _drive(
+        payload, tmp_path, [("accept", None)] * 400, 7.0, pzem_mode="alternate"
+    )
+
+    assert running
+    assert pzem.requests >= 10, "the meter was polled throughout"
+    assert 1 <= len(receiver.status_calls) <= 2, _states(receiver)
+
+
+@pytest.mark.slow
+def test_a_flapping_meter_costs_a_receiver_without_the_route_one_request(
+    payload: Path, tmp_path: Path
+) -> None:
+    """After a discard only the interval sends, however often a sensor changes."""
+    running, _code, _out, receiver, _pzem, _counters_ = _drive(
+        payload,
+        tmp_path,
+        [("accept", None)] * 400,
+        7.0,
+        pzem_mode="alternate",
+        status_script=[("http", 404)] * 50,
+    )
+
+    assert running
+    assert len(receiver.status_calls) == 1, _states(receiver)
+
+
+@pytest.mark.slow
+def test_rejected_sensor_entries_are_counted_and_logged(
+    payload: Path, tmp_path: Path
+) -> None:
+    running, _code, output, receiver, _pzem, counters = _drive(
+        payload,
+        tmp_path,
+        [],
+        2.5,
+        pzem_mode="silent",
+        status_script=[("partial", None)],
+    )
+
+    assert running
+    assert len(receiver.status_calls) == 1
+    assert counters["status_accepted"] == 1, counters
+    assert counters["status_rejected_sensors"] == 1, counters
+    assert "rejected 1 sensor status entry" in output
+
+
+@pytest.mark.slow
+def test_a_status_post_with_no_answer_is_discarded_and_ends_nothing(
+    payload: Path, tmp_path: Path
+) -> None:
+    running, _code, output, receiver, _pzem, counters = _drive(
+        payload,
+        tmp_path,
+        [("accept", None)] * 200,
+        3.5,
+        status_script=[("drop", None)] * 50,
+        flush_interval_s=1.0,
+    )
+
+    assert running
+    assert "sensor status POST got no answer" in output
+    assert counters["status_accepted"] == 0, counters
+    assert counters["status_discarded"] >= 2, counters
+    assert receiver.stored, "readings are delivered whatever happens to status"
+
+
+@pytest.mark.slow
+def test_a_declared_sensor_the_payload_does_not_read_is_in_the_snapshot(
+    payload: Path, tmp_path: Path
+) -> None:
+    battery = {
+        "id": "phone-battery",
+        "type": "battery_percent",
+        "protocol": "android_battery",
+        "device_path": "",
+    }
+    running, _code, _out, receiver, _pzem, _counters_ = _drive(
+        payload, tmp_path, [("accept", None)] * 50, 2.5, extra_sensors=[battery]
+    )
+
+    assert running
+    sensors = receiver.status_calls[0]["snapshot"]["sensors"]
+    assert [entry["sensor_id"] for entry in sensors] == [
+        "phone-main-power",
+        "phone-battery",
+    ]
+    assert sensors[1] == {
+        "sensor_id": "phone-battery",
+        "sensor_type": "battery_percent",
+        "state": "never_read",
+        "reason": "not_configured",
+        "consecutive_failures": 0,
+    }
+
+
 def _raw_response(status_line: bytes, fields: list[bytes], body: bytes) -> bytes:
     return (
         status_line + b"\r\n" + b"".join(f + b"\r\n" for f in fields) + b"\r\n" + body
@@ -828,6 +1216,39 @@ def test_a_coded_body_cut_short_is_unreadable_not_no_answer(
     assert running
     assert counters["unreadable_responses"] >= 1, counters
     assert counters["delivered"] == 0, counters
+
+
+@pytest.mark.slow
+def test_a_coded_refusal_on_the_status_route_does_not_suspend(
+    payload: Path, tmp_path: Path
+) -> None:
+    """The status route reads its answer under the same rules as readings.
+
+    A plain refusal labelled `deflate`, read as plain, would suspend both
+    routes from the route that carries no readings.
+    """
+    coded = _raw_response(
+        b"HTTP/1.1 403 Forbidden",
+        [
+            b"Content-Type: application/json",
+            b"Content-Encoding: deflate",
+            b"Content-Length: %d" % len(_REFUSAL),
+        ],
+        _REFUSAL,
+    )
+    running, _code, output, receiver, _pzem, counters = _drive(
+        payload,
+        tmp_path,
+        [("accept", None)] * 200,
+        3.0,
+        status_script=[("raw", coded)] * 50,
+        flush_interval_s=1.0,
+    )
+
+    assert running
+    assert "export suspended" not in output
+    assert counters["suspended"] == "false", counters
+    assert len(receiver.status_calls) >= 2, "the next interval snapshot was sent"
 
 
 @pytest.mark.slow
