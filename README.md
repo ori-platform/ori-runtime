@@ -26,45 +26,13 @@ Ori is the **operating layer for infrastructure intelligence**. Most tools that 
 
 The platform story is at [oriplatform.dev](https://oriplatform.dev). Every term used in this README — infrastructure intelligence, operating layer, agentic IoT runtime, Physical Actuation Trust, authority tiers, Agent of Things — is defined in the [Ori glossary](https://oriplatform.dev/glossary).
 
-## Release Status
+---
 
-**Current channel: Stable (`2.4.x`)**
+## See it decide
 
-- Runtime core is stable for PoC, demo API, and controlled field deployment,
-  with a fail-closed production security posture: staging/production configs
-  must meet the hardened gateway, remote-command, webhook, skill-signing,
-  state-encryption, and signed-config requirements or the runtime refuses to
-  start. Development-profile deployments remain warning-only.
-- High-authority action evidence is implemented behind `evidence.enabled`:
-  Tier C/D dispatch records are signed into the runtime's own local evidence
-  chain, reconciled after restart, and surfaced through runtime health and
-  gateway heartbeat evidence. Delivery is not built: the device retains its
-  evidence locally, and nothing yet consumes it. Device-origin telemetry is now consumed by the
-  runtime verification gate: firmware signs readings at the physical edge, the
-  runtime verifies and trust-grades them, and the runtime's own evidence chain
-  verifies the shared golden bytes/signatures without owning firmware
-  canonicalization.
-- Safety invariants (tier guards, the runtime action registry, strict skill validation, skill provenance) are CI-enforced on every PR.
-- Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0. The runtime health payload is also read by companion repos and is versioned separately: `2.4.x` serves `ori-specs/runtime-health/v1`, and the next release serves `v2`, which removes the evidence artifact version, a field that no longer has a source now that the private artifact is retired.
-- Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
-- Upgrading from `2.3.x` and scripting the Linux installer? `2.4.0` makes
-  `--scope` explicit, prints a human summary unless `--json` is passed, and
-  drops `--service-user`. See
-  [Migration](docs/releases/v2.4.0.md#migration).
-- Release notes: [`docs/releases/v2.4.0.md`](docs/releases/v2.4.0.md)
+![Real footage from the Ori interactive simulation: the grid returns, Ori confirms the supply is stable and acts within policy at Tier B, the operator receives a plain-text message; then a higher-consequence fault is only proposed and waits for a human YES at Tier C.](docs/ori-demo.gif)
 
-Related public repos in the org:
-
-- Runtime: `ori-platform/ori-runtime` (this repo)
-- Skills registry: `ori-platform/ori-skills-hub`
-- CLI: `ori-platform/ori-cli`
-- Gateway: `ori-platform/ori-gateway`
-- SDK (Python): `ori-platform/ori-sdk-python`
-- Specs/RFCs: `ori-platform/ori-specs`
-
-Edge-firmware artifacts integrate through the public
-contracts in `ori-specs`; their source coordinates are intentionally not part of
-this public runtime repository.
+Real footage from the runtime-backed simulation, not a mock-up: a grid-restoration event handled at **Tier B** (act within policy, then tell the operator in plain text), followed by a compressor fault that is only **proposed** and waits for a human YES (**Tier C**). Every value is simulated; no physical equipment is operated. Try it yourself at [energy.oriplatform.dev/demo](https://energy.oriplatform.dev/demo#runtime).
 
 ---
 
@@ -107,6 +75,86 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 - Not a notification system — alerts are Tier A, the least of what Ori does
 - Not just a rules engine — Ori pairs deterministic safety rules with LLM reasoning
 - Not the other "Ori"s — this is Ori by [Ori Nexus Systems](https://oriplatform.dev/about), Lagos (oriplatform.dev, ori-runtime). It is unrelated to ORI at useori.africa, Ori Industries / ori.co, ori.io, or the Ori video games
+
+---
+
+## Quick Start — No Hardware Needed
+
+Ori's **pc-system-health** skill runs on any laptop using `psutil`. No Raspberry Pi, no sensors, no wiring.
+
+> **Linux users:** To deploy a signed release as a service, see [docs/linux-install.md](docs/linux-install.md). To run from source for development, see [docs/linux-setup.md](docs/linux-setup.md) for a step-by-step setup guide, including a minimal validated config (`ori.linux.yaml.example`), Linux model paths, and troubleshooting for common Linux-specific issues.
+
+```bash
+# Clone and install
+git clone https://github.com/ori-platform/ori-runtime.git
+cd ori-runtime
+python3 -m venv .venv
+source .venv/bin/activate
+
+# One-command dev bootstrap (deps + hooks + formatting baseline)
+bash scripts/bootstrap.sh
+
+# Verify everything works
+pytest tests/ -v
+
+# Validate a skill loads cleanly
+python -c "
+import asyncio
+from ori.skills.loader import SkillLoader
+skill = asyncio.run(SkillLoader().load_one('skills/pc-system-health'))
+print(f'Loaded: {skill.name} v{skill.version}')
+for t in skill.triggers:
+    print(f'  Trigger: {t.name} tier={t.action_tier}')
+"
+```
+
+---
+
+## How It Works
+
+Ori runs a paired decision system on every sensor event:
+
+### The Intelligence Elevator — _What does this mean?_
+
+```text
+Tier 1  RULE ENGINE    microseconds · always available  · safety triggers
+Tier 2  LOCAL SLM      3-8 seconds  · offline-capable   · everyday reasoning
+Tier 3  GATEWAY LLM    1-3 seconds  · LAN only          · cross-device or cloud-backed reasoning
+```
+
+- Tier 1 (Rule Engine) and Tier 2 (Local SLM) are fully implemented and available offline.
+- Tier 3 (Gateway LLM) is implemented over MQTT request/response and remains optional.
+- Cloud reasoning, when used, is a gateway backend, not a runtime dependency.
+- Production runtime-gateway MQTT deployments should follow
+  [`docs/MQTT_SECURITY.md`](docs/MQTT_SECURITY.md) for broker ACLs, network
+  isolation, and HMAC envelope configuration.
+- Public SMS webhook deployments should follow
+  [`docs/SMS_WEBHOOK_SECURITY.md`](docs/SMS_WEBHOOK_SECURITY.md). Runtime
+  sender allowlisting is necessary, but carrier-level sender spoofing requires
+  deployment controls such as a signing bridge, source CIDR allowlisting, or a
+  trusted reverse proxy.
+- The runtime is correctly described as an offline-capable safety runtime. Tier 1 and Tier D safety paths are available with zero network dependency.
+
+### The Action Tier Framework — _What should I do about it?_
+
+```text
+Tier A  INFORMATIONAL       Always autonomous
+        Alerts, logs, reports — the agent acts without asking
+
+Tier B  SOFT PHYSICAL        Explicit approval or post-action policy
+        Power source switching, thermostat adjustments, irrigation valves
+        The agent either asks first or acts first and explains after
+
+Tier C  HARD PHYSICAL        Approval workflow — always
+        Relay/contactor-controlled shutdown, high-consequence control
+        The agent reasons, proposes, and waits for your YES or NO
+
+Tier D  SAFETY-CRITICAL      Always autonomous, cannot be overridden
+        Dangerous overcurrent, thermal runaway, hazardous gas
+        The agent acts first, notifies you immediately
+```
+
+The runtime picks the cheapest reasoning tier that can answer. The action tier determines whether it acts, asks, or moves immediately.
 
 ---
 
@@ -176,54 +224,6 @@ All adapters include a **hardware circuit breaker** that auto-isolates failing b
 | Development / laptop      | Any modern machine             | 4GB+ | psutil adapter. No Pi required.               |
 
 The model file (Qwen2.5-0.5B Q4) is 500MB. The SQLite state store stays bounded under 80MB via the compaction pyramid regardless of deployment duration. Production/staging deployments must place the SQLite state path on an encrypted filesystem or mount and declare that posture under `state.encryption`; the runtime uses standard `sqlite3`, not SQLCipher.
-
----
-
-## How It Works
-
-Ori runs a paired decision system on every sensor event:
-
-### The Intelligence Elevator — _What does this mean?_
-
-```text
-Tier 1  RULE ENGINE    microseconds · always available  · safety triggers
-Tier 2  LOCAL SLM      3-8 seconds  · offline-capable   · everyday reasoning
-Tier 3  GATEWAY LLM    1-3 seconds  · LAN only          · cross-device or cloud-backed reasoning
-```
-
-- Tier 1 (Rule Engine) and Tier 2 (Local SLM) are fully implemented and available offline.
-- Tier 3 (Gateway LLM) is implemented over MQTT request/response and remains optional.
-- Cloud reasoning, when used, is a gateway backend, not a runtime dependency.
-- Production runtime-gateway MQTT deployments should follow
-  [`docs/MQTT_SECURITY.md`](docs/MQTT_SECURITY.md) for broker ACLs, network
-  isolation, and HMAC envelope configuration.
-- Public SMS webhook deployments should follow
-  [`docs/SMS_WEBHOOK_SECURITY.md`](docs/SMS_WEBHOOK_SECURITY.md). Runtime
-  sender allowlisting is necessary, but carrier-level sender spoofing requires
-  deployment controls such as a signing bridge, source CIDR allowlisting, or a
-  trusted reverse proxy.
-- The runtime is correctly described as an offline-capable safety runtime. Tier 1 and Tier D safety paths are available with zero network dependency.
-
-### The Action Tier Framework — _What should I do about it?_
-
-```text
-Tier A  INFORMATIONAL       Always autonomous
-        Alerts, logs, reports — the agent acts without asking
-
-Tier B  SOFT PHYSICAL        Explicit approval or post-action policy
-        Power source switching, thermostat adjustments, irrigation valves
-        The agent either asks first or acts first and explains after
-
-Tier C  HARD PHYSICAL        Approval workflow — always
-        Relay/contactor-controlled shutdown, high-consequence control
-        The agent reasons, proposes, and waits for your YES or NO
-
-Tier D  SAFETY-CRITICAL      Always autonomous, cannot be overridden
-        Dangerous overcurrent, thermal runaway, hazardous gas
-        The agent acts first, notifies you immediately
-```
-
-The runtime picks the cheapest reasoning tier that can answer. The action tier determines whether it acts, asks, or moves immediately.
 
 ---
 
@@ -326,36 +326,6 @@ The same message format is used on both channels.
 The agent does the diagnosis. The operator approves or rejects a specific, fully-reasoned proposal.
 
 ---
-
-## Quick Start — No Hardware Needed
-
-Ori's **pc-system-health** skill runs on any laptop using `psutil`. No Raspberry Pi, no sensors, no wiring.
-
-> **Linux users:** To deploy a signed release as a service, see [docs/linux-install.md](docs/linux-install.md). To run from source for development, see [docs/linux-setup.md](docs/linux-setup.md) for a step-by-step setup guide, including a minimal validated config (`ori.linux.yaml.example`), Linux model paths, and troubleshooting for common Linux-specific issues.
-
-```bash
-# Clone and install
-git clone https://github.com/ori-platform/ori-runtime.git
-cd ori-runtime
-python3 -m venv .venv
-source .venv/bin/activate
-
-# One-command dev bootstrap (deps + hooks + formatting baseline)
-bash scripts/bootstrap.sh
-
-# Verify everything works
-pytest tests/ -v
-
-# Validate a skill loads cleanly
-python -c "
-import asyncio
-from ori.skills.loader import SkillLoader
-skill = asyncio.run(SkillLoader().load_one('skills/pc-system-health'))
-print(f'Loaded: {skill.name} v{skill.version}')
-for t in skill.triggers:
-    print(f'  Trigger: {t.name} tier={t.action_tier}')
-"
-```
 
 ## Install Targets
 
@@ -498,9 +468,53 @@ installed artifact. This protects downstream product/demo API paths from
 type-checker ignores, accidental dependency bloat, and source-checkout-only
 packaging mistakes.
 
+---
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, and disclosure policy.
+
+---
+
+## Release Status
+
+**Current channel: Stable (`2.4.x`)**
+
+- Runtime core is stable for PoC, demo API, and controlled field deployment,
+  with a fail-closed production security posture: staging/production configs
+  must meet the hardened gateway, remote-command, webhook, skill-signing,
+  state-encryption, and signed-config requirements or the runtime refuses to
+  start. Development-profile deployments remain warning-only.
+- High-authority action evidence is implemented behind `evidence.enabled`:
+  Tier C/D dispatch records are signed into the runtime's own local evidence
+  chain, reconciled after restart, and surfaced through runtime health and
+  gateway heartbeat evidence. Delivery is not built: the device retains its
+  evidence locally, and nothing yet consumes it. Device-origin telemetry is now consumed by the
+  runtime verification gate: firmware signs readings at the physical edge, the
+  runtime verifies and trust-grades them, and the runtime's own evidence chain
+  verifies the shared golden bytes/signatures without owning firmware
+  canonicalization.
+- Safety invariants (tier guards, the runtime action registry, strict skill validation, skill provenance) are CI-enforced on every PR.
+- Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0. The runtime health payload is also read by companion repos and is versioned separately: `2.4.x` serves `ori-specs/runtime-health/v1`, and the next release serves `v2`, which removes the evidence artifact version, a field that no longer has a source now that the private artifact is retired.
+- Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
+- Upgrading from `2.3.x` and scripting the Linux installer? `2.4.0` makes
+  `--scope` explicit, prints a human summary unless `--json` is passed, and
+  drops `--service-user`. See
+  [Migration](docs/releases/v2.4.0.md#migration).
+- Release notes: [`docs/releases/v2.4.0.md`](docs/releases/v2.4.0.md)
+
+Related public repos in the org:
+
+- Runtime: `ori-platform/ori-runtime` (this repo)
+- Skills registry: `ori-platform/ori-skills-hub`
+- CLI: `ori-platform/ori-cli`
+- Gateway: `ori-platform/ori-gateway`
+- SDK (Python): `ori-platform/ori-sdk-python`
+- Specs/RFCs: `ori-platform/ori-specs`
+
+Edge-firmware artifacts integrate through the public
+contracts in `ori-specs`; their source coordinates are intentionally not part of
+this public runtime repository.
 
 ---
 
