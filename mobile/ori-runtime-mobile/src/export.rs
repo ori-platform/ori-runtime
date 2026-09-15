@@ -224,6 +224,28 @@ impl Exporter {
         self.queue.clear();
     }
 
+    /// Suspend export for this credential, from the answer on either route.
+    ///
+    /// A terminal refusal is a statement about the credential rather than about
+    /// a body, so one on the sensor-status route stops readings too. Everything
+    /// still held is counted as refused rather than cleared: clearing it would
+    /// lose readings the report was still naming as queued.
+    pub fn suspend(&mut self, now: Instant, route: &str) {
+        let already = self.suspended;
+        self.suspended = true;
+        self.discard_everything_as_refused();
+        self.failed(now);
+        if !already {
+            eprintln!(
+                "[ori-runtime-mobile] endpoint refused this device on the {route} route \
+                 ({TERMINAL_REFUSAL_DETAIL}); telemetry export suspended on both routes until the \
+                 credential changes or the payload restarts. Reading the meter continues. \
+                 refused_total={}",
+                self.counters.refused_events
+            );
+        }
+    }
+
     fn succeeded(&mut self) {
         self.backoff = BACKOFF_FLOOR;
         self.next_attempt = None;
@@ -270,8 +292,6 @@ impl Exporter {
             };
             match verdict.outcome {
                 DeliveryOutcome::Suspend => {
-                    // The remaining batches are not attempted: the credential
-                    // they would present is the one that was refused.
                     // The verdict counts this batch; the rest are refused
                     // without being attempted, because the credential they
                     // would present is the one that was refused.
@@ -280,20 +300,8 @@ impl Exporter {
                             .iter()
                             .map(|item| item.events.len())
                             .sum::<usize>();
-                    self.suspended = true;
                     self.counters.refused_events += refused;
-                    // Everything still held is counted as refused rather than
-                    // cleared. Clearing the queue without counting it lost
-                    // readings the report was still naming as queued, and under
-                    // `--once` the process ended before anything noticed.
-                    self.discard_everything_as_refused();
-                    eprintln!(
-                        "[ori-runtime-mobile] endpoint refused this device ({TERMINAL_REFUSAL_DETAIL}); \
-                         telemetry export suspended until the credential changes or the payload \
-                         restarts. Reading the meter continues. refused_total={}",
-                        self.counters.refused_events
-                    );
-                    self.failed(now);
+                    self.suspend(now, "reading");
                     return FlushOutcome::Suspended;
                 }
                 DeliveryOutcome::Retain => {

@@ -150,7 +150,7 @@ pub fn readable_header_section(fields: &[(String, Vec<u8>)]) -> bool {
 /// Every value of the named field, joined, or None when it is absent. Only
 /// called for verdict fields, whose bytes `readable_header_section` has
 /// already held to visible ASCII.
-fn field(fields: &[(String, Vec<u8>)], wanted: &str) -> Option<String> {
+pub(crate) fn field(fields: &[(String, Vec<u8>)], wanted: &str) -> Option<String> {
     let values: Vec<String> = fields
         .iter()
         .filter(|(name, _)| name.eq_ignore_ascii_case(wanted))
@@ -264,7 +264,7 @@ fn nesting_exceeds(body: &[u8], limit: usize) -> bool {
 /// refuses the same set explicitly. The size and depth bounds are checked here
 /// so neither producer depends on a library limit, and so is a repeated member
 /// name, which serde_json would otherwise resolve by keeping the last.
-fn parse_strict_json(body: &[u8]) -> Option<JsonValue> {
+pub(crate) fn parse_strict_json(body: &[u8]) -> Option<JsonValue> {
     if body.is_empty() || body.len() > MAX_RESPONSE_BYTES {
         return None;
     }
@@ -354,7 +354,7 @@ impl<'de> serde::de::Visitor<'de> for UniqueMembersVisitor {
 /// negative number and a number written with a fraction or exponent. Holding
 /// every term to the batch size is what keeps the sum below from wrapping in a
 /// release build, panicking in a debug one, or truncating on a 32-bit phone.
-fn count(body: &JsonValue, key: &str, batch_events: usize) -> Option<usize> {
+pub(crate) fn count(body: &JsonValue, key: &str, batch_events: usize) -> Option<usize> {
     let value = body.get(key)?.as_u64()?;
     let value = usize::try_from(value).ok()?;
     (value <= batch_events).then_some(value)
@@ -367,7 +367,7 @@ fn count(body: &JsonValue, key: &str, batch_events: usize) -> Option<usize> {
 /// contradicted it. Any intermediary can return a bare 403 -- a proxy or WAF
 /// does so without a challenge and with an HTML body -- and an absent header
 /// proves nothing about origin. So every recorded property must hold.
-fn is_terminal_refusal(
+pub(crate) fn is_terminal_refusal(
     status: u16,
     content_type: &str,
     www_authenticate: Option<&str>,

@@ -23,8 +23,12 @@ It can:
 - verify the backend-generated signed runtime config;
 - read PZEM-style USB meter data from an approved Android bridge;
 - publish HMAC-signed `runtime.telemetry.v1` batches to the provisioning
-  endpoint configured in `telemetry_export.endpoint`;
-- report operational failure through process exit and stderr.
+  endpoint configured in `telemetry_export.endpoint`, under
+  `runtime-telemetry/v2`;
+- report what it observed of each meter on the sensor-status route;
+- report its export state on stderr, and exit only when start-up is refused
+  (exit code 2). A failed upload is retained and retried; it never ends the
+  process.
 
 It must not:
 
@@ -58,6 +62,67 @@ telemetry_export:
   endpoint: "https://provisioning.example.invalid/runtime/telemetry"
   api_key_env: ORI_DEVICE_API_KEY
 ```
+
+## Sensor Status
+
+A meter that stops answering produces no readings, and from outside the phone
+silence cannot be told from a quiet meter or a dead network. So the payload
+posts a signed `runtime.sensor_status.v1` snapshot of every declared sensor to
+`telemetry_export.endpoint` with `/sensor-status` appended: whether its most
+recent read succeeded, why not if it did not, when one last did, and how many
+have failed since. A declared sensor this payload does not read is reported as
+`never_read` with reason `not_configured`.
+
+The first snapshot goes out after the first poll of every meter, then once per
+`telemetry_export.flush_interval_s`, and when any sensor's state or reason
+changes, but for a change no sooner than five seconds after the previous
+snapshot and only if the receiver accepted that one. A meter that answers every
+other poll therefore costs one snapshot per five seconds, and a receiver that
+has not implemented the route one request per interval.
+
+A snapshot is the state when it is taken, not a history. A stop that persists is
+reported within five seconds of an accepted snapshot, or within one flush
+interval of a discarded one; a stop shorter than that is not reported. For the
+same reason, a meter that answers every other poll is usually reported as
+`failing` by an interval snapshot, because a failed read lasts the whole timeout
+and the snapshot tends to fall inside one; its `last_success_ms` shows that it
+is still answering.
+
+A read is bounded by `timeout_ms` for the answer itself; connecting to the
+bridge and sending the request each have their own `timeout_ms` as well. A
+bridge that holds a late answer and delivers it on the next connection would be
+read as that request's answer: Modbus RTU carries no transaction id, and whether
+the hosting application's bridge buffers that way is not yet measured.
+
+Each failed read is classified by what the payload observed on the bridge
+socket, never from an error message:
+
+| What the payload observed | `reason` |
+|---|---|
+| The connection was refused, reset, or closed before any byte of an answer | `interface_absent` |
+| The socket reported a permission error | `interface_denied` |
+| No byte of an answer within the sensor's `timeout_ms` | `no_response` |
+| Part of an answer by the timeout, a Modbus exception, or the wrong function, byte count or slave | `malformed_response` |
+| A complete frame whose CRC does not match | `integrity_failed` |
+| The target does not resolve | `not_configured` |
+
+`timeout_ms` bounds the whole answer, not each byte of it, so a bridge trickling
+bytes cannot hold the poll loop and every upload behind it for more than that.
+
+Which physical fault produces which observation depends on how the hosting
+application's bridge behaves, and that is not yet measured on a handset. The
+expected mapping is that a meter without mains or at the wrong slave id is
+`no_response`, an unplugged adapter is `interface_absent`, and a wrong baud rate
+is `malformed_response` or `no_response` depending on whether noise arrives.
+It holds only if the bridge keeps a silent meter's connection open until the
+payload's timeout and stops listening when the adapter is detached. A USB
+permission refusal inside the hosting application reaches the payload as
+whatever the bridge then does with its socket, typically `interface_absent`;
+`interface_denied` arises only from the socket itself.
+
+A snapshot carries no error text, device path or key. It is not retained: any
+answer other than acceptance discards it, and the next one supersedes it. The
+recorded terminal refusal on this route suspends export on both routes.
 
 Direct `/dev/ttyUSB*` access remains a Termux/development path. The APK
 provisioning path uses the bridge so Android's USB permission model stays
