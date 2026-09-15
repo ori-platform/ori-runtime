@@ -157,4 +157,11 @@ jobs:
       - name: Sign with a throwaway key and verify every payload
         env:
           STAGE: ${{ runner.temp }}/android-payload
-        run: python scripts/check-android-payload-build.py --payload-dir "${STAGE}" --runtime-version 0.0.0-ci >> "${GITHUB_STEP_SUMMARY}"
+        # tee, not a redirect: the job summary is where a person reads this and
+        # the log is where it can be fetched from, and a digest nobody can fetch
+        # cannot be compared with another host's.
+        run: |
+          set -euo pipefail
+          python scripts/check-android-payload-build.py \
+            --payload-dir "${STAGE}" --runtime-version 0.0.0-ci \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
