@@ -185,7 +185,7 @@ def test_suspension_needs_every_recorded_property_of_the_refusal() -> None:
     """
     detail = TERMINAL_REFUSALS[403]
     body = json.dumps({"detail": detail}).encode()
-    complete = dict(
+    complete: dict[str, Any] = dict(
         status=403,
         content_type="application/json",
         www_authenticate=None,
@@ -201,7 +201,7 @@ def test_suspension_needs_every_recorded_property_of_the_refusal() -> None:
         ("body", json.dumps({"detail": "access denied"}).encode()),
         ("body", b""),
     ):
-        weakened = {**complete, field: value}
+        weakened: dict[str, Any] = {**complete, field: value}
         assert read_batch_response(**weakened).outcome is not DeliveryOutcome.SUSPEND, (
             field
         )

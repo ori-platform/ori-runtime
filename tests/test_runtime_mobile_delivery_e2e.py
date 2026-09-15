@@ -30,6 +30,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -136,8 +137,8 @@ class _Receiver(threading.Thread):
 
     def __init__(
         self,
-        script: list[tuple[str, object]],
-        status_script: list[tuple[str, object]] | None = None,
+        script: list[tuple[str, Any]],
+        status_script: list[tuple[str, Any]] | None = None,
     ) -> None:
         super().__init__()
         self.script = list(script)
@@ -151,7 +152,7 @@ class _Receiver(threading.Thread):
         case = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_args: object) -> None:
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
                 return
 
             def do_POST(self) -> None:  # noqa: N802
@@ -173,7 +174,10 @@ class _Receiver(threading.Thread):
                         **_request_headers(self.headers),
                     }
                 )
-                kind, payload = case.script.pop(0) if case.script else ("accept", None)
+                kind, payload = cast(
+                    "tuple[str, Any]",
+                    case.script.pop(0) if case.script else ("accept", None),
+                )
                 if kind == "raw":
                     # The response exactly as written, header section and all.
                     self.wfile.write(payload)
@@ -283,10 +287,11 @@ class _Receiver(threading.Thread):
                         **_request_headers(self.headers),
                     }
                 )
-                kind, payload = (
+                kind, payload = cast(
+                    "tuple[str, Any]",
                     case.status_script.pop(0)
                     if case.status_script
-                    else ("accept", None)
+                    else ("accept", None),
                 )
                 if kind == "accept":
                     self._json(
@@ -426,9 +431,9 @@ def _run(binary: Path, config: Path, anchor: str, seconds: float):
     return still_running, process.returncode, output
 
 
-def _counters(output: str) -> dict[str, int | str]:
+def _counters(output: str) -> dict[str, Any]:
     """The last export state the payload reported, read from its own output."""
-    found: dict[str, int | str] = {}
+    found: dict[str, Any] = {}
     for line in output.splitlines():
         if "export state:" in line:
             tail = line.split("export state:")[1]
