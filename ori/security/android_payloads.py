@@ -250,6 +250,11 @@ def inspect_payload_build(data: bytes) -> PayloadBuild:
     return PayloadBuild(api_level=api_level, stripped=stripped)
 
 
+def payload_sections(data: bytes) -> list[tuple[str, int, int]]:
+    """Every section's name, offset and size, for reporting what a build made."""
+    return _elf_sections(data)
+
+
 def create_payload_envelope(
     *,
     artifact: bytes,
