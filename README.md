@@ -14,13 +14,17 @@
 
 ---
 
-# Ori — Agentic IoT Runtime
+# Ori — the agentic IoT runtime for infrastructure intelligence
 
 > **IoT devices do not need more data. They need to reason about that data — and act on it.**
 
 Ori is an open-source **agentic IoT runtime** that gives physical devices **tiered autonomous reasoning** — from deterministic safety rules to local SLMs. This reasoning is governed by a **[Physical Actuation Trust](PRINCIPLES.md)** framework that defines exactly what an AI agent is permitted to do in the physical world, at what consequence level, and with what human oversight. Offline-first with an offline-capable safety core; gateway escalation is optional. Runs on a $55 Raspberry Pi.
 
 Built for the world's majority condition — unreliable power, intermittent connectivity, constrained hardware. Systems designed for constraint work everywhere.
+
+Ori is the **operating layer for infrastructure intelligence**. Most tools that carry that label stop at a dashboard: sensor readings, a threshold, an alert, a human. Ori is built to also decide what a site is permitted to do, act on commissioned equipment locally under graduated authority tiers (A inform → B act within policy → C ask before acting → D protect immediately), keep working without the internet, and preserve a record of what happened that can be reconstructed afterwards.
+
+The platform story is at [oriplatform.dev](https://oriplatform.dev). Every term used in this README — infrastructure intelligence, operating layer, agentic IoT runtime, Physical Actuation Trust, authority tiers, Agent of Things — is defined in the [Ori glossary](https://oriplatform.dev/glossary).
 
 ## Release Status
 
@@ -102,6 +106,7 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 - Not a cloud IoT platform like AWS IoT Core — Ori keeps an offline-capable safety core (Tier 1 + local Tier 2), with optional gateway escalation when connected
 - Not a notification system — alerts are Tier A, the least of what Ori does
 - Not just a rules engine — Ori pairs deterministic safety rules with LLM reasoning
+- Not the other "Ori"s — this is Ori by [Ori Nexus Systems](https://oriplatform.dev/about), Lagos (oriplatform.dev, ori-runtime). It is unrelated to ORI at useori.africa, Ori Industries / ori.co, ori.io, or the Ori video games
 
 ---
 
