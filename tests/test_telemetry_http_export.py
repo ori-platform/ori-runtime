@@ -639,7 +639,7 @@ async def test_a_cancelled_flush_retains_the_batch_and_releases_the_bound(monkey
     await asyncio.sleep(0)
     flush.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await flush
+        await asyncio.wait_for(flush, timeout=5)
 
     assert exporter.retained_events == 2, "the drained batch is held, not lost"
     assert exporter._in_flight_events == 0
