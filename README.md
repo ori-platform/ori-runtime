@@ -22,7 +22,9 @@ Ori is an open-source **agentic IoT runtime** that gives physical devices **tier
 
 Built for the world's majority condition — unreliable power, intermittent connectivity, constrained hardware. Systems designed for constraint work everywhere.
 
-Ori is the **operating layer for infrastructure intelligence**. Most tools that carry that label stop at a dashboard: sensor readings, a threshold, an alert, a human. Ori is built to also decide what a site is permitted to do, act on commissioned equipment locally under graduated authority tiers (A inform → B act within policy → C ask before acting → D protect immediately), keep working without the internet, and preserve evidence of what happened. Read the platform story at [oriplatform.dev](https://oriplatform.dev) and the definitions of every term used here — infrastructure intelligence, operating layer, agentic IoT runtime, Physical Actuation Trust, authority tiers, Agent of Things — in the [Ori glossary](https://oriplatform.dev/glossary).
+Ori is the **operating layer for infrastructure intelligence**. Most tools that carry that label stop at a dashboard: sensor readings, a threshold, an alert, a human. Ori is built to also decide what a site is permitted to do, act on commissioned equipment locally under graduated authority tiers (A inform → B act within policy → C ask before acting → D protect immediately), keep working without the internet, and preserve a record of what happened that can be reconstructed afterwards.
+
+The platform story is at [oriplatform.dev](https://oriplatform.dev). Every term used in this README — infrastructure intelligence, operating layer, agentic IoT runtime, Physical Actuation Trust, authority tiers, Agent of Things — is defined in the [Ori glossary](https://oriplatform.dev/glossary).
 
 ## Release Status
 
