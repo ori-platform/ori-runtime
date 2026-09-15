@@ -104,6 +104,7 @@ Ori is not a monitoring system with a language model attached. It is an agent th
 - Not a cloud IoT platform like AWS IoT Core — Ori keeps an offline-capable safety core (Tier 1 + local Tier 2), with optional gateway escalation when connected
 - Not a notification system — alerts are Tier A, the least of what Ori does
 - Not just a rules engine — Ori pairs deterministic safety rules with LLM reasoning
+- Not the other "Ori"s — this is Ori by [Ori Nexus Systems](https://oriplatform.dev/about), Lagos (oriplatform.dev, ori-runtime). It is unrelated to ORI at useori.africa, Ori Industries / ori.co, ori.io, or the Ori video games
 
 ---
 
