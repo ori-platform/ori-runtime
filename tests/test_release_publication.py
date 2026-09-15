@@ -602,6 +602,35 @@ def test_the_ndk_step_points_both_ndk_variables_at_the_pinned_ndk(
     assert f"ANDROID_NDK_ROOT={pinned}" in exported
 
 
+def test_the_published_digest_is_produced_twice_before_anything_is_staged(
+    workflow: dict[str, Any],
+) -> None:
+    """A digest nobody reproduced is a claim, not a fact."""
+    names = [step.get("name", "") for step in _steps(workflow, "build-android-payload")]
+    build = names.index("Build every payload, stripped, at the pinned API level")
+    rebuild = names.index("Rebuild every payload and confirm the digests reproduce")
+    stage = names.index("Stage payloads under their published names")
+    assert build < rebuild < stage
+    step = _step(
+        workflow,
+        "build-android-payload",
+        "Rebuild every payload and confirm the digests reproduce",
+    )
+    built = _step(
+        workflow,
+        "build-android-payload",
+        "Build every payload, stripped, at the pinned API level",
+    )
+    assert step["env"]["ORI_ANDROID_RUNTIME_PAYLOAD_STRIP"] == "1"
+    assert (
+        step["env"]["ORI_ANDROID_RUNTIME_PAYLOAD_OUT"]
+        != built["env"]["ORI_ANDROID_RUNTIME_PAYLOAD_OUT"]
+    ), "a rebuild into the same directory proves nothing"
+    assert "sha256sum" in step["run"] and "did not reproduce" in step["run"]
+    for abi in ("arm64-v8a", "armeabi-v7a", "x86_64"):
+        assert abi in step["run"], abi
+
+
 def test_the_build_step_strips_at_the_pinned_api_level(
     workflow: dict[str, Any],
 ) -> None:

@@ -222,6 +222,27 @@ machine's home directory, and a payload carrying one fails the build.
 
 With that, the three payloads reproduce byte for byte across different source
 directories, target directories and Cargo homes, and between a toolchain with
-`rust-src` installed and one without, on one macOS arm64 host. The pull-request
-build reports the digests a Linux x86_64 runner produces; whether those equal a
-macOS build's has not yet been compared.
+`rust-src` installed and one without, on one host. Every release rebuilds each
+payload from a fresh copy of the tagged commit before staging anything and
+fails if a digest does not reproduce, so a published digest has been produced
+twice on the runner image that published it.
+
+**Across host operating systems the digests differ, and pinning the toolchain
+does not change that.** Measured on 2026-09-16 between macOS arm64 and the
+release runner image (Ubuntu 24.04 x86_64), with the same pinned Rust
+toolchain, `cargo-ndk` and NDK, every payload differed. The difference is not
+arbitrary: the section inventory is identical and every section produced from
+the crate's own data matches in size — `.rodata`, `.dynsym`, `.dynstr`, the
+relocations, `.data` — while `.text` and the unwind tables (`.eh_frame`,
+`.gcc_except_table`, and on 32-bit ARM `.ARM.exidx` and `.ARM.extab`) differ by
+between 8 bytes and 2.3 KiB. That is where code from the NDK's prebuilt static
+runtime libraries lands, and those prebuilts ship inside the host-specific NDK
+download rather than being built from the pinned sources. Which build produced
+a payload is therefore a property of the host operating system as well as of
+the pinned versions.
+
+What a digest means here follows from that: it identifies the bytes a release
+published and reproduces on that runner image, and it is not a value another
+machine can expect to arrive at independently. Verify a payload by its
+signature and its published digest, not by rebuilding it elsewhere and
+comparing.

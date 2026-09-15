@@ -436,6 +436,36 @@ jobs:
           ORI_ANDROID_RUNTIME_PAYLOAD_OUT: ${{ runner.temp }}/android-build
         run: bash scripts/build-android-runtime-mobile.sh
 
+      # A published digest is a claim about bytes, and it is only a fact once it
+      # has been produced twice. The same pinned toolchain builds every payload
+      # again from a fresh copy of the commit into different source and target
+      # directories, and a digest that does not match the first build fails
+      # before anything is staged or signed. This bounds the claim to this
+      # runner image; docs/android-runtime-mobile.md records what was measured
+      # across host operating systems, which is not the same thing.
+      - name: Rebuild every payload and confirm the digests reproduce
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.ORI_ANDROID_RUST_TOOLCHAIN }}
+          ORI_ANDROID_RUNTIME_PAYLOAD_PLATFORM: ${{ env.ORI_ANDROID_API_LEVEL }}
+          ORI_ANDROID_RUNTIME_PAYLOAD_STRIP: "1"
+          ORI_ANDROID_RUNTIME_PAYLOAD_OUT: ${{ runner.temp }}/android-rebuild
+          CARGO_TARGET_DIR: ${{ runner.temp }}/android-rebuild-target
+        run: |
+          set -euo pipefail
+          source="${{ runner.temp }}/android-rebuild-source"
+          mkdir -p "${source}"
+          git archive HEAD | tar -x -C "${source}"
+          (cd "${source}" && bash scripts/build-android-runtime-mobile.sh)
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            first="$(sha256sum "${{ runner.temp }}/android-build/${abi}/libori_runtime_exec.so" | cut -d" " -f1)"
+            second="$(sha256sum "${{ runner.temp }}/android-rebuild/${abi}/libori_runtime_exec.so" | cut -d" " -f1)"
+            if [ "${first}" != "${second}" ]; then
+              echo "the payload for ${abi} did not reproduce: ${first} then ${second}" >&2
+              exit 1
+            fi
+            echo "${abi}: ${first} reproduced"
+          done
+
       # Every target or none: a partial set leaves a consumer unable to tell a
       # withheld ABI from a failed one, so a missing payload fails the release.
       - name: Stage payloads under their published names
