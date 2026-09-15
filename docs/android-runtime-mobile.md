@@ -120,6 +120,13 @@ permission refusal inside the hosting application reaches the payload as
 whatever the bridge then does with its socket, typically `interface_absent`;
 `interface_denied` arises only from the socket itself.
 
+Every snapshot also carries `export`: the readings the payload has delivered
+(and of those, duplicates), declined, abandoned as unconfirmed, dropped and
+refused since it started, and the readings it is holding now, queued and
+retained. What a phone dropped or is still sitting on is therefore visible to
+the receiver, not only in the payload's log. A count changing does not make a
+snapshot due; the flush interval carries it.
+
 A snapshot carries no error text, device path or key. It is not retained: any
 answer other than acceptance discards it, and the next one supersedes it. The
 recorded terminal refusal on this route suspends export on both routes.

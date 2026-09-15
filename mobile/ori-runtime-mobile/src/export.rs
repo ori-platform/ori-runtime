@@ -76,6 +76,20 @@ pub enum FlushOutcome {
     Suspended,
 }
 
+/// The `export` member from counts, per `runtime-telemetry/v2`.
+pub fn export_member(counters: &ExportCounters, queued: usize, retained: usize) -> JsonValue {
+    serde_json::json!({
+        "delivered_events": counters.delivered_events,
+        "duplicate_events": counters.duplicate_events,
+        "declined_events": counters.declined_events,
+        "unconfirmed_events": counters.unconfirmed_events,
+        "dropped_events": counters.dropped_events,
+        "refused_events": counters.refused_events,
+        "queued_events": queued,
+        "retained_events": retained,
+    })
+}
+
 pub struct Exporter {
     batch_size: usize,
     max_queue_size: usize,
@@ -119,6 +133,13 @@ impl Exporter {
 
     pub fn retained_events(&self) -> usize {
         self.retained_events
+    }
+
+    /// The `export` member of a sensor-status snapshot: what this payload has
+    /// done with the readings it took, so it is visible off the phone and not
+    /// only in its own log.
+    pub fn export_state(&self) -> JsonValue {
+        export_member(&self.counters, self.queued_events(), self.retained_events())
     }
 
     /// Events held in memory, queued and retained together.
