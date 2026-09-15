@@ -721,6 +721,16 @@ def test_a_silent_meter_is_reported_as_not_answering_once(
     for leak in (b"socket://", b"127.0.0.1", b"e2e-secret", b"Modbus", b"timeout"):
         assert leak not in call["raw"], f"the snapshot carries {leak!r}"
     assert counters["status_accepted"] == 1, counters
+    assert call["snapshot"]["export"] == {
+        "delivered_events": 0,
+        "duplicate_events": 0,
+        "declined_events": 0,
+        "unconfirmed_events": 0,
+        "dropped_events": 0,
+        "refused_events": 0,
+        "queued_events": 0,
+        "retained_events": 0,
+    }
 
 
 @pytest.mark.slow
@@ -1324,3 +1334,37 @@ def test_a_refusal_with_an_invalid_field_name_does_not_suspend(
     assert running
     assert "export suspended" not in output
     assert counters["suspended"] == "false", counters
+
+
+@pytest.mark.slow
+def test_what_was_dropped_and_held_is_reported_off_the_phone(
+    payload: Path, tmp_path: Path
+) -> None:
+    """The export state reaches the receiver, not only the payload's own log.
+
+    An outage longer than the queue holds makes the payload drop readings. The
+    first snapshots after it reach the receiver carrying the dropped count, and
+    no count in a snapshot runs ahead of what the process finally reports.
+    """
+    running, _code, _output, receiver, pzem, counters = _drive(
+        payload, tmp_path, [], 8.0, queue=3, down_for=3.0, flush_interval_s=1.0
+    )
+
+    assert running
+    assert counters["dropped"] > 0, counters
+    exports = [call["snapshot"]["export"] for call in receiver.status_calls]
+    assert exports, "snapshots were sent"
+    last = exports[-1]
+    assert last["dropped_events"] > 0, exports
+    assert last["delivered_events"] > 0, exports
+    # A snapshot is taken before the run ends and the meter keeps being read
+    # after it, so its counts can only trail the process's final ones.
+    held = last["queued_events"] + last["retained_events"]
+    accounted = last["delivered_events"] + last["dropped_events"] + held
+    assert accounted <= pzem.served, (accounted, pzem.served, last)
+    assert last["dropped_events"] <= counters["dropped"], (last, counters)
+    assert last["delivered_events"] <= counters["delivered"], (last, counters)
+    assert all(
+        later["dropped_events"] >= earlier["dropped_events"]
+        for earlier, later in zip(exports, exports[1:])
+    ), exports

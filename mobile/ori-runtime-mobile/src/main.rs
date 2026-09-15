@@ -135,7 +135,8 @@ fn run() -> Result<(), String> {
         // does not bring the next interval snapshot forward.
         let status_now = Instant::now();
         if !exporter.is_suspended() && status.snapshot_due(status_now) {
-            let snapshot = status.take_snapshot(&config.device.id, now_ms(), status_now);
+            let mut snapshot = status.take_snapshot(&config.device.id, now_ms(), status_now);
+            snapshot["export"] = exporter.export_state();
             let outcome = send_status(&config, &api_key, &snapshot, status.declared_sensors());
             if outcome == StatusOutcome::Suspend {
                 exporter.suspend(status_now, "sensor-status");
@@ -1646,6 +1647,83 @@ mod tests {
             "socket://localhost:7000",
         ] {
             assert!(socket_target(accepted).is_ok(), "{accepted}");
+        }
+    }
+
+    #[test]
+    fn a_snapshot_with_export_state_reproduces_the_contract_fixture() {
+        use sensor_status::StatusReason;
+        let mut status = StatusTracker::new(
+            [
+                ("phone-main-power", "usb_power"),
+                ("phone-battery", "battery_percent"),
+                ("phone-inverter", "usb_power"),
+            ],
+            Duration::from_secs(30),
+        );
+        status.record_success("phone-main-power", 1_718_999_400_000);
+        for _ in 0..120 {
+            status.record_failure("phone-main-power", StatusReason::NoResponse);
+        }
+        status.record_success("phone-battery", 1_719_000_000_000);
+        for _ in 0..43 {
+            status.record_failure("phone-inverter", StatusReason::InterfaceAbsent);
+        }
+        let mut snapshot =
+            status.take_snapshot("phone-gateway-ikeja-01", 1_719_000_000_000, Instant::now());
+        let counters = export::ExportCounters {
+            delivered_events: 1180,
+            duplicate_events: 12,
+            declined_events: 1,
+            unconfirmed_events: 2,
+            dropped_events: 37,
+            refused_events: 0,
+            ..Default::default()
+        };
+        snapshot["export"] = export::export_member(&counters, 4, 50);
+        let body = canonical_telemetry_json(&snapshot).expect("canonical");
+        assert_eq!(
+            String::from_utf8(body.clone()).unwrap(),
+            concat!(
+                "{\"device_id\":\"phone-gateway-ikeja-01\",\"export\":{\"declined_events\":1,\"delivered_events\":1180,",
+                "\"dropped_events\":37,\"duplicate_events\":12,\"queued_events\":4,\"refused_events\":0,",
+                "\"retained_events\":50,\"unconfirmed_events\":2},\"schema_version\":\"runtime.sensor_status.v1\",",
+                "\"sensors\":[{\"consecutive_failures\":120,\"last_success_ms\":1718999400000,\"reason\":\"no_response\",",
+                "\"sensor_id\":\"phone-main-power\",\"sensor_type\":\"usb_power\",\"state\":\"failing\"},",
+                "{\"consecutive_failures\":0,\"last_success_ms\":1719000000000,\"reason\":\"none\",",
+                "\"sensor_id\":\"phone-battery\",\"sensor_type\":\"battery_percent\",\"state\":\"reading\"},",
+                "{\"consecutive_failures\":43,\"reason\":\"interface_absent\",\"sensor_id\":\"phone-inverter\",",
+                "\"sensor_type\":\"usb_power\",\"state\":\"never_read\"}],\"sent_at_ms\":1719000000000}"
+            )
+        );
+        assert_eq!(
+            hex::encode(Sha256::digest(&body)),
+            "b5243e28156146a339cda430bd5ccb534614cac4ca2581bb2abb6df48d774e9d"
+        );
+        assert_eq!(
+            telemetry_signature(b"test-runtime-telemetry-key", b"1719000000123", &body).unwrap(),
+            "48085bdc87eb0f23815a5766746d7de99e131d90b810dc26340250ea35a2b2b5"
+        );
+    }
+
+    #[test]
+    fn export_state_reports_the_exporters_counts_and_holding() {
+        let mut exporter = Exporter::new(2, 3);
+        for value in 0..5 {
+            exporter.enqueue(json!({ "event_id": format!("e{value}") }));
+        }
+        let state = exporter.export_state();
+        assert_eq!(state["queued_events"], 3);
+        assert_eq!(state["dropped_events"], 2, "the bound refused two readings");
+        assert_eq!(state["retained_events"], 0);
+        for key in [
+            "delivered_events",
+            "duplicate_events",
+            "declined_events",
+            "unconfirmed_events",
+            "refused_events",
+        ] {
+            assert_eq!(state[key], 0, "{key}");
         }
     }
 
