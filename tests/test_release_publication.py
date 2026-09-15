@@ -1,9 +1,12 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import fnmatch
 import hashlib
+import os
 import re
 import runpy
+import subprocess
 import urllib.error
 import warnings
 import zipfile
@@ -434,9 +437,376 @@ def test_release_stages_are_strictly_ordered(workflow: dict[str, Any]) -> None:
     jobs = workflow["jobs"]
 
     assert jobs["build"]["needs"] == "test"
-    assert jobs["sign"]["needs"] == "build"
+    assert jobs["build-android-payload"]["needs"] == "test"
+    assert sorted(jobs["sign"]["needs"]) == ["build", "build-android-payload"]
     assert jobs["publish"]["needs"] == "sign"
     assert jobs["reverify"]["needs"] == "publish"
+
+
+def test_the_android_payload_build_holds_no_signing_authority(
+    workflow: dict[str, Any],
+) -> None:
+    """runtime-mobile/v2: the toolchain that compiles a payload never signs it.
+
+    The payloads are signed in the one job that holds the credential, which
+    builds nothing, so the build and signing boundaries stay separate.
+    """
+    build = workflow["jobs"]["build-android-payload"]
+    assert build["permissions"] == {"contents": "read", "id-token": "none"}
+    assert "environment" not in build
+    assert not any(
+        "configure-aws-credentials" in str(step.get("uses", ""))
+        for step in build["steps"]
+    )
+
+    sign_steps = " ".join(str(step.get("run", "")) for step in _steps(workflow, "sign"))
+    assert "sign-android-runtime-payload-aws-kms.py" in sign_steps
+    assert "build-android-runtime-mobile.sh" not in sign_steps
+
+
+# --- Android payload steps, run as the runner runs them -----------------------
+
+ANDROID_WORKFLOW_PATH = Path(".github/workflows/android-payload.yml")
+ANDROID_TARGETS = (
+    "android-arm64-v8a-api21",
+    "android-armeabi-v7a-api21",
+    "android-x86_64-api21",
+)
+
+
+def _step(workflow: dict[str, Any], job: str, name: str) -> dict[str, Any]:
+    matches = [step for step in _steps(workflow, job) if step.get("name") == name]
+    assert len(matches) == 1, f"{job} has no single step named {name!r}"
+    return matches[0]
+
+
+def _run_step(
+    step: dict[str, Any],
+    tmp_path: Path,
+    *,
+    env: dict[str, str],
+    fake_commands: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run a step's script under the shell options a GitHub runner uses."""
+    script = str(step["run"])
+    script = script.replace("${{ runner.temp }}", str(tmp_path / "runner-temp"))
+    script = script.replace("${{ steps.assets.outputs.targets }}", "")
+    assert "${{" not in script, "an expression this harness does not substitute"
+    bin_dir = tmp_path / "fake-bin"
+    bin_dir.mkdir(exist_ok=True)
+    for command, body in (fake_commands or {}).items():
+        path = bin_dir / command
+        path.write_text("#!/usr/bin/env bash\n" + body)
+        path.chmod(0o755)
+    environment = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "GITHUB_ENV": str(tmp_path / "github-env"),
+    }
+    for key, value in {**step.get("env", {}), **env}.items():
+        environment[key] = str(value)
+    (tmp_path / "runner-temp").mkdir(exist_ok=True)
+    return subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+
+def _release_env(workflow: dict[str, Any]) -> dict[str, str]:
+    return {key: str(value) for key, value in workflow["env"].items()}
+
+
+def test_the_api_level_pin_is_the_level_every_v2_target_names(
+    workflow: dict[str, Any],
+) -> None:
+    from ori.security.android_payloads import TARGETS
+
+    level = str(workflow["env"]["ORI_ANDROID_API_LEVEL"])
+    assert {target.rsplit("-api", 1)[1] for target in TARGETS} == {level}
+    assert set(TARGETS) == set(ANDROID_TARGETS)
+
+
+def test_staging_publishes_every_target_under_its_derived_name(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    step = _step(
+        workflow, "build-android-payload", "Stage payloads under their published names"
+    )
+    build = tmp_path / "runner-temp" / "android-build"
+    for abi in ("arm64-v8a", "armeabi-v7a", "x86_64"):
+        (build / abi).mkdir(parents=True)
+        (build / abi / "libori_runtime_exec.so").write_bytes(abi.encode())
+    result = _run_step(
+        step, tmp_path, env={**_release_env(workflow), "VERSION": "v2.5.0"}
+    )
+    assert result.returncode == 0, result.stderr
+    stage = tmp_path / "runner-temp" / "android-payload"
+    expected = {f"ori-runtime-2.5.0-{target}.so" for target in ANDROID_TARGETS}
+    assert {p.name for p in stage.iterdir()} == expected | {
+        f"{name}.sha256" for name in expected
+    }
+    for name in expected:
+        digest = hashlib.sha256((stage / name).read_bytes()).hexdigest()
+        assert (stage / f"{name}.sha256").read_text() == f"{digest}  {name}\n"
+
+
+@pytest.mark.parametrize("missing", ["arm64-v8a", "armeabi-v7a", "x86_64"])
+def test_staging_fails_when_any_payload_did_not_build(
+    workflow: dict[str, Any], tmp_path: Path, missing: str
+) -> None:
+    step = _step(
+        workflow, "build-android-payload", "Stage payloads under their published names"
+    )
+    build = tmp_path / "runner-temp" / "android-build"
+    for abi in ("arm64-v8a", "armeabi-v7a", "x86_64"):
+        if abi != missing:
+            (build / abi).mkdir(parents=True)
+            (build / abi / "libori_runtime_exec.so").write_bytes(b"payload")
+    result = _run_step(
+        step, tmp_path, env={**_release_env(workflow), "VERSION": "v2.5.0"}
+    )
+    assert result.returncode != 0
+
+
+def test_the_ndk_step_points_both_ndk_variables_at_the_pinned_ndk(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    step = _step(workflow, "build-android-payload", "Install the pinned NDK")
+    sdk = tmp_path / "sdk"
+    sdkmanager = sdk / "cmdline-tools" / "latest" / "bin" / "sdkmanager"
+    sdkmanager.parent.mkdir(parents=True)
+    sdkmanager.write_text(
+        "#!/usr/bin/env bash\n"
+        'package="${2#ndk;}"\n'
+        'mkdir -p "$(dirname "$0")/../../../ndk/${package}"\n'
+    )
+    sdkmanager.chmod(0o755)
+    result = _run_step(
+        step,
+        tmp_path,
+        env={
+            **_release_env(workflow),
+            "ANDROID_SDK_ROOT": str(sdk),
+            "ANDROID_NDK_HOME": "/image/ndk/other",
+            "ANDROID_NDK_ROOT": "/image/ndk/other",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    pinned = f"{sdk}/ndk/{workflow['env']['ORI_ANDROID_NDK_VERSION']}"
+    exported = (tmp_path / "github-env").read_text().splitlines()
+    assert f"ANDROID_NDK_HOME={pinned}" in exported
+    assert f"ANDROID_NDK_ROOT={pinned}" in exported
+
+
+def test_the_build_step_strips_at_the_pinned_api_level(
+    workflow: dict[str, Any],
+) -> None:
+    step = _step(
+        workflow,
+        "build-android-payload",
+        "Build every payload, stripped, at the pinned API level",
+    )
+    assert step["env"]["ORI_ANDROID_RUNTIME_PAYLOAD_STRIP"] == "1"
+    assert (
+        step["env"]["ORI_ANDROID_RUNTIME_PAYLOAD_PLATFORM"]
+        == "${{ env.ORI_ANDROID_API_LEVEL }}"
+    )
+    assert step["env"]["RUSTUP_TOOLCHAIN"] == "${{ env.ORI_ANDROID_RUST_TOOLCHAIN }}"
+
+
+_RECORDING_PYTHON = (
+    'printf "%s\\n" "$*" >> "${HOME}/python-calls"\nexit "${FAKE_EXIT:-0}"\n'
+)
+
+
+@pytest.mark.parametrize(
+    ("job", "name"),
+    [
+        ("sign", "Sign every Android payload"),
+        ("publish", "Verify staged assets before publication"),
+        ("reverify", "Reverify published assets"),
+    ],
+)
+def test_a_refusing_payload_command_fails_its_step(
+    workflow: dict[str, Any], tmp_path: Path, job: str, name: str
+) -> None:
+    step = _step(workflow, job, name)
+    result = _run_step(
+        step,
+        tmp_path,
+        env={**_release_env(workflow), "VERSION": "v2.5.0", "FAKE_EXIT": "2"},
+        fake_commands={"python": _RECORDING_PYTHON},
+    )
+    assert result.returncode != 0, f"{name} passed although its command refused"
+
+
+def test_signing_names_the_staged_set_and_no_strip_flag(
+    workflow: dict[str, Any], tmp_path: Path
+) -> None:
+    step = _step(workflow, "sign", "Sign every Android payload")
+    result = _run_step(
+        step,
+        tmp_path,
+        env={**_release_env(workflow), "VERSION": "v2.5.0"},
+        fake_commands={"python": _RECORDING_PYTHON},
+    )
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "python-calls").read_text().splitlines()
+    assert len(calls) == 1
+    arguments = calls[0].split()
+    assert arguments[0] == "scripts/sign-android-runtime-payload-aws-kms.py"
+    assert arguments[arguments.index("--payload-dir") + 1] == str(
+        tmp_path / "runner-temp" / "android-payload"
+    )
+    assert arguments[arguments.index("--runtime-version") + 1] == "2.5.0"
+    assert arguments[arguments.index("--key-registry") + 1] == (
+        "ori/installer/android-payload-keys.json"
+    )
+    assert "--stripped" not in arguments, "strip state is measured, never asserted"
+
+
+@pytest.mark.parametrize(
+    ("job", "name"),
+    [
+        ("publish", "Verify staged assets before publication"),
+        ("reverify", "Reverify published assets"),
+    ],
+)
+def test_every_android_target_is_verified_before_and_after_publication(
+    workflow: dict[str, Any], tmp_path: Path, job: str, name: str
+) -> None:
+    step = _step(workflow, job, name)
+    result = _run_step(
+        step,
+        tmp_path,
+        env={**_release_env(workflow), "VERSION": "v2.5.0"},
+        fake_commands={"python": _RECORDING_PYTHON},
+    )
+    assert result.returncode == 0, result.stderr
+    (call,) = (tmp_path / "python-calls").read_text().splitlines()
+    arguments = call.split()
+    assert arguments[0] == "scripts/verify_published_release.py"
+    android = [
+        arguments[i + 1]
+        for i, value in enumerate(arguments)
+        if value == "--android-target"
+    ]
+    assert sorted(android) == sorted(ANDROID_TARGETS)
+
+
+def test_payloads_are_downloaded_before_staged_verification_and_the_draft(
+    workflow: dict[str, Any],
+) -> None:
+    names = [step.get("name", "") for step in _steps(workflow, "publish")]
+    download = names.index("Download Android payloads and their envelopes")
+    verify = names.index("Verify staged assets before publication")
+    draft = names.index("Create draft release with the complete asset set")
+    assert download < verify < draft
+    pattern = _step(
+        workflow, "publish", "Download Android payloads and their envelopes"
+    )["with"]["pattern"]
+    uploaded = {
+        step["with"]["name"]
+        for job in ("build-android-payload", "sign")
+        for step in _steps(workflow, job)
+        if "upload-artifact" in str(step.get("uses", ""))
+        and str(step["with"]["name"]).startswith("android-payload")
+    }
+    assert uploaded == {"android-payload", "android-payload-signatures"}
+    assert all(fnmatch.fnmatchcase(name, pattern) for name in uploaded)
+
+
+def test_no_android_payload_step_can_fail_quietly(workflow: dict[str, Any]) -> None:
+    checked = 0
+    for job in ("build-android-payload", "sign", "publish"):
+        for step in _steps(workflow, job):
+            text = (
+                f"{step.get('name', '')} {step.get('run', '')} {step.get('with', '')}"
+            )
+            if job != "build-android-payload" and not re.search(
+                r"android|payload|verify_published_release", text, re.IGNORECASE
+            ):
+                continue
+            checked += 1
+            assert "continue-on-error" not in step, (job, step.get("name"))
+            run = str(step.get("run", ""))
+            assert "|| true" not in run and "|| :" not in run, (job, step.get("name"))
+            if "upload-artifact" in str(step.get("uses", "")):
+                assert step["with"]["if-no-files-found"] == "error", (
+                    job,
+                    step.get("name"),
+                )
+    assert checked >= 10
+
+
+def test_pull_requests_build_payloads_with_the_release_steps_and_pins(
+    workflow: dict[str, Any],
+) -> None:
+    """A tag is not the first place the release's build steps run."""
+    document = yaml.safe_load(ANDROID_WORKFLOW_PATH.read_text(encoding="utf-8"))
+    for pin in (
+        "ORI_ANDROID_RUST_TOOLCHAIN",
+        "ORI_ANDROID_CARGO_NDK_VERSION",
+        "ORI_ANDROID_NDK_VERSION",
+        "ORI_ANDROID_API_LEVEL",
+    ):
+        assert document["env"][pin] == workflow["env"][pin], pin
+
+    assert (
+        document["jobs"]["build-android-payload"]["runs-on"]
+        == workflow["jobs"]["build-android-payload"]["runs-on"]
+    ), "the same runner image, or the pull request proves nothing about the release"
+
+    # YAML 1.1 reads a bare `on` key as the boolean true.
+    events = document.get("on", document.get(True))
+    triggers = events["pull_request"]["paths"]
+    assert triggers == events["push"]["paths"]
+    for path in (
+        "mobile/**",
+        "scripts/build-android-runtime-mobile.sh",
+        "scripts/sign-android-runtime-payload-aws-kms.py",
+        "scripts/verify-android-runtime-payload.py",
+        "scripts/verify_published_release.py",
+        "ori/security/android_payloads.py",
+        "ori/security/release_bundles.py",
+        "ori/security/aws_kms_release_signer.py",
+        "pyproject.toml",
+        "requirements/**",
+        ".github/workflows/release.yml",
+        ".github/workflows/android-payload.yml",
+    ):
+        assert path in triggers, path
+
+    release_steps = [
+        step
+        for step in _steps(workflow, "build-android-payload")
+        if "upload-artifact" not in str(step.get("uses", ""))
+    ]
+    pull_request_steps = document["jobs"]["build-android-payload"]["steps"][
+        : len(release_steps)
+    ]
+    for release_step, pull_request_step in zip(
+        release_steps, pull_request_steps, strict=True
+    ):
+        release_env = dict(release_step.get("env", {}))
+        pull_request_env = dict(pull_request_step.get("env", {}))
+        if "VERSION" in release_env:
+            assert release_env.pop("VERSION") == "${{ github.ref_name }}"
+            assert pull_request_env.pop("VERSION") == "v0.0.0-ci"
+        assert {**release_step, "env": release_env} == {
+            **pull_request_step,
+            "env": pull_request_env,
+        }, release_step.get("name")
+    final = document["jobs"]["build-android-payload"]["steps"][-1]
+    assert "scripts/check-android-payload-build.py" in final["run"]
+    assert document["jobs"]["build-android-payload"]["permissions"] == {
+        "contents": "read",
+        "id-token": "none",
+    }
 
 
 @pytest.mark.parametrize(

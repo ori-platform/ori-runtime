@@ -1,0 +1,9 @@
+{
+  "source_repository": "ori-platform/ori-specs",
+  "source_path": "runtime-mobile",
+  "source_commit": "3b34bbc29103a0d5252fb9271b4ceab6987840fb",
+  "note": "Vendored copy of the runtime-mobile/v2 consumer verification corpus. The runtime signs payloads a consumer must accept and ships a reference verifier and producer held to every case, so these are its conformance fixtures. The digest detects a local edit; the source commit is the provenance trail, and a commit that is not a 40-character object name fails the suite.",
+  "files": {
+    "payload-vectors-v2.json": "fa253918364b2ce7e66f9b2d903016855f1c2b5be895bfd1f7b54202745b7e17"
+  }
+}

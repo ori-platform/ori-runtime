@@ -377,6 +377,12 @@ VECTOR_CONSUMERS = {
         "test_telemetry_delivery_contract.py"
         "::test_the_vector_set_covers_all_three_outcomes",
     ),
+    ("runtime_mobile_payload", "payload-vectors-v2"): (
+        "test_android_payload_publication.py"
+        "::test_every_corpus_case_reaches_its_recorded_outcome",
+        "test_android_payload_publication.py"
+        "::test_every_stage_is_exercised_by_the_corpus",
+    ),
     ("telemetry_refusals", "telemetry_refusals"): (
         "test_telemetry_refusal_contract.py"
         "::test_recorded_refusal_is_dispositioned_as_declared",

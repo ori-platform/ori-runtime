@@ -147,4 +147,81 @@ The script writes payloads under `dist/android-runtime-payloads/` and prints the
 environment variables expected by the Android release build.
 
 The build uses Cargo's checked-in lockfile through `--locked`. Run
-`python3 scripts/check_rust_supply_chain.py` before publishing payloads.
+`bash scripts/check_rust_supply_chain.sh` before publishing payloads.
+
+A payload built this way is for development. It carries no signature and no
+recorded provenance, and nothing downstream can establish which commit produced
+it, so it must not be packaged into an application that reaches a customer.
+
+## Obtaining a signed payload
+
+A tagged release publishes each payload as separate assets beside the Linux and
+Pi bundles, per `runtime-mobile/v2` in ori-specs:
+
+```text
+ori-runtime-<version>-android-arm64-v8a-api21.so
+ori-runtime-<version>-android-armeabi-v7a-api21.so
+ori-runtime-<version>-android-x86_64-api21.so
+```
+
+each with a `.signature.json` envelope and a `.sha256` checksum. The release
+workflow builds them from the tagged commit with a pinned Rust toolchain,
+`cargo-ndk` and NDK, strips them, and signs them in the one job that holds the
+release signing credential and builds nothing. Every target is signed and
+verified before the release is created, and a release that cannot build all
+three fails rather than publishing a partial set.
+
+Fetch and verify payloads from a tagged release in one step, naming the
+release you selected and each ABI slot you are filling. Neither is read from the
+envelope; they are what the envelope is checked against:
+
+```sh
+python3 scripts/verify_published_release.py \
+  --version 2.5.0 \
+  --android-target android-arm64-v8a-api21 \
+  --workspace "$PWD/payloads"
+```
+
+It downloads each payload, its checksum and its envelope from the release
+origin into the workspace, and runs the nine consumer checks against the
+registry shipped in `ori/installer/android-payload-keys.json`. Exit status 0
+means the files left in the workspace may be packaged; any refusal exits 2 and
+names what refused. A payload already on disk is verified with
+`scripts/verify-android-runtime-payload.py`, which takes the artifact, the
+envelope, the version, the target and the registry.
+
+Keep a downloaded file under its published name until verification has passed:
+the name is part of what is checked, and `libori_runtime_exec.so` carries no
+identity. A consumer that cannot verify a payload must fail its build rather
+than package it with a warning, and must never substitute a stub or a previously
+staged file for a missing one.
+
+The payload registry pins the release signing key under its own key id and
+purpose, `android_runtime_payload`. The same key signs the Linux bundles under a
+different purpose, and a signature from one protocol never verifies under the
+other. A registry holding a key whose seed the conformance corpus publishes is
+refused at load.
+
+The envelope's `stripped` is measured from the payload's section headers, not
+taken from the build setting, and a release refuses to sign a payload that is
+not stripped or whose Android note records an API level other than its target's.
+
+Panic locations embed the absolute source path of every file they come from, and
+stripping keeps them, so the build script remaps two prefixes and refuses to run
+with `RUSTFLAGS` of the caller's:
+
+- the Cargo registry, to `/cargo`;
+- the toolchain sysroot's copy of the standard library, to `/rustc/<commit>` —
+  the prefix rustc itself uses when `rust-src` is not installed. Without that,
+  a machine with `rust-src` embeds its own home directory where a machine
+  without it embeds rustc's canonical prefix, and the two digests could never
+  agree for a reason that has nothing to do with the sources.
+
+Each stripped payload is then checked for any remaining path under the build
+machine's home directory, and a payload carrying one fails the build.
+
+With that, the three payloads reproduce byte for byte across different source
+directories, target directories and Cargo homes, and between a toolchain with
+`rust-src` installed and one without, on one macOS arm64 host. The pull-request
+build reports the digests a Linux x86_64 runner produces; whether those equal a
+macOS build's has not yet been compared.
