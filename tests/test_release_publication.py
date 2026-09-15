@@ -795,8 +795,12 @@ def test_pull_requests_build_payloads_with_the_release_steps_and_pins(
         release_env = dict(release_step.get("env", {}))
         pull_request_env = dict(pull_request_step.get("env", {}))
         if "VERSION" in release_env:
-            assert release_env.pop("VERSION") == "${{ github.ref_name }}"
-            assert pull_request_env.pop("VERSION") == "v0.0.0-ci"
+            # A release stages under the tag; a pull request has no tag to
+            # stage under, so that one value differs and nothing else may.
+            release_version = release_env.pop("VERSION")
+            pull_request_version = pull_request_env.pop("VERSION")
+            assert release_version == "${{ github.ref_name }}"
+            assert pull_request_version == "v0.0.0-ci"
         assert {**release_step, "env": release_env} == {
             **pull_request_step,
             "env": pull_request_env,
