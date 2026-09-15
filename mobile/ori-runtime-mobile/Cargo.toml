@@ -15,8 +15,15 @@ ed25519-dalek = "2.1"
 hex = "0.4"
 hmac = "0.12"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+# float_roundtrip parses a number to the nearest double, as the Python producer
+# does. Without it a literal near the largest double is refused here and read
+# there, and a response body is readable by one producer and not the other.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 serde_yaml = "0.9"
 sha2 = "0.10"
-ureq = { version = "2.10", default-features = false, features = ["tls"] }
+# TLS for the telemetry client in src/http.rs, which reads responses itself so
+# that it reads them as the Python producer's parser does. The same crates and
+# features the previous HTTP client used, so the lockfile adds nothing.
+rustls = { version = "0.23.19", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+webpki-roots = "1.0"
 uuid = { version = "1.10", features = ["v4"] }

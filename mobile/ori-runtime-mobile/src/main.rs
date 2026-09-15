@@ -15,8 +15,16 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+mod delivery;
+mod export;
+mod http;
+use delivery::{
+    body_is_wanted, read_answer, read_batch_response, DeliveryVerdict, MAX_RESPONSE_BYTES,
+};
+use export::Exporter;
 
 const CONFIG_SIGNATURE_SCHEMA: &str = "ori.config_signature.v1";
 const CONFIG_REQUIRE_SIGNED_ENV: &str = "ORI_CONFIG_REQUIRE_SIGNED";
@@ -24,13 +32,24 @@ const DEFAULT_CONFIG_TRUST_ANCHOR_ENV: &str = "ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KE
 const TELEMETRY_SCHEMA_VERSION: &str = "runtime.telemetry.v1";
 const JSON_SAFE_INT_MAX: u64 = 9_007_199_254_740_991;
 const USER_AGENT: &str = "ori-runtime-mobile/0.1";
+/// How often the export state is restated when nothing about it has changed,
+/// so a reader can tell a quiet payload from a stopped one.
+const REPORT_INTERVAL: Duration = Duration::from_secs(60);
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// A configuration or start-up refusal, which is a different fact from a
+/// runtime that stopped. The hosting application needs to tell an operator
+/// which one it is, and a single exit code could not.
+const EXIT_STARTUP_REFUSED: i32 = 2;
 
 fn main() {
     if let Err(error) = run() {
         eprintln!("[ori-runtime-mobile] {error}");
-        std::process::exit(1);
+        // Every error reaching here is from start-up: once the poll loop
+        // begins, a telemetry fault is retained and retried rather than
+        // returned, so the loop has no error path out.
+        std::process::exit(EXIT_STARTUP_REFUSED);
     }
 }
 
@@ -57,12 +76,19 @@ fn run() -> Result<(), String> {
         return Err("no usb_serial socket:// sensors are configured".to_string());
     }
 
-    let mut sequence = 0_u64;
+    let mut exporter = Exporter::new(
+        config.telemetry_export.batch_size(),
+        config.telemetry_export.max_queue_size(),
+    );
+    let poll_interval = Duration::from_millis(config.min_poll_interval_ms());
+    let mut last_reported = exporter.counters().clone();
+    let mut last_held = (exporter.queued_events(), exporter.retained_events());
+    let mut last_report_at = Instant::now();
+
     loop {
-        let mut events = Vec::new();
         for sensor in &sensors {
             match read_pzem_sensor(sensor) {
-                Ok(reading) => events.push(sensor_event(&config.device.id, reading)),
+                Ok(reading) => exporter.enqueue(sensor_event(&config.device.id, reading)),
                 Err(error) => eprintln!(
                     "[ori-runtime-mobile] sensor_id={} read failed: {error}",
                     sensor.id
@@ -70,17 +96,173 @@ fn run() -> Result<(), String> {
             }
         }
 
-        if !events.is_empty() {
-            sequence += 1;
-            post_telemetry_batch(&config, &api_key, sequence, events)?;
+        // Reading the meter is never gated on the network. A failed upload is
+        // retained and retried on a backoff; it does not return out of here,
+        // and it does not stop the next poll.
+        let now = Instant::now();
+        if exporter.has_pending() && exporter.attempt_due(now) {
+            exporter.flush(now, |batch| send_batch(&config, &api_key, batch));
+        }
+
+        // Reported whenever it changes rather than only on the way out, because
+        // the hosting application stops this payload with a signal and would
+        // otherwise never see a final line. What is dropped, queued, retained
+        // or refused is a fact an operator needs while it is happening.
+        //
+        // The held counts are part of what "changes" here, not only the
+        // counters: a payload retrying one batch against an endpoint that never
+        // accepts moves no counter at all, and that is exactly the state worth
+        // reporting. The interval then covers a steady state, which changes
+        // nothing and still needs saying.
+        let held = (exporter.queued_events(), exporter.retained_events());
+        if exporter.counters() != &last_reported
+            || held != last_held
+            || now.duration_since(last_report_at) >= REPORT_INTERVAL
+        {
+            report_export_state(&exporter, false);
+            last_reported = exporter.counters().clone();
+            last_held = held;
+            last_report_at = now;
         }
 
         if args.once {
             break;
         }
-        thread::sleep(Duration::from_millis(config.min_poll_interval_ms()));
+        thread::sleep(poll_interval);
     }
+
+    report_export_state(&exporter, args.once);
     Ok(())
+}
+
+/// What the payload is holding and what it has lost, on one line.
+///
+/// Under `--once` an undelivered batch is not carried anywhere: the process is
+/// about to end and nothing here is durable, so it is reported rather than
+/// silently discarded.
+fn report_export_state(exporter: &Exporter, once: bool) {
+    let counters = exporter.counters();
+    eprintln!(
+        "[ori-runtime-mobile] export state: delivered={} duplicate={} declined={} unconfirmed={} \
+         dropped={} refused={} queued={} retained={} suspended={} \
+         unreadable_responses={} nonconformant_responses={}",
+        counters.delivered_events,
+        counters.duplicate_events,
+        counters.declined_events,
+        counters.unconfirmed_events,
+        counters.dropped_events,
+        counters.refused_events,
+        exporter.queued_events(),
+        exporter.retained_events(),
+        exporter.is_suspended(),
+        counters.unreadable_responses,
+        counters.nonconformant_responses,
+    );
+    if once && (exporter.queued_events() > 0 || exporter.retained_events() > 0) {
+        eprintln!(
+            "[ori-runtime-mobile] --once is ending with {} reading(s) undelivered; \
+             nothing here is durable, so they are lost",
+            exporter.queued_events() + exporter.retained_events()
+        );
+    }
+}
+
+/// Post one batch and read the answer. Returns None when the batch cannot be
+/// sent at all, which is this payload's own loss rather than a refusal.
+fn send_batch(
+    config: &RuntimeConfig,
+    api_key: &str,
+    batch: &export::PendingBatch,
+) -> Option<DeliveryVerdict> {
+    let payload = json!({
+        "schema_version": TELEMETRY_SCHEMA_VERSION,
+        "device_id": config.device.id.as_str(),
+        "sequence": batch.sequence,
+        "sent_at_ms": now_ms(),
+        "events": batch.events,
+    });
+    let body = match canonical_telemetry_json(&payload) {
+        Ok(body) => body,
+        Err(error) => {
+            eprintln!(
+                "[ori-runtime-mobile] batch sequence={} cannot be canonicalised: {error}",
+                batch.sequence
+            );
+            return None;
+        }
+    };
+    let timestamp_ms = now_ms().to_string();
+    let signature = match telemetry_signature(api_key.as_bytes(), timestamp_ms.as_bytes(), &body) {
+        Ok(signature) => signature,
+        Err(error) => {
+            eprintln!(
+                "[ori-runtime-mobile] batch sequence={} cannot be signed: {error}",
+                batch.sequence
+            );
+            return None;
+        }
+    };
+
+    let batch_events = batch.events.len();
+    let authorization = format!("Bearer {api_key}");
+    let signature_header = format!("v1={signature}");
+    let headers = [
+        ("Authorization", authorization.as_str()),
+        ("Content-Type", "application/json"),
+        // No coding is accepted, so none is decoded: the size ceiling then
+        // bounds the bytes that actually arrive.
+        ("Accept-Encoding", "identity"),
+        ("User-Agent", USER_AGENT),
+        ("X-Ori-Device-Id", config.device.id.as_str()),
+        ("X-Ori-Timestamp-Ms", timestamp_ms.as_str()),
+        ("X-Ori-Signature", signature_header.as_str()),
+    ];
+    let response = http::post(
+        &config.telemetry_export.endpoint,
+        &headers,
+        &body,
+        Duration::from_millis(config.telemetry_export.timeout_ms.max(100)),
+        MAX_RESPONSE_BYTES,
+        |_, fields| body_is_wanted(fields),
+    );
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            eprintln!(
+                "[ori-runtime-mobile] telemetry POST for batch sequence={} got no answer: {error}",
+                batch.sequence
+            );
+            return Some(read_batch_response(None, "", None, None, batch_events));
+        }
+    };
+    let body = match &response.body {
+        http::Body::Complete(bytes) => Some(bytes.as_slice()),
+        http::Body::PastCeiling => {
+            eprintln!(
+                "[ori-runtime-mobile] response body exceeds the {MAX_RESPONSE_BYTES}-byte \
+                 ceiling; batch sequence={} retained",
+                batch.sequence
+            );
+            None
+        }
+        http::Body::NotRead => {
+            if response.status != 101 {
+                eprintln!(
+                    "[ori-runtime-mobile] response body not read: its header section is not \
+                     readable alike, it is content-coded, or it declares more than the \
+                     {MAX_RESPONSE_BYTES}-byte ceiling; batch sequence={} retained",
+                    batch.sequence
+                );
+            }
+            None
+        }
+    };
+    Some(read_answer(
+        Some(response.status),
+        &response.fields,
+        body,
+        batch_events,
+    ))
 }
 
 #[derive(Debug)]
@@ -194,6 +376,31 @@ struct TelemetryExportConfig {
     api_key_env: String,
     #[serde(default = "default_timeout_ms")]
     timeout_ms: u64,
+    #[serde(default = "default_batch_size")]
+    batch_size: usize,
+    #[serde(default = "default_max_queue_size")]
+    max_queue_size: usize,
+}
+
+impl TelemetryExportConfig {
+    fn batch_size(&self) -> usize {
+        self.batch_size.clamp(1, 500)
+    }
+
+    /// The bound on telemetry held in memory, never below one batch: a payload
+    /// that could not hold the batch it just formed would drop a reading it had
+    /// no opportunity to send.
+    fn max_queue_size(&self) -> usize {
+        self.max_queue_size.max(self.batch_size())
+    }
+}
+
+fn default_batch_size() -> usize {
+    50
+}
+
+fn default_max_queue_size() -> usize {
+    1000
 }
 
 fn default_poll_interval_ms() -> u32 {
@@ -407,40 +614,6 @@ fn sensor_event(device_id: &str, reading: SensorReading) -> JsonValue {
     })
 }
 
-fn post_telemetry_batch(
-    config: &RuntimeConfig,
-    api_key: &str,
-    sequence: u64,
-    events: Vec<JsonValue>,
-) -> Result<(), String> {
-    let payload = json!({
-        "schema_version": TELEMETRY_SCHEMA_VERSION,
-        "device_id": config.device.id.as_str(),
-        "sequence": sequence,
-        "sent_at_ms": now_ms(),
-        "events": events,
-    });
-    let body = canonical_telemetry_json(&payload)?;
-    let timestamp_ms = now_ms().to_string();
-    let signature = telemetry_signature(api_key.as_bytes(), timestamp_ms.as_bytes(), &body)?;
-    let response = ureq::post(&config.telemetry_export.endpoint)
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .set("Content-Type", "application/json")
-        .set("User-Agent", USER_AGENT)
-        .set("X-Ori-Device-Id", &config.device.id)
-        .set("X-Ori-Timestamp-Ms", &timestamp_ms)
-        .set("X-Ori-Signature", &format!("v1={signature}"))
-        .timeout(Duration::from_millis(
-            config.telemetry_export.timeout_ms.max(100),
-        ))
-        .send_bytes(&body);
-    match response {
-        Ok(resp) if (200..300).contains(&resp.status()) => Ok(()),
-        Ok(resp) => Err(format!("telemetry POST returned HTTP {}", resp.status())),
-        Err(error) => Err(format!("telemetry POST failed: {error}")),
-    }
-}
-
 fn telemetry_signature(key: &[u8], timestamp_ms: &[u8], body: &[u8]) -> Result<String, String> {
     let mut mac = HmacSha256::new_from_slice(key)
         .map_err(|error| format!("failed to initialize HMAC: {error}"))?;
@@ -508,7 +681,7 @@ fn verify_config_signature(raw_yaml: &YamlValue) -> Result<(), String> {
         .as_mapping()
         .ok_or_else(|| "runtime config must be a mapping".to_string())?;
     let signature_block = root
-        .get(&YamlValue::String("config_signature".to_string()))
+        .get(YamlValue::String("config_signature".to_string()))
         .ok_or_else(|| {
             if required {
                 "missing config_signature block".to_string()
@@ -569,7 +742,7 @@ fn canonical_config_signature_payload(raw_yaml: &YamlValue) -> Result<Vec<u8>, S
         .as_mapping()
         .ok_or_else(|| "runtime config must be a mapping".to_string())?;
     let signature_block = root
-        .get(&YamlValue::String("config_signature".to_string()))
+        .get(YamlValue::String("config_signature".to_string()))
         .ok_or_else(|| "config_signature must be present".to_string())?;
     let signature_map = signature_block
         .as_mapping()
@@ -600,18 +773,18 @@ fn config_trust_anchor_env(raw_yaml: &YamlValue) -> Result<String, String> {
     }
     let Some(security) = raw_yaml
         .as_mapping()
-        .and_then(|root| root.get(&YamlValue::String("security".to_string())))
+        .and_then(|root| root.get(YamlValue::String("security".to_string())))
         .and_then(YamlValue::as_mapping)
     else {
         return Ok(DEFAULT_CONFIG_TRUST_ANCHOR_ENV.to_string());
     };
     let Some(config_signature) = security
-        .get(&YamlValue::String("config_signature".to_string()))
+        .get(YamlValue::String("config_signature".to_string()))
         .and_then(YamlValue::as_mapping)
     else {
         return Ok(DEFAULT_CONFIG_TRUST_ANCHOR_ENV.to_string());
     };
-    match config_signature.get(&YamlValue::String("trust_anchor_env".to_string())) {
+    match config_signature.get(YamlValue::String("trust_anchor_env".to_string())) {
         Some(value) => value.as_str().map(str::to_string).ok_or_else(|| {
             "security.config_signature.trust_anchor_env must be a string".to_string()
         }),
@@ -624,14 +797,14 @@ fn yaml_to_json(value: &YamlValue) -> Result<JsonValue, String> {
 }
 
 fn yaml_string(map: &serde_yaml::Mapping, key: &str) -> Result<String, String> {
-    map.get(&YamlValue::String(key.to_string()))
+    map.get(YamlValue::String(key.to_string()))
         .and_then(YamlValue::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("config_signature.{key} is required"))
 }
 
 fn yaml_i64(map: &serde_yaml::Mapping, key: &str) -> Result<i64, String> {
-    map.get(&YamlValue::String(key.to_string()))
+    map.get(YamlValue::String(key.to_string()))
         .and_then(YamlValue::as_i64)
         .ok_or_else(|| format!("config_signature.{key} must be an integer"))
 }

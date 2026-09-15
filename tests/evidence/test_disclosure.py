@@ -1238,6 +1238,9 @@ PASSAGE_AUDITS = {
     "docs/android-runtime-mobile.md": 0,
     "docs/alpha-release-notes.md": 0,
     "docs/beta-release-notes.md": 0,
+    # Describes the telemetry delivery decision table. No evidence passages
+    # today; listed so that one added later is audited.
+    "tests/vectors/telemetry_delivery/README.md": 0,
 }
 
 # Exempt from the *pattern* audit only, each with the reason. Still fully

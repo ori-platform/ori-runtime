@@ -26,6 +26,7 @@ import pytest
 from ori.config import TelemetryExportConfig
 from ori.network.events import OriEvent, SensorReading
 from ori.telemetry import http_export
+from ori.telemetry.delivery import DeliveryOutcome, read_batch_response
 from ori.telemetry.http_export import (
     TERMINAL_REFUSAL_STATUSES,
     HttpTelemetryExporter,
@@ -396,19 +397,28 @@ async def test_a_403_that_is_not_the_recorded_shape_does_not_suspend(
     assert exporter.refused_events == 0, label
     # Posted again rather than parked: the batch survives an intermediary.
     assert len(attempts) == 2, label
-    assert exporter._queue.qsize() == 1, label
+    # Retained as a batch under its own identity, not pushed back onto the
+    # queue, so the retry carries the same events under the same sequence.
+    assert exporter.retained_events == 1, label
+    assert exporter._queue.qsize() == 0, label
 
 
 def test_a_response_carrying_no_headers_is_not_read_as_the_endpoint() -> None:
-    """Absent headers cannot be evidence of origin, so they never suspend."""
+    """Absent headers cannot be evidence of origin, so they never suspend.
 
-    class _NoHeaders:
-        status_code = 403
-
-        def json(self) -> dict[str, str]:
-            return {"detail": "device is suspended"}
-
-    assert http_export._is_terminal_refusal(403, _NoHeaders()) is False
+    An answer with no media type is the shape an intermediary produces, and the
+    body alone is not evidence: a proxy that reproduced the recorded detail
+    would satisfy every other property.
+    """
+    verdict = read_batch_response(
+        status=403,
+        content_type="",
+        www_authenticate=None,
+        body=b'{"detail":"device is suspended"}',
+        batch_events=1,
+    )
+    assert verdict.outcome is not DeliveryOutcome.SUSPEND
+    assert verdict.refused_events == 0
 
 
 @pytest.mark.asyncio
@@ -540,7 +550,16 @@ async def test_a_success_after_a_retryable_refusal_exports_the_retained_batch(
     def handler(request: httpx.Request) -> httpx.Response:
         case = responses.pop(0)
         if case is None:
-            return httpx.Response(200, json={"accepted": 1}, request=request)
+            return httpx.Response(
+                200,
+                json={
+                    "status": "accepted",
+                    "accepted_events": 1,
+                    "duplicate_events": 0,
+                    "rejected_events": [],
+                },
+                request=request,
+            )
         return httpx.Response(case["status"], json={}, request=request)
 
     endpoint = _Endpoint(CASES["bad_credential"])

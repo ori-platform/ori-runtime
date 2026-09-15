@@ -371,6 +371,12 @@ EXEMPTION_OWNERS = frozenset(
 #: a comment, a dead helper, or a `json.load` with no assertions all read as
 #: consumption, which is the false green this accounting exists to refuse.
 VECTOR_CONSUMERS = {
+    ("telemetry_delivery", "delivery_cases"): (
+        "test_telemetry_delivery_contract.py"
+        "::test_every_delivery_vector_reaches_its_recorded_outcome",
+        "test_telemetry_delivery_contract.py"
+        "::test_the_vector_set_covers_all_three_outcomes",
+    ),
     ("telemetry_refusals", "telemetry_refusals"): (
         "test_telemetry_refusal_contract.py"
         "::test_recorded_refusal_is_dispositioned_as_declared",

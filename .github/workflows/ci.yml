@@ -333,3 +333,46 @@ jobs:
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
+
+  mobile-payload:
+    # The Android payload is a separate Rust program, and until this job nothing
+    # in CI compiled it or ran its tests. The Rust half of the shared telemetry
+    # delivery vectors ran on developer machines only, so a disagreement with the
+    # Python producer could land unnoticed.
+    name: Android payload (Rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: none
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy
+          rustup run 1.96.1 rustc --version
+
+      - name: Format
+        working-directory: mobile/ori-runtime-mobile
+        run: cargo +1.96.1 fmt --check
+
+      - name: Clippy
+        working-directory: mobile/ori-runtime-mobile
+        run: cargo +1.96.1 clippy --all-targets --locked -- -D warnings
+
+      # Includes the shared delivery vectors and the exporter's retention,
+      # backoff and attempt bound.
+      - name: Test
+        working-directory: mobile/ori-runtime-mobile
+        run: cargo +1.96.1 test --locked
