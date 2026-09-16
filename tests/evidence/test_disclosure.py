@@ -1491,11 +1491,49 @@ def _audit_passage(passage: str, passage_index: int) -> list[str]:
     for label, pattern in SHAPE_PATTERNS.items():
         if re.search(pattern, flat, re.IGNORECASE):
             failures.append(_opaque(location, label))
-    for term in _supplied_denylist():
-        if term in flat.lower():
-            failures.append(_opaque(location))
-            break
+    if _mentions(flat, _supplied_denylist()):
+        # On word boundaries, as the wheelhouse half matches: a term inside an
+        # unrelated English word is not a disclosure, and a substring test makes
+        # the audit unpassable by any document that happens to contain one.
+        failures.append(_opaque(location))
     return failures
+
+
+@pytest.mark.parametrize(
+    ("passage", "discloses"),
+    [
+        ("The knowledge a verifier acknowledged on the evidence path.", False),
+        ("An unabridged, unhedged paragraph.", False),
+        ("The evidence artifact is produced by ledge.", True),
+        ("Sealed by ori-ledge before the chain row is written.", True),
+        ("Raised against ori_ledge/artifacts on the evidence path.", True),
+        ("A LEDGE artifact, upper-cased.", True),
+    ],
+    ids=[
+        "inside_an_english_word",
+        "inside_two_more",
+        "named_alone",
+        "inside_a_repository_name",
+        "inside_a_module_path",
+        "upper_cased",
+    ],
+)
+def test_a_denylisted_term_is_matched_on_word_boundaries(
+    monkeypatch, passage: str, discloses: bool
+):
+    """A private identifier inside an unrelated word is not a disclosure.
+
+    The wheelhouse half of this audit settled that with `_mentions`; the
+    document half matched by substring, so any document using an English word
+    that happens to contain the term failed an audit only a tag can run. The
+    term here is invented for the test; the configured ones are never committed.
+    """
+    monkeypatch.setenv("ORI_DISCLOSURE_DENYLIST", "ledge")
+    findings = _audit_passage(passage, 0)
+    assert bool(findings) is discloses, findings
+    assert all("ledge" not in finding.lower() for finding in findings), (
+        "a finding must never quote the matched term"
+    )
 
 
 @pytest.mark.disclosure_release
