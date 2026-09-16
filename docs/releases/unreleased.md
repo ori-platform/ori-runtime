@@ -100,6 +100,36 @@ candidate or release is cut.
   recorded in `action_log` as `suppressed` so it is distinguishable from a
   delivery that failed.
 
+- A tagged release publishes the Android runtime payload. Each of the three
+  ABIs is built by the release workflow from the tagged commit with a pinned
+  Rust toolchain, `cargo-ndk` and NDK, in a job that holds no signing
+  credential, and published as a separate asset with a detached signature
+  envelope and a checksum under `runtime-mobile/v2`. Signing is a protocol of
+  its own — its own schema, domain separator, target grammar and key registry —
+  so a payload signature cannot verify as a release-bundle signature, and the
+  registry refuses any key whose private seed this repository or the
+  conformance corpus publishes. `stripped` and the API level are measured from
+  each artifact's ELF image rather than taken from build configuration, and a
+  payload whose recorded API level is not its target's is not signed. Every
+  target is signed and verified before the draft release exists and verified
+  again from the public origin afterwards, so a partial or unverifiable set is
+  never published. `scripts/verify_published_release.py --android-target`
+  fetches a payload by tag and runs the nine consumer checks on it;
+  `scripts/verify-android-runtime-payload.py` does the same for a file already
+  on disk. Digests reproduce on the runner image that published them — every
+  release rebuilds each payload and fails if one does not — and differ between
+  host operating systems, which `docs/android-runtime-mobile.md` states along
+  with the measurement and the reason.
+- The Android payload reports what it observes of its meter. It posts a signed
+  `runtime.sensor_status.v1` snapshot of every declared sensor to the telemetry
+  endpoint's `/sensor-status` route: whether the last read succeeded, why not
+  when it did not, when one last did, and how many have failed since. A silent
+  meter previously looked exactly like a quiet one. Each snapshot also carries
+  the payload's export state — readings delivered, duplicated, declined,
+  abandoned, dropped and refused since start, and the counts queued and
+  retained now — so a phone dropping readings or sitting on a backlog is
+  visible to whoever receives the reports rather than only in its own logs.
+
 ## Changed
 
 - Three action-registry entries that governed physical actions with no executor
@@ -326,6 +356,23 @@ candidate or release is cut.
   rather than handed to a terminal to act on. A skill directory holds whatever
   was put in it, and a configuration scalar carries whatever `${VAR}` expanded
   into it, so neither is necessarily a name an operator chose.
+
+- Both telemetry producers report a reading as delivered only when the
+  receiver's answer accounts for it, under `runtime-telemetry/v2`. Before this,
+  the Android payload exited the process on a failed upload, both producers
+  treated any `2xx` as a delivery, a retry merged newer readings under a new
+  sequence, and a batch the receiver declined was reported as exported — so a
+  restart or a lost acknowledgement discarded readings a per-event receiver
+  would have stored. A `2xx` now delivers a batch only when the accepted,
+  duplicate and declined counts account for every event in it; a retained batch
+  is re-sent as itself ahead of newer ones; a batch answered five times without
+  confirmation is discarded and counted; and export suspends only on the
+  contract's recorded terminal refusal. How an answer is read is one decision
+  table driven from one vector set in both languages, so the two producers
+  cannot disagree about the same bytes. The payload's HTTP client is now its
+  own strict reader over rustls rather than `ureq`, which panicked on a header
+  line without a colon and ended the process — the failure a phone hit on a
+  Wi-Fi blip.
 
 ## Security
 
