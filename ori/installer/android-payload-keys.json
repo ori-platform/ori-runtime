@@ -1,0 +1,11 @@
+{
+  "keys": [
+    {
+      "key_id": "ori-android-payload-2026-01",
+      "public_key_b64": "aDlW3MqinQM8y96szEqNske2ytKkxbmMDl87CuLbAQ8=",
+      "purpose": "android_runtime_payload",
+      "status": "active"
+    }
+  ],
+  "schema": "ori.android_runtime_payload_keys.v1"
+}

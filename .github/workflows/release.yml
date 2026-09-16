@@ -22,6 +22,16 @@ concurrency:
 
 env:
   ORI_RELEASE_KEY_ID: ori-runtime-release-2026-01
+  # The Android payload key is the release key under its own purpose and id, per
+  # runtime-mobile/v2; ori/installer/android-payload-keys.json pins it.
+  ORI_ANDROID_PAYLOAD_KEY_ID: ori-android-payload-2026-01
+  # Everything that changes a payload's bytes is pinned here rather than taken
+  # from whatever the runner image carries, because a published digest that
+  # cannot be reproduced describes nothing.
+  ORI_ANDROID_RUST_TOOLCHAIN: "1.96.1"
+  ORI_ANDROID_CARGO_NDK_VERSION: "4.1.2"
+  ORI_ANDROID_NDK_VERSION: "27.2.12479018"
+  ORI_ANDROID_API_LEVEL: "21"
 
 jobs:
   # GitHub silently creates a referenced environment without protection rules
@@ -364,9 +374,137 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-android-payload:
+    name: Build Android runtime payloads
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # Builds and holds no signing authority. runtime-mobile/v2 requires the
+    # toolchain that compiles a payload never to hold signing credentials, and
+    # the job that signs to receive artifacts it did not build.
+    permissions:
+      contents: read
+      id-token: none
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain and Android targets
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${ORI_ANDROID_RUST_TOOLCHAIN}" --profile minimal \
+            --target aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          rustup run "${ORI_ANDROID_RUST_TOOLCHAIN}" rustc --version
+
+      - name: Install the pinned cargo-ndk
+        run: |
+          set -euo pipefail
+          cargo +"${ORI_ANDROID_RUST_TOOLCHAIN}" install cargo-ndk \
+            --version "${ORI_ANDROID_CARGO_NDK_VERSION}" --locked
+          cargo ndk --version
+
+      # The runner image carries NDKs of its own choosing and presets both NDK
+      # variables to one of them. The pinned NDK is installed and both are
+      # pointed at it, so neither cargo-ndk nor the build script's search for
+      # llvm-strip can pick a different one from the image.
+      - name: Install the pinned NDK
+        run: |
+          set -euo pipefail
+          sdkmanager="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "${sdkmanager}"
+          # Not `yes | sdkmanager`: under pipefail, `yes` exits 141 on the
+          # closed pipe and fails the step even when the install succeeded.
+          "${sdkmanager}" --install "ndk;${ORI_ANDROID_NDK_VERSION}" < /dev/null > /dev/null
+          ndk="${ANDROID_SDK_ROOT}/ndk/${ORI_ANDROID_NDK_VERSION}"
+          test -d "${ndk}"
+          echo "ANDROID_NDK_HOME=${ndk}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_ROOT=${ndk}" >> "${GITHUB_ENV}"
+
+      - name: Build every payload, stripped, at the pinned API level
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.ORI_ANDROID_RUST_TOOLCHAIN }}
+          ORI_ANDROID_RUNTIME_PAYLOAD_PLATFORM: ${{ env.ORI_ANDROID_API_LEVEL }}
+          ORI_ANDROID_RUNTIME_PAYLOAD_STRIP: "1"
+          ORI_ANDROID_RUNTIME_PAYLOAD_OUT: ${{ runner.temp }}/android-build
+        run: bash scripts/build-android-runtime-mobile.sh
+
+      # A published digest is a claim about bytes, and it is only a fact once it
+      # has been produced twice. The same pinned toolchain builds every payload
+      # again from a fresh copy of the commit into different source and target
+      # directories, and a digest that does not match the first build fails
+      # before anything is staged or signed. This bounds the claim to this
+      # runner image; docs/android-runtime-mobile.md records what was measured
+      # across host operating systems, which is not the same thing.
+      - name: Rebuild every payload and confirm the digests reproduce
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.ORI_ANDROID_RUST_TOOLCHAIN }}
+          ORI_ANDROID_RUNTIME_PAYLOAD_PLATFORM: ${{ env.ORI_ANDROID_API_LEVEL }}
+          ORI_ANDROID_RUNTIME_PAYLOAD_STRIP: "1"
+          ORI_ANDROID_RUNTIME_PAYLOAD_OUT: ${{ runner.temp }}/android-rebuild
+          CARGO_TARGET_DIR: ${{ runner.temp }}/android-rebuild-target
+        run: |
+          set -euo pipefail
+          source="${{ runner.temp }}/android-rebuild-source"
+          mkdir -p "${source}"
+          git archive HEAD | tar -x -C "${source}"
+          (cd "${source}" && bash scripts/build-android-runtime-mobile.sh)
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            first="$(sha256sum "${{ runner.temp }}/android-build/${abi}/libori_runtime_exec.so" | cut -d" " -f1)"
+            second="$(sha256sum "${{ runner.temp }}/android-rebuild/${abi}/libori_runtime_exec.so" | cut -d" " -f1)"
+            if [ "${first}" != "${second}" ]; then
+              echo "the payload for ${abi} did not reproduce: ${first} then ${second}" >&2
+              exit 1
+            fi
+            echo "${abi}: ${first} reproduced"
+          done
+
+      # Every target or none: a partial set leaves a consumer unable to tell a
+      # withheld ABI from a failed one, so a missing payload fails the release.
+      - name: Stage payloads under their published names
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          build="${{ runner.temp }}/android-build"
+          stage="${{ runner.temp }}/android-payload"
+          mkdir -p "${stage}"
+          for pair in \
+            "arm64-v8a:android-arm64-v8a-api${ORI_ANDROID_API_LEVEL}" \
+            "armeabi-v7a:android-armeabi-v7a-api${ORI_ANDROID_API_LEVEL}" \
+            "x86_64:android-x86_64-api${ORI_ANDROID_API_LEVEL}"; do
+            abi="${pair%%:*}"
+            target="${pair#*:}"
+            source="${build}/${abi}/libori_runtime_exec.so"
+            test -f "${source}" || { echo "missing payload for ${abi}" >&2; exit 1; }
+            name="ori-runtime-${version}-${target}.so"
+            cp "${source}" "${stage}/${name}"
+            (cd "${stage}" && sha256sum "${name}" > "${name}.sha256")
+          done
+          ls -l "${stage}"
+
+      - name: Upload unsigned payloads
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-payload
+          path: ${{ runner.temp }}/android-payload/*
+          if-no-files-found: error
+          retention-days: 7
+
   sign:
     name: Sign release bundles (${{ github.ref_name }})
-    needs: build
+    # One job holds the signing credential. The Android payloads are signed here
+    # rather than in a job of their own, which keeps that credential confined to
+    # a single job that builds nothing.
+    needs: [build, build-android-payload]
     runs-on: ubuntu-24.04
     # A short ceiling bounds how long this job can hold signing credentials.
     timeout-minutes: 20
@@ -466,6 +604,40 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Download unsigned Android payloads
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: android-payload
+          path: ${{ runner.temp }}/android-payload
+
+      # The signer takes the expected set from the contract's target list, not
+      # from what was downloaded, so a payload that failed to build cannot be
+      # left quietly unsigned. It checks each staged checksum, the ELF header,
+      # the recorded API level and the measured strip state, and verifies every
+      # envelope offline before writing any.
+      - name: Sign every Android payload
+        env:
+          VERSION: ${{ github.ref_name }}
+          KMS_KEY_ARN: ${{ vars.ORI_RELEASE_KMS_KEY_ARN }}
+          KMS_REGION: ${{ vars.ORI_RELEASE_KMS_REGION }}
+        run: |
+          set -euo pipefail
+          python scripts/sign-android-runtime-payload-aws-kms.py \
+            --payload-dir "${{ runner.temp }}/android-payload" \
+            --runtime-version "${VERSION#v}" \
+            --key-id "${ORI_ANDROID_PAYLOAD_KEY_ID}" \
+            --key-registry ori/installer/android-payload-keys.json \
+            --kms-key-arn "${KMS_KEY_ARN}" \
+            --aws-region "${KMS_REGION}"
+
+      - name: Upload Android payload signature envelopes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: android-payload-signatures
+          path: ${{ runner.temp }}/android-payload/*.signature.json
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish release assets
     needs: sign
@@ -546,8 +718,17 @@ jobs:
             echo "prerelease=false" >> "${GITHUB_OUTPUT}"
           fi
 
+      - name: Download Android payloads and their envelopes
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: android-payload*
+          merge-multiple: true
+          path: ${{ runner.temp }}/assets
+
       # Verify before the bytes become public. Reverification after publication
       # proves delivery, but it is too late to stop an unverifiable release.
+      # Every Android payload is held to the nine checks a consumer makes,
+      # against the shipped registry, beside the bundles.
       - name: Verify staged assets before publication
         env:
           VERSION: ${{ github.ref_name }}
@@ -557,6 +738,9 @@ jobs:
             --version "${VERSION#v}" \
             --from-staged \
             --workspace "${{ runner.temp }}/assets" \
+            --android-target android-arm64-v8a-api21 \
+            --android-target android-armeabi-v7a-api21 \
+            --android-target android-x86_64-api21 \
             ${{ steps.assets.outputs.targets }}
 
       # A ruleset restricts who may move a tag; this proves it did not move
@@ -723,6 +907,9 @@ jobs:
             --target linux-aarch64-python3.12 \
             --target linux-x86_64-python3.13 \
             --target linux-aarch64-python3.13 \
+            --android-target android-arm64-v8a-api21 \
+            --android-target android-armeabi-v7a-api21 \
+            --android-target android-x86_64-api21 \
             --workspace "${{ runner.temp }}/reverify"
 
       # always() so the outcome is recorded even when an earlier step failed;

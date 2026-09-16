@@ -73,6 +73,36 @@ if [ "${STRIP}" = "1" ] && [ -z "${LLVM_STRIP}" ]; then
   exit 1
 fi
 
+# Panic locations embed the absolute path of every source file they come from,
+# and stripping keeps them, so a payload built under /home/runner differs from
+# one built under /Users/someone by those bytes alone. Two prefixes leak:
+#
+#   * the Cargo registry, for every dependency, which is remapped to /cargo;
+#   * the toolchain sysroot, for the standard library, but only when `rust-src`
+#     is installed for the pinned toolchain. Without it rustc already renders
+#     those paths as /rustc/<commit>/..., so the sysroot's copy of the sources
+#     is remapped onto that same prefix rather than a prefix of our own. A
+#     machine with `rust-src` then produces the bytes a machine without it
+#     produces, instead of a digest that depends on which components happen to
+#     be installed.
+#
+# The crate's own sources are passed to rustc relative to the crate, so they
+# need no remap. Flags from the caller's environment would change the bytes
+# without changing anything this script reports, so they are refused.
+if [ -n "${RUSTFLAGS:-}" ] || [ -n "${CARGO_ENCODED_RUSTFLAGS:-}" ]; then
+  echo "ERROR: RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS is set; a payload's flags are this script's." >&2
+  exit 1
+fi
+CARGO_HOME_DIR="$(cd "${CARGO_HOME:-${HOME}/.cargo}" && pwd -P)"
+SYSROOT="$(cd "$(rustc --print sysroot)" && pwd -P)"
+RUSTC_COMMIT="$(rustc -vV | awk '/^commit-hash: /{print $2}')"
+if [ -z "${RUSTC_COMMIT}" ]; then
+  echo "ERROR: rustc reports no commit hash, so the standard library cannot be remapped." >&2
+  exit 1
+fi
+UNIT_SEPARATOR="$(printf '\037')"
+export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=${CARGO_HOME_DIR}=/cargo${UNIT_SEPARATOR}--remap-path-prefix=${SYSROOT}/lib/rustlib/src/rust=/rustc/${RUSTC_COMMIT}${UNIT_SEPARATOR}--remap-path-prefix=${SYSROOT}=/rust"
+
 mkdir -p "${OUT}"
 
 build_one() {
@@ -109,6 +139,14 @@ build_one() {
   fi
 
   verify_payload "${dest}" "${elf_class}" "${elf_machine}"
+  # The whole home directory, not just the two prefixes above: a leak from a
+  # path this script did not anticipate is the same defect as a leak from one
+  # it did, and a digest that embeds a home directory reproduces nowhere.
+  if [ -n "${HOME:-}" ] && grep -q -F "${HOME}" "${dest}"; then
+    echo "ERROR: payload still embeds a path under the build machine's home: ${dest}" >&2
+    grep -o -F -m 3 "${HOME}[^\"]*" "${dest}" >&2 || true
+    exit 1
+  fi
   # Reported per artefact, so a digest is never read alongside a size the run
   # did not produce.
   echo "  ${abi}: ${symbols}"

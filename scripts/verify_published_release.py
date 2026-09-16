@@ -34,6 +34,15 @@ from importlib import resources
 from pathlib import Path
 from typing import IO, Callable, Sequence
 
+from ori.security.android_payloads import (
+    TARGETS as ANDROID_TARGETS,
+)
+from ori.security.android_payloads import (
+    AndroidPayloadError,
+    load_payload_key_registry,
+    payload_artifact_name,
+    verify_payload,
+)
 from ori.security.release_bundles import (
     ReleaseBundleError,
     extract_verified_bundle,
@@ -49,6 +58,7 @@ _VERSION_RE = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$"
 )
 _MAX_ASSET_BYTES = 4 * 1024 * 1024 * 1024
+_MAX_PAYLOAD_ASSET_BYTES = 64 * 1024 * 1024
 _MAX_TEXT_BYTES = 1024 * 1024
 _MAX_REGISTRY_BYTES = 64 * 1024
 _CHECKSUM_RE = re.compile(r"^(?P<digest>[0-9a-f]{64}) [ *](?P<name>\S+)$")
@@ -311,12 +321,54 @@ def verify_target(resolve: Resolver, version: str, target: str) -> None:
         verify_packaged_anchor(extracted.root, anchor)
 
 
+def verify_android_payload(resolve: Resolver, version: str, target: str) -> Path:
+    """Authenticate one Android payload by the nine runtime-mobile/v2 checks.
+
+    Returns the verified payload's path, so a consumer fetching by tag packages
+    the file that was verified and not a second download.
+    """
+    if target not in ANDROID_TARGETS:
+        raise PublicationError(
+            "unsupported_target", f"{target} is not a runtime-mobile/v2 target"
+        )
+    name = payload_artifact_name(version, target)
+    artifact = verify_checksum_pair(resolve, name, _MAX_PAYLOAD_ASSET_BYTES)
+    envelope = resolve(f"{name}.signature.json", _MAX_TEXT_BYTES)
+    with resources.as_file(
+        resources.files("ori.installer").joinpath("android-payload-keys.json")
+    ) as registry_path:
+        registry = load_payload_key_registry(registry_path)
+    try:
+        envelope_bytes = envelope.read_bytes()
+        artifact_bytes = artifact.read_bytes()
+    except OSError as exc:
+        raise PublicationError(
+            "artifact_integrity_mismatch", f"payload could not be read: {name}"
+        ) from exc
+    verify_payload(
+        envelope_text=envelope_bytes,
+        registry=registry,
+        artifact=artifact_bytes,
+        downloaded_basename=artifact.name,
+        runtime_version=version,
+        target=target,
+    )
+    return artifact
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Verify Ori Runtime release assets against the reviewed trust anchor."
     )
     parser.add_argument("--version", required=True)
-    parser.add_argument("--target", required=True, action="append", dest="targets")
+    parser.add_argument("--target", action="append", dest="targets", default=[])
+    parser.add_argument(
+        "--android-target",
+        action="append",
+        dest="android_targets",
+        default=[],
+        help="an Android payload target; published payloads are verified in place",
+    )
     parser.add_argument(
         "--workspace",
         required=True,
@@ -329,6 +381,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="verify assets already on disk instead of downloading them",
     )
     args = parser.parse_args(argv)
+
+    if not args.targets and not args.android_targets:
+        parser.error("name at least one --target or --android-target")
 
     try:
         if not _VERSION_RE.fullmatch(args.version):
@@ -346,14 +401,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             resolve = origin_resolver(f"{RELEASE_ORIGIN}/v{args.version}", workspace)
             source = "published"
-        verify_bootstrap(resolve)
+        if args.targets:
+            verify_bootstrap(resolve)
         for target in args.targets:
             verify_target(resolve, args.version, target)
+        for target in args.android_targets:
+            verify_android_payload(resolve, args.version, target)
     except (PublicationError, ReleaseBundleError) as exc:
         print(f"{exc.code}: {exc.detail}", file=sys.stderr)
         return 2
+    except AndroidPayloadError as exc:
+        print(f"{exc.reason}: {exc.stage}: {exc.detail}", file=sys.stderr)
+        return 2
     print(
-        f"verified {source} release v{args.version} for {len(args.targets)} target(s)"
+        f"verified {source} release v{args.version} for {len(args.targets)} "
+        f"target(s) and {len(args.android_targets)} Android payload(s)"
     )
     return 0
 

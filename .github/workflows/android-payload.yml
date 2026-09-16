@@ -1,0 +1,197 @@
+name: Android payload build
+
+# A tag is the first time the release workflow's payload jobs run, and a failure
+# there spends the tag. This runs the release's own build steps on every change
+# that can affect them, on the same runner image, so the hosted NDK install, the
+# pinned toolchain and the build are exercised before a tag depends on them. The
+# steps from "Install the pinned Rust toolchain" to "Stage payloads" are the
+# release job's, and tests/test_release_publication.py holds them identical.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - "scripts/build-android-runtime-mobile.sh"
+      - "scripts/sign-android-runtime-payload-aws-kms.py"
+      - "scripts/verify-android-runtime-payload.py"
+      - "scripts/check-android-payload-build.py"
+      - "pyproject.toml"
+      - "requirements/**"
+      - "ori/security/release_bundles.py"
+      - "ori/security/aws_kms_release_signer.py"
+      - "scripts/verify_published_release.py"
+      - "ori/security/android_payloads.py"
+      - ".github/workflows/android-payload.yml"
+      - ".github/workflows/release.yml"
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - "scripts/build-android-runtime-mobile.sh"
+      - "scripts/sign-android-runtime-payload-aws-kms.py"
+      - "scripts/verify-android-runtime-payload.py"
+      - "scripts/check-android-payload-build.py"
+      - "pyproject.toml"
+      - "requirements/**"
+      - "ori/security/release_bundles.py"
+      - "ori/security/aws_kms_release_signer.py"
+      - "scripts/verify_published_release.py"
+      - "ori/security/android_payloads.py"
+      - ".github/workflows/android-payload.yml"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: none
+
+env:
+  # Everything that changes a payload's bytes is pinned here rather than taken
+  # from whatever the runner image carries, because a published digest that
+  # cannot be reproduced describes nothing.
+  ORI_ANDROID_RUST_TOOLCHAIN: "1.96.1"
+  ORI_ANDROID_CARGO_NDK_VERSION: "4.1.2"
+  ORI_ANDROID_NDK_VERSION: "27.2.12479018"
+  ORI_ANDROID_API_LEVEL: "21"
+
+jobs:
+  build-android-payload:
+    name: Build Android runtime payloads as a release does
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: none
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain and Android targets
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${ORI_ANDROID_RUST_TOOLCHAIN}" --profile minimal \
+            --target aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          rustup run "${ORI_ANDROID_RUST_TOOLCHAIN}" rustc --version
+
+      - name: Install the pinned cargo-ndk
+        run: |
+          set -euo pipefail
+          cargo +"${ORI_ANDROID_RUST_TOOLCHAIN}" install cargo-ndk \
+            --version "${ORI_ANDROID_CARGO_NDK_VERSION}" --locked
+          cargo ndk --version
+
+      # The runner image carries NDKs of its own choosing and presets both NDK
+      # variables to one of them. The pinned NDK is installed and both are
+      # pointed at it, so neither cargo-ndk nor the build script's search for
+      # llvm-strip can pick a different one from the image.
+      - name: Install the pinned NDK
+        run: |
+          set -euo pipefail
+          sdkmanager="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "${sdkmanager}"
+          # Not `yes | sdkmanager`: under pipefail, `yes` exits 141 on the
+          # closed pipe and fails the step even when the install succeeded.
+          "${sdkmanager}" --install "ndk;${ORI_ANDROID_NDK_VERSION}" < /dev/null > /dev/null
+          ndk="${ANDROID_SDK_ROOT}/ndk/${ORI_ANDROID_NDK_VERSION}"
+          test -d "${ndk}"
+          echo "ANDROID_NDK_HOME=${ndk}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_ROOT=${ndk}" >> "${GITHUB_ENV}"
+
+      - name: Build every payload, stripped, at the pinned API level
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.ORI_ANDROID_RUST_TOOLCHAIN }}
+          ORI_ANDROID_RUNTIME_PAYLOAD_PLATFORM: ${{ env.ORI_ANDROID_API_LEVEL }}
+          ORI_ANDROID_RUNTIME_PAYLOAD_STRIP: "1"
+          ORI_ANDROID_RUNTIME_PAYLOAD_OUT: ${{ runner.temp }}/android-build
+        run: bash scripts/build-android-runtime-mobile.sh
+
+      # A published digest is a claim about bytes, and it is only a fact once it
+      # has been produced twice. The same pinned toolchain builds every payload
+      # again from a fresh copy of the commit into different source and target
+      # directories, and a digest that does not match the first build fails
+      # before anything is staged or signed. This bounds the claim to this
+      # runner image; docs/android-runtime-mobile.md records what was measured
+      # across host operating systems, which is not the same thing.
+      - name: Rebuild every payload and confirm the digests reproduce
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.ORI_ANDROID_RUST_TOOLCHAIN }}
+          ORI_ANDROID_RUNTIME_PAYLOAD_PLATFORM: ${{ env.ORI_ANDROID_API_LEVEL }}
+          ORI_ANDROID_RUNTIME_PAYLOAD_STRIP: "1"
+          ORI_ANDROID_RUNTIME_PAYLOAD_OUT: ${{ runner.temp }}/android-rebuild
+          CARGO_TARGET_DIR: ${{ runner.temp }}/android-rebuild-target
+        run: |
+          set -euo pipefail
+          source="${{ runner.temp }}/android-rebuild-source"
+          mkdir -p "${source}"
+          git archive HEAD | tar -x -C "${source}"
+          (cd "${source}" && bash scripts/build-android-runtime-mobile.sh)
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            first="$(sha256sum "${{ runner.temp }}/android-build/${abi}/libori_runtime_exec.so" | cut -d" " -f1)"
+            second="$(sha256sum "${{ runner.temp }}/android-rebuild/${abi}/libori_runtime_exec.so" | cut -d" " -f1)"
+            if [ "${first}" != "${second}" ]; then
+              echo "the payload for ${abi} did not reproduce: ${first} then ${second}" >&2
+              exit 1
+            fi
+            echo "${abi}: ${first} reproduced"
+          done
+
+      # Every target or none: a partial set leaves a consumer unable to tell a
+      # withheld ABI from a failed one, so a missing payload fails the release.
+      - name: Stage payloads under their published names
+        env:
+          VERSION: v0.0.0-ci
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          build="${{ runner.temp }}/android-build"
+          stage="${{ runner.temp }}/android-payload"
+          mkdir -p "${stage}"
+          for pair in \
+            "arm64-v8a:android-arm64-v8a-api${ORI_ANDROID_API_LEVEL}" \
+            "armeabi-v7a:android-armeabi-v7a-api${ORI_ANDROID_API_LEVEL}" \
+            "x86_64:android-x86_64-api${ORI_ANDROID_API_LEVEL}"; do
+            abi="${pair%%:*}"
+            target="${pair#*:}"
+            source="${build}/${abi}/libori_runtime_exec.so"
+            test -f "${source}" || { echo "missing payload for ${abi}" >&2; exit 1; }
+            name="ori-runtime-${version}-${target}.so"
+            cp "${source}" "${stage}/${name}"
+            (cd "${stage}" && sha256sum "${name}" > "${name}.sha256")
+          done
+          ls -l "${stage}"
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install verification dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/runtime.txt
+          python -m pip install --no-deps -e .
+
+      # The release signs through KMS; the producer and verifier are the same
+      # code. A throwaway key exercises them on the bytes this runner built:
+      # the ELF header, the recorded API level, the measured strip state and
+      # all nine consumer checks. The digests are reported so a build on another
+      # host can be compared with them.
+      - name: Sign with a throwaway key and verify every payload
+        env:
+          STAGE: ${{ runner.temp }}/android-payload
+        # tee, not a redirect: the job summary is where a person reads this and
+        # the log is where it can be fetched from, and a digest nobody can fetch
+        # cannot be compared with another host's.
+        run: |
+          set -euo pipefail
+          python scripts/check-android-payload-build.py \
+            --payload-dir "${STAGE}" --runtime-version 0.0.0-ci \
+            | tee -a "${GITHUB_STEP_SUMMARY}"
