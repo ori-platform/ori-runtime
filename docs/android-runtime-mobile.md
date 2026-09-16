@@ -164,8 +164,9 @@ ori-runtime-<version>-android-armeabi-v7a-api21.so
 ori-runtime-<version>-android-x86_64-api21.so
 ```
 
-each with a `.signature.json` envelope and a `.sha256` checksum. The release
-workflow builds them from the tagged commit with a pinned Rust toolchain,
+each with a `.signature.json` envelope and a `.sha256` checksum. `v2.5.0-rc.10`
+is the first release to carry them. The release workflow builds them from the
+tagged commit with a pinned Rust toolchain,
 `cargo-ndk` and NDK, strips them, and signs them in the one job that holds the
 release signing credential and builds nothing. Every target is signed and
 verified before the release is created, and a release that cannot build all
