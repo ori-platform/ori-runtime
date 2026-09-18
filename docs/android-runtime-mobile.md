@@ -110,18 +110,31 @@ socket, never from an error message:
 bytes cannot hold the poll loop and every upload behind it for more than that.
 
 Which physical fault produces which observation depends on how the hosting
-application's bridge behaves, and that is not yet measured through such a bridge
-on a handset. The delivery results below were obtained on a handset over a
-socket, which exercises the poll loop and the upload path and not this mapping.
-The
-expected mapping is that a meter without mains or at the wrong slave id is
-`no_response`, an unplugged adapter is `interface_absent`, and a wrong baud rate
-is `malformed_response` or `no_response` depending on whether noise arrives.
-It holds only if the bridge keeps a silent meter's connection open until the
-payload's timeout and stops listening when the adapter is detached. A USB
-permission refusal inside the hosting application reaches the payload as
-whatever the bridge then does with its socket, typically `interface_absent`;
-`interface_denied` arises only from the socket itself.
+application's bridge behaves. Two cases are measured on a handset through such a
+bridge, over a CP2102, and three are not.
+
+- **A meter with no mains supply is `no_response`**, as expected, and the
+  timeout is what ends the read rather than an error from the bridge.
+- **A TXD-to-RXD loopback is `malformed_response`**, not `integrity_failed`: the
+  echo returns the request, whose Modbus byte count is 0 where 4 is expected, so
+  it reaches the byte-count branch and never the CRC check. This is worth stating
+  plainly, because a loopback is the rig anyone without mains reaches for, and it
+  does not exercise the CRC path. **Nothing has produced `integrity_failed`.**
+- **`timeout_ms` bounds the whole answer, and that is measured**, not inferred
+  from the code: consecutive failed reads on one poll loop sat about 5.1 s apart
+  with the meter silent and about 2.06 s apart with the loopback returning
+  bytes. A per-byte timeout would have held the spacing near the silent figure
+  once bytes began arriving.
+
+Unmeasured: a wrong slave id, which is the same class as the silent meter by
+construction but was not driven; a wrong baud rate, expected to be
+`malformed_response` or `no_response` depending on whether noise arrives; and an
+unplugged adapter, expected to be `interface_absent`. Those expectations hold
+only if the bridge keeps a silent meter's connection open until the payload's
+timeout and stops listening when the adapter is detached. A USB permission
+refusal inside the hosting application reaches the payload as whatever the bridge
+then does with its socket, typically `interface_absent`; `interface_denied`
+arises only from the socket itself.
 
 Every snapshot also carries `export`: the readings the payload has delivered
 (and of those, duplicates), declined, abandoned as unconfirmed, dropped and
@@ -256,6 +269,11 @@ that met the dropped answer ends at 196 delivered and 1 duplicate, with nothing
 declined, unconfirmed, dropped or refused. So a reading survives a restart and a
 lost acknowledgement on the hardware the payload ships to, and a re-sent batch is
 recognised rather than stored twice.
+
+Also observed on the phone, with the receiver torn down mid-run: a sensor-status
+POST answered by a refused connection discards the snapshot and the runtime keeps
+polling. A failed status post ends neither the process nor the poll loop, which
+is the constraint this route was built under.
 
 **On the host** — one process per device, which is what makes the counters
 attributable. For each snapshot the receiver stored, its
