@@ -208,6 +208,58 @@ The envelope's `stripped` is measured from the payload's section headers, not
 taken from the build setting, and a release refuses to sign a payload that is
 not stripped or whose Android note records an API level other than its target's.
 
+## The receiver migrates before the payload reaches a field device
+
+A payload carrying the `runtime-telemetry/v2` delivery rules reports a reading
+as delivered only when the receiver's answer accounts for it. Against a receiver
+that has not migrated, a restarted payload re-sends its retained batch under its
+original `sequence` and is answered `200 {"status": "duplicate",
+"accepted_events": 0}`. That answer accounts for no event, so the batch is
+retained, it blocks the newer batches behind it, and after the fifth such answer
+it is discarded and counted under `unconfirmed_events`.
+
+That is counted loss rather than silent loss — the count reaches whoever reads
+the sensor-status snapshot — but it is loss, and it is loss the migrated
+receiver would not have caused. So the ordering is a deployment gate, not a
+preference:
+
+**Do not deploy a payload built from the v2 delivery change to a device whose
+readings a pre-v2 receiver ingests.** Publishing one is fine and is how it
+becomes verifiable; installing it on a field device is what waits. Confirm two
+properties of the receiver that device reports to, not just its version string:
+`sequence` is part of no batch key, and an event it already holds does not
+reject the batch carrying it.
+
+The reverse order costs nothing. A migrated receiver serving an older payload
+stores at least what it stored before, and the answer members a v1 payload does
+not read it simply ignores.
+
+### What the delivery rules have been proven against
+
+Host-tested against the receiver application itself, and no further. The payload
+was driven against the product API running locally at the revision this
+repository vendors its answer contract from, with a simulated meter over a
+socket, and what was read back was the receiver's own storage rather than the
+payload's log.
+
+- **Counter agreement**: for each snapshot the receiver stored, its
+  `export.delivered_events` equalled the number of distinct event ids the
+  receiver held at that snapshot's own `received_at_ms` — 253 against 253 over
+  a 140-second run, and 64 against 64 over a shorter one. That comparison is the
+  one that can fail: a payload counting a lost reading as delivered moves the
+  counter and not the row count.
+- **No reading lost across a restart or a lost acknowledgement**: three
+  processes on one device, the last of them behind a proxy that dropped the
+  answer to a batch the receiver had already stored, left 123 rows and 123
+  distinct event ids. The re-sent batch was answered duplicate, stored no second
+  copy, and was counted under `duplicate_events` with nothing unconfirmed.
+
+**No reading has been produced by real hardware.** Whether the PZEM answers at
+all, and whether a reading round-trips from a real meter, is not addressed by
+any of the above and is not claimed anywhere in this document. The sensor status
+route and the delivery rules are proven under simulated load with no meter, on a
+development host, with nothing run on a handset.
+
 Panic locations embed the absolute source path of every file they come from, and
 stripping keeps them, so the build script remaps two prefixes and refuses to run
 with `RUSTFLAGS` of the caller's:

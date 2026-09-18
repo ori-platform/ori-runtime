@@ -12,8 +12,10 @@
 use serde_json::Value as JsonValue;
 
 /// The refusals the endpoint repeats for as long as this credential is
-/// presented. The enumeration belongs to the receiver; the runtime's
-/// `tests/vectors/telemetry_refusals` pins both halves.
+/// presented. The enumeration belongs to the receiver; the runtime vendors it
+/// at `tests/vectors/telemetry_refusals`, and both producers replay every case
+/// it records against the dispositions declared beside it, so neither can
+/// classify one of those answers differently from the other.
 pub const TERMINAL_REFUSAL_STATUS: u16 = 403;
 pub const TERMINAL_REFUSAL_DETAIL: &str = "device is suspended";
 
@@ -534,12 +536,204 @@ mod tests {
     const VECTORS: &str =
         include_str!("../../../tests/vectors/telemetry_delivery/delivery_cases.json");
 
+    /// The receiver's own recorded answers, vendored, and the runtime's
+    /// classification of them. The two producers being pinned to each other
+    /// through `VECTORS` says nothing about the bytes the receiver sends; this
+    /// is what makes that claim true of this half.
+    const RECEIVER_CONTRACT: &str =
+        include_str!("../../../tests/vectors/telemetry_refusals/telemetry_refusals.json");
+    const RECEIVER_DISPOSITIONS: &str =
+        include_str!("../../../tests/vectors/telemetry_refusals/dispositions.json");
+
+    /// The two routes the contract records. Named here because both halves are
+    /// replayed in this language: this payload posts readings and snapshots.
+    const READING_ROUTE: &str = "POST /runtime/telemetry";
+    const STATUS_ROUTE: &str = "POST /runtime/telemetry/sensor-status";
+
+    use crate::sensor_status::{read_status_response, StatusOutcome};
+
     fn outcome_from(name: &str) -> DeliveryOutcome {
         match name {
             "delivered" => DeliveryOutcome::Delivered,
             "retain" => DeliveryOutcome::Retain,
             "suspend" => DeliveryOutcome::Suspend,
             other => panic!("unknown outcome in the vector set: {other}"),
+        }
+    }
+
+    /// The body a recorded case arrives as: its answer where it records one,
+    /// otherwise the `detail` shape a refusal carries.
+    fn recorded_body(case: &JsonValue) -> String {
+        match case.get("answer") {
+            Some(answer) if !answer.is_null() => answer.to_string(),
+            _ => match case["detail"].as_str() {
+                Some(detail) => serde_json::json!({ "detail": detail }).to_string(),
+                None => "{}".to_string(),
+            },
+        }
+    }
+
+    fn cases_on<'a>(contract: &'a JsonValue, route: &str) -> Vec<&'a JsonValue> {
+        contract["cases"]
+            .as_array()
+            .expect("cases is an array")
+            .iter()
+            .filter(|case| case["endpoint"].as_str() == Some(route))
+            .collect()
+    }
+
+    fn route<'a>(declared: &'a JsonValue, name: &str) -> &'a serde_json::Map<String, JsonValue> {
+        declared["routes"][name]["dispositions"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{name} has no declared dispositions"))
+    }
+
+    /// Both routes partition the contract, and this payload produces both, so
+    /// neither half may go unreplayed here. The version guard is what makes a
+    /// receiver's change to either arrive as a failure rather than as silence.
+    #[test]
+    fn the_two_routes_partition_the_recorded_cases() {
+        let contract: JsonValue = serde_json::from_str(RECEIVER_CONTRACT).expect("contract parses");
+        let declared: JsonValue =
+            serde_json::from_str(RECEIVER_DISPOSITIONS).expect("dispositions parse");
+        assert_eq!(
+            contract["contract_version"], declared["classifies_contract_version"],
+            "the vendored contract is a version the disposition table has not been reviewed against"
+        );
+
+        let endpoints = contract["endpoints"]
+            .as_array()
+            .expect("endpoints is an array");
+        let routes = declared["routes"].as_object().expect("routes is an object");
+        assert_eq!(
+            endpoints.len(),
+            routes.len(),
+            "the contract records routes the disposition table does not classify"
+        );
+
+        let mut classified = 0;
+        for endpoint in endpoints {
+            let name = endpoint.as_str().expect("an endpoint is a string");
+            let table = route(&declared, name);
+            let recorded = cases_on(&contract, name);
+            assert!(!recorded.is_empty(), "{name} records no case");
+            assert_eq!(
+                recorded.len(),
+                table.len(),
+                "{name}: every case recorded on it must be classified, and nothing else"
+            );
+            for case in recorded {
+                let case_name = case["name"].as_str().expect("case name");
+                assert!(
+                    table.contains_key(case_name),
+                    "{case_name} is recorded on {name} and classified nowhere"
+                );
+            }
+            classified += table.len();
+        }
+        assert_eq!(
+            classified,
+            contract["cases"].as_array().expect("cases").len(),
+            "a case is classified under more than one route"
+        );
+    }
+
+    #[test]
+    fn every_recorded_snapshot_answer_reaches_its_declared_disposition() {
+        let contract: JsonValue = serde_json::from_str(RECEIVER_CONTRACT).expect("contract parses");
+        let declared: JsonValue =
+            serde_json::from_str(RECEIVER_DISPOSITIONS).expect("dispositions parse");
+        let table = route(&declared, STATUS_ROUTE);
+        let recorded = cases_on(&contract, STATUS_ROUTE);
+        assert!(!recorded.is_empty(), "no snapshot case is recorded");
+
+        for case in recorded {
+            let name = case["name"].as_str().expect("case name");
+            let status = u16::try_from(case["status"].as_u64().expect("case status"))
+                .expect("a status fits in u16");
+            let body = recorded_body(case);
+            let want = table[name].as_str().expect("a declared disposition");
+            // The snapshot is sent with as many sensors as the answer accounts
+            // for, so an accepted answer's counts can be checked against it.
+            let accepted = case["answer"]["accepted_sensors"].as_u64().unwrap_or(0) as usize;
+            let rejected = case["answer"]["rejected_sensors"]
+                .as_array()
+                .map(|entries| entries.len())
+                .unwrap_or(0);
+            let sensors_sent = (accepted + rejected).max(1);
+
+            let outcome = read_status_response(
+                Some(status),
+                "application/json",
+                case["www_authenticate"].as_str(),
+                Some(body.as_bytes()),
+                sensors_sent,
+            );
+            let reached = match outcome {
+                StatusOutcome::Accepted { .. } => "accepted",
+                StatusOutcome::Discarded => "discard",
+                StatusOutcome::Suspend => "suspend",
+            };
+            assert_eq!(
+                reached, want,
+                "{name}: HTTP {status} was read as {reached}, not {want}"
+            );
+            if let StatusOutcome::Accepted { rejected_sensors } = outcome {
+                assert_eq!(
+                    rejected_sensors, rejected,
+                    "{name}: the rejected count must be the one the receiver reported"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_recorded_receiver_answer_reaches_its_declared_disposition() {
+        let contract: JsonValue = serde_json::from_str(RECEIVER_CONTRACT).expect("contract parses");
+        let declared: JsonValue =
+            serde_json::from_str(RECEIVER_DISPOSITIONS).expect("dispositions parse");
+        let dispositions = route(&declared, READING_ROUTE);
+        let cases = cases_on(&contract, READING_ROUTE);
+        assert!(!cases.is_empty(), "the contract records no reading case");
+
+        for case in cases {
+            let name = case["name"].as_str().expect("case name");
+            let status = u16::try_from(case["status"].as_u64().expect("case status"))
+                .expect("a status fits in u16");
+            let challenge = case["www_authenticate"].as_str();
+            let body = recorded_body(case);
+            let want = dispositions[name]
+                .as_str()
+                .unwrap_or_else(|| panic!("{name} has no declared disposition"));
+
+            let verdict = read_batch_response(
+                Some(status),
+                "application/json",
+                challenge,
+                Some(body.as_bytes()),
+                1,
+            );
+            assert_eq!(
+                verdict.outcome,
+                outcome_from(want),
+                "{name}: HTTP {status} was read as {:?}, not {want} ({})",
+                verdict.outcome,
+                verdict.reason
+            );
+            if want == "suspend" {
+                assert_eq!(verdict.refused_events, 1, "{name} must count its refusal");
+            }
+            if want == "delivered" {
+                let expected = case["answer"]["duplicate_events"].as_u64().unwrap_or(0);
+                assert_eq!(
+                    verdict.duplicate_events as u64, expected,
+                    "{name}: the duplicate count must be the one the receiver reported"
+                );
+                assert!(
+                    !verdict.nonconformant_body,
+                    "{name}: a recorded success answer must be conformant"
+                );
+            }
         }
     }
 

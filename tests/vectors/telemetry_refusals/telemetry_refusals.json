@@ -1,46 +1,158 @@
 {
-  "contract": "ori-energy.runtime-telemetry-refusals",
-  "contract_version": 1,
-  "endpoint": "POST /runtime/telemetry",
-  "generated_from": {
-    "repo": "ori-energy",
-    "commit": "cb6b1258b14b967509679432116d68d5b6087f91",
-    "api_version": "0.1.0"
-  },
+  "contract": "runtime-telemetry-refusals",
+  "contract_version": 3,
+  "endpoints": [
+    "POST /runtime/telemetry",
+    "POST /runtime/telemetry/sensor-status"
+  ],
   "cases": [
     {
+      "name": "accepted_batch",
+      "endpoint": "POST /runtime/telemetry",
+      "status": 200,
+      "www_authenticate": null,
+      "detail": null,
+      "answer": {
+        "status": "accepted",
+        "accepted_events": 1,
+        "duplicate_events": 0,
+        "rejected_events": []
+      },
+      "meaning": "every event of the one-event batch is held; accepted_events + duplicate_events + len(rejected_events) equals the events sent -- delivered, do not send it again"
+    },
+    {
+      "name": "duplicate_batch",
+      "endpoint": "POST /runtime/telemetry",
+      "status": 200,
+      "www_authenticate": null,
+      "detail": null,
+      "answer": {
+        "status": "duplicate",
+        "accepted_events": 0,
+        "duplicate_events": 1,
+        "rejected_events": []
+      },
+      "meaning": "every event of the one-event batch is held; accepted_events + duplicate_events + len(rejected_events) equals the events sent -- delivered, do not send it again"
+    },
+    {
+      "name": "sensor_status_accepted_snapshot",
+      "endpoint": "POST /runtime/telemetry/sensor-status",
+      "status": 200,
+      "www_authenticate": null,
+      "detail": null,
+      "answer": {
+        "status": "accepted",
+        "accepted_sensors": 3,
+        "rejected_sensors": []
+      },
+      "meaning": "the snapshot is held as this device's sensor state; accepted_sensors + len(rejected_sensors) equals the sensors sent -- a rejected entry is counted, logged and not retried, and the next snapshot supersedes it"
+    },
+    {
+      "name": "sensor_status_partial_snapshot",
+      "endpoint": "POST /runtime/telemetry/sensor-status",
+      "status": 200,
+      "www_authenticate": null,
+      "detail": null,
+      "answer": {
+        "status": "partial",
+        "accepted_sensors": 2,
+        "rejected_sensors": [
+          {
+            "sensor_id": "phone-battery",
+            "reason": "unknown_state"
+          }
+        ]
+      },
+      "meaning": "the snapshot is held as this device's sensor state; accepted_sensors + len(rejected_sensors) equals the sensors sent -- a rejected entry is counted, logged and not retried, and the next snapshot supersedes it"
+    },
+    {
       "name": "bad_credential",
+      "endpoint": "POST /runtime/telemetry",
       "status": 401,
       "www_authenticate": "Bearer",
       "detail": "telemetry credentials are invalid",
+      "answer": null,
+      "meaning": "credentials did not prove the device; retry with a fresh credential"
+    },
+    {
+      "name": "sensor_status_bad_credential",
+      "endpoint": "POST /runtime/telemetry/sensor-status",
+      "status": 401,
+      "www_authenticate": "Bearer",
+      "detail": "telemetry credentials are invalid",
+      "answer": null,
       "meaning": "credentials did not prove the device; retry with a fresh credential"
     },
     {
       "name": "bad_signature",
+      "endpoint": "POST /runtime/telemetry",
       "status": 401,
       "www_authenticate": "Bearer",
       "detail": "telemetry signature is invalid",
+      "answer": null,
+      "meaning": "credentials did not prove the device; retry with a fresh credential"
+    },
+    {
+      "name": "sensor_status_bad_signature",
+      "endpoint": "POST /runtime/telemetry/sensor-status",
+      "status": 401,
+      "www_authenticate": "Bearer",
+      "detail": "telemetry signature is invalid",
+      "answer": null,
       "meaning": "credentials did not prove the device; retry with a fresh credential"
     },
     {
       "name": "malformed_batch",
+      "endpoint": "POST /runtime/telemetry",
       "status": 422,
       "www_authenticate": null,
       "detail": null,
+      "answer": null,
+      "meaning": "status control only; exporter behaviour unchanged unless #517 widens scope"
+    },
+    {
+      "name": "sensor_status_malformed_snapshot",
+      "endpoint": "POST /runtime/telemetry/sensor-status",
+      "status": 422,
+      "www_authenticate": null,
+      "detail": null,
+      "answer": null,
       "meaning": "status control only; exporter behaviour unchanged unless #517 widens scope"
     },
     {
       "name": "wrong_content_type",
+      "endpoint": "POST /runtime/telemetry",
       "status": 415,
       "www_authenticate": null,
       "detail": null,
+      "answer": null,
+      "meaning": "status control only; exporter behaviour unchanged unless #517 widens scope"
+    },
+    {
+      "name": "sensor_status_wrong_content_type",
+      "endpoint": "POST /runtime/telemetry/sensor-status",
+      "status": 415,
+      "www_authenticate": null,
+      "detail": null,
+      "answer": null,
       "meaning": "status control only; exporter behaviour unchanged unless #517 widens scope"
     },
     {
       "name": "suspended_device",
+      "endpoint": "POST /runtime/telemetry",
       "status": 403,
       "www_authenticate": null,
       "detail": "device is suspended",
+      "answer": null,
+      "meaning": "the device is suspended; re-authenticating cannot help -- stop and surface the device to an operator"
+    },
+    {
+      "name": "sensor_status_suspended_device",
+      "endpoint": "POST /runtime/telemetry/sensor-status",
+      "status": 403,
+      "www_authenticate": null,
+      "detail": "device is suspended",
+      "answer": null,
       "meaning": "the device is suspended; re-authenticating cannot help -- stop and surface the device to an operator"
     }
   ]

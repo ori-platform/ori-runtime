@@ -389,6 +389,17 @@ VECTOR_CONSUMERS = {
         "test_telemetry_refusal_contract.py"
         "::test_terminal_statuses_are_exactly_the_cases_declared_terminal",
     ),
+    # Runtime-owned rather than vendored: the classification of the contract
+    # above. The Android payload replays the same two files in
+    # `delivery.rs::every_recorded_receiver_answer_reaches_its_declared_disposition`
+    # and `::every_recorded_snapshot_answer_reaches_its_declared_disposition`,
+    # which this registry cannot name because it records pytest node ids.
+    ("telemetry_refusals", "dispositions"): (
+        "test_telemetry_refusal_contract.py"
+        "::test_the_disposition_table_classifies_the_version_it_was_written_for",
+        "test_telemetry_refusal_contract.py"
+        "::test_every_recorded_case_is_classified_under_the_route_that_records_it",
+    ),
     ("commissioned_safety_binding", "binding-vectors-v1"): (
         "test_commissioned_binding_vectors.py::test_accept_cases_pass_every_stage",
         "test_commissioned_binding_vectors.py"
