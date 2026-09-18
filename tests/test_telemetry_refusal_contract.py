@@ -34,21 +34,30 @@ from ori.telemetry.http_export import (
 
 VECTOR_DIR = Path(__file__).parent / "vectors" / "telemetry_refusals"
 VECTOR_PATH = VECTOR_DIR / "telemetry_refusals.json"
+DISPOSITIONS_PATH = VECTOR_DIR / "dispositions.json"
 CONTRACT = json.loads(VECTOR_PATH.read_text())
 CASES = {case["name"]: case for case in CONTRACT["cases"]}
+DISPOSITIONS = json.loads(DISPOSITIONS_PATH.read_text())
 
 API_KEY_ENV = "ORI_DEVICE_API_KEY"
 
-# What the exporter must do with each recorded refusal.
-#   "suspend" — stop posting, discard the batch, count it under refused_events
-#   "retry"   — requeue the batch and post again on the next flush
-EXPECTED_DISPOSITION = {
-    "bad_credential": "retry",
-    "bad_signature": "retry",
-    "malformed_batch": "retry",
-    "wrong_content_type": "retry",
-    "suspended_device": "suspend",
-}
+#: The route this producer posts to. The contract records two, and the other
+#: one has no producer in this language.
+READING_ROUTE = "POST /runtime/telemetry"
+STATUS_ROUTE = "POST /runtime/telemetry/sensor-status"
+
+# What the exporter must do with each recorded answer, read from the table the
+# Android payload reads. The vocabulary is that table's:
+#   "delivered" — the answer accounts for the batch; it is not retained
+#   "retain"    — requeue the batch and post it again as itself on a later flush
+#   "suspend"   — stop posting, discard the batch, count it under refused_events
+#
+# Declared there rather than here so that the two producers cannot classify one
+# recorded answer two ways, which a table per language allows and which the
+# receiver's bytes would not reveal.
+EXPECTED_DISPOSITION: dict[str, str] = DISPOSITIONS["routes"][READING_ROUTE][
+    "dispositions"
+]
 
 
 def _config(**overrides: Any) -> TelemetryExportConfig:
@@ -93,9 +102,15 @@ class _Endpoint:
         challenge = self.case["www_authenticate"]
         if challenge is not None:
             headers["WWW-Authenticate"] = challenge
-        body: dict[str, Any] = {}
-        if self.case["detail"] is not None:
-            body["detail"] = self.case["detail"]
+        # A case that records an answer body is served that body; the refusals
+        # record none and are served the `detail` shape they carry. The
+        # receiver's success answers are what a delivery verdict is read from,
+        # so they cannot be represented as a detail.
+        body = self.case.get("answer")
+        if body is None:
+            body = {}
+            if self.case["detail"] is not None:
+                body["detail"] = self.case["detail"]
         return httpx.Response(
             self.case["status"], headers=headers, json=body, request=request
         )
@@ -121,6 +136,22 @@ def _install(monkeypatch: pytest.MonkeyPatch, endpoint: _Endpoint) -> None:
 # --------------------------------------------------------------------------
 
 
+def _recorded_terminals() -> dict[int, str]:
+    """Every case any route classifies as suspending, as status to detail.
+
+    Across both routes deliberately, though this producer posts to one. A
+    terminal refusal is a statement about the credential and suspends both, so
+    a status the receiver records as terminal anywhere is one this producer
+    must recognise if it ever arrives on the route it does post to.
+    """
+    terminals: dict[int, str] = {}
+    for table in DISPOSITIONS["routes"].values():
+        for name, disposition in table["dispositions"].items():
+            if disposition == "suspend":
+                terminals[CASES[name]["status"]] = CASES[name]["detail"]
+    return terminals
+
+
 def test_contract_is_the_vendored_artifact_at_the_pinned_revision() -> None:
     """The vendored bytes are the ones the manifest pins, not a local edit."""
     manifest = json.loads((VECTOR_DIR / "MANIFEST.json").read_text())
@@ -138,10 +169,84 @@ def test_snapshot_capture_is_not_vendored() -> None:
     assert not (VECTOR_DIR / "telemetry_refusals.snapshot.json").exists()
 
 
-def test_every_recorded_case_has_a_declared_disposition() -> None:
-    """A case the product API adds must be classified here before it can pass."""
-    assert CONTRACT["contract_version"] == 1
-    assert set(CASES) == set(EXPECTED_DISPOSITION)
+def test_the_disposition_table_classifies_the_version_it_was_written_for() -> None:
+    """A re-vendor that changes the contract version must be classified again.
+
+    The receiver adding a case, or changing what one means, arrives here as a
+    version bump. Coupling the table to that version rather than to a literal in
+    this file keeps the two producers reading one statement of what is expected.
+    """
+    assert (
+        CONTRACT["contract_version"] == DISPOSITIONS["classifies_contract_version"]
+    ), (
+        "the vendored contract is a version the disposition table has not been "
+        "reviewed against; classify its cases in dispositions.json"
+    )
+    vocabulary = DISPOSITIONS["routes"][READING_ROUTE]["vocabulary"]
+    assert set(vocabulary) == {"delivered", "retain", "suspend"}
+    assert set(EXPECTED_DISPOSITION.values()) <= set(vocabulary)
+
+
+def test_every_recorded_case_is_classified_under_the_route_that_records_it() -> None:
+    """The two routes partition the contract, and each producer owns its half.
+
+    A case the product API adds must be classified before it can pass, and it
+    must be classified under the route it was recorded on: the same answer
+    means different things to the two, since a reading is data that is lost if
+    the batch is not kept and a snapshot is state the next one supersedes.
+    """
+    declared = DISPOSITIONS["routes"]
+    assert set(declared) == set(CONTRACT["endpoints"]), (
+        "the contract records routes the disposition table does not classify, "
+        "or the table classifies a route the contract does not record"
+    )
+
+    classified: dict[str, str] = {}
+    for route, table in declared.items():
+        for name in table["dispositions"]:
+            assert name not in classified, f"{name} is classified twice"
+            classified[name] = route
+        assert set(table["dispositions"].values()) <= set(table["vocabulary"])
+
+    assert set(CASES) == set(classified), (
+        "every recorded case must be classified, and nothing else"
+    )
+    for name, case in CASES.items():
+        assert case["endpoint"] == classified[name], (
+            f"{name} is recorded on {case['endpoint']} and classified under "
+            f"{classified[name]}"
+        )
+
+
+def test_the_route_this_producer_does_not_post_to_has_no_producer_here() -> None:
+    """The sensor-status half is replayed by the payload, and that is asserted.
+
+    Half the contract is unexercised in this language, which is a coverage gap
+    unless something holds the reason. The reason is that no Python code posts a
+    snapshot, and this is the scan that says so rather than leaving it implied.
+    Write a Python sensor-status producer and this fails, which is the moment
+    those seven cases need replaying here too.
+    """
+    assert DISPOSITIONS["routes"][STATUS_ROUTE]["producers"] == ["android"]
+    status_route_cases = {
+        name for name, case in CASES.items() if case["endpoint"] == STATUS_ROUTE
+    }
+    assert status_route_cases, "the contract records no sensor-status case"
+    assert not (status_route_cases & set(EXPECTED_DISPOSITION))
+
+    root = Path(__file__).resolve().parents[1] / "ori"
+    sources = sorted(root.rglob("*.py"))
+    assert sources, "no source found under ori/; the scan would pass vacuously"
+    posting = [
+        path.relative_to(root).as_posix()
+        for path in sources
+        if "/runtime/telemetry/sensor-status" in path.read_text()
+    ]
+    assert posting == [], (
+        "a Python module names the sensor-status route, so this language now has "
+        f"a producer for it: {posting}. Replay the cases recorded on that route "
+        "here, against that producer, as the payload's suite does."
+    )
 
 
 def test_terminal_refusals_carry_the_detail_the_contract_records() -> None:
@@ -151,12 +256,7 @@ def test_terminal_refusals_carry_the_detail_the_contract_records() -> None:
     This is what binds them to the contract: reword the detail upstream and the
     vendored bytes change, the digest check fires, and this fails.
     """
-    recorded = {
-        CASES[name]["status"]: CASES[name]["detail"]
-        for name, disposition in EXPECTED_DISPOSITION.items()
-        if disposition == "suspend"
-    }
-    assert http_export.TERMINAL_REFUSALS == recorded
+    assert http_export.TERMINAL_REFUSALS == _recorded_terminals()
 
 
 def test_terminal_statuses_are_exactly_the_cases_declared_terminal() -> None:
@@ -167,12 +267,7 @@ def test_terminal_statuses_are_exactly_the_cases_declared_terminal() -> None:
     fails here even though the table below is local. Bytes alone would not do
     that -- a status can keep its number and change what it means.
     """
-    terminal = {
-        CASES[name]["status"]
-        for name, disposition in EXPECTED_DISPOSITION.items()
-        if disposition == "suspend"
-    }
-    assert TERMINAL_REFUSAL_STATUSES == terminal
+    assert TERMINAL_REFUSAL_STATUSES == set(_recorded_terminals())
 
 
 def test_no_terminal_case_offers_an_authentication_challenge() -> None:
@@ -183,12 +278,13 @@ def test_no_terminal_case_offers_an_authentication_challenge() -> None:
     carrying a challenge upstream, the classification is wrong and this is
     where that has to surface.
     """
-    for name, disposition in EXPECTED_DISPOSITION.items():
-        case = CASES[name]
-        if disposition == "suspend":
-            assert case["www_authenticate"] is None, name
-        elif case["status"] == 401:
-            assert case["www_authenticate"] == "Bearer", name
+    for table in DISPOSITIONS["routes"].values():
+        for name, disposition in table["dispositions"].items():
+            case = CASES[name]
+            if disposition == "suspend":
+                assert case["www_authenticate"] is None, name
+            elif case["status"] == 401:
+                assert case["www_authenticate"] == "Bearer", name
 
 
 # --------------------------------------------------------------------------
@@ -201,15 +297,33 @@ def test_no_terminal_case_offers_an_authentication_challenge() -> None:
 async def test_recorded_refusal_is_dispositioned_as_declared(
     name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A retried refusal is posted again; a terminal one is never posted again."""
+    """Each recorded answer reaches the disposition declared beside the contract.
+
+    A retained batch is posted again, a terminal refusal is never posted again,
+    and an answer that accounts for the batch leaves nothing to post.
+    """
     endpoint = _Endpoint(CASES[name])
     _install(monkeypatch, endpoint)
     exporter = HttpTelemetryExporter(device_id="phone-01", config=_config())
     await exporter.handle_event(_event())
 
-    assert await exporter.flush_once() == 0
+    delivered = await exporter.flush_once()
     assert len(endpoint.requests) == 1
 
+    if EXPECTED_DISPOSITION[name] == "delivered":
+        # The receiver accounted for the event, so nothing is retained and the
+        # next flush has nothing to post.
+        assert delivered == 1
+        await exporter.flush_once()
+        assert len(endpoint.requests) == 1
+        assert exporter.export_suspended is False
+        assert exporter.refused_events == 0
+        assert exporter.dropped_events == 0
+        assert exporter.duplicate_events == CASES[name]["answer"]["duplicate_events"]
+        assert exporter.declined_events == 0
+        return
+
+    assert delivered == 0
     await exporter.flush_once()
 
     if EXPECTED_DISPOSITION[name] == "suspend":

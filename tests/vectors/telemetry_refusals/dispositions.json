@@ -1,0 +1,40 @@
+{
+  "comment": "Runtime-owned. The contract beside this file is the receiver's and is vendored byte for byte; what each of its recorded answers must do to an export is the runtime's judgement, and it is declared once here because both producers read it. Two hand-written tables, one per language, is the thing this file exists to prevent: they can agree with each other's prose while disagreeing about the bytes. The two routes have separate vocabularies because the same answer means different things to them: a reading is data that is lost if it is not kept, so a refusal retains the batch, while a snapshot is state the next one supersedes, so a refusal discards it and keeps nothing. Only the terminal refusal reads alike on both, because it is a statement about the credential rather than about what was sent.",
+  "classifies_contract_version": 3,
+  "routes": {
+    "POST /runtime/telemetry": {
+      "producers": ["python", "android"],
+      "vocabulary": {
+        "delivered": "the answer accounts for every event in the batch; the batch is not retained",
+        "retain": "the batch is kept and sent again as itself on a later flush",
+        "suspend": "export stops on both routes, the batch is discarded, and its events are counted as refused"
+      },
+      "dispositions": {
+        "accepted_batch": "delivered",
+        "duplicate_batch": "delivered",
+        "bad_credential": "retain",
+        "bad_signature": "retain",
+        "malformed_batch": "retain",
+        "wrong_content_type": "retain",
+        "suspended_device": "suspend"
+      }
+    },
+    "POST /runtime/telemetry/sensor-status": {
+      "producers": ["android"],
+      "vocabulary": {
+        "accepted": "the snapshot is held as the device's sensor state, whole or with entries the receiver rejected; a rejected entry is counted and not retried",
+        "discard": "the snapshot is not held and is not retained; the next one supersedes it",
+        "suspend": "export stops on both routes and the snapshot is discarded"
+      },
+      "dispositions": {
+        "sensor_status_accepted_snapshot": "accepted",
+        "sensor_status_partial_snapshot": "accepted",
+        "sensor_status_bad_credential": "discard",
+        "sensor_status_bad_signature": "discard",
+        "sensor_status_malformed_snapshot": "discard",
+        "sensor_status_wrong_content_type": "discard",
+        "sensor_status_suspended_device": "suspend"
+      }
+    }
+  }
+}
