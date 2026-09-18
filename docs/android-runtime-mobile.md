@@ -270,10 +270,14 @@ declined, unconfirmed, dropped or refused. So a reading survives a restart and a
 lost acknowledgement on the hardware the payload ships to, and a re-sent batch is
 recognised rather than stored twice.
 
-Also observed on the phone, with the receiver torn down mid-run: a sensor-status
-POST answered by a refused connection discards the snapshot and the runtime keeps
+Also observed on the phone, with the receiver torn down: a sensor-status POST
+answered by a refused connection discards the snapshot and the runtime keeps
 polling. A failed status post ends neither the process nor the poll loop, which
-is the constraint this route was built under.
+is the constraint this route was built under. Sustained for about twenty minutes
+of continuous refusal in one run, which is the part worth recording: a few
+seconds shows only that the error path does not raise, while twenty minutes
+shows nothing accumulates behind it — no retry count reaching a ceiling, no
+queue growing until something gives, no backoff walking itself into a stall.
 
 **On the host** — one process per device, which is what makes the counters
 attributable. For each snapshot the receiver stored, its
