@@ -110,7 +110,10 @@ socket, never from an error message:
 bytes cannot hold the poll loop and every upload behind it for more than that.
 
 Which physical fault produces which observation depends on how the hosting
-application's bridge behaves, and that is not yet measured on a handset. The
+application's bridge behaves, and that is not yet measured through such a bridge
+on a handset. The delivery results below were obtained on a handset over a
+socket, which exercises the poll loop and the upload path and not this mapping.
+The
 expected mapping is that a meter without mains or at the wrong slave id is
 `no_response`, an unplugged adapter is `interface_absent`, and a wrong baud rate
 is `malformed_response` or `no_response` depending on whether noise arrives.
@@ -236,29 +239,44 @@ not read it simply ignores.
 
 ### What the delivery rules have been proven against
 
-Host-tested against the receiver application itself, and no further. The payload
-was driven against the product API running locally at the revision this
-repository vendors its answer contract from, with a simulated meter over a
-socket, and what was read back was the receiver's own storage rather than the
-payload's log.
+Proven against the receiver application itself, on the phone and on a
+development host. In both cases the payload posted to the product API running
+locally at the revision this repository vendors its answer contract from, the
+meter was simulated over a socket, and what was read back was the receiver's own
+storage rather than the payload's log. The two runs prove different things and
+the difference matters.
 
-- **Counter agreement**: for each snapshot the receiver stored, its
-  `export.delivered_events` equalled the number of distinct event ids the
-  receiver held at that snapshot's own `received_at_ms` — 253 against 253 over
-  a 140-second run, and 64 against 64 over a shorter one. That comparison is the
-  one that can fail: a payload counting a lost reading as delivered moves the
-  counter and not the row count.
-- **No reading lost across a restart or a lost acknowledgement**: three
-  processes on one device, the last of them behind a proxy that dropped the
-  answer to a batch the receiver had already stored, left 123 rows and 123
-  distinct event ids. The re-sent batch was answered duplicate, stored no second
-  copy, and was counted under `duplicate_events` with nothing unconfirmed.
+**On the phone** — an arm64 payload exec'd from `/data/local/tmp` on an
+SM-M336BU, posting through a reverse tunnel, three processes on one device, the
+last of them behind a proxy that dropped the answer to a batch the receiver had
+already stored. The receiver holds 1104 rows for that device, 1104 distinct
+event ids, and no duplicate row. The batch sequence began at 1 four times: three
+process starts and the retained batch re-sent, which added no row. The process
+that met the dropped answer ends at 196 delivered and 1 duplicate, with nothing
+declined, unconfirmed, dropped or refused. So a reading survives a restart and a
+lost acknowledgement on the hardware the payload ships to, and a re-sent batch is
+recognised rather than stored twice.
 
-**No reading has been produced by real hardware.** Whether the PZEM answers at
-all, and whether a reading round-trips from a real meter, is not addressed by
-any of the above and is not claimed anywhere in this document. The sensor status
-route and the delivery rules are proven under simulated load with no meter, on a
-development host, with nothing run on a handset.
+**On the host** — one process per device, which is what makes the counters
+attributable. For each snapshot the receiver stored, its
+`export.delivered_events` equalled the distinct event ids the receiver held at
+that snapshot's own `received_at_ms`: 253 against 253 over a 140-second run and
+64 against 64 over a shorter one. That is the comparison that can fail, since a
+payload counting a lost reading as delivered moves the counter and not the row
+count.
+
+Counter agreement is a host result and not a phone result, for a structural
+reason rather than a missing run. The export counters accumulate from process
+start and reset with the process, and a receiver keeps only the most recent
+snapshot, so on a device that ran three processes the stored snapshot carries the
+last process's counts while the rows carry all three. The check is therefore per
+process, and only the last process of a device can be checked at all.
+
+**No reading has been produced by a real meter.** The PZEM has no mains supply,
+so whether it answers at all, and whether a reading round-trips from it, is
+untested — outstanding for a physical reason, not for want of trying. Nothing in
+this document claims otherwise, and the simulated meter is the boundary of every
+result above.
 
 Panic locations embed the absolute source path of every file they come from, and
 stripping keeps them, so the build script remaps two prefixes and refuses to run
