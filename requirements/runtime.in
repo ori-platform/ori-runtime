@@ -13,4 +13,4 @@ pyopenssl>=26.3.0
 twilio>=9.11.1
 africastalking>=2.0.3
 python-dotenv>=1.2.3
-urllib3>=2.7.0
+urllib3>=2.8.0
