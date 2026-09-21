@@ -8,6 +8,15 @@ updates:
       time: "06:00"
       timezone: Africa/Lagos
     open-pull-requests-limit: 5
+    # One pull request per week for the routine bumps rather than one per
+    # package: every dependency change runs the whole matrix, because a
+    # dependency can break anything, and six of them in a morning cost six
+    # matrix runs for one review. A major bump stays on its own so it can be
+    # declined on its own.
+    groups:
+      python-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     ignore:
       # Pin major versions manually — breaking changes need a human decision
       - dependency-name: "anthropic"
@@ -28,5 +37,8 @@ updates:
       day: monday
       time: "06:00"
       timezone: Africa/Lagos
+    groups:
+      github-actions:
+        patterns: ["*"]
     commit-message:
       prefix: "ci(deps)"

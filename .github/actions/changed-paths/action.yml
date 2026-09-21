@@ -1,0 +1,64 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+name: Changed paths
+description: >-
+  Decide whether a job's own paths changed since the comparison base, so a job
+  outside a change's blast radius can skip its work while still running and
+  reporting. Fails open: when the base is unknown or unreachable the answer is
+  always "run".
+
+inputs:
+  pattern:
+    description: Extended regular expression matched against each changed path.
+    required: true
+  reason:
+    description: What the caller does with the answer, for the log line.
+    required: false
+    default: running this job's checks
+
+outputs:
+  run:
+    description: '"true" when the paths changed, or when no base could be used.'
+    value: ${{ steps.decide.outputs.run }}
+
+runs:
+  using: composite
+  steps:
+    - id: decide
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PUSH_BEFORE_SHA: ${{ github.event.before }}
+        PATTERN: ${{ inputs.pattern }}
+        REASON: ${{ inputs.reason }}
+      run: |
+        decide() {
+          echo "run=$1" >> "$GITHUB_OUTPUT"
+          echo "$2"
+        }
+        case "$EVENT_NAME" in
+          pull_request) base="$PR_BASE_SHA" ;;
+          push) base="$PUSH_BEFORE_SHA" ;;
+          *) base="" ;;
+        esac
+        if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          decide true "No comparison base for event '$EVENT_NAME': $REASON."
+          exit 0
+        fi
+        if ! git fetch --no-tags --depth=1 origin "$base"; then
+          decide true "Comparison base $base is not reachable (force-push?): $REASON."
+          exit 0
+        fi
+        changed="$(git diff --name-only "$base" HEAD)"
+        if [ -z "$changed" ]; then
+          decide true "No changed paths reported against $base: $REASON."
+          exit 0
+        fi
+        if printf '%s\n' "$changed" | grep -Eq "$PATTERN"; then
+          decide true "Matching paths changed since $base: $REASON."
+          printf '%s\n' "$changed" | grep -E "$PATTERN"
+        else
+          decide false "No matching paths changed since $base: skipping $REASON."
+        fi
