@@ -87,7 +87,9 @@ def _event(
         quality=quality,
         metadata={"source": source},
     )
-    return OriEvent.from_reading(reading, "energy-site-01")
+    event = OriEvent.from_reading(reading, "energy-site-01")
+    event.received_at_ms = reading.timestamp  # received when measured
+    return event
 
 
 def _ctx(skill, event, store):
@@ -497,3 +499,59 @@ def test_post_reasoning_includes_projected_daily_risk_anchor():
     updated = skill.hooks.post_reasoning(result, hook_ctx)
     assert "/day projected extra cost risk" in updated.text
     assert "prevented" not in updated.text.lower()
+
+
+def test_observed_window_is_the_span_of_receipts_not_of_device_clocks():
+    """Ten hours on the readings' own clocks, one hour of observation."""
+    skill = _load_skill()
+    store = _Store()
+    sensor_id = "load-current-01"
+    _seed_history(store, sensor_id, [10.0, 10.0, 10.0, 10.0, 10.0, 10.0])
+    base = 1_710_000_000_000
+    rows = [
+        StoredReading(
+            sensor_id=sensor_id,
+            sensor_type="current_clamp",
+            value=10.0,
+            unit="ampere",
+            timestamp=base + index * 2 * 3_600_000,
+            quality=1.0,
+            received_at_ms=base + index * 12 * 60_000,
+        )
+        for index in range(6)
+    ]
+    store.hooks_get_history = lambda _sensor_id, limit=1: rows[:limit]  # type: ignore[method-assign]
+
+    event = _event(sensor_id=sensor_id, value=14.0)
+    hook_ctx, _ = _ctx(skill, event, store)
+
+    assert hook_ctx.derived["observed_window_hours"] == pytest.approx(1.0)
+
+
+def test_a_history_row_without_a_receipt_does_not_stretch_the_observed_window():
+    """A zero receipt would span to the epoch; the row is left out instead."""
+    skill = _load_skill()
+    store = _Store()
+    sensor_id = "load-current-01"
+    _seed_history(store, sensor_id, [10.0, 10.0, 10.0, 10.0, 10.0, 10.0])
+    base = 1_710_000_000_000
+    rows = [
+        {
+            "sensor_id": sensor_id,
+            "sensor_type": "current_clamp",
+            "value": 10.0,
+            "unit": "ampere",
+            "timestamp": base + index * 60_000,
+            "quality": 1.0,
+            "metadata": {},
+            "received_at_ms": 0 if index == 0 else base + index * 60_000,
+        }
+        for index in range(6)
+    ]
+    event = _event(sensor_id=sensor_id, value=14.0)
+    hook_ctx = HookContext.build(event, store, skill.name, skill_config=skill.config)
+    hook_ctx.history.fetch_history = lambda _sensor_id, limit=1: rows[:limit]  # type: ignore[method-assign]
+
+    skill.hooks.pre_trigger_eval(hook_ctx)
+
+    assert hook_ctx.derived["observed_window_hours"] == pytest.approx(4 / 60)

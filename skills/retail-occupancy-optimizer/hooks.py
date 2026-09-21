@@ -22,6 +22,21 @@ _SMS_MAX_CHARS = 160
 _DIAGNOSIS_MAX_CHARS = 68
 
 
+def _elapsed_minutes(now, start):
+    """Minutes since a receipt, or None when the pair is not usable.
+
+    Zero is no start. A start after now is a clock the runtime cannot
+    reconcile and reads as unknown: never zero and never fresh. No upper
+    bound: a wall-clock interval cannot tell an eight-day condition from a
+    forward jump of the runtime's own clock, and a bound would erase the
+    former to guard against the latter. That excursion is the runtime clock's
+    to settle, not this hook's.
+    """
+    if start <= 0 or now < start:
+        return None
+    return (now - start) / 60000.0
+
+
 def _state_get(context, key, default=""):
     value = context.state.get(key)
     return default if value is None else value
@@ -109,7 +124,10 @@ def pre_trigger_eval(context):
     cfg = getattr(context, "config", {}) or {}
     event = getattr(context, "event", None)
     reading = getattr(event, "reading", None)
-    now = as_int(getattr(context, "timestamp", 0), 0)
+    # Now is the runtime's clock at receipt, never the reading's own clock: a
+    # persistence window or a staleness check measured on a device's clock
+    # could be made to look elapsed or fresh by what that clock reports.
+    now = as_int(getattr(context, "received_at_ms", 0), 0)
 
     min_quality = as_float(cfg.get("min_quality", 0.8), 0.8)
     occupancy_empty_threshold = as_float(cfg.get("occupancy_empty_threshold", 0.0), 0.0)
@@ -185,33 +203,35 @@ def pre_trigger_eval(context):
     if sensor_type in _OCCUPANCY_TYPES:
         occupancy_count = max(0.0, current_value)
         _state_set(context, "last_occupancy_count", occupancy_count)
-        _state_set(context, "last_occupancy_ts", now)
+        _state_set(context, "last_occupancy_received_ms", now)
         if occupancy_count <= occupancy_empty_threshold:
-            empty_since_ms = _state_get_int(context, "occupancy_empty_since_ms", 0)
+            empty_since_ms = _state_get_int(
+                context, "occupancy_empty_since_received_ms", 0
+            )
             if empty_since_ms <= 0:
                 empty_since_ms = now
-                _state_set(context, "occupancy_empty_since_ms", empty_since_ms)
+                _state_set(context, "occupancy_empty_since_received_ms", empty_since_ms)
         else:
-            _state_set(context, "occupancy_empty_since_ms", 0)
+            _state_set(context, "occupancy_empty_since_received_ms", 0)
     else:
         power_watts = max(0.0, current_value)
         _state_set(context, "last_power_watts", power_watts)
-        _state_set(context, "last_power_ts", now)
+        _state_set(context, "last_power_received_ms", now)
         _state_set(context, "last_power_sensor_id", sensor_id)
 
     occupancy_count = _state_get_float(context, "last_occupancy_count", 0.0)
-    empty_since_ms = _state_get_int(context, "occupancy_empty_since_ms", 0)
+    empty_since_ms = _state_get_int(context, "occupancy_empty_since_received_ms", 0)
     facility_empty = occupancy_count <= occupancy_empty_threshold and empty_since_ms > 0
-    empty_duration_minutes = (
-        max(now - empty_since_ms, 0) / 60000.0 if facility_empty else 0.0
-    )
+    empty_elapsed = _elapsed_minutes(now, empty_since_ms) if facility_empty else None
+    empty_duration_minutes = empty_elapsed if empty_elapsed is not None else 0.0
 
     power_watts = _state_get_float(context, "last_power_watts", 0.0)
-    power_ts = _state_get_int(context, "last_power_ts", 0)
+    power_ts = _state_get_int(context, "last_power_received_ms", 0)
     power_sensor_id = str(
         _state_get(context, "last_power_sensor_id", sensor_id)
     ).strip()
-    power_age_minutes = max(now - power_ts, 0) / 60000.0 if power_ts > 0 else 1e9
+    power_elapsed = _elapsed_minutes(now, power_ts)
+    power_age_minutes = power_elapsed if power_elapsed is not None else 1e9
     power_snapshot_fresh = power_age_minutes <= power_snapshot_staleness_minutes
 
     context.derived["occupancy_count"] = occupancy_count

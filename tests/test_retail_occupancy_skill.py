@@ -87,6 +87,7 @@ def _event(
         metadata={"source": "mqtt"},
     )
     event = OriEvent.from_reading(reading, "retail-site-01")
+    event.received_at_ms = reading.timestamp  # received when measured
     event.context = {"device_timezone": "Africa/Lagos"}
     return event
 
@@ -384,3 +385,92 @@ def test_post_action_trigger_requires_tier_a_followup(tmp_path):
 
     with pytest.raises(SkillValidationError, match="no Tier A default action"):
         _load_skill(skill_copy)
+
+
+@pytest.mark.asyncio
+async def test_empty_duration_is_measured_on_receipt_not_the_device_clock():
+    """A power reading whose clock runs fifty minutes ahead arrived one minute after the site emptied."""
+    skill = _load_skill()
+    skill.config["timezone"] = "Africa/Lagos"
+    skill.config["high_power_threshold_watts"] = 3000.0
+    skill.config["high_power_baseline_multiplier"] = 1.2
+    store = _Store()
+    _seed_power_baseline(store, "site-total-power", [2000.0, 2100.0, 1900.0, 2000.0])
+    _prime_empty_occupancy(skill, store, timestamp=_ts_utc(2024, 3, 11, 8, 0))
+
+    power_event = _event(
+        sensor_id="site-total-power",
+        sensor_type="total_power_watts",
+        value=3600.0,
+        timestamp=_ts_utc(2024, 3, 11, 8, 50),
+        quality=0.95,
+    )
+    power_event.received_at_ms = _ts_utc(2024, 3, 11, 8, 1)
+    _, context = _ctx(skill, power_event, store)
+    trigger = next(
+        t for t in skill.triggers if t.name == "empty_business_hours_high_power"
+    )
+
+    result = await RuleEngine().evaluate(power_event, [trigger], context=context)
+
+    assert context["empty_duration_minutes"] < 45
+    assert result.matched is False
+
+
+@pytest.mark.asyncio
+async def test_state_written_in_the_producer_clock_domain_is_not_read_as_a_receipt():
+    """Keys the previous release persisted are absent, so the window starts fresh."""
+    skill = _load_skill()
+    skill.config["timezone"] = "Africa/Lagos"
+    skill.config["high_power_threshold_watts"] = 3000.0
+    skill.config["high_power_baseline_multiplier"] = 1.2
+    store = _Store()
+    _seed_power_baseline(store, "site-total-power", [2000.0, 2100.0, 1900.0, 2000.0])
+    # The old release stored these under the reading's own clock, ten hours behind.
+    old_clock = _ts_utc(2024, 3, 11, 8, 0) - 10 * 3_600_000
+    store.hooks_set_skill_state(skill.name, "last_occupancy_count", "0")
+    store.hooks_set_skill_state(skill.name, "occupancy_empty_since_ms", str(old_clock))
+    store.hooks_set_skill_state(skill.name, "last_occupancy_ts", str(old_clock))
+    _prime_empty_occupancy(skill, store, timestamp=_ts_utc(2024, 3, 11, 8, 0))
+
+    power_event = _event(
+        sensor_id="site-total-power",
+        sensor_type="total_power_watts",
+        value=3600.0,
+        timestamp=_ts_utc(2024, 3, 11, 8, 1),
+        quality=0.95,
+    )
+    _, context = _ctx(skill, power_event, store)
+    trigger = next(
+        t for t in skill.triggers if t.name == "empty_business_hours_high_power"
+    )
+    result = await RuleEngine().evaluate(power_event, [trigger], context=context)
+
+    assert context["empty_duration_minutes"] < 45
+    assert result.matched is False
+
+
+def test_a_receipt_before_the_power_snapshot_reads_as_stale_not_fresh():
+    """A backward host clock step is unknown freshness, which is not fresh."""
+    skill = _load_skill()
+    store = _Store()
+    _seed_power_baseline(store, "site-total-power", [2000.0, 2100.0, 1900.0, 2000.0])
+    power_event = _event(
+        sensor_id="site-total-power",
+        sensor_type="total_power_watts",
+        value=2000.0,
+        timestamp=_ts_utc(2024, 3, 11, 8, 0),
+        quality=0.95,
+    )
+    _ctx(skill, power_event, store)
+    later = _event(
+        sensor_id="lobby-occupancy",
+        sensor_type="occupancy_count",
+        value=0.0,
+        timestamp=_ts_utc(2024, 3, 11, 8, 1),
+        quality=0.95,
+    )
+    later.received_at_ms = _ts_utc(2024, 3, 11, 8, 0) - 10 * 3_600_000
+    hook_ctx, _ = _ctx(skill, later, store)
+
+    assert hook_ctx.derived["power_snapshot_fresh"] == 0

@@ -1114,3 +1114,63 @@ def test_the_classification_table_describes_clauses_that_exist() -> None:
 @pytest.mark.parametrize("reason", sorted(set(CLASSIFIED_CLAUSES.values())))
 def test_each_classification_states_a_reason(reason: str) -> None:
     assert len(reason) > 30, f"classification is too thin to review: {reason!r}"
+
+
+# ─── Elapsed time on a wall clock may not authorise a physical act ───────────
+
+#: Derived values that are an interval on the runtime's wall clock. A forward
+#: step of that clock reads as elapsed time, and nothing in a hook can tell it
+#: from a genuine long condition; until the runtime supplies an elapsed time
+#: that survives a clock step, a trigger gated on one of these may reach
+#: notifications only.
+WALL_CLOCK_INTERVALS = (
+    "empty_duration_minutes",
+    "power_snapshot_fresh",
+    "low_soc_persist_minutes",
+    "outage_duration_minutes",
+    "observed_window_hours",
+)
+
+
+def test_no_bundled_trigger_gated_on_a_wall_clock_interval_reaches_a_physical_action() -> (
+    None
+):
+    """Binding a physical default to such a trigger fails here, not on a device."""
+    import yaml
+
+    checked = 0
+    offenders: list[str] = []
+    for manifest in sorted((ROOT / "skills").glob("*/skill.yaml")):
+        skill = yaml.safe_load(manifest.read_text())
+        actions = skill.get("actions") or {}
+        tiers = {
+            str(item.get("name")): str(item.get("tier", "")).upper()
+            for item in actions.get("available") or []
+            if isinstance(item, dict)
+        }
+        defaults = actions.get("defaults") or {}
+        for trigger in skill.get("triggers") or []:
+            condition = str(trigger.get("condition", ""))
+            names = {
+                n.id
+                for n in ast.walk(ast.parse(condition, mode="eval"))
+                if isinstance(n, ast.Name)
+            }
+            if not names & set(WALL_CLOCK_INTERVALS):
+                continue
+            checked += 1
+            for action in defaults.get(trigger["name"]) or []:
+                if tiers.get(str(action), "A") != "A":
+                    offenders.append(
+                        f"{manifest.parent.name}: {trigger['name']} -> {action}"
+                    )
+    assert checked, (
+        "no bundled trigger is gated on a wall-clock interval; the scan would pass vacuously"
+    )
+    assert not offenders, (
+        f"triggers gated on a wall-clock interval reach a physical action: {offenders}. "
+        "A forward step of the runtime's clock reads as elapsed time and no hook can "
+        "tell it from a genuine long condition, so such a trigger may reach "
+        "notifications only until the runtime supplies an elapsed time that survives "
+        "a clock step."
+    )

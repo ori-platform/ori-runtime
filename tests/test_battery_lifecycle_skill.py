@@ -83,7 +83,9 @@ def _event(
         quality=quality,
         metadata={},
     )
-    return OriEvent.from_reading(reading, "battery-site-01")
+    event = OriEvent.from_reading(reading, "battery-site-01")
+    event.received_at_ms = reading.timestamp  # received when measured
+    return event
 
 
 def _ctx(skill, event, store):
@@ -249,3 +251,80 @@ def test_post_reasoning_uses_plain_language_sms_bounded_text():
     lower = updated.text.lower()
     for token in ("anomaly", "threshold", "voltage"):
         assert token not in lower
+
+
+@pytest.mark.asyncio
+async def test_persistence_is_measured_on_receipt_not_the_device_clock():
+    """A device clock ten hours ahead does not make thirty seconds persist."""
+    skill = _load_skill()
+    skill.config["timezone"] = "UTC"
+    skill.config["low_soc_persistence_minutes"] = 1
+    store = _Store()
+
+    first = _event(
+        sensor_id="bat-soc-1",
+        sensor_type="growatt_battery_soc",
+        value=18.0,
+        timestamp=_ts_utc(2024, 3, 9, 12, 0),
+    )
+    _ctx(skill, first, store)
+
+    second = _event(
+        sensor_id="bat-soc-1",
+        sensor_type="growatt_battery_soc",
+        value=17.5,
+        timestamp=_ts_utc(2024, 3, 9, 22, 0),
+    )
+    second.received_at_ms = first.received_at_ms + 30_000
+    _, context = _ctx(skill, second, store)
+    trigger = next(t for t in skill.triggers if t.name == "battery_deep_discharge_risk")
+    result = await RuleEngine().evaluate(second, [trigger], context=context)
+    assert result.matched is False
+
+
+@pytest.mark.asyncio
+async def test_state_written_in_the_producer_clock_domain_is_not_read_as_a_receipt():
+    """The old release's low-SoC start, ten hours behind, does not make a minute persist."""
+    skill = _load_skill()
+    skill.config["timezone"] = "UTC"
+    skill.config["low_soc_persistence_minutes"] = 30
+    store = _Store()
+    old_clock = _ts_utc(2024, 3, 9, 12, 0) - 10 * 3_600_000
+    store.hooks_set_skill_state(skill.name, "low_soc_start_ms", str(old_clock))
+
+    event = _event(
+        sensor_id="bat-soc-1",
+        sensor_type="growatt_battery_soc",
+        value=17.5,
+        timestamp=_ts_utc(2024, 3, 9, 12, 1),
+    )
+    hook_ctx, context = _ctx(skill, event, store)
+    trigger = next(t for t in skill.triggers if t.name == "battery_deep_discharge_risk")
+    result = await RuleEngine().evaluate(event, [trigger], context=context)
+
+    assert hook_ctx.derived["low_soc_persist_minutes"] < 1
+    assert result.matched is False
+
+
+def test_a_receipt_before_the_outage_start_reads_as_no_duration():
+    skill = _load_skill()
+    skill.config["timezone"] = "UTC"
+    store = _Store()
+    outage = _event(
+        sensor_id="grid-voltage",
+        sensor_type="grid_voltage",
+        value=0.0,
+        timestamp=_ts_utc(2024, 3, 9, 12, 0),
+    )
+    skill.config["grid_voltage_sensor_ids"] = ["grid-voltage"]
+    _ctx(skill, outage, store)
+    later = _event(
+        sensor_id="grid-voltage",
+        sensor_type="grid_voltage",
+        value=0.0,
+        timestamp=_ts_utc(2024, 3, 9, 12, 5),
+    )
+    later.received_at_ms = _ts_utc(2024, 3, 9, 12, 0) - 10 * 3_600_000
+    hook_ctx, _ = _ctx(skill, later, store)
+
+    assert hook_ctx.derived.get("outage_duration_minutes", 0.0) == 0.0

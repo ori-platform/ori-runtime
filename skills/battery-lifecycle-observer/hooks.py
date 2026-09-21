@@ -18,6 +18,21 @@ _DIAGNOSIS_MAX_CHARS = 66
 _EFC_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 
 
+def _elapsed_minutes(now, start):
+    """Minutes since a receipt, or None when the pair is not usable.
+
+    Zero is no start. A start after now is a clock the runtime cannot
+    reconcile and reads as unknown: never zero and never fresh. No upper
+    bound: a wall-clock interval cannot tell an eight-day condition from a
+    forward jump of the runtime's own clock, and a bound would erase the
+    former to guard against the latter. That excursion is the runtime clock's
+    to settle, not this hook's.
+    """
+    if start <= 0 or now < start:
+        return None
+    return (now - start) / 60000.0
+
+
 def _state_get_float(context, key, default=0.0):
     return as_float(context.state.get(key), default)
 
@@ -65,7 +80,10 @@ def pre_trigger_eval(context):
     cfg = getattr(context, "config", {}) or {}
     event = getattr(context, "event", None)
     reading = getattr(event, "reading", None)
-    now = as_int(getattr(context, "timestamp", 0), 0)
+    # Now is the runtime's clock at receipt, never the reading's own clock: a
+    # persistence window or a staleness check measured on a device's clock
+    # could be made to look elapsed or fresh by what that clock reports.
+    now = as_int(getattr(context, "received_at_ms", 0), 0)
 
     min_quality = as_float(cfg.get("min_quality", 0.8), 0.8)
     low_soc_threshold = as_float(cfg.get("low_soc_threshold", 20.0), 20.0)
@@ -115,11 +133,11 @@ def pre_trigger_eval(context):
     if sensor_id in grid_voltage_sensor_ids:
         if value <= grid_outage_voltage_threshold:
             if _state_get_int(context, "outage_active", 0) == 0:
-                _state_set(context, "outage_start_ms", now)
+                _state_set(context, "outage_start_received_ms", now)
             _state_set(context, "outage_active", 1)
         else:
             _state_set(context, "outage_active", 0)
-            _state_set(context, "outage_start_ms", 0)
+            _state_set(context, "outage_start_received_ms", 0)
             _state_set(context, "outage_start_voltage", 0.0)
 
     # Optional fallback outage updates from inverter-reported grid power.
@@ -128,18 +146,21 @@ def pre_trigger_eval(context):
     if sensor_type in _GRID_POWER_TYPES:
         if value <= 0.0:
             if _state_get_int(context, "outage_active", 0) == 0:
-                _state_set(context, "outage_start_ms", now)
+                _state_set(context, "outage_start_received_ms", now)
             _state_set(context, "outage_active", 1)
         elif not grid_voltage_sensor_ids:
             _state_set(context, "outage_active", 0)
-            _state_set(context, "outage_start_ms", 0)
+            _state_set(context, "outage_start_received_ms", 0)
             _state_set(context, "outage_start_voltage", 0.0)
 
     outage_active = _state_get_int(context, "outage_active", 0)
-    outage_start_ms = _state_get_int(context, "outage_start_ms", 0)
-    if outage_active == 1 and outage_start_ms > 0 and now > outage_start_ms:
+    outage_start_ms = _state_get_int(context, "outage_start_received_ms", 0)
+    outage_elapsed = (
+        _elapsed_minutes(now, outage_start_ms) if outage_active == 1 else None
+    )
+    if outage_elapsed is not None and outage_elapsed > 0:
         context.derived["outage_active"] = 1
-        context.derived["outage_duration_minutes"] = (now - outage_start_ms) / 60000.0
+        context.derived["outage_duration_minutes"] = outage_elapsed
 
     # SOC mode: equivalent full cycle estimate and deep-discharge persistence.
     if sensor_type in _SOC_TYPES:
@@ -147,21 +168,24 @@ def pre_trigger_eval(context):
         context.derived["is_soc_sensor"] = 1
         context.derived["soc_value"] = soc
 
-        low_soc_start_ms = _state_get_int(context, "low_soc_start_ms", 0)
+        low_soc_start_ms = _state_get_int(context, "low_soc_start_received_ms", 0)
         if soc <= low_soc_threshold:
             if low_soc_start_ms <= 0:
                 low_soc_start_ms = now
-                _state_set(context, "low_soc_start_ms", low_soc_start_ms)
+                _state_set(context, "low_soc_start_received_ms", low_soc_start_ms)
+            low_soc_elapsed = _elapsed_minutes(now, low_soc_start_ms)
             context.derived["low_soc_persist_minutes"] = (
-                max(now - low_soc_start_ms, 0) / 60000.0
+                low_soc_elapsed if low_soc_elapsed is not None else 0.0
             )
         else:
-            _state_set(context, "low_soc_start_ms", 0)
+            _state_set(context, "low_soc_start_received_ms", 0)
 
-        efc_window_start_ms = _state_get_int(context, "efc_window_start_ms", now)
+        efc_window_start_ms = _state_get_int(
+            context, "efc_window_start_received_ms", now
+        )
         efc_accum_pct = _state_get_float(context, "efc_accum_pct", 0.0)
         last_soc = _state_get_float(context, "last_soc_value", soc)
-        last_soc_ts = _state_get_int(context, "last_soc_ts", now)
+        last_soc_ts = _state_get_int(context, "last_soc_received_ms", now)
 
         if now <= efc_window_start_ms or (now - efc_window_start_ms) > _EFC_WINDOW_MS:
             efc_window_start_ms = now
@@ -173,10 +197,10 @@ def pre_trigger_eval(context):
         weekly_efc = efc_accum_pct / 100.0
         context.derived["weekly_efc"] = weekly_efc
 
-        _state_set(context, "efc_window_start_ms", efc_window_start_ms)
+        _state_set(context, "efc_window_start_received_ms", efc_window_start_ms)
         _state_set(context, "efc_accum_pct", efc_accum_pct)
         _state_set(context, "last_soc_value", soc)
-        _state_set(context, "last_soc_ts", now)
+        _state_set(context, "last_soc_received_ms", now)
 
     # Voltage-proxy mode (OLAX PoC): decay slope during active outage.
     if sensor_id in battery_voltage_sensor_ids:
@@ -189,13 +213,13 @@ def pre_trigger_eval(context):
                 start_voltage = value
                 _state_set(context, "outage_start_voltage", start_voltage)
 
-            duration_ms = max(now - max(outage_start_ms, 0), 0)
-            if duration_ms > 0:
-                hours = duration_ms / 3600000.0
+            decay_elapsed = _elapsed_minutes(now, outage_start_ms)
+            if decay_elapsed is not None and decay_elapsed > 0:
+                hours = decay_elapsed / 60.0
                 decay_v_per_hour = max(0.0, (start_voltage - value) / hours)
                 context.derived["voltage_decay_v_per_hour"] = decay_v_per_hour
                 context.derived["outage_active"] = 1
-                context.derived["outage_duration_minutes"] = duration_ms / 60000.0
+                context.derived["outage_duration_minutes"] = decay_elapsed
         else:
             _state_set(context, "outage_start_voltage", 0.0)
 
