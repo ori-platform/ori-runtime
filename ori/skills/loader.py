@@ -20,6 +20,7 @@ checks cooldown itself and fires
 — LLM inference, network, GPIO — runs inside a background task.
 """
 
+import ast
 import asyncio
 import base64
 import binascii
@@ -55,6 +56,36 @@ from ori.utils.path_utils import shown
 logger = logging.getLogger(__name__)
 
 _VALID_TIERS = frozenset({"A", "B", "C", "D"})
+
+
+def _refuse_history_in_tier_d_condition(
+    skill_name: str, trigger_name: str, condition: str
+) -> None:
+    """A Tier D condition may not name `history`; what a hook derives is beyond this check.
+
+    Stored history is ordered and aged by the store's receipts, and every
+    helper over it can be made to look stale or current by what arrived and
+    when. This refuses the direct route. A hook's derived values reach the
+    same condition and are not inspected here; the safety-profile migration
+    removes hooks from Tier D conditions altogether.
+    """
+    try:
+        tree = ast.parse(condition, mode="eval")
+    except SyntaxError:
+        return  # the rule engine refuses an unparsable condition with its own message
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "history":
+            raise SkillValidationError(
+                f"Skill '{skill_name}' trigger '{trigger_name}' is Tier D and its "
+                f"condition reads history: {condition!r}. A Tier D condition "
+                "evaluates the reading in hand only; stored history is ordered by "
+                "when the runtime received each reading, and a safety cutoff must "
+                "not depend on delivery order or on how current the store believes "
+                "a reading is. This guard reads the condition text only; it does not "
+                "see a hook, a prompt, or what an executor reads."
+            )
+
+
 _TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
 _MAX_HISTORY_PLACEHOLDERS = 16
@@ -1684,6 +1715,9 @@ class SkillLoader:
             # Tier D: enforce bypass_llm — safety-critical actions never reach LLM
             if action_tier == "D":
                 bypass_llm = True
+                _refuse_history_in_tier_d_condition(
+                    skill_name, name, str(raw.get("condition", "") or "")
+                )
 
             # bypass_llm without Tier D is a misconfiguration
             if bypass_llm and action_tier != "D":

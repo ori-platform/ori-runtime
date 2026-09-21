@@ -789,6 +789,7 @@ class IntelligenceElevator:
             device_id=event.device_id,
             sensor_id=event.sensor_id,
             timestamp=now_ms(),
+            received_at_ms=now_ms(),
             reading=None,
             context={
                 "message": msg,
@@ -1657,6 +1658,7 @@ class IntelligenceElevator:
                 device_id=event.device_id,
                 sensor_id=event.sensor_id,
                 timestamp=now_ms(),
+                received_at_ms=now_ms(),
                 reading=event.reading,
             )
             synthetic_event.context["operator_message"] = str(result.text)
@@ -1784,6 +1786,7 @@ class IntelligenceElevator:
                     "unit": getattr(reading, "unit", ""),
                     "timestamp": getattr(reading, "timestamp", None),
                     "quality": getattr(reading, "quality", None),
+                    "received_at_ms": getattr(reading, "received_at_ms", None),
                 }
             )
         event.context["history_window"] = history_window

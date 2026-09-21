@@ -4130,6 +4130,7 @@ class TestAlertOutbox:
                 action_tier="A",
                 trigger_name="high_draw",
                 original_ts=1234567890,
+                received_at_ms=1234567890,
                 alert_sender=alert_sender,
             )
             assert handled is True
@@ -4173,6 +4174,7 @@ class TestAlertOutbox:
                 action_tier="A",
                 trigger_name="high_draw",
                 original_ts=1234567890,
+                received_at_ms=1234567890,
                 alert_sender=alert_sender,
             )
             second = await runtime._send_or_queue_alert(
@@ -4182,6 +4184,7 @@ class TestAlertOutbox:
                 action_tier="A",
                 trigger_name="high_draw",
                 original_ts=1234567891,
+                received_at_ms=1234567891,
                 alert_sender=alert_sender,
             )
             assert first is True
@@ -4221,6 +4224,7 @@ class TestAlertOutbox:
                 action_tier="D",
                 trigger_name="dangerous_overcurrent",
                 original_ts=1234567890,
+                received_at_ms=1234567890,
                 alert_sender=alert_sender,
             )
             assert delivered is True
@@ -4264,6 +4268,7 @@ class TestAlertOutbox:
                 action_tier="A",
                 trigger_name="high_draw",
                 original_ts=1234567890,
+                received_at_ms=1234567890,
                 alert_sender=alert_sender,
             )
             assert delivered is True

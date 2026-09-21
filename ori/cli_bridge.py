@@ -28,7 +28,7 @@ from ori.config import (
     requires_production_posture,
 )
 from ori.gateway.mqtt_security import parse_gateway_broker_endpoint
-from ori.network.events import SensorReading
+from ori.network.events import StoredReading
 from ori.security.commissioning.anchors import (
     COMMISSIONING_ANCHOR_ENV,
     AnchorError,
@@ -56,7 +56,7 @@ from ori.security.commissioning.profiles import (
 )
 from ori.skills.loader import Skill, SkillLoader, SkillValidationError
 from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
-from ori.state.store import StateStore
+from ori.state.store import HistoryReceiptMigrationRequiredError, StateStore
 from ori.utils.bool_utils import is_truthy
 
 _SCHEMA_VERSION = 1
@@ -759,7 +759,7 @@ async def _read_state_action_log(args: list[str]) -> list[dict[str, Any]]:
     )
     limit = _state_limit(filters.get("limit"), default=50)
     store = _state_store_from_config(config)
-    await store.open()
+    await _open_state_store(store)
     try:
         return await store.get_action_log(limit=limit)
     finally:
@@ -781,7 +781,7 @@ async def _read_state_history(args: list[str]) -> list[dict[str, Any]]:
         )
     limit = _state_limit(filters.get("limit"), default=100)
     store = _state_store_from_config(config)
-    await store.open()
+    await _open_state_store(store)
     try:
         readings = await store.get_history(sensor_id=sensor_id, limit=limit)
     finally:
@@ -892,7 +892,7 @@ async def _in_force_binding(config: Config) -> AcceptedBinding | None:
         # that is root, and the service account could then never open it.
         return None
     store = _commissioning_store(config)
-    await store.open()
+    await _open_state_store(store)
     try:
         row = await store.get_commissioned_binding_in_force()
     finally:
@@ -1041,7 +1041,7 @@ async def _proof_state(config: Config):
             "provisional binding there",
         )
     store = _commissioning_store(config)
-    await store.open()
+    await _open_state_store(store)
     try:
         provisional_row = await store.get_provisional_binding()
         in_force_row = await store.get_commissioned_binding_in_force()
@@ -1079,7 +1079,7 @@ async def _commissioning_prove_command(
     config = Config.load(config_path)
     provisional, in_force = await _proof_state(config)
     store = _commissioning_store(config)
-    await store.open()
+    await _open_state_store(store)
     try:
         operation = ProofOperation(
             store=store,
@@ -1138,7 +1138,7 @@ async def _commissioning_proof_export(config_path: str) -> dict[str, Any]:
     config = Config.load(config_path)
     provisional, _ = await _proof_state(config)
     store = _commissioning_store(config)
-    await store.open()
+    await _open_state_store(store)
     try:
         return await export_observations(store=store, provisional=provisional)
     except ProofRefusedError as refusal:
@@ -1229,7 +1229,7 @@ def _state_store_from_config(config: Config) -> StateStore:
     return StateStore(str(path))
 
 
-def _sensor_reading_to_dict(reading: SensorReading) -> dict[str, Any]:
+def _sensor_reading_to_dict(reading: StoredReading) -> dict[str, Any]:
     return {
         "sensor_id": reading.sensor_id,
         "sensor_type": reading.sensor_type,
@@ -1238,7 +1238,16 @@ def _sensor_reading_to_dict(reading: SensorReading) -> dict[str, Any]:
         "timestamp": reading.timestamp,
         "quality": reading.quality,
         "metadata": reading.metadata,
+        "received_at_ms": int(reading.received_at_ms),
     }
+
+
+async def _open_state_store(store: StateStore) -> None:
+    """Open for reading; a store that needs the destructive migration is reported, not migrated."""
+    try:
+        await store.open()
+    except HistoryReceiptMigrationRequiredError as exc:
+        raise BridgeError("state_migration_required", str(exc)) from exc
 
 
 def _optional_str(value: Any) -> str | None:

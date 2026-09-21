@@ -5,13 +5,23 @@ import asyncio
 import datetime
 import hashlib
 import json
+import logging
 import os
 import sqlite3
+from pathlib import Path
 from typing import Any, Callable, Concatenate, Optional, ParamSpec, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
+from ori.network.events import (
+    ActionResult,
+    OriEvent,
+    ReasoningResult,
+    SensorReading,
+    StoredReading,
+)
 from ori.utils.time_utils import now_ms
+
+logger = logging.getLogger(__name__)
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -39,21 +49,7 @@ def _normalise_input_evidence(grade_value: Any, posture_value: Any) -> tuple[str
     return "unattested", ""
 
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS sensor_history (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    sensor_id   TEXT    NOT NULL,
-    sensor_type TEXT    NOT NULL,
-    value       REAL    NOT NULL,
-    unit        TEXT    NOT NULL,
-    timestamp   INTEGER NOT NULL,
-    quality     REAL    NOT NULL,
-    metadata    TEXT    NOT NULL DEFAULT '{}'
-);
-
-CREATE INDEX IF NOT EXISTS idx_sensor_history_sensor_id_ts
-    ON sensor_history (sensor_id, timestamp DESC);
-
+_CORE_DDL = """
 CREATE TABLE IF NOT EXISTS reasoning_log (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     trigger_name   TEXT    NOT NULL,
@@ -288,7 +284,8 @@ CREATE TABLE IF NOT EXISTS alert_outbox (
     template_variables_json TEXT NOT NULL DEFAULT '[]',
     action_tier     TEXT    NOT NULL,   -- 'A' | 'B' | 'C' | 'D'
     trigger_name    TEXT    NOT NULL DEFAULT '',
-    original_ts     INTEGER NOT NULL,
+    original_ts     INTEGER NOT NULL,   -- the event's producer time, kept raw
+    queued_at_ms    INTEGER NOT NULL DEFAULT 0,  -- the store's clock at enqueue; 0 only before migration
     attempt_count   INTEGER NOT NULL DEFAULT 0,
     last_attempt_ts INTEGER,
     status          TEXT    NOT NULL DEFAULT 'pending', -- queue: pending|failed|accepted|abandoned
@@ -300,8 +297,8 @@ CREATE TABLE IF NOT EXISTS alert_outbox (
     last_status_at_ms INTEGER
 );
 
-CREATE INDEX IF NOT EXISTS idx_alert_outbox_status_tier_ts
-    ON alert_outbox (status, action_tier, original_ts ASC);
+CREATE INDEX IF NOT EXISTS idx_alert_outbox_status_tier_id
+    ON alert_outbox (status, action_tier, id ASC);
 
 CREATE TABLE IF NOT EXISTS safety_trip_journal (
     seq            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -352,39 +349,6 @@ CREATE TABLE IF NOT EXISTS offline_token_audit (
     approved    INTEGER NOT NULL,
     reason      TEXT    NOT NULL,
     attempted_at INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS sensor_history_5min (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sensor_id TEXT NOT NULL,
-    sensor_type TEXT NOT NULL,
-    bucket_ms INTEGER NOT NULL,
-    avg_value REAL NOT NULL,
-    unit TEXT NOT NULL,
-    sample_count INTEGER NOT NULL,
-    UNIQUE(sensor_id, bucket_ms)
-);
-
-CREATE TABLE IF NOT EXISTS sensor_history_hourly (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sensor_id TEXT NOT NULL,
-    sensor_type TEXT NOT NULL,
-    bucket_ms INTEGER NOT NULL,
-    avg_value REAL NOT NULL,
-    unit TEXT NOT NULL,
-    sample_count INTEGER NOT NULL,
-    UNIQUE(sensor_id, bucket_ms)
-);
-
-CREATE TABLE IF NOT EXISTS sensor_history_daily (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sensor_id TEXT NOT NULL,
-    sensor_type TEXT NOT NULL,
-    bucket_ms INTEGER NOT NULL,
-    avg_value REAL NOT NULL,
-    unit TEXT NOT NULL,
-    sample_count INTEGER NOT NULL,
-    UNIQUE(sensor_id, bucket_ms)
 );
 
 CREATE TABLE IF NOT EXISTS firmware_device_registry (
@@ -746,6 +710,103 @@ CREATE TABLE IF NOT EXISTS commissioning_proof_observation (
 );
 """
 
+#: The history pyramid, kept apart from the core DDL because the receipt
+#: migration rebuilds exactly these tables inside one transaction.
+_HISTORY_DDL_STATEMENTS: tuple[str, ...] = (
+    """CREATE TABLE IF NOT EXISTS sensor_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id   TEXT    NOT NULL,
+    sensor_type TEXT    NOT NULL,
+    value       REAL    NOT NULL,
+    unit        TEXT    NOT NULL,
+    timestamp   INTEGER NOT NULL,   -- the producer's clock, kept raw, never a ranking key
+    quality     REAL    NOT NULL,
+    metadata    TEXT    NOT NULL DEFAULT '{}',
+    received_at_ms INTEGER NOT NULL CHECK (received_at_ms > 0)  -- the store's clock at insert
+)""",
+    """-- Arrival order is `id` and arrival time is `received_at_ms`. Both are the
+-- store's own observation, which is why "latest" and "within the last N
+-- hours" rank and filter on them and never on the producer's `timestamp`.
+CREATE INDEX IF NOT EXISTS idx_sensor_history_sensor_id
+    ON sensor_history (sensor_id)""",
+    """CREATE INDEX IF NOT EXISTS idx_sensor_history_sensor_id_received
+    ON sensor_history (sensor_id, received_at_ms DESC)""",
+    """CREATE TABLE IF NOT EXISTS sensor_history_5min (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id TEXT NOT NULL,
+    sensor_type TEXT NOT NULL,
+    bucket_ms INTEGER NOT NULL,   -- bucket of the producer's measured time
+    avg_value REAL NOT NULL,
+    unit TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
+    UNIQUE(sensor_id, bucket_ms)
+)""",
+    """CREATE TABLE IF NOT EXISTS sensor_history_hourly (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id TEXT NOT NULL,
+    sensor_type TEXT NOT NULL,
+    bucket_ms INTEGER NOT NULL,   -- bucket of the producer's measured time
+    avg_value REAL NOT NULL,
+    unit TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
+    UNIQUE(sensor_id, bucket_ms)
+)""",
+    """CREATE TABLE IF NOT EXISTS sensor_history_daily (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id TEXT NOT NULL,
+    sensor_type TEXT NOT NULL,
+    bucket_ms INTEGER NOT NULL,   -- bucket of the producer's measured time
+    avg_value REAL NOT NULL,
+    unit TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
+    UNIQUE(sensor_id, bucket_ms)
+)""",
+)
+
+_HISTORY_DDL = ";\n".join(_HISTORY_DDL_STATEMENTS) + ";\n"
+_DDL = _CORE_DDL + "\n" + _HISTORY_DDL
+
+_HISTORY_RECEIPT_COLUMNS: dict[str, str] = {
+    "sensor_history": "received_at_ms",
+    "sensor_history_5min": "max_received_at_ms",
+    "sensor_history_hourly": "max_received_at_ms",
+    "sensor_history_daily": "max_received_at_ms",
+}
+
+_LEGACY_HISTORY_INDEXES: tuple[str, ...] = ("idx_sensor_history_sensor_id_ts",)
+_LEGACY_OUTBOX_INDEXES: tuple[str, ...] = ("idx_alert_outbox_status_tier_ts",)
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _unreceipted_history(conn: sqlite3.Connection) -> tuple[list[str], dict[str, int]]:
+    """History tables present without their receipt column, and every present table's row count."""
+    present = {table: _table_columns(conn, table) for table in _HISTORY_RECEIPT_COLUMNS}
+    missing = [
+        table
+        for table, column in _HISTORY_RECEIPT_COLUMNS.items()
+        if present[table] and column not in present[table]
+    ]
+    counts = {
+        table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table, columns in present.items()
+        if columns
+    }
+    return missing, counts
+
+
+def _history_rebuild_statements() -> tuple[str, ...]:
+    """Drop the unreceipted pyramid and recreate it, as one statement list."""
+    drops = tuple(
+        f"DROP INDEX IF EXISTS {name}" for name in _LEGACY_HISTORY_INDEXES
+    ) + tuple(f"DROP TABLE IF EXISTS {table}" for table in _HISTORY_RECEIPT_COLUMNS)
+    return drops + _HISTORY_DDL_STATEMENTS
+
 
 # Marks a migrated identity whose activation history cannot be
 # reconstructed. Revocation sets `approved = 0`, so a pre-lifecycle
@@ -828,6 +889,14 @@ def _require_attribution(operation: str, actor: str, reason: str) -> None:
 MINIMUM_SQLITE_VERSION = (3, 39, 0)
 
 
+class HistoryReceiptMigrationRequiredError(RuntimeError):
+    """The history tables predate the receipt column and this opener may not rebuild them.
+
+    Rebuilding discards every history row, so only the runtime's own startup
+    asks for it. A read path that meets this store reports it instead.
+    """
+
+
 class UnsupportedSQLiteError(RuntimeError):
     """The host's SQLite library is too old for this store's queries."""
 
@@ -851,6 +920,19 @@ def require_supported_sqlite() -> None:
     )
 
 
+def _stored_reading(row: sqlite3.Row) -> StoredReading:
+    return StoredReading(
+        sensor_id=row["sensor_id"],
+        sensor_type=row["sensor_type"],
+        value=row["value"],
+        unit=row["unit"],
+        timestamp=row["timestamp"],
+        quality=row["quality"],
+        metadata=json.loads(row["metadata"]),
+        received_at_ms=int(row["received_at_ms"]),
+    )
+
+
 class StateStore:
     """Async-safe SQLite state store.
 
@@ -858,8 +940,13 @@ class StateStore:
     asyncio event loop is never blocked.
     """
 
-    def __init__(self, db_path: str = "ori_state.db") -> None:
+    def __init__(
+        self, db_path: str = "ori_state.db", *, allow_history_rebuild: bool = False
+    ) -> None:
         self._db_path = db_path
+        # Only the runtime's startup passes True: the rebuild discards rows,
+        # and a tool that only reads must never do that on the way in.
+        self._allow_history_rebuild = allow_history_rebuild
         self._conn: Optional[sqlite3.Connection] = None
         self._write_lock = asyncio.Lock()
         self._lifecycle_lock = asyncio.Lock()
@@ -888,6 +975,10 @@ class StateStore:
         # connection would cost a comparison on every read to re-establish
         # something already known.
         require_supported_sqlite()
+        # Decided on a read-only connection before this one exists: a refused
+        # open must leave the file byte-for-byte as it found it, and the WAL
+        # pragma below already writes the header.
+        self._refuse_unreceipted_history_unless_allowed()
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._restrict_db_file_permissions()
         conn.row_factory = sqlite3.Row
@@ -916,7 +1007,13 @@ class StateStore:
                 await asyncio.to_thread(conn.close)
 
     def _migrate_sync(self, conn: sqlite3.Connection) -> None:
-        conn.executescript(_DDL)
+        conn.executescript(_CORE_DDL)
+        # Before the history DDL: its receipt index cannot be created over a
+        # table that predates the column, so an unreceipted pyramid is rebuilt
+        # first and a fresh store gets its tables from the DDL after.
+        self._rebuild_history_schema_if_unreceipted(conn)
+        conn.executescript(_HISTORY_DDL)
+        self._migrate_alert_outbox_receipt(conn)
         # Add columns that may be missing from databases created before this
         # migration.  SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS
         # so duplicate-column errors are handled explicitly.
@@ -1091,9 +1188,7 @@ class StateStore:
                        WHEN provider_status = '' THEN 'legacy_provider_success'
                        ELSE provider_status
                    END,
-                   accepted_at_ms = COALESCE(
-                       accepted_at_ms, last_attempt_ts, original_ts
-                   ),
+                   accepted_at_ms = COALESCE(accepted_at_ms, last_attempt_ts),
                    delivered_at_ms = NULL
              WHERE status = 'delivered'
             """
@@ -1484,6 +1579,76 @@ class StateStore:
                 ),
             )
 
+    def _refuse_unreceipted_history_unless_allowed(self) -> None:
+        """Raise before any write when the store needs the rebuild and this opener may not do it."""
+        if self._allow_history_rebuild or self._db_path == ":memory:":
+            return
+        path = Path(self._db_path)
+        if not path.is_file():
+            return
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            missing, counts = _unreceipted_history(conn)
+        finally:
+            conn.close()
+        if missing:
+            raise HistoryReceiptMigrationRequiredError(
+                f"history tables {', '.join(missing)} predate the receipt column; "
+                f"migrating rebuilds them and discards {sum(counts.values())} rows "
+                f"({counts}). Nothing was changed. Start the runtime under this "
+                "release to migrate; a read-only tool does not."
+            )
+
+    def _rebuild_history_schema_if_unreceipted(self, conn: sqlite3.Connection) -> None:
+        """Discard history rows that carry no receipt; the loss is logged, never silent.
+
+        A row written before the store recorded receipts has only the producer's
+        clock, and copying that into the receipt would rank the store's history
+        on the very value this schema exists to keep out of rankings. The
+        rebuild is one transaction: a failure leaves the old tables and rows.
+        """
+        missing, counts = _unreceipted_history(conn)
+        if not missing:
+            return
+        if not self._allow_history_rebuild:
+            raise HistoryReceiptMigrationRequiredError(
+                f"history tables {', '.join(missing)} predate the receipt column; "
+                f"migrating rebuilds them and discards {sum(counts.values())} rows "
+                f"({counts}). Nothing was changed. Start the runtime under this "
+                "release to migrate; a read-only tool does not."
+            )
+        conn.commit()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for statement in _history_rebuild_statements():
+                conn.execute(statement)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        logger.warning(
+            "[store] history tables predate the receipt column (%s); rebuilt "
+            "them and discarded %d rows (%s). Rows without a receipt cannot be "
+            "ranked as current or aged, so they are not carried forward.",
+            ", ".join(missing),
+            sum(counts.values()),
+            counts,
+        )
+
+    def _migrate_alert_outbox_receipt(self, conn: sqlite3.Connection) -> None:
+        """Queue order is arrival; rows from before the column get the migration moment."""
+        if "queued_at_ms" not in _table_columns(conn, "alert_outbox"):
+            self._add_column_if_missing_on_conn(
+                conn, "alert_outbox", "queued_at_ms", "INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            "UPDATE alert_outbox SET queued_at_ms = ? WHERE queued_at_ms <= 0",
+            (now_ms(),),
+        )
+        for name in _LEGACY_OUTBOX_INDEXES:
+            conn.execute(f"DROP INDEX IF EXISTS {name}")
+        conn.commit()
+
     def _add_column_if_missing_on_conn(
         self,
         conn: sqlite3.Connection,
@@ -1606,13 +1771,13 @@ class StateStore:
         row = self._conn.execute(
             """
             SELECT MAX(t) as max_ts FROM (
-                SELECT MAX(timestamp) as t FROM sensor_history
+                SELECT MAX(received_at_ms) as t FROM sensor_history
                 UNION ALL
-                SELECT MAX(bucket_ms) as t FROM sensor_history_5min
+                SELECT MAX(max_received_at_ms) as t FROM sensor_history_5min
                 UNION ALL
-                SELECT MAX(bucket_ms) as t FROM sensor_history_hourly
+                SELECT MAX(max_received_at_ms) as t FROM sensor_history_hourly
                 UNION ALL
-                SELECT MAX(bucket_ms) as t FROM sensor_history_daily
+                SELECT MAX(max_received_at_ms) as t FROM sensor_history_daily
             )
             """
         ).fetchone()
@@ -1624,60 +1789,91 @@ class StateStore:
                     f"Clock skew detected: now_ms ({now_ms}) is behind db_max_ts ({db_max_ts}) by more than {max_backward_skew_ms}ms"
                 )
 
-        # 1. Aggregate raw → 5-minute buckets older than 48h
+        # Retention is decided on receipt: a row leaves a tier once the store
+        # received it before the cutoff. Buckets are keyed on the producer's
+        # measured time, so one bucket can gain samples across compaction runs
+        # and the insert merges the weighted average instead of ignoring them.
+
+        # 1. raw → 5-minute buckets, received more than 48h ago
         self._conn.execute(
             """
-            INSERT OR IGNORE INTO sensor_history_5min
-            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
+            INSERT INTO sensor_history_5min
+            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
+             max_received_at_ms)
             SELECT sensor_id, sensor_type,
                    (timestamp / 300000) * 300000 AS bucket_ms,
-                   AVG(value), unit, COUNT(*)
+                   AVG(value), unit, COUNT(*), MAX(received_at_ms)
             FROM sensor_history
-            WHERE timestamp < ?
+            WHERE received_at_ms < ?
             GROUP BY sensor_id, (timestamp / 300000)
-        """,
+            ON CONFLICT(sensor_id, bucket_ms) DO UPDATE SET
+                avg_value = (sensor_history_5min.avg_value * sensor_history_5min.sample_count
+                             + excluded.avg_value * excluded.sample_count)
+                            / (sensor_history_5min.sample_count + excluded.sample_count),
+                sample_count = sensor_history_5min.sample_count + excluded.sample_count,
+                max_received_at_ms = MAX(sensor_history_5min.max_received_at_ms,
+                                         excluded.max_received_at_ms)
+            """,
+            (cutoffs["raw"],),
+        )
+        self._conn.execute(
+            "DELETE FROM sensor_history WHERE received_at_ms < ?",
             (cutoffs["raw"],),
         )
 
-        # 2. Delete raw rows older than 48h
-        self._conn.execute(
-            "DELETE FROM sensor_history WHERE timestamp < ?", (cutoffs["raw"],)
-        )
-
-        # 3. Aggregate 5-min → hourly buckets older than 30d
+        # 2. 5-minute → hourly buckets, received more than 30d ago
         self._conn.execute(
             """
-            INSERT OR IGNORE INTO sensor_history_hourly
-            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
+            INSERT INTO sensor_history_hourly
+            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
+             max_received_at_ms)
             SELECT sensor_id, sensor_type,
-                   (bucket_ms / 3600000) * 3600000,
-                   SUM(avg_value * sample_count) / SUM(sample_count), unit, SUM(sample_count)
+                   (bucket_ms / 3600000) * 3600000 AS bucket_ms,
+                   SUM(avg_value * sample_count) / SUM(sample_count), unit,
+                   SUM(sample_count), MAX(max_received_at_ms)
             FROM sensor_history_5min
-            WHERE bucket_ms < ?
+            WHERE max_received_at_ms < ?
             GROUP BY sensor_id, (bucket_ms / 3600000)
-        """,
+            ON CONFLICT(sensor_id, bucket_ms) DO UPDATE SET
+                avg_value = (sensor_history_hourly.avg_value * sensor_history_hourly.sample_count
+                             + excluded.avg_value * excluded.sample_count)
+                            / (sensor_history_hourly.sample_count + excluded.sample_count),
+                sample_count = sensor_history_hourly.sample_count + excluded.sample_count,
+                max_received_at_ms = MAX(sensor_history_hourly.max_received_at_ms,
+                                         excluded.max_received_at_ms)
+            """,
             (cutoffs["5min"],),
         )
         self._conn.execute(
-            "DELETE FROM sensor_history_5min WHERE bucket_ms < ?", (cutoffs["5min"],)
+            "DELETE FROM sensor_history_5min WHERE max_received_at_ms < ?",
+            (cutoffs["5min"],),
         )
 
-        # 4. Aggregate hourly → daily buckets older than 1 year
+        # 3. hourly → daily buckets, received more than 1 year ago
         self._conn.execute(
             """
-            INSERT OR IGNORE INTO sensor_history_daily
-            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
+            INSERT INTO sensor_history_daily
+            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
+             max_received_at_ms)
             SELECT sensor_id, sensor_type,
-                   (bucket_ms / 86400000) * 86400000,
-                   SUM(avg_value * sample_count) / SUM(sample_count), unit, SUM(sample_count)
+                   (bucket_ms / 86400000) * 86400000 AS bucket_ms,
+                   SUM(avg_value * sample_count) / SUM(sample_count), unit,
+                   SUM(sample_count), MAX(max_received_at_ms)
             FROM sensor_history_hourly
-            WHERE bucket_ms < ?
+            WHERE max_received_at_ms < ?
             GROUP BY sensor_id, (bucket_ms / 86400000)
-        """,
+            ON CONFLICT(sensor_id, bucket_ms) DO UPDATE SET
+                avg_value = (sensor_history_daily.avg_value * sensor_history_daily.sample_count
+                             + excluded.avg_value * excluded.sample_count)
+                            / (sensor_history_daily.sample_count + excluded.sample_count),
+                sample_count = sensor_history_daily.sample_count + excluded.sample_count,
+                max_received_at_ms = MAX(sensor_history_daily.max_received_at_ms,
+                                         excluded.max_received_at_ms)
+            """,
             (cutoffs["hourly"],),
         )
         self._conn.execute(
-            "DELETE FROM sensor_history_hourly WHERE bucket_ms < ?",
+            "DELETE FROM sensor_history_hourly WHERE max_received_at_ms < ?",
             (cutoffs["hourly"],),
         )
 
@@ -1695,8 +1891,9 @@ class StateStore:
         self._conn.execute(
             """
             INSERT INTO sensor_history
-                (sensor_id, sensor_type, value, unit, timestamp, quality, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (sensor_id, sensor_type, value, unit, timestamp, quality, metadata,
+                 received_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 r.sensor_id,
@@ -1706,46 +1903,37 @@ class StateStore:
                 r.timestamp,
                 r.quality,
                 json.dumps(r.metadata),
+                now_ms(),  # the store's own clock; a reading never brings its receipt
             ),
         )
         self._conn.commit()
 
     async def get_history(
         self, sensor_id: str, limit: int = 100
-    ) -> list[SensorReading]:
+    ) -> list[StoredReading]:
         return await self._run_read(self._get_history_sync, sensor_id, limit)
 
     def hooks_get_history(
         self, sensor_id: str, limit: int = 100
-    ) -> list[SensorReading]:
+    ) -> list[StoredReading]:
         """Stable sync facade for hook history lookups."""
         return self._run_read_with_conn(self._get_history_sync, sensor_id, limit)
 
     def _get_history_sync(
         self, conn: sqlite3.Connection, sensor_id: str, limit: int
-    ) -> list[SensorReading]:
+    ) -> list[StoredReading]:
         rows = conn.execute(
             """
-            SELECT sensor_id, sensor_type, value, unit, timestamp, quality, metadata
+            SELECT sensor_id, sensor_type, value, unit, timestamp, quality, metadata,
+                   received_at_ms
             FROM sensor_history
             WHERE sensor_id = ?
-            ORDER BY timestamp DESC
+            ORDER BY id DESC
             LIMIT ?
             """,
             (sensor_id, limit),
         ).fetchall()
-        return [
-            SensorReading(
-                sensor_id=row["sensor_id"],
-                sensor_type=row["sensor_type"],
-                value=row["value"],
-                unit=row["unit"],
-                timestamp=row["timestamp"],
-                quality=row["quality"],
-                metadata=json.loads(row["metadata"]),
-            )
-            for row in rows
-        ]
+        return [_stored_reading(row) for row in rows]
 
     async def avg_last_n(self, sensor_id: str, n: int) -> Optional[float]:
         """Average of the n most-recent readings for a sensor."""
@@ -1765,7 +1953,7 @@ class StateStore:
                 SELECT value
                 FROM sensor_history
                 WHERE sensor_id = ?
-                ORDER BY timestamp DESC
+                ORDER BY id DESC
                 LIMIT ?
             )
             """,
@@ -1786,39 +1974,33 @@ class StateStore:
     ) -> Optional[float]:
         cutoff_ms = now_ms() - hours * 3_600_000
 
-        # Weighted average across all tiers to seamlessly span compaction boundaries
+        # "Within the last N hours" is an age, and an age is the greater of the
+        # two intervals: a row qualifies only if it was both received and
+        # measured inside the window. The measured bound can exclude a late
+        # flush; it can never admit a row the store received too long ago.
         row = conn.execute(
             """
             SELECT SUM(val * cnt) / SUM(cnt) AS avg_val
             FROM (
                 SELECT value AS val, 1 AS cnt
                 FROM sensor_history
-                WHERE sensor_id = ? AND timestamp >= ?
+                WHERE sensor_id = ? AND received_at_ms >= ? AND timestamp >= ?
                 UNION ALL
                 SELECT avg_value AS val, sample_count AS cnt
                 FROM sensor_history_5min
-                WHERE sensor_id = ? AND bucket_ms >= ?
+                WHERE sensor_id = ? AND max_received_at_ms >= ? AND bucket_ms >= ?
                 UNION ALL
                 SELECT avg_value AS val, sample_count AS cnt
                 FROM sensor_history_hourly
-                WHERE sensor_id = ? AND bucket_ms >= ?
+                WHERE sensor_id = ? AND max_received_at_ms >= ? AND bucket_ms >= ?
                 UNION ALL
                 SELECT avg_value AS val, sample_count AS cnt
                 FROM sensor_history_daily
-                WHERE sensor_id = ? AND bucket_ms >= ?
+                WHERE sensor_id = ? AND max_received_at_ms >= ? AND bucket_ms >= ?
             )
             HAVING SUM(cnt) > 0
             """,
-            (
-                sensor_id,
-                cutoff_ms,
-                sensor_id,
-                cutoff_ms,
-                sensor_id,
-                cutoff_ms,
-                sensor_id,
-                cutoff_ms,
-            ),
+            (sensor_id, cutoff_ms, cutoff_ms) * 4,
         ).fetchone()
         return row["avg_val"] if row and row["avg_val"] is not None else None
 
@@ -1946,8 +2128,15 @@ class StateStore:
         exclude_sensor_id: str,
         since_ms: int,
         max_entries: int,
-    ) -> list[SensorReading]:
-        """Return the most-recent reading per sensor_id fresher than since_ms.
+    ) -> list[StoredReading]:
+        """Return the latest-arrived reading per sensor_id if its age is within since_ms.
+
+        Which reading is latest is decided first, on arrival order alone. Age
+        is then the greater of the two intervals, so that reading qualifies
+        only if it was both received and measured at or after since_ms. A
+        sensor whose latest arrival is stale by either clock is absent, never
+        represented by an older row: a late flush of an old measurement is
+        not fresh context, and neither is what it superseded.
 
         The triggering sensor (exclude_sensor_id) is always excluded.
         Results are bounded to max_entries, ordered by sensor_id for
@@ -1966,43 +2155,32 @@ class StateStore:
         exclude_sensor_id: str,
         since_ms: int,
         max_entries: int,
-    ) -> list[SensorReading]:
-        # Uses a derived-table join rather than a correlated subquery so the
-        # planner resolves each sensor's MAX(timestamp) in a single index pass
-        # over (sensor_id, timestamp DESC) before joining back to the full row.
-        # The correlated-subquery form re-executes the inner SELECT for every
-        # outer candidate row — O(N_candidates × log N_table) vs O(N_candidates).
+    ) -> list[StoredReading]:
+        # The latest reading per sensor is the last one the store received
+        # (MAX(id) is arrival order), chosen over every row for the sensor.
+        # The freshness bounds are applied to that row afterwards, in the
+        # outer query: filtering before choosing would let an older row stand
+        # in for a sensor whose latest arrival is stale.
         rows = conn.execute(
             """
             SELECT h.sensor_id, h.sensor_type, h.value, h.unit,
-                   h.timestamp, h.quality, h.metadata
+                   h.timestamp, h.quality, h.metadata, h.received_at_ms
             FROM sensor_history AS h
             INNER JOIN (
-                SELECT sensor_id, MAX(timestamp) AS max_ts
+                SELECT sensor_id, MAX(id) AS latest_id
                 FROM sensor_history
                 WHERE sensor_id != ?
-                  AND timestamp >= ?
                 GROUP BY sensor_id
             ) AS latest
-              ON h.sensor_id = latest.sensor_id
-             AND h.timestamp = latest.max_ts
+              ON h.id = latest.latest_id
+            WHERE h.received_at_ms >= ?
+              AND h.timestamp >= ?
             ORDER BY h.sensor_id
             LIMIT ?
             """,
-            (exclude_sensor_id, since_ms, max(1, max_entries)),
+            (exclude_sensor_id, since_ms, since_ms, max(1, max_entries)),
         ).fetchall()
-        return [
-            SensorReading(
-                sensor_id=row["sensor_id"],
-                sensor_type=row["sensor_type"],
-                value=row["value"],
-                unit=row["unit"],
-                timestamp=row["timestamp"],
-                quality=row["quality"],
-                metadata=json.loads(row["metadata"]),
-            )
-            for row in rows
-        ]
+        return [_stored_reading(row) for row in rows]
 
     async def get_timeseries(
         self, sensor_id: str, start_ms: int, end_ms: int
@@ -2099,7 +2277,8 @@ class StateStore:
                     unit,
                     quality,
                     1 AS sample_count,
-                    'raw' AS tier
+                    'raw' AS tier,
+                    received_at_ms
                 FROM sensor_history
                 WHERE sensor_id = ? AND timestamp BETWEEN ? AND ?
                 UNION ALL
@@ -2111,7 +2290,8 @@ class StateStore:
                     unit,
                     NULL AS quality,
                     sample_count,
-                    '5min' AS tier
+                    '5min' AS tier,
+                    max_received_at_ms AS received_at_ms
                 FROM sensor_history_5min
                 WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
                 UNION ALL
@@ -2123,7 +2303,8 @@ class StateStore:
                     unit,
                     NULL AS quality,
                     sample_count,
-                    'hourly' AS tier
+                    'hourly' AS tier,
+                    max_received_at_ms AS received_at_ms
                 FROM sensor_history_hourly
                 WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
                 UNION ALL
@@ -2135,7 +2316,8 @@ class StateStore:
                     unit,
                     NULL AS quality,
                     sample_count,
-                    'daily' AS tier
+                    'daily' AS tier,
+                    max_received_at_ms AS received_at_ms
                 FROM sensor_history_daily
                 WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
             )
@@ -2154,6 +2336,7 @@ class StateStore:
                 "quality": row["quality"],
                 "sample_count": row["sample_count"],
                 "tier": row["tier"],
+                "received_at_ms": row["received_at_ms"],
             }
             for row in rows
         ]
@@ -3195,8 +3378,8 @@ class StateStore:
             INSERT INTO alert_outbox
                 (alert_id, channel, recipient, message, intent,
                  template_variables_json, action_tier, trigger_name, original_ts,
-                 status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                 queued_at_ms, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
             ON CONFLICT(alert_id) DO NOTHING
             """,
             (
@@ -3209,6 +3392,7 @@ class StateStore:
                 action_tier,
                 trigger_name,
                 original_ts,
+                now_ms(),
             ),
         )
         self._conn.commit()
@@ -3227,10 +3411,10 @@ class StateStore:
             """
             SELECT alert_id, channel, recipient, message, intent,
                    template_variables_json, action_tier, trigger_name,
-                   original_ts, attempt_count, last_attempt_ts, status
+                   original_ts, queued_at_ms, attempt_count, last_attempt_ts, status
             FROM alert_outbox
             WHERE status IN ('pending', 'failed')
-            ORDER BY original_ts ASC, id ASC
+            ORDER BY id ASC
             LIMIT ?
             """,
             (limit,),
@@ -3255,7 +3439,8 @@ class StateStore:
         row = conn.execute(
             """
             SELECT COUNT(*) AS backlog_count,
-                   MIN(original_ts) AS oldest_queued_original_ts
+                   MIN(original_ts) AS oldest_queued_original_ts,
+                   MIN(queued_at_ms) AS oldest_queued_at_ms
             FROM alert_outbox
             WHERE status IN ('pending', 'failed')
             """
@@ -3266,9 +3451,16 @@ class StateStore:
             if row["oldest_queued_original_ts"] is not None
             else None
         )
+        oldest_queued_at = (
+            int(row["oldest_queued_at_ms"])
+            if row["oldest_queued_at_ms"] is not None
+            else None
+        )
         return {
             "backlog_count": backlog_count,
+            # The producer's account, reported beside the store's own receipt.
             "oldest_queued_original_ts": oldest_ts,
+            "oldest_queued_at_ms": oldest_queued_at,
         }
 
     async def mark_alert_accepted(

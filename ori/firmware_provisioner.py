@@ -228,10 +228,13 @@ async def _open_store(db_path: str) -> Any:
     """Open the runtime's own state store. `open()` applies the DDL
     migrations, so the registry this CLI reads is the same table the
     runtime uses — not a private copy."""
-    from ori.state.store import StateStore
+    from ori.state.store import HistoryReceiptMigrationRequiredError, StateStore
 
     store = StateStore(db_path=db_path)
-    await store.open()
+    try:
+        await store.open()
+    except HistoryReceiptMigrationRequiredError as exc:
+        raise ProvisionerError(str(exc)) from exc
     return store
 
 

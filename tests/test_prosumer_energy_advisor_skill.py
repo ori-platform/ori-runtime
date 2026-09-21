@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ori.network.events import OriEvent, ReasoningResult, SensorReading
+from ori.network.events import OriEvent, ReasoningResult, SensorReading, StoredReading
 from ori.reasoning.rule_engine import RuleEngine
 from ori.skills.hooks_api import HookContext
 from ori.skills.loader import SkillLoader
@@ -17,8 +17,13 @@ class _Store:
         self._history: dict[str, list[SensorReading]] = {}
         self._state: dict[tuple[str, str], str] = {}
 
-    def hooks_get_history(self, sensor_id: str, limit: int = 1) -> list[SensorReading]:
-        return self._history.get(sensor_id, [])[:limit]
+    def hooks_get_history(self, sensor_id: str, limit: int = 1) -> list[StoredReading]:
+        # The store hands hooks stored readings, each with its receipt; this
+        # double received every reading the moment it was measured.
+        return [
+            StoredReading(**{**vars(reading), "received_at_ms": reading.timestamp})
+            for reading in self._history.get(sensor_id, [])[:limit]
+        ]
 
     def hooks_avg_last_hours(self, sensor_id: str, _hours: int) -> float | None:
         rows = self._history.get(sensor_id, [])

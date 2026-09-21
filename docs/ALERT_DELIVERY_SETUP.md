@@ -139,6 +139,14 @@ Office`, `4`, `3`; `overcurrent`, `Ikeja Office`, `2026-08-29 17:00 WAT`;
 Do not change wording after approval without versioning the template name and
 reviewing the matching runtime intent.
 
+The time slot in each template is the runtime's own clock at the moment it
+detected the risk, proposed the action, or timed out — never the reading's own
+timestamp, which a device reports from a clock nobody can vouch for. The Tier C
+approval body carries both, under their own names (`Measured:` and
+`Detected:`), so a device clock that runs ahead is visible rather than
+corrected. A Tier A body carries whatever the skill composed, and the runtime's
+fallback body carries the value alone.
+
 Template wording must be purpose-specific and fixed around those fields. Do not
 submit a template such as `ORI ALERT — {{1}}`: carrying arbitrary model output
 in one variable recreates the free-form path inside a nominal template. The

@@ -34,7 +34,12 @@ from ori.actions.alert_delivery import (
     build_outbound_alert,
 )
 from ori.actions.logger import LoggerAction
-from ori.network.events import ActionResult, ActionTier, ReasoningResult
+from ori.network.events import (
+    ActionResult,
+    ActionTier,
+    ReasoningResult,
+    event_received_at_ms,
+)
 from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.action_registry import (
     ACTION_REGISTRY,
@@ -1345,17 +1350,22 @@ class ActionDispatcher:
             self._status_indicator.set_tier_c_pending(has_comms=has_comms)
 
         device_id = context.event.device_id if context.event else "unknown"
+        detected_at_ms = event_received_at_ms(context.event)
         message = self._format_approval_message(
             device_id=device_id,
-            timestamp_ms=context.event.timestamp if context.event else now_ms(),
+            timestamp_ms=context.event.timestamp if context.event else detected_at_ms,
             result=result,
             action=action,
             timeout_seconds=approval_timeout_seconds,
             device_timezone=self._config.get("device_timezone", "Africa/Lagos"),
             proposal_id=proposal_id,
+            received_at_ms=detected_at_ms,
         )
+        # The provider template reads "Ori proposes {action} at {time}": the
+        # time Ori proposed it, which is the runtime's own clock, never the
+        # device's account of when the reading was measured.
         formatted_time = self._format_local_time(
-            context.event.timestamp if context.event else now_ms(),
+            detected_at_ms,
             self._config.get("device_timezone", "Africa/Lagos"),
         )
         approval_alert = build_outbound_alert(
@@ -1952,12 +1962,17 @@ class ActionDispatcher:
         timeout_seconds: int,
         device_timezone: str = "Africa/Lagos",
         proposal_id: str | None = None,
+        received_at_ms: int | None = None,
     ) -> str:
         """Format the WhatsApp/SMS approval request message.
 
         Args:
             device_id: The device that triggered the action.
-            timestamp_ms: Unix milliseconds timestamp.
+            timestamp_ms: The reading's own time, as the device reported it.
+            received_at_ms: The runtime's clock when it saw the reading; now
+                when not given. Shown beside the measured time, under its own
+                name, so a device clock that runs ahead is visible rather
+                than corrected.
             result: The reasoning result with text and confidence.
             action: The proposed action name.
             timeout_seconds: Auto-cancel window.
@@ -1970,7 +1985,11 @@ class ActionDispatcher:
         Returns:
             Formatted approval message string matching the README template.
         """
-        formatted_time = self._format_local_time(timestamp_ms, device_timezone)
+        measured_time = self._format_local_time(timestamp_ms, device_timezone)
+        detected_time = self._format_local_time(
+            received_at_ms if received_at_ms and received_at_ms > 0 else now_ms(),
+            device_timezone,
+        )
 
         observation = result.text
         reasoning = result.reasoning if result.reasoning else result.text
@@ -1987,7 +2006,8 @@ class ActionDispatcher:
             f"ORI ALERT — Action Required\n"
             f"Device: {device_id}\n"
             f"{proposal_line}"
-            f"Time: {formatted_time}\n"
+            f"Measured: {measured_time}\n"
+            f"Detected: {detected_time}\n"
             f"\n"
             f"OBSERVATION:\n"
             f"{observation}\n"

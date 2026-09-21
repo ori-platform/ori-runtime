@@ -320,6 +320,9 @@ def test_cli_bridge_state_history_reads_bounded_sensor_history(
     assert rc == 0
     assert payload["ok"] is True
     assert payload["command"] == "state history"
+    # The store's own receipt travels beside the producer's timestamp.
+    received = [row.pop("received_at_ms") for row in payload["result"]]
+    assert received and all(isinstance(value, int) and value > 0 for value in received)
     assert payload["result"] == [
         {
             "sensor_id": "pir_01",

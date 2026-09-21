@@ -6,6 +6,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from ori.utils.time_utils import now_ms
+
 
 @dataclass
 class SensorReading:
@@ -20,6 +22,14 @@ class SensorReading:
 
 
 @dataclass
+class StoredReading(SensorReading):
+    """A reading read back from the store, with the store's own receipt beside it."""
+
+    # The store's clock at insert, never a caller's.
+    received_at_ms: int = field(kw_only=True)
+
+
+@dataclass
 class OriEvent:
     event_id: str
     event_type: str  # 'sensor.reading' | 'device.heartbeat' | 'skill.trigger'
@@ -30,6 +40,8 @@ class OriEvent:
     context: dict[str, Any] = field(default_factory=dict)
     source: str = ""  # 'gpio' | 'i2c' | 'serial' | 'mqtt' | 'sysfs' | 'psutil'
     fingerprint: str = ""
+    # The runtime's clock when it built the event; 0 means never stamped.
+    received_at_ms: int = 0
 
     @classmethod
     def from_reading(cls, reading: SensorReading, device_id: str) -> "OriEvent":
@@ -41,7 +53,15 @@ class OriEvent:
             timestamp=reading.timestamp,
             reading=reading,
             source=reading.metadata.get("source", ""),
+            received_at_ms=now_ms(),
         )
+
+
+def event_received_at_ms(event: Optional[OriEvent]) -> int:
+    """The runtime's own time for an event: its receipt, or now for one never stamped."""
+    if event is not None and int(getattr(event, "received_at_ms", 0) or 0) > 0:
+        return int(event.received_at_ms)
+    return now_ms()
 
 
 @dataclass

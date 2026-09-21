@@ -24,13 +24,14 @@ async def test_compaction_pyramid(store, monkeypatch):
     monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
 
     def _insert_raw(ts: int, value: float):
+        # Received when measured: the receipt is what retention is decided on.
         store._conn.execute(
             """
             INSERT INTO sensor_history
-            (sensor_id, sensor_type, value, unit, timestamp, quality)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (sensor_id, sensor_type, value, unit, timestamp, quality, received_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            ("s1", "temp", value, "c", ts, 1.0),
+            ("s1", "temp", value, "c", ts, 1.0, ts),
         )
 
     # 1. New data (<48h)
@@ -78,17 +79,18 @@ async def test_compaction_pyramid(store, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_clock_skew_guard(store, monkeypatch):
-    # Guardrail: if host clock moves backward relative to persisted history,
-    # compaction must refuse to delete data.
+    # Guardrail: if the host clock moves backward relative to the store's own
+    # receipts, compaction must refuse to delete data. Only a receipt can trip
+    # it: a producer clock in the future is not a fault of the host clock.
     now = 2_000_000_000_000
     future_ts = now + 4_000_000
     store._conn.execute(
         """
         INSERT INTO sensor_history
-        (sensor_id, sensor_type, value, unit, timestamp, quality)
-        VALUES (?, ?, ?, ?, ?, ?)
+        (sensor_id, sensor_type, value, unit, timestamp, quality, received_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        ("s1", "temp", 20.0, "c", future_ts, 1.0),
+        ("s1", "temp", 20.0, "c", now, 1.0, future_ts),
     )
     store._conn.commit()
 
@@ -107,13 +109,13 @@ async def test_unified_read_paths(store, monkeypatch):
 
     # Insert raw
     store._conn.execute(
-        "INSERT INTO sensor_history (sensor_id, sensor_type, value, unit, timestamp, quality) VALUES (?, ?, ?, ?, ?, ?)",
-        ("s1", "temp", 10.0, "c", NOW_MS - 1000, 1.0),
+        "INSERT INTO sensor_history (sensor_id, sensor_type, value, unit, timestamp, quality, received_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", 10.0, "c", NOW_MS - 1000, 1.0, NOW_MS - 1000),
     )
     # Insert 5min
     store._conn.execute(
-        "INSERT INTO sensor_history_5min (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
-        ("s1", "temp", NOW_MS - 86400_000 * 3, 20.0, "c", 2),
+        "INSERT INTO sensor_history_5min (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count, max_received_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", NOW_MS - 86400_000 * 3, 20.0, "c", 2, NOW_MS - 86400_000 * 3),
     )
     store._conn.commit()
 
@@ -134,12 +136,12 @@ async def test_compaction_uses_weighted_average_for_hourly(store, monkeypatch):
     bucket = NOW_MS - 86400_000 * 40
     hour_bucket = (bucket // 3_600_000) * 3_600_000
     store._conn.execute(
-        "INSERT INTO sensor_history_5min (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
-        ("s1", "temp", hour_bucket, 10.0, "c", 1),
+        "INSERT INTO sensor_history_5min (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count, max_received_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", hour_bucket, 10.0, "c", 1, hour_bucket),
     )
     store._conn.execute(
-        "INSERT INTO sensor_history_5min (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
-        ("s1", "temp", hour_bucket + 300_000, 20.0, "c", 9),
+        "INSERT INTO sensor_history_5min (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count, max_received_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", hour_bucket + 300_000, 20.0, "c", 9, hour_bucket + 300_000),
     )
     store._conn.commit()
 
@@ -159,12 +161,12 @@ async def test_compaction_uses_weighted_average_for_daily(store, monkeypatch):
     bucket = NOW_MS - 86400_000 * 400
     day_bucket = (bucket // 86_400_000) * 86_400_000
     store._conn.execute(
-        "INSERT INTO sensor_history_hourly (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
-        ("s1", "temp", day_bucket, 10.0, "c", 1),
+        "INSERT INTO sensor_history_hourly (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count, max_received_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", day_bucket, 10.0, "c", 1, day_bucket),
     )
     store._conn.execute(
-        "INSERT INTO sensor_history_hourly (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count) VALUES (?, ?, ?, ?, ?, ?)",
-        ("s1", "temp", day_bucket + 3_600_000, 20.0, "c", 9),
+        "INSERT INTO sensor_history_hourly (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count, max_received_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("s1", "temp", day_bucket + 3_600_000, 20.0, "c", 9, day_bucket + 3_600_000),
     )
     store._conn.commit()
 

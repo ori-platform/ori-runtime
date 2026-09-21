@@ -200,12 +200,15 @@ class TestCompactionGuard:
         with pytest.raises(RuntimeError, match="Invalid compaction cutoffs"):
             store._compact_sync(cutoffs, now_ms=3000)
 
-    async def test_compact_sync_raises_on_backward_clock_skew(self, store):
-        # Insert a row into the future
+    async def test_compact_sync_raises_on_backward_clock_skew(self, store, monkeypatch):
+        # A receipt in the future means the host clock has moved backward since
+        # the store last wrote, so compaction refuses to delete anything.
         future_ts = _ms() + 10_000_000
+        monkeypatch.setattr("ori.state.store.now_ms", lambda: future_ts)
         await store.append_history(_event(_reading(timestamp=future_ts)))
+        monkeypatch.undo()
 
-        # now_ms is in the past compared to DB
+        # now_ms is in the past compared to the store's own receipts
         past_ms = future_ts - 4_000_000
         cutoffs = {
             "hourly": past_ms - 30_000,
@@ -347,10 +350,19 @@ class TestAverages:
         store._conn.execute(
             """
             INSERT INTO sensor_history_hourly
-                (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
+                 max_received_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (sensor_id, "current_clamp", bucket_ms, value, "ampere", sample_count),
+            (
+                sensor_id,
+                "current_clamp",
+                bucket_ms,
+                value,
+                "ampere",
+                sample_count,
+                bucket_ms,
+            ),
         )
 
     async def test_time_of_week_baseline_uses_site_local_weekday_hour(self, store):
@@ -435,10 +447,11 @@ class TestAverages:
             lambda: store._conn.execute(
                 """
                 INSERT INTO sensor_history_5min
-                    (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
+                     max_received_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("s1", "current_clamp", 2_000, 5.5, "ampere", 12),
+                ("s1", "current_clamp", 2_000, 5.5, "ampere", 12, 2_000),
             )
         )
         await store._run_write(store._conn.commit)
@@ -824,6 +837,7 @@ class TestAlertOutbox:
         assert empty == {
             "backlog_count": 0,
             "oldest_queued_original_ts": None,
+            "oldest_queued_at_ms": None,
         }
 
         await store.enqueue_alert(
@@ -863,10 +877,10 @@ class TestAlertOutbox:
 
         summary = await store.get_alert_outbox_summary()
 
-        assert summary == {
-            "backlog_count": 2,
-            "oldest_queued_original_ts": 1000,
-        }
+        assert summary["backlog_count"] == 2
+        assert summary["oldest_queued_original_ts"] == 1000
+        # The queue's own receipt is the store's clock, not the alert's time.
+        assert summary["oldest_queued_at_ms"] > 1000
 
     async def test_mark_abandoned_removes_from_retryable(self, store):
         await store.enqueue_alert(
