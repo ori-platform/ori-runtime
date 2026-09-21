@@ -96,7 +96,12 @@ from ori.hardware.led_indicator import (
 )
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
-from ori.network.events import OriEvent, SensorReading, compute_fingerprint
+from ori.network.events import (
+    OriEvent,
+    SensorReading,
+    compute_fingerprint,
+    event_received_at_ms,
+)
 from ori.network.sms_webhook import SMSWebhookServer
 from ori.policy.alert_classes import alert_class_for_trigger
 from ori.policy.remote_fetch import (
@@ -748,7 +753,11 @@ class OriRuntime:
             self._status_indicator = status_indicator
 
         # ── Step B: Open StateStore ───────────────────────────────────────────
-        self._state_store = StateStore(db_path=config.database_path)
+        # Startup is the one opener allowed to rebuild pre-receipt history,
+        # because it is the moment the device is being upgraded on purpose.
+        self._state_store = StateStore(
+            db_path=config.database_path, allow_history_rebuild=True
+        )
         await self._state_store.open()
         await self._load_remote_command_lockout_state()
 
@@ -1126,6 +1135,7 @@ class OriRuntime:
                 action_tier=action_tier,
                 trigger_name=trigger_name,
                 original_ts=original_ts,
+                received_at_ms=event_received_at_ms(ctx.event if ctx else None),
                 alert_sender=alert_sender,
             )
 
@@ -1147,6 +1157,7 @@ class OriRuntime:
                 action_tier=action_tier,
                 trigger_name=trigger_name,
                 original_ts=original_ts,
+                received_at_ms=event_received_at_ms(ctx.event if ctx else None),
                 alert_sender=alert_sender,
             )
 
@@ -2459,13 +2470,15 @@ class OriRuntime:
             f"{decision.window_ms // 1000}s. Command feedback has been throttled; "
             "valid signed commands remain allowed."
         )
+        alert_ts = now_ms()
         await self._send_or_queue_alert(
             channel=self._primary_alert_channel,
             message=message,
             recipient=self._operator_contact,
             action_tier="A",
             trigger_name="remote_command_abuse",
-            original_ts=now_ms(),
+            original_ts=alert_ts,
+            received_at_ms=alert_ts,
             alert_sender=self._alert_sender,
         )
 
@@ -3606,19 +3619,26 @@ class OriRuntime:
         summary = {
             "backlog_count": 0,
             "oldest_queued_original_ts": None,
+            "oldest_queued_at_ms": None,
             "oldest_queued_age_ms": None,
         }
         if self._state_store is not None:
             try:
                 raw_summary = await self._state_store.get_alert_outbox_summary()
                 oldest_ts = raw_summary.get("oldest_queued_original_ts")
+                oldest_queued_at = raw_summary.get("oldest_queued_at_ms")
                 summary = {
                     "backlog_count": int(raw_summary.get("backlog_count") or 0),
                     "oldest_queued_original_ts": int(oldest_ts)
                     if oldest_ts is not None
                     else None,
-                    "oldest_queued_age_ms": max(0, now - int(oldest_ts))
-                    if oldest_ts is not None
+                    "oldest_queued_at_ms": int(oldest_queued_at)
+                    if oldest_queued_at is not None
+                    else None,
+                    # Queue latency is the store's own interval; the event's
+                    # producer time is reported beside it and never ages it.
+                    "oldest_queued_age_ms": max(0, now - int(oldest_queued_at))
+                    if oldest_queued_at is not None
                     else None,
                 }
             except Exception:
@@ -4198,13 +4218,15 @@ class OriRuntime:
             f"Sensor {sensor_id} has not reported for about {minutes} minute(s). "
             f"This exceeded the stale threshold of {threshold_seconds}s."
         )
+        alert_ts = now_ms()
         await self._send_or_queue_alert(
             channel=self._primary_alert_channel,
             message=message,
             recipient=self._operator_contact,
             action_tier="A",
             trigger_name="sensor_stale_warning",
-            original_ts=now_ms(),
+            original_ts=alert_ts,
+            received_at_ms=alert_ts,
             alert_sender=alert_sender,
         )
 
@@ -4697,6 +4719,7 @@ class OriRuntime:
         action_tier: str,
         trigger_name: str,
         original_ts: int,
+        received_at_ms: int,
         alert_sender: AlertFailoverSender,
         allow_failover: bool = True,
         outbound_alert: OutboundAlert | None = None,
@@ -4704,6 +4727,10 @@ class OriRuntime:
         skill_is_first_party: bool = False,
     ) -> bool | str:
         """Durably record an alert, then attempt provider acceptance.
+
+        ``original_ts`` is the event's own account of when it happened and is
+        kept raw; ``received_at_ms`` is the runtime's clock when it saw the
+        event, and it is what the provider template's "detected at" slot shows.
 
         Returns True if the provider accepted it or a durable retry obligation
         exists, False if neither holds, or `ALERT_SUPPRESSED` when a customer
@@ -4759,13 +4786,19 @@ class OriRuntime:
             )
             return False
 
+        if received_at_ms <= 0:
+            logger.warning(
+                "[runtime] alert trigger=%s arrived with no receipt; using now",
+                trigger_name,
+            )
+            received_at_ms = now_ms()
         alert = outbound_alert or build_outbound_alert(
             intent=AlertIntent.TIER_A_ALERT,
             sms_body=message,
             template_variables=(
                 trigger_name or "configured risk",
                 self._device_location or self._device_id or "site",
-                _format_alert_timestamp(original_ts, self._device_timezone),
+                _format_alert_timestamp(received_at_ms, self._device_timezone),
             ),
         )
         alert_id = _build_alert_id(
@@ -5186,6 +5219,7 @@ class OriRuntime:
                     action_tier="A",
                     trigger_name="runtime_setup_complete",
                     original_ts=original_ts,
+                    received_at_ms=original_ts,
                     alert_sender=alert_sender,
                     allow_failover=False,
                     outbound_alert=startup_alert,
@@ -5236,11 +5270,15 @@ class OriRuntime:
                     intent = AlertIntent(str(alert.get("intent", "tier_a_alert")))
                     template_variables = tuple(alert.get("template_variables") or ())
                     if not template_variables:
+                        # A row queued before template variables were stored:
+                        # the "detected at" slot takes the queue receipt, never
+                        # the event's producer time.
+                        queued_at = int(alert.get("queued_at_ms", 0) or 0)
                         template_variables = (
                             trigger_name or "configured risk",
                             self._device_location or self._device_id or "site",
                             _format_alert_timestamp(
-                                int(alert.get("original_ts", 0)),
+                                queued_at if queued_at > 0 else now_ms(),
                                 self._device_timezone,
                             ),
                         )

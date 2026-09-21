@@ -4,7 +4,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from ori.network.events import OriEvent
+from ori.network.events import OriEvent, event_received_at_ms
 from ori.utils.time_utils import now_ms
 
 
@@ -84,6 +84,7 @@ class HookHistoryAdapter:
                 "timestamp": r.timestamp,
                 "quality": r.quality,
                 "metadata": r.metadata,
+                "received_at_ms": r.received_at_ms,
             }
             for r in history
         ]
@@ -154,9 +155,12 @@ class HookContext:
     readings: dict[str, Any]
     history: HookHistoryAdapter
     state: HookStateAdapter
-    timestamp: int
+    timestamp: int  # the reading's own time, as the device reported it
     config: dict[str, Any] = field(default_factory=dict)
     derived: dict[str, Any] = field(default_factory=dict)
+    # The runtime's clock when it received the event: the honest "now" for a
+    # persistence window or a staleness check, which a device clock is not.
+    received_at_ms: int = 0
 
     @property
     def reading(self) -> Any:
@@ -200,4 +204,5 @@ class HookContext:
             state=HookStateAdapter(store, skill_name),
             timestamp=event.timestamp if event else now_ms(),
             config=skill_config if isinstance(skill_config, dict) else {},
+            received_at_ms=event_received_at_ms(event),
         )

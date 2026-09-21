@@ -181,6 +181,7 @@ async def test_runtime_health_snapshot_shape():
     assert snapshot["alert_outbox"] == {
         "backlog_count": 0,
         "oldest_queued_original_ts": None,
+        "oldest_queued_at_ms": None,
         "oldest_queued_age_ms": None,
         "retry_interval_minutes": 0.5,
         "max_non_tier_d_attempts": 10,
@@ -279,6 +280,7 @@ async def test_health_snapshot_includes_alert_outbox_backlog(tmp_path):
 
         assert snapshot["alert_outbox"]["backlog_count"] == 1
         assert snapshot["alert_outbox"]["oldest_queued_original_ts"] == original_ts
+        assert snapshot["alert_outbox"]["oldest_queued_at_ms"] > 0
         assert snapshot["alert_outbox"]["oldest_queued_age_ms"] >= 0
     finally:
         await runtime._state_store.close()

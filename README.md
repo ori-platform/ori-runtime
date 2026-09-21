@@ -300,7 +300,8 @@ When Ori proposes a hard physical action, this is what the operator receives:
 ORI ALERT — Action Required
 Device: energy-monitor-ikeja-office-01
 Proposal ID: AB12CD34
-Time: Wednesday 14:32
+Measured: Wednesday 14:32
+Detected: Wednesday 14:32
 
 OBSERVATION:
 Load current has reached 38.4A — 3.8x the rated 10A capacity.

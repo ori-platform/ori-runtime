@@ -378,6 +378,7 @@ async def _deliver(
         action_tier=tier,
         trigger_name=trigger,
         original_ts=original_ts,
+        received_at_ms=original_ts,
         alert_sender=sender,  # type: ignore[arg-type]
         skill_name=skill,
         skill_is_first_party=first_party,
@@ -762,6 +763,7 @@ async def test_a_disabled_alert_with_no_recipient_is_still_disabled(
             action_tier="A",
             trigger_name=TRIGGER,
             original_ts=1_700_000_000_000,
+            received_at_ms=1_700_000_000_000,
             alert_sender=sender,  # type: ignore[arg-type]
             skill_name=SKILL,
             skill_is_first_party=True,
@@ -796,6 +798,7 @@ async def test_an_unmapped_alert_with_no_recipient_is_still_a_failure(bound) -> 
         action_tier="A",
         trigger_name="sustained_overdraw",
         original_ts=1,
+        received_at_ms=1,
         alert_sender=sender,  # type: ignore[arg-type]
         skill_name=SKILL,
         skill_is_first_party=True,

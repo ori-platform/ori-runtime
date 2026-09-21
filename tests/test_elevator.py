@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ori.network.events import OriEvent, ReasoningResult, SensorReading
+from ori.network.events import (
+    OriEvent,
+    ReasoningResult,
+    SensorReading,
+    StoredReading,
+)
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext, _complexity_score
@@ -186,7 +191,12 @@ class _PromptHistoryStore:
         return self._avg_last_n_sync(sensor_id, n)
 
     def hooks_get_history(self, sensor_id: str, limit: int = 1):
-        return self._get_history_sync(sensor_id, limit)
+        # The store hands hooks stored readings, each with its receipt; this
+        # double received every reading the moment it was measured.
+        return [
+            StoredReading(**{**vars(reading), "received_at_ms": reading.timestamp})
+            for reading in self._get_history_sync(sensor_id, limit)
+        ]
 
 
 # ─── _complexity_score ────────────────────────────────────────────────────────

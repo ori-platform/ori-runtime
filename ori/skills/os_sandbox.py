@@ -434,6 +434,7 @@ class OSSandboxHookRunner:
                             "timestamp": r.timestamp,
                             "quality": r.quality,
                             "metadata": r.metadata,
+                            "received_at_ms": r.received_at_ms,
                         }
                         for r in history
                     ]
@@ -474,6 +475,7 @@ def _serialize_hook_context(
             "trigger_name": str(getattr(hook_ctx, "trigger_name", "") or ""),
             "readings": dict(getattr(hook_ctx, "readings", {}) or {}),
             "timestamp": int(getattr(hook_ctx, "timestamp", 0) or 0),
+            "received_at_ms": int(getattr(hook_ctx, "received_at_ms", 0) or 0),
             "config": dict(getattr(hook_ctx, "config", {}) or {}),
             "derived": dict(getattr(hook_ctx, "derived", {}) or {}),
             "event": {
@@ -482,6 +484,7 @@ def _serialize_hook_context(
                 "device_id": str(getattr(event, "device_id", "") or ""),
                 "sensor_id": str(getattr(event, "sensor_id", "") or ""),
                 "timestamp": int(getattr(event, "timestamp", 0) or 0),
+                "received_at_ms": int(getattr(event, "received_at_ms", 0) or 0),
                 "context": dict(event_ctx),
             }
             if event is not None
@@ -600,6 +603,7 @@ class _ChildHookContext:
         self.trigger_name = str(raw.get("trigger_name", "") or "")
         self.readings = dict(raw.get("readings") or {})
         self.timestamp = int(raw.get("timestamp", 0) or 0)
+        self.received_at_ms = int(raw.get("received_at_ms", 0) or 0)
         self.config = dict(raw.get("config") or {})
         self.derived = dict(raw.get("derived") or {})
         event_raw = raw.get("event")
@@ -632,6 +636,7 @@ class _ChildHookContext:
                 device_id=str(event_raw.get("device_id", "") or ""),
                 sensor_id=str(event_raw.get("sensor_id", "") or ""),
                 timestamp=int(event_raw.get("timestamp", 0) or 0),
+                received_at_ms=int(event_raw.get("received_at_ms", 0) or 0),
                 context=dict(event_raw.get("context") or {}),
                 reading=reading,
             )

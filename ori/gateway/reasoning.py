@@ -302,12 +302,14 @@ async def _history_points(
         return []
     points = []
     for row in rows[:MAX_CONTEXT_HISTORY_POINTS]:
-        points.append(
-            {
-                "value": float(getattr(row, "value", 0.0) or 0.0),
-                "timestamp": int(getattr(row, "timestamp", 0) or 0),
-            }
-        )
+        point: dict[str, Any] = {
+            "value": float(getattr(row, "value", 0.0) or 0.0),
+            "timestamp": int(getattr(row, "timestamp", 0) or 0),
+        }
+        received = getattr(row, "received_at_ms", None)
+        if received is not None:
+            point["received_at_ms"] = int(received)
+        points.append(point)
     return points
 
 
@@ -322,17 +324,18 @@ def _history_points_from_context(event: OriEvent | None) -> list[dict[str, Any]]
         if not isinstance(row, dict):
             continue
         try:
-            points.append(
-                {
-                    "value": float(row.get("value", 0.0) or 0.0),
-                    "timestamp": int(
-                        row.get("timestamp")
-                        or row.get("timestamp_ms")
-                        or row.get("reading_timestamp")
-                        or 0
-                    ),
-                }
-            )
+            point: dict[str, Any] = {
+                "value": float(row.get("value", 0.0) or 0.0),
+                "timestamp": int(
+                    row.get("timestamp")
+                    or row.get("timestamp_ms")
+                    or row.get("reading_timestamp")
+                    or 0
+                ),
+            }
+            if row.get("received_at_ms") is not None:
+                point["received_at_ms"] = int(row["received_at_ms"])
+            points.append(point)
         except (TypeError, ValueError):
             continue
     return points

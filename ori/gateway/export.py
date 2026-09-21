@@ -618,6 +618,7 @@ def _bucket_sensor_rows(
                 "sample_count": 0,
                 "bucket_ms": bucket_ms,
                 "tier": "bucketed",
+                "received_at_ms": None,
                 "_weighted_total": 0.0,
             },
         )
@@ -625,6 +626,9 @@ def _bucket_sensor_rows(
         bucket["_weighted_total"] += value * sample_count
         bucket["min_value"] = min(float(bucket["min_value"]), value)
         bucket["max_value"] = max(float(bucket["max_value"]), value)
+        bucket["received_at_ms"] = max(
+            int(bucket["received_at_ms"] or 0), int(row["received_at_ms"])
+        )
 
     result = []
     for bucket_start in sorted(buckets):
