@@ -388,10 +388,15 @@ def pre_trigger_eval(context):
         sensor_id,
         limit=max(2, persistence_window),
     )
+    # How long the runtime has been observing is the span of its own
+    # receipts; a span of the readings' own clocks could be stretched by one
+    # reading dated anywhere.
+    # A row with no receipt is not evidence of observation and would stretch
+    # the span to the epoch; it is left out rather than counted from zero.
     timestamps = [
-        as_int(item.get("timestamp", 0), 0)
+        as_int(item.get("received_at_ms", 0), 0)
         for item in history_rows
-        if isinstance(item, dict)
+        if isinstance(item, dict) and as_int(item.get("received_at_ms", 0), 0) > 0
     ]
     if len(timestamps) >= 2:
         span_ms = max(timestamps) - min(timestamps)
