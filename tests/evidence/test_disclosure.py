@@ -1234,6 +1234,7 @@ PASSAGE_AUDITS = {
     # Settles what the evidence chain records about a dispatched action, so its
     # evidence passages are audited rather than exempted.
     "docs/DISPATCH_PLAN.md": 1,
+    "docs/STARTUP_STAGES.md": 0,
     "docs/ALERT_DELIVERY_SETUP.md": 0,
     "docs/android-runtime-mobile.md": 0,
     "docs/alpha-release-notes.md": 0,
