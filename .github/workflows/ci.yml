@@ -10,6 +10,14 @@ permissions:
   contents: read
   id-token: none
 
+# A newer push to a pull-request branch supersedes the run in flight: cancel it
+# rather than spend the matrix on a stale commit. Pushes to main keep a unique
+# group so they never cancel or queue behind each other; every main commit gets
+# its own complete run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -31,6 +39,31 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Decide once which checks this change reaches. A change outside the
+      # runtime's code and its build inputs (a document, a release note) skips
+      # the suite, the type checkers, the audits and the release rehearsals.
+      # The job still runs and reports, so the required checks stay attached
+      # to every pull request, and the decision fails open when no base can be
+      # compared. tests/test_ci_scopes.py holds which paths reach which job.
+      - name: Decide whether this change reaches the runtime's checks
+        id: scope
+        uses: ./.github/actions/changed-paths
+        with:
+          pattern: '^(ori/|tests/|skills/|scripts/|packaging/|requirements/|mobile/|pyproject\.toml|pyright-baseline\.json|\.pre-commit-config\.yaml|\.python-version|ori\.[A-Za-z.]*example|\.github/)'
+          reason: running the runtime's tests, type checks and audits
+
+      # A few tests read documents: the disclosure audit classifies every
+      # document by name, the evidence harness reads the runbook and its
+      # scripts, and the release checks read the install guide. A change that
+      # touches only documents runs those and nothing else; a change the first
+      # decision reaches runs the whole suite, which includes them.
+      - name: Decide whether this change touches a document
+        id: docs
+        uses: ./.github/actions/changed-paths
+        with:
+          pattern: '^(docs/|[^/]+\.md$)'
+          reason: running the tests that read documents
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -45,6 +78,7 @@ jobs:
           python -m pip install --no-deps -e .
 
       - name: Guard supply-chain invariants
+        if: steps.scope.outputs.run == 'true'
         run: |
           python scripts/check_workflows.py
           bash scripts/check_rust_supply_chain.sh
@@ -56,11 +90,11 @@ jobs:
       # pin naming a commit nobody can find. It runs against throwaway git
       # fixtures and needs no network.
       - name: Test the vendored-vector provenance rule
-        if: matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         run: bash scripts/test-refresh-evidence-vectors.sh
 
       - name: Check vendored evidence vectors against ori-specs
-        if: matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         run: bash scripts/refresh-evidence-vectors.sh
 
       # The telemetry refusal contract is vendored from a private repository,
@@ -69,7 +103,7 @@ jobs:
       # regardless, against throwaway git fixtures and no network, and it is
       # the half a private source would otherwise leave unchecked.
       - name: Test the telemetry refusal fixture provenance rule
-        if: matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         run: bash scripts/test-refresh-telemetry-refusal-fixture.sh
 
       # The wheelhouse audit runs only under the release marker, so defects in
@@ -82,7 +116,7 @@ jobs:
       # that aarch64 bundles now ship. Auditing the smaller target would leave
       # the wheels that actually reach a device uninspected.
       - name: Audit a built wheelhouse for disclosure
-        if: matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         env:
           ORI_WHEELHOUSE_OUT: ${{ runner.temp }}/wheelhouse
           ORI_WHEELHOUSE_TARGET: pi
@@ -116,7 +150,7 @@ jobs:
       # twelve dist-info directories, and the builder called it ambiguous. The
       # wheelhouse above is reused rather than rebuilt.
       - name: Assemble a release bundle from that wheelhouse
-        if: matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         env:
           ORI_WHEELHOUSE_OUT: ${{ runner.temp }}/wheelhouse
         run: |
@@ -156,6 +190,7 @@ jobs:
           ls -l "${RUNNER_TEMP}/bundle"
 
       - name: Type check runtime contract boundaries
+        if: steps.scope.outputs.run == 'true'
         run: bash scripts/typecheck-boundaries.sh
 
       # Whole-package mypy runs here rather than in pre-commit because this job
@@ -164,6 +199,7 @@ jobs:
       # result is only reproducible in a pinned environment; a developer's local
       # set is not one. That is a reason to scope the check, not to skip it.
       - name: Type check the whole package
+        if: steps.scope.outputs.run == 'true'
         run: python -m mypy ori/
 
       # Pyright catches what mypy does not: unbound locals behind optional
@@ -176,7 +212,7 @@ jobs:
       # payable by removing some from `tests/`, which is the absorption the
       # ratchet exists to prevent one directory over.
       - name: Type check production code (pyright)
-        if: matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         run: pyright ori/ scripts/
 
       # mypy needs no ratchet: it is already clean over both trees, so it gets
@@ -185,7 +221,7 @@ jobs:
       # scoped to one interpreter because the analysis version is pinned in
       # config and running it three times measures the same thing three times.
       - name: Type check the test tree (mypy)
-        if: matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         run: python -m mypy tests/
 
       # The test tree is not zero and paying it down is separate work. This
@@ -194,7 +230,7 @@ jobs:
       # in both directions, because a baseline left above the real count is
       # headroom someone later spends without noticing.
       - name: Hold the pyright count against its baseline (ratchet)
-        if: matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         run: python scripts/pyright_ratchet.py
 
       - name: Pre-commit (lint + format + hygiene)
@@ -233,6 +269,7 @@ jobs:
           bash scripts/guard-capability-matrix.sh "$FROM_REF" "$TO_REF"
 
       - name: Guard Tier Escalation Invariants
+        if: steps.scope.outputs.run == 'true'
         run: |
           pytest -v \
             tests/test_action_dispatcher.py::TestCapabilityTierGuard \
@@ -240,12 +277,14 @@ jobs:
             tests/test_soundness_verification.py::test_dispatcher_never_downgrades_tier
 
       - name: Guard Skill Capability Invariants
+        if: steps.scope.outputs.run == 'true'
         run: |
           pytest -v \
             tests/test_skill_loader.py::TestValidation::test_missing_defaults_mapping_for_trigger_raises \
             tests/test_skill_loader.py::TestValidation::test_extra_defaults_key_without_trigger_raises
 
       - name: Run tests with coverage
+        if: steps.scope.outputs.run == 'true'
         run: |
           pytest tests/ -v \
             --cov=ori \
@@ -253,10 +292,21 @@ jobs:
             --cov-report=xml \
             -m "not hardware"
 
+      - name: Run the tests that read documents
+        if: steps.scope.outputs.run != 'true' && steps.docs.outputs.run == 'true'
+        run: |
+          pytest -q -m "not hardware" \
+            tests/evidence/test_disclosure.py \
+            tests/evidence/test_harness.py \
+            tests/test_ci_scopes.py \
+            tests/test_linux_bootstrap.py \
+            tests/test_release_publication.py
+
       # GitHub's runner normally starts at 0022. Debian private-user-group
       # hosts, including stock Raspberry Pi OS Trixie, commonly use 0002;
       # installer fixtures must not depend on the runner's ambient umask.
       - name: Installer checks under private-group umask
+        if: steps.scope.outputs.run == 'true'
         run: |
           umask 0002
           pytest -q \
@@ -269,18 +319,20 @@ jobs:
       # rather than skipping, so a missing privileged invocation fails here
       # instead of quietly reporting green.
       - name: System-scope installer checks (root, real venv)
+        if: steps.scope.outputs.run == 'true'
         run: |
           sudo -H env ORI_REQUIRE_ROOT_TESTS=1 \
             "$(which python)" -m pytest \
             tests/test_installer_system_scope.py -q
 
       - name: Audit pinned Python dependencies
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         run: |
           python -m pip_audit -r requirements/runtime.txt
           python -m pip_audit -r requirements/dev.txt
 
       - name: Generate runtime SBOM
-        if: matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         run: |
           python -m cyclonedx_py requirements requirements/runtime.txt \
             --pyproject pyproject.toml \
@@ -289,7 +341,7 @@ jobs:
             -o sbom-runtime.json
 
       - name: Upload runtime SBOM
-        if: matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sbom-runtime
@@ -297,6 +349,7 @@ jobs:
           if-no-files-found: error
 
       - name: Validate bundled skills load cleanly
+        if: steps.scope.outputs.run == 'true'
         run: |
           python -c "
           import asyncio, sys
@@ -324,12 +377,12 @@ jobs:
           "
 
       - name: Release wheel smoke test
-        if: matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.12'
         run: bash scripts/smoke-release-wheel.sh
 
       - name: Upload coverage report
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        if: matrix.python-version == '3.11'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.11'
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
@@ -357,22 +410,33 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Decide whether this change reaches the payload
+        id: scope
+        uses: ./.github/actions/changed-paths
+        with:
+          pattern: '^(mobile/|\.github/(workflows/ci\.yml|actions/changed-paths/)|scripts/ci_local\.sh)'
+          reason: building and testing the Android payload
+
       - name: Install the pinned Rust toolchain
+        if: steps.scope.outputs.run == 'true'
         run: |
           set -euo pipefail
           rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy
           rustup run 1.96.1 rustc --version
 
       - name: Format
+        if: steps.scope.outputs.run == 'true'
         working-directory: mobile/ori-runtime-mobile
         run: cargo +1.96.1 fmt --check
 
       - name: Clippy
+        if: steps.scope.outputs.run == 'true'
         working-directory: mobile/ori-runtime-mobile
         run: cargo +1.96.1 clippy --all-targets --locked -- -D warnings
 
       # Includes the shared delivery vectors and the exporter's retention,
       # backoff and attempt bound.
       - name: Test
+        if: steps.scope.outputs.run == 'true'
         working-directory: mobile/ori-runtime-mobile
         run: cargo +1.96.1 test --locked
