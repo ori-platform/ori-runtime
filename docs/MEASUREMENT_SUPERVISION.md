@@ -35,10 +35,42 @@ can claim.
 |---|---|
 | A window that cannot be shown to be a measurement is refused, and no reading is published | `ori/hal/ac_measurement.py`, `ori/hal/i2c_adapter.py` |
 | Three consecutive refusals mark the sensor degraded; five consecutive good windows clear it | `MEASUREMENT_REFUSALS_BEFORE_DEGRADED`, `MEASUREMENT_WINDOWS_TO_RECOVER` |
+| A current window whose mean sits outside the bias midpoint's tolerance is refused: a disconnected input floats far from it while its hum reads as a plausible current | `summarise_window`, `_bias_bounds` |
 | A chip found running a configuration this runtime did not set is quarantined for the life of the process | `_refuse_if_configuration_moved` |
-| Health reports the degradation per sensor and in the aggregate `status` | `_build_health_snapshot` |
+| Health reports the degradation per sensor, with the latest refusal's reason seen by this process, or a stated unknown for one restored from before it started, and in the aggregate `status` | `_build_health_snapshot` |
 | Affected safety pairs are told their measurement is unavailable — **dormant**, since `note_sensor_unavailable` returns false while every profile is a candidate | the safety registry |
 | A Tier A notice fires on the transition into degraded, then at 6 h, 12 h and daily, escalating to the secondary contact | `MEASUREMENT_REMINDER_AFTER_MS` and the constants beside it |
+
+The midpoint is half the 3.3 V rail, from the supported network of two equal
+resistors, and its tolerance is the worst corner of 5% resistors and a 5% rail
+allowance, 0.169 V either side. Neither is a calibration key: widening them
+would disable the refusal. A window may also sit off the midpoint by what its
+own signal can move the mean, so a large current over a window that is not a
+whole number of cycles is not refused for it. The allowance is a quarter of
+the window's peak-to-peak, which bounds the mean of any load without DC whose
+peaks the samples catch over a window spanning at least one true cycle. Two
+declared cycles span that at every supply from 45 to 65 Hz under either
+declaration; a shorter or sparser window is refused at connect. A pulse too
+narrow for 860 samples a second to catch falls outside it and can be refused
+near the edge of the tolerance; at nominal bias the same window was already
+published as near 0 A, an under-report this check does not introduce.
+
+What the check admits is a window mean within 0.169 V plus a quarter of the
+window's peak-to-peak of 1.65 V. With the largest unclipped peak-to-peak the
+input allows, about 3.2 V, that is roughly 0.68 to 2.62 V; with the 1.1 V of
+hum the bench's floating input could carry before clipping, 1.21 to 2.09 V. A
+floating input near 0.6 V is outside every one of these, and one that floats
+nearer the midpoint is not.
+
+**What this does not detect.** A clamp closed on the conductor rather than
+around it, with its burden across the leads, holds the input at the midpoint
+and reads the noise floor, which is what a working clamp on an idle circuit
+reads. Nothing in the signal separates the two, so the channel keeps
+publishing a plausible low current at full quality. Commissioning can catch it
+only where the circuit leg records the bound sensor's readings before and after
+the load changes; the contract permits those fields and does not require them,
+because an instrument classifies load presence. A clamp that comes uncoupled
+after commissioning is not detected at all.
 
 Recovery is deliberately slower than failure. A measurement path that
 alternates is not trustworthy, and flapping between degraded and healthy

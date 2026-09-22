@@ -2997,6 +2997,7 @@ class TestSensorPolling:
         runtime._primary_alert_channel = "sms"
         runtime._measurement_refusals = {}
         runtime._measurement_valid_streak = {}
+        runtime._measurement_refusal_reason = {}
         runtime._measurement_degraded = set()
         runtime._measurement_unnotified = set()
         runtime._measurement_notify_attempts = {}
@@ -3072,6 +3073,7 @@ class TestSensorPolling:
         runtime._alert_sender = AsyncMock()
         runtime._measurement_refusals = {}
         runtime._measurement_valid_streak = {}
+        runtime._measurement_refusal_reason = {}
         runtime._measurement_degraded = set()
         runtime._measurement_unnotified = set()
         runtime._measurement_notify_attempts = {}
@@ -3115,6 +3117,7 @@ class TestSensorPolling:
         runtime._alert_sender = AsyncMock()
         runtime._measurement_refusals = {}
         runtime._measurement_valid_streak = {}
+        runtime._measurement_refusal_reason = {}
         runtime._measurement_degraded = set()
         runtime._measurement_unnotified = set()
         runtime._measurement_notify_attempts = {}
@@ -3160,6 +3163,7 @@ class TestSensorPolling:
         runtime._alert_sender = AsyncMock()
         runtime._measurement_refusals = {}
         runtime._measurement_valid_streak = {}
+        runtime._measurement_refusal_reason = {}
         runtime._measurement_degraded = set()
         runtime._measurement_unnotified = set()
         runtime._measurement_notify_attempts = {}
@@ -3196,6 +3200,7 @@ class TestSensorPolling:
         runtime._shutdown_event = asyncio.Event()
         runtime._measurement_refusals = {}
         runtime._measurement_valid_streak = {}
+        runtime._measurement_refusal_reason = {}
         runtime._measurement_degraded = set()
 
         attempts = 0
@@ -4693,6 +4698,14 @@ class TestAlertOutbox:
 
         assert snapshot["sensors"][0]["measurement_degraded"] is True
         assert snapshot["sensors"][0]["connected"] is True
+        assert snapshot["sensors"][0]["measurement_refusal_reason"] is None
+
+        runtime._measurement_refusal_reason = {"load-current": "window mean 0.598 V"}
+        snapshot = await runtime._build_health_snapshot()
+        assert (
+            snapshot["sensors"][0]["measurement_refusal_reason"]
+            == "window mean 0.598 V"
+        )
         assert snapshot["status"] == "degraded"
 
     async def test_health_snapshot_omits_safety_zones_without_a_registry(

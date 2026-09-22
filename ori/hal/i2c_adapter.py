@@ -37,7 +37,7 @@ CALIBRATION_SCHEMAS = {
     "ads1115_current": {
         "sensitivity_v_per_amp": {"type": "number", "required": True, "minimum": 0},
         "mains_frequency_hz": {"type": "integer", "required": True, "enum": [50, 60]},
-        "window_cycles": {"type": "integer", "default": 2, "minimum": 1},
+        "window_cycles": {"type": "integer", "default": 2, "minimum": 2},
         "data_rate": {"type": "integer", "default": 860, "minimum": 1},
         "gain": {"type": "number", "default": 1, "minimum": 0},
         "overrun_tolerance": {"type": "number", "default": 1.5, "minimum": 0},
@@ -363,6 +363,51 @@ _FOREIGN_CALIBRATION_KEYS = frozenset(
 # reviewed here until a commissioned hardware binding can carry it.
 _ADC_SUPPLY_VOLTS = 3.3
 
+# The supported bias network: two equal resistors from that rail to ground,
+# holding the clamp's return at half the supply (docs/RASPBERRY_PI_SUPPORT.md).
+# Not calibration keys, for the reason the supply is not one: widening either
+# would disable the refusal of a disconnected input, whose mean floats far from
+# the midpoint while its hum reads as a plausible current.
+#
+#   _BIAS_DIVIDER_RATIO       equal resistors. Another network is refused only
+#                             where its midpoint falls outside the tolerance.
+#   _BIAS_RESISTOR_TOLERANCE  an allowance for 5% parts. Opposite worst cases
+#                             move the ratio by half of it.
+#   _ADC_SUPPLY_TOLERANCE     an allowance on the rail, not a datasheet figure.
+#                             The bench rail held the midpoint at 1.638 V
+#                             against 1.650 V, under 1%.
+_BIAS_DIVIDER_RATIO = 0.5
+_BIAS_RESISTOR_TOLERANCE = 0.05
+_ADC_SUPPLY_TOLERANCE = 0.05
+
+# The geometry the bias check's signal allowance holds over. For any load
+# without DC whose peaks the samples catch, a window spanning at least one true
+# cycle keeps its mean within the allowance; two declared cycles do that from
+# 45 to 65 Hz under either declaration. Beyond it is a pulse too narrow for the
+# samples to catch, which the published path would read as near 0 A anyway.
+# Samples-per-cycle is enforced here rather than in the schema, since it
+# depends on the declared frequency.
+_MIN_WINDOW_CYCLES = 2
+_MIN_SAMPLES_PER_CYCLE = 14
+
+
+def _bias_bounds() -> tuple[float, float]:
+    """The expected midpoint and the furthest its components can move it."""
+    expected = _ADC_SUPPLY_VOLTS * _BIAS_DIVIDER_RATIO
+    ratio_shift = _BIAS_RESISTOR_TOLERANCE * _BIAS_DIVIDER_RATIO
+    low = (
+        _ADC_SUPPLY_VOLTS
+        * (1 - _ADC_SUPPLY_TOLERANCE)
+        * (_BIAS_DIVIDER_RATIO - ratio_shift)
+    )
+    high = (
+        _ADC_SUPPLY_VOLTS
+        * (1 + _ADC_SUPPLY_TOLERANCE)
+        * (_BIAS_DIVIDER_RATIO + ratio_shift)
+    )
+    return expected, max(expected - low, high - expected)
+
+
 # Conversion rates the ADS1115 implements, in samples per second.
 _ADS1115_DATA_RATES = frozenset({8, 16, 32, 64, 128, 250, 475, 860})
 
@@ -440,6 +485,22 @@ def _resolve_calibration(config: dict) -> dict[str, float]:
             f"I2CAdapter: data_rate {raw.get('data_rate')!r} is not an ADS1115 "
             f"rate; expected one of {sorted(_ADS1115_DATA_RATES)}"
         )
+    # The bias check allows a window's mean to sit off the midpoint by what its
+    # own signal can move it, and that allowance holds only for a window of at
+    # least two cycles sampled densely enough to catch the peaks. Outside it, a
+    # large current can be refused as a disconnected input.
+    if resolved["window_cycles"] < _MIN_WINDOW_CYCLES:
+        raise AdapterConnectionError(
+            f"I2CAdapter: calibration 'window_cycles' must be at least "
+            f"{_MIN_WINDOW_CYCLES}, got {raw.get('window_cycles')!r}"
+        )
+    per_cycle = resolved["data_rate"] / resolved["mains_frequency_hz"]
+    if per_cycle < _MIN_SAMPLES_PER_CYCLE:
+        raise AdapterConnectionError(
+            f"I2CAdapter: data_rate {raw.get('data_rate')!r} gives {per_cycle:.1f} "
+            f"samples per cycle at {resolved['mains_frequency_hz']:g} Hz; at least "
+            f"{_MIN_SAMPLES_PER_CYCLE} are needed to resolve the waveform's peaks"
+        )
     return resolved
 
 
@@ -472,6 +533,7 @@ def _window_spec(calibration: dict[str, float]) -> WindowSpec:
     cycles = int(calibration["window_cycles"])
     seconds = cycles / calibration["mains_frequency_hz"]
     expected = calibration["data_rate"] * seconds
+    expected_bias, bias_tolerance = _bias_bounds()
     return WindowSpec(
         mains_frequency_hz=calibration["mains_frequency_hz"],
         window_cycles=cycles,
@@ -481,6 +543,8 @@ def _window_spec(calibration: dict[str, float]) -> WindowSpec:
         full_scale_volts=min(_GAIN_FULL_SCALE[calibration["gain"]], _ADC_SUPPLY_VOLTS),
         clip_margin_volts=calibration["clip_margin_volts"],
         overrun_tolerance=calibration["overrun_tolerance"],
+        expected_bias_volts=expected_bias,
+        bias_tolerance_volts=bias_tolerance,
     )
 
 
