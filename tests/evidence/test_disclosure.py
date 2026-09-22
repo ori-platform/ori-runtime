@@ -1318,6 +1318,12 @@ PATTERN_AUDIT_EXEMPT = {
         "readings are the deliberately public provenance of a hardware "
         "observation."
     ),
+    "docs/evidence/2026-09-22-pi4-circuit-leg-proof.md": (
+        "Bench measurement record for a protected-circuit proof at a wired "
+        "lamp, not evidence-chain evidence; its wiring, command timings and "
+        "raw current readings are the deliberately public provenance of a "
+        "hardware observation."
+    ),
     "docs/evidence/2026-09-22-pi4-sct013-linearity.md": (
         "Bench measurement record for the calibrated current path against a "
         "filament lamp, not evidence-chain evidence; its wiring, bias "
