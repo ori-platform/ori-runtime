@@ -48,6 +48,8 @@ SPEC = WindowSpec(
     full_scale_volts=3.3,
     clip_margin_volts=0.05,
     overrun_tolerance=1.5,
+    expected_bias_volts=1.65,
+    bias_tolerance_volts=0.17,
 )
 
 
@@ -80,12 +82,12 @@ def test_no_signal_reports_no_current() -> None:
     assert result.bias_volts == pytest.approx(1.65)
 
 
-@pytest.mark.parametrize("bias", [1.20, 1.65, 2.10])
+@pytest.mark.parametrize("bias", [1.52, 1.65, 1.78])
 def test_the_bias_is_measured_rather_than_assumed(bias: float) -> None:
     """A divider drifts with supply and temperature.
 
     A configured constant would become an offset added to every reading, so the
-    same waveform must measure the same regardless of where it sits.
+    same waveform must measure the same wherever inside the bias tolerance it sits.
     """
     result = summarise_window(
         _sine(amplitude=0.8, bias=bias), SPEC.nominal_seconds, SPEC
@@ -151,6 +153,8 @@ def _worst_error_across_start_phases(
         full_scale_volts=3.3,
         clip_margin_volts=0.05,
         overrun_tolerance=1.5,
+        expected_bias_volts=1.65,
+        bias_tolerance_volts=0.17,
     )
     true_rms = amplitude / math.sqrt(2)
     worst = 0.0
@@ -251,6 +255,8 @@ def test_the_worst_case_is_always_an_under_report() -> None:
             full_scale_volts=3.3,
             clip_margin_volts=0.05,
             overrun_tolerance=1.5,
+            expected_bias_volts=1.65,
+            bias_tolerance_volts=0.17,
         )
         true_rms = 0.5 / math.sqrt(2)
         errors = []
@@ -288,6 +294,8 @@ def test_the_overrun_budget_follows_the_declared_frequency() -> None:
         full_scale_volts=3.3,
         clip_margin_volts=0.05,
         overrun_tolerance=1.5,
+        expected_bias_volts=1.65,
+        bias_tolerance_volts=0.17,
     )
     at_60 = WindowSpec(
         mains_frequency_hz=60.0,
@@ -296,6 +304,8 @@ def test_the_overrun_budget_follows_the_declared_frequency() -> None:
         full_scale_volts=3.3,
         clip_margin_volts=0.05,
         overrun_tolerance=1.5,
+        expected_bias_volts=1.65,
+        bias_tolerance_volts=0.17,
     )
 
     summarise_window(samples, elapsed, at_50)
@@ -327,6 +337,187 @@ def test_a_waveform_touching_the_lower_rail_is_refused_too() -> None:
     )
     with pytest.raises(WindowRefusedError, match="clipped"):
         summarise_window(samples, SPEC.nominal_seconds, SPEC)
+
+
+def test_a_disconnected_input_is_refused_rather_than_read_as_a_small_current() -> None:
+    """The floating A0 the bench measured: 0.598 V mean, a few millivolts of hum.
+
+    Its RMS is a small, steady current that reads exactly like a healthy clamp
+    on a light load, so the mean is the only thing that gives it away.
+    """
+    samples = _sine(amplitude=0.003, bias=0.598)
+    with pytest.raises(WindowRefusedError, match="from the bias midpoint"):
+        summarise_window(samples, SPEC.nominal_seconds, SPEC)
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+def test_the_midpoint_tolerance_holds_on_both_sides(sign: float) -> None:
+    """Accepted just inside the tolerance and refused just outside, either way."""
+    inside = [
+        SPEC.expected_bias_volts + sign * (SPEC.bias_tolerance_volts - 0.005)
+    ] * 64
+    outside = [
+        SPEC.expected_bias_volts + sign * (SPEC.bias_tolerance_volts + 0.005)
+    ] * 64
+    summarise_window(inside, SPEC.nominal_seconds, SPEC)
+    with pytest.raises(WindowRefusedError, match="from the bias midpoint"):
+        summarise_window(outside, SPEC.nominal_seconds, SPEC)
+
+
+def test_a_large_signal_on_a_partial_window_is_not_refused_for_its_mean() -> None:
+    """The refusal must not fire on the overcurrent it exists to let through.
+
+    A 50 Hz supply under a 60 Hz declaration spans 1.67 cycles, whose mean sits
+    well off the bias for a large sine. Refusing that would degrade the sensor
+    at the moment a trip depends on it, so the allowance grows with the signal.
+    """
+    count, elapsed = _paced_window(declared_hz=60.0)
+    spec = WindowSpec(
+        mains_frequency_hz=60.0,
+        window_cycles=2,
+        min_samples=16,
+        full_scale_volts=3.3,
+        clip_margin_volts=0.05,
+        overrun_tolerance=1.5,
+        expected_bias_volts=1.65,
+        bias_tolerance_volts=0.17,
+    )
+    for bias in (1.65 - 0.16, 1.65 + 0.16):
+        for step in range(360):
+            phase = 2 * math.pi * step / 360
+            samples = [
+                bias
+                + 1.3 * math.sin(2 * math.pi * 50.0 * (i * _SAMPLE_INTERVAL) + phase)
+                for i in range(count)
+            ]
+            summarise_window(samples, elapsed, spec)
+
+
+def _unit_waveform(shape: str, phase: float) -> float:
+    """One period of a load shape at phase 0..1, before its mean is removed."""
+    if shape == "square":
+        return 1.0 if phase < 0.5 else -1.0
+    if shape == "half_wave":
+        return max(0.0, math.sin(2 * math.pi * phase))
+    if shape.startswith("pulse"):
+        return 1.0 if phase < float(shape.removeprefix("pulse")) else 0.0
+    if shape == "phase_cut":
+        # A dimmer conducting from 90 degrees of each half cycle.
+        in_half = (phase % 0.5) / 0.5
+        return math.sin(2 * math.pi * phase) if in_half >= 0.5 else 0.0
+    return math.sin(2 * math.pi * phase)
+
+
+def _load_window(
+    shape: str, *, true_hz: float, declared_hz: float, bias: float, start: float
+) -> tuple[list[float], float]:
+    """A zero-mean load as a clamp couples it, filling the input's usable span."""
+    grid = [_unit_waveform(shape, i / 720) for i in range(720)]
+    mean = sum(grid) / len(grid)
+    low, high = min(grid) - mean, max(grid) - mean
+    # The largest scale that keeps every sample inside the clip margins.
+    headroom = min((3.3 - 0.05 - 0.01 - bias) / high, (bias - 0.05 - 0.01) / -low)
+    count, elapsed = _paced_window(declared_hz=declared_hz)
+    samples = [
+        bias
+        + headroom
+        * (_unit_waveform(shape, (start + true_hz * i * _SAMPLE_INTERVAL) % 1.0) - mean)
+        for i in range(count)
+    ]
+    return samples, elapsed
+
+
+@pytest.mark.parametrize(
+    "shape", ["sine", "square", "half_wave", "pulse0.1", "pulse0.3", "phase_cut"]
+)
+@pytest.mark.parametrize(
+    ("true_hz", "declared_hz"),
+    [
+        (45.0, 50.0),
+        (47.0, 50.0),
+        (50.0, 50.0),
+        (53.0, 50.0),
+        (55.0, 50.0),
+        (60.0, 60.0),
+        (57.0, 60.0),
+        (63.0, 60.0),
+        (50.0, 60.0),
+        (60.0, 50.0),
+        (45.0, 60.0),
+        (46.0, 60.0),
+        (65.0, 50.0),
+    ],
+)
+def test_a_large_load_of_any_common_shape_is_not_refused_for_its_mean(
+    shape: str, true_hz: float, declared_hz: float
+) -> None:
+    """At both edges of the bias tolerance, every start phase, near full scale.
+
+    The signal allowance is a bound on how far a partial window's mean can sit
+    from its bias. It is swept here over the load shapes a site presents,
+    because a bound derived for a sine and applied to a pulse would refuse the
+    overcurrent the check exists to let through.
+    """
+    spec = WindowSpec(
+        mains_frequency_hz=declared_hz,
+        window_cycles=2,
+        min_samples=16,
+        full_scale_volts=3.3,
+        clip_margin_volts=0.05,
+        overrun_tolerance=1.5,
+        expected_bias_volts=1.65,
+        bias_tolerance_volts=0.169125,
+    )
+    for bias in (1.65 - 0.169, 1.65 + 0.169):
+        for step in range(48):
+            samples, elapsed = _load_window(
+                shape,
+                true_hz=true_hz,
+                declared_hz=declared_hz,
+                bias=bias,
+                start=step / 48,
+            )
+            summarise_window(samples, elapsed, spec)
+
+
+@pytest.mark.parametrize(
+    ("shape", "true_hz", "declared_hz"),
+    [("pulse0.02", 50.0, 50.0)],
+)
+def test_the_limits_of_the_allowance_are_refusals(
+    shape: str, true_hz: float, declared_hz: float
+) -> None:
+    """Outside the bound the check refuses, and the limit is pinned, not stated.
+
+    A pulse narrower than the sample interval is not caught, so its peak-to-
+    peak and with it the allowance collapse; the same window at nominal bias
+    publishes near 0 A, an under-report that predates this check.
+    """
+    spec = WindowSpec(
+        mains_frequency_hz=declared_hz,
+        window_cycles=2,
+        min_samples=16,
+        full_scale_volts=3.3,
+        clip_margin_volts=0.05,
+        overrun_tolerance=1.5,
+        expected_bias_volts=1.65,
+        bias_tolerance_volts=0.169125,
+    )
+    refused = 0
+    for bias in (1.65 - 0.169, 1.65 + 0.169):
+        for step in range(48):
+            samples, elapsed = _load_window(
+                shape,
+                true_hz=true_hz,
+                declared_hz=declared_hz,
+                bias=bias,
+                start=step / 48,
+            )
+            try:
+                summarise_window(samples, elapsed, spec)
+            except WindowRefusedError:
+                refused += 1
+    assert refused > 0
 
 
 def test_too_few_samples_are_refused() -> None:
@@ -379,6 +570,7 @@ class _Runtime:
         self.runtime = OriRuntime.__new__(OriRuntime)
         self.runtime._measurement_refusals = {}
         self.runtime._measurement_valid_streak = {}
+        self.runtime._measurement_refusal_reason = {}
         self.runtime._measurement_degraded = set()
         self.runtime._measurement_unnotified = set()
         self.runtime._measurement_notify_attempts = {}
@@ -437,6 +629,55 @@ async def test_a_run_of_refusals_degrades_and_alerts_once() -> None:
 
     await harness.refuse(20)
     assert harness.alerts == ["load-current"], "the alert repeated per window"
+
+
+async def test_the_refusal_reason_lasts_as_long_as_the_fault() -> None:
+    """Health says why a sensor is degraded until it has recovered.
+
+    Kept through the recovery run, because a sensor still degraded is still
+    owed its reason, and dropped on recovery or when a lone refusal is
+    followed by a good window.
+    """
+    from ori.runtime import (
+        MEASUREMENT_REFUSALS_BEFORE_DEGRADED,
+        MEASUREMENT_WINDOWS_TO_RECOVER,
+    )
+
+    harness = _Runtime()
+    reasons = harness.runtime._measurement_refusal_reason
+    await harness.refuse(1)
+    assert reasons == {"load-current": "clipped"}
+    await harness.accept(1)
+    assert reasons == {}
+
+    await harness.refuse(MEASUREMENT_REFUSALS_BEFORE_DEGRADED)
+    await harness.accept(MEASUREMENT_WINDOWS_TO_RECOVER - 1)
+    assert reasons == {"load-current": "clipped"}
+    await harness.accept(1)
+    assert harness.degraded == set()
+    assert reasons == {}
+
+
+async def test_a_restored_degradation_says_its_reason_was_not_kept() -> None:
+    """After a restart the reason is unknown, and health must not read as none."""
+
+    class _Store:
+        async def get_measurement_degradation(self):
+            return {"load-current": True}
+
+        async def get_measurement_notice_schedule(self):
+            return {}
+
+    harness = _Runtime()
+    harness.runtime._state_store = cast(Any, _Store())
+    await harness.runtime._restore_measurement_state()
+
+    assert harness.degraded == {"load-current"}
+    assert harness.runtime._measurement_refusal_reason == {
+        "load-current": "degraded before this start; no window refused since"
+    }
+    await harness.refuse(1)
+    assert harness.runtime._measurement_refusal_reason == {"load-current": "clipped"}
 
 
 async def test_recovery_needs_a_run_of_valid_windows() -> None:
@@ -949,6 +1190,7 @@ async def test_a_delivered_escalation_stops_the_initial_notice_being_retried(
     restarted.runtime._emit_measurement_degraded_warning = _initial  # type: ignore[method-assign]
     restarted.runtime._measurement_refusals = {"load-current": 9}
     restarted.runtime._measurement_valid_streak = {}
+    restarted.runtime._measurement_refusal_reason = {}
     await restarted.runtime._note_measurement_refusal(
         sensor_id="load-current", detail="still refused"
     )

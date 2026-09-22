@@ -69,6 +69,11 @@ class WindowSpec:
     full_scale_volts: float
     clip_margin_volts: float
     overrun_tolerance: float
+    # Where the bias network should hold the input, and how far its components
+    # and supply may move it. A window whose mean sits beyond that is not the
+    # clamp's signal on the bias; see `summarise_window`.
+    expected_bias_volts: float
+    bias_tolerance_volts: float
 
     @property
     def nominal_seconds(self) -> float:
@@ -121,6 +126,28 @@ def summarise_window(
     # and temperature, and a configured constant would silently become an
     # offset added to every reading.
     bias = math.fsum(samples) / len(samples)
+
+    # But it must still be the bias. A disconnected input floats near 0.6 V and
+    # picks up hum, which reduces to a small, steady, plausible current. The
+    # allowance adds what the signal itself can move the mean: over a window
+    # spanning at least one true cycle, a load without DC has a mean within a
+    # quarter of its peak-to-peak of the bias, wherever the window starts. Two
+    # declared cycles span one and a half at 45 Hz under a 60 Hz declaration,
+    # so a mis-declared, sagging supply stays inside it. The bound is on the
+    # waveform; the samples carry it only where they catch its peaks, so a pulse
+    # narrower than the sample interval can still be refused.
+    signal_allowance = (max(samples) - min(samples)) / 4
+    allowed = spec.bias_tolerance_volts + signal_allowance
+    offset = bias - spec.expected_bias_volts
+    if abs(offset) > allowed:
+        raise WindowRefusedError(
+            f"window mean {bias:.3f} V is {offset:+.3f} V from the bias midpoint "
+            f"{spec.expected_bias_volts:.3f} V, beyond the {allowed:.3f} V the bias "
+            "network and the signal allow, so the window cannot be certified as the "
+            "clamp's signal on its bias: the input may be disconnected, its bias "
+            "network may have failed, or the samples did not resolve the waveform"
+        )
+
     mean_square = math.fsum((sample - bias) ** 2 for sample in samples) / len(samples)
     return WindowResult(
         rms_volts=math.sqrt(mean_square),

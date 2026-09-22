@@ -689,6 +689,49 @@ class TestCalibrationResolution:
         block["gain"] = 2 / 3
         assert _window_spec(self._resolve(block)).full_scale_volts == pytest.approx(3.3)
 
+    @pytest.mark.parametrize(
+        ("overrides", "match"),
+        [
+            ({"window_cycles": 1}, "at least 2"),
+            ({"data_rate": 475}, "samples per cycle"),
+            ({"data_rate": 860, "mains_frequency_hz": 400.0}, "samples per cycle"),
+        ],
+    )
+    def test_a_geometry_the_bias_allowance_does_not_cover_is_refused(
+        self, overrides, match
+    ):
+        """Outside it a large current can be refused as a disconnected input."""
+        block = dict(CALIBRATION)
+        block.update(overrides)
+        with pytest.raises(AdapterConnectionError, match=match):
+            self._resolve(block)
+
+    def test_the_bias_midpoint_follows_the_supply_and_divider(self, monkeypatch):
+        """Derived from the rail and the supported network, never a default.
+
+        Half the supply, and a tolerance that is the worst corner of 5% parts
+        and a 5% rail: the low corner is 3.3 x 0.95 x 0.475 = 1.489 V and the
+        high 3.3 x 1.05 x 0.525 = 1.819 V, so 0.169 V either side of 1.650 V.
+        """
+        window = _window_spec(self._resolve(dict(CALIBRATION)))
+        assert window.expected_bias_volts == pytest.approx(1.65)
+        assert window.bias_tolerance_volts == pytest.approx(0.169125)
+
+        monkeypatch.setattr(i2c_module, "_ADC_SUPPLY_VOLTS", 5.0)
+        moved = _window_spec(self._resolve(dict(CALIBRATION)))
+        assert moved.expected_bias_volts == pytest.approx(2.5)
+        assert moved.bias_tolerance_volts > window.bias_tolerance_volts
+
+    @pytest.mark.parametrize(
+        "key", ["expected_bias_volts", "bias_tolerance_volts", "bias_volts"]
+    )
+    def test_the_bias_midpoint_is_not_operator_calibration(self, key):
+        """Widening it would disable the refusal of a disconnected input."""
+        block = dict(CALIBRATION)
+        block[key] = 1.0
+        with pytest.raises(AdapterConnectionError, match="unknown calibration keys"):
+            self._resolve(block)
+
 
 class TestReadAds1115Current:
     """The clamp path reads a window, not a sample.
@@ -2347,6 +2390,11 @@ class TestWindowIntegrity:
         ownership of the bus, which cannot be established from the same bus.
         Written down here so the boundary is visible in the suite rather than
         only in prose: a change that closes it should make this test fail.
+
+        Pinned at a large signal. The midpoint check refuses a foreign gain
+        whose rescaling moves the mean further than the signal allows, which a
+        small signal cannot hide; a large one widens the allowance past it,
+        and a large signal is the overcurrent this path exists for.
         """
         created = _pinned_driver(monkeypatch, chip_mux=0)
         adapter = I2CAdapter()
@@ -2355,7 +2403,7 @@ class TestWindowIntegrity:
 
         full_scale = {0x0200: 4.096, 0x0000: 6.144}  # gain 1, gain 2/3
         counts = itertools.count()
-        bias, peak = 1.65, 0.5
+        bias, peak = 1.65, 1.2
 
         def square():
             i = next(counts)
@@ -2371,12 +2419,111 @@ class TestWindowIntegrity:
 
         reading = await adapter.read("s")
 
-        # 0.5 V RMS over a 1/30 V/A clamp is 15 A on an untouched chip.
-        assert 8.0 < reading.value < 13.0, (
+        # 1.2 V RMS over a 1/30 V/A clamp is 36 A on an untouched chip.
+        assert 22.0 < reading.value < 32.0, (
             "the window was refused or read correctly, so the limitation this "
             f"pins has changed and the documents stating it are now wrong: "
             f"{reading.value}"
         )
+        await adapter.close()
+
+    async def test_a_foreign_gain_on_a_small_signal_moves_the_mean_and_is_refused(
+        self, monkeypatch
+    ):
+        """What the midpoint check does reach of the case above, and no more.
+
+        At gain 2/3 the chip converts the midpoint to counts this adapter scales
+        to about 1.1 V. Held for most of a window of up to about 9 A that moves
+        the mean past the tolerance and the signal's allowance, so the
+        under-report is refused rather than published. The large-signal case
+        above is not.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        ads = created[0]
+
+        full_scale = {0x0200: 4.096, 0x0000: 6.144}
+        counts = itertools.count()
+        bias, peak = 1.65, 0.3
+
+        def square():
+            i = next(counts)
+            if i == 0:
+                ads._gain_bits = 0x0000
+            elif i == 32:
+                ads._gain_bits = 0x0200
+            volts = bias + (peak if i % 2 == 0 else -peak)
+            return int(volts * 32768 / full_scale[ads._gain_bits])
+
+        ads._conversion = square
+
+        with pytest.raises(MeasurementRefusedError, match="from the bias midpoint"):
+            await adapter.read("s")
+        await adapter.close()
+
+    async def test_a_large_square_load_on_a_sagging_misdeclared_supply_is_published(
+        self, monkeypatch
+    ):
+        """45 Hz under a 60 Hz declaration: the window spans 1.5 true cycles.
+
+        Its mean sits well off the bias for a square load near full scale, and
+        refusing it would withhold the overcurrent a trip depends on. Driven
+        through the real read path, paced on the wall clock, with the bias at
+        the low edge of its tolerance.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        calibration = dict(CALIBRATION)
+        calibration["mains_frequency_hz"] = 60.0
+        await adapter.connect(
+            _config(sensor_type="ads1115_current", channel=0, calibration=calibration)
+        )
+        ads = created[0]
+        bias, peak = 1.65 - 0.169, 1.3
+        clock = {"sample": 0, "start": 0.0}
+
+        def square():
+            # Sample-indexed at the conversion rate, so the start phase is the
+            # test's choice rather than the scheduler's.
+            t = clock["start"] + clock["sample"] / 860
+            clock["sample"] += 1
+            volts = bias + (peak if (t * 45.0) % 1.0 < 0.5 else -peak)
+            return int(volts * 32768 / 4.096)
+
+        ads._conversion = square
+        readings = []
+        for step in range(24):
+            clock["sample"], clock["start"] = 0, step / 24 / 45.0
+            readings.append(await adapter.read("s"))
+        await adapter.close()
+
+        # 1.3 V RMS over a 1/30 V/A clamp is 39 A.
+        for reading in readings:
+            assert reading.value > 30.0, reading.value
+
+    async def test_a_disconnected_input_is_refused_through_the_driver(
+        self, monkeypatch
+    ):
+        """The bench's floating A0, through the pinned driver: 0.598 V and hum.
+
+        Before the midpoint check this published about 0.05 A at full quality,
+        which is what a healthy clamp on a light load reads.
+        """
+        created = _pinned_driver(monkeypatch, chip_mux=0)
+        adapter = I2CAdapter()
+        await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
+        ads = created[0]
+        counts = itertools.count()
+
+        def floating():
+            volts = 0.598 + 0.002 * math.sin(2 * math.pi * next(counts) / 17)
+            return int(volts * 32768 / 4.096)
+
+        ads._conversion = floating
+
+        with pytest.raises(MeasurementRefusedError, match="from the bias midpoint"):
+            await adapter.read("s")
         await adapter.close()
 
     async def test_a_sample_is_scaled_the_way_the_driver_scales(self, monkeypatch):

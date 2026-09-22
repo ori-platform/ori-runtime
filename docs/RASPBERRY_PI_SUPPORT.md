@@ -43,8 +43,11 @@ data rate or conversion mode changed by anything outside the runtime refuses
 the measurement rather than quietly rescaling it. It is read back again at the
 end of each window, so a change that is still present when the window closes
 refuses that window rather than the next one. A writer that changes the
-configuration and restores it before the window closes is not caught, and
-cannot be from this side of the bus.
+configuration and restores it before the window closes is not caught by either
+readback, and cannot be from this side of the bus. Its rescaled samples move
+the window's mean, so on a small signal it is refused at the bias midpoint;
+on a large one the signal's own allowance absorbs the shift and the window
+under-reports.
 
 Every sample writes the chip's register pointer for itself, so a foreign read
 of the configuration register cannot turn the rest of a window into the

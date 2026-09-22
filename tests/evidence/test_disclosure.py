@@ -1330,6 +1330,11 @@ PATTERN_AUDIT_EXEMPT = {
         "voltages and raw current readings are the deliberately public "
         "provenance of a hardware observation."
     ),
+    "docs/evidence/2026-09-22-pi4-midpoint-refusal.md": (
+        "Bench measurement record for the bias-midpoint refusal on a floating "
+        "input, not evidence-chain evidence; its wiring, window means and refusal "
+        "text are the deliberately public provenance of a hardware observation."
+    ),
     "docs/INVERTER_CONTROL_LADDER.md": (
         "Inverter control reference written in Modbus register vocabulary."
     ),

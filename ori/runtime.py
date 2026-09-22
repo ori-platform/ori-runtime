@@ -471,6 +471,8 @@ class OriRuntime:
         # present and answering; what it returned was not a measurement.
         self._measurement_refusals: dict[str, int] = {}
         self._measurement_valid_streak: dict[str, int] = {}
+        # Why the current run of refusals was refused, for the health snapshot.
+        self._measurement_refusal_reason: dict[str, str] = {}
         self._measurement_degraded: set[str] = set()
         # Configured sensors whose adapter never connected. Distinct from a
         # sensor that connected and went quiet: that one is late and the
@@ -1471,6 +1473,7 @@ class OriRuntime:
         self._stale_sensor_active = set()
         self._measurement_refusals = {}
         self._measurement_valid_streak = {}
+        self._measurement_refusal_reason = {}
         await self._restore_measurement_state()
         self._last_alert_timestamps_by_channel = {}
         self._last_alert_timestamps_by_trigger = {}
@@ -3271,6 +3274,9 @@ class OriRuntime:
                     "consecutive_refusals": self._measurement_refusals.get(
                         sensor_id, 0
                     ),
+                    "measurement_refusal_reason": (
+                        self._measurement_refusal_reason.get(sensor_id)
+                    ),
                     "last_seen_ms": int(last_seen_ms)
                     if last_seen_ms is not None
                     else None,
@@ -3850,6 +3856,11 @@ class OriRuntime:
             else {}
         )
         self._measurement_degraded = set(restored)
+        # The reason is not persisted; say so rather than report none.
+        self._measurement_refusal_reason = {
+            sensor_id: "degraded before this start; no window refused since"
+            for sensor_id in restored
+        }
         self._measurement_degraded_since = {
             sensor_id: since for sensor_id, (since, _) in schedule.items()
         }
@@ -4014,6 +4025,7 @@ class OriRuntime:
         """A window that was a measurement. Counts toward clearing degradation."""
         if sensor_id not in self._measurement_degraded:
             self._measurement_refusals.pop(sensor_id, None)
+            self._measurement_refusal_reason.pop(sensor_id, None)
             return
         streak = self._measurement_valid_streak.get(sensor_id, 0) + 1
         self._measurement_valid_streak[sensor_id] = streak
@@ -4028,6 +4040,7 @@ class OriRuntime:
         self._measurement_unnotified.discard(sensor_id)
         self._measurement_notify_attempts.pop(sensor_id, None)
         self._measurement_refusals.pop(sensor_id, None)
+        self._measurement_refusal_reason.pop(sensor_id, None)
         self._measurement_valid_streak.pop(sensor_id, None)
         self._measurement_degraded_since.pop(sensor_id, None)
         self._measurement_notice_stage.pop(sensor_id, None)
@@ -4047,6 +4060,7 @@ class OriRuntime:
         # Any refusal breaks a recovery run. Alternating windows are not a
         # measurement path coming back.
         self._measurement_valid_streak.pop(sensor_id, None)
+        self._measurement_refusal_reason[sensor_id] = detail
         refusals = self._measurement_refusals.get(sensor_id, 0) + 1
         self._measurement_refusals[sensor_id] = refusals
         if refusals < MEASUREMENT_REFUSALS_BEFORE_DEGRADED:
