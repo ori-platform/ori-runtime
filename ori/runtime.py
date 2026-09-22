@@ -222,7 +222,7 @@ from ori.telemetry.http_export import HttpTelemetryExporter
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
 from ori.utils.path_utils import path_is_relative_to, shown
-from ori.utils.time_utils import host_clock_synchronized, now_ms
+from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -4654,11 +4654,7 @@ class OriRuntime:
             if self._state_store is not None:
                 try:
                     await self._state_store.compact_history(
-                        max_backward_skew_ms=max_backward_skew_ms,
-                        # Off the loop: the first call searches for libc.
-                        clock_synchronized=await asyncio.to_thread(
-                            host_clock_synchronized
-                        ),
+                        max_backward_skew_ms=max_backward_skew_ms
                     )
                     logger.debug("[compaction] history compaction complete")
                 except Exception:

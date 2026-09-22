@@ -1335,11 +1335,6 @@ PATTERN_AUDIT_EXEMPT = {
         "input, not evidence-chain evidence; its wiring, window means and refusal "
         "text are the deliberately public provenance of a hardware observation."
     ),
-    "docs/evidence/2026-09-22-pi4-clock-sync-probe.md": (
-        "Bench record of the host-clock synchronization probe on a Pi, not "
-        "evidence-chain evidence; its commands and kernel states are the "
-        "deliberately public provenance of a platform observation."
-    ),
     "docs/INVERTER_CONTROL_LADDER.md": (
         "Inverter control reference written in Modbus register vocabulary."
     ),

@@ -3231,14 +3231,9 @@ def _parse_state(data: Any) -> StateConfig:
             "state.compaction.max_backward_skew_ms must be an integer."
         ) from exc
 
-    # A skew below the readers' tolerance would let a synchronized prune
-    # delete rows the age windows still admit.
-    from ori.state.store import RECEIPT_READ_TOLERANCE_MS
-
-    if max_skew < RECEIPT_READ_TOLERANCE_MS:
+    if max_skew < 60000:
         raise ConfigValidationError(
-            "state.compaction.max_backward_skew_ms must be >= "
-            f"{RECEIPT_READ_TOLERANCE_MS}."
+            "state.compaction.max_backward_skew_ms must be >= 60000."
         )
 
     encryption = _parse_state_encryption(encryption_data)

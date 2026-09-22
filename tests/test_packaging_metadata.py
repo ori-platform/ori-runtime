@@ -285,29 +285,3 @@ def test_eval_extra_is_intentionally_empty() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["optional-dependencies"]["eval"] == []
-
-
-def test_a_syscall_filter_on_the_unit_cannot_kill_the_clock_probe() -> None:
-    """Compaction reads the kernel's clock state with adjtimex every cycle.
-
-    A systemd `SystemCallFilter=` that omits it kills the process with SIGSYS
-    unless `SystemCallErrorNumber=` makes a denied call fail instead, and that
-    kill would come five minutes after every start. This guards only the
-    shipped unit template; a filter added by an operator override is not seen.
-    """
-    root = Path(__file__).resolve().parent.parent
-    unit = (root / "packaging" / "systemd" / "ori-runtime.service.in").read_text()
-    filters = [
-        line.split("=", 1)[1]
-        for line in unit.splitlines()
-        if line.strip().startswith("SystemCallFilter=")
-    ]
-    if not filters:
-        return
-    allowed = " ".join(filters)
-    assert (
-        "SystemCallErrorNumber=" in unit or "adjtimex" in allowed or "@clock" in allowed
-    ), (
-        "the unit filters system calls without allowing adjtimex or setting "
-        "SystemCallErrorNumber=, so the clock probe would kill the runtime"
-    )

@@ -209,11 +209,9 @@ class TestCompactionGuard:
         await store.append_history(_event(_reading(timestamp=future_ts)))
         monkeypatch.undo()
 
-        await store.compact_history(clock_synchronized=None)
+        await store.compact_history()
+        await store.compact_history()
         assert len(await store.get_history("s1", limit=10)) == 1
-
-        await store.compact_history(clock_synchronized=True)
-        assert await store.get_history("s1", limit=10) == []
 
     async def test_compact_sync_succeeds_normally(self, store):
         # Insert a row safely in the past

@@ -1745,19 +1745,11 @@ class StateStore:
 
     # ─── sensor_history ───────────────────────────────────────────────────────
 
-    async def compact_history(
-        self,
-        max_backward_skew_ms: int = 3600000,
-        *,
-        clock_synchronized: bool | None = None,
-    ) -> None:
+    async def compact_history(self, max_backward_skew_ms: int = 3600000) -> None:
         """Compact raw sensor history into time-bucketed averages.
 
         Call from runtime.py via asyncio.create_task() on a 5-minute
         schedule using asyncio periodic task pattern.
-
-        ``clock_synchronized`` licenses pruning receipts dated beyond the skew
-        bound; anything but True keeps them, since the clock may be what is wrong.
         """
         current_ms = now_ms()
         cutoffs = {
@@ -1770,7 +1762,6 @@ class StateStore:
             cutoffs,
             current_ms,
             max_backward_skew_ms,
-            clock_synchronized,
         )
 
     def _compact_sync(
@@ -1778,7 +1769,6 @@ class StateStore:
         cutoffs: dict,
         now_ms: int,
         max_backward_skew_ms: int = 3600000,
-        clock_synchronized: bool | None = None,
     ) -> None:
         if self._conn is None:
             raise RuntimeError("StateStore is not open")
@@ -1795,11 +1785,11 @@ class StateStore:
         # clock ran ahead, or a clock now running behind. Compaction runs in
         # both cases: a clock behind only moves the cutoffs earlier, so it
         # deletes less, never more. Halting instead stopped retention for as
-        # long as the bad receipt stayed ahead of the clock. Raw rows are pruned
-        # only when the kernel says the clock is synchronized, because otherwise
-        # the clock may be the thing that is wrong. A bucket is never pruned for
-        # it: its receipt is the greatest of many samples, and deleting it would
-        # delete the ordinary ones merged with the suspect one.
+        # long as the bad receipt stayed ahead of the clock. Nothing is deleted
+        # for it either: the kernel cannot say which clock is right, and a
+        # source that steps it back while reporting synchronized would turn a
+        # prune into the loss of an incident's raw trace. Such rows stay out of
+        # age windows until the clock passes them.
         horizon = now_ms + max_backward_skew_ms
         future = {
             table: int(
@@ -1810,13 +1800,7 @@ class StateStore:
             )
             for table, column in _HISTORY_RECEIPT_COLUMNS.items()
         }
-        pruned = 0
-        if future["sensor_history"] and clock_synchronized is True:
-            pruned = self._conn.execute(
-                "DELETE FROM sensor_history WHERE received_at_ms > ?", (horizon,)
-            ).rowcount
-            future["sensor_history"] = 0
-        self._report_future_receipts(future, pruned, now_ms, max_backward_skew_ms)
+        self._report_future_receipts(future, now_ms, max_backward_skew_ms)
 
         # Retention is decided on receipt: a row leaves a tier once the store
         # received it before the cutoff. Buckets are keyed on the producer's
@@ -1911,18 +1895,10 @@ class StateStore:
     def _report_future_receipts(
         self,
         kept: dict[str, int],
-        pruned: int,
         now_ms: int,
         max_backward_skew_ms: int,
     ) -> None:
-        """Log what compaction did about receipts beyond the clock, on change or daily."""
-        if pruned:
-            logger.warning(
-                "[compaction] pruned %d raw readings received after the "
-                "synchronized clock by more than %d ms",
-                pruned,
-                max_backward_skew_ms,
-            )
+        """Log history received beyond the clock, on change and daily."""
         if not any(kept.values()):
             self._future_receipts_logged = None
             return

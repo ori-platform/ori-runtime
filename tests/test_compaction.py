@@ -101,13 +101,12 @@ _CUTOFFS = {
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("synchronized", [None, False])
-async def test_a_future_receipt_does_not_halt_compaction(store, synchronized):
+async def test_a_future_receipt_does_not_halt_compaction(store):
     """Retention keeps running; the row is kept, since the clock may be wrong."""
     _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 86_400_000)
     _insert_receipt(store, timestamp=NOW_MS - 150_000, received_at_ms=NOW_MS - 150_000)
 
-    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, synchronized)
+    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000)
 
     remaining = store._conn.execute(
         "SELECT received_at_ms FROM sensor_history"
@@ -117,8 +116,13 @@ async def test_a_future_receipt_does_not_halt_compaction(store, synchronized):
 
 
 @pytest.mark.asyncio
-async def test_a_synchronized_clock_prunes_raw_receipts_beyond_the_skew_bound(store):
-    """Only raw rows past the bound go; a receipt inside it is ordinary skew."""
+async def test_no_future_receipt_is_ever_deleted(store):
+    """The kernel cannot say which clock is right, so compaction deletes none.
+
+    A source that steps the clock back while reporting synchronized would turn
+    a prune into the loss of an incident's raw trace. Raw rows and buckets are
+    kept whatever the receipt, and stay out of age windows instead.
+    """
     _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 3_600_001)
     _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 3_600_000)
     for table in (
@@ -137,14 +141,15 @@ async def test_a_synchronized_clock_prunes_raw_receipts_beyond_the_skew_bound(st
         )
     store._conn.commit()
 
-    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, True)
+    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000)
 
     remaining = store._conn.execute(
-        "SELECT received_at_ms FROM sensor_history"
+        "SELECT received_at_ms FROM sensor_history ORDER BY received_at_ms"
     ).fetchall()
-    assert [row["received_at_ms"] for row in remaining] == [NOW_MS + 3_600_000]
-    # A bucket's receipt is the greatest of its samples; pruning it would take
-    # the ordinary samples merged with the suspect one.
+    assert [row["received_at_ms"] for row in remaining] == [
+        NOW_MS + 3_600_000,
+        NOW_MS + 3_600_001,
+    ]
     for table in (
         "sensor_history_5min",
         "sensor_history_hourly",
@@ -158,7 +163,7 @@ async def test_a_producer_clock_in_the_future_is_not_a_receipt(store):
     """Only a receipt is the host's own clock; a reading's date prunes nothing."""
     _insert_receipt(store, timestamp=NOW_MS + 86_400_000, received_at_ms=NOW_MS)
 
-    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, True)
+    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000)
 
     assert _row_count(store, "sensor_history") == 1
 
@@ -254,7 +259,7 @@ async def test_a_bucket_mixing_a_future_receipt_with_ordinary_ones_is_kept(store
     )
     store._conn.commit()
 
-    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, True)
+    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000)
 
     row = store._conn.execute("SELECT sample_count FROM sensor_history_5min").fetchone()
     assert row is not None and row["sample_count"] == 18
@@ -266,13 +271,13 @@ async def test_a_kept_future_receipt_is_reported_on_change_and_daily(store, capl
     day = 86_400_000
     _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 10 * day)
     with caplog.at_level("WARNING", logger="ori.state.store"):
-        store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, None)
-        store._compact_sync(_CUTOFFS, NOW_MS + 300_000, 3_600_000, None)
+        store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000)
+        store._compact_sync(_CUTOFFS, NOW_MS + 300_000, 3_600_000)
         assert len(caplog.records) == 1
         _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 11 * day)
-        store._compact_sync(_CUTOFFS, NOW_MS + 600_000, 3_600_000, None)
+        store._compact_sync(_CUTOFFS, NOW_MS + 600_000, 3_600_000)
         assert len(caplog.records) == 2
-        store._compact_sync(_CUTOFFS, NOW_MS + 600_000 + day, 3_600_000, None)
+        store._compact_sync(_CUTOFFS, NOW_MS + 600_000 + day, 3_600_000)
         assert len(caplog.records) == 3
 
 
@@ -372,37 +377,16 @@ async def test_the_latest_snapshot_tolerates_a_receipt_just_ahead(
     assert (len(snapshot) == 1) is counted
 
 
-def test_the_compaction_skew_can_never_fall_below_the_read_tolerance(tmp_path):
-    """A prune on a synchronized clock must not delete rows readers still admit."""
-    from ori.config import ConfigValidationError, _parse_state
-    from ori.state.store import RECEIPT_READ_TOLERANCE_MS
-
-    with pytest.raises(ConfigValidationError, match=str(RECEIPT_READ_TOLERANCE_MS)):
-        _parse_state(
-            {"compaction": {"max_backward_skew_ms": RECEIPT_READ_TOLERANCE_MS - 1}}
-        )
-
-
-@pytest.mark.asyncio
-async def test_a_pruned_row_is_not_reported_as_kept(store, caplog):
-    """The warning names what was kept, and a pruned row is not among it."""
-    _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 86_400_000)
-    with caplog.at_level("WARNING", logger="ori.state.store"):
-        store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, True)
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("pruned 1 raw readings" in m for m in messages), messages
-    assert not any("is kept" in m for m in messages), messages
-
-
 @pytest.mark.asyncio
 async def test_a_cleared_condition_is_reported_again_when_it_returns(store, caplog):
     """Once nothing is kept, the next future receipt is new, not a repeat."""
     day = 86_400_000
     _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 10 * day)
     with caplog.at_level("WARNING", logger="ori.state.store"):
-        store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, None)
-        store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, True)
-        _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 10 * day)
-        store._compact_sync(_CUTOFFS, NOW_MS + 300_000, 3_600_000, None)
+        store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000)
+        # The clock passes the receipt, so nothing is beyond it any more.
+        store._compact_sync(_CUTOFFS, NOW_MS + 11 * day, 3_600_000)
+        _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 21 * day + 1)
+        store._compact_sync(_CUTOFFS, NOW_MS + 11 * day + 300_000, 3_600_000)
     kept = [r for r in caplog.records if "is kept" in r.getMessage()]
     assert len(kept) == 2
