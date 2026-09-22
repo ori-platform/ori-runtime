@@ -11,6 +11,8 @@ from ori.skills.composer import (
     resolve_timezone,
     sms_cap,
 )
+from ori.state.store import RAW_HISTORY_RETENTION_MS as _RAW_RETENTION_MS
+from ori.state.store import RECEIPT_READ_TOLERANCE_MS as _RECEIPT_TOLERANCE_MS
 
 
 def _mean(values):
@@ -392,14 +394,23 @@ def pre_trigger_eval(context):
     # receipts; a span of the readings' own clocks could be stretched by one
     # reading dated anywhere.
     # A row with no receipt is not evidence of observation and would stretch
-    # the span to the epoch; it is left out rather than counted from zero.
+    # the span to the epoch; it is left out rather than counted from zero. So
+    # is one received well after this event, which only a clock that ran ahead
+    # can write; the event's own row is stamped just after the event, so the
+    # bound carries the store's read tolerance. The span never exceeds what raw
+    # history retains.
+    now = as_int(getattr(context, "received_at_ms", 0), 0)
     timestamps = [
-        as_int(item.get("received_at_ms", 0), 0)
-        for item in history_rows
-        if isinstance(item, dict) and as_int(item.get("received_at_ms", 0), 0) > 0
+        received
+        for received in (
+            as_int(item.get("received_at_ms", 0), 0)
+            for item in history_rows
+            if isinstance(item, dict)
+        )
+        if received > 0 and (now <= 0 or received <= now + _RECEIPT_TOLERANCE_MS)
     ]
     if len(timestamps) >= 2:
-        span_ms = max(timestamps) - min(timestamps)
+        span_ms = min(max(timestamps) - min(timestamps), _RAW_RETENTION_MS)
         if span_ms > 0:
             observed_hours = span_ms / 3_600_000.0
     if observed_hours <= 0.0:

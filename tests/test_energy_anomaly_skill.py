@@ -522,10 +522,59 @@ def test_observed_window_is_the_span_of_receipts_not_of_device_clocks():
     ]
     store.hooks_get_history = lambda _sensor_id, limit=1: rows[:limit]  # type: ignore[method-assign]
 
-    event = _event(sensor_id=sensor_id, value=14.0)
+    # Received after every row in its history, as an event always is.
+    event = _event(sensor_id=sensor_id, value=14.0, timestamp=base + 3_600_000)
     hook_ctx, _ = _ctx(skill, event, store)
 
     assert hook_ctx.derived["observed_window_hours"] == pytest.approx(1.0)
+
+
+def _receipt_rows(sensor_id: str, receipts: list[int]) -> list[dict]:
+    return [
+        {
+            "sensor_id": sensor_id,
+            "sensor_type": "current_clamp",
+            "value": 10.0,
+            "unit": "ampere",
+            "timestamp": received,
+            "quality": 1.0,
+            "metadata": {},
+            "received_at_ms": received,
+        }
+        for received in receipts
+    ]
+
+
+def _observed_hours(receipts: list[int], event_received_at_ms: int) -> float:
+    skill = _load_skill()
+    store = _Store()
+    sensor_id = "load-current-01"
+    _seed_history(store, sensor_id, [10.0, 10.0, 10.0, 10.0, 10.0, 10.0])
+    rows = _receipt_rows(sensor_id, receipts)
+    event = _event(sensor_id=sensor_id, value=14.0, timestamp=event_received_at_ms)
+    hook_ctx = HookContext.build(event, store, skill.name, skill_config=skill.config)
+    hook_ctx.history.fetch_history = lambda _sensor_id, limit=1: rows[:limit]  # type: ignore[method-assign]
+    skill.hooks.pre_trigger_eval(hook_ctx)
+    return hook_ctx.derived["observed_window_hours"]
+
+
+def test_a_receipt_after_the_event_does_not_stretch_the_observed_window():
+    """Only a clock that ran ahead writes a receipt later than the event itself."""
+    base = 1_710_000_000_000
+    now = base + 5 * 60_000
+    ahead = now + 365 * 86_400_000
+    receipts = [ahead] + [base + index * 60_000 for index in range(5)]
+
+    assert _observed_hours(receipts, now) == pytest.approx(4 / 60)
+
+
+def test_the_observed_window_never_exceeds_raw_retention():
+    """Raw history is kept for 48 hours; no span of it can honestly be longer."""
+    base = 1_710_000_000_000
+    now = base + 400 * 86_400_000
+    receipts = [base] + [now - index * 60_000 for index in range(5)]
+
+    assert _observed_hours(receipts, now) == pytest.approx(48.0)
 
 
 def test_a_history_row_without_a_receipt_does_not_stretch_the_observed_window():
@@ -548,10 +597,53 @@ def test_a_history_row_without_a_receipt_does_not_stretch_the_observed_window():
         }
         for index in range(6)
     ]
-    event = _event(sensor_id=sensor_id, value=14.0)
+    event = _event(sensor_id=sensor_id, value=14.0, timestamp=base + 5 * 60_000)
     hook_ctx = HookContext.build(event, store, skill.name, skill_config=skill.config)
     hook_ctx.history.fetch_history = lambda _sensor_id, limit=1: rows[:limit]  # type: ignore[method-assign]
 
     skill.hooks.pre_trigger_eval(hook_ctx)
 
     assert hook_ctx.derived["observed_window_hours"] == pytest.approx(4 / 60)
+
+
+async def test_the_events_own_row_counts_though_the_store_stamped_it_later(
+    tmp_path, monkeypatch
+):
+    """The store receives a reading just after the event that carries it."""
+    from ori.state.store import StateStore
+
+    skill = _load_skill()
+    store = StateStore(str(tmp_path / "state.db"))
+    await store.open()
+    sensor_id = "load-current-01"
+    base = 1_710_000_000_000
+    clock = {"now": base}
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: clock["now"])
+    try:
+        for index in range(5):
+            clock["now"] = base + index * 60_000
+            await store.append_history(
+                _event(sensor_id=sensor_id, value=10.0, timestamp=clock["now"])
+            )
+        event = _event(sensor_id=sensor_id, value=14.0, timestamp=base + 4 * 60_000)
+
+        # The row for this event was stamped 50 ms after the event itself.
+        def _lag() -> None:
+            assert store._conn is not None
+            store._conn.execute(
+                "UPDATE sensor_history SET received_at_ms = received_at_ms + 50 "
+                "WHERE id = (SELECT MAX(id) FROM sensor_history)"
+            )
+            store._conn.commit()
+
+        await store._run_write(_lag)
+        hook_ctx = HookContext.build(
+            event, store, skill.name, skill_config=skill.config
+        )
+        skill.hooks.pre_trigger_eval(hook_ctx)
+    finally:
+        await store.close()
+
+    assert hook_ctx.derived["observed_window_hours"] == pytest.approx(
+        (4 * 60_000 + 50) / 3_600_000
+    )

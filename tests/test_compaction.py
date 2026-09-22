@@ -77,30 +77,90 @@ async def test_compaction_pyramid(store, monkeypatch):
     assert daily[0]["avg_value"] == 500.0
 
 
-@pytest.mark.asyncio
-async def test_clock_skew_guard(store, monkeypatch):
-    # Guardrail: if the host clock moves backward relative to the store's own
-    # receipts, compaction must refuse to delete data. Only a receipt can trip
-    # it: a producer clock in the future is not a fault of the host clock.
-    now = 2_000_000_000_000
-    future_ts = now + 4_000_000
+def _row_count(store, table: str) -> int:
+    return store._conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+
+
+def _insert_receipt(store, *, timestamp: int, received_at_ms: int) -> None:
     store._conn.execute(
         """
         INSERT INTO sensor_history
         (sensor_id, sensor_type, value, unit, timestamp, quality, received_at_ms)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        ("s1", "temp", 20.0, "c", now, 1.0, future_ts),
+        ("s1", "temp", 20.0, "c", timestamp, 1.0, received_at_ms),
     )
     store._conn.commit()
 
-    cutoffs = {
-        "hourly": now - 300_000,
-        "5min": now - 200_000,
-        "raw": now - 100_000,
-    }
-    with pytest.raises(RuntimeError, match="Clock skew detected"):
-        store._compact_sync(cutoffs, now)
+
+_CUTOFFS = {
+    "hourly": NOW_MS - 300_000,
+    "5min": NOW_MS - 200_000,
+    "raw": NOW_MS - 100_000,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("synchronized", [None, False])
+async def test_a_future_receipt_does_not_halt_compaction(store, synchronized):
+    """Retention keeps running; the row is kept, since the clock may be wrong."""
+    _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 86_400_000)
+    _insert_receipt(store, timestamp=NOW_MS - 150_000, received_at_ms=NOW_MS - 150_000)
+
+    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, synchronized)
+
+    remaining = store._conn.execute(
+        "SELECT received_at_ms FROM sensor_history"
+    ).fetchall()
+    assert [row["received_at_ms"] for row in remaining] == [NOW_MS + 86_400_000]
+    assert _row_count(store, "sensor_history_5min") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_synchronized_clock_prunes_raw_receipts_beyond_the_skew_bound(store):
+    """Only raw rows past the bound go; a receipt inside it is ordinary skew."""
+    _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 3_600_001)
+    _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 3_600_000)
+    for table in (
+        "sensor_history_5min",
+        "sensor_history_hourly",
+        "sensor_history_daily",
+    ):
+        store._conn.execute(
+            f"""
+            INSERT INTO {table}
+            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
+             max_received_at_ms)
+            VALUES ('s1', 'temp', ?, 20.0, 'c', 1, ?)
+            """,
+            (NOW_MS, NOW_MS + 86_400_000),
+        )
+    store._conn.commit()
+
+    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, True)
+
+    remaining = store._conn.execute(
+        "SELECT received_at_ms FROM sensor_history"
+    ).fetchall()
+    assert [row["received_at_ms"] for row in remaining] == [NOW_MS + 3_600_000]
+    # A bucket's receipt is the greatest of its samples; pruning it would take
+    # the ordinary samples merged with the suspect one.
+    for table in (
+        "sensor_history_5min",
+        "sensor_history_hourly",
+        "sensor_history_daily",
+    ):
+        assert _row_count(store, table) == 1, table
+
+
+@pytest.mark.asyncio
+async def test_a_producer_clock_in_the_future_is_not_a_receipt(store):
+    """Only a receipt is the host's own clock; a reading's date prunes nothing."""
+    _insert_receipt(store, timestamp=NOW_MS + 86_400_000, received_at_ms=NOW_MS)
+
+    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, True)
+
+    assert _row_count(store, "sensor_history") == 1
 
 
 @pytest.mark.asyncio
@@ -178,3 +238,171 @@ async def test_compaction_uses_weighted_average_for_daily(store, monkeypatch):
     ).fetchone()
     assert daily["avg_value"] == pytest.approx(19.0)
     assert daily["sample_count"] == 10
+
+
+@pytest.mark.asyncio
+async def test_a_bucket_mixing_a_future_receipt_with_ordinary_ones_is_kept(store):
+    """Eighteen ordinary samples and one suspect receipt share a bucket."""
+    store._conn.execute(
+        """
+        INSERT INTO sensor_history_5min
+        (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
+         max_received_at_ms)
+        VALUES ('s1', 'temp', ?, 20.0, 'c', 18, ?)
+        """,
+        (NOW_MS - 3 * 86_400_000, NOW_MS + 86_400_000),
+    )
+    store._conn.commit()
+
+    store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, True)
+
+    row = store._conn.execute("SELECT sample_count FROM sensor_history_5min").fetchone()
+    assert row is not None and row["sample_count"] == 18
+
+
+@pytest.mark.asyncio
+async def test_a_kept_future_receipt_is_reported_on_change_and_daily(store, caplog):
+    """A condition that persists is not a warning every five minutes."""
+    day = 86_400_000
+    _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 10 * day)
+    with caplog.at_level("WARNING", logger="ori.state.store"):
+        store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, None)
+        store._compact_sync(_CUTOFFS, NOW_MS + 300_000, 3_600_000, None)
+        assert len(caplog.records) == 1
+        _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 11 * day)
+        store._compact_sync(_CUTOFFS, NOW_MS + 600_000, 3_600_000, None)
+        assert len(caplog.records) == 2
+        store._compact_sync(_CUTOFFS, NOW_MS + 600_000 + day, 3_600_000, None)
+        assert len(caplog.records) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_future_receipt_is_left_out_of_an_hours_average(store, monkeypatch):
+    """Its age is unknown, so it is not inside any window measured from now."""
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    _insert_receipt(store, timestamp=NOW_MS - 60_000, received_at_ms=NOW_MS - 60_000)
+    store._conn.execute(
+        "UPDATE sensor_history SET value = 10.0 WHERE received_at_ms = ?",
+        (NOW_MS - 60_000,),
+    )
+    _insert_receipt(
+        store, timestamp=NOW_MS - 60_000, received_at_ms=NOW_MS + 86_400_000
+    )
+    store._conn.commit()
+
+    assert await store.avg_last_hours("s1", 1) == pytest.approx(10.0)
+
+
+@pytest.mark.asyncio
+async def test_a_future_receipt_is_not_a_fresh_latest_reading(store, monkeypatch):
+    """The sensor's latest arrival carries a receipt the clock has not reached."""
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    _insert_receipt(
+        store, timestamp=NOW_MS - 60_000, received_at_ms=NOW_MS + 86_400_000
+    )
+
+    snapshot = await store.get_latest_readings_snapshot(
+        exclude_sensor_id="other", since_ms=NOW_MS - 3_600_000, max_entries=10
+    )
+
+    assert snapshot == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "table", ["sensor_history_5min", "sensor_history_hourly", "sensor_history_daily"]
+)
+async def test_a_future_bucket_is_left_out_of_an_hours_average(
+    store, monkeypatch, table
+):
+    """The age bound applies to every tier the window reads, not only raw."""
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    _insert_receipt(store, timestamp=NOW_MS - 60_000, received_at_ms=NOW_MS - 60_000)
+    store._conn.execute("UPDATE sensor_history SET value = 10.0")
+    store._conn.execute(
+        f"""
+        INSERT INTO {table}
+        (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
+         max_received_at_ms)
+        VALUES ('s1', 'temp', ?, 99.0, 'c', 50, ?)
+        """,
+        (NOW_MS - 600_000, NOW_MS + 86_400_000),
+    )
+    store._conn.commit()
+
+    assert await store.avg_last_hours("s1", 1) == pytest.approx(10.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("ahead_ms", "counted"), [(30_000, True), (61_000, False)])
+async def test_the_hours_average_tolerates_a_receipt_just_ahead(
+    store, monkeypatch, ahead_ms, counted
+):
+    """Within the read tolerance a receipt counts; beyond it, it does not."""
+    from ori.state.store import RECEIPT_READ_TOLERANCE_MS
+
+    assert RECEIPT_READ_TOLERANCE_MS == 60_000
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    _insert_receipt(store, timestamp=NOW_MS - 60_000, received_at_ms=NOW_MS - 60_000)
+    store._conn.execute("UPDATE sensor_history SET value = 10.0")
+    _insert_receipt(store, timestamp=NOW_MS - 30_000, received_at_ms=NOW_MS + ahead_ms)
+    store._conn.execute(
+        "UPDATE sensor_history SET value = 30.0 WHERE received_at_ms = ?",
+        (NOW_MS + ahead_ms,),
+    )
+    store._conn.commit()
+
+    expected = 20.0 if counted else 10.0
+    assert await store.avg_last_hours("s1", 1) == pytest.approx(expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("ahead_ms", "counted"), [(30_000, True), (61_000, False)])
+async def test_the_latest_snapshot_tolerates_a_receipt_just_ahead(
+    store, monkeypatch, ahead_ms, counted
+):
+    """A small backward clock step must not make a live sensor vanish."""
+    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    _insert_receipt(store, timestamp=NOW_MS - 30_000, received_at_ms=NOW_MS + ahead_ms)
+
+    snapshot = await store.get_latest_readings_snapshot(
+        exclude_sensor_id="other", since_ms=NOW_MS - 3_600_000, max_entries=10
+    )
+
+    assert (len(snapshot) == 1) is counted
+
+
+def test_the_compaction_skew_can_never_fall_below_the_read_tolerance(tmp_path):
+    """A prune on a synchronized clock must not delete rows readers still admit."""
+    from ori.config import ConfigValidationError, _parse_state
+    from ori.state.store import RECEIPT_READ_TOLERANCE_MS
+
+    with pytest.raises(ConfigValidationError, match=str(RECEIPT_READ_TOLERANCE_MS)):
+        _parse_state(
+            {"compaction": {"max_backward_skew_ms": RECEIPT_READ_TOLERANCE_MS - 1}}
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_pruned_row_is_not_reported_as_kept(store, caplog):
+    """The warning names what was kept, and a pruned row is not among it."""
+    _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 86_400_000)
+    with caplog.at_level("WARNING", logger="ori.state.store"):
+        store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, True)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("pruned 1 raw readings" in m for m in messages), messages
+    assert not any("is kept" in m for m in messages), messages
+
+
+@pytest.mark.asyncio
+async def test_a_cleared_condition_is_reported_again_when_it_returns(store, caplog):
+    """Once nothing is kept, the next future receipt is new, not a repeat."""
+    day = 86_400_000
+    _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 10 * day)
+    with caplog.at_level("WARNING", logger="ori.state.store"):
+        store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, None)
+        store._compact_sync(_CUTOFFS, NOW_MS, 3_600_000, True)
+        _insert_receipt(store, timestamp=NOW_MS, received_at_ms=NOW_MS + 10 * day)
+        store._compact_sync(_CUTOFFS, NOW_MS + 300_000, 3_600_000, None)
+    kept = [r for r in caplog.records if "is kept" in r.getMessage()]
+    assert len(kept) == 2

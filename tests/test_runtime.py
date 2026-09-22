@@ -3622,14 +3622,20 @@ class TestCompactionLoop:
                 awaitable.close()
             raise asyncio.TimeoutError
 
-        with patch(
-            "ori.runtime.asyncio.wait_for",
-            new=AsyncMock(side_effect=_fake_wait_for),
+        with (
+            patch(
+                "ori.runtime.asyncio.wait_for",
+                new=AsyncMock(side_effect=_fake_wait_for),
+            ),
+            patch("ori.runtime.host_clock_synchronized", return_value=None),
         ):
             await runtime._compaction_loop(_dedup())
 
+        # None, not True: a loop that passed a constant True would prune on an
+        # unknown clock, and a sentinel the constant cannot equal catches it.
         runtime._state_store.compact_history.assert_awaited_once_with(
-            max_backward_skew_ms=3600000
+            max_backward_skew_ms=3600000,
+            clock_synchronized=None,
         )
         assert cleanup_calls["count"] == 1
 

@@ -200,24 +200,20 @@ class TestCompactionGuard:
         with pytest.raises(RuntimeError, match="Invalid compaction cutoffs"):
             store._compact_sync(cutoffs, now_ms=3000)
 
-    async def test_compact_sync_raises_on_backward_clock_skew(self, store, monkeypatch):
-        # A receipt in the future means the host clock has moved backward since
-        # the store last wrote, so compaction refuses to delete anything.
+    async def test_compaction_through_the_public_path_survives_a_future_receipt(
+        self, store, monkeypatch
+    ):
+        """A row written while the clock ran ahead no longer stops retention."""
         future_ts = _ms() + 10_000_000
         monkeypatch.setattr("ori.state.store.now_ms", lambda: future_ts)
         await store.append_history(_event(_reading(timestamp=future_ts)))
         monkeypatch.undo()
 
-        # now_ms is in the past compared to the store's own receipts
-        past_ms = future_ts - 4_000_000
-        cutoffs = {
-            "hourly": past_ms - 30_000,
-            "5min": past_ms - 20_000,
-            "raw": past_ms - 10_000,
-        }
+        await store.compact_history(clock_synchronized=None)
+        assert len(await store.get_history("s1", limit=10)) == 1
 
-        with pytest.raises(RuntimeError, match="Clock skew detected"):
-            await store._run_write(store._compact_sync, cutoffs, past_ms, 3600000)
+        await store.compact_history(clock_synchronized=True)
+        assert await store.get_history("s1", limit=10) == []
 
     async def test_compact_sync_succeeds_normally(self, store):
         # Insert a row safely in the past
