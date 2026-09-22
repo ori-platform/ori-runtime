@@ -769,6 +769,16 @@ CREATE INDEX IF NOT EXISTS idx_sensor_history_sensor_id
 _HISTORY_DDL = ";\n".join(_HISTORY_DDL_STATEMENTS) + ";\n"
 _DDL = _CORE_DDL + "\n" + _HISTORY_DDL
 
+# How long raw readings stay in `sensor_history`, by receipt, before they are
+# compacted into five-minute buckets.
+RAW_HISTORY_RETENTION_MS = 48 * 3600 * 1000
+
+# How far past a reference time a receipt may be and still count as inside a
+# window ending there. It covers the store stamping a row just after the event
+# that carried it, and a small backward step of the clock; a receipt written
+# while the clock ran ahead is hours or days out, far beyond it.
+RECEIPT_READ_TOLERANCE_MS = 60_000
+
 _HISTORY_RECEIPT_COLUMNS: dict[str, str] = {
     "sensor_history": "received_at_ms",
     "sensor_history_5min": "max_received_at_ms",
@@ -948,6 +958,9 @@ class StateStore:
         # and a tool that only reads must never do that on the way in.
         self._allow_history_rebuild = allow_history_rebuild
         self._conn: Optional[sqlite3.Connection] = None
+        # What the last future-receipt warning reported, and when, so a
+        # persistent condition is reported on change and daily, not every cycle.
+        self._future_receipts_logged: tuple[dict[str, int], int] | None = None
         self._write_lock = asyncio.Lock()
         self._lifecycle_lock = asyncio.Lock()
 
@@ -1740,7 +1753,7 @@ class StateStore:
         """
         current_ms = now_ms()
         cutoffs = {
-            "raw": current_ms - (48 * 3600 * 1000),  # 48 hours
+            "raw": current_ms - RAW_HISTORY_RETENTION_MS,
             "5min": current_ms - (30 * 86400 * 1000),  # 30 days
             "hourly": current_ms - (365 * 86400 * 1000),  # 1 year
         }
@@ -1768,26 +1781,26 @@ class StateStore:
                 "Invalid compaction cutoffs: must be strictly ordered in the past"
             )
 
-        row = self._conn.execute(
-            """
-            SELECT MAX(t) as max_ts FROM (
-                SELECT MAX(received_at_ms) as t FROM sensor_history
-                UNION ALL
-                SELECT MAX(max_received_at_ms) as t FROM sensor_history_5min
-                UNION ALL
-                SELECT MAX(max_received_at_ms) as t FROM sensor_history_hourly
-                UNION ALL
-                SELECT MAX(max_received_at_ms) as t FROM sensor_history_daily
+        # A receipt beyond the skew bound is either a row written while the
+        # clock ran ahead, or a clock now running behind. Compaction runs in
+        # both cases: a clock behind only moves the cutoffs earlier, so it
+        # deletes less, never more. Halting instead stopped retention for as
+        # long as the bad receipt stayed ahead of the clock. Nothing is deleted
+        # for it either: the kernel cannot say which clock is right, and a
+        # source that steps it back while reporting synchronized would turn a
+        # prune into the loss of an incident's raw trace. Such rows stay out of
+        # age windows until the clock passes them.
+        horizon = now_ms + max_backward_skew_ms
+        future = {
+            table: int(
+                self._conn.execute(
+                    f"SELECT COUNT(*) AS n FROM {table} WHERE {column} > ?",
+                    (horizon,),
+                ).fetchone()["n"]
             )
-            """
-        ).fetchone()
-
-        if row and row["max_ts"] is not None:
-            db_max_ts = row["max_ts"]
-            if now_ms + max_backward_skew_ms < db_max_ts:
-                raise RuntimeError(
-                    f"Clock skew detected: now_ms ({now_ms}) is behind db_max_ts ({db_max_ts}) by more than {max_backward_skew_ms}ms"
-                )
+            for table, column in _HISTORY_RECEIPT_COLUMNS.items()
+        }
+        self._report_future_receipts(future, now_ms, max_backward_skew_ms)
 
         # Retention is decided on receipt: a row leaves a tier once the store
         # received it before the cutoff. Buckets are keyed on the producer's
@@ -1878,6 +1891,27 @@ class StateStore:
         )
 
         self._conn.commit()
+
+    def _report_future_receipts(
+        self,
+        kept: dict[str, int],
+        now_ms: int,
+        max_backward_skew_ms: int,
+    ) -> None:
+        """Log history received beyond the clock, on change and daily."""
+        if not any(kept.values()):
+            self._future_receipts_logged = None
+            return
+        last = self._future_receipts_logged
+        if last is not None and last[0] == kept and now_ms - last[1] < 86_400_000:
+            return
+        self._future_receipts_logged = (dict(kept), now_ms)
+        logger.warning(
+            "[compaction] history received after the clock by more than %d ms is "
+            "kept, and left out of age windows until the clock passes it: %s",
+            max_backward_skew_ms,
+            kept,
+        )
 
     async def append_history(self, event: OriEvent) -> None:
         """Persist a sensor reading from an OriEvent."""
@@ -1972,35 +2006,43 @@ class StateStore:
     def _avg_last_hours_sync(
         self, conn: sqlite3.Connection, sensor_id: str, hours: int
     ) -> Optional[float]:
-        cutoff_ms = now_ms() - hours * 3_600_000
+        current_ms = now_ms()
+        cutoff_ms = current_ms - hours * 3_600_000
 
         # "Within the last N hours" is an age, and an age is the greater of the
         # two intervals: a row qualifies only if it was both received and
         # measured inside the window. The measured bound can exclude a late
-        # flush; it can never admit a row the store received too long ago.
+        # flush; it can never admit a row the store received too long ago. A
+        # receipt well after now was written while the clock ran ahead, so its
+        # age is unknown and it is left out.
         row = conn.execute(
             """
             SELECT SUM(val * cnt) / SUM(cnt) AS avg_val
             FROM (
                 SELECT value AS val, 1 AS cnt
                 FROM sensor_history
-                WHERE sensor_id = ? AND received_at_ms >= ? AND timestamp >= ?
+                WHERE sensor_id = ? AND received_at_ms BETWEEN ? AND ?
+                  AND timestamp >= ?
                 UNION ALL
                 SELECT avg_value AS val, sample_count AS cnt
                 FROM sensor_history_5min
-                WHERE sensor_id = ? AND max_received_at_ms >= ? AND bucket_ms >= ?
+                WHERE sensor_id = ? AND max_received_at_ms BETWEEN ? AND ?
+                  AND bucket_ms >= ?
                 UNION ALL
                 SELECT avg_value AS val, sample_count AS cnt
                 FROM sensor_history_hourly
-                WHERE sensor_id = ? AND max_received_at_ms >= ? AND bucket_ms >= ?
+                WHERE sensor_id = ? AND max_received_at_ms BETWEEN ? AND ?
+                  AND bucket_ms >= ?
                 UNION ALL
                 SELECT avg_value AS val, sample_count AS cnt
                 FROM sensor_history_daily
-                WHERE sensor_id = ? AND max_received_at_ms >= ? AND bucket_ms >= ?
+                WHERE sensor_id = ? AND max_received_at_ms BETWEEN ? AND ?
+                  AND bucket_ms >= ?
             )
             HAVING SUM(cnt) > 0
             """,
-            (sensor_id, cutoff_ms, cutoff_ms) * 4,
+            (sensor_id, cutoff_ms, current_ms + RECEIPT_READ_TOLERANCE_MS, cutoff_ms)
+            * 4,
         ).fetchone()
         return row["avg_val"] if row and row["avg_val"] is not None else None
 
@@ -2173,12 +2215,18 @@ class StateStore:
                 GROUP BY sensor_id
             ) AS latest
               ON h.id = latest.latest_id
-            WHERE h.received_at_ms >= ?
+            WHERE h.received_at_ms BETWEEN ? AND ?
               AND h.timestamp >= ?
             ORDER BY h.sensor_id
             LIMIT ?
             """,
-            (exclude_sensor_id, since_ms, since_ms, max(1, max_entries)),
+            (
+                exclude_sensor_id,
+                since_ms,
+                now_ms() + RECEIPT_READ_TOLERANCE_MS,
+                since_ms,
+                max(1, max_entries),
+            ),
         ).fetchall()
         return [_stored_reading(row) for row in rows]
 

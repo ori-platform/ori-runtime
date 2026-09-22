@@ -624,7 +624,7 @@ hal:
 
 state:
   compaction:
-    max_backward_skew_ms: 3600000    # Threshold (in ms) to reject compaction due to clock skew
+    max_backward_skew_ms: 3600000    # History received this far beyond the clock is reported, kept, and left out of age windows
   encryption:
     mode: disabled                   # disabled | filesystem_required
     encrypted_path_prefixes: []      # e.g. ["/var/lib/ori-encrypted"]; required for production unless marker_file is set
