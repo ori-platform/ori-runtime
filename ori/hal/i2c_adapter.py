@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import functools
 import logging
 import math
 import threading
@@ -72,64 +73,98 @@ def _unavailable(capability: str, exc: BaseException) -> None:
     _DRIVER_UNAVAILABLE[capability] = f"{type(exc).__name__}: {exc}"
 
 
-try:
-    import smbus2 as smbus  # type: ignore[import-untyped]
+# Imported on first use, never at module import. Configuration validation
+# imports this module for its schemas, and importing blinka initialises the
+# board's GPIO library, which creates its notify pipe in the caller's working
+# directory: a configuration read would change whatever directory it ran in.
+# Every path that reads a driver reaches `_load_drivers()` first, through
+# `i2c_driver_unavailable_reason`, which every `_connect_*` calls.
+smbus: Any = None
+_bme280_lib: Any = None
+_ads1115: Any = None
+_ads1x15: Any = None
+_board: Any = None
+_busio: Any = None
+adafruit_scd4x: Any = None
+_SMBUS_AVAILABLE = False
+_BME280_AVAILABLE = False
+_ADS1115_AVAILABLE = False
+_BLINKA_AVAILABLE = False
+_SCD40_AVAILABLE = False
 
-    _SMBUS_AVAILABLE = True
-except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
-    smbus = None
-    _SMBUS_AVAILABLE = False
-    _unavailable("smbus2", exc)
 
-try:
-    import bme280 as _bme280_lib  # type: ignore[import-untyped]
+@functools.cache
+def _load_drivers() -> None:
+    """Import the optional hardware drivers once, recording why any is unusable.
 
-    _BME280_AVAILABLE = True
-except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
-    _bme280_lib = None
-    _BME280_AVAILABLE = False
-    _unavailable("bme280", exc)
+    Cached only once every import has run: a driver raising something other than
+    an expected platform failure propagates, the failed call is not cached, and
+    the next call retries and raises its cause again rather than reporting it
+    "not available".
+    Concurrent first calls are safe: each import is serialised by Python's own
+    import lock and assigns the same values.
+    """
+    global smbus, _bme280_lib, _ads1115, _ads1x15, _board, _busio
+    global adafruit_scd4x, _SMBUS_AVAILABLE, _BME280_AVAILABLE
+    global _ADS1115_AVAILABLE, _BLINKA_AVAILABLE, _SCD40_AVAILABLE
+    try:
+        import smbus2 as smbus  # type: ignore[import-untyped]
 
-try:
-    import adafruit_ads1x15.ads1x15 as _ads1x15  # type: ignore[import-untyped]
-    import adafruit_ads1x15.ads1115 as _ads1115  # type: ignore[import-untyped]
+        _SMBUS_AVAILABLE = True
+    except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
+        smbus = None
+        _SMBUS_AVAILABLE = False
+        _unavailable("smbus2", exc)
 
-    # Imported to prove the driver package is complete, not to read through:
-    # a sample is taken with the register pointer written explicitly, which
-    # this module's reader does not do.
-    import adafruit_ads1x15.analog_in as _analog_in  # type: ignore[import-untyped]
+    try:
+        import bme280 as _bme280_lib  # type: ignore[import-untyped]
 
-    _ADS1115_AVAILABLE = True
-except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
-    _ads1115 = None
-    _ads1x15 = None
-    _analog_in = None
-    _ADS1115_AVAILABLE = False
-    _unavailable("ads1115", exc)
+        _BME280_AVAILABLE = True
+    except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
+        _bme280_lib = None
+        _BME280_AVAILABLE = False
+        _unavailable("bme280", exc)
 
-# blinka is a separate dependency from the ADS1115 driver and separate sensors
-# need it. Folding the two into one block made `scd40` — which needs blinka for
-# its bus but not the ADC driver at all — report a missing `adafruit_ads1x15`,
-# and told an operator to install a package their device does not use.
-try:
-    import board as _board  # type: ignore[import-untyped]
-    import busio as _busio  # type: ignore[import-untyped]
+    try:
+        import adafruit_ads1x15.ads1x15 as _ads1x15  # type: ignore[import-untyped]
+        import adafruit_ads1x15.ads1115 as _ads1115  # type: ignore[import-untyped]
 
-    _BLINKA_AVAILABLE = True
-except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
-    _board = None
-    _busio = None
-    _BLINKA_AVAILABLE = False
-    _unavailable("blinka", exc)
+        # Imported to prove the driver package is complete, not to read through:
+        # a sample is taken with the register pointer written explicitly, which
+        # this module's reader does not do.
+        import adafruit_ads1x15.analog_in  # type: ignore[import-untyped]  # noqa: F401
 
-try:
-    import adafruit_scd4x  # type: ignore[import-untyped]
+        _ADS1115_AVAILABLE = True
+    except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
+        _ads1115 = None
+        _ads1x15 = None
+        _ADS1115_AVAILABLE = False
+        _unavailable("ads1115", exc)
 
-    _SCD40_AVAILABLE = True
-except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
-    adafruit_scd4x = None
-    _SCD40_AVAILABLE = False
-    _unavailable("scd40", exc)
+    # blinka is a separate dependency from the ADS1115 driver and separate sensors
+    # need it. Folding the two into one block made `scd40` — which needs blinka for
+    # its bus but not the ADC driver at all — report a missing `adafruit_ads1x15`,
+    # and told an operator to install a package their device does not use.
+    try:
+        import board as _board  # type: ignore[import-untyped]
+        import busio as _busio  # type: ignore[import-untyped]
+
+        _BLINKA_AVAILABLE = True
+    except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
+        _board = None
+        _busio = None
+        _BLINKA_AVAILABLE = False
+        _unavailable("blinka", exc)
+
+    try:
+        import adafruit_scd4x  # type: ignore[import-untyped]
+
+        _SCD40_AVAILABLE = True
+    except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
+        adafruit_scd4x = None
+        _SCD40_AVAILABLE = False
+        _unavailable("scd40", exc)
+
 
 # Sensor types that require the ADS1115 ADC
 _ADS_SENSOR_TYPES = frozenset({"ads1115_current", "ads1115_voltage"})
@@ -226,6 +261,7 @@ def i2c_driver_unavailable_reason(sensor_type: str) -> str | None:
     ``connect()``. The boundary covering those is the hardened refusal in the
     runtime's sensor startup, not this function.
     """
+    _load_drivers()
     reasons = []
     for driver in _SENSOR_TYPE_DRIVERS.get(sensor_type, ()):
         if not _driver_missing(driver):

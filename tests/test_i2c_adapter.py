@@ -29,6 +29,10 @@ from ori.hal.i2c_adapter import (
     _window_spec,
 )
 
+# Patches of the driver globals simulate a Pi, and must land after the drivers'
+# one real load, or the first connect would overwrite them with this host's.
+i2c_module._load_drivers()
+
 # ─── Pi guard ─────────────────────────────────────────────────────────────────
 
 _HAS_I2C_BUS = os.path.exists("/dev/i2c-1")
@@ -311,16 +315,12 @@ def _pinned_driver(monkeypatch, **ads_kwargs):
     class _X:
         Mode = _Mode
 
-    class _AI:
-        AnalogIn = _PinnedDriverAnalogIn
-
     monkeypatch.setattr(i2c_module, "_ADS1115_AVAILABLE", True)
     monkeypatch.setattr(i2c_module, "_BLINKA_AVAILABLE", True)
     monkeypatch.setattr(i2c_module, "_busio", MagicMock(), raising=False)
     monkeypatch.setattr(i2c_module, "_board", MagicMock(), raising=False)
     monkeypatch.setattr(i2c_module, "_ads1115", _Module, raising=False)
     monkeypatch.setattr(i2c_module, "_ads1x15", _X, raising=False)
-    monkeypatch.setattr(i2c_module, "_analog_in", _AI, raising=False)
     return created
 
 
@@ -396,7 +396,6 @@ class TestConnect:
             patch("ori.hal.i2c_adapter._BLINKA_AVAILABLE", True),
             patch("ori.hal.i2c_adapter._ads1115"),
             patch("ori.hal.i2c_adapter._ads1x15"),
-            patch("ori.hal.i2c_adapter._analog_in"),
         ):
             with pytest.raises(
                 AdapterConnectionError, match="currently only support I2C bus 1"
@@ -912,12 +911,7 @@ class TestReadAds1115Voltage:
     async def test_channel_in_metadata(self):
         adapter = _connected_ads_adapter("ads1115_voltage")
         adapter._channel = 1
-        mock_chan = MagicMock()
-        mock_chan.voltage = 5.0
-
-        with patch("ori.hal.i2c_adapter._analog_in", create=True) as mock_analog:
-            mock_analog.AnalogIn.return_value = mock_chan
-            reading = await adapter.read("grid-voltage")
+        reading = await adapter.read("grid-voltage")
 
         assert reading.metadata["channel"] == 1
 
@@ -1895,6 +1889,7 @@ def fake_import(name, *args, **kwargs):
 builtins.__import__ = fake_import
 
 import ori.hal.i2c_adapter as m
+m._load_drivers()
 print(json.dumps({{
     "ads1115_available": m._ADS1115_AVAILABLE,
     "blinka_available": m._BLINKA_AVAILABLE,
