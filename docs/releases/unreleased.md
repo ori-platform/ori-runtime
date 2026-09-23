@@ -319,6 +319,16 @@ candidate or release is cut.
 
 ## Fixed
 
+- `commissioning deliver` replaces the staged binding in force with a verified
+  revision without `--force`. The binding in force stays staged once accepted
+  and the runtime retains it, so replacing it discards nothing; it is
+  recognised by its signed content rather than its file bytes. Any other
+  different document staged, a provisional one included, still needs
+  `--force`, so the flag keeps protecting another installer's work instead of
+  being passed on every revision. Deliveries are admitted one at a time, so a
+  second one cannot stage a document between another's check and its write;
+  it is refused `delivery_in_progress`. Each write goes through its own
+  temporary file.
 - The bridge's read commands -- `commissioning inventory`, `binding-export`
   and `proof-export`, `state action-log` and `state history` -- open the
   state database read-only. They previously opened it as the runtime does,

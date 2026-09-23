@@ -274,7 +274,13 @@ to the service and another to the shell.
 For a user install the file is `~/.config/ori/runtime.env`.
 
 `commissioning deliver` stages the verified document beside `ori.yaml`; the
-provisional record appears when the runtime next starts. So a freshly delivered
+provisional record appears when the runtime next starts. A different document
+already staged is replaced only with `--force`, except the binding in force
+itself, which a verified revision replaces without it. One delivery is
+admitted at a time; another arriving meanwhile is refused
+`delivery_in_progress`. The lock is taken on the configuration directory, which
+must be on a local filesystem; where it cannot be taken, the delivery is
+refused `delivery_lock_unavailable`. So a freshly delivered
 binding needs one runtime start before `commissioning prove-command` can see it,
 and until then the operation answers `no_provisional_binding`.
 
