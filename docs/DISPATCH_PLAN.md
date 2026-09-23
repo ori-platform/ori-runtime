@@ -456,6 +456,22 @@ that both acted and proposed. A trigger whose only actions were informational co
 `attempted` like any other — a notice that fired is a notice the operator
 received.
 
+Because consumption waits for the outcome, a trigger whose plan is still in
+flight — its reasoning running, or its operator not yet answered — has not been
+charged, and every reading that arrives meanwhile would match it again. So a
+trigger with a cooldown is **held** from the moment it is planned until its own
+plan is charged: a repeat match is dropped rather than planned, and the hold is
+released in the same step that charges it, so a trigger that took its turn
+passes straight from held to cooling down, and one that was refused can
+re-raise on the next reading. It is the trigger's own plan that releases it,
+not its event: another plan of the same event may be waiting on an operator
+for minutes. The cooldown is read again when the hold is taken, because
+discovery reads it and then awaits other skills' hooks, and another event can
+take and charge the turn meanwhile. A trigger with no cooldown is not
+held, since it promises no window. A plan granting Tier D is never held: a
+trip refused at the gate re-raises on the next reading against the state that
+then obtains, and holding it behind its own notice would sit that out.
+
 This requires the rule engine to stop recording a fire while evaluating, and the
 loader to stop recording one before the condition is known to match. Accounting
 it in two places, on events that are not the trigger firing, is why a trigger
