@@ -331,6 +331,31 @@ candidate or release is cut.
   while loading and two overlapping loads leave them silenced; a load that
   fails is retried by the next caller, including one that failed after every
   caller waiting on it was cancelled.
+- Tier C and Tier D actions are signed into the evidence chain again. The
+  dispatcher built the attestation row without the authority snapshot stored in
+  the same action-log insert, so the attestor refused every Tier C and Tier D
+  attestation terminally as having no licence. The row now carries that stored
+  snapshot, never a rebuilt one, and the attestor call requires it, so an
+  omitted licence is a programming error rather than a silent refusal. A row
+  logged by a store that cannot hold the snapshot in the same insert is not
+  marked for attestation at all. Only an approval licenses a Tier C action: a
+  proposal the operator refused, left unanswered or never received ran its safe
+  default under no approval, and it is refused rather than signed under
+  `tier_c_approval`, which would record the opposite of the operator's
+  decision. The dispatcher builds no licence for it, and the attestor refuses
+  one on its own, including on reconciliation after a restart. The evidence
+  contract has no licence kind for a declined proposal yet, so until it does,
+  that decision is kept in the Tier C decision log and not in the chain.
+- An unanswered Tier C approval is reported by why it ended. Only a window that
+  ran out is a timeout. A request no channel accepted is recorded as
+  `undelivered`, and a reply listener or local console that stopped before its
+  window is recorded as `no_reply`. That value is used everywhere the timeout
+  was reported: the log, the decision log, the override log and the SMS
+  escalation to the secondary contact, which no longer tells a person that an
+  operator who was never asked did not answer. The safe default still runs in
+  every case. The WhatsApp escalation is a provider-approved template whose text
+  says the proposal timed out, and it is sent unchanged until a template
+  carrying the reason is approved.
 - Ori processes no longer leave lgpio's notify pipe (`.lgd-nfy0`) in the
   directory they ran from. lgpio moves the process into `LG_WD`, or stays
   where it is when that is unset, and creates the pipe there by a relative

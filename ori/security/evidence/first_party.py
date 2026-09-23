@@ -614,6 +614,18 @@ def _authority_snapshot(action_row: dict[str, Any]) -> dict[str, Any]:
             f"a Tier {tier} action cannot be licensed by {authority['kind']!r}; "
             f"that tier admits {sorted(permitted)}"
         )
+    # `tier_c_approval` attests that an operator approved the proposal. A
+    # proposal refused, unanswered or never delivered ran its safe default
+    # under no approval, and sealing it under this kind would record the
+    # opposite of the operator's decision.
+    if authority["kind"] == "tier_c_approval" and action_row.get("approved") not in (
+        True,
+        1,
+    ):
+        raise AuthorityUnavailableError(
+            "a Tier C action the operator did not approve has no licence: "
+            "tier_c_approval attests an approval"
+        )
 
     # Where the snapshot and a query column both name the same fact they must
     # agree. A disagreement means one of them was written from something other

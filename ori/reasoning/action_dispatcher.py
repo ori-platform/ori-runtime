@@ -24,6 +24,7 @@ import json
 import logging
 import secrets
 import string
+import time
 from collections.abc import Callable
 from typing import Any, Final
 
@@ -64,6 +65,23 @@ from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_commands.commands import extract_remote_command_payload
 from ori.utils.bool_utils import is_truthy
 from ori.utils.time_utils import now_ms
+
+APPROVAL_WINDOW_ELAPSED: Final = "window_elapsed"
+APPROVAL_UNDELIVERED: Final = "undelivered"
+APPROVAL_LISTENER_ENDED: Final = "listener_ended"
+
+# The tier_c_decision_log and override_log value for each way an approval ends
+# unanswered.
+_APPROVAL_END_DECISION: Final[dict[str, str]] = {
+    APPROVAL_WINDOW_ELAPSED: "timeout",
+    APPROVAL_UNDELIVERED: "undelivered",
+    APPROVAL_LISTENER_ENDED: "no_reply",
+}
+_APPROVAL_END_HEADLINE: Final[dict[str, str]] = {
+    APPROVAL_WINDOW_ELAPSED: "Tier C approval timed out",
+    APPROVAL_UNDELIVERED: "Tier C approval request was not delivered",
+    APPROVAL_LISTENER_ENDED: "Tier C approval could not receive a reply",
+}
 
 #: An executor may return this instead of a bool to say it deliberately did not
 #: act. A plain `False` means the action was attempted and did not happen, which
@@ -148,7 +166,9 @@ def _authority_snapshot_json(
 
     if tier == ActionTier.HARD_PHYSICAL:
         proposal_id = str(action_result.proposal_id or "")
-        if not proposal_id:
+        # Only an approval licenses a Tier C action. A refused, unanswered or
+        # undelivered proposal has no licence kind, and the attestor refuses it.
+        if not proposal_id or action_result.approved is not True:
             return None
         authority: dict[str, Any] = {
             "kind": "tier_c_approval",
@@ -1402,16 +1422,24 @@ class ActionDispatcher:
                     "ActionDispatcher: failed to send approval request for action=%r",
                     action,
                 )
+                approval_receipt = AlertSendReceipt.refused(
+                    channel=str(self._config.get("primary_alert_channel", "sms")),
+                    error="sender_raised",
+                )
 
         # Wait for response
         operator_response: str | None = None
         parsed_operator_response: str | None = None
         inbound_response: InboundApprovalResponse | None = None
         timed_out = False
+        # Why an unanswered approval ended, for every record and message that
+        # reports it: only a window that ran out is a timeout.
+        approval_end = ""
         local_console_mode = bool(not has_comms and self._local_console_enabled)
         store = self._resolve_state_store(context)
         if local_console_mode:
             local_from_number = operator_contact or "local-operator"
+            listen_started = time.monotonic()
             operator_response = await self._listen_for_local_console_response(
                 store=store,
                 from_number=local_from_number,
@@ -1423,11 +1451,16 @@ class ActionDispatcher:
                 operator_response = f"LOCAL:{operator_response}"
             else:
                 timed_out = True
+                approval_end = self._unanswered_approval_end(
+                    listen_started, approval_timeout_seconds
+                )
                 logger.warning(
-                    "ActionDispatcher: local console approval timeout for action=%r "
-                    "after %ds — executing safe_default=%r",
+                    "ActionDispatcher: local console approval for action=%r "
+                    "proposal_id=%s ended without a reply (%s) — executing "
+                    "safe_default=%r",
                     action,
-                    approval_timeout_seconds,
+                    proposal_id,
+                    approval_end,
                     safe_default_action,
                 )
         else:
@@ -1440,6 +1473,7 @@ class ActionDispatcher:
                 # Backward compatibility for older test doubles/overrides that
                 # patched _listen_for_response with a no-arg coroutine.
                 listen_coro = self._listen_for_response()  # type: ignore[call-arg]
+            listen_started = time.monotonic()
             listen_task = asyncio.create_task(
                 listen_coro,
                 name=f"approval:{action}",
@@ -1458,6 +1492,7 @@ class ActionDispatcher:
                 parsed_operator_response = operator_response
             except asyncio.TimeoutError:
                 timed_out = True
+                approval_end = APPROVAL_WINDOW_ELAPSED
                 if not listen_task.done():
                     listen_task.cancel()
                 logger.warning(
@@ -1470,13 +1505,39 @@ class ActionDispatcher:
             else:
                 if operator_response is None:
                     timed_out = True
-                    logger.warning(
-                        "ActionDispatcher: no approval response for action=%r within %ds — "
-                        "executing safe_default=%r",
-                        action,
-                        approval_timeout_seconds,
-                        safe_default_action,
-                    )
+                    if not approval_receipt.accepted:
+                        approval_end = APPROVAL_UNDELIVERED
+                        logger.warning(
+                            "ActionDispatcher: approval request for action=%r "
+                            "proposal_id=%s was not delivered (%s) — executing "
+                            "safe_default=%r",
+                            action,
+                            proposal_id,
+                            approval_receipt.error or "not accepted by any channel",
+                            safe_default_action,
+                        )
+                    else:
+                        approval_end = self._unanswered_approval_end(
+                            listen_started, approval_timeout_seconds
+                        )
+                    if approval_end == APPROVAL_LISTENER_ENDED:
+                        logger.warning(
+                            "ActionDispatcher: the approval reply listener for "
+                            "action=%r proposal_id=%s ended without a reply "
+                            "before its %ds window — executing safe_default=%r",
+                            action,
+                            proposal_id,
+                            approval_timeout_seconds,
+                            safe_default_action,
+                        )
+                    elif approval_end == APPROVAL_WINDOW_ELAPSED:
+                        logger.warning(
+                            "ActionDispatcher: no approval response for action=%r within %ds — "
+                            "executing safe_default=%r",
+                            action,
+                            approval_timeout_seconds,
+                            safe_default_action,
+                        )
 
         try:
             # Parse response
@@ -1571,6 +1632,7 @@ class ActionDispatcher:
                         proposal_id=proposal_id,
                         safe_default_action=safe_default_action,
                         safe_default_executed=executed,
+                        approval_end=approval_end,
                     )
                 # Log operator rejection / timeout override to override_log
                 if store is not None and hasattr(store, "log_override"):
@@ -1578,7 +1640,11 @@ class ActionDispatcher:
                     await store.log_override(
                         trigger_name=context.event.sensor_id if context.event else "",
                         action=action,
-                        reason="timeout" if timed_out else "operator_rejection",
+                        reason=(
+                            _APPROVAL_END_DECISION[approval_end]
+                            if timed_out
+                            else "operator_rejection"
+                        ),
                         operator_response=operator_response,
                         override_type="rejection",
                         device_id=device_id,
@@ -1610,7 +1676,11 @@ class ActionDispatcher:
                 action=action,
                 action_result=action_result,
                 operator_decision=(
-                    "approved" if approved else "timeout" if timed_out else "rejected"
+                    "approved"
+                    if approved
+                    else _APPROVAL_END_DECISION[approval_end]
+                    if timed_out
+                    else "rejected"
                 ),
                 approval_started_at=approval_started_at,
                 completed_at=completed_at,
@@ -2033,6 +2103,13 @@ class ActionDispatcher:
         local = datetime.datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone)
         return local.strftime("%A %H:%M")
 
+    @staticmethod
+    def _unanswered_approval_end(listen_started: float, window_seconds: int) -> str:
+        waited = time.monotonic() - listen_started
+        if waited < window_seconds:
+            return APPROVAL_LISTENER_ENDED
+        return APPROVAL_WINDOW_ELAPSED
+
     async def _escalate_to_secondary(
         self,
         action: str,
@@ -2042,8 +2119,9 @@ class ActionDispatcher:
         proposal_id: str,
         safe_default_action: str,
         safe_default_executed: bool,
+        approval_end: str,
     ) -> AlertSendReceipt:
-        """Notify the secondary contact when a Tier C approval times out.
+        """Notify the secondary contact when a Tier C approval ends unanswered.
 
         No-op if no secondary contact is configured or alert_sender is absent.
 
@@ -2066,7 +2144,7 @@ class ActionDispatcher:
         )
         outcome = "completed" if safe_default_executed else "failed"
         message = (
-            f"ORI ESCALATION — Tier C approval timed out\n"
+            f"ORI ESCALATION — {_APPROVAL_END_HEADLINE[approval_end]}\n"
             f"Device: {device_id}\n"
             f"Proposal ID: {proposal_id}\n"
             f"Action: {action}\n"
@@ -2282,9 +2360,11 @@ class ActionDispatcher:
                     authority_json=authority_json,
                 )
             else:
-                action_row_id = await store.log_action(
-                    action_result, trigger_name, attestation_pending=attest
-                )
+                # This insert cannot store the licence with the row, so the row
+                # is never marked for attestation: signing a licence the log
+                # does not hold would leave reconciliation nothing to replay.
+                attest = False
+                action_row_id = await store.log_action(action_result, trigger_name)
         except Exception:
             logger.exception(
                 "ActionDispatcher: failed to log action=%r to action_log",
@@ -2305,6 +2385,7 @@ class ActionDispatcher:
                 input_firmware_boot_id,
                 input_firmware_seq,
                 firmware_registration,
+                authority_json=authority_json,
             )
 
     async def _build_firmware_registration_snapshot(
@@ -2344,6 +2425,8 @@ class ActionDispatcher:
         input_firmware_boot_id: int,
         input_firmware_seq: int,
         firmware_registration: dict | None = None,
+        *,
+        authority_json: str | None,
     ) -> None:
         """Sign a Tier C/D action into the evidence chain (append-after-log).
 
@@ -2374,6 +2457,9 @@ class ActionDispatcher:
         # (see _log_action), so it is already durable. Reuse it here rather
         # than re-querying, so what is attested is exactly what was logged.
         row["input_firmware_registration"] = firmware_registration
+        # The licence stored in the same insert, never rebuilt here: the
+        # attestor replays it, and a row without it is refused terminally.
+        row["authority_json"] = authority_json
 
         try:
             # Cross-store confirmation gate on the immediate signing path.

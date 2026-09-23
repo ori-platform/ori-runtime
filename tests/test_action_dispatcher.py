@@ -2208,3 +2208,145 @@ class TestAttestationFailureIsRecordedNotSilent:
         assert "failed" in statuses, (
             "a chain that sealed nothing was recorded as signed"
         )
+
+
+class _RecordingSender:
+    """A sender whose delivery outcome and reply timing the test decides."""
+
+    def __init__(
+        self, *, accept: bool, reply_after: float = 0.0, raise_first: bool = False
+    ) -> None:
+        self._accept = accept
+        self._reply_after = reply_after
+        self._raise_first = raise_first
+        self.sent: list[tuple[str, str]] = []
+
+    async def send(self, alert=None, to_number=None, **_kwargs) -> bool:
+        self.sent.append((str(to_number), str(getattr(alert, "sms_body", ""))))
+        if self._raise_first:
+            self._raise_first = False
+            raise RuntimeError("provider unreachable")
+        return self._accept
+
+    async def listen_for_response(self, from_number, timeout_seconds):
+        await asyncio.sleep(self._reply_after)
+        return None
+
+
+class TestAnUnansweredApprovalSaysWhyItEnded:
+    """Only a window that ran out is a timeout. An operator who was never told,
+    or a reply channel that stopped listening, must not be reported to the
+    secondary contact or recorded as an operator who did not answer."""
+
+    SECONDARY = "+2348000000001"
+
+    async def _dispatch(self, tmp_path, sender, *, timeout: int, local=False):
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        config = {"secondary_contact": self.SECONDARY}
+        if local:
+            config["local_console_enabled"] = True
+        else:
+            config["operator_contact"] = "+2348000000000"
+        dispatcher = ActionDispatcher(
+            alert_sender=None if local else sender, config=config
+        )
+        context = _context(trigger_name="critical_fault")
+        context.state_store = store
+        try:
+            outcome = await dispatcher.dispatch(
+                "terminate_process",
+                "C",
+                context,
+                _result(action_tier="C"),
+                safe_default_action="log_to_dashboard",
+                approval_timeout_seconds=timeout,
+            )
+
+            def records(conn):
+                decision = conn.execute(
+                    "SELECT operator_decision, final_action_result_json "
+                    "FROM tier_c_decision_log"
+                ).fetchone()
+                override = conn.execute("SELECT reason FROM override_log").fetchone()
+                return decision[0], override[0], json.loads(decision[1])
+
+            decision, override, self.final = await store._run_read(records)
+        finally:
+            await store.close()
+        return outcome, decision, override
+
+    def _escalations(self, sender) -> list[str]:
+        return [body for to, body in sender.sent if to == self.SECONDARY]
+
+    async def test_an_undelivered_request_is_not_reported_as_a_timeout(
+        self, tmp_path, caplog
+    ):
+        sender = _RecordingSender(accept=False)
+        outcome, decision, override = await self._dispatch(
+            tmp_path, sender, timeout=300
+        )
+
+        assert outcome.approved is False and outcome.safe_default_used
+        assert outcome.operator_response is None
+        assert (decision, override) == ("undelivered", "undelivered")
+        [escalation] = self._escalations(sender)
+        assert "was not delivered" in escalation
+        assert "timed out" not in escalation
+        assert "was not delivered" in caplog.text
+        assert "no approval response" not in caplog.text
+
+    async def test_a_listener_that_stops_early_is_not_reported_as_a_timeout(
+        self, tmp_path, caplog
+    ):
+        sender = _RecordingSender(accept=True)
+        outcome, decision, override = await self._dispatch(
+            tmp_path, sender, timeout=300
+        )
+
+        assert outcome.safe_default_used and outcome.operator_response is None
+        assert (decision, override) == ("no_reply", "no_reply")
+        [escalation] = self._escalations(sender)
+        assert "could not receive a reply" in escalation
+        assert "timed out" not in escalation
+        assert "ended without a reply before its 300s window" in caplog.text
+
+    async def test_a_window_that_runs_out_is_a_timeout(self, tmp_path, caplog):
+        sender = _RecordingSender(accept=True, reply_after=1.1)
+        outcome, decision, override = await self._dispatch(tmp_path, sender, timeout=1)
+
+        assert outcome.safe_default_used and outcome.operator_response is None
+        assert (decision, override) == ("timeout", "timeout")
+        [escalation] = self._escalations(sender)
+        assert "timed out" in escalation
+        assert "no approval response for action='terminate_process' within 1s" in (
+            caplog.text
+        )
+
+    async def test_a_local_console_that_stops_early_is_not_a_timeout(
+        self, tmp_path, caplog
+    ):
+        with patch.object(
+            ActionDispatcher,
+            "_listen_for_local_console_response",
+            AsyncMock(return_value=None),
+        ):
+            outcome, decision, override = await self._dispatch(
+                tmp_path, None, timeout=300, local=True
+            )
+
+        assert outcome.safe_default_used
+        assert (decision, override) == ("no_reply", "no_reply")
+        assert "ended without a reply (listener_ended)" in caplog.text
+
+    async def test_a_send_that_raises_is_recorded_as_undelivered(self, tmp_path):
+        sender = _RecordingSender(accept=True, raise_first=True)
+        outcome, decision, override = await self._dispatch(
+            tmp_path, sender, timeout=300
+        )
+
+        assert outcome.safe_default_used and outcome.operator_response is None
+        assert (decision, override) == ("undelivered", "undelivered")
+        [escalation] = self._escalations(sender)
+        assert "was not delivered" in escalation
+        assert self.final["approval_delivery"]["error"] == "sender_raised"

@@ -109,6 +109,7 @@ def test_a_snapshot_disagreeing_with_a_query_column_is_refused():
     """One of the two was written from something other than this decision."""
     row = _row(
         tier="C",
+        approved=True,
         authority_json=json.dumps(TIER_C, sort_keys=True, separators=(",", ":")),
         proposal_id="ZZ99ZZ99",
     )
@@ -127,7 +128,11 @@ def test_a_trigger_name_disagreeing_with_the_column_is_refused():
 @pytest.mark.parametrize(
     ("kind", "authority", "columns"),
     [
-        ("tier_c_approval", TIER_C, {"tier": "C", "proposal_id": "AB12CD34"}),
+        (
+            "tier_c_approval",
+            TIER_C,
+            {"tier": "C", "proposal_id": "AB12CD34", "approved": True},
+        ),
         ("tier_d_legacy_skill", LEGACY_SKILL, {}),
         ("tier_d_profile", PROFILE, {"binding_seq": 4}),
         ("tier_d_qualification", QUALIFICATION, {"binding_seq": 4}),
@@ -496,7 +501,7 @@ class TestTheEmissionCallerRefuses:
     """
 
     async def test_the_dispatcher_marks_a_bad_licence_terminally_refused(
-        self, tmp_path
+        self, tmp_path, caplog
     ):
         from ori.network.events import ActionResult
         from ori.reasoning.action_dispatcher import ActionDispatcher
@@ -545,12 +550,15 @@ class TestTheEmissionCallerRefuses:
                 "",
                 0,
                 0,
+                authority_json=json.dumps(TIER_C),
             )
 
             assert await _attestation_of(store, row_id) == (
                 "refused",
                 AUTHORITY_UNAVAILABLE_REASON,
             )
+            # Refused for the licence it carries, not for carrying none.
+            assert "cannot be licensed by 'tier_c_approval'" in caplog.text
         finally:
             attestor.close()
             await store.close()
@@ -638,3 +646,212 @@ def _reasoning_result():
         latency_ms=0,
         action_tier="D",
     )
+
+
+class TestADispatchedActionIsAttested:
+    """Through the dispatcher's public entry, with a real store and attestor.
+
+    A test that hands the attestor a hand-built row proves only that the
+    attestor accepts that row. The emission path builds its own, and once
+    built it without the licence the same insert stored, so every Tier C and
+    Tier D action was refused while the hand-built tests passed.
+    """
+
+    @staticmethod
+    def _skill():
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class _Skill:
+            name: str = "attestation-probe"
+            version: str = "0.1.0"
+            config: dict = field(default_factory=dict)
+            triggers: list = field(default_factory=list)
+            actions: dict = field(default_factory=dict)
+            first_party: bool = True
+
+        return _Skill()
+
+    async def _dispatch(self, tmp_path, tier, *, reply=None, store_cls=None):
+        from ori.network.events import OriEvent, ReasoningResult, SensorReading
+        from ori.reasoning.action_dispatcher import ActionDispatcher, SkillContext
+        from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
+        from ori.state.store import StateStore
+
+        class _Sender:
+            proposal_id = ""
+
+            async def send(self, alert=None, to_number=None, **_kwargs):
+                body = str(getattr(alert, "sms_body", ""))
+                if "YES-" in body:
+                    self.proposal_id = body.split("YES-", 1)[1][:8]
+                return True
+
+            async def listen_for_response(self, from_number, timeout_seconds):
+                if reply is None:
+                    return None
+                return f"{reply}-{self.proposal_id}"
+
+        store = (store_cls or StateStore)(db_path=str(tmp_path / "emit.db"))
+        await store.open()
+        attestor = FirstPartyEvidenceAttestor(
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "device.key"),
+            device_secret="a" * 64,
+            device_id="test-device",
+        )
+        assert await attestor.start()
+        try:
+            head_before = await attestor.chain_head_hash()
+            reading = SensorReading(
+                sensor_id="load-current",
+                sensor_type="current_clamp",
+                value=9.5,
+                unit="ampere",
+                timestamp=1787000000000,
+                quality=1.0,
+            )
+            context = SkillContext(
+                skill=self._skill(),
+                event=OriEvent.from_reading(reading, "test-device"),
+                state_store=store,
+                trigger_name="critical_fault",
+            )
+            result = ReasoningResult(
+                text="Load far above rating.",
+                tier="rule",
+                model="rule",
+                tokens_used=0,
+                latency_ms=0,
+                action_tier=tier,
+            )
+            dispatcher = ActionDispatcher(
+                alert_sender=_Sender(),
+                config={"operator_contact": "+2348000000000"},
+                evidence_attestor=attestor,
+            )
+
+            async def _executor(_action, _context):
+                return None
+
+            dispatcher.register_executor("terminate_process", _executor)
+            outcome = await dispatcher.dispatch(
+                "terminate_process",
+                tier,
+                context,
+                result,
+                safe_default_action="log_to_dashboard",
+                approval_timeout_seconds=1,
+            )
+
+            def rows_at_tier(conn):
+                return conn.execute(
+                    "SELECT attestation_status, attestation_seq, authority_json "
+                    "FROM action_log WHERE tier = ?",
+                    (tier,),
+                ).fetchall()
+
+            rows = await store._run_read(rows_at_tier)
+            head_changed = await attestor.chain_head_hash() != head_before
+        finally:
+            attestor.close()
+            await store.close()
+        return outcome, rows, head_changed
+
+    @pytest.mark.parametrize(
+        ("tier", "reply", "kind"),
+        [("C", "YES", "tier_c_approval"), ("D", None, "tier_d_legacy_skill")],
+    )
+    async def test_a_licensed_action_is_signed_into_the_chain(
+        self, tmp_path, tier, reply, kind
+    ):
+        outcome, rows, head_changed = await self._dispatch(tmp_path, tier, reply=reply)
+
+        assert outcome.tier == tier and outcome.executed
+        assert rows, f"no Tier {tier} row was logged"
+        for status, seq, authority in rows:
+            assert status == "signed" and seq is not None, rows
+            assert json.loads(authority)["kind"] == kind
+        assert head_changed
+
+    @pytest.mark.parametrize("reply", ["NO", None])
+    async def test_a_proposal_the_operator_did_not_approve_is_never_signed_as_approved(
+        self, tmp_path, reply
+    ):
+        outcome, rows, head_changed = await self._dispatch(tmp_path, "C", reply=reply)
+
+        assert outcome.approved is False and outcome.safe_default_used
+        assert rows
+        for status, seq, authority in rows:
+            assert (status, seq, authority) == ("refused", None, None), rows
+        assert not head_changed
+
+    async def test_a_store_that_cannot_hold_the_licence_never_marks_a_row_for_signing(
+        self, tmp_path
+    ):
+        from ori.state.store import StateStore
+
+        class _NoEventLogStore(StateStore):
+            def __getattribute__(self, name):
+                if name == "log_action_for_event":
+                    raise AttributeError(name)
+                return super().__getattribute__(name)
+
+        outcome, rows, head_changed = await self._dispatch(
+            tmp_path, "D", store_cls=_NoEventLogStore
+        )
+
+        assert outcome.executed
+        assert rows
+        assert all(status == "" for status, _seq, _authority in rows), rows
+        assert not head_changed
+
+
+class TestTheAttestorRefusesAnUnapprovedTierCLicence:
+    """The attestor holds the rule on its own, for rows it did not see built:
+    reconciliation after a restart replays whatever the log stored."""
+
+    async def test_a_logged_unapproved_row_carrying_an_approval_licence_is_refused(
+        self, tmp_path
+    ):
+        from ori.network.events import ActionResult
+        from ori.security.evidence.first_party import (
+            AuthorityUnavailableError,
+            FirstPartyEvidenceAttestor,
+        )
+
+        attestor = FirstPartyEvidenceAttestor(
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "device.key"),
+            device_secret="a" * 64,
+            device_id="test-device",
+        )
+        assert await attestor.start()
+        try:
+            result = ActionResult(
+                action_name="terminate_process",
+                tier="C",
+                executed=True,
+                approved=False,
+                action_taken="log_to_dashboard",
+                timestamp=1787000000000,
+                proposal_id="AB12CD34",
+            )
+            row = {
+                "id": 1,
+                "action_name": result.action_name,
+                "tier": "C",
+                "executed": 1,
+                "approved": 0,
+                "action_taken": result.action_taken,
+                "trigger_name": "critical_fault",
+                "proposal_id": "AB12CD34",
+                "timestamp": result.timestamp,
+                "authority_json": json.dumps(TIER_C),
+            }
+            with pytest.raises(AuthorityUnavailableError, match="did not approve"):
+                await attestor.attest_action(row)
+            row["approved"] = 1
+            assert await attestor.attest_action(row) is not None
+        finally:
+            attestor.close()

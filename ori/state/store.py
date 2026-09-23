@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS tier_c_decision_log (
     reasoning_tier           TEXT    NOT NULL DEFAULT '',
     reasoning_model          TEXT    NOT NULL DEFAULT '',
     prompt_context_summary   TEXT    NOT NULL DEFAULT '',
-    operator_decision        TEXT    NOT NULL DEFAULT '', -- 'approved' | 'rejected' | 'timeout'
+    operator_decision        TEXT    NOT NULL DEFAULT '', -- 'approved' | 'rejected' | 'timeout' | 'undelivered' | 'no_reply'
     operator_response        TEXT,
     operator_response_channel TEXT   NOT NULL DEFAULT '',
     operator_response_provider_message_id TEXT NOT NULL DEFAULT '',
