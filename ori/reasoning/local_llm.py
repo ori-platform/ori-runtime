@@ -5,6 +5,8 @@ import asyncio
 import logging
 import os
 import re
+import threading
+from typing import Any
 
 from ori.network.events import ReasoningResult
 from ori.utils.path_utils import shown
@@ -44,6 +46,12 @@ _OUTPUT_CONTRACT = (
 )
 
 
+def _retrieve(future: asyncio.Future[Any]) -> None:
+    """Mark an abandoned worker's failure as seen; its caller was cancelled."""
+    if not future.cancelled():
+        future.exception()
+
+
 class LocalLLM:
     """Thin asyncio wrapper around a llama-cpp-python ``Llama`` instance.
 
@@ -67,6 +75,19 @@ class LocalLLM:
         self._context_window = context_window
         self._llm: object | None = None  # Llama instance, populated on first call
         self._load_lock = asyncio.Lock()
+        # One load, shared: a caller cancelled mid-load must not abandon it.
+        # llama.cpp silences stdout and stderr process-wide while loading, and
+        # two overlapping loads restore them out of order, leaving the
+        # process's output at /dev/null for good.
+        self._load_task: asyncio.Task[object] | None = None
+        # One inference at a time on the loaded model: a llama.cpp context
+        # decoded from two threads at once crashes the process. Callers queue
+        # in the event loop, never in pool threads. A cancelled caller's decode
+        # cannot be stopped, so it keeps the model until its thread returns and
+        # the next caller waits for it here; the thread lock is the last line.
+        self._infer_lock = asyncio.Lock()
+        self._decode_task: asyncio.Future[dict] | None = None
+        self._decode_lock = threading.Lock()
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -112,11 +133,20 @@ class LocalLLM:
 
         start_ms = now_ms()
 
-        output = await asyncio.to_thread(
-            self._infer,
-            prompt=self._build_inference_prompt(prompt),
-            max_tokens=max_tokens,
-        )
+        async with self._infer_lock:
+            abandoned = self._decode_task
+            if abandoned is not None and not abandoned.done():
+                await asyncio.wait({abandoned})
+            decode = asyncio.ensure_future(
+                asyncio.to_thread(
+                    self._infer,
+                    prompt=self._build_inference_prompt(prompt),
+                    max_tokens=max_tokens,
+                )
+            )
+            decode.add_done_callback(_retrieve)
+            self._decode_task = decode
+            output = await asyncio.shield(decode)
 
         latency_ms = now_ms() - start_ms
         raw_text = output["choices"][0]["text"].strip()
@@ -139,17 +169,35 @@ class LocalLLM:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     async def _ensure_loaded(self) -> None:
-        """Load the model in a thread-pool executor if not already loaded."""
+        """Load the model once, in a worker thread, whichever caller asks first."""
+        if self._llm is not None:
+            return
         async with self._load_lock:
-            if self._llm is not None:
-                return
-            logger.info(
-                "LocalLLM: loading model %s (n_ctx=%d) …",
-                shown(self._model_path),
-                self._context_window,
-            )
-            self._llm = await asyncio.to_thread(self._load_model)
+            if self._llm is None and self._load_task is None:
+                logger.info(
+                    "LocalLLM: loading model %s (n_ctx=%d) …",
+                    shown(self._model_path),
+                    self._context_window,
+                )
+                self._load_task = asyncio.create_task(
+                    asyncio.to_thread(self._load_model)
+                )
+                self._load_task.add_done_callback(self._forget_failed_load)
+            task = self._load_task
+        if task is None:
+            return
+        llm = await asyncio.shield(task)
+        if self._llm is None:
+            self._llm = llm
             logger.info("LocalLLM: model loaded")
+
+    def _forget_failed_load(self, task: asyncio.Task[object]) -> None:
+        # Here rather than in an awaiter, so a load that fails after every
+        # caller was cancelled is still retried by the next one.
+        if (task.cancelled() or task.exception() is not None) and (
+            self._load_task is task
+        ):
+            self._load_task = None
 
     def _load_model(self) -> object:
         if Llama is None:
@@ -164,6 +212,10 @@ class LocalLLM:
 
     def _infer(self, prompt: str, max_tokens: int) -> dict:
         # _llm is populated by load(); _infer is unreachable before that.
+        with self._decode_lock:
+            return self._infer_unlocked(prompt, max_tokens)
+
+    def _infer_unlocked(self, prompt: str, max_tokens: int) -> dict:
         return self._llm(  # type: ignore[operator, misc, no-any-return]
             prompt,
             max_tokens=max_tokens,
