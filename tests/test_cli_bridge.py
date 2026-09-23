@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+import copy
 import hashlib
 import json
 import os
@@ -2324,3 +2325,189 @@ def test_a_read_answers_a_file_it_cannot_read_without_touching_it(
         assert rc == 0 and payload["result"]["accepted_binding_seq"] == 0, payload
     else:
         assert rc == 2 and payload["error"]["code"] == expected, payload
+
+
+def _deliver_without_force(config_path, tmp_path, capsys, envelope) -> dict:
+    source = tmp_path / "revision.json"
+    source.write_text(json.dumps(envelope), encoding="utf-8")
+    cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+    return _read_stdout_json(capsys)
+
+
+def _reasoned(envelope: dict, reason: str) -> dict:
+    from tests.commissioning.signing import EPHEMERAL_SEED, sign_envelope
+
+    binding = copy.deepcopy(envelope["binding"])
+    binding["reason"] = reason
+    return sign_envelope(binding, EPHEMERAL_SEED)
+
+
+@pytest.mark.parametrize("spelling", ["as delivered", "re-encoded"])
+def test_a_revision_replaces_the_staged_binding_in_force_without_force(
+    tmp_path, monkeypatch, capsys, spelling
+):
+    """The binding in force stays staged and is retained; replacing it discards nothing.
+
+    It is recognised by its signed content, not its file bytes, so a staged
+    copy written with other whitespace is still the binding in force.
+    """
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    first = _bench_envelope()
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, first)
+    staged = tmp_path / BINDING_RELATIVE_PATH
+    if spelling == "re-encoded":
+        staged.write_text(json.dumps(first, indent=4), encoding="utf-8")
+    revision = _reasoned(_carried_revision(first), "clamp re-seated; nothing changed")
+
+    payload = _deliver_without_force(config_path, tmp_path, capsys, revision)
+
+    assert payload["ok"] is True, payload
+    assert payload["result"]["installed"] is True
+    assert json.loads(staged.read_text(encoding="utf-8")) == revision
+
+
+@pytest.mark.parametrize(
+    "staged_content",
+    ["another revision", "not a document", "an older binding"],
+)
+def test_anything_else_staged_still_needs_force(
+    tmp_path, monkeypatch, capsys, staged_content
+):
+    """A staged document that is not the binding in force may be someone else's work."""
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    first = _bench_envelope()
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, first)
+    staged = tmp_path / BINDING_RELATIVE_PATH
+    revision = _carried_revision(first)
+    if staged_content == "another revision":
+        other = _reasoned(revision, "someone else's revision")
+        assert _deliver_without_force(config_path, tmp_path, capsys, other)["ok"]
+    elif staged_content == "not a document":
+        staged.write_bytes(b"\xff not json")
+    else:
+        staged.write_text(json.dumps(_bench_envelope(binding_seq=9)), encoding="utf-8")
+    before = staged.read_bytes()
+
+    payload = _deliver_without_force(
+        config_path, tmp_path, capsys, _reasoned(revision, "mine")
+    )
+
+    assert payload["error"]["code"] == "binding_already_staged", payload
+    assert staged.read_bytes() == before
+
+
+def test_a_directory_at_the_staged_path_is_refused_by_name(
+    tmp_path, monkeypatch, capsys
+):
+    """Not an internal error: the staged path holds something that is not a binding."""
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    first = _bench_envelope()
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, first)
+    staged = tmp_path / BINDING_RELATIVE_PATH
+    staged.unlink()
+    staged.mkdir()
+
+    payload = _deliver_without_force(
+        config_path, tmp_path, capsys, _reasoned(_carried_revision(first), "mine")
+    )
+
+    assert payload["error"]["code"] == "binding_already_staged", payload
+    assert staged.is_dir()
+
+
+def test_a_delivery_is_refused_while_another_holds_the_device(
+    tmp_path, monkeypatch, capsys
+):
+    """Admission is serialized: nothing is staged between another delivery's check and write."""
+    import fcntl
+
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    first = _bench_envelope()
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, first)
+    staged = tmp_path / BINDING_RELATIVE_PATH
+    before = staged.read_bytes()
+    held = os.open(config_path.resolve().parent, os.O_RDONLY)
+    try:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        payload = _deliver_without_force(
+            config_path, tmp_path, capsys, _reasoned(_carried_revision(first), "mine")
+        )
+    finally:
+        os.close(held)
+
+    assert payload["error"]["code"] == "delivery_in_progress", payload
+    assert staged.read_bytes() == before
+    assert not list(staged.parent.glob("*.tmp"))
+
+
+def test_a_retired_binding_staged_again_is_not_the_binding_in_force(
+    tmp_path, monkeypatch, capsys
+):
+    """A former binding in force, retired by a revision, is someone's document now."""
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    first = _bench_envelope()
+    revision = _reasoned(_carried_revision(first), "revision in force")
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, first)
+    assert _deliver_without_force(config_path, tmp_path, capsys, revision)["ok"]
+    _deliver_and_load(tmp_path, monkeypatch, capsys, revision)
+    inventory = _run_read(["commissioning", "inventory"], config_path, capsys)
+    assert inventory["result"]["accepted_binding_seq"] == 2, inventory
+    staged = tmp_path / BINDING_RELATIVE_PATH
+    staged.write_text(json.dumps(first), encoding="utf-8")
+    before = staged.read_bytes()
+
+    from ori.security.commissioning.binding import canonical_hash
+    from tests.commissioning.signing import EPHEMERAL_SEED, sign_envelope
+
+    later = copy.deepcopy(revision["binding"])
+    later["binding_seq"] = 3
+    later["supersedes"] = canonical_hash(revision["binding"])
+    later["reason"] = "a later revision"
+    later_envelope = sign_envelope(later, EPHEMERAL_SEED)
+    payload = _deliver_without_force(config_path, tmp_path, capsys, later_envelope)
+
+    assert payload["error"]["code"] == "binding_already_staged", payload
+    assert staged.read_bytes() == before
+    # The same revision over the binding in force is admitted, so the refusal
+    # above was the retired document, not the revision.
+    staged.write_text(json.dumps(revision), encoding="utf-8")
+    assert _deliver_without_force(config_path, tmp_path, capsys, later_envelope)["ok"]
+
+
+def test_a_directory_that_cannot_be_locked_refuses_the_delivery(
+    tmp_path, monkeypatch, capsys
+):
+    """Unserialized admission is not admission: the delivery is refused by name."""
+    import fcntl
+
+    from ori.security.commissioning.loader import BINDING_RELATIVE_PATH
+
+    first = _bench_envelope()
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, first)
+    staged = tmp_path / BINDING_RELATIVE_PATH
+    before = staged.read_bytes()
+
+    def unsupported(*_args):
+        raise OSError(95, "Operation not supported")
+
+    monkeypatch.setattr(fcntl, "flock", unsupported)
+    payload = _deliver_without_force(
+        config_path, tmp_path, capsys, _reasoned(_carried_revision(first), "mine")
+    )
+
+    assert payload["error"]["code"] == "delivery_lock_unavailable", payload
+    assert staged.read_bytes() == before
