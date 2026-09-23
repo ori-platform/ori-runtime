@@ -489,3 +489,73 @@ class TestFirmwareRegistrationSnapshot:
             assert "sha256:aa" in str(row["input_firmware_registration"])
         finally:
             await reopened.close()
+
+
+class TestReconciliationNeverSealsADeclinedProposalAsApproved:
+    """A pending Tier C row carrying `tier_c_approval` for a proposal the operator
+    did not approve (left by an earlier build, or by a crash between insert and
+    signing) is refused on the restart pass and leaves the reconciliation set."""
+
+    async def test_an_unapproved_row_is_refused_and_an_approved_one_reconciled(
+        self, tmp_path
+    ) -> None:
+        import json
+
+        from ori.network.events import ActionResult
+        from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
+        from ori.state.store import StateStore
+
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        attestor = FirstPartyEvidenceAttestor(
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "device.key"),
+            device_secret="a" * 64,
+            device_id="test-device",
+        )
+        assert await attestor.start()
+        try:
+            ids = {}
+            for label, approved, proposal_id in (
+                ("declined", False, "AB12CD34"),
+                ("approved", True, "EF56GH78"),
+            ):
+                result = ActionResult(
+                    action_name="terminate_process",
+                    tier="C",
+                    executed=True,
+                    approved=approved,
+                    action_taken=(
+                        "terminate_process" if approved else "log_to_dashboard"
+                    ),
+                    timestamp=1787000000000,
+                    proposal_id=proposal_id,
+                )
+                ids[label] = await store.log_action_for_event(
+                    result,
+                    trigger_name="critical_fault",
+                    device_id="test-device",
+                    attestation_pending=True,
+                    authority_json=json.dumps(
+                        {"kind": "tier_c_approval", "proposal_id": proposal_id},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+
+            await _reconcile(_Runtime(attestor=attestor, store=store))
+
+            def statuses(conn):
+                return dict(
+                    conn.execute(
+                        "SELECT id, attestation_status FROM action_log"
+                    ).fetchall()
+                )
+
+            by_id = await store._run_read(statuses)
+            assert by_id[ids["declined"]] == "refused"
+            assert by_id[ids["approved"]] == "reconciled"
+            assert await store.get_actions_needing_attestation() == []
+        finally:
+            attestor.close()
+            await store.close()
