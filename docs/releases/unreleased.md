@@ -319,6 +319,18 @@ candidate or release is cut.
 
 ## Fixed
 
+- Concurrent local reasoning no longer crashes the runtime. A llama.cpp
+  context decoded from two threads at once aborts the process, and two
+  triggers matching together each ran the local model in its own worker
+  thread. Local inference now runs one decode at a time on the loaded model.
+  A caller cancelled mid-inference cannot stop its decode, so that decode keeps
+  the model until its thread returns, and later callers wait for it in the event
+  loop rather than in worker threads, where a run of cancellations would
+  otherwise fill the default executor. The model is loaded once, whichever
+  caller asks first, because llama.cpp silences stdout and stderr process-wide
+  while loading and two overlapping loads leave them silenced; a load that
+  fails is retried by the next caller, including one that failed after every
+  caller waiting on it was cancelled.
 - Ori processes no longer leave lgpio's notify pipe (`.lgd-nfy0`) in the
   directory they ran from. lgpio moves the process into `LG_WD`, or stays
   where it is when that is unset, and creates the pipe there by a relative

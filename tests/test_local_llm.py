@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -329,3 +330,239 @@ class TestLazyLoading:
                 )
 
         assert load_calls == 1
+
+
+# ─── one inference at a time ──────────────────────────────────────────────────
+
+
+async def _was_cancelled(task: asyncio.Task) -> bool:
+    [outcome] = await asyncio.gather(task, return_exceptions=True)
+    return isinstance(outcome, asyncio.CancelledError)
+
+
+class _OverlapDetectingLlama:
+    """A model whose decode records how many callers are inside it at once."""
+
+    def __init__(self, release: "threading.Event | None" = None) -> None:
+        self._guard = threading.Lock()
+        self.inside = 0
+        self.most_inside = 0
+        self.entered = threading.Event()
+        self._release = release
+
+    def __call__(self, *_args, **_kwargs) -> dict:
+        with self._guard:
+            self.inside += 1
+            self.most_inside = max(self.most_inside, self.inside)
+        self.entered.set()
+        if self._release is not None:
+            self._release.wait(5)
+        else:
+            time.sleep(0.05)
+        with self._guard:
+            self.inside -= 1
+        return _LLAMA_OUTPUT
+
+
+class TestOneInferenceAtATime:
+    """A llama.cpp context decoded from two threads at once crashes the process."""
+
+    async def test_concurrent_callers_never_decode_together(self):
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+        model = _OverlapDetectingLlama()
+        llm._llm = model
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("os.path.isfile", return_value=True),
+        ):
+            results = await asyncio.gather(*(llm.reason(f"p{i}") for i in range(4)))
+
+        assert len(results) == 4
+        assert model.most_inside == 1
+
+    async def test_a_cancelled_caller_does_not_let_the_next_decode_alongside_it(self):
+        """The cancelled caller's thread keeps decoding; the next must still wait."""
+        release = threading.Event()
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+        model = _OverlapDetectingLlama(release)
+        llm._llm = model
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("os.path.isfile", return_value=True),
+        ):
+            first = asyncio.create_task(llm.reason("first"))
+            await asyncio.to_thread(model.entered.wait, 5)
+            first.cancel()
+            assert await _was_cancelled(first)
+            second = asyncio.create_task(llm.reason("second"))
+            await asyncio.sleep(0.2)
+            assert model.inside == 1, "the second decode started beside the first"
+            release.set()
+            result = await second
+
+        assert result.tier == "local_slm"
+        assert model.most_inside == 1
+
+    async def test_queued_callers_wait_in_the_loop_not_in_pool_threads(self):
+        """Each waiting caller parked in a worker thread would starve other to_thread work."""
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+        llm._llm = _OverlapDetectingLlama()
+        real_to_thread = asyncio.to_thread
+        in_flight = 0
+        most_in_flight = 0
+
+        async def counting_to_thread(func, *args, **kwargs):
+            nonlocal in_flight, most_in_flight
+            in_flight += 1
+            most_in_flight = max(most_in_flight, in_flight)
+            try:
+                return await real_to_thread(func, *args, **kwargs)
+            finally:
+                in_flight -= 1
+
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("os.path.isfile", return_value=True),
+            patch("ori.reasoning.local_llm.asyncio.to_thread", counting_to_thread),
+        ):
+            await asyncio.gather(*(llm.reason(f"p{i}") for i in range(4)))
+
+        assert most_in_flight == 1
+
+    async def test_a_cancellation_storm_never_parks_callers_in_pool_threads(self):
+        """Callers cancelled one after another behind a running decode each
+        leave their work queued; none may take a worker thread to wait in."""
+        release = threading.Event()
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+        model = _OverlapDetectingLlama(release)
+        llm._llm = model
+        real_to_thread = asyncio.to_thread
+        in_flight = 0
+        most_in_flight = 0
+
+        async def counting_to_thread(func, *args, **kwargs):
+            nonlocal in_flight, most_in_flight
+            in_flight += 1
+            most_in_flight = max(most_in_flight, in_flight)
+            try:
+                return await real_to_thread(func, *args, **kwargs)
+            finally:
+                in_flight -= 1
+
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("os.path.isfile", return_value=True),
+            patch("ori.reasoning.local_llm.asyncio.to_thread", counting_to_thread),
+        ):
+            first = asyncio.create_task(llm.reason("first"))
+            await real_to_thread(model.entered.wait, 5)
+            first.cancel()
+            for i in range(6):
+                caller = asyncio.create_task(llm.reason(f"storm{i}"))
+                await asyncio.sleep(0.02)
+                caller.cancel()
+                assert await _was_cancelled(caller)
+            assert await _was_cancelled(first)
+            release.set()
+            result = await llm.reason("after")
+
+        assert result.tier == "local_slm"
+        assert most_in_flight == 1
+        assert model.most_inside == 1
+
+
+class TestOneLoad:
+    """llama.cpp silences stdout and stderr process-wide while it loads; two
+    overlapping loads restore them out of order and leave them silenced."""
+
+    @staticmethod
+    def _slow_llama(loads: list, release: threading.Event):
+        class _Llama:
+            def __init__(self, *_args, **_kwargs):
+                loads.append(threading.get_ident())
+                release.wait(5)
+
+            def __call__(self, *_args, **_kwargs):
+                return _LLAMA_OUTPUT
+
+        return _Llama
+
+    async def test_a_caller_cancelled_mid_load_does_not_start_a_second_load(self):
+        loads: list = []
+        release = threading.Event()
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("ori.reasoning.local_llm.Llama", self._slow_llama(loads, release)),
+            patch("os.path.isfile", return_value=True),
+        ):
+            first = asyncio.create_task(llm.reason("first"))
+            await asyncio.sleep(0.1)
+            first.cancel()
+            assert await _was_cancelled(first)
+            second = asyncio.create_task(llm.reason("second"))
+            await asyncio.sleep(0.1)
+            assert len(loads) == 1, "a second load started beside the first"
+            release.set()
+            result = await second
+
+        assert result.tier == "local_slm"
+        assert len(loads) == 1
+
+    async def test_a_failed_load_is_retried_by_the_next_caller(self):
+        attempts = []
+
+        class _FailingOnce:
+            def __init__(self, *_args, **_kwargs):
+                attempts.append(1)
+                if len(attempts) == 1:
+                    raise RuntimeError("model file unreadable")
+
+            def __call__(self, *_args, **_kwargs):
+                return _LLAMA_OUTPUT
+
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("ori.reasoning.local_llm.Llama", _FailingOnce),
+            patch("os.path.isfile", return_value=True),
+        ):
+            with pytest.raises(RuntimeError):
+                await llm.reason("first")
+            result = await llm.reason("second")
+
+        assert result.tier == "local_slm"
+        assert len(attempts) == 2
+
+    async def test_a_load_failing_after_every_caller_left_is_retried(self):
+        release = threading.Event()
+        attempts = []
+
+        class _FailingOnceSlowly:
+            def __init__(self, *_args, **_kwargs):
+                attempts.append(1)
+                if len(attempts) == 1:
+                    release.wait(5)
+                    raise RuntimeError("model file unreadable")
+
+            def __call__(self, *_args, **_kwargs):
+                return _LLAMA_OUTPUT
+
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("ori.reasoning.local_llm.Llama", _FailingOnceSlowly),
+            patch("os.path.isfile", return_value=True),
+        ):
+            first = asyncio.create_task(llm.reason("first"))
+            await asyncio.sleep(0.1)
+            first.cancel()
+            assert await _was_cancelled(first)
+            release.set()
+            while llm._load_task is not None and not llm._load_task.done():
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0)
+            result = await llm.reason("second")
+
+        assert result.tier == "local_slm"
+        assert len(attempts) == 2
