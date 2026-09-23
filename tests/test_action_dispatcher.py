@@ -2243,7 +2243,7 @@ class TestAnUnansweredApprovalSaysWhyItEnded:
     async def _dispatch(self, tmp_path, sender, *, timeout: int, local=False):
         store = StateStore(db_path=str(tmp_path / "state.db"))
         await store.open()
-        config = {"secondary_contact": self.SECONDARY}
+        config: dict[str, object] = {"secondary_contact": self.SECONDARY}
         if local:
             config["local_console_enabled"] = True
         else:
