@@ -12,11 +12,15 @@ JSON envelopes.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import json
 import os
 import sqlite3
 import sys
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -53,6 +57,7 @@ from ori.security.commissioning.loader import (
     verifier_context,
 )
 from ori.security.commissioning.profiles import (
+    ProfileSet,
     ProfileSetError,
     load_shipped_profile_set,
 )
@@ -977,7 +982,6 @@ async def _commissioning_deliver(
     file when it next starts.
     """
     config = Config.load(config_path)
-    device_id = str(config.device.id)
     try:
         text = Path(binding_path).read_bytes().decode("utf-8")
     except OSError as exc:
@@ -999,6 +1003,62 @@ async def _commissioning_deliver(
         raise BridgeError("profile_set_error", str(exc)) from exc
 
     prov = provisioning_anchor(config.security)
+    with _delivery_lock(Path(config_path).resolve().parent):
+        return await _deliver_admitted(
+            config,
+            text,
+            anchors=anchors,
+            profiles=profiles,
+            prov=prov,
+            force=force,
+            config_path=config_path,
+        )
+
+
+@contextmanager
+def _delivery_lock(config_dir: Path) -> Iterator[None]:
+    """One delivery at a time, from reading the binding in force to the write.
+
+    Held on the configuration directory itself, so a refused delivery leaves no
+    file behind. Without it a second delivery could stage a document between
+    this one's check and its write, and be overwritten without --force.
+    """
+    try:
+        descriptor = os.open(config_dir, os.O_RDONLY)
+    except OSError as exc:
+        raise BridgeError("binding_unreadable", str(exc)) from exc
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise BridgeError(
+                "delivery_in_progress",
+                "another delivery to this device is in progress; retry when it finishes",
+            ) from None
+        except OSError as exc:
+            # A filesystem that cannot take the lock cannot serialize admission,
+            # so nothing is delivered rather than delivered unserialized.
+            raise BridgeError(
+                "delivery_lock_unavailable",
+                f"cannot lock {config_dir} to admit a delivery ({exc}); the "
+                "configuration directory must be on a local filesystem",
+            ) from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
+async def _deliver_admitted(
+    config: Config,
+    text: str,
+    *,
+    anchors: CommissioningAnchors,
+    profiles: ProfileSet,
+    prov: bytes | None,
+    force: bool,
+    config_path: str,
+) -> dict[str, Any]:
+    device_id = str(config.device.id)
     in_force = await _in_force_binding(config)
 
     if anchor_collision(anchors, prov):
@@ -1045,7 +1105,11 @@ async def _commissioning_deliver(
 
     target = Path(config_path).resolve().parent / BINDING_RELATIVE_PATH
     payload = text.encode("utf-8")
-    if target.exists() and target.read_bytes() != payload and not force:
+    if (
+        target.exists()
+        and not force
+        and not _replaceable_without_force(target, payload, in_force)
+    ):
         raise BridgeError(
             "binding_already_staged",
             f"a different document is already staged at {target}; "
@@ -1077,6 +1141,29 @@ async def _commissioning_deliver(
             else "binding verified and staged; the runtime reads it when it next starts"
         ),
     }
+
+
+def _replaceable_without_force(
+    target: Path, payload: bytes, in_force: AcceptedBinding | None
+) -> bool:
+    """The staged file is this document, or the binding in force it revises.
+
+    The binding in force stays staged once accepted, and the runtime retains
+    it, so replacing it with a verified revision discards nothing. Anything
+    else staged, a provisional document included, may be someone else's work.
+    """
+    try:
+        staged = target.read_bytes()
+    except OSError:
+        return False
+    if staged == payload:
+        return True
+    if in_force is None:
+        return False
+    try:
+        return is_the_binding_in_force(parse_document(staged.decode("utf-8")), in_force)
+    except (UnicodeDecodeError, BindingRefusedError):
+        return False
 
 
 async def _proof_state(config: Config):
@@ -1252,9 +1339,13 @@ def _write_staged_binding(target: Path, payload: bytes) -> None:
     tinguishable from a tampered one.
     """
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(target.name + ".tmp")
+    descriptor, name = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+    )
+    temporary = Path(name)
     try:
-        temporary.write_bytes(payload)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
