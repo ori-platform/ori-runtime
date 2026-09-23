@@ -1324,6 +1324,12 @@ PATTERN_AUDIT_EXEMPT = {
         "raw current readings are the deliberately public provenance of a "
         "hardware observation."
     ),
+    "docs/evidence/2026-09-23-pi4-revision-ceremony.md": (
+        "Bench record of the commissioning ceremony run through the operator "
+        "CLI, not evidence-chain evidence; its commands, canonical hashes and "
+        "outcomes are the deliberately public provenance of a hardware "
+        "observation."
+    ),
     "docs/evidence/2026-09-22-pi4-sct013-linearity.md": (
         "Bench measurement record for the calibrated current path against a "
         "filament lamp, not evidence-chain evidence; its wiring, bias "
