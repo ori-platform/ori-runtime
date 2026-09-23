@@ -279,8 +279,7 @@ def test_relative_paths_resolve_against_the_callers_directory_after_lgpio(tmp_pa
         tmp_path,
         [
             "-c",
-            "import ori, lgpio; from pathlib import Path; "
-            "print(Path('ori.yaml').read_text())",
+            "import ori, lgpio; from pathlib import Path; print(Path('ori.yaml').read_text())",
         ],
     )
 

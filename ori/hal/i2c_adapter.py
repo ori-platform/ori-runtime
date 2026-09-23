@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import functools
 import logging
 import math
 import threading
@@ -82,7 +83,6 @@ smbus: Any = None
 _bme280_lib: Any = None
 _ads1115: Any = None
 _ads1x15: Any = None
-_analog_in: Any = None
 _board: Any = None
 _busio: Any = None
 adafruit_scd4x: Any = None
@@ -91,23 +91,22 @@ _BME280_AVAILABLE = False
 _ADS1115_AVAILABLE = False
 _BLINKA_AVAILABLE = False
 _SCD40_AVAILABLE = False
-_DRIVERS_LOADED = False
 
 
+@functools.cache
 def _load_drivers() -> None:
     """Import the optional hardware drivers once, recording why any is unusable.
 
-    Marked loaded only after every import has run: a driver raising something
-    other than an expected platform failure propagates, and the next call
-    retries and raises its cause again rather than reporting it "not available".
+    Cached only once every import has run: a driver raising something other than
+    an expected platform failure propagates, the failed call is not cached, and
+    the next call retries and raises its cause again rather than reporting it
+    "not available".
     Concurrent first calls are safe: each import is serialised by Python's own
     import lock and assigns the same values.
     """
-    global smbus, _bme280_lib, _ads1115, _ads1x15, _analog_in, _board, _busio
+    global smbus, _bme280_lib, _ads1115, _ads1x15, _board, _busio
     global adafruit_scd4x, _SMBUS_AVAILABLE, _BME280_AVAILABLE
-    global _ADS1115_AVAILABLE, _BLINKA_AVAILABLE, _SCD40_AVAILABLE, _DRIVERS_LOADED
-    if _DRIVERS_LOADED:
-        return
+    global _ADS1115_AVAILABLE, _BLINKA_AVAILABLE, _SCD40_AVAILABLE
     try:
         import smbus2 as smbus  # type: ignore[import-untyped]
 
@@ -133,13 +132,12 @@ def _load_drivers() -> None:
         # Imported to prove the driver package is complete, not to read through:
         # a sample is taken with the register pointer written explicitly, which
         # this module's reader does not do.
-        import adafruit_ads1x15.analog_in as _analog_in  # type: ignore[import-untyped]
+        import adafruit_ads1x15.analog_in  # type: ignore[import-untyped]  # noqa: F401
 
         _ADS1115_AVAILABLE = True
     except _DRIVER_FAILURE as exc:  # pragma: no cover - exercised on non-Pi hosts
         _ads1115 = None
         _ads1x15 = None
-        _analog_in = None
         _ADS1115_AVAILABLE = False
         _unavailable("ads1115", exc)
 
@@ -166,7 +164,6 @@ def _load_drivers() -> None:
         adafruit_scd4x = None
         _SCD40_AVAILABLE = False
         _unavailable("scd40", exc)
-    _DRIVERS_LOADED = True
 
 
 # Sensor types that require the ADS1115 ADC
