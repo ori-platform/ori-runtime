@@ -319,6 +319,23 @@ candidate or release is cut.
 
 ## Fixed
 
+- Ori processes no longer leave lgpio's notify pipe (`.lgd-nfy0`) in the
+  directory they ran from. lgpio moves the process into `LG_WD`, or stays
+  where it is when that is unset, and creates the pipe there by a relative
+  path when imported, never removing it. An operator command run from the
+  data directory therefore planted a named pipe in the install root, and the
+  next upgrade was refused `unsafe_install_root`. Every process now points
+  `LG_WD` at a directory it owns: the service's runtime directory under
+  `/run`, or a private temporary directory under an absolute temporary base
+  that is not at or below the working directory, removed at exit; an
+  inherited `LG_WD` is not kept. The working directory lgpio moves the
+  process out of is restored as soon as its import finishes, so relative
+  paths keep resolving where they did. Where neither exists (no writable
+  temporary base at all), `LG_WD` is left unset and lgpio behaves as before,
+  rather than failing the GPIO import and with it the relay. Validating a
+  configuration no longer imports the board's GPIO library at all: the I2C
+  adapter loads its drivers when a sensor connects, not when its module is
+  imported for the schemas.
 - `commissioning deliver` replaces the staged binding in force with a verified
   revision without `--force`. The binding in force stays staged once accepted
   and the runtime retains it, so replacing it discards nothing; it is

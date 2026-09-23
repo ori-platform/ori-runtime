@@ -6,7 +6,7 @@ import enum
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -379,7 +379,7 @@ class BaseAdapter(ABC):
             )
 
     @asynccontextmanager
-    async def _closing(self) -> AsyncIterator[None]:
+    async def _closing(self) -> AsyncGenerator[None, None]:
         """Run an adapter's close body under the lifecycle guarantee above.
 
         The close records itself *before* requesting the lock. A connect

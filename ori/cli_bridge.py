@@ -19,7 +19,7 @@ import os
 import sqlite3
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -1016,7 +1016,7 @@ async def _commissioning_deliver(
 
 
 @contextmanager
-def _delivery_lock(config_dir: Path) -> Iterator[None]:
+def _delivery_lock(config_dir: Path) -> Generator[None, None, None]:
     """One delivery at a time, from reading the binding in force to the write.
 
     Held on the configuration directory itself, so a refused delivery leaves no

@@ -20,7 +20,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterator, Literal, NoReturn, Sequence
+from typing import Callable, Generator, Literal, NoReturn, Sequence
 
 import yaml
 
@@ -1657,7 +1657,7 @@ RELEASE_PROBE_TIMEOUT_S = 30.0
 
 
 @contextlib.contextmanager
-def release_lifecycle_lock(layout: InstallLayout) -> Iterator[None]:
+def release_lifecycle_lock(layout: InstallLayout) -> Generator[None, None, None]:
     """Serialise everything that can move a release under this root.
 
     Install captures a rollback target and then activates. Retirement moves a

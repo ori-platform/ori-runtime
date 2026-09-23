@@ -29,6 +29,10 @@ from ori.hal.i2c_adapter import (
     _window_spec,
 )
 
+# Patches of the driver globals simulate a Pi, and must land after the drivers'
+# one real load, or the first connect would overwrite them with this host's.
+i2c_module._load_drivers()
+
 # ─── Pi guard ─────────────────────────────────────────────────────────────────
 
 _HAS_I2C_BUS = os.path.exists("/dev/i2c-1")
@@ -1895,6 +1899,7 @@ def fake_import(name, *args, **kwargs):
 builtins.__import__ = fake_import
 
 import ori.hal.i2c_adapter as m
+m._load_drivers()
 print(json.dumps({{
     "ads1115_available": m._ADS1115_AVAILABLE,
     "blinka_available": m._BLINKA_AVAILABLE,

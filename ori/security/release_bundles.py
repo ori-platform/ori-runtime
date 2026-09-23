@@ -18,7 +18,7 @@ import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import IO, Any, Callable, Iterator, NoReturn
+from typing import IO, Any, Callable, Generator, NoReturn
 
 SIGNATURE_SCHEMA = "ori.runtime_release_bundle_signature.v1"
 MANIFEST_SCHEMA = "ori.runtime_release_bundle_manifest.v1"
@@ -755,7 +755,7 @@ def _hash_file(path: Path) -> tuple[int, str]:
 
 
 @contextmanager
-def _open_artifact(path: Path) -> Iterator[IO[bytes]]:
+def _open_artifact(path: Path) -> Generator[IO[bytes], None, None]:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     fd = -1
     try:
