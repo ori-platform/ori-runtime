@@ -87,15 +87,26 @@ leaves the output untouched.
 controller-loss state the site commissioned, which may be `closed`. Health
 reports such a zone `unavailable`, never protected.
 
-**A revision invalidates the proof leg by leg.** A revision changing any
-actuator identity field, any mapping field, or `calibration_ref` carries a
-circuit leg performed after the retained circuit proof and, where it claims one,
-a control leg performed after the retained control proof. A changed `gpio_pin`
+**A revision invalidates the proof leg by leg.** A revision changing any field
+of a zone's sensor, its actuator identity or its mapping requires every leg it
+claims to be performed after the same leg's retained time, whichever field
+changed. A leg it does not claim — a circuit leg recorded `undemonstrated`, a
+control leg `undemonstrated` or absent — is held to no time and leaves the zone
+provisional. A change to `zone_id` or `rated_capacity` alone carries the proof,
+unless the new name is another retained zone's. The sensor is part of what a proof establishes:
+carried onto another sensor, the proof asserts an association nobody observed. A changed `gpio_pin`
 or `active_high` does not inherit the control proof taken against the old one:
 that measurement recorded which level drove which coil state on the wiring this
 revision replaces. The retained record therefore keeps both timestamps, and a
 retained document that carried no control leg has none, so a revision's control
 leg is fresh by construction.
+
+**A revision needing fresh legs on an actuator the binding in force still binds
+cannot yet be proven.** The binding in force keeps that actuator until the
+revision is in force, and the proof operation refuses an actuator it binds, so
+such a revision would stay provisional while the old binding goes on driving
+the relay under the polarity it recorded. A producer refuses to capture one;
+taking a zone out of operation to prove it is not yet specified.
 
 A retained binding whose legs are not both proven is migrated into the
 provisional record and the in-force row is retired, so the device keeps a
@@ -269,6 +280,12 @@ and until then the operation answers `no_provisional_binding`.
 
 `commissioning proof-export` returns what was recorded, and is read-only: it
 accepts no observation, no consent, no pin value and no claimed outcome.
+
+`commissioning binding-export` returns the signed envelope of the binding in
+force, for a revision to start from. It is read-only, rebuilds the envelope
+from the canonical bytes and signature the store retained, refuses when those
+do not reproduce the recorded hash, never exports a provisional binding, and
+answers `no_binding_in_force` on a device that holds none.
 Completion is a new signed document carrying both legs; the provisional record
 is never promoted in place.
 

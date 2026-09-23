@@ -59,11 +59,16 @@ def test_corpus_is_the_published_artifact_at_the_pinned_revision() -> None:
     manifest = json.loads((VECTOR_DIR / "MANIFEST.json").read_text())
     assert manifest["source_repository"] == "ori-platform/ori-specs"
     assert manifest["source_commit"]
-    recorded = manifest["files"][VECTOR_PATH.name]
-    assert hashlib.sha256(VECTOR_PATH.read_bytes()).hexdigest() == recorded, (
-        "the vendored corpus has been edited locally; re-vendor with "
-        "scripts/refresh-evidence-vectors.sh rather than editing it here"
-    )
+    assert set(manifest["files"]) == {
+        path.name for path in VECTOR_DIR.glob("*.json") if path.name != "MANIFEST.json"
+    }
+    for name, recorded in manifest["files"].items():
+        assert (
+            hashlib.sha256((VECTOR_DIR / name).read_bytes()).hexdigest() == recorded
+        ), (
+            f"the vendored {name} has been edited locally; re-vendor with "
+            "scripts/refresh-evidence-vectors.sh rather than editing it here"
+        )
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c["name"])

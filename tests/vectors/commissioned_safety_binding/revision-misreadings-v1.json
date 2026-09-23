@@ -1,0 +1,585 @@
+{
+  "v": 1,
+  "note": "The revision rule of commissioned-safety-binding/v1 as a table of switches, and the misreadings of it the corpus must refuse. `reference` is the rule; each misreading overrides some of its switches. Every revision vector is decided under the reference and under each misreading, and each misreading must decide some vector against its declared verdict. Exemptions keyed on a set of fields are enumerated only for `change_events`, the changes the contract names.",
+  "reference": {
+    "match_name": true,
+    "match_actuator": true,
+    "match_sensor": true,
+    "sensor_match": "sensor_id",
+    "gpio_match": "pin",
+    "firmware_match": "identity",
+    "change_identity": true,
+    "identity_compare": "whole",
+    "change_mapping": true,
+    "change_sensor": "whole",
+    "rename_is_change": false,
+    "visit": "all",
+    "circuit_unclaimed_exempt": true,
+    "circuit_skip_if_control_fresh": false,
+    "circuit_only_single_match": false,
+    "circuit_strict": false,
+    "control_requires_claim": true,
+    "control_on": "any_change",
+    "control_skip_if_circuit_unclaimed": false,
+    "control_missing": "fresh",
+    "control_strict": false,
+    "one_to_one": false,
+    "control_only_single_match": false,
+    "circuit_skip_if_control_unclaimed": false,
+    "control_absent_stale": false,
+    "single_retained_time": false,
+    "fresh_against_every_match_once_changed": false,
+    "proof_change_is_change": false,
+    "claimed_methods": "any_but_undemonstrated",
+    "circuit_retained_time": "own",
+    "exempt": [],
+    "exempt_sets": [],
+    "exempt_at_least": [],
+    "exempt_kind_change": [],
+    "exempt_control_behind_pre_energisation": false,
+    "exempt_postures": [],
+    "control_retained_time": "own"
+  },
+  "change_events": {
+    "sensor is replaced": [
+      "calibration_ref",
+      "sensor_id"
+    ],
+    "actuator is replaced": [
+      "active_high",
+      "gpio_pin"
+    ],
+    "actuator is rewired to another pin": [
+      "gpio_pin",
+      "mapping"
+    ],
+    "polarity flips with its mapping": [
+      "active_high",
+      "mapping"
+    ]
+  },
+  "misreadings": {
+    "GPIO matched by whole identity": {
+      "gpio_match": "whole"
+    },
+    "a new proof time is a change": {
+      "proof_change_is_change": true
+    },
+    "actuator clause dropped": {
+      "match_actuator": false
+    },
+    "calibration change ignored": {
+      "change_sensor": "ignore:calibration_ref"
+    },
+    "circuit checked only on a single match": {
+      "circuit_only_single_match": true
+    },
+    "circuit leg equal to the retained time is fresh": {
+      "circuit_strict": true
+    },
+    "circuit leg exempt in development posture": {
+      "exempt_postures": [
+        [
+          "circuit",
+          "development"
+        ]
+      ]
+    },
+    "circuit leg exempt in staging posture": {
+      "exempt_postures": [
+        [
+          "circuit",
+          "staging"
+        ]
+      ]
+    },
+    "circuit leg exempt on a kind change to GPIO": {
+      "exempt_kind_change": [
+        "GPIO"
+      ]
+    },
+    "circuit leg exempt on a kind change to firmware": {
+      "exempt_kind_change": [
+        "firmware"
+      ]
+    },
+    "circuit leg exempt when 2 or more fields changed": {
+      "exempt_at_least": [
+        [
+          "circuit",
+          2
+        ]
+      ]
+    },
+    "circuit leg exempt when 3 or more fields changed": {
+      "exempt_at_least": [
+        [
+          "circuit",
+          3
+        ]
+      ]
+    },
+    "circuit leg exempt when only active_high changed": {
+      "exempt": [
+        [
+          "circuit",
+          "active_high"
+        ]
+      ]
+    },
+    "circuit leg exempt when only calibration_ref changed": {
+      "exempt": [
+        [
+          "circuit",
+          "calibration_ref"
+        ]
+      ]
+    },
+    "circuit leg exempt when only channel changed": {
+      "exempt": [
+        [
+          "circuit",
+          "channel"
+        ]
+      ]
+    },
+    "circuit leg exempt when only direction changed": {
+      "exempt": [
+        [
+          "circuit",
+          "direction"
+        ]
+      ]
+    },
+    "circuit leg exempt when only firmware_device_id changed": {
+      "exempt": [
+        [
+          "circuit",
+          "firmware_device_id"
+        ]
+      ]
+    },
+    "circuit leg exempt when only gpio_pin changed": {
+      "exempt": [
+        [
+          "circuit",
+          "gpio_pin"
+        ]
+      ]
+    },
+    "circuit leg exempt when only mapping changed": {
+      "exempt": [
+        [
+          "circuit",
+          "mapping"
+        ]
+      ]
+    },
+    "circuit leg exempt when only noise_floor changed": {
+      "exempt": [
+        [
+          "circuit",
+          "noise_floor"
+        ]
+      ]
+    },
+    "circuit leg exempt when only quantity changed": {
+      "exempt": [
+        [
+          "circuit",
+          "quantity"
+        ]
+      ]
+    },
+    "circuit leg exempt when only range_max changed": {
+      "exempt": [
+        [
+          "circuit",
+          "range_max"
+        ]
+      ]
+    },
+    "circuit leg exempt when only range_min changed": {
+      "exempt": [
+        [
+          "circuit",
+          "range_min"
+        ]
+      ]
+    },
+    "circuit leg exempt when only sensor_id changed": {
+      "exempt": [
+        [
+          "circuit",
+          "sensor_id"
+        ]
+      ]
+    },
+    "circuit leg exempt when only unit changed": {
+      "exempt": [
+        [
+          "circuit",
+          "unit"
+        ]
+      ]
+    },
+    "circuit leg exempt when the actuator is replaced": {
+      "exempt_sets": [
+        [
+          "circuit",
+          [
+            "active_high",
+            "gpio_pin"
+          ]
+        ]
+      ]
+    },
+    "circuit leg exempt when the actuator is rewired to another pin": {
+      "exempt_sets": [
+        [
+          "circuit",
+          [
+            "gpio_pin",
+            "mapping"
+          ]
+        ]
+      ]
+    },
+    "circuit leg exempt when the polarity flips with its mapping": {
+      "exempt_sets": [
+        [
+          "circuit",
+          [
+            "active_high",
+            "mapping"
+          ]
+        ]
+      ]
+    },
+    "circuit leg exempt when the sensor is replaced": {
+      "exempt_sets": [
+        [
+          "circuit",
+          [
+            "calibration_ref",
+            "sensor_id"
+          ]
+        ]
+      ]
+    },
+    "circuit leg held to the earlier retained time": {
+      "circuit_retained_time": "earlier"
+    },
+    "circuit skipped behind a fresh control leg": {
+      "circuit_skip_if_control_fresh": true
+    },
+    "circuit skipped behind an unclaimed control leg": {
+      "circuit_skip_if_control_unclaimed": true
+    },
+    "control leg checked only on a single match": {
+      "control_only_single_match": true
+    },
+    "control leg checked only on an actuator or mapping change": {
+      "control_on": "identity_or_mapping"
+    },
+    "control leg checked only on an identity change": {
+      "control_on": "identity"
+    },
+    "control leg equal to the retained time is fresh": {
+      "control_strict": true
+    },
+    "control leg exempt behind a pre_energisation circuit leg": {
+      "exempt_control_behind_pre_energisation": true
+    },
+    "control leg exempt in development posture": {
+      "exempt_postures": [
+        [
+          "control",
+          "development"
+        ]
+      ]
+    },
+    "control leg exempt in staging posture": {
+      "exempt_postures": [
+        [
+          "control",
+          "staging"
+        ]
+      ]
+    },
+    "control leg exempt when 2 or more fields changed": {
+      "exempt_at_least": [
+        [
+          "control",
+          2
+        ]
+      ]
+    },
+    "control leg exempt when 3 or more fields changed": {
+      "exempt_at_least": [
+        [
+          "control",
+          3
+        ]
+      ]
+    },
+    "control leg exempt when only active_high changed": {
+      "exempt": [
+        [
+          "control",
+          "active_high"
+        ]
+      ]
+    },
+    "control leg exempt when only calibration_ref changed": {
+      "exempt": [
+        [
+          "control",
+          "calibration_ref"
+        ]
+      ]
+    },
+    "control leg exempt when only direction changed": {
+      "exempt": [
+        [
+          "control",
+          "direction"
+        ]
+      ]
+    },
+    "control leg exempt when only gpio_pin changed": {
+      "exempt": [
+        [
+          "control",
+          "gpio_pin"
+        ]
+      ]
+    },
+    "control leg exempt when only mapping changed": {
+      "exempt": [
+        [
+          "control",
+          "mapping"
+        ]
+      ]
+    },
+    "control leg exempt when only noise_floor changed": {
+      "exempt": [
+        [
+          "control",
+          "noise_floor"
+        ]
+      ]
+    },
+    "control leg exempt when only quantity changed": {
+      "exempt": [
+        [
+          "control",
+          "quantity"
+        ]
+      ]
+    },
+    "control leg exempt when only range_max changed": {
+      "exempt": [
+        [
+          "control",
+          "range_max"
+        ]
+      ]
+    },
+    "control leg exempt when only range_min changed": {
+      "exempt": [
+        [
+          "control",
+          "range_min"
+        ]
+      ]
+    },
+    "control leg exempt when only sensor_id changed": {
+      "exempt": [
+        [
+          "control",
+          "sensor_id"
+        ]
+      ]
+    },
+    "control leg exempt when only unit changed": {
+      "exempt": [
+        [
+          "control",
+          "unit"
+        ]
+      ]
+    },
+    "control leg exempt when the actuator is replaced": {
+      "exempt_sets": [
+        [
+          "control",
+          [
+            "active_high",
+            "gpio_pin"
+          ]
+        ]
+      ]
+    },
+    "control leg exempt when the actuator is rewired to another pin": {
+      "exempt_sets": [
+        [
+          "control",
+          [
+            "gpio_pin",
+            "mapping"
+          ]
+        ]
+      ]
+    },
+    "control leg exempt when the polarity flips with its mapping": {
+      "exempt_sets": [
+        [
+          "control",
+          [
+            "active_high",
+            "mapping"
+          ]
+        ]
+      ]
+    },
+    "control leg exempt when the sensor is replaced": {
+      "exempt_sets": [
+        [
+          "control",
+          [
+            "calibration_ref",
+            "sensor_id"
+          ]
+        ]
+      ]
+    },
+    "control leg held to the later retained time": {
+      "control_retained_time": "later"
+    },
+    "control leg skipped when the circuit leg is unclaimed": {
+      "control_skip_if_circuit_unclaimed": true
+    },
+    "direction change ignored": {
+      "change_sensor": "ignore:direction"
+    },
+    "dropped control leg is stale": {
+      "control_absent_stale": true
+    },
+    "each retained zone matched to one revision zone": {
+      "one_to_one": true
+    },
+    "firmware matched by board only": {
+      "firmware_match": "board"
+    },
+    "firmware matched by channel only": {
+      "firmware_match": "channel"
+    },
+    "first match only": {
+      "visit": "first"
+    },
+    "fresh against every match once any changed": {
+      "fresh_against_every_match_once_changed": true
+    },
+    "identity change ignored": {
+      "change_identity": false
+    },
+    "identity change ignores the board": {
+      "identity_compare": "ignore_board"
+    },
+    "identity change ignores the channel": {
+      "identity_compare": "ignore_channel"
+    },
+    "last match only": {
+      "visit": "last"
+    },
+    "latest-proof match only": {
+      "visit": "latest_proof"
+    },
+    "lower range change ignored": {
+      "change_sensor": "ignore:range_min"
+    },
+    "mapping change ignored": {
+      "change_mapping": false
+    },
+    "missing control time is stale": {
+      "control_missing": "stale"
+    },
+    "missing control time is the circuit time": {
+      "control_missing": "circuit_time"
+    },
+    "name clause dropped": {
+      "match_name": false
+    },
+    "name only when no actuator matches": {
+      "visit": "name_if_no_actuator"
+    },
+    "one retained time for both legs": {
+      "single_retained_time": true
+    },
+    "pre_energisation leg treated as unclaimed": {
+      "claimed_methods": "actuate_and_observe"
+    },
+    "quantity change ignored": {
+      "change_sensor": "ignore:quantity"
+    },
+    "range change ignored": {
+      "change_sensor": "ignore:range"
+    },
+    "rename is a change": {
+      "rename_is_change": true
+    },
+    "sensor change by id and calibration": {
+      "change_sensor": "id_and_calibration"
+    },
+    "sensor change by id only": {
+      "change_sensor": "sensor_id"
+    },
+    "sensor clause dropped": {
+      "match_sensor": false
+    },
+    "sensor match first": {
+      "visit": "sensor_first"
+    },
+    "sensor matched as a whole": {
+      "sensor_match": "whole"
+    },
+    "sensor matched by id and calibration_ref": {
+      "sensor_match": "id_and:calibration_ref"
+    },
+    "sensor matched by id and direction": {
+      "sensor_match": "id_and:direction"
+    },
+    "sensor matched by id and noise_floor": {
+      "sensor_match": "id_and:noise_floor"
+    },
+    "sensor matched by id and quantity": {
+      "sensor_match": "id_and:quantity"
+    },
+    "sensor matched by id and range_max": {
+      "sensor_match": "id_and:range_max"
+    },
+    "sensor matched by id and range_min": {
+      "sensor_match": "id_and:range_min"
+    },
+    "sensor matched by id and unit": {
+      "sensor_match": "id_and:unit"
+    },
+    "stop after the first passing match": {
+      "visit": "stop_after_pass"
+    },
+    "stop at the first unchanged match": {
+      "visit": "break_on_unchanged"
+    },
+    "unclaimed circuit leg held to the retained time": {
+      "circuit_unclaimed_exempt": false
+    },
+    "unclaimed control leg held to the retained time": {
+      "control_requires_claim": false
+    },
+    "unit change ignored": {
+      "change_sensor": "ignore:unit"
+    }
+  }
+}

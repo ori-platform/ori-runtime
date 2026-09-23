@@ -291,7 +291,7 @@ def _retained(binding: dict[str, Any]) -> dict[str, ZoneState]:
         zone["zone_id"]: ZoneState(
             identity=dict(zone["actuator"]["identity"]),
             mapping=dict(zone["actuator"]["commissioned_mapping"]),
-            calibration_ref=zone["sensor"]["calibration_ref"],
+            sensor=dict(zone["sensor"]),
             proof_at_ms=zone["proof"]["performed_at_ms"],
             control_proof_at_ms=(
                 leg["performed_at_ms"] if isinstance(leg, dict) else None

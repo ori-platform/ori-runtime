@@ -364,7 +364,9 @@ def accepted_zone_state(binding: dict) -> dict:
         row = {
             "identity": z["actuator"]["identity"],
             "mapping": z["actuator"]["commissioned_mapping"],
-            "calibration_ref": z["sensor"]["calibration_ref"],
+            # The whole sensor: a proof records that this sensor observes this
+            # circuit, so any change to it needs a fresh proof.
+            "sensor": copy.deepcopy(z["sensor"]),
             "proof_at_ms": z["proof"]["performed_at_ms"],
         }
         leg = z["proof"].get("control_path")
@@ -704,6 +706,29 @@ accept_cases.append(
     )
 )
 
+
+def _capacity_only() -> dict:
+    b = gpio_only_binding(seq=2, supersedes=digest(_PROVEN_GPIO))
+    b["reason"] = "breaker upgraded from 10 A to 16 A"
+    b["zones"][0]["rated_capacity"]["value"] = 16.0
+    return b
+
+
+accept_cases.append(
+    case(
+        "capacity_only_revision_keeps_its_proof",
+        _capacity_only(),
+        "The revision changes `rated_capacity` and carries both proof legs, each "
+        "exactly as old as the retained record. Capacity is the one zone field "
+        "a proof does not establish, so the revision reaches in force after its "
+        "bounds are checked again. The retained state holds no capacity, so a "
+        "consumer cannot tell this case from an unchanged revision; what it "
+        "pins is that a carried proof on a zone whose sensor, actuator and "
+        "mapping are unchanged is accepted.",
+        _POLARITY_CTX,
+    )
+)
+
 # ── reject cases ─────────────────────────────────────────────────────────────
 
 reject_cases = []
@@ -919,6 +944,1534 @@ reject_cases.append(
         True,
     )
 )
+
+
+def _carried_revision() -> dict:
+    """A revision of the proven GPIO binding carrying both legs unchanged."""
+    return gpio_only_binding(seq=2, supersedes=digest(_PROVEN_GPIO))
+
+
+def _sensor_rebound() -> dict:
+    b = _carried_revision()
+    b["reason"] = "clamp moved to the feeder input"
+    b["zones"][0]["sensor"]["sensor_id"] = "load-current-feeder"
+    return b
+
+
+reject_cases.append(
+    reject(
+        "sensor_rebound_without_fresh_proof",
+        _sensor_rebound(),
+        "The revision binds the zone to a different declared clamp and carries "
+        "both proof legs unchanged. Actuator identity, mapping and "
+        "`calibration_ref` are exactly as retained, so the verdict is decided "
+        "by the sensor alone. A proof records that this sensor observes this "
+        "circuit; carried onto another sensor it asserts an association nobody "
+        "observed, which is the transposition a proof exists to catch, reached "
+        "through a revision rather than a first commissioning.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(_PROVEN_GPIO),
+            accepted_zone_state=accepted_zone_state(_PROVEN_GPIO),
+            declared_inventory={
+                "sensor_ids": ["load-current-feeder", "load-current-main"],
+                "actuators": GPIO_ONLY_INVENTORY["actuators"],
+            },
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _renamed_polarity_flip() -> dict:
+    """A polarity flip under a new zone name, carrying both legs."""
+    b = _carried_revision()
+    b["reason"] = "driver board replaced; zone renamed"
+    zone = b["zones"][0]
+    zone["zone_id"] = "main-distribution-renamed"
+    zone["actuator"]["identity"]["active_high"] = True
+    for leg in (zone["proof"], zone["proof"]["control_path"]):
+        for ob in leg["observations"]:
+            ob["gpio_level"] = "low" if ob["gpio_level"] == "high" else "high"
+    return b
+
+
+reject_cases.append(
+    reject(
+        "zone_renamed_without_fresh_proof",
+        _renamed_polarity_flip(),
+        "The revision inverts the driver stage and gives the zone a new name, "
+        "carrying both proof legs from the retained record. Renaming a zone "
+        "does not make its actuator new: the revision is compared against "
+        "every retained zone sharing its zone id, its actuator identity or its "
+        "sensor, and the retained zone on this pin was proven at the other "
+        "polarity. Matching on the name alone would let a rename carry an "
+        "unproven polarity into force.",
+        "stale_proof",
+        _POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _renamed_keeping_only_the_pin() -> dict:
+    b = _carried_revision()
+    b["reason"] = "zone renamed; clamp moved to the feeder input; stage inverts"
+    zone = b["zones"][0]
+    zone["zone_id"] = "feeder-circuit"
+    zone["sensor"]["sensor_id"] = "load-current-feeder"
+    # Polarity changes too, so the identity differs as a whole and only the pin
+    # is shared: a consumer comparing whole identities would find nothing.
+    zone["actuator"]["identity"]["active_high"] = True
+    for leg in (zone["proof"], zone["proof"]["control_path"]):
+        for ob in leg["observations"]:
+            ob["gpio_level"] = "low" if ob["gpio_level"] == "high" else "high"
+    return b
+
+
+reject_cases.append(
+    reject(
+        "zone_renamed_keeping_only_its_pin",
+        _renamed_keeping_only_the_pin(),
+        "The revision renames the zone, binds it to a different clamp and "
+        "inverts the driver stage, keeping only the pin, and carries both "
+        "proof legs. Its name, its sensor and its identity as a whole match no "
+        "retained zone; only its pin does, so only a consumer that compares a "
+        "GPIO actuator by its pin refuses it. The retained proof observed the "
+        "old clamp at the other polarity.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(_PROVEN_GPIO),
+            accepted_zone_state=accepted_zone_state(_PROVEN_GPIO),
+            declared_inventory={
+                "sensor_ids": ["load-current-feeder"],
+                "actuators": GPIO_ONLY_INVENTORY["actuators"],
+            },
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _moved_keeping_only_the_name() -> dict:
+    b = _carried_revision()
+    b["reason"] = "contactor moved to pin 19; clamp moved to the feeder input"
+    zone = b["zones"][0]
+    zone["actuator"]["identity"]["gpio_pin"] = 19
+    zone["sensor"]["sensor_id"] = "load-current-feeder"
+    return b
+
+
+reject_cases.append(
+    reject(
+        "zone_moved_keeping_only_its_name",
+        _moved_keeping_only_the_name(),
+        "The revision keeps the zone's name and moves it to another pin and "
+        "another clamp, carrying both proof legs. Its actuator and its sensor "
+        "match no retained zone; only its name does, so only a consumer that "
+        "finds the retained zone by its name refuses it. The retained proof was "
+        "taken on hardware this zone no longer uses.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(_PROVEN_GPIO),
+            accepted_zone_state=accepted_zone_state(_PROVEN_GPIO),
+            declared_inventory={
+                "sensor_ids": ["load-current-feeder"],
+                "actuators": [
+                    {
+                        "kind": "local_gpio",
+                        "identity": {"gpio_pin": 19, "active_high": False},
+                    }
+                ],
+            },
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _mapping_rewired() -> dict:
+    """The same zone, pin, polarity and clamp, with the contactor rewired."""
+    b = _carried_revision()
+    b["reason"] = "contactor rewired to its other contact"
+    zone = b["zones"][0]
+    mapping = {
+        "open_protected_circuit": "energised",
+        "close_protected_circuit": "de_energised",
+        "de_energised_terminal_state": "closed",
+    }
+    zone["actuator"]["commissioned_mapping"] = mapping
+    active_high = zone["actuator"]["identity"]["active_high"]
+    for leg in (zone["proof"], zone["proof"]["control_path"]):
+        for ob in leg["observations"]:
+            coil = mapping[ob["commanded"]]
+            ob["coil_state"] = coil
+            ob["gpio_level"] = "high" if (coil == "energised") == active_high else "low"
+    return b
+
+
+reject_cases.append(
+    reject(
+        "mapping_rewired_without_fresh_proof",
+        _mapping_rewired(),
+        "The revision keeps the zone's name, pin, polarity and clamp, and "
+        "records the contactor rewired so that the energised coil now opens the "
+        "circuit, carrying both proof legs. Only the mapping changed, so the "
+        "verdict is decided by it alone. The retained proof established the "
+        "opposite mapping; carried onto this one it asserts the outcome a trip "
+        "would command without anyone having observed it.",
+        "stale_proof",
+        _POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _retained_row(pin: int, sensor_id: str, proof_at: int, control_at: int) -> dict:
+    """A retained local-GPIO row as the proven binding would have left it."""
+    row = copy.deepcopy(accepted_zone_state(_PROVEN_GPIO)["main-distribution"])
+    row["identity"]["gpio_pin"] = pin
+    row["sensor"]["sensor_id"] = sensor_id
+    row["proof_at_ms"] = proof_at
+    row["control_proof_at_ms"] = control_at
+    return row
+
+
+def _held_to_every_match() -> dict:
+    b = _carried_revision()
+    b["reason"] = "contactor moved to pin 13; clamp taken from the feeder zone"
+    zone = b["zones"][0]
+    zone["actuator"]["identity"]["gpio_pin"] = 13
+    zone["sensor"]["sensor_id"] = "load-current-feeder"
+    zone["proof"]["performed_at_ms"] = 1800000600000
+    zone["proof"]["control_path"]["performed_at_ms"] = 1800000600000
+    return b
+
+
+# Three retained zones, each matched by a different way. The proof is fresh
+# against the first and the last and stale against the middle one, so only a
+# consumer that holds the zone to every match refuses it.
+reject_cases.append(
+    reject(
+        "zone_held_to_every_retained_zone_it_matches",
+        _held_to_every_match(),
+        "The revision keeps the zone's name, moves it to pin 13 and takes the "
+        "clamp of another retained zone. It matches three retained zones: its "
+        "own by name, the feeder by sensor, and the zone on pin 13 by pin. Its "
+        "fresh legs follow its own zone's proof and pin 13's, but not the "
+        "feeder's, which was proven later. A consumer that checks only the "
+        "first match, the last, or stops at the first that passes accepts it; "
+        "the rule holds the zone to every match, and the feeder's proof "
+        "refuses it.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(_PROVEN_GPIO),
+            accepted_zone_state={
+                "main-distribution": _retained_row(
+                    26, "load-current-main", 1800000000000, 1800000000000
+                ),
+                "feeder": _retained_row(
+                    19, "load-current-feeder", 1800000900000, 1800000900000
+                ),
+                "pin-13": _retained_row(
+                    13, "load-current-spare", 1800000000000, 1800000000000
+                ),
+            },
+            declared_inventory={
+                "sensor_ids": ["load-current-feeder"],
+                "actuators": [
+                    {
+                        "kind": "local_gpio",
+                        "identity": {"gpio_pin": 13, "active_high": False},
+                    }
+                ],
+            },
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _mapping_rewired_carrying_the_control_leg() -> dict:
+    b = _mapping_rewired()
+    b["reason"] = "contactor rewired; circuit re-proven, control leg carried"
+    b["zones"][0]["proof"]["performed_at_ms"] = 1800000900000
+    return b
+
+
+reject_cases.append(
+    reject(
+        "mapping_rewired_carrying_its_control_leg",
+        _mapping_rewired_carrying_the_control_leg(),
+        "The mapping is rewired and the circuit leg is redone, but the control "
+        "leg is carried from the retained record. The control leg recorded "
+        "which level drove which coil state under the old mapping; any change "
+        "needs both legs refreshed, not only a change to the actuator, so the "
+        "verdict is decided by the control leg alone.",
+        "stale_proof",
+        _POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _firmware_board_replaced() -> dict:
+    b = base_binding(seq=2, supersedes=digest(base_binding()))
+    b["reason"] = "pump relay board replaced"
+    b["zones"][1]["actuator"]["identity"]["firmware_device_id"] = "ori-fw-0d4e1a77"
+    return b
+
+
+reject_cases.append(
+    reject(
+        "firmware_board_replaced_without_fresh_proof",
+        _firmware_board_replaced(),
+        "The firmware zone keeps its name and clamp and moves to a new board on "
+        "the same channel, carrying its proof. A firmware actuator is its board "
+        "and its channel together, so the identity changed and the proof taken "
+        "on the old board does not carry.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(base_binding()),
+            accepted_zone_state=accepted_zone_state(base_binding()),
+            declared_inventory={
+                "sensor_ids": INVENTORY["sensor_ids"],
+                "actuators": [
+                    INVENTORY["actuators"][0],
+                    {
+                        "kind": "firmware_channel",
+                        "identity": {
+                            "firmware_device_id": "ori-fw-0d4e1a77",
+                            "channel": "relay0",
+                        },
+                    },
+                ],
+            },
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _recalibrated_on_a_new_pin() -> dict:
+    b = _carried_revision()
+    b["reason"] = "zone renamed onto pin 19; clamp recalibrated"
+    zone = b["zones"][0]
+    zone["zone_id"] = "main-on-19"
+    zone["actuator"]["identity"]["gpio_pin"] = 19
+    sensor = zone["sensor"]
+    sensor["calibration_ref"] = "sct013-100-2026-09-01-a"
+    sensor["quantity"] = "current_rms"
+    sensor["unit"] = "amp_rms"
+    sensor["range_max"] = 200.0
+    sensor["noise_floor"] = 0.07
+    return b
+
+
+reject_cases.append(
+    reject(
+        "zone_found_by_sensor_id_not_by_the_whole_sensor",
+        _recalibrated_on_a_new_pin(),
+        "The revision renames the zone, moves it to pin 19 and recalibrates the "
+        "clamp, carrying both proof legs. Only the `sensor_id` links it to the "
+        "retained zone; the sensor as a whole differs. A consumer that finds a "
+        "retained zone by the whole sensor finds nothing and accepts it.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(_PROVEN_GPIO),
+            accepted_zone_state=accepted_zone_state(_PROVEN_GPIO),
+            declared_inventory={
+                "sensor_ids": GPIO_ONLY_INVENTORY["sensor_ids"],
+                "actuators": [
+                    {
+                        "kind": "local_gpio",
+                        "identity": {"gpio_pin": 19, "active_high": False},
+                    }
+                ],
+            },
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _rewired_after_no_control_leg() -> dict:
+    b = _mapping_rewired()
+    b["reason"] = "contactor rewired and both legs proven"
+    zone = b["zones"][0]
+    zone["proof"]["performed_at_ms"] = 1800000900000
+    # No later than the retained circuit proof: a consumer that read a missing
+    # control time as the circuit time would refuse it.
+    zone["proof"]["control_path"]["performed_at_ms"] = 1800000000000
+    return b
+
+
+_NO_CONTROL_ROW = copy.deepcopy(accepted_zone_state(_PROVEN_GPIO))
+del _NO_CONTROL_ROW["main-distribution"]["control_proof_at_ms"]
+
+accept_cases.append(
+    case(
+        "revision_after_a_record_with_no_control_leg",
+        _rewired_after_no_control_leg(),
+        "The retained record carried no control leg, so there is no control "
+        "time for a revision's control leg to follow. The revision rewires the "
+        "mapping and carries a fresh circuit leg and a control leg; with nothing "
+        "retained to inherit, the control leg is fresh by construction and the "
+        "zone reaches in force.",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(_PROVEN_GPIO),
+            accepted_zone_state=_NO_CONTROL_ROW,
+            declared_inventory=GPIO_ONLY_INVENTORY,
+        ),
+    )
+)
+
+
+def _renamed_only() -> dict:
+    b = _carried_revision()
+    b["reason"] = "zone renamed"
+    b["zones"][0]["zone_id"] = "main-circuit"
+    return b
+
+
+accept_cases.append(
+    case(
+        "zone_renamed_on_the_same_hardware_keeps_its_proof",
+        _renamed_only(),
+        "The revision renames the zone and changes nothing else. A zone's name "
+        "labels it; the proof established the sensor, the actuator and the "
+        "mapping, and none of those moved, so the carried legs stand and the "
+        "zone reaches in force.",
+        _POLARITY_CTX,
+    )
+)
+
+
+def _new_channel_on_the_same_board() -> dict:
+    b = base_binding(seq=2, supersedes=digest(base_binding()))
+    b["reason"] = "pump moved to the board's second relay; clamp moved to the tank"
+    zone = b["zones"][1]
+    zone["zone_id"] = "tank-circuit"
+    zone["sensor"]["sensor_id"] = "load-current-tank"
+    zone["actuator"]["identity"]["channel"] = "relay1"
+    return b
+
+
+accept_cases.append(
+    case(
+        "another_channel_on_the_same_board_is_not_its_predecessor",
+        _new_channel_on_the_same_board(),
+        "The same board on another channel is a different actuator. Nothing "
+        "retained shares its name, its sensor or its identity, so there is no "
+        "proof for it to inherit; it is verified as a new zone, provisional as "
+        "every firmware zone is. A consumer that matched firmware actuators on "
+        "the board alone would refuse it.",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(base_binding()),
+            accepted_zone_state=accepted_zone_state(base_binding()),
+            declared_inventory={
+                "sensor_ids": ["load-current-main", "load-current-tank"],
+                "actuators": [
+                    INVENTORY["actuators"][0],
+                    {
+                        "kind": "firmware_channel",
+                        "identity": {
+                            "firmware_device_id": "ori-fw-7c9f2b3a",
+                            "channel": "relay1",
+                        },
+                    },
+                ],
+            },
+        ),
+    )
+)
+
+
+def _rewired_leaving_the_circuit_leg_unclaimed() -> dict:
+    b = _mapping_rewired()
+    b["reason"] = "contactor rewired; not yet proven"
+    zone = b["zones"][0]
+    zone["proof"] = {
+        "method": "undemonstrated",
+        "performed_at_ms": zone["proof"]["performed_at_ms"],
+        "reason": "rewired; proof to follow",
+        "observations": [],
+    }
+    return b
+
+
+accept_cases.append(
+    case(
+        "an_unclaimed_leg_is_not_held_to_the_retained_proof",
+        _rewired_leaving_the_circuit_leg_unclaimed(),
+        "The mapping is rewired and the circuit leg is recorded undemonstrated, "
+        "with the time of the retained proof. A leg the revision does not claim "
+        "carries no proof, so it is not held to the retained time: the zone is "
+        "provisional, never in force, and never refused as stale.",
+        # Development posture: production refuses any undemonstrated zone at
+        # activation_posture, which would decide the case before freshness.
+        {**_POLARITY_CTX, "deployment_posture": "development"},
+    )
+)
+
+
+_DEV_POLARITY_CTX = {**_POLARITY_CTX, "deployment_posture": "development"}
+
+
+def _circuit_stale_behind_a_fresh_control_leg() -> dict:
+    b = _mapping_rewired()
+    b["reason"] = "contactor rewired; control leg redone, circuit leg carried"
+    b["zones"][0]["proof"]["control_path"]["performed_at_ms"] = 1800000900000
+    return b
+
+
+reject_cases.append(
+    reject(
+        "circuit_leg_carried_behind_a_fresh_control_leg",
+        _circuit_stale_behind_a_fresh_control_leg(),
+        "The mapping is rewired and the control leg redone, but the circuit leg "
+        "is carried. A fresh control leg says the pin still moves the coil; it "
+        "says nothing about what the coil now does to the circuit, so the "
+        "carried circuit leg decides the case alone.",
+        "stale_proof",
+        _POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _sensor_changed_carrying_the_control_leg() -> dict:
+    b = _carried_revision()
+    b["reason"] = "clamp noise floor re-measured; circuit re-proven"
+    zone = b["zones"][0]
+    zone["sensor"]["noise_floor"] = 0.07
+    zone["proof"]["performed_at_ms"] = 1800000900000
+    return b
+
+
+reject_cases.append(
+    reject(
+        "sensor_changed_carrying_its_control_leg",
+        _sensor_changed_carrying_the_control_leg(),
+        "Only the sensor changes, by its noise floor, and the circuit leg is "
+        "redone, but the control leg is carried. Freshness is required of every "
+        "claimed leg whichever field changed, so the control leg decides it; a "
+        "consumer that refreshed the control leg only for an actuator or mapping "
+        "change, or that noticed only a new sensor_id or calibration, accepts "
+        "it.",
+        "stale_proof",
+        _POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _control_claimed_behind_an_unclaimed_circuit_leg() -> dict:
+    b = _mapping_rewired()
+    b["reason"] = "contactor rewired; circuit not yet proven, control leg carried"
+    zone = b["zones"][0]
+    zone["proof"] = {
+        "method": "undemonstrated",
+        "performed_at_ms": zone["proof"]["performed_at_ms"],
+        "reason": "rewired; circuit proof to follow",
+        "observations": [],
+        "control_path": zone["proof"]["control_path"],
+    }
+    return b
+
+
+reject_cases.append(
+    reject(
+        "control_leg_carried_behind_an_unclaimed_circuit_leg",
+        _control_claimed_behind_an_unclaimed_circuit_leg(),
+        "The circuit leg is left undemonstrated, which holds it to no time, but "
+        "the control leg is claimed and carried from the retained record. An "
+        "unclaimed circuit leg does not excuse a claimed control leg, which is "
+        "held to its retained time and refuses the case.",
+        "stale_proof",
+        _DEV_POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _unclaimed_control_leg() -> dict:
+    b = _mapping_rewired()
+    b["reason"] = "contactor rewired; circuit re-proven, control leg to follow"
+    zone = b["zones"][0]
+    zone["proof"]["performed_at_ms"] = 1800000900000
+    zone["proof"]["control_path"] = {
+        "method": "undemonstrated",
+        "performed_at_ms": 1800000000000,
+        "reason": "control leg to follow",
+        "observations": [],
+    }
+    return b
+
+
+accept_cases.append(
+    case(
+        "an_unclaimed_control_leg_is_not_held_to_the_retained_proof",
+        _unclaimed_control_leg(),
+        "The mapping is rewired and the circuit leg redone; the control leg is "
+        "recorded undemonstrated with the time of the retained proof. A leg the "
+        "revision does not claim is held to no time, so the zone is provisional "
+        "and not refused as stale.",
+        _DEV_POLARITY_CTX,
+    )
+)
+
+
+def _firmware_channel_moved() -> dict:
+    b = base_binding(seq=2, supersedes=digest(base_binding()))
+    b["reason"] = "pump moved to the board's second relay"
+    b["zones"][1]["actuator"]["identity"]["channel"] = "relay1"
+    return b
+
+
+reject_cases.append(
+    reject(
+        "firmware_channel_moved_without_fresh_proof",
+        _firmware_channel_moved(),
+        "The firmware zone keeps its name, clamp and board and moves to the "
+        "board's other channel, carrying its proof. A firmware actuator is its "
+        "board and its channel together, so the identity changed and the proof "
+        "taken on the old channel does not carry.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(base_binding()),
+            accepted_zone_state=accepted_zone_state(base_binding()),
+            declared_inventory={
+                "sensor_ids": INVENTORY["sensor_ids"],
+                "actuators": [
+                    INVENTORY["actuators"][0],
+                    {
+                        "kind": "firmware_channel",
+                        "identity": {
+                            "firmware_device_id": "ori-fw-7c9f2b3a",
+                            "channel": "relay1",
+                        },
+                    },
+                ],
+            },
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _name_taken_from_a_retained_zone() -> dict:
+    b = _carried_revision()
+    b["reason"] = "main circuit renamed to feeder; the old feeder zone is retired"
+    zone = b["zones"][0]
+    zone["zone_id"] = "feeder"
+    zone["proof"]["control_path"]["performed_at_ms"] = 1800000600000
+    return b
+
+
+reject_cases.append(
+    reject(
+        "name_taken_from_a_retained_zone",
+        _name_taken_from_a_retained_zone(),
+        "The revision keeps the main circuit's hardware exactly and renames it "
+        "to `feeder`, the name of another retained zone proven on pin 19. "
+        "Against its own hardware nothing changed; against `feeder`, whose name "
+        "it takes, everything did, and its circuit leg is no later than "
+        "`feeder`'s proof. A rename onto a retained zone's name is held to that "
+        "zone. A consumer that stopped at the unchanged match, preferred the "
+        "hardware match, looked only at the latest proof, or checked the circuit "
+        "leg only on a single match accepts it.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(_PROVEN_GPIO),
+            accepted_zone_state={
+                "main-distribution": _retained_row(
+                    26, "load-current-main", 1800000900000, 1800000000000
+                ),
+                "feeder": _retained_row(
+                    19, "load-current-feeder", 1800000000000, 1800000000000
+                ),
+            },
+            declared_inventory=GPIO_ONLY_INVENTORY,
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _sensor_field_redeclared(field: str, value: Any) -> dict:
+    b = _carried_revision()
+    b["reason"] = f"sensor {field} redeclared"
+    b["zones"][0]["sensor"][field] = value
+    return b
+
+
+for _name, _field, _value, _why in (
+    (
+        "recalibrated_without_fresh_proof",
+        "calibration_ref",
+        "sct013-100-2026-09-01-b",
+        "a new calibration",
+    ),
+    (
+        "sensor_range_redeclared_without_fresh_proof",
+        "range_max",
+        150.0,
+        "a new upper range",
+    ),
+    (
+        "sensor_lower_range_redeclared_without_fresh_proof",
+        "range_min",
+        1.0,
+        "a new lower range",
+    ),
+    ("sensor_unit_redeclared_without_fresh_proof", "unit", "amp", "a new unit"),
+    (
+        "sensor_direction_flipped_without_fresh_proof",
+        "direction",
+        "negative_is_load_draw",
+        "a reversed clamp",
+    ),
+    (
+        "sensor_quantity_redeclared_without_fresh_proof",
+        "quantity",
+        "current_rms",
+        "a new quantity",
+    ),
+):
+    reject_cases.append(
+        reject(
+            _name,
+            _sensor_field_redeclared(_field, _value),
+            f"The revision changes only the sensor's `{_field}`, {_why}, and "
+            "carries both proof legs. Every sensor field is part of what the proof "
+            f"established, so a consumer that compared the sensor without "
+            f"`{_field}` accepts a proof taken on a sensor described otherwise.",
+            "stale_proof",
+            _POLARITY_CTX,
+            COMMISSIONING_SEED,
+            True,
+        )
+    )
+
+
+def _two_zones_matching_one_retained_zone() -> dict:
+    b = _carried_revision()
+    b["reason"] = "main moved to pin 19; its old contactor reused as a new zone"
+    first = b["zones"][0]
+    second = copy.deepcopy(first)
+    first["actuator"]["identity"]["gpio_pin"] = 19
+    first["sensor"]["sensor_id"] = "load-current-feeder"
+    first["proof"]["performed_at_ms"] = 1800000900000
+    first["proof"]["control_path"]["performed_at_ms"] = 1800000900000
+    second["zone_id"] = "main-renamed"
+    second["actuator"]["identity"]["active_high"] = True
+    for leg in (second["proof"], second["proof"]["control_path"]):
+        for ob in leg["observations"]:
+            ob["gpio_level"] = "low" if ob["gpio_level"] == "high" else "high"
+    b["zones"].append(second)
+    return b
+
+
+reject_cases.append(
+    reject(
+        "retained_zone_held_by_every_revision_zone_matching_it",
+        _two_zones_matching_one_retained_zone(),
+        "Two revision zones match the one retained zone: the first takes its "
+        "name on a new pin with fresh legs, the second keeps its pin and clamp "
+        "under a new name, inverts the polarity and carries the proof. Each "
+        "revision zone is held to every retained zone it matches, so the "
+        "second is refused; a consumer that let each retained zone match only "
+        "one revision zone gives it to the first and accepts the carried proof.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(_PROVEN_GPIO),
+            accepted_zone_state=accepted_zone_state(_PROVEN_GPIO),
+            declared_inventory={
+                "sensor_ids": ["load-current-feeder", "load-current-main"],
+                "actuators": [
+                    {
+                        "kind": "local_gpio",
+                        "identity": {"gpio_pin": 19, "active_high": False},
+                    },
+                    {
+                        "kind": "local_gpio",
+                        "identity": {"gpio_pin": 26, "active_high": False},
+                    },
+                ],
+            },
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _stale_control_against_one_of_two() -> dict:
+    b = _carried_revision()
+    b["reason"] = "renamed to feeder on pin 26 with a spare clamp"
+    zone = b["zones"][0]
+    zone["zone_id"] = "feeder"
+    zone["sensor"]["sensor_id"] = "load-current-spare"
+    zone["proof"]["performed_at_ms"] = 1800000600000
+    zone["proof"]["control_path"]["performed_at_ms"] = 1800000600000
+    return b
+
+
+reject_cases.append(
+    reject(
+        "control_leg_stale_against_one_of_several_matches",
+        _stale_control_against_one_of_two(),
+        "The zone is matched by two retained zones, one by its pin and one by "
+        "its name. Its circuit leg is fresh against both and its control leg is "
+        "fresh against the second but no later than the first's control proof. "
+        "A consumer that checked the control leg only when a single retained "
+        "zone matched accepts it.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(_PROVEN_GPIO),
+            accepted_zone_state={
+                "main-distribution": _retained_row(
+                    26, "load-current-main", 1800000000000, 1800000900000
+                ),
+                "feeder": _retained_row(
+                    19, "load-current-feeder", 1800000000000, 1800000000000
+                ),
+            },
+            declared_inventory={
+                "sensor_ids": ["load-current-spare"],
+                "actuators": GPIO_ONLY_INVENTORY["actuators"],
+            },
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _circuit_carried_behind_an_unclaimed_control_leg() -> dict:
+    b = _mapping_rewired()
+    b["reason"] = "contactor rewired; circuit carried, control leg to follow"
+    b["zones"][0]["proof"]["control_path"] = {
+        "method": "undemonstrated",
+        "performed_at_ms": 1800000900000,
+        "reason": "control leg to follow",
+        "observations": [],
+    }
+    return b
+
+
+reject_cases.append(
+    reject(
+        "circuit_leg_carried_behind_an_undemonstrated_control_leg",
+        _circuit_carried_behind_an_unclaimed_control_leg(),
+        "The mapping is rewired, the control leg is left undemonstrated and the "
+        "circuit leg is carried. An unclaimed control leg does not excuse a "
+        "claimed circuit leg, which is held to its retained time and refuses "
+        "the case.",
+        "stale_proof",
+        _POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _rewired_dropping_the_control_leg() -> dict:
+    b = _mapping_rewired()
+    b["reason"] = "contactor rewired; circuit re-proven, control leg dropped"
+    zone = b["zones"][0]
+    zone["proof"]["performed_at_ms"] = 1800000900000
+    del zone["proof"]["control_path"]
+    return b
+
+
+_CONTROL_LATER = copy.deepcopy(accepted_zone_state(_PROVEN_GPIO))
+_CONTROL_LATER["main-distribution"]["control_proof_at_ms"] = 1800000600000
+
+accept_cases.append(
+    case(
+        "control_leg_dropped_on_a_changed_zone_is_provisional",
+        _rewired_dropping_the_control_leg(),
+        "The mapping is rewired, the circuit leg redone and the control leg "
+        "left out. The retained record has a control time, but an absent leg "
+        "carries no proof and is held to none, so the zone is provisional and "
+        "not refused as stale.",
+        {**_POLARITY_CTX, "accepted_zone_state": _CONTROL_LATER},
+    )
+)
+
+
+def _circuit_between_the_retained_times() -> dict:
+    b = _mapping_rewired()
+    b["reason"] = "contactor rewired and both legs proven"
+    zone = b["zones"][0]
+    zone["proof"]["performed_at_ms"] = 1800000300000
+    zone["proof"]["control_path"]["performed_at_ms"] = 1800000900000
+    return b
+
+
+accept_cases.append(
+    case(
+        "circuit_leg_between_the_two_retained_times_is_fresh",
+        _circuit_between_the_retained_times(),
+        "The circuit leg follows the retained circuit proof and precedes the "
+        "retained control proof; the control leg follows the retained control "
+        "proof. Each leg is held to the retained time of the same leg, so both "
+        "are fresh; a consumer that held both to the later of the two retained "
+        "times refuses it.",
+        {**_POLARITY_CTX, "accepted_zone_state": _CONTROL_LATER},
+    )
+)
+
+
+def _unchanged_hardware_under_another_name() -> dict:
+    b = _carried_revision()
+    b["reason"] = "main circuit renamed to feeder and re-proven"
+    zone = b["zones"][0]
+    zone["zone_id"] = "feeder"
+    zone["proof"]["performed_at_ms"] = 1800000600000
+    zone["proof"]["control_path"]["performed_at_ms"] = 1800000600000
+    return b
+
+
+accept_cases.append(
+    case(
+        "name_taken_by_unchanged_hardware_fresh_against_that_zone",
+        _unchanged_hardware_under_another_name(),
+        "The main circuit's hardware, unchanged, takes the name of the retained "
+        "`feeder` zone with legs fresh against `feeder`. Against its own "
+        "retained zone nothing changed, so it is not held to that zone's later "
+        "proof; a consumer that, once any match changed, held the zone to every "
+        "match refuses it. Its legs predate its own zone's retained proof, so "
+        "this case depends on whether an unchanged zone may carry an older "
+        "proof, which the contract leaves open.",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(_PROVEN_GPIO),
+            accepted_zone_state={
+                "main-distribution": _retained_row(
+                    26, "load-current-main", 1800000900000, 1800000900000
+                ),
+                "feeder": _retained_row(
+                    19, "load-current-feeder", 1800000000000, 1800000000000
+                ),
+            },
+            declared_inventory=GPIO_ONLY_INVENTORY,
+        ),
+    )
+)
+
+
+def _proof_only_revision() -> dict:
+    b = _carried_revision()
+    b["reason"] = "circuit leg re-proven; nothing changed"
+    b["zones"][0]["proof"]["performed_at_ms"] = 1800000900000
+    return b
+
+
+accept_cases.append(
+    case(
+        "proof_only_revision_carries_its_control_leg",
+        _proof_only_revision(),
+        "Nothing in the zone changes; the circuit leg is re-proven and the "
+        "control leg carried. A new proof time is not a change to the zone, so "
+        "the carried control leg stands and the zone reaches in force.",
+        _POLARITY_CTX,
+    )
+)
+
+
+def _recalibrated_with_a_carried_pre_energisation_leg() -> dict:
+    b = _sensor_field_redeclared("calibration_ref", "sct013-100-2026-09-01-c")
+    leg = b["zones"][0]["proof"]["control_path"]
+    _pre_energisation(b)
+    b["reason"] = "clamp recalibrated; control leg redone, meter proof carried"
+    zone = b["zones"][0]
+    zone["proof"]["performed_at_ms"] = 1800000000000
+    zone["proof"]["control_path"] = leg
+    leg["performed_at_ms"] = 1800000900000
+    return b
+
+
+reject_cases.append(
+    reject(
+        "pre_energisation_leg_carried_without_fresh_proof",
+        _recalibrated_with_a_carried_pre_energisation_leg(),
+        "The clamp is recalibrated and the control leg redone, but the circuit "
+        "leg is a pre_energisation proof carried from the retained record. A "
+        "meter proof is a claimed leg like an actuation proof, held to the "
+        "retained time; a consumer that counted only actuate_and_observe as "
+        "claimed exempts it.",
+        "stale_proof",
+        _POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _circuit_after_the_earlier_retained_time() -> dict:
+    b = _mapping_rewired()
+    b["reason"] = "contactor rewired and both legs proven"
+    zone = b["zones"][0]
+    zone["proof"]["performed_at_ms"] = 1800000300000
+    zone["proof"]["control_path"]["performed_at_ms"] = 1800000300000
+    return b
+
+
+_CONTROL_EARLIER = copy.deepcopy(accepted_zone_state(_PROVEN_GPIO))
+_CONTROL_EARLIER["main-distribution"]["proof_at_ms"] = 1800000600000
+_CONTROL_EARLIER["main-distribution"]["control_proof_at_ms"] = 1800000000000
+
+reject_cases.append(
+    reject(
+        "circuit_leg_held_to_its_own_retained_time_not_the_earlier",
+        _circuit_after_the_earlier_retained_time(),
+        "The retained control proof predates the retained circuit proof. Both "
+        "new legs fall between them: the control leg is fresh, the circuit leg "
+        "is not. Each leg is held to the retained time of the same leg, so the "
+        "circuit leg refuses it; a consumer that held the circuit leg to the "
+        "earlier of the two retained times accepts it.",
+        "stale_proof",
+        {**_POLARITY_CTX, "accepted_zone_state": _CONTROL_EARLIER},
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+_FIELD_VALUES = {
+    "quantity": "current_rms",
+    "unit": "amp",
+    "range_min": 1.0,
+    "range_max": 150.0,
+    "direction": "negative_is_load_draw",
+    "noise_floor": 0.07,
+    "calibration_ref": "sct013-100-2026-09-01-d",
+}
+
+
+def _one_field_one_stale_leg(field: str, stale_leg: str) -> dict:
+    """Only `field` changes; only `stale_leg` is no later than its retained time."""
+    b = _carried_revision()
+    b["reason"] = f"{field} changed; the {stale_leg} leg carried"
+    zone = b["zones"][0]
+    if field == "active_high":
+        zone["actuator"]["identity"]["active_high"] = True
+        for leg in (zone["proof"], zone["proof"]["control_path"]):
+            for ob in leg["observations"]:
+                ob["gpio_level"] = "low" if ob["gpio_level"] == "high" else "high"
+    elif field == "gpio_pin":
+        zone["actuator"]["identity"]["gpio_pin"] = 19
+    else:
+        zone["sensor"][field] = _FIELD_VALUES[field]
+    fresh = "control" if stale_leg == "circuit" else "circuit"
+    if fresh == "circuit":
+        zone["proof"]["performed_at_ms"] = 1800000900000
+    else:
+        zone["proof"]["control_path"]["performed_at_ms"] = 1800001200000
+    return b
+
+
+for _stale_leg, _fields in (
+    (
+        "circuit",
+        (
+            "active_high",
+            "quantity",
+            "unit",
+            "range_min",
+            "range_max",
+            "direction",
+            "noise_floor",
+        ),
+    ),
+    (
+        "control",
+        (
+            "gpio_pin",
+            "quantity",
+            "unit",
+            "range_min",
+            "range_max",
+            "direction",
+            "calibration_ref",
+        ),
+    ),
+):
+    for _field in _fields:
+        _ctx = _POLARITY_CTX
+        if _field == "gpio_pin":
+            _ctx = context(
+                accepted_binding_seq=1,
+                accepted_binding_hash=digest(_PROVEN_GPIO),
+                accepted_zone_state=accepted_zone_state(_PROVEN_GPIO),
+                declared_inventory={
+                    "sensor_ids": GPIO_ONLY_INVENTORY["sensor_ids"],
+                    "actuators": [
+                        {
+                            "kind": "local_gpio",
+                            "identity": {"gpio_pin": 19, "active_high": False},
+                        }
+                    ],
+                },
+            )
+        reject_cases.append(
+            reject(
+                f"{_field}_changed_with_only_the_{_stale_leg}_leg_carried",
+                _one_field_one_stale_leg(_field, _stale_leg),
+                f"Only `{_field}` changes. The other leg is redone and the "
+                f"{_stale_leg} leg is carried from the retained record. A change "
+                "to any field requires every claimed leg to be fresh, not the "
+                f"leg a reader might pair with `{_field}`; a consumer that exempted "
+                f"the {_stale_leg} leg for this change accepts it.",
+                "stale_proof",
+                _ctx,
+                COMMISSIONING_SEED,
+                True,
+            )
+        )
+
+
+_PIN_19_CTX = context(
+    accepted_binding_seq=1,
+    accepted_binding_hash=digest(_PROVEN_GPIO),
+    accepted_zone_state=accepted_zone_state(_PROVEN_GPIO),
+    declared_inventory={
+        "sensor_ids": ["load-current-main", "load-current-feeder"],
+        "actuators": [
+            {
+                "kind": "local_gpio",
+                "identity": {"gpio_pin": 19, "active_high": False},
+            }
+        ],
+    },
+)
+
+_EVERY_FIELD = (
+    "sensor_id",
+    "gpio_pin",
+    "active_high",
+    "mapping",
+    *_FIELD_VALUES,
+)
+
+_REWIRED = {
+    "open_protected_circuit": "energised",
+    "close_protected_circuit": "de_energised",
+    "de_energised_terminal_state": "closed",
+}
+
+
+def _declared(b: dict) -> dict:
+    """The inventory that declares exactly the hardware a revision binds."""
+    return {
+        "sensor_ids": [z["sensor"]["sensor_id"] for z in b["zones"]],
+        "actuators": [
+            {"kind": z["actuator"]["kind"], "identity": z["actuator"]["identity"]}
+            for z in b["zones"]
+        ],
+    }
+
+
+def _fields_one_stale_leg(fields: tuple[str, ...], stale_leg: str) -> dict:
+    """`fields` change together; only `stale_leg` is no later than its retained time."""
+    b = _carried_revision()
+    b["reason"] = f"{len(fields)} fields changed; the {stale_leg} leg carried"
+    zone = b["zones"][0]
+    for field in fields:
+        if field == "active_high":
+            zone["actuator"]["identity"]["active_high"] = True
+            for leg in (zone["proof"], zone["proof"]["control_path"]):
+                for ob in leg["observations"]:
+                    ob["gpio_level"] = "low" if ob["gpio_level"] == "high" else "high"
+        elif field == "gpio_pin":
+            zone["actuator"]["identity"]["gpio_pin"] = 19
+        elif field == "sensor_id":
+            zone["sensor"]["sensor_id"] = "load-current-feeder"
+        elif field == "mapping":
+            zone["actuator"]["commissioned_mapping"] = dict(_REWIRED)
+        else:
+            zone["sensor"][field] = _FIELD_VALUES[field]
+    identity = zone["actuator"]["identity"]
+    for leg in (zone["proof"], zone["proof"]["control_path"]):
+        for ob in leg["observations"]:
+            coil = zone["actuator"]["commissioned_mapping"][ob["commanded"]]
+            ob["coil_state"] = coil
+            energised = coil == "energised"
+            ob["gpio_level"] = "high" if energised == identity["active_high"] else "low"
+    if stale_leg == "circuit":
+        zone["proof"]["control_path"]["performed_at_ms"] = 1800001200000
+    else:
+        zone["proof"]["performed_at_ms"] = 1800000900000
+    return b
+
+
+# The changes the contract names, each as the fields it changes together.
+_CHANGE_EVENTS = (
+    ("sensor_replaced", ("sensor_id", "calibration_ref"), "a replaced clamp"),
+    ("actuator_replaced", ("gpio_pin", "active_high"), "a replaced driver"),
+    ("rewired_to_another_pin", ("gpio_pin", "mapping"), "a rewired actuator"),
+    (
+        "polarity_flipped_with_its_mapping",
+        ("active_high", "mapping"),
+        "a polarity flip whose mapping flips with it",
+    ),
+)
+
+for _stale_leg in ("circuit", "control"):
+    for _slug, _fields, _what in _CHANGE_EVENTS:
+        _b = _fields_one_stale_leg(_fields, _stale_leg)
+        reject_cases.append(
+            reject(
+                f"{_slug}_with_only_the_{_stale_leg}_leg_carried",
+                _b,
+                f"Only {', '.join(f'`{f}`' for f in _fields)} change, together: "
+                f"{_what}. The other leg is redone and the {_stale_leg} leg is "
+                f"carried. A consumer that exempted the {_stale_leg} leg for "
+                f"{_what} accepts it.",
+                "stale_proof",
+                {**_PIN_19_CTX, "declared_inventory": _declared(_b)},
+                COMMISSIONING_SEED,
+                True,
+            )
+        )
+    reject_cases.append(
+        reject(
+            f"every_field_changed_with_only_the_{_stale_leg}_leg_carried",
+            _fields_one_stale_leg(_EVERY_FIELD, _stale_leg),
+            "The sensor and the actuator are both redeclared in every field. "
+            f"The other leg is redone and the {_stale_leg} leg is carried. A "
+            f"consumer that exempted the {_stale_leg} leg once enough fields "
+            "changed, reading the zone as new rather than revised, accepts it.",
+            "stale_proof",
+            _PIN_19_CTX,
+            COMMISSIONING_SEED,
+            True,
+        )
+    )
+
+
+def _firmware_zone_moved_to_gpio() -> dict:
+    b = base_binding(seq=2, supersedes=digest(base_binding()))
+    b["reason"] = "pump moved from the relay board to a local pin"
+    zone = b["zones"][1]
+    zone["actuator"]["kind"] = "local_gpio"
+    zone["actuator"]["identity"] = {"gpio_pin": 19, "active_high": False}
+    mapping = zone["actuator"]["commissioned_mapping"]
+    for ob in zone["proof"]["observations"]:
+        ob["gpio_level"] = "low" if mapping[ob["commanded"]] == "energised" else "high"
+    return b
+
+
+reject_cases.append(
+    reject(
+        "actuator_kind_changed_carrying_the_circuit_leg",
+        _firmware_zone_moved_to_gpio(),
+        "The pump zone moves from a firmware relay channel to a local pin, "
+        "keeping its name, clamp and mapping, and carries its circuit leg. The "
+        "retained zone had no control leg, so the circuit leg decides it alone. "
+        "A consumer that compared identities only within one actuator kind, "
+        "and so saw no change, accepts it.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(base_binding()),
+            accepted_zone_state=accepted_zone_state(base_binding()),
+            declared_inventory={
+                "sensor_ids": INVENTORY["sensor_ids"],
+                "actuators": [
+                    INVENTORY["actuators"][0],
+                    {
+                        "kind": "local_gpio",
+                        "identity": {"gpio_pin": 19, "active_high": False},
+                    },
+                ],
+            },
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _control_carried_behind_a_fresh_meter_proof() -> dict:
+    b = _sensor_field_redeclared("calibration_ref", "sct013-100-2026-09-01-e")
+    leg = b["zones"][0]["proof"]["control_path"]
+    _pre_energisation(b)
+    b["reason"] = "clamp recalibrated; meter proof redone, control leg carried"
+    zone = b["zones"][0]
+    zone["proof"]["performed_at_ms"] = 1800000900000
+    zone["proof"]["control_path"] = leg
+    leg["performed_at_ms"] = 1800000600000
+    return b
+
+
+reject_cases.append(
+    reject(
+        "control_leg_carried_behind_a_fresh_pre_energisation_leg",
+        _control_carried_behind_a_fresh_meter_proof(),
+        "The clamp is recalibrated and the circuit leg redone as a "
+        "pre_energisation meter proof, but the control leg is carried. A meter "
+        "proof never drives the pin, so it cannot stand in for the control leg; "
+        "a consumer that exempted the control leg behind one accepts it.",
+        "stale_proof",
+        _POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+reject_cases.append(
+    reject(
+        "circuit_leg_carried_in_development_posture",
+        _circuit_stale_behind_a_fresh_control_leg(),
+        "The mapping is rewired, the control leg redone and the circuit leg "
+        "carried, in development posture. Posture decides what a provisional "
+        "zone may do, not whether a carried proof is fresh; a consumer that "
+        "held the circuit leg to its retained time only in production accepts "
+        "it.",
+        "stale_proof",
+        _DEV_POLARITY_CTX,
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+for _stale_leg in ("circuit", "control"):
+    _b = _fields_one_stale_leg(("mapping",), _stale_leg)
+    reject_cases.append(
+        reject(
+            f"{_stale_leg}_leg_carried_in_staging_posture",
+            _b,
+            f"The mapping is rewired, the other leg redone and the {_stale_leg} "
+            "leg carried, in staging posture. Posture never decides whether a "
+            "carried proof is fresh; a consumer that held the leg to its "
+            "retained time only in production accepts it.",
+            "stale_proof",
+            {**_POLARITY_CTX, "deployment_posture": "staging"},
+            COMMISSIONING_SEED,
+            True,
+        )
+    )
+
+
+def _gpio_zone_moved_to_firmware() -> dict:
+    b = _carried_revision()
+    b["reason"] = "main contactor moved from the local pin to a relay board"
+    zone = b["zones"][0]
+    zone["actuator"]["kind"] = "firmware_channel"
+    zone["actuator"]["identity"] = {
+        "firmware_device_id": "ori-fw-7c9f2b3a",
+        "channel": "relay1",
+    }
+    del zone["proof"]["control_path"]
+    for ob in zone["proof"]["observations"]:
+        ob.pop("gpio_level", None)
+    return b
+
+
+reject_cases.append(
+    reject(
+        "actuator_kind_changed_to_firmware_carrying_the_circuit_leg",
+        _gpio_zone_moved_to_firmware(),
+        "A zone in force on a local pin moves to a firmware relay channel, "
+        "keeping its name, clamp and mapping, and carries its circuit leg; a "
+        "firmware zone claims no control leg. A consumer that compared "
+        "identities only within one actuator kind, and so saw no change, "
+        "accepts it.",
+        "stale_proof",
+        {
+            **_POLARITY_CTX,
+            "declared_inventory": _declared(_gpio_zone_moved_to_firmware()),
+        },
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _renamed_keeping_only_the_sensor_id() -> dict:
+    b = _carried_revision()
+    b["reason"] = "zone renamed; contactor moved to pin 19; clamp re-declared"
+    zone = b["zones"][0]
+    zone["zone_id"] = "main-on-19"
+    zone["actuator"]["identity"]["gpio_pin"] = 19
+    for field, value in _FIELD_VALUES.items():
+        zone["sensor"][field] = value
+    return b
+
+
+reject_cases.append(
+    reject(
+        "zone_found_by_its_sensor_id_alone",
+        _renamed_keeping_only_the_sensor_id(),
+        "The revision renames the zone, moves it to another pin and redeclares "
+        "every sensor field but `sensor_id`, carrying both legs. Only the "
+        "sensor_id finds the retained zone, so a consumer that matched a "
+        "sensor by its id together with any other field finds nothing.",
+        "stale_proof",
+        {
+            **_PIN_19_CTX,
+            "declared_inventory": _declared(_renamed_keeping_only_the_sensor_id()),
+        },
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _control_between_the_retained_times() -> dict:
+    b = _mapping_rewired()
+    b["reason"] = "contactor rewired and both legs proven"
+    zone = b["zones"][0]
+    zone["proof"]["performed_at_ms"] = 1800000900000
+    zone["proof"]["control_path"]["performed_at_ms"] = 1800000300000
+    return b
+
+
+accept_cases.append(
+    case(
+        "control_leg_between_the_two_retained_times_is_fresh",
+        _control_between_the_retained_times(),
+        "The retained control proof predates the retained circuit proof, and "
+        "the new control leg falls between them. Each leg is held to the "
+        "retained time of the same leg, so the control leg is fresh and the "
+        "revision reaches in force; a consumer that held it to the later of "
+        "the two retained times refuses it.",
+        {**_POLARITY_CTX, "accepted_zone_state": _CONTROL_EARLIER},
+    )
+)
+
+
+def _renamed_keeping_only_the_sensor() -> dict:
+    b = _carried_revision()
+    b["reason"] = "zone renamed; contactor moved to pin 19"
+    zone = b["zones"][0]
+    zone["zone_id"] = "main-on-19"
+    zone["actuator"]["identity"]["gpio_pin"] = 19
+    return b
+
+
+reject_cases.append(
+    reject(
+        "zone_renamed_keeping_only_its_sensor",
+        _renamed_keeping_only_the_sensor(),
+        "The revision renames the zone and moves it to another pin, keeping "
+        "only the clamp, and carries both proof legs. Its name and its "
+        "actuator match no retained zone; only its sensor does, so only a "
+        "consumer that finds the retained zone by the sensor refuses it. The "
+        "retained proof was taken on the old contactor.",
+        "stale_proof",
+        context(
+            accepted_binding_seq=1,
+            accepted_binding_hash=digest(_PROVEN_GPIO),
+            accepted_zone_state=accepted_zone_state(_PROVEN_GPIO),
+            declared_inventory={
+                "sensor_ids": GPIO_ONLY_INVENTORY["sensor_ids"],
+                "actuators": [
+                    {
+                        "kind": "local_gpio",
+                        "identity": {"gpio_pin": 19, "active_high": False},
+                    }
+                ],
+            },
+        ),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+
+def _renamed_firmware_zone(firmware_device_id: str | None = None) -> dict:
+    b = base_binding(seq=2, supersedes=digest(base_binding()))
+    b["reason"] = "pump zone renamed; clamp moved to the tank input"
+    zone = b["zones"][1]
+    zone["zone_id"] = "tank-circuit"
+    zone["sensor"]["sensor_id"] = "load-current-tank"
+    if firmware_device_id is not None:
+        zone["actuator"]["identity"]["firmware_device_id"] = firmware_device_id
+    return b
+
+
+def _firmware_context(firmware_device_id: str) -> dict:
+    return context(
+        accepted_binding_seq=1,
+        accepted_binding_hash=digest(base_binding()),
+        accepted_zone_state=accepted_zone_state(base_binding()),
+        declared_inventory={
+            "sensor_ids": ["load-current-main", "load-current-tank"],
+            "actuators": [
+                INVENTORY["actuators"][0],
+                {
+                    "kind": "firmware_channel",
+                    "identity": {
+                        "firmware_device_id": firmware_device_id,
+                        "channel": "relay0",
+                    },
+                },
+            ],
+        },
+    )
+
+
+reject_cases.append(
+    reject(
+        "firmware_zone_renamed_keeping_only_its_channel",
+        _renamed_firmware_zone(),
+        "The revision renames the firmware zone and binds it to a different "
+        "clamp, keeping the same board and channel, and carries its proof. "
+        "Only the actuator identity matches a retained zone, and a firmware "
+        "actuator is identified by its board and its channel together, so the "
+        "retained zone is found and the carried proof is refused.",
+        "stale_proof",
+        _firmware_context("ori-fw-7c9f2b3a"),
+        COMMISSIONING_SEED,
+        True,
+    )
+)
+
+accept_cases.append(
+    case(
+        "firmware_zone_on_another_board_is_not_its_predecessor",
+        _renamed_firmware_zone("ori-fw-0d4e1a77"),
+        "The same channel name on a different board is a different actuator. "
+        "Nothing retained shares its name, its sensor or its identity, so "
+        "there is no proof for it to inherit and no revision rule to apply; "
+        "it is verified as a new zone, provisional as every firmware zone is. "
+        "A consumer that matched on the channel alone would refuse it.",
+        _firmware_context("ori-fw-0d4e1a77"),
+    )
+)
+
 
 _rej(
     "actuator_replaced_without_fresh_proof",
