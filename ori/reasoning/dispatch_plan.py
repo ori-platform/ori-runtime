@@ -489,6 +489,9 @@ class TriggerPlan:
     # Whether a reasoning task was scheduled for this trigger. Such a plan is
     # charged when that task settles rather than when it is scheduled.
     scheduled: bool = False
+    # Whether this plan holds its trigger against matching again until it
+    # settles. Set by the coordinator; released when the plan's event settles.
+    holds_in_flight: bool = False
 
     @property
     def outcome(self) -> str:

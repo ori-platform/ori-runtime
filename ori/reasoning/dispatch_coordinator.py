@@ -68,6 +68,10 @@ class DispatchCoordinator:
         self._claimed: OrderedDict[str, int] = OrderedDict()
         self._binding: BindingView | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
+        # (skill, trigger) pairs whose plan is still in flight. A trigger's
+        # cooldown is charged when its plan settles, so without this every
+        # reading that arrives during its reasoning or approval matches it again.
+        self._in_flight: set[tuple[str, str]] = set()
 
     # ── registration ─────────────────────────────────────────────────────────
 
@@ -169,8 +173,8 @@ class DispatchCoordinator:
 
     async def dispatch_event(self, event: OriEvent) -> None:
         """Phase 1 discovery, then Tier D, then everything else."""
-        plans = await self._discover(event)
-        if not plans:
+        discovered = await self._discover(event)
+        if not discovered:
             return
 
         # One arbitration scope for the event. A Tier D act that completes
@@ -180,7 +184,9 @@ class DispatchCoordinator:
         scope = str(getattr(event, "event_id", "") or id(event))
         scope_token = self._gate.open_scope(scope)
         scheduled: list[asyncio.Task[Any]] = []
+        plans: list[TriggerPlan] = []
         try:
+            plans = self._hold_in_flight(discovered)
             # Phase 2 — a Tier D match anywhere in the discovery set is
             # attempted before any reasoning task is scheduled anywhere in it.
             for plan in plans:
@@ -197,9 +203,66 @@ class DispatchCoordinator:
             # reached by the plans that scheduled nothing.
             self._charge_cooldowns(plans)
         finally:
-            if scheduled:
-                await asyncio.gather(*scheduled, return_exceptions=True)
-            await self._gate.close_scope(scope, scope_token)
+            try:
+                if scheduled:
+                    await asyncio.gather(*scheduled, return_exceptions=True)
+                await self._gate.close_scope(scope, scope_token)
+            finally:
+                # Each plan releases itself when it is charged. This only
+                # catches one that never reached its charge, so no path leaves
+                # a trigger held for good.
+                for plan in plans:
+                    self._release(plan)
+
+    def _release(self, plan: TriggerPlan) -> None:
+        if plan.holds_in_flight:
+            plan.holds_in_flight = False
+            self._in_flight.discard((plan.skill_name, plan.trigger_name))
+
+    def _hold_in_flight(self, plans: list[TriggerPlan]) -> list[TriggerPlan]:
+        """Drop a match whose own plan is still in flight, and hold the rest.
+
+        Only a trigger with a cooldown is held, since only it promises one
+        dispatch per window. A plan granting Tier D is never held: a trip
+        refused at the gate re-raises on the next reading against the state
+        that then obtains, and holding it behind its own notice would sit that
+        out.
+
+        The cooldown is read again here, with no await since the hold was
+        checked: discovery awaits other skills' hooks after reading it, and
+        another event can take and charge this trigger's turn meanwhile.
+        """
+        engine = getattr(self._elevator, "_rule_engine", None)
+        kept: list[TriggerPlan] = []
+        for plan in plans:
+            if (
+                plan.cooldown_seconds > 0
+                and plan.trigger_name
+                and not plan.grants_tier_d
+            ):
+                key = (plan.skill_name, plan.trigger_name)
+                if key in self._in_flight:
+                    logger.debug(
+                        "DispatchCoordinator: trigger=%r of skill=%r held while "
+                        "its plan is in flight",
+                        plan.trigger_name,
+                        plan.skill_name,
+                    )
+                    continue
+                if engine is not None and engine.in_cooldown(
+                    plan.trigger_name, plan.cooldown_seconds, plan.skill_name
+                ):
+                    logger.debug(
+                        "DispatchCoordinator: trigger=%r of skill=%r entered its "
+                        "cooldown during discovery",
+                        plan.trigger_name,
+                        plan.skill_name,
+                    )
+                    continue
+                self._in_flight.add(key)
+                plan.holds_in_flight = True
+            kept.append(plan)
+        return kept
 
     @staticmethod
     def _eligible(skill: Any, event: OriEvent) -> bool:
@@ -441,6 +504,14 @@ class DispatchCoordinator:
         resource gate, and a trigger refused there has not had its turn: it must
         be able to re-raise on the next event rather than sit out its window.
         """
+        try:
+            self._charge_settled_plan(plan)
+        finally:
+            # Released as soon as its own turn is charged, not when its event
+            # settles: another plan of the same event may wait on an operator.
+            self._release(plan)
+
+    def _charge_settled_plan(self, plan: TriggerPlan) -> None:
         engine = getattr(self._elevator, "_rule_engine", None)
         if engine is None or not hasattr(engine, "record_fire"):
             return
@@ -463,24 +534,29 @@ class DispatchCoordinator:
 
     def _charge_cooldowns(self, plans: list[TriggerPlan]) -> None:
         engine = getattr(self._elevator, "_rule_engine", None)
-        if engine is None or not hasattr(engine, "record_fire"):
-            return
         for plan in plans:
             if plan.scheduled:
                 # Charged when its task settles, so a refusal at the gate is
                 # seen rather than assumed away.
                 continue
-            if not plan.trigger_name:
-                continue
-            outcome = plan.outcome
-            if consumes_cooldown(outcome):
-                engine.record_fire(plan.trigger_name, plan.skill_name)
-            else:
-                logger.debug(
-                    "DispatchCoordinator: trigger=%r consumed no cooldown (%s)",
-                    plan.trigger_name,
-                    outcome,
-                )
+            try:
+                if (
+                    engine is None
+                    or not hasattr(engine, "record_fire")
+                    or not plan.trigger_name
+                ):
+                    continue
+                outcome = plan.outcome
+                if consumes_cooldown(outcome):
+                    engine.record_fire(plan.trigger_name, plan.skill_name)
+                else:
+                    logger.debug(
+                        "DispatchCoordinator: trigger=%r consumed no cooldown (%s)",
+                        plan.trigger_name,
+                        outcome,
+                    )
+            finally:
+                self._release(plan)
 
     # ── skill lookups ────────────────────────────────────────────────────────
 

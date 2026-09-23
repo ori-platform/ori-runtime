@@ -247,8 +247,10 @@ DISCOVERY BARRIER — one event, every eligible skill, evaluated exhaustively
     an unrelated channel. Every trigger whose condition holds is collected,
     across those skills, before any action is dispatched and before any
     reasoning is scheduled.
-    Declaration order decides nothing. A trigger in cooldown does not match;
-    cooldown is charged later, against the outcome the trigger reached.
+    Declaration order decides nothing. A trigger in cooldown does not match,
+    and neither does one with a cooldown whose own plan is still in flight —
+    except a plan granting Tier D, which is never held; cooldown is charged
+    later, against the outcome the trigger reached.
     │
     ▼
 THE PLAN — each matched trigger's actions, each at its own authority

@@ -72,7 +72,7 @@ class FakeSkill:
         self.triggers: list[Any] = list(triggers)
         self.actions = actions
         self.config: dict[str, Any] = {}
-        self.hooks = None
+        self.hooks: Any = None
         self.first_party = first_party
         self.sensors_required = [{"type": "current_clamp"}]
 
@@ -1832,3 +1832,397 @@ class TestScopesBelongToTheirEvent:
         await asyncio.wait_for(running_a, 10)
         await event_a.drain()
         assert ran == ["close_gas_valve"], ran
+
+
+class TestATriggerInFlightDoesNotMatchAgain:
+    """A trigger's cooldown is charged when its plan settles, so every reading
+    that arrives while its reasoning or approval is still running would match it
+    again and dispatch it again, inside the window the cooldown exists for."""
+
+    @staticmethod
+    def _slow_notice_skill(cooldown: int) -> FakeSkill:
+        skill = FakeSkill(
+            triggers=[_trigger("notice", "A")],
+            actions={
+                "available": [{"name": "alert_whatsapp", "tier": "A"}],
+                "defaults": {"notice": ["alert_whatsapp"]},
+            },
+        )
+        skill.triggers[0]["cooldown_seconds"] = cooldown
+        return skill
+
+    @staticmethod
+    def _slow_dispatcher(
+        executors: tuple[str, ...], *, refuse=(), delay=0.3, slow=None
+    ):
+        from ori.network.events import ActionResult
+
+        dispatcher = _dispatcher_double(executors)
+
+        async def dispatch(**kwargs):
+            action = kwargs["action"]
+            if action in refuse:
+                taken = f"refused_{OPPOSING_ACT_RUNNING}"
+            else:
+                if slow is None or action in slow:
+                    await asyncio.sleep(delay)
+                taken = action
+            return ActionResult(
+                action_name=action,
+                tier=kwargs["tier"],
+                executed=action not in refuse,
+                approved=None,
+                action_taken=taken,
+                timestamp=now_ms(),
+            )
+
+        dispatcher.dispatch.side_effect = dispatch
+        return dispatcher
+
+    @staticmethod
+    async def _readings(coordinator, count: int, interval: float = 0.02) -> None:
+        tasks = []
+        for _ in range(count):
+            tasks.append(asyncio.create_task(coordinator.dispatch_event(_event())))
+            await asyncio.sleep(interval)
+        await asyncio.gather(*tasks)
+
+    async def test_one_condition_dispatches_once_while_its_plan_is_in_flight(self):
+        dispatcher = self._slow_dispatcher(("alert_whatsapp",))
+        coordinator = _coordinator(self._slow_notice_skill(60), dispatcher)
+
+        await self._readings(coordinator, 6)
+        await coordinator.drain()
+
+        assert await _dispatched(dispatcher) == [("alert_whatsapp", "A")]
+
+    async def test_the_cooldown_holds_once_the_plan_settles(self):
+        dispatcher = self._slow_dispatcher(("alert_whatsapp",))
+        elevator = IntelligenceElevator()
+        coordinator = _coordinator(
+            self._slow_notice_skill(60), dispatcher, elevator=elevator
+        )
+
+        await self._readings(coordinator, 1)
+        await coordinator.drain()
+        assert elevator._rule_engine.in_cooldown("notice", 60, "fake-skill")
+        await self._readings(coordinator, 1)
+        await coordinator.drain()
+
+        assert await _dispatched(dispatcher) == [("alert_whatsapp", "A")]
+
+    async def test_a_trigger_without_a_cooldown_is_not_held(self):
+        dispatcher = self._slow_dispatcher(("alert_whatsapp",))
+        coordinator = _coordinator(self._slow_notice_skill(0), dispatcher)
+
+        await self._readings(coordinator, 3)
+        await coordinator.drain()
+
+        assert await _dispatched(dispatcher) == [("alert_whatsapp", "A")] * 3
+
+    async def test_a_plan_refused_in_flight_can_re_raise_after_it_settles(self):
+        """Held while running, but a refusal is not a turn taken."""
+        skill = FakeSkill(
+            triggers=[_trigger("candidate", "C")],
+            actions={
+                "available": [{"name": "terminate_process", "tier": "C"}],
+                "defaults": {"candidate": ["terminate_process"]},
+            },
+        )
+        skill.triggers[0]["cooldown_seconds"] = 600
+        dispatcher = self._slow_dispatcher(
+            ("terminate_process",), refuse=("terminate_process",)
+        )
+        coordinator = _coordinator(skill, dispatcher)
+
+        await self._readings(coordinator, 1)
+        await coordinator.drain()
+        await self._readings(coordinator, 1)
+        await coordinator.drain()
+
+        assert await _dispatched(dispatcher) == [("terminate_process", "C")] * 2
+
+    async def test_a_tier_d_trip_is_never_held_behind_its_own_notice(self):
+        """A trip refused at the gate re-raises on the next reading, even while
+        the notice from the same trigger is still being sent."""
+        skill = FakeSkill(
+            triggers=[_trigger("trip", "D", bypass=True)],
+            actions={
+                "available": [
+                    {"name": "close_gas_valve", "tier": "D"},
+                    {"name": "alert_whatsapp", "tier": "A"},
+                ],
+                "defaults": {"trip": ["close_gas_valve", "alert_whatsapp"]},
+            },
+        )
+        skill.triggers[0]["cooldown_seconds"] = 600
+        dispatcher = self._slow_dispatcher(
+            ("close_gas_valve", "alert_whatsapp"), refuse=("close_gas_valve",)
+        )
+        coordinator = _coordinator(skill, dispatcher)
+
+        await self._readings(coordinator, 3)
+        await coordinator.drain()
+
+        trips = [
+            call
+            for call in await _dispatched(dispatcher)
+            if call[0] == "close_gas_valve"
+        ]
+        assert trips == [("close_gas_valve", "D")] * 3
+
+    @staticmethod
+    async def _handled(coordinator, count: int, interval: float) -> None:
+        """Through the runtime's entry point, which schedules each event."""
+        for _ in range(count):
+            await coordinator.handle_event(_event())
+            await asyncio.sleep(interval)
+        await coordinator.drain(timeout=30)
+
+    @staticmethod
+    def _dispatched_by(dispatcher) -> list[tuple[str, str]]:
+        return [
+            (call.kwargs["action"], call.kwargs["context"].skill.name)
+            for call in dispatcher.dispatch.call_args_list
+        ]
+
+    async def test_a_trigger_is_released_by_its_own_plan_not_its_event(self):
+        """A notice sharing an event with an approval still waiting on the
+        operator re-raises once its own window has passed."""
+        skill = FakeSkill(
+            triggers=[_trigger("notice", "A"), _trigger("proposal", "C")],
+            actions={
+                "available": [
+                    {"name": "alert_whatsapp", "tier": "A"},
+                    {"name": "terminate_process", "tier": "C"},
+                ],
+                "defaults": {
+                    "notice": ["alert_whatsapp"],
+                    "proposal": ["terminate_process"],
+                },
+            },
+        )
+        skill.triggers[0]["cooldown_seconds"] = 1
+        skill.triggers[1]["cooldown_seconds"] = 600
+        dispatcher = self._slow_dispatcher(
+            ("alert_whatsapp", "terminate_process"),
+            delay=2.0,
+            slow=("terminate_process",),
+        )
+        coordinator = _coordinator(skill, dispatcher)
+
+        await self._handled(coordinator, 2, interval=1.3)
+
+        notices = [
+            call
+            for call in self._dispatched_by(dispatcher)
+            if call[0] == "alert_whatsapp"
+        ]
+        assert len(notices) == 2
+
+    async def test_a_match_read_before_another_event_charged_it_is_dropped(self):
+        """Discovery reads the cooldown, then awaits other skills' hooks; an
+        event that takes and charges the turn meanwhile must not be followed by
+        a second dispatch inside the window."""
+        noticing = FakeSkill(
+            triggers=[_trigger("notice", "A")],
+            actions={
+                "available": [{"name": "alert_whatsapp", "tier": "A"}],
+                "defaults": {"notice": ["alert_whatsapp"]},
+            },
+            name="noticing",
+        )
+        noticing.triggers[0]["cooldown_seconds"] = 600
+        slow = FakeSkill(
+            triggers=[_trigger("other", "A")],
+            actions={
+                "available": [{"name": "log_to_dashboard", "tier": "A"}],
+                "defaults": {"other": ["log_to_dashboard"]},
+            },
+            name="slow",
+        )
+        slow.triggers[0]["cooldown_seconds"] = 600
+
+        class _SlowHooks:
+            async def pre_trigger_eval(self, _context):
+                await asyncio.sleep(0.3)
+
+        slow.hooks = _SlowHooks()
+        dispatcher = self._slow_dispatcher(
+            ("alert_whatsapp", "log_to_dashboard"), delay=0.05
+        )
+        coordinator = _coordinator(noticing, dispatcher)
+        coordinator.add_skill(slow)
+
+        await self._handled(coordinator, 3, interval=0.1)
+
+        assert [
+            call for call in self._dispatched_by(dispatcher) if call[1] == "noticing"
+        ] == [("alert_whatsapp", "noticing")]
+
+    async def test_two_skills_sharing_a_trigger_name_are_held_apart(self):
+        def skill(name: str) -> FakeSkill:
+            made = FakeSkill(
+                triggers=[_trigger("notice", "A")],
+                actions={
+                    "available": [{"name": "alert_whatsapp", "tier": "A"}],
+                    "defaults": {"notice": ["alert_whatsapp"]},
+                },
+                name=name,
+            )
+            made.triggers[0]["cooldown_seconds"] = 60
+            return made
+
+        dispatcher = self._slow_dispatcher(("alert_whatsapp",))
+        coordinator = _coordinator(skill("first"), dispatcher)
+        coordinator.add_skill(skill("second"))
+
+        await self._handled(coordinator, 5, interval=0.05)
+
+        assert sorted(self._dispatched_by(dispatcher)) == [
+            ("alert_whatsapp", "first"),
+            ("alert_whatsapp", "second"),
+        ]
+
+    async def test_a_plan_that_schedules_nothing_is_released_at_its_charge(
+        self, caplog
+    ):
+        """Refused at admission, it took no turn, so it re-raises on the next
+        reading even while a slow plan of the same event is still waiting."""
+        skill = FakeSkill(
+            triggers=[_trigger("orphan", "A"), _trigger("proposal", "C")],
+            actions={
+                "available": [
+                    {"name": "open_bypass_valve", "tier": "B"},
+                    {"name": "terminate_process", "tier": "C"},
+                ],
+                "defaults": {
+                    "orphan": ["open_bypass_valve"],
+                    "proposal": ["terminate_process"],
+                },
+            },
+        )
+        skill.triggers[0]["cooldown_seconds"] = 60
+        skill.triggers[1]["cooldown_seconds"] = 600
+        dispatcher = self._slow_dispatcher(
+            ("terminate_process",), delay=1.5, slow=("terminate_process",)
+        )
+        coordinator = _coordinator(skill, dispatcher)
+
+        with caplog.at_level("DEBUG", logger="ori.reasoning.dispatch_coordinator"):
+            await self._handled(coordinator, 2, interval=0.5)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert sum("refusing action='open_bypass_valve'" in m for m in messages) == 2
+        assert not any(
+            "trigger='orphan'" in m and "held while its plan is in flight" in m
+            for m in messages
+        )
+
+    async def test_a_plan_that_never_reached_its_charge_is_not_held_for_good(self):
+        dispatcher = self._slow_dispatcher(("alert_whatsapp",), delay=0.0)
+        coordinator = _coordinator(self._slow_notice_skill(60), dispatcher)
+        real = coordinator._schedule_remainder
+        calls = 0
+
+        async def fails_once(plan, event):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("scheduling failed")
+            return await real(plan, event)
+
+        coordinator._schedule_remainder = fails_once  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError):
+            await coordinator.dispatch_event(_event())
+        await coordinator.dispatch_event(_event())
+        await coordinator.drain()
+
+        assert await _dispatched(dispatcher) == [("alert_whatsapp", "A")]
+
+    async def test_a_cancelled_plan_releases_its_hold_once_it_settles(self):
+        dispatcher = self._slow_dispatcher(("alert_whatsapp",), delay=0.5)
+        coordinator = _coordinator(self._slow_notice_skill(60), dispatcher)
+
+        running = asyncio.create_task(coordinator.dispatch_event(_event()))
+        await asyncio.sleep(0.1)
+        assert coordinator._in_flight == {("fake-skill", "notice")}
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        await coordinator.drain()
+
+        assert coordinator._in_flight == set()
+
+    async def test_a_drain_that_times_out_leaves_only_live_work_held(self):
+        dispatcher = self._slow_dispatcher(("alert_whatsapp",), delay=0.5)
+        coordinator = _coordinator(self._slow_notice_skill(60), dispatcher)
+
+        await coordinator.handle_event(_event())
+        await coordinator.drain(timeout=0.05)
+        assert coordinator._in_flight == {("fake-skill", "notice")}
+        await coordinator.drain(timeout=5)
+
+        assert coordinator._in_flight == set()
+
+    async def test_a_reload_while_held_neither_duplicates_nor_leaks(self):
+        dispatcher = self._slow_dispatcher(("alert_whatsapp",), delay=0.5)
+        coordinator = _coordinator(self._slow_notice_skill(60), dispatcher)
+
+        await coordinator.handle_event(_event())
+        await asyncio.sleep(0.1)
+        coordinator.clear_skills()
+        coordinator.add_skill(self._slow_notice_skill(60))
+        await coordinator.handle_event(_event())
+        await coordinator.drain(timeout=5)
+
+        assert await _dispatched(dispatcher) == [("alert_whatsapp", "A")]
+        assert coordinator._in_flight == set()
+
+    @pytest.mark.parametrize("reply", ["NO", None])
+    async def test_a_real_refusal_or_timeout_opens_one_proposal_per_window(self, reply):
+        """Through the real dispatcher: a NO or an unanswered window is
+        `proposal_opened`, which consumes, so the next reading proposes nothing."""
+        from ori.reasoning.action_dispatcher import ActionDispatcher
+
+        class _Operator:
+            def __init__(self) -> None:
+                self.proposals: list[str] = []
+
+            async def send(self, alert=None, to_number=None, **_kwargs):
+                body = str(getattr(alert, "sms_body", ""))
+                if "YES-" in body:
+                    self.proposals.append(body.split("YES-", 1)[1][:8])
+                return True
+
+            async def listen_for_response(self, from_number, timeout_seconds):
+                if reply is None:
+                    await asyncio.sleep(timeout_seconds + 0.2)
+                    return None
+                return f"{reply}-{self.proposals[-1]}"
+
+        skill = FakeSkill(
+            triggers=[_trigger("candidate", "C")],
+            actions={
+                "available": [{"name": "terminate_process", "tier": "C"}],
+                "defaults": {"candidate": ["terminate_process"]},
+            },
+        )
+        skill.triggers[0]["cooldown_seconds"] = 600
+        skill.triggers[0]["approval_timeout_seconds"] = 1
+        operator = _Operator()
+        dispatcher = ActionDispatcher(
+            alert_sender=operator, config={"operator_contact": "+2348000000000"}
+        )
+
+        async def _executor(_action, _context):
+            return None
+
+        dispatcher.register_executor("terminate_process", _executor)
+        elevator = IntelligenceElevator()
+        coordinator = _coordinator(skill, dispatcher, elevator=elevator)
+
+        await self._handled(coordinator, 3, interval=0.1)
+        await self._handled(coordinator, 1, interval=0.0)
+
+        assert len(operator.proposals) == 1
+        assert elevator._rule_engine.in_cooldown("candidate", 600, "fake-skill")

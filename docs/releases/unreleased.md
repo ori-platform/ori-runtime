@@ -319,6 +319,20 @@ candidate or release is cut.
 
 ## Fixed
 
+- A trigger whose reasoning or approval is still running no longer matches
+  again inside its own cooldown. The cooldown is charged when a trigger's plan
+  settles, so every reading that arrived while its inference ran, or while its
+  operator had not yet answered, matched it again and dispatched again: one
+  continuous condition sent the operator a message per reading instead of one
+  per window. A trigger with a cooldown is now held from the moment it is
+  planned until its own plan is charged, and released in that same step, so a
+  trigger that acted goes straight into cooldown, one refused at the resource
+  gate can still re-raise on the next reading, and a notice is never held
+  behind another trigger's approval in the same event. The cooldown is also
+  read again when the hold is taken, so a match evaluated before another event
+  charged the turn is dropped rather than dispatched a second time. A trigger with
+  no cooldown is not held, and a plan granting Tier D is never held behind its
+  own notice.
 - Concurrent local reasoning no longer crashes the runtime. A llama.cpp
   context decoded from two threads at once aborts the process, and two
   triggers matching together each ran the local model in its own worker
