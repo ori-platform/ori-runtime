@@ -12,8 +12,10 @@ JSON envelopes.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -82,6 +84,7 @@ _PUBLIC_COMMANDS = {
     ("commissioning", "deliver"): "commissioning-deliver",
     ("commissioning", "prove-command"): "commissioning-prove-command",
     ("commissioning", "proof-export"): "commissioning-proof-export",
+    ("commissioning", "binding-export"): "commissioning-binding-export",
 }
 _SENSITIVE_KEY_FRAGMENTS = (
     "authorization",
@@ -180,6 +183,9 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
         elif command == "commissioning-proof-export":
             path = _required_option(args, "--path", command)
             result = asyncio.run(_commissioning_proof_export(path))
+        elif command == "commissioning-binding-export":
+            path = _required_option(args, "--path", command)
+            result = asyncio.run(_commissioning_binding_export(path))
         else:
             raise BridgeError(
                 "unknown_command",
@@ -762,6 +768,8 @@ async def _read_state_action_log(args: list[str]) -> list[dict[str, Any]]:
     await _open_state_store(store)
     try:
         return await store.get_action_log(limit=limit)
+    except sqlite3.DatabaseError as exc:
+        raise _read_refused(exc) from exc
     finally:
         await store.close()
 
@@ -784,6 +792,8 @@ async def _read_state_history(args: list[str]) -> list[dict[str, Any]]:
     await _open_state_store(store)
     try:
         readings = await store.get_history(sensor_id=sensor_id, limit=limit)
+    except sqlite3.DatabaseError as exc:
+        raise _read_refused(exc) from exc
     finally:
         await store.close()
     return [_sensor_reading_to_dict(reading) for reading in readings]
@@ -849,9 +859,9 @@ def _state_limit(raw: str | None, *, default: int) -> int:
     return limit
 
 
-def _commissioning_store(config: Config) -> StateStore:
+def _commissioning_store(config: Config, *, read_only: bool = False) -> StateStore:
     """The store the runtime itself opens, resolved the way the runtime does."""
-    return StateStore(db_path=config.database_path)
+    return StateStore(db_path=config.database_path, read_only=read_only)
 
 
 def _declared_actuators(config: Config) -> list[dict[str, Any]]:
@@ -884,17 +894,19 @@ async def _in_force_binding(config: Config) -> AcceptedBinding | None:
     onto a document this device never accepted.
     """
     db_path = Path(config.database_path)
-    if not db_path.is_file():
+    if not _store_present(db_path):
         # A device that has never started has no store, and asking it a
         # question must not build one. Opening the store applies the DDL, so
         # this read would otherwise materialise the runtime's whole durable
         # state owned by whoever ran an inventory query -- on a system install
         # that is root, and the service account could then never open it.
         return None
-    store = _commissioning_store(config)
+    store = _commissioning_store(config, read_only=True)
     await _open_state_store(store)
     try:
         row = await store.get_commissioned_binding_in_force()
+    except sqlite3.DatabaseError as exc:
+        raise _read_refused(exc) from exc
     finally:
         await store.close()
     if row is None or str(row.get("device_id")) != str(config.device.id):
@@ -914,6 +926,42 @@ async def _commissioning_inventory(config_path: str) -> dict[str, Any]:
         "deployment_posture": _commissioning_posture(config),
         "accepted_binding_seq": in_force.binding_seq if in_force else 0,
         "accepted_binding_hash": in_force.canonical_hash if in_force else None,
+    }
+
+
+async def _commissioning_binding_export(config_path: str) -> dict[str, Any]:
+    """The signed envelope of the binding in force, for a revision to start from.
+
+    Rebuilt from the canonical bytes and signature the store retained, in the
+    envelope's own canonical form, and carried as a string so no JSON layer
+    re-encodes the bytes a reader hashes. Read-only, and never the provisional
+    binding: a revision chained onto a document that never reached in force
+    would supersede nothing the device holds.
+    """
+    config = Config.load(config_path)
+    in_force = await _in_force_binding(config)
+    if in_force is None:
+        raise BridgeError(
+            "no_binding_in_force", "this device holds no binding in force"
+        )
+    digest = "sha256:" + hashlib.sha256(in_force.canonical_bytes).hexdigest()
+    if digest != in_force.canonical_hash:
+        raise BridgeError(
+            "retained_binding_mismatch",
+            "the retained binding does not reproduce its recorded hash; "
+            "nothing is exported",
+        )
+    envelope = (
+        b'{"binding":'
+        + in_force.canonical_bytes
+        + b',"signature":'
+        + json.dumps(in_force.signature).encode("utf-8")
+        + b"}"
+    )
+    return {
+        "binding_seq": in_force.binding_seq,
+        "binding_hash": in_force.canonical_hash,
+        "envelope_json": envelope.decode("utf-8"),
     }
 
 
@@ -1034,17 +1082,19 @@ async def _commissioning_deliver(
 async def _proof_state(config: Config):
     """The provisional and in-force bindings this device holds."""
     db_path = Path(config.database_path)
-    if not db_path.is_file():
+    if not _store_present(db_path):
         raise BridgeError(
             "no_provisional_binding",
             f"no state store at {db_path}, so this device holds no "
             "provisional binding there",
         )
-    store = _commissioning_store(config)
+    store = _commissioning_store(config, read_only=True)
     await _open_state_store(store)
     try:
         provisional_row = await store.get_provisional_binding()
         in_force_row = await store.get_commissioned_binding_in_force()
+    except sqlite3.DatabaseError as exc:
+        raise _read_refused(exc) from exc
     finally:
         await store.close()
 
@@ -1137,12 +1187,14 @@ async def _commissioning_proof_export(config_path: str) -> dict[str, Any]:
 
     config = Config.load(config_path)
     provisional, _ = await _proof_state(config)
-    store = _commissioning_store(config)
+    store = _commissioning_store(config, read_only=True)
     await _open_state_store(store)
     try:
         return await export_observations(store=store, provisional=provisional)
     except ProofRefusedError as refusal:
         raise BridgeError(refusal.reason, refusal.detail) from None
+    except sqlite3.DatabaseError as exc:
+        raise _read_refused(exc) from exc
     finally:
         await store.close()
 
@@ -1226,7 +1278,12 @@ def _state_store_from_config(config: Config) -> StateStore:
             "state_store_unavailable",
             f"state database path is not a file: {path}",
         )
-    return StateStore(str(path))
+    if not _store_present(path):
+        raise BridgeError(
+            "state_store_unavailable",
+            f"state database is empty: {path}",
+        )
+    return StateStore(str(path), read_only=True)
 
 
 def _sensor_reading_to_dict(reading: StoredReading) -> dict[str, Any]:
@@ -1248,6 +1305,40 @@ async def _open_state_store(store: StateStore) -> None:
         await store.open()
     except HistoryReceiptMigrationRequiredError as exc:
         raise BridgeError("state_migration_required", str(exc)) from exc
+    except sqlite3.DatabaseError as exc:
+        raise BridgeError(
+            "state_store_unavailable", f"state database cannot be read: {exc}"
+        ) from exc
+
+
+def _store_present(path: Path) -> bool:
+    """A store exists to be read: a file with something in it.
+
+    An empty file is what SQLite would build a store from, not one the runtime
+    wrote, so it is answered as no store rather than as an old one.
+    """
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _read_refused(exc: sqlite3.DatabaseError) -> BridgeError:
+    """A read-only tool reports a store older than its release; it never migrates one.
+
+    Only a missing table or column says the store is older. A lock held by a
+    running runtime, an I/O failure or a file that is not a database is
+    reported as unavailable instead.
+    """
+    if not isinstance(exc, sqlite3.OperationalError) or not str(exc).startswith(
+        ("no such table", "no such column")
+    ):
+        return BridgeError(
+            "state_store_unavailable", f"state database cannot be read now: {exc}"
+        )
+    return BridgeError(
+        "state_migration_required",
+        f"the state database predates this release ({exc}). Nothing was "
+        "changed. Start the runtime under this release to migrate; a "
+        "read-only tool does not.",
+    )
 
 
 def _optional_str(value: Any) -> str | None:

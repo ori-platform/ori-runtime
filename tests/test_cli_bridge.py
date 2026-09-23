@@ -3,7 +3,10 @@
 
 import asyncio
 import base64
+import hashlib
 import json
+import os
+import sqlite3
 import textwrap
 from pathlib import Path
 
@@ -915,7 +918,9 @@ def test_a_store_beside_the_config_is_found_from_any_directory(
     """A present store stops the refusal, and no second store is created."""
     home = tmp_path / "data"
     config_path = _relative_store_config(home)
-    (home / "ori_state.db").write_bytes(b"")
+    store = sqlite3.connect(home / "ori_state.db")
+    store.execute("CREATE TABLE present (x)")
+    store.close()
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
@@ -1923,3 +1928,399 @@ def test_cli_bridge_skills_list_calls_a_malformed_anchor_unusable(
     assert result["community_anchor"]["usable"] is False
     assert "ORI_HUB_ROOT_PUBLIC_KEY_B64" in result["community_anchor"]["detail"]
     assert {error["code"] for error in result["errors"]} == {"community_anchor_error"}
+
+
+def _deliver_and_load(tmp_path, monkeypatch, capsys, envelope) -> Path:
+    """Stage an envelope through the bridge, then start the way the runtime does."""
+    from ori.config import Config
+    from ori.security.commissioning.anchors import load_commissioning_anchors
+    from ori.security.commissioning.loader import (
+        DeclaredInventory,
+        load_commissioning_state,
+    )
+    from ori.security.commissioning.profiles import load_shipped_profile_set
+
+    config_path = _commissioning_config(tmp_path)
+    _anchor(monkeypatch)
+    source = tmp_path / "binding.json"
+    source.write_text(json.dumps(envelope), encoding="utf-8")
+    cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+        ]
+    )
+    capsys.readouterr()
+
+    async def _load():
+        config = Config.load(str(config_path))
+        store = cli_bridge._commissioning_store(config)
+        await store.open()
+        try:
+            await load_commissioning_state(
+                data_path=config_path.resolve().parent,
+                device_id=str(config.device.id),
+                anchors=load_commissioning_anchors(),
+                provisioning_anchor=None,
+                inventory=DeclaredInventory.from_config(["load-current"], 26),
+                posture="development",
+                profiles=load_shipped_profile_set(),
+                store=store,
+            )
+        finally:
+            await store.close()
+
+    asyncio.run(_load())
+    return config_path
+
+
+def test_binding_export_returns_the_envelope_in_force(tmp_path, monkeypatch, capsys):
+    """A revision starts from the document the device holds, verifiable offline."""
+    from ori.security.commissioning.binding import canonical_bytes
+
+    envelope = _bench_envelope()
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, envelope)
+
+    cli_bridge.main(["commissioning", "inventory", "--path", str(config_path)])
+    inventory = _read_stdout_json(capsys)["result"]
+    rc = cli_bridge.main(
+        ["commissioning", "binding-export", "--path", str(config_path)]
+    )
+    result = _read_stdout_json(capsys)["result"]
+
+    assert rc == 0
+    assert result["binding_seq"] == inventory["accepted_binding_seq"]
+    assert result["binding_hash"] == inventory["accepted_binding_hash"]
+    exported = json.loads(result["envelope_json"])
+    assert exported == envelope
+    # The string is the envelope's canonical form, byte for byte.
+    assert result["envelope_json"].encode("utf-8") == canonical_bytes(exported)
+
+
+def test_binding_export_never_exports_a_provisional_binding(
+    tmp_path, monkeypatch, capsys
+):
+    """A revision chained onto a document never in force supersedes nothing."""
+    config_path = _deliver_and_load(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        _bench_envelope(control_proof_method="undemonstrated"),
+    )
+
+    rc = cli_bridge.main(
+        ["commissioning", "binding-export", "--path", str(config_path)]
+    )
+
+    payload = _read_stdout_json(capsys)
+    assert rc == 2
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "no_binding_in_force"
+
+
+def test_binding_export_creates_no_state_database(tmp_path, capsys):
+    """A device never started has no binding in force and no store to build."""
+    config_path = _commissioning_config(tmp_path)
+
+    rc = cli_bridge.main(
+        ["commissioning", "binding-export", "--path", str(config_path)]
+    )
+
+    assert rc == 2
+    assert _read_stdout_json(capsys)["error"]["code"] == "no_binding_in_force"
+    assert not (tmp_path / "ori_state.db").exists()
+
+
+def test_binding_export_refuses_a_retained_binding_that_does_not_reproduce(
+    tmp_path, monkeypatch, capsys
+):
+    """A retained row whose bytes do not hash to its record is not exported."""
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, _bench_envelope())
+    store = StateStore(db_path=str(tmp_path / "ori_state.db"))
+
+    async def _tamper() -> None:
+        await store.open()
+        try:
+            assert store._conn is not None
+            store._conn.execute(
+                "UPDATE commissioned_binding SET canonical_json = "
+                "replace(canonical_json, 'bench-01', 'bench-02')"
+            )
+            store._conn.commit()
+        finally:
+            await store.close()
+
+    asyncio.run(_tamper())
+    rc = cli_bridge.main(
+        ["commissioning", "binding-export", "--path", str(config_path)]
+    )
+
+    assert rc == 2
+    assert _read_stdout_json(capsys)["error"]["code"] == "retained_binding_mismatch"
+
+
+def _carried_revision(first: dict, **changes) -> dict:
+    """A revision of `first` carrying its proof legs unchanged."""
+    from ori.security.commissioning.binding import canonical_hash
+    from tests.commissioning.signing import (
+        EPHEMERAL_SEED,
+        local_gpio_binding,
+        sign_envelope,
+    )
+
+    rename = changes.pop("zone_id", None)
+    sensor_id = changes.pop("sensor_id", "load-current")
+    binding = local_gpio_binding(
+        device_id="bench-01",
+        sensor_id=sensor_id,
+        gpio_pin=26,
+        binding_seq=2,
+        supersedes=canonical_hash(first["binding"]),
+        proof_method="actuate_and_observe",
+        control_proof_method="commanded_and_observed",
+        **{"active_high": False, **changes},
+    )
+    if rename is not None:
+        binding["zones"][0]["zone_id"] = rename
+    return sign_envelope(binding, EPHEMERAL_SEED)
+
+
+def _deliver_revision(config_path, tmp_path, capsys, envelope) -> dict:
+    source = tmp_path / "revision.json"
+    source.write_text(json.dumps(envelope), encoding="utf-8")
+    cli_bridge.main(
+        [
+            "commissioning",
+            "deliver",
+            "--path",
+            str(config_path),
+            "--binding",
+            str(source),
+            "--force",
+        ]
+    )
+    return _read_stdout_json(capsys)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"active_high": True, "zone_id": "bench-renamed"}, {"active_high": True}],
+    ids=["renamed", "same-name"],
+)
+def test_a_polarity_flip_cannot_keep_its_proof_under_any_name(
+    tmp_path, monkeypatch, capsys, changes
+):
+    """The retained zone is found by its actuator, not only by its name."""
+    first = _bench_envelope()
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, first)
+
+    payload = _deliver_revision(
+        config_path, tmp_path, capsys, _carried_revision(first, **changes)
+    )
+
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "stale_proof", payload
+
+
+def test_a_sensor_change_cannot_keep_its_proof(tmp_path, monkeypatch, capsys):
+    """The sensor is part of what a proof establishes."""
+    first = _bench_envelope()
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, first)
+    revision = _carried_revision(first)
+    from tests.commissioning.signing import EPHEMERAL_SEED, sign_envelope
+
+    binding = revision["binding"]
+    binding["zones"][0]["sensor"]["noise_floor"] = 0.07
+    payload = _deliver_revision(
+        config_path, tmp_path, capsys, sign_envelope(binding, EPHEMERAL_SEED)
+    )
+
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "stale_proof", payload
+
+
+def test_binding_export_refuses_a_row_in_force_that_is_not_eligible(tmp_path, capsys):
+    """A legacy row with an unproven leg is not the binding in force.
+
+    Today's store refuses to write one; a store an older runtime wrote can hold
+    it, so the row is inserted as that runtime would have.
+    """
+    config_path = _commissioning_config(tmp_path)
+
+    async def _retain() -> None:
+        from ori.config import Config
+
+        config = Config.load(str(config_path))
+        store = cli_bridge._commissioning_store(config)
+        await store.open()
+        try:
+            assert store._conn is not None
+            store._conn.execute(
+                "INSERT INTO commissioned_binding (binding_seq, canonical_hash, "
+                "device_id, inventory_generation, signer_id, supersedes, "
+                "canonical_json, signature, zones_json, accepted_at_ms) "
+                "VALUES (3, ?, ?, 1, 'commissioning-test', NULL, '{}', ?, ?, 1)",
+                (
+                    "sha256:" + "b" * 64,
+                    config.device.id,
+                    "ed25519:" + base64.b64encode(b"\x00" * 64).decode(),
+                    json.dumps([_legacy_zone()]),
+                ),
+            )
+            store._conn.commit()
+        finally:
+            await store.close()
+
+    asyncio.run(_retain())
+    rc = cli_bridge.main(
+        ["commissioning", "binding-export", "--path", str(config_path)]
+    )
+
+    assert rc == 2
+    assert _read_stdout_json(capsys)["error"]["code"] == "no_binding_in_force"
+
+
+def test_binding_export_never_exports_another_devices_binding(tmp_path, capsys):
+    config_path = _commissioning_config(tmp_path)
+    asyncio.run(_retain_foreign_binding(config_path))
+
+    rc = cli_bridge.main(
+        ["commissioning", "binding-export", "--path", str(config_path)]
+    )
+
+    assert rc == 2
+    assert _read_stdout_json(capsys)["error"]["code"] == "no_binding_in_force"
+
+
+_READ_COMMANDS = {
+    "inventory": ["commissioning", "inventory"],
+    "binding-export": ["commissioning", "binding-export"],
+    "proof-export": ["commissioning", "proof-export"],
+    "action-log": ["state", "action-log"],
+    "history": ["state", "history", "sensor_id=load-current"],
+}
+
+
+def _files(directory: Path) -> dict[str, tuple[int, str]]:
+    return {
+        path.name: (path.stat().st_mode, hashlib.sha256(path.read_bytes()).hexdigest())
+        for path in sorted(directory.iterdir())
+        if path.is_file()
+    }
+
+
+def _run_read(command: list[str], config_path: Path, capsys) -> dict:
+    cli_bridge.main([*command[:2], "--path", str(config_path), *command[2:]])
+    return _read_stdout_json(capsys)
+
+
+@pytest.mark.parametrize("name", sorted(_READ_COMMANDS))
+@pytest.mark.parametrize("legacy", [False, True], ids=["current", "legacy"])
+def test_a_read_leaves_an_existing_store_exactly_as_it_found_it(
+    tmp_path, monkeypatch, capsys, name, legacy
+):
+    """No migration, no WAL pragma, no permission change, no file created beside it.
+
+    The legacy store lacks a table this release adds, which opening the store
+    for writing would create.
+    """
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, _bench_envelope())
+    db_path = tmp_path / "ori_state.db"
+    if legacy:
+        conn = sqlite3.connect(db_path)
+        conn.execute("DROP TABLE commissioned_binding")
+        conn.commit()
+        conn.close()
+    os.chmod(db_path, 0o640)
+    before = _files(tmp_path)
+
+    payload = _run_read(_READ_COMMANDS[name], config_path, capsys)
+
+    assert _files(tmp_path) == before, payload
+    if legacy and name in {"inventory", "binding-export", "proof-export"}:
+        assert payload["error"]["code"] == "state_migration_required", payload
+
+
+@pytest.mark.parametrize("name", sorted(_READ_COMMANDS))
+def test_a_read_beside_a_running_runtime_changes_nothing_it_owns(
+    tmp_path, monkeypatch, capsys, name
+):
+    """With a writer holding the WAL, the reader writes neither the database nor its log.
+
+    The store lacks a table this release adds, so a reader that migrated would
+    write the DDL into the log. Only the shared-memory index, which every
+    reader of a WAL database updates, may change.
+    """
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, _bench_envelope())
+    db_path = tmp_path / "ori_state.db"
+    writer = sqlite3.connect(db_path)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("DROP TABLE commissioned_binding")
+        writer.commit()
+        before = {k: v for k, v in _files(tmp_path).items() if not k.endswith("-shm")}
+        assert "ori_state.db-wal" in before
+
+        payload = _run_read(_READ_COMMANDS[name], config_path, capsys)
+
+        after = {k: v for k, v in _files(tmp_path).items() if not k.endswith("-shm")}
+        assert after == before, payload
+    finally:
+        writer.close()
+
+
+def test_a_locked_store_is_unavailable_not_older(tmp_path, monkeypatch, capsys):
+    """Only a missing table or column says the store predates the release."""
+    config_path = _deliver_and_load(tmp_path, monkeypatch, capsys, _bench_envelope())
+
+    async def locked(self) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(StateStore, "get_commissioned_binding_in_force", locked)
+    payload = _run_read(_READ_COMMANDS["binding-export"], config_path, capsys)
+
+    assert payload["error"]["code"] == "state_store_unavailable", payload
+
+
+_EMPTY_STORE_ANSWER = {
+    "inventory": None,
+    "binding-export": "no_binding_in_force",
+    "proof-export": "no_provisional_binding",
+    "action-log": "state_store_unavailable",
+    "history": "state_store_unavailable",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_READ_COMMANDS))
+@pytest.mark.parametrize(
+    "content", [b"", b"not a database\n" * 64], ids=["empty", "not-a-database"]
+)
+def test_a_read_answers_a_file_it_cannot_read_without_touching_it(
+    tmp_path, capsys, name, content
+):
+    """An empty file is no store; a file that is not a database is refused by name."""
+    config_path = _commissioning_config(tmp_path)
+    db_path = tmp_path / "ori_state.db"
+    db_path.write_bytes(content)
+    before = _files(tmp_path)
+
+    rc = cli_bridge.main(
+        [
+            *_READ_COMMANDS[name][:2],
+            "--path",
+            str(config_path),
+            *_READ_COMMANDS[name][2:],
+        ]
+    )
+    payload = _read_stdout_json(capsys)
+
+    assert _files(tmp_path) == before, payload
+    expected = _EMPTY_STORE_ANSWER[name] if not content else "state_store_unavailable"
+    if expected is None:
+        assert rc == 0 and payload["result"]["accepted_binding_seq"] == 0, payload
+    else:
+        assert rc == 2 and payload["error"]["code"] == expected, payload

@@ -951,9 +951,18 @@ class StateStore:
     """
 
     def __init__(
-        self, db_path: str = "ori_state.db", *, allow_history_rebuild: bool = False
+        self,
+        db_path: str = "ori_state.db",
+        *,
+        allow_history_rebuild: bool = False,
+        read_only: bool = False,
     ) -> None:
+        if read_only and (db_path == ":memory:" or allow_history_rebuild):
+            raise ValueError("a read-only store is an existing file and never migrates")
         self._db_path = db_path
+        # A read-only store changes nothing on disk: no DDL, no WAL pragma, no
+        # permission change, and no -wal or -shm file it did not find.
+        self._read_only = read_only
         # Only the runtime's startup passes True: the rebuild discards rows,
         # and a tool that only reads must never do that on the way in.
         self._allow_history_rebuild = allow_history_rebuild
@@ -988,6 +997,8 @@ class StateStore:
         # connection would cost a comparison on every read to re-establish
         # something already known.
         require_supported_sqlite()
+        if self._read_only:
+            return self._connect_read_only()
         # Decided on a read-only connection before this one exists: a refused
         # open must leave the file byte-for-byte as it found it, and the WAL
         # pragma below already writes the header.
@@ -1681,6 +1692,8 @@ class StateStore:
         self, fn: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs
     ) -> _T:
         """Run a synchronous write callable in the executor under write lock."""
+        if self._read_only:
+            raise PermissionError("this store was opened read-only")
         async with self._write_lock:
             return await asyncio.to_thread(fn, *args, **kwargs)
 
@@ -1727,11 +1740,35 @@ class StateStore:
             if close_when_done:
                 conn.close()
 
+    def _connect_read_only(self) -> sqlite3.Connection:
+        """A connection that cannot change the file or create one beside it.
+
+        A read-only open of a WAL database creates its -wal and -shm files when
+        they are absent, owned by whoever opened it; a store the runtime then
+        cannot open is a change, however read-only the query. With no -wal the
+        runtime is not writing, so the file alone is the database and is read
+        immutable. A runtime starting during the read leaves it answering from
+        the file as it stood before, or failing; it never changes the file. A
+        binding exported that way is one the device held, and a revision built
+        on a superseded one is refused at delivery.
+        """
+        path = Path(self._db_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"no state database at {path}")
+        mode = "ro" if Path(f"{path}-wal").exists() else "ro&immutable=1"
+        conn = sqlite3.connect(
+            f"{path.resolve().as_uri()}?mode={mode}", uri=True, check_same_thread=False
+        )
+        conn.row_factory = sqlite3.Row
+        return conn
+
     def _open_read_conn_sync(self) -> tuple[sqlite3.Connection, bool]:
         """Open a short-lived read connection safe for concurrent executor threads."""
         if self._db_path == ":memory:":
             assert self._conn is not None
             return self._conn, False
+        if self._read_only:
+            return self._connect_read_only(), True
 
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row

@@ -74,6 +74,16 @@ candidate or release is cut.
   proof is refused as `stale_proof`. A retained binding whose legs are not both
   proven is migrated into the provisional record rather than only retired, and
   an existing provisional record is never overwritten by that migration.
+- A revision changing any field of a zone's sensor, its actuator identity or
+  its mapping needs every claimed proof leg fresh: every sensor field now
+  counts, not only `calibration_ref`, so the retained record keeps the whole
+  sensor. A revised zone is held to every retained zone it shares a name, an
+  actuator or a sensor with, so renaming a zone
+  no longer lets an inverted polarity or a rebound clamp keep the old proof.
+  `commissioning binding-export` returns the signed envelope in force, read
+  only, for a revision to start from, and never a provisional one. The
+  vendored corpus and its misreading table follow ori-specs
+  `commissioned-safety-binding/v1` at `7d9a6e8`.
 - The relay is driven only through the commissioned binding. It is connected
   under the zone's polarity, startup commands the coil `de_energised` through
   it, and `trip_relay`, `close_gas_valve` and `release_relay` resolve to
@@ -309,6 +319,17 @@ candidate or release is cut.
 
 ## Fixed
 
+- The bridge's read commands -- `commissioning inventory`, `binding-export`
+  and `proof-export`, `state action-log` and `state history` -- open the
+  state database read-only. They previously opened it as the runtime does,
+  which set WAL mode, narrowed its permissions and applied this release's
+  migrations to an existing store, and a read-only open of a stopped
+  runtime's database left `-wal` and `-shm` files owned by whoever ran the
+  query. A store older than the release is now reported as
+  `state_migration_required` and left as it was, an empty file is answered
+  as no store rather than given the schema, and a file that is not a
+  database is refused as `state_store_unavailable` rather than failing as an
+  internal error.
 - Telemetry stops exporting to an endpoint that has refused this device. A
   terminal refusal is classified narrowly — status, media type, absent
   authentication challenge and an exact detail — so a captive portal or proxy

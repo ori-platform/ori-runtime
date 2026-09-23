@@ -261,7 +261,7 @@ def verifier_context(
             zone.zone_id: ZoneState(
                 identity=dict(zone.identity),
                 mapping=dict(zone.mapping),
-                calibration_ref=zone.calibration_ref,
+                sensor=zone.sensor,
                 proof_at_ms=zone.proof_performed_at_ms,
                 control_proof_at_ms=zone.control_proof_performed_at_ms,
             )

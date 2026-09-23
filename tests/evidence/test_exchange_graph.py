@@ -405,6 +405,10 @@ VECTOR_CONSUMERS = {
         "test_commissioned_binding_vectors.py"
         "::test_reject_cases_refuse_at_their_declared_stage",
     ),
+    ("commissioned_safety_binding", "revision-misreadings-v1"): (
+        "test_revision_rule_mutation_adequacy.py"
+        "::test_the_corpus_refuses_every_misreading_of_the_rule",
+    ),
     ("safety_profile", "profiles"): (
         "commissioning/test_profiles.py::test_the_shipped_profile_set_is_the_vendored_one",
     ),

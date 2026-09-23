@@ -171,7 +171,9 @@ class ZoneState:
 
     identity: dict[str, Any]
     mapping: dict[str, str]
-    calibration_ref: str
+    # The whole sensor block: a proof records that this sensor observes this
+    # circuit, so any change to it needs a fresh proof, not only the calibration.
+    sensor: dict[str, Any]
     proof_at_ms: int
     control_proof_at_ms: int | None = None
 
@@ -222,7 +224,7 @@ class VerifierContext:
                 zone_id: ZoneState(
                     identity=dict(was["identity"]),
                     mapping=dict(was["mapping"]),
-                    calibration_ref=str(was["calibration_ref"]),
+                    sensor=dict(was["sensor"]),
                     proof_at_ms=int(was["proof_at_ms"]),
                     control_proof_at_ms=(
                         None
@@ -255,6 +257,20 @@ class AcceptedZone:
     proof_performed_at_ms: int
     control_proof_method: str | None = None
     control_proof_performed_at_ms: int | None = None
+
+    @property
+    def sensor(self) -> dict[str, Any]:
+        """The zone's sensor block as the document carried it."""
+        return {
+            "sensor_id": self.sensor_id,
+            "quantity": self.quantity,
+            "unit": self.unit,
+            "range_min": self.range_min,
+            "range_max": self.range_max,
+            "direction": self.direction,
+            "noise_floor": self.noise_floor,
+            "calibration_ref": self.calibration_ref,
+        }
 
     @property
     def identity_key(self) -> tuple[str, str]:
@@ -812,31 +828,58 @@ def st_proof_consistency(b: dict[str, Any], ctx: VerifierContext) -> None:
         leg = proof.get("control_path")
         if isinstance(leg, dict) and leg["method"] != "undemonstrated":
             _check_observations(zone, leg["observations"])
-    # A revision changing actuator identity, mapping or calibration needs a
-    # proof performed after the accepted document.
+    # A revision changing the sensor, actuator identity or mapping needs every
+    # claimed leg performed after the same leg's retained time.
+    # Each zone is held to every retained zone it shares a name, an actuator or
+    # a sensor with: matched on the name alone, a rename would carry a proof
+    # onto wiring nobody proved.
     for zone in b["zones"]:
-        was = ctx.accepted_zone_state.get(zone["zone_id"])
-        if was is None:
-            continue
-        changed = (
-            was.identity != zone["actuator"]["identity"]
-            or was.mapping != zone["actuator"]["commissioned_mapping"]
-            or was.calibration_ref != zone["sensor"]["calibration_ref"]
-        )
-        if not changed:
-            continue
-        if zone["proof"]["performed_at_ms"] <= was.proof_at_ms:
-            raise BindingRefusedError("proof_consistency", "stale_proof")
-        # A changed pin or polarity invalidates the control proof too: it was
-        # performed on the wiring this revision replaces.
-        leg = zone["proof"].get("control_path")
-        if (
-            isinstance(leg, dict)
-            and leg["method"] == "commanded_and_observed"
-            and was.control_proof_at_ms is not None
-            and leg["performed_at_ms"] <= was.control_proof_at_ms
-        ):
-            raise BindingRefusedError("proof_consistency", "stale_proof")
+        for was in _retained_matches(zone, ctx.accepted_zone_state):
+            changed = (
+                was.identity != zone["actuator"]["identity"]
+                or was.mapping != zone["actuator"]["commissioned_mapping"]
+                or was.sensor != zone["sensor"]
+            )
+            if not changed:
+                continue
+            # Freshness applies to a leg the revision claims: an undemonstrated
+            # leg carries no proof, so it inherits nothing and the zone is
+            # provisional rather than stale.
+            if (
+                zone["proof"]["method"] != "undemonstrated"
+                and zone["proof"]["performed_at_ms"] <= was.proof_at_ms
+            ):
+                raise BindingRefusedError("proof_consistency", "stale_proof")
+            # A changed pin or polarity invalidates the control proof too: it
+            # was performed on the wiring this revision replaces.
+            leg = zone["proof"].get("control_path")
+            if (
+                isinstance(leg, dict)
+                and leg["method"] == "commanded_and_observed"
+                and was.control_proof_at_ms is not None
+                and leg["performed_at_ms"] <= was.control_proof_at_ms
+            ):
+                raise BindingRefusedError("proof_consistency", "stale_proof")
+
+
+def _same_actuator(retained: dict[str, Any], identity: dict[str, Any]) -> bool:
+    """One actuator, as `actuator_identity` reads it: a GPIO line by its pin."""
+    if "gpio_pin" in retained and "gpio_pin" in identity:
+        return bool(retained["gpio_pin"] == identity["gpio_pin"])
+    return retained == identity
+
+
+def _retained_matches(
+    zone: dict[str, Any], retained: dict[str, ZoneState]
+) -> list[ZoneState]:
+    """Every retained zone this one shares a name, an actuator or a sensor with."""
+    return [
+        was
+        for zone_id, was in retained.items()
+        if zone_id == zone["zone_id"]
+        or _same_actuator(was.identity, zone["actuator"]["identity"])
+        or was.sensor.get("sensor_id") == zone["sensor"]["sensor_id"]
+    ]
 
 
 def st_bounds(b: dict[str, Any], ctx: VerifierContext) -> None:
