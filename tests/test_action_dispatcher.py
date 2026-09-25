@@ -2317,8 +2317,10 @@ class TestOfflineTokenApproval:
             )
             await listening.wait()
             task.cancel()
+            outcome: ActionResult | None = None
             with contextlib.suppress(asyncio.CancelledError):
-                await task
+                outcome = await task
+        assert outcome is None or outcome.approved is not True
         safe_default.assert_not_awaited()
 
     async def test_a_late_refusal_survives_an_indicator_fault(self):
