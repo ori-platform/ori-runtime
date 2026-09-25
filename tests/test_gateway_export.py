@@ -155,6 +155,57 @@ async def test_malformed_json_payload_returns_error_response(store):
     assert response.items == []
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"\xff\xfe{",
+        b'{"a":' * 50_000 + b"1" + b"}" * 50_000,
+        b'{"limit":' + b"9" * 5_000 + b"}",
+        b'{"request_id":"r\\ud800","export_type":"health"}',
+    ],
+    ids=["invalid UTF-8", "deep nesting", "5000-digit integer", "lone surrogate"],
+)
+async def test_hostile_json_payload_returns_error_response(store, payload):
+    response = await _responder(store).handle_payload(payload)
+
+    assert response.error == "request payload must be JSON"
+    assert response.items == []
+    # The refusal itself must be publishable.
+    assert response.to_json_bytes()
+
+
+_BIG = "1" + "0" * 30
+
+
+@pytest.mark.parametrize(
+    "extra, field",
+    [
+        (f'"since_ms": 1, "until_ms": {_BIG}', "until_ms"),
+        (f'"since_ms": {_BIG}, "until_ms": {_BIG}', "since_ms"),
+        (f'"since_ms": 1, "until_ms": 2, "page_token": {_BIG}', "page_token"),
+        ('"since_ms": 1, "until_ms": 2, "limit": Infinity', "limit"),
+        ('"since_ms": -Infinity, "until_ms": 2', "since_ms"),
+    ],
+    ids=[
+        "until past int64",
+        "since past int64",
+        "page past int64",
+        "limit infinite",
+        "since infinite",
+    ],
+)
+async def test_an_out_of_range_integer_is_refused_with_its_own_reason(
+    store, extra, field
+):
+    request = json.dumps(_request("sensor_history", params={"sensor_id": "s"}))
+    payload = (request[:-1] + ", " + extra + "}").encode()
+    response = await _responder(store).handle_payload(payload)
+
+    assert response.error
+    assert field in response.error
+    assert "internal" not in response.error
+
+
 async def test_export_responder_verifies_signed_request(store):
     request_auth = GatewayMessageAuthenticator(
         GatewayMessageAuthConfig(shared_secret="gateway-secret")

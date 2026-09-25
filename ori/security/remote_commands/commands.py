@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Mapping
 
 from ori.utils.time_utils import now_ms
+
+logger = logging.getLogger(__name__)
 
 _ALLOWED_COMMANDS = {
     "UPDATE_CONFIG",
@@ -89,6 +92,29 @@ class RemoteCommandVerifier:
         self._allow_unlisted_senders = bool(allow_unlisted_senders)
 
     async def verify(
+        self,
+        payload: dict[str, Any],
+        *,
+        state_store: Any,
+    ) -> CommandVerificationResult:
+        """Verify a command; a command that cannot be judged is refused, and
+        recorded, so the throttle and lockout count it."""
+        try:
+            return await self._verify(payload, state_store=state_store)
+        except Exception:
+            logger.exception("RemoteCommandVerifier: verification failed; refusing")
+            return await self._audit(
+                state_store=state_store,
+                command_id=str(payload.get("command_id", "") or ""),
+                channel=str(payload.get("channel", "") or ""),
+                from_number=str(payload.get("from_number", "") or ""),
+                command=str(payload.get("command", "") or ""),
+                accepted=False,
+                reason="verifier_error",
+                issued_at_ms=_safe_int_or_none(payload.get("issued_at_ms")),
+            )
+
+    async def _verify(
         self,
         payload: dict[str, Any],
         *,
@@ -209,11 +235,13 @@ class RemoteCommandVerifier:
         if state_store is not None and hasattr(
             state_store, "log_remote_command_attempt"
         ):
+            # Refused input is recorded as the store can hold it, so the
+            # throttle and lockout count every refusal.
             await state_store.log_remote_command_attempt(
-                command_id=command_id,
-                channel=channel,
-                from_number=from_number,
-                command=command,
+                command_id=_storable(command_id),
+                channel=_storable(channel),
+                from_number=_storable(from_number),
+                command=_storable(command),
                 accepted=accepted,
                 reason=reason,
                 issued_at_ms=issued_at_ms,
@@ -334,7 +362,9 @@ def extract_remote_command_payload(
 
     try:
         decoded = json.loads(body)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # Not JSON, an integer past the conversion limit, or nesting past the
+        # recursion limit: not a command.
         return None
     if not isinstance(decoded, dict):
         return None
@@ -386,6 +416,14 @@ def sign_remote_command(
 
 
 def _parse_command(payload: dict[str, Any]) -> tuple[RemoteCommand | None, str]:
+    fields = [
+        str(payload.get(key, "") or "")
+        for key in ("command_id", "device_id", "command")
+    ]
+    if not _encodable(
+        *fields, json.dumps(payload.get("args"), ensure_ascii=False, default=str)
+    ):
+        return None, "invalid_encoding"
     command_id = str(payload.get("command_id", "") or "").strip()
     if not command_id:
         return None, "missing_command_id"
@@ -395,8 +433,15 @@ def _parse_command(payload: dict[str, Any]) -> tuple[RemoteCommand | None, str]:
         return None, "missing_device_id"
 
     issued_at_ms = _safe_int_or_none(payload.get("issued_at_ms"))
-    if issued_at_ms is None:
+    if issued_at_ms is None or not _INT64_MIN <= issued_at_ms <= _INT64_MAX:
         return None, "invalid_timestamp"
+
+    signature = payload.get("signature")
+    if signature is not None and (
+        not isinstance(signature, str) or not signature.isascii()
+    ):
+        # An HMAC tag is ASCII; anything else cannot be compared, only refused.
+        return None, "invalid_signature"
 
     command = str(payload.get("command", "") or "").strip().upper()
     if not command:
@@ -470,8 +515,26 @@ def _normalize_channel(value: Any) -> str:
 def _safe_int_or_none(value: Any) -> int | None:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
+
+
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+
+
+def _encodable(*texts: str) -> bool:
+    """Whether UTF-8, and so the store and the signature, can carry every text."""
+    try:
+        for text in texts:
+            text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _storable(text: str) -> str:
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 async def _audit_without_verifier(

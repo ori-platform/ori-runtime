@@ -195,9 +195,17 @@ class OfflineTierCTokenVerifier:
             payload_txt = raw
         try:
             decoded = json.loads(payload_txt)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
+            # Malformed JSON, an integer past the conversion limit, or
+            # nesting past the recursion limit: nothing to judge.
             return None
         if not isinstance(decoded, dict):
+            return None
+        try:
+            # JSON can escape a lone surrogate that UTF-8 cannot carry; such
+            # a payload can be neither verified nor audited.
+            json.dumps(decoded, ensure_ascii=False).encode("utf-8")
+        except UnicodeEncodeError:
             return None
         return decoded
 

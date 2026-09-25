@@ -685,7 +685,16 @@ def _strict_object(raw: bytes) -> dict[str, Any]:
 
     try:
         value = json.loads(raw, object_pairs_hook=reject_duplicates)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except FirmwareMqttProvisioningError:
+        raise
+    except (ValueError, RecursionError) as exc:
+        # Not UTF-8 JSON, an integer past the conversion limit, or nesting
+        # past the recursion limit.
+        raise FirmwareMqttProvisioningError("malformed device message") from exc
+    try:
+        # A lone surrogate decodes but cannot be carried back into bytes.
+        json.dumps(value, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError as exc:
         raise FirmwareMqttProvisioningError("malformed device message") from exc
     if not isinstance(value, dict):
         raise FirmwareMqttProvisioningError("device message must be an object")

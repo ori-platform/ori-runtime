@@ -109,6 +109,17 @@ async def test_decode_payload_form_and_json():
     assert js == {"from": "+2348000000000", "text": "NO"}
 
 
+@pytest.mark.parametrize(
+    "body",
+    [b'{"a":' * 50_000 + b"1" + b"}" * 50_000, b'{"text":' + b"9" * 5_000 + b"}"],
+    ids=["deep nesting", "5000-digit integer"],
+)
+def test_decode_payload_refuses_hostile_json(body):
+    server = SMSWebhookServer(sms_action=AsyncMock(), token="secret-token")
+
+    assert server._decode_payload({"content-type": "application/json"}, body) == {}
+
+
 @pytest.mark.asyncio
 async def test_read_request_parses_http_message():
     server = SMSWebhookServer(sms_action=AsyncMock(), token="secret-token")

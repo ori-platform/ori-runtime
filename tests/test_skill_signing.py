@@ -91,6 +91,11 @@ def test_shared_skill_signing_fixture_digest_and_profiles() -> None:
         ({"value": float("inf")}, "non-finite number"),
         ({1: "not-a-string-key"}, "non-string object key"),
         ({"value": object()}, "non-JSON value"),
+        # JSON can escape a lone surrogate; UTF-8, and so the signed bytes,
+        # cannot carry one.
+        ({"value": "t\ud800"}, "lone surrogate"),
+        ({"k\udc00": 1}, "lone surrogate"),
+        ({"nested": ["ok", {"deep": "\udfff"}]}, "lone surrogate"),
     ],
 )
 def test_canonical_signed_payload_rejects_non_json_values(
@@ -99,6 +104,26 @@ def test_canonical_signed_payload_rejects_non_json_values(
 ) -> None:
     with pytest.raises(SkillSecurityError, match=message):
         canonical_signed_payload(payload)  # type: ignore[arg-type]
+
+
+def test_canonical_signed_payload_refuses_nesting_past_the_recursion_limit() -> None:
+    payload: dict[str, object] = {}
+    inner: dict[str, object] = payload
+    for _ in range(5_000):
+        nested: dict[str, object] = {}
+        inner["n"] = nested
+        inner = nested
+
+    with pytest.raises(SkillSecurityError, match="nested too deeply"):
+        canonical_signed_payload(payload)
+
+
+def test_canonical_signed_payload_refuses_an_integer_past_the_conversion_limit() -> (
+    None
+):
+    # YAML parses hexadecimal without the decimal digit limit json.dumps applies.
+    with pytest.raises(SkillSecurityError, match="cannot be represented"):
+        canonical_signed_payload({"note": int("f" * 4_000, 16)})
 
 
 def test_canonical_signed_payload_rejects_cycles() -> None:
