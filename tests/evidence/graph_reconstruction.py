@@ -77,7 +77,7 @@ def reconstruct() -> tuple[int, list[str]]:
         return base64.b64encode(raw).decode("ascii")
 
     # ---- 1. re-derive the anchor identifiers from the registration itself -------
-    reg_doc = load("anchor-registration.json")
+    reg_doc = load("anchor-registration-v2.json")
     valid_reg = next(c for c in reg_doc["cases"] if c["expected"] == "accept")[
         "artifact"
     ]
@@ -258,7 +258,7 @@ def reconstruct() -> tuple[int, list[str]]:
 
     # ---- 7. every declared authenticator posture is independently true ---------
     for name in (
-        "anchor-registration.json",
+        "anchor-registration-v2.json",
         "commissioning-authorization.json",
         "epoch-confirmation.json",
         "checkpoint.json",

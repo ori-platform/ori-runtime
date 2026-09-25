@@ -1,7 +1,7 @@
 # Commissioned safety binding
 
 The runtime actuates a physical circuit only through a **commissioned safety
-binding**: a signed record, per `commissioned-safety-binding/v1` in
+binding**: a signed record, per `commissioned-safety-binding/v2` in
 `ori-specs`, of which sensor observes which circuit, which actuator controls
 it, what its coil states do to the load, and what the load is rated for —
 established at installation by whoever certified the electrical work, and

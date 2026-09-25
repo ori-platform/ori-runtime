@@ -1,7 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""Canonical JSON for the evidence chain, per `ori-specs/evidence/v2`.
+"""Canonical JSON for the evidence chain, per `ori-specs/evidence/v3`.
 
 Bytes are the signing contract. Two implementations that disagree on how a
 value serialises produce signatures that verify on one side and not the other,

@@ -40,7 +40,7 @@ from tests.golden.verify_commissioned_binding_vectors import (
 )
 
 VECTOR_DIR = Path(__file__).parent / "vectors" / "commissioned_safety_binding"
-VECTOR_PATH = VECTOR_DIR / "binding-vectors-v1.json"
+VECTOR_PATH = VECTOR_DIR / "binding-vectors-v2.json"
 
 VECTORS = json.loads(VECTOR_PATH.read_text())
 CASES = VECTORS["cases"]

@@ -9,7 +9,7 @@ rule — each one a way a consumer could look retained zones up, decide what
 changed, or judge a leg fresh — and fails if the corpus lets any of them
 through.
 
-It guards only the misreadings in ori-specs' revision-misreadings-v1.json. A
+It guards only the misreadings in ori-specs' revision-misreadings-v2.json. A
 new way of getting the rule wrong is caught only once it is added to that
 table, so a change to the rule's text adds its misreadings in the same change.
 """
@@ -33,7 +33,7 @@ VECTORS = json.loads(
         Path(__file__).parent
         / "vectors"
         / "commissioned_safety_binding"
-        / "binding-vectors-v1.json"
+        / "binding-vectors-v2.json"
     ).read_text()
 )
 
@@ -59,7 +59,7 @@ TABLE = json.loads(
         Path(__file__).parent
         / "vectors"
         / "commissioned_safety_binding"
-        / "revision-misreadings-v1.json"
+        / "revision-misreadings-v2.json"
     ).read_text()
 )
 REFERENCE: dict[str, Any] = _switches(TABLE["reference"])

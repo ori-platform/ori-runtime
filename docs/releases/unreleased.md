@@ -6,7 +6,7 @@ candidate or release is cut.
 ## Added
 
 - The runtime verifies, retains and reports a commissioned safety binding
-  (`ori-specs/commissioned-safety-binding/v1`). The binding envelope at
+  (`ori-specs/commissioned-safety-binding/v2`). The binding envelope at
   `commissioning/binding.json` beside `ori.yaml` is verified through the
   contract's twelve ordered stages against commissioning anchors the
   installer delivers in the service environment, retained whole in the state
@@ -83,7 +83,7 @@ candidate or release is cut.
   `commissioning binding-export` returns the signed envelope in force, read
   only, for a revision to start from, and never a provisional one. The
   vendored corpus and its misreading table follow ori-specs
-  `commissioned-safety-binding/v1` at `7d9a6e8`.
+  `commissioned-safety-binding/v2` at `06ba18e`.
 - The relay is driven only through the commissioned binding. It is connected
   under the zone's polarity, startup commands the coil `de_energised` through
   it, and `trip_relay`, `close_gas_valve` and `release_relay` resolve to
@@ -139,8 +139,177 @@ candidate or release is cut.
   abandoned, dropped and refused since start, and the counts queued and
   retained now — so a phone dropping readings or sitting on a backlog is
   visible to whoever receives the reports rather than only in its own logs.
+- The runtime produces, delivers and confirms its own evidence anchor
+  registration (`ori-specs/evidence-exchange/v2`). `evidence commission`
+  records the commissioning reference at the device against the epoch the
+  running runtime reports on its health socket, once that epoch is shown to be
+  the one the configured evidence store holds, refusing a malformed reference
+  before touching anything, a missing epoch, a store the runtime does not hold
+  open, and a different reference for the same epoch without `--force`. The
+  command implements the mechanism that predates the operator socket: the
+  bridge reads the configuration document and the health socket and records
+  the reference in the state store itself, with its own refusal codes. The
+  socket-served command `operator-socket/v1` specifies, whose bridge opens no
+  store, is the open gap the contract repository records against the runtime
+  and lands with the operator socket. The
+  runtime seals a registration under the recorded reference and keeps a
+  durable confirmation obligation holding its exact bytes: a courier `queued`
+  retires only the handoff copy, and the obligation re-offers the identical
+  bytes under the release-owned schedule, across restarts, until a verified
+  epoch confirmation for that epoch completes it: the first re-offer 60
+  seconds after the first attempted offer, each later delay doubling to a
+  3,600-second ceiling, measured from the previous attempted offer of those
+  bytes and never from sealing, with the time of each attempt persisted so a
+  restart measures from it. Each epoch's
+  obligation is independent: one left open when the epoch changes keeps being
+  re-offered until it resolves. The effect of an evidence disposition is
+  implemented behind a verification seam, and no disposition is applied on
+  this release: the release ships no disposition key registry, the installed
+  verifier verifies nothing, and no inbound route carries one. Behind that
+  seam a disposition binds to any artifact this device sealed for delivery,
+  under the epoch that artifact names, and has the effect the value gives it:
+  `retained_pending` suspends a registration's re-offers, `artifact_terminal`
+  closes a registration attempt for operator repair or is only recorded
+  against any other artifact, and `epoch_reprovisioning_required` or
+  `identity_replacement_required` stops every new handoff within that epoch or
+  the whole identity -- registrations, checkpoints and delivery envelopes,
+  including copies already waiting for the courier -- while Tier C/D evidence
+  is still signed and sealed locally. What is stopped stays sealed and durable
+  on the device, is neither discarded nor rewritten, and is never re-signed
+  under another identity; an artifact the courier already acknowledged
+  `queued` stays the courier's. An artifact-scoped disposition stops nothing
+  further. A stop is permanent: nothing deletes, clears or weakens one, not a
+  restart, a new commissioning reference, a later disposition, a new epoch or
+  an identity replacement, and `superseded` means only that a disposition has
+  no new effect. The stop record is itself the move into stopped local
+  custody: a stopped artifact leaves active ordering and the pending counts
+  only because the record exists, and is counted in health as
+  `stopped_local_artifact_count`, `stopped_local_bytes` and
+  `oldest_stopped_local_since_ms` (`null` when none is stopped), across
+  current and earlier epochs, matched by the same condition the courier
+  route excludes it by. `pending_export_count` keeps its `runtime-health/v3`
+  meaning, every sealed envelope no courier has acknowledged holding, stopped
+  or not. Bytes the courier held before the stop are the
+  courier's and are not counted. Checkpoints are handed off in the order they
+  were produced: a later checkpoint waits while an earlier one is still its
+  predecessor, whatever its own retry schedule. A checkpoint stops being a
+  predecessor only once the runtime durably records a verified `queued`
+  acknowledgement, a covering stop, or a verified terminal refusal
+  (`malformed` or `binding_mismatch`), which keeps its exact bytes retired as
+  `refused`; `queue_full`, an acknowledgement that fails authentication and no
+  acknowledgement at all leave it a predecessor. This order is a behaviour
+  of the release and not a declared carriage capability: the capability
+  profile carries no `carriage_capabilities` member, because declaring
+  `checkpoint_fifo_handoff_v1` is an evidence-epoch migration that the
+  evidence authority must be upgraded for first, taken together with the
+  disposition purpose when the disposition verifier ships; until then a
+  checkpoint rollback under this epoch is refused artifact-scoped, never
+  identity-scoped. The acknowledgement router retires a checkpoint on a
+  courier's verified `malformed` from any gateway, while the contract counts
+  `malformed` as terminal only from a gateway claiming the evidence carriage
+  contract; this runtime carries under `gateway-api/v1`, and the distinction
+  is unobservable while the capability is undeclared. Before the courier
+  acknowledges `queued`, the handoff copy is retried on the outbox schedule,
+  separate from the obligation's re-offers. The
+  profile grammar accepts the member, so a registration declaring one is
+  derived as `runtime-evidence-anchor/v2` specifies, and an empty, unsorted,
+  repeated or unknown entry is refused before derivation. The earliest checkpoint is
+  selected on its own, so any number of checkpoints waiting behind it cannot
+  crowd a registration or an envelope out of a drain, and registrations and
+  re-offers that are not yet due cannot hide one that is. The stop is read
+  again immediately before each handoff, so one applied during a drain holds
+  what that drain has not yet carried. An acknowledgement for a copy never
+  handed off is refused rather than retiring it. Every retained copy is
+  checked before it is carried: one whose bytes are not UTF-8 text, or no
+  longer hash to the digest recorded with them, is kept where it is, taken out
+  of the route and the checkpoint order, and recorded once as a local fault
+  in the evidence store; such a row can no longer fail the query the route
+  runs, which previously took the route down on every reconnect. Health
+  reports no count of such faults, since `runtime-health/v3` defines none. A
+  disposition is
+  bound only to an artifact sealed under this device identity, so evidence
+  files carried over from another identity cannot stop this one, and copies
+  another identity sealed are never carried; health counts them as
+  `foreign_identity_pending_count`. A copy counts as another identity's only
+  when it is a JSON object naming a text `device_id` other than this one;
+  bytes that are not JSON, a non-object, and a missing or non-text
+  `device_id` are carried so the courier can refuse and retire them, and bytes
+  that are not JSON are never read as JSON, so no row can take the courier
+  route down. A disposition for a registration already confirmed or closed,
+  or a stop already in force, is refused `superseded`. `evidence commission`
+  reports the status the runtime will actually hold after the reference is
+  recorded: `confirmed`, the current status under a stop, and otherwise
+  `pending_confirmation`; a snapshot naming no recognised status refuses the
+  command rather than guessing. Health reports, per `runtime-health/v3`,
+  `anchor_epoch_id`, `registration_status` (`disabled`,
+  `pending_authorisation`, `pending_confirmation` or `confirmed`; an attempt a
+  terminal disposition closed stays `pending_confirmation`, keeps its pending
+  time and overdue diagnostic, and is reported as `registration_offer:
+  closed`, since the reference is still held and no confirmation arrived),
+  `registration_pending_since_ms`, `registration_confirmation_overdue`,
+  `registration_offer`, `last_disposition`, `foreign_identity_pending_count`,
+  the three stopped-local diagnostics and
+  `delivery_stop_status` (`not_stopped`, `epoch_stopped` or
+  `identity_stopped`); none of them gates, delays or suppresses an
+  approved Tier C action or any Tier D execution. The authorisation-based
+  registrar, which could never produce anything because the device never
+  holds an authorisation, is removed. An epoch confirmation applies only to a
+  registration this device sealed for that epoch and key, and a late one for
+  an earlier epoch no longer moves the active epoch back.
+- Evidence waiting for the courier is republished at once after the clock is
+  stepped back past its last attempt, for delivery envelopes and checkpoints
+  as well as registrations; previously an envelope or checkpoint waited for
+  the clock to catch up. Backoff for every evidence artifact stops doubling at
+  its ceiling, so an attempt count, which is unbounded, can no longer
+  overflow the delay and take the courier route down.
+- Known limits of the anchor registration. `registration_pending_since_ms` is
+  the wall-clock time the registration was sealed, and
+  `registration_confirmation_overdue` compares it with the wall clock, true
+  once 7,200 seconds have elapsed: a
+  clock stepped forward reports overdue early, one stepped back reports it
+  late, and one set before the sealing time reports it overdue at once,
+  because the time spent pending cannot then be measured and reporting
+  `false` would hide a stall for as long as the step was large. It stays on the
+  wall clock because the contract defines the field as that observed time and
+  a monotonic clock restarts at every boot, so it cannot carry a pending
+  duration across a restart; the flag is a diagnostic and gates nothing. A
+  `--force` replacement withdraws the superseded registration's courier copy,
+  but rolling back to the previous release puts that copy back in circulation,
+  because the previous release does not read the withdrawal; and `--force`
+  cannot recall a copy the gateway has already queued, which reaches the
+  evidence authority as a pending-registration conflict cleared by
+  cancellation there. A store in which an earlier release applied an epoch
+  confirmation without a sealed registration reports `pending_authorisation`
+  here, while the firmware confirmation coordinator still reads that epoch as
+  active from the table the earlier release wrote. `evidence commission`
+  records the reference in a short `BEGIN IMMEDIATE` transaction on the live
+  state store, bounded by a 3-second lock wait; while it holds the lock, and
+  for as long as a stalled command held it, the runtime's own state-store
+  writes wait up to the store's busy timeout. Action executors do not wait on
+  it; the writes that do are records, such as the action log and the
+  offline-token audit. Opening a store written by the previous release is
+  tested for the evidence ledger against the schema v2.5.0-rc.11 shipped,
+  vendored as a fixture; the state-store half of that test simulates the
+  older store by dropping the new reference table rather than vendoring the
+  previous state-store schema.
 
 ## Changed
+
+- The vendored ori-specs corpora are selected by the contract version each
+  set claims, now that a vector directory can hold more than one version: a
+  `<stem>-v<N>.json` belongs to version N, an untokened file to the original
+  version and to each later one that has not replaced it, and
+  `scripts/refresh-evidence-vectors.sh` vendors, per stem, the newest file at
+  or below the claimed version and nothing from a later one. Each manifest
+  records the version as `contract_version`. The runtime claims
+  `evidence-exchange/v2` (with its receiver-state corpus), `evidence/v3`
+  (its chain-row corpus is `chain-row-v3.json`, vendored under
+  `tests/vectors/evidence`), `runtime-evidence-anchor/v2` and
+  `commissioned-safety-binding/v2`, each pinned at ori-specs `06ba18e`; the
+  gateway-api, safety-profile and sensor-configuration sets are unchanged and
+  keep their pins. The disposition corpus is held to for its re-offer
+  schedule, its overdue bound and its canonical bytes; the courier's routing
+  projection is vendored for the drift check and owned by the gateway.
 
 - Three action-registry entries that governed physical actions with no executor
   behind them — `emergency_cutoff`, `open_safety_circuit` and

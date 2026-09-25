@@ -3,7 +3,7 @@
 
 """Derive the identifiers this runtime seals evidence under.
 
-Implements `ori-specs/runtime-evidence-anchor/v1.md`. Both identifiers are
+Implements `ori-specs/runtime-evidence-anchor/v2.md`. Both identifiers are
 derived and never configured: they name the key that signs immutable evidence,
 so a value an operator can set is a value that will eventually be set wrongly on
 some device, permanently. A sealed envelope cannot be rewritten, and the
@@ -32,14 +32,36 @@ from ori.security.evidence.canonical import canonical_json
 #: posture without changing this answer, so it must not promote the value.
 POSTURE_SOFTWARE_WRAPPED = "software_wrapped"
 
-#: The closed purpose vocabulary from evidence-exchange/v1.
+#: The closed purpose vocabulary from evidence-exchange/v2.
 KEY_PURPOSES = frozenset(
     {
         "evidence_device",
         "commissioning_authority",
         "evidence_authority_receipt",
         "evidence_authority_epoch",
+        "evidence_authority_disposition",
         "gateway_custody",
+    }
+)
+
+#: The closed carriage-capability vocabulary from runtime-evidence-anchor/v2.
+#: A capability is declared only by a release that guarantees it, and this
+#: release declares none: the declaration is an epoch migration, taken together
+#: with the disposition purpose when the disposition verifier ships.
+CARRIAGE_CAPABILITIES = frozenset({"checkpoint_fifo_handoff_v1"})
+
+#: Every member a profile document may carry. Anything else is refused: a
+#: member the derivation ignores would be signed into the registration while
+#: the epoch was derived without it, and the authority recomputes from what is
+#: carried.
+PROFILE_MEMBERS = frozenset(
+    {
+        "v",
+        "artifact_purposes",
+        "chain_protocol",
+        "signing_alg",
+        "firmware_freshness_verified",
+        "carriage_capabilities",
     }
 )
 
@@ -93,25 +115,99 @@ class EvidenceCapabilityProfile:
     #: runtime that records supplied coordinates without validating them against
     #: confirmed registration and epoch state reports False.
     firmware_freshness_verified: bool = False
+    #: Carriage behaviours this release guarantees. Empty means none declared,
+    #: and the member is then absent from the document.
+    carriage_capabilities: tuple[str, ...] = ()
+
+    @classmethod
+    def from_document(cls, document: dict[str, Any]) -> "EvidenceCapabilityProfile":
+        """Read a profile from its wire form, refusing one that cannot derive.
+
+        An explicit empty `carriage_capabilities` is refused here rather than
+        read as "none declared": the contract says a profile declaring none
+        omits the member, so an empty array is a malformed profile.
+        """
+        if not isinstance(document, dict):
+            raise AnchorDerivationError("the capability profile must be an object")
+        unknown = sorted(set(document) - PROFILE_MEMBERS)
+        if unknown:
+            raise AnchorDerivationError(
+                f"the capability profile carries members the epoch does not derive "
+                f"from: {unknown}"
+            )
+        try:
+            version = document["v"]
+            purposes = document["artifact_purposes"]
+            protocol = document["chain_protocol"]
+            alg = document["signing_alg"]
+            freshness = document["firmware_freshness_verified"]
+        except KeyError as exc:
+            raise AnchorDerivationError(
+                "the capability profile is missing a field the epoch derives from"
+            ) from exc
+        # `True == 1` and `1.0 == 1`, so the type is checked, not the value alone.
+        if type(version) is not int or version != PROFILE_VERSION:
+            raise AnchorDerivationError("the capability profile version is not 1")
+        # Typed strictly rather than coerced: `bool("false")` is True, and a
+        # profile read leniently derives an epoch its own document contradicts.
+        if not isinstance(purposes, list):
+            raise AnchorDerivationError("artifact_purposes must be a list")
+        if not isinstance(protocol, str) or not isinstance(alg, str):
+            raise AnchorDerivationError(
+                "chain_protocol and signing_alg must be strings"
+            )
+        if not isinstance(freshness, bool):
+            raise AnchorDerivationError("firmware_freshness_verified must be a boolean")
+        capabilities: tuple[str, ...] = ()
+        if "carriage_capabilities" in document:
+            declared = document["carriage_capabilities"]
+            if not isinstance(declared, list) or not declared:
+                raise AnchorDerivationError(
+                    "carriage_capabilities must be a non-empty list when present"
+                )
+            capabilities = tuple(declared)
+        profile = cls(
+            artifact_purposes=tuple(purposes),
+            chain_protocol=protocol,
+            signing_alg=alg,
+            firmware_freshness_verified=freshness,
+            carriage_capabilities=capabilities,
+        )
+        profile.as_document()
+        return profile
 
     def as_document(self) -> dict[str, Any]:
         purposes = list(self.artifact_purposes)
-        if sorted(purposes) != purposes:
-            raise AnchorDerivationError("artifact_purposes must be sorted")
-        if len(set(purposes)) != len(purposes):
-            raise AnchorDerivationError("artifact_purposes must not repeat a purpose")
-        unknown = [p for p in purposes if p not in KEY_PURPOSES]
-        if unknown:
-            raise AnchorDerivationError(
-                f"artifact_purposes contains unknown purposes: {unknown}"
-            )
-        return {
+        _check_sorted_vocabulary(purposes, "artifact_purposes", KEY_PURPOSES, "purpose")
+        capabilities = list(self.carriage_capabilities)
+        _check_sorted_vocabulary(
+            capabilities, "carriage_capabilities", CARRIAGE_CAPABILITIES, "capability"
+        )
+        document: dict[str, Any] = {
             "artifact_purposes": purposes,
             "chain_protocol": self.chain_protocol,
             "firmware_freshness_verified": bool(self.firmware_freshness_verified),
             "signing_alg": self.signing_alg,
             "v": PROFILE_VERSION,
         }
+        if capabilities:
+            document["carriage_capabilities"] = capabilities
+        return document
+
+
+def _check_sorted_vocabulary(
+    entries: list[Any], field: str, vocabulary: frozenset[str], noun: str
+) -> None:
+    """Sorted, without repeats, and drawn from the closed vocabulary."""
+    if any(not isinstance(entry, str) for entry in entries):
+        raise AnchorDerivationError(f"{field} must contain only strings")
+    if sorted(entries) != entries:
+        raise AnchorDerivationError(f"{field} must be sorted")
+    if len(set(entries)) != len(entries):
+        raise AnchorDerivationError(f"{field} must not repeat a {noun}")
+    unknown = [entry for entry in entries if entry not in vocabulary]
+    if unknown:
+        raise AnchorDerivationError(f"{field} contains unknown {noun}s: {unknown}")
 
 
 def _digest(document: dict[str, Any]) -> str:

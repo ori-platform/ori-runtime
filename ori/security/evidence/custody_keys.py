@@ -3,7 +3,7 @@
 
 """Custody secret generations, and the identifiers derived from them.
 
-`evidence-exchange/v1` authenticates a custody acknowledgement under a secret
+`evidence-exchange/v2` authenticates a custody acknowledgement under a secret
 dedicated to that purpose -- not the runtime-gateway envelope secret. The two
 are symmetric secrets between the same two parties, which is exactly why they
 must not be the same bytes: domain separation makes the preimages differ, but

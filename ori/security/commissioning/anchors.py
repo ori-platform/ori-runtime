@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Commissioning anchors: delivered out of band, compared as key material.
 
-The locations are constants of commissioned-safety-binding/v1: the installer
+The locations are constants of commissioned-safety-binding/v2: the installer
 writes them into the service environment, and no configuration document names
 or overrides them. `anchor_collision` is decided here, at configuration load,
 before any binding is seen.

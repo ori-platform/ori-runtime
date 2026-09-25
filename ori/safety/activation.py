@@ -67,7 +67,7 @@ class ActivatedProfile:
     # consumer that claims a pair is protecting something can re-check it,
     # rather than inferring it from `activate()` having refused candidates
     # earlier. A check that holds only because an earlier check held is not a
-    # boundary, and this one is load-bearing for `runtime-health/v2`'s
+    # boundary, and this one is load-bearing for `runtime-health/v3`'s
     # `protection_claim`.
     profile_status: str
 

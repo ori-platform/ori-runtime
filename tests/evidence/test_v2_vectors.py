@@ -36,7 +36,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
-VECTORS = pathlib.Path(__file__).parent.parent / "vectors" / "evidence_v2"
+VECTORS = pathlib.Path(__file__).parent.parent / "vectors" / "evidence"
 
 # From ori-specs evidence/v2.md. Restated rather than imported: a conformance
 # test that reads its expectations from the thing under test proves nothing.
@@ -303,7 +303,7 @@ def test_event_ids_derive_from_the_published_name_format():
 
 
 def test_rows_chain_hash_and_verify():
-    vector = load("chain-row.json")
+    vector = load("chain-row-v3.json")
     public = Ed25519PrivateKey.from_private_bytes(
         bytes.fromhex(vector["device_seed_hex"])
     ).public_key()
@@ -461,7 +461,7 @@ def _authority_rule_violated(payload: object) -> int | None:
 
 def test_every_rejection_rule_has_a_case():
     """Nineteen rules, nineteen concrete rows. A rule without one is untested."""
-    covered = {case["rule"] for case in load("chain-row.json")["rejection_cases"]}
+    covered = {case["rule"] for case in load("chain-row-v3.json")["rejection_cases"]}
     assert covered == set(range(1, 20)), (
         f"rules without a case: {set(range(1, 20)) - covered}"
     )
@@ -476,7 +476,7 @@ def test_each_rejection_case_violates_exactly_the_rule_it_names():
     coverage it does not have. Two cases in the contract's first draft did
     exactly that, and this assertion is what found them.
     """
-    vector = load("chain-row.json")
+    vector = load("chain-row-v3.json")
     public = Ed25519PrivateKey.from_private_bytes(
         bytes.fromhex(vector["device_seed_hex"])
     ).public_key()
@@ -499,7 +499,7 @@ def test_each_rejection_case_violates_exactly_the_rule_it_names():
 
 def test_a_valid_row_violates_no_rule():
     """The validator must not reject everything, or the test above proves nothing."""
-    vector = load("chain-row.json")
+    vector = load("chain-row-v3.json")
     public = Ed25519PrivateKey.from_private_bytes(
         bytes.fromhex(vector["device_seed_hex"])
     ).public_key()
@@ -530,7 +530,9 @@ def test_a_valid_row_violates_no_rule():
 
 def test_a_v1_row_is_rejected_rather_than_reinterpreted():
     """Rule 11 is what makes version confusion impossible rather than merely unlikely."""
-    case = next(c for c in load("chain-row.json")["rejection_cases"] if c["rule"] == 11)
+    case = next(
+        c for c in load("chain-row-v3.json")["rejection_cases"] if c["rule"] == 11
+    )
     assert case["row"]["envelope"]["schema_version"] != SCHEMA_VERSION
     assert case["expected"] == "reject"
 

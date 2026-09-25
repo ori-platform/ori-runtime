@@ -1,0 +1,377 @@
+{
+  "vector_set": "runtime-evidence-anchor/v1",
+  "contract": "ori-specs runtime-evidence-anchor/v1.md",
+  "purpose": "Cross-language agreement on how a runtime derives the identifiers it seals evidence under. An implementation passes when it reproduces key_id, capability_hash and anchor_epoch_id for every case. refused_profiles are refused before derivation; migrations state what an artifact_purposes change keeps and what it does not.",
+  "canonicalisation": "evidence-exchange/v1.md canonical encoding",
+  "warning": "Published test keys. They must never sign anything real.",
+  "cases": [
+    {
+      "name": "baseline",
+      "note": "A runtime with a software-wrapped key and no verified firmware freshness.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        }
+      },
+      "key_id": "sha256:d56fc6b582592159b9004669a86f4b269beb73c96d34689d321e7f39fd00d123",
+      "capability_hash": "sha256:f1a8082773c3851455614af8c8fd7bf3d35844e8b7d81468b2c8d0ea7ea35421",
+      "anchor_epoch_id": "sha256:b5ed901ed1ea693daa7c9a314728d27add1a1476d30ff84e2363a9ad0b2914e2"
+    },
+    {
+      "name": "rotated_key",
+      "note": "Same device, new key. key_id and anchor_epoch_id both change.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        }
+      },
+      "key_id": "sha256:dd5c7616e2e8888d261f3ff55175bf5fb026e809bef9812402679c9bcc281ed4",
+      "capability_hash": "sha256:f1a8082773c3851455614af8c8fd7bf3d35844e8b7d81468b2c8d0ea7ea35421",
+      "anchor_epoch_id": "sha256:b863c63ac0a64b7ee39156a02d73a49548c076a1383f3c73fd9b788ba7fc2b4b"
+    },
+    {
+      "name": "other_device",
+      "note": "Same key material, different device. Identities must not collide.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-02",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        }
+      },
+      "key_id": "sha256:d33dc302246a2c34ad34abb819e2582cf828748f0ec9c8169e285c00dcece3bd",
+      "capability_hash": "sha256:f1a8082773c3851455614af8c8fd7bf3d35844e8b7d81468b2c8d0ea7ea35421",
+      "anchor_epoch_id": "sha256:14b12c5535e9dc9812f3ad26bd0394d24ae758c6c215c49e6047434c7e944ad4"
+    },
+    {
+      "name": "posture_hardware",
+      "note": "Custody promoted to hardware-backed. key_id is unchanged; the epoch is not.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "hardware_key",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        }
+      },
+      "key_id": "sha256:d56fc6b582592159b9004669a86f4b269beb73c96d34689d321e7f39fd00d123",
+      "capability_hash": "sha256:f1a8082773c3851455614af8c8fd7bf3d35844e8b7d81468b2c8d0ea7ea35421",
+      "anchor_epoch_id": "sha256:fa3812560a77e58f68e829c545ce06d8c19ba5d62db6892482dbcf382b0492f0"
+    },
+    {
+      "name": "freshness_verified",
+      "note": "Firmware freshness becomes atomically verified: a new trust proposition.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": true,
+          "signing_alg": "ed25519",
+          "v": 1
+        }
+      },
+      "key_id": "sha256:d56fc6b582592159b9004669a86f4b269beb73c96d34689d321e7f39fd00d123",
+      "capability_hash": "sha256:1efb10acda2c31cded52fd7a40286ac87784c61ad9bb3d4034e0c0a520f8ea95",
+      "anchor_epoch_id": "sha256:c02f404567a32208141c0b8a9b2ed0fa72cfa9907e8c1db1caab4e236f4e0429"
+    },
+    {
+      "name": "protocol_v3",
+      "note": "A future chain protocol changes the capability hash and the epoch.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v3",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        }
+      },
+      "key_id": "sha256:d56fc6b582592159b9004669a86f4b269beb73c96d34689d321e7f39fd00d123",
+      "capability_hash": "sha256:9e7f40b34a52f5659074ac4fc5a30c8d1be1971d95313efa288679589ee39de4",
+      "anchor_epoch_id": "sha256:2147bbf681f2b89d3be53c2901aec9b92d66e3c6ae50a21ca372addb9ac8285b"
+    },
+    {
+      "name": "fewer_purposes",
+      "note": "A runtime that verifies fewer artifact purposes.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        }
+      },
+      "key_id": "sha256:d56fc6b582592159b9004669a86f4b269beb73c96d34689d321e7f39fd00d123",
+      "capability_hash": "sha256:efc3c0014b59759f4bdcb04f8f8ac35793eed9b5bea3dd2046e8fd8e2eb1469a",
+      "anchor_epoch_id": "sha256:c1e9d8ca6e357bb0a2e628c32ae252860f975b0e92e2f41bc5bdce1f94149cb1"
+    },
+    {
+      "name": "with_disposition_purpose",
+      "note": "Baseline plus evidence_authority_disposition: the same device and key under a new capability hash and epoch. This is the epoch migration a release that starts verifying dispositions declares.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_disposition",
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        }
+      },
+      "key_id": "sha256:d56fc6b582592159b9004669a86f4b269beb73c96d34689d321e7f39fd00d123",
+      "capability_hash": "sha256:89b6fe261d57f36a88f6a57eda24245ccce09c47f824a4ab35ec234ff5a0d88f",
+      "anchor_epoch_id": "sha256:45802183d75c516e3c8697f27fcf18ba75ee120b09103bace899f5f6dcc19227"
+    },
+    {
+      "name": "with_fifo_handoff",
+      "note": "The disposition-purpose runtime of with_disposition_purpose, released with FIFO checkpoint handoff and declaring checkpoint_fifo_handoff_v1: the key is unchanged and the epoch is new.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_disposition",
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1,
+          "carriage_capabilities": [
+            "checkpoint_fifo_handoff_v1"
+          ]
+        }
+      },
+      "key_id": "sha256:d56fc6b582592159b9004669a86f4b269beb73c96d34689d321e7f39fd00d123",
+      "capability_hash": "sha256:f58ace651cd4ed59de9299482e4e8dfdf6db18da2e95eac4d6a3ada82c3f4083",
+      "anchor_epoch_id": "sha256:1160bbe722e5d2f2f6957fceb95db86ce7b9975ebd05218f0d7fdbc6030ff839"
+    }
+  ],
+  "refused_profiles": [
+    {
+      "name": "unsorted_purposes",
+      "note": "Reordering purposes creates no epoch: input that is not sorted is refused.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "gateway_custody",
+            "evidence_authority_receipt",
+            "evidence_authority_epoch",
+            "evidence_authority_disposition"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        }
+      },
+      "refusal": "unsorted"
+    },
+    {
+      "name": "duplicated_purpose",
+      "note": "A duplicated purpose is refused rather than derived.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        }
+      },
+      "refusal": "duplicated"
+    },
+    {
+      "name": "unknown_purpose",
+      "note": "A purpose outside the closed vocabulary is refused.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_everything",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        }
+      },
+      "refusal": "unknown"
+    },
+    {
+      "name": "empty_carriage_capabilities",
+      "note": "A profile declaring no carriage capability omits the member; an empty array is refused, so one profile has one encoding.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_disposition",
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1,
+          "carriage_capabilities": []
+        }
+      },
+      "refusal": "empty_capabilities"
+    },
+    {
+      "name": "duplicated_carriage_capability",
+      "note": "A duplicated carriage capability is refused rather than derived.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_disposition",
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1,
+          "carriage_capabilities": [
+            "checkpoint_fifo_handoff_v1",
+            "checkpoint_fifo_handoff_v1"
+          ]
+        }
+      },
+      "refusal": "duplicated_capability"
+    },
+    {
+      "name": "unknown_carriage_capability",
+      "note": "A carriage capability outside the closed vocabulary is refused.",
+      "inputs": {
+        "device_id": "energy-monitor-ikeja-01",
+        "public_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_disposition",
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1,
+          "carriage_capabilities": [
+            "checkpoint_any_order_v1"
+          ]
+        }
+      },
+      "refusal": "unknown_capability"
+    }
+  ],
+  "migrations": [
+    {
+      "name": "baseline_to_disposition_purpose",
+      "from": "baseline",
+      "to": "with_disposition_purpose",
+      "note": "The upgrade changes only the epoch. The reference recorded against the baseline epoch does not bind the new one; a new authorisation and reference are needed, and the baseline epoch's confirmation is not transferred.",
+      "expected": {
+        "device_id_unchanged": true,
+        "key_id_unchanged": true,
+        "epoch_changed": true,
+        "counters_unchanged": true,
+        "reference_binds_new_epoch": false,
+        "confirmation_transfers": false
+      }
+    }
+  ]
+}

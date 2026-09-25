@@ -26,7 +26,7 @@ CORPUS = json.loads(
         Path(__file__).parent.parent
         / "vectors"
         / "commissioned_safety_binding"
-        / "binding-vectors-v1.json"
+        / "binding-vectors-v2.json"
     ).read_text()
 )
 

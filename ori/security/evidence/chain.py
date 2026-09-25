@@ -1,7 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""The runtime's own evidence chain, per `ori-specs/evidence/v2`.
+"""The runtime's own evidence chain, per `ori-specs/evidence/v3`.
 
 The runtime produces hash-chained, device-signed rows locally. It does not
 implement an authoritative store: cross-device ordering, receipt issuance, gap
@@ -103,7 +103,7 @@ BEGIN
 END;
 """
 
-# The eight fields evidence/v2 defines. A row carrying more or fewer is
+# The eight fields evidence/v3 defines. A row carrying more or fewer is
 # reported rather than tolerated: an unknown field would be covered by the
 # signature while meaning nothing to a verifier.
 ENVELOPE_FIELDS = frozenset(

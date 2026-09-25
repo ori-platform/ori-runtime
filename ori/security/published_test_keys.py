@@ -27,6 +27,7 @@ from typing import Final
 PUBLISHED_TEST_KEYS_B64: Final[tuple[str, ...]] = (
     "0EqyMnQrtKs6E2i9RhXk5tAiSrcaAWuvhSCjMsl3hzc=",
     "11l5O7wTooGagnx2rbb7qKSa7gB/SfLQmS2ZuCWtLEg=",
+    "3eO8zsfzpmoRFfRdcg9NwTXDrnxOItyjj9se/WpJX/g=",
     "5zTqbCtiV95yNV5HKqBaTEh+a0Y8Ap7TBt8vAbVja1g=",
     "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
     "E9mQinCSWZLtVGAH0n9Q2mi6chfvYqw8ynhFKf8QRxw=",

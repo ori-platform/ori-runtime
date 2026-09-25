@@ -1,7 +1,7 @@
 # Commissioned safety binding — vector tools
 
 Authoring and checking tools for the corpus defined by
-`ori-specs/commissioned-safety-binding/v1.md`. The contract repository holds the
+`ori-specs/commissioned-safety-binding/v2.md`. The contract repository holds the
 authority. `tests/vectors/commissioned_safety_binding/` is a vendored copy whose
 `MANIFEST.json` records the ori-specs commit it came from and the digest of the
 file; `scripts/refresh-evidence-vectors.sh` compares both against ori-specs in

@@ -19,12 +19,8 @@ from ori.security.evidence.chain import (
 from ori.security.evidence.first_party import (
     ACTION_EVENT_TYPE,
     FirstPartyEvidenceAttestor,
-    PendingAuthorisationRegistrar,
 )
-from ori.security.evidence.registrar import (
-    AnchorRegistrationRequest,
-    RegistrationStatus,
-)
+from ori.security.evidence.registration import RegistrationStatus
 
 
 def _text(value) -> str:
@@ -223,33 +219,19 @@ class TestHonestClaims:
 
 
 class TestRegistrationRemainsPending:
-    def test_no_authorisation_produces_no_registration(self) -> None:
-        outcome = PendingAuthorisationRegistrar().register(
-            AnchorRegistrationRequest(
-                device_id=DEVICE,
-                public_key_hex="ab" * 32,
-                anchor_epoch_id="epoch-1",
-                posture="sealed_flash",
-            )
-        )
-        assert outcome.status is RegistrationStatus.PENDING_AUTHORISATION
-        assert outcome.registration is None
-        assert not outcome.authoritative
+    async def test_no_reference_produces_no_registration(self, attestor) -> None:
+        status = await attestor.reconcile_registration(None)
+        assert status is RegistrationStatus.PENDING_AUTHORISATION
+        assert await attestor.outbound.pending_artifacts() == []
 
-    async def test_epoch_is_not_active_merely_because_it_was_requested(
+    async def test_epoch_is_not_active_merely_because_it_was_sealed(
         self, attestor
     ) -> None:
         """Authority arrives only as a signed confirmation through ingest."""
+        status = await attestor.reconcile_registration("sha256:" + "ab" * 32)
+        assert status is RegistrationStatus.PENDING_CONFIRMATION
         backend = attestor.confirmation_backend()
         assert backend is not None
-        backend.register_anchor(
-            AnchorRegistrationRequest(
-                device_id=DEVICE,
-                public_key_hex=attestor.public_key_hex,
-                anchor_epoch_id=attestor.anchor.anchor_epoch_id,
-                posture=attestor.anchor.posture,
-            )
-        )
         assert backend.active_anchor_epoch_id(DEVICE) is None
 
 

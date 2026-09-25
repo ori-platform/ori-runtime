@@ -21,14 +21,25 @@ from dataclasses import dataclass
 
 from ori.security.evidence.authority_keys import AuthorityKey
 from ori.security.evidence.custody_keys import CustodyKeyRegistry
+from ori.security.evidence.disposition import (
+    DispositionVerifier,
+    NoDispositionVerifier,
+    disposition_fault,
+)
 from ori.security.evidence.ingest import (
+    REJECT_BINDING_MISMATCH,
+    REJECT_MALFORMED,
     REJECT_UNKNOWN_KEY,
     IngestRejectedError,
     verify_custody_acknowledgement,
     verify_delivery_receipt,
     verify_epoch_confirmation,
 )
-from ori.security.evidence.ledger import EvidenceDeliveryLedger
+from ori.security.evidence.ledger import (
+    DeliveryLedgerError,
+    DispositionRefusedError,
+    EvidenceDeliveryLedger,
+)
 from ori.utils.time_utils import now_ms
 
 ACCEPTED = "accepted"
@@ -61,8 +72,12 @@ class EvidenceIngestService:
         device_id: str,
         device_pubkey_hex: str,
         custody_keys: CustodyKeyRegistry | None = None,
+        disposition_verifier: DispositionVerifier | None = None,
     ) -> None:
         self._ledger = ledger
+        self._disposition_verifier: DispositionVerifier = (
+            disposition_verifier or NoDispositionVerifier()
+        )
         self._registry = registry
         self._device_id = str(device_id)
         self._device_pubkey_hex = str(device_pubkey_hex)
@@ -173,6 +188,45 @@ class EvidenceIngestService:
             artifact="delivery_receipt", state=ACCEPTED, applied_sequences=applied
         )
 
+    def accept_disposition(self, artifact: object) -> IngestOutcome:
+        """Apply a verified evidence disposition, in the contract's order.
+
+        The verifier is the seam for steps 1 to 3; the one installed on this
+        release verifies nothing, so every disposition is refused and nothing
+        changes. Steps 4 to 6 are decided here and in the ledger, and a refusal
+        at any step changes nothing.
+        """
+        try:
+            verified = self._disposition_verifier.verify_disposition(artifact)
+        except Exception:
+            verified = None
+        if verified is None:
+            return self._refuse(
+                "disposition",
+                IngestRejectedError(
+                    REJECT_UNKNOWN_KEY, "no disposition verifies on this release"
+                ),
+            )
+        fault = disposition_fault(verified)
+        if fault is not None:
+            return self._refuse(
+                "disposition", IngestRejectedError(REJECT_MALFORMED, fault)
+            )
+        if verified.device_id != self._device_id:
+            return self._refuse(
+                "disposition",
+                IngestRejectedError(
+                    REJECT_BINDING_MISMATCH, "the disposition names another device"
+                ),
+            )
+        try:
+            applied = self._ledger._apply_verified_disposition(verified, at_ms=now_ms())
+        except DispositionRefusedError as exc:
+            return self._refuse(
+                "disposition", IngestRejectedError(exc.reason, exc.detail)
+            )
+        return IngestOutcome(artifact="disposition", state=ACCEPTED, detail=applied)
+
     def accept_epoch_confirmation(self, artifact: object) -> IngestOutcome:
         """Persist a confirmed epoch, which is what makes firmware authority effective.
 
@@ -191,14 +245,23 @@ class EvidenceIngestService:
         except IngestRejectedError as exc:
             return self._refuse("epoch_confirmation", exc)
 
-        self._ledger._apply_verified_epoch(
-            verified.device_id,
-            anchor_epoch_id=verified.anchor_epoch_id,
-            pubkey_hex=verified.pubkey_hex,
-            actor=verified.actor,
-            confirmed_at_ms=verified.confirmed_at_ms,
-            key_id=verified.key_id,
-        )
+        # Bound to a registration this device sealed for that epoch and key,
+        # whichever epoch it is: the ledger refuses anything else.
+        try:
+            self._ledger._apply_verified_epoch_confirmation(
+                verified.device_id,
+                anchor_epoch_id=verified.anchor_epoch_id,
+                pubkey_hex=verified.pubkey_hex,
+                actor=verified.actor,
+                confirmed_at_ms=verified.confirmed_at_ms,
+                key_id=verified.key_id,
+                closed_at_ms=now_ms(),
+            )
+        except DeliveryLedgerError as exc:
+            return self._refuse(
+                "epoch_confirmation",
+                IngestRejectedError(REJECT_BINDING_MISMATCH, str(exc)),
+            )
         return IngestOutcome(artifact="epoch_confirmation", state=ACCEPTED)
 
 
@@ -210,10 +273,6 @@ class ConfirmedEpochReader:
     the off-device topology that answer arrives as a signed confirmation and is
     persisted by ingest, so this is the same question asked of the same
     conceptual authority — reached differently.
-
-    Registration is deliberately absent. Pushing an anchor to the authority is
-    an outbound artifact this runtime does not yet produce, tracked as #350;
-    until it exists a confirmation cannot be *caused* from here, only observed.
     """
 
     def __init__(self, ledger: EvidenceDeliveryLedger) -> None:

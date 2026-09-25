@@ -594,7 +594,7 @@ actions:
   coap:
     enabled: false
     timeout_s: 2.0
-    retries: 1
+    retries: 1  # 0 to 10; a larger value is refused at load
     allowed_hosts: ["192.168.1.70"]  # required when enabled
     commands:
       open_bypass_valve:

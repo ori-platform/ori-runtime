@@ -299,6 +299,7 @@ jobs:
             tests/evidence/test_disclosure.py \
             tests/evidence/test_harness.py \
             tests/test_ci_scopes.py \
+            tests/test_docs_registration_status.py \
             tests/test_linux_bootstrap.py \
             tests/test_release_publication.py
 

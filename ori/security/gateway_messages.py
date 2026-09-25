@@ -510,7 +510,7 @@ def _canonical_json(value: Any) -> str:
     # allow_nan=False refuses NaN and Infinity, which json.dumps would otherwise
     # emit as bare NaN/Infinity tokens that no conforming JSON parser accepts --
     # the Go gateway rejects them outright, so the message would be unverifiable.
-    # This is a validity constraint, not evidence/v2's D-011 agreement zone: gateway
+    # This is a validity constraint, not evidence/v3's D-011 agreement zone: gateway
     # MQTT carries operational telemetry whose numeric range is deliberately broader.
     return json.dumps(
         value,

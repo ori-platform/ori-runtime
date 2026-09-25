@@ -22,11 +22,6 @@ from ori.security.evidence.bound import (
 )
 from ori.security.evidence.executor import EvidenceExecutor
 from ori.security.evidence.ingest_service import IngestOutcome
-from ori.security.evidence.registrar import (
-    AnchorRegistrationRequest,
-    RegistrationOutcome,
-    RegistrationStatus,
-)
 
 
 class _RecordingIngest:
@@ -59,6 +54,9 @@ class _RecordingIngest:
     def accept_epoch_confirmation(self, artifact: object) -> IngestOutcome:
         return self._record("accept_epoch_confirmation", artifact)
 
+    def accept_disposition(self, artifact: object) -> IngestOutcome:
+        return self._record("accept_disposition", artifact)
+
     @property
     def rejections(self) -> tuple[IngestOutcome, ...]:
         self.threads["rejections"] = threading.get_ident()
@@ -74,20 +72,6 @@ class _RecordingReader:
         return "epoch-1" if device_id == "dev-01" else None
 
 
-class _PendingRegistrar:
-    """No commissioning authorisation is available, so nothing is produced."""
-
-    def __init__(self) -> None:
-        self.thread: int | None = None
-
-    def register(self, request: AnchorRegistrationRequest) -> RegistrationOutcome:
-        self.thread = threading.get_ident()
-        return RegistrationOutcome(
-            status=RegistrationStatus.PENDING_AUTHORISATION,
-            detail="no commissioning authorisation is held",
-        )
-
-
 @pytest.fixture()
 def executor():
     ex = EvidenceExecutor()
@@ -99,7 +83,12 @@ def executor():
 
 @pytest.mark.parametrize(
     "method",
-    ["accept_custody", "accept_receipt", "accept_epoch_confirmation"],
+    [
+        "accept_custody",
+        "accept_receipt",
+        "accept_epoch_confirmation",
+        "accept_disposition",
+    ],
 )
 def test_ingest_methods_run_on_the_owner_thread(executor, method) -> None:
     """Inbound artifacts arrive on MQTT callback threads, never the owner."""
@@ -143,7 +132,7 @@ def test_ingest_rejections_are_read_on_the_owner_thread(executor) -> None:
 def test_active_anchor_epoch_id_runs_on_the_owner_thread(executor) -> None:
     """The confirmation coordinator calls this from asyncio.to_thread."""
     reader = _RecordingReader()
-    backend = ExecutorBoundConfirmationBackend(executor, reader, _PendingRegistrar())
+    backend = ExecutorBoundConfirmationBackend(executor, reader)
     owner = executor.run(threading.get_ident)
 
     result: dict = {}
@@ -157,45 +146,6 @@ def test_active_anchor_epoch_id_runs_on_the_owner_thread(executor) -> None:
 
     assert reader.thread == owner
     assert result["value"] == "epoch-1"
-
-
-def test_registration_runs_on_the_owner_thread_and_grants_nothing(executor) -> None:
-    """A registration is a request to the authority, never a local grant."""
-    registrar = _PendingRegistrar()
-    reader = _RecordingReader()
-    backend = ExecutorBoundConfirmationBackend(executor, reader, registrar)
-    owner = executor.run(threading.get_ident)
-
-    result: dict = {}
-
-    def caller() -> None:
-        result["outcome"] = backend.register_anchor(
-            AnchorRegistrationRequest(
-                device_id="dev-01",
-                public_key_hex="ab" * 32,
-                anchor_epoch_id="epoch-2",
-                posture="sealed_flash",
-            )
-        )
-
-    thread = threading.Thread(target=caller)
-    thread.start()
-    thread.join(timeout=5)
-
-    assert registrar.thread == owner
-    outcome = result["outcome"]
-    assert outcome.status is RegistrationStatus.PENDING_AUTHORISATION
-    assert outcome.registration is None
-    assert not outcome.authoritative
-
-
-def test_no_outcome_is_ever_authoritative() -> None:
-    """Even a produced registration confers nothing until a confirmation lands."""
-    # list() rather than iterating the class directly: some static
-    # analysers do not model Enum metaclass iteration.
-    for status in list(RegistrationStatus):
-        outcome = RegistrationOutcome(status=status, registration={"v": 1})
-        assert not outcome.authoritative
 
 
 def test_facade_marshals_a_genuinely_thread_bound_object(executor, tmp_path) -> None:
@@ -220,7 +170,7 @@ def test_facade_marshals_a_genuinely_thread_bound_object(executor, tmp_path) -> 
         return _Reader(), conn
 
     reader, conn = executor.run(_open_reader)
-    backend = ExecutorBoundConfirmationBackend(executor, reader, _PendingRegistrar())
+    backend = ExecutorBoundConfirmationBackend(executor, reader)
 
     # Unbound access from this thread is what the façade prevents.
     with pytest.raises(sqlite3.ProgrammingError):

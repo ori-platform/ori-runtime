@@ -829,7 +829,7 @@ PRODUCED_HERE = {
     # Registration binds this device's verification key to the epoch
     # authorising it, and is signed by the key being registered. It was
     # outstanding through steps 2 and 3, and is produced as of #350.
-    "anchor-registration.json",
+    "anchor-registration-v2.json",
 }
 
 RUNTIME_PRODUCER_OUTSTANDING: set[str] = set()
@@ -846,6 +846,16 @@ STEP_FOUR_INGEST_VECTORS = {
 # nor roots it in the release bundle, so it is not this repository's to own.
 NOT_RUNTIME_ARTIFACTS = {"commissioning-authorization.json"}
 
+# Received by the runtime behind its disposition seam: the seam applies a
+# verified disposition, and no verifier is installed until the disposition key
+# registry ships. Its schedule and canonical bytes are held to in
+# `test_disposition_vectors.py`.
+RECEIVED_BEHIND_A_SEAM = {"evidence-disposition-v2.json"}
+
+# A courier's projection over every carried artifact, not an artifact: the
+# runtime produces what is routed and routes nothing.
+COURIER_PROJECTIONS = {"routing-projection-v2.json"}
+
 
 def test_every_exchange_vector_is_claimed_by_an_owner():
     present = {p.name for p in EXCHANGE.glob("*.json")} - {"MANIFEST.json"}
@@ -854,6 +864,8 @@ def test_every_exchange_vector_is_claimed_by_an_owner():
         | RUNTIME_PRODUCER_OUTSTANDING
         | STEP_FOUR_INGEST_VECTORS
         | NOT_RUNTIME_ARTIFACTS
+        | RECEIVED_BEHIND_A_SEAM
+        | COURIER_PROJECTIONS
     )
     assert present == claimed, (
         f"an exchange vector has no recorded owner: {sorted(present ^ claimed)}"
@@ -867,6 +879,8 @@ def test_the_owner_sets_do_not_overlap():
         RUNTIME_PRODUCER_OUTSTANDING,
         STEP_FOUR_INGEST_VECTORS,
         NOT_RUNTIME_ARTIFACTS,
+        RECEIVED_BEHIND_A_SEAM,
+        COURIER_PROJECTIONS,
     ]
     seen: set[str] = set()
     for group in sets:
