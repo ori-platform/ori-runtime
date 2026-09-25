@@ -428,6 +428,25 @@ def test_extract_remote_command_ignores_plain_approval_reply():
     assert result is None
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "ORI_COMMAND " + '{"a":' * 50_000 + "1" + "}" * 50_000,
+        'ORI_COMMAND {"command_id":' + "9" * 5_000 + "}",
+        '{"command_id":' + "9" * 5_000 + "}",
+    ],
+    ids=["deep nesting", "5000-digit integer", "raw 5000-digit integer"],
+)
+def test_extract_remote_command_treats_hostile_json_as_no_command(text):
+    payload = {"from": "+2348012345678", "text": text}
+
+    result = extract_remote_command_payload(
+        payload, channel="sms", from_number="+2348012345678"
+    )
+
+    assert result is None
+
+
 def test_extract_remote_command_uses_ingress_channel_not_payload_channel(fixed_now):
     command = _payload(now=fixed_now)
     command["channel"] = "sms"
@@ -1360,3 +1379,73 @@ async def test_whatsapp_repeated_poll_result_is_audited_once(store, fixed_now):
     rows = await store.get_remote_command_log()
     assert len([row for row in rows if row["command_id"] == "wa-repeat"]) == 1
     assert rows[0]["accepted"] is True
+
+
+@pytest.mark.parametrize(
+    "overrides, reason",
+    [
+        ({"command_id": "cmd-\ud800"}, "invalid_encoding"),
+        ({"command": "UPDATE_\udc00"}, "invalid_encoding"),
+        ({"args": {"k\ud800": 1}}, "invalid_encoding"),
+        ({"issued_at_ms": float("inf")}, "invalid_timestamp"),
+        ({"issued_at_ms": 10**30}, "invalid_timestamp"),
+        ({"signature": "hmac-sha256:\u00e9"}, "invalid_signature"),
+        ({"signature": 5}, "invalid_signature"),
+    ],
+    ids=[
+        "surrogate command_id",
+        "surrogate command",
+        "surrogate args key",
+        "infinite timestamp",
+        "timestamp past int64",
+        "non-ASCII signature",
+        "non-string signature",
+    ],
+)
+async def test_hostile_commands_are_refused_and_still_audited(
+    store, fixed_now, overrides, reason
+):
+    payload = _payload(now=fixed_now)
+    payload.update(overrides)
+    before = len(await store.get_remote_command_log(limit=500))
+
+    result = await _verifier().verify(payload, state_store=store)
+
+    assert result.accepted is False
+    assert result.reason == reason
+    # Refusals feed the throttle and lockout, so each one must be recorded.
+    assert len(await store.get_remote_command_log(limit=500)) == before + 1
+
+
+async def test_a_command_the_verifier_cannot_judge_is_refused_and_audited(
+    store, fixed_now, monkeypatch
+):
+    verifier = _verifier()
+    monkeypatch.setattr(
+        verifier, "_verify", AsyncMock(side_effect=RuntimeError("verifier broke"))
+    )
+    before = len(await store.get_remote_command_log(limit=500))
+
+    result = await verifier.verify(_payload(now=fixed_now), state_store=store)
+
+    assert result.accepted is False
+    assert result.reason == "verifier_error"
+    assert len(await store.get_remote_command_log(limit=500)) == before + 1
+
+
+async def test_an_out_of_range_timestamp_is_audited_as_null_not_clamped(
+    store, fixed_now
+):
+    payload = _payload(now=fixed_now, command_id="cmd-huge-ts")
+    payload["issued_at_ms"] = 2**64
+
+    result = await _verifier().verify(payload, state_store=store)
+
+    assert result.reason == "invalid_timestamp"
+    rows = [
+        row
+        for row in await store.get_remote_command_log(limit=500)
+        if row["command_id"] == "cmd-huge-ts"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["issued_at_ms"] is None

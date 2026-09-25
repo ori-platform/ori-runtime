@@ -274,6 +274,31 @@ async def test_fetch_remote_policy_rejects_invalid_signature(monkeypatch):
     assert exc.value.code == "invalid_signature"
 
 
+@pytest.mark.skipif(
+    Ed25519PrivateKey is None,
+    reason="cryptography ed25519 is unavailable",
+)
+@pytest.mark.asyncio
+async def test_fetch_remote_policy_refuses_a_lone_surrogate_as_invalid(monkeypatch):
+    private_key = Ed25519PrivateKey.generate()
+    public_key_b64 = base64.b64encode(
+        private_key.public_key().public_bytes(
+            encoding=Encoding.Raw,
+            format=PublicFormat.Raw,
+        )
+    ).decode("ascii")
+    payload = _signed_payload(private_key)
+    payload["note"] = "\ud800"
+
+    monkeypatch.setattr(
+        "ori.policy.remote_fetch._http_get_json",
+        lambda _cfg: ("{}", payload),
+    )
+    with pytest.raises(RemotePolicyFetchError, match="lone surrogate") as exc:
+        await fetch_remote_device_policy_bundle(_base_config(public_key_b64))
+    assert exc.value.code == "invalid_signature"
+
+
 @pytest.mark.asyncio
 async def test_fetch_remote_policy_rejects_non_https_url():
     with pytest.raises(RemotePolicyFetchError, match="https://") as exc:

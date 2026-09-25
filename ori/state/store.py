@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import json
 import logging
+import math
 import os
 import sqlite3
 from pathlib import Path
@@ -941,6 +942,26 @@ def _stored_reading(row: sqlite3.Row) -> StoredReading:
         metadata=json.loads(row["metadata"]),
         received_at_ms=int(row["received_at_ms"]),
     )
+
+
+_SQLITE_INT_MIN = -(2**63)
+_SQLITE_INT_MAX = 2**63 - 1
+
+
+def _audit_bindable(value: Any) -> Any:
+    """A value as an audit row can hold it, so a refusal or decision is never
+    lost to how it was spelled: lone surrogates escaped, and an integer outside
+    SQLite's range or a non-finite float recorded as NULL rather than as a
+    plausible number the producer never sent."""
+    if isinstance(value, str):
+        return value.encode("utf-8", "backslashreplace").decode("utf-8")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value if _SQLITE_INT_MIN <= value <= _SQLITE_INT_MAX else None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 class StateStore:
@@ -2795,7 +2816,10 @@ class StateStore:
         sensor context, reasoning proposal, operator decision, latency, and final
         action outcome needed for future approval/rejection learning.
         """
-        await self._run_write(self._log_tier_c_decision_sync, fields)
+        await self._run_write(
+            self._log_tier_c_decision_sync,
+            {key: _audit_bindable(value) for key, value in fields.items()},
+        )
 
     def _log_tier_c_decision_sync(self, fields: dict) -> None:
         assert self._conn is not None
@@ -3093,14 +3117,19 @@ class StateStore:
     ) -> None:
         await self._run_write(
             self._log_remote_command_attempt_sync,
-            command_id,
-            channel,
-            from_number,
-            command,
-            accepted,
-            reason,
-            issued_at_ms,
-            received_at_ms if received_at_ms is not None else now_ms(),
+            *(
+                _audit_bindable(value)
+                for value in (
+                    command_id,
+                    channel,
+                    from_number,
+                    command,
+                    accepted,
+                    reason,
+                    issued_at_ms,
+                    received_at_ms if received_at_ms is not None else now_ms(),
+                )
+            ),
         )
 
     def _log_remote_command_attempt_sync(
@@ -6407,12 +6436,17 @@ class StateStore:
         """Persist an operator rejection or autonomous Tier D override."""
         await self._run_write(
             self._log_override_sync,
-            trigger_name,
-            action,
-            reason,
-            operator_response,
-            override_type,
-            device_id,
+            *(
+                _audit_bindable(value)
+                for value in (
+                    trigger_name,
+                    action,
+                    reason,
+                    operator_response,
+                    override_type,
+                    device_id,
+                )
+            ),
         )
 
     def _log_override_sync(

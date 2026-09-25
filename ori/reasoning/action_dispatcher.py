@@ -61,7 +61,10 @@ from ori.security.evidence.first_party import (
     AuthorityUnavailableError,
 )
 from ori.security.evidence.policy import tier_requires_attestation
-from ori.security.offline_tokens import OfflineTierCTokenVerifier
+from ori.security.offline_tokens import (
+    OfflineTierCTokenVerifier,
+    TokenVerificationResult,
+)
 from ori.security.remote_commands.commands import extract_remote_command_payload
 from ori.utils.bool_utils import is_truthy
 from ori.utils.time_utils import now_ms
@@ -290,8 +293,53 @@ def _normalize_proposal_id(value: str | None) -> str:
 def _safe_int_or_none(value: Any) -> int | None:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
+
+
+#: What an unencodable reply is classified as: text that is no decision.
+_UNENCODABLE_REPLY = "\ufffd"
+
+
+def _cancelled_here(exc: BaseException) -> bool:
+    """Whether *exc* is a cancellation of the running task itself, which must
+    propagate. A CancelledError a listener raised of its own accord is a
+    listener failure, like any other."""
+    if not isinstance(exc, asyncio.CancelledError):
+        return False
+    task = asyncio.current_task()
+    return task is None or task.cancelling() > 0
+
+
+class _ApprovalProgress:
+    """What an approval workflow has done so far, for its failure path."""
+
+    def __init__(self) -> None:
+        self.proposal_id: str | None = None
+        self.acted: ActionResult | None = None
+
+
+def _storable_reply(reply: object) -> str | None:
+    """A heard reply as text the store can hold, or None when it is not text.
+
+    A lone surrogate, which a provider's JSON can carry and UTF-8 cannot, is
+    escaped for storage and reporting only; it is never classified.
+    """
+    if not isinstance(reply, str):
+        return None
+    return reply.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def _classifiable_reply(reply: object) -> str | None:
+    """A heard reply as the classifier sees it: None when it is not text, and
+    no decision at all when UTF-8 cannot carry it."""
+    if not isinstance(reply, str):
+        return None
+    try:
+        reply.encode("utf-8")
+    except UnicodeEncodeError:
+        return _UNENCODABLE_REPLY
+    return reply
 
 
 def _classify_approval_response(
@@ -1327,6 +1375,85 @@ class ActionDispatcher:
         approval_timeout_seconds: int,
         gate_token: Any = None,
     ) -> ActionResult:
+        """Run the approval workflow; whatever fails inside it, the proposal
+        resolves. An act that already ran is reported as it ran; otherwise the
+        safe default runs and nothing is approved."""
+        progress = _ApprovalProgress()
+        try:
+            return await self._run_approval_workflow(
+                action,
+                tier,
+                context,
+                result,
+                safe_default_action,
+                approval_timeout_seconds,
+                gate_token,
+                progress=progress,
+            )
+        except (Exception, asyncio.CancelledError) as exc:
+            if _cancelled_here(exc):
+                raise
+            logger.exception(
+                "ActionDispatcher: approval workflow failed for action=%r "
+                "proposal_id=%s; resolving it",
+                action,
+                progress.proposal_id,
+            )
+            if progress.acted is not None:
+                return progress.acted
+            return await self._resolve_failed_approval(
+                action,
+                tier,
+                context,
+                self._vet_safe_default(safe_default_action),
+                progress.proposal_id,
+            )
+
+    async def _resolve_failed_approval(
+        self,
+        action: str,
+        tier: str,
+        context: SkillContext,
+        safe_default_action: str,
+        proposal_id: str | None,
+    ) -> ActionResult:
+        """Run the safe default for a proposal no decision was reached for."""
+        action_taken = safe_default_action
+        executed = False
+        try:
+            inner = await self._execute_immediately(safe_default_action, tier, context)
+            action_taken = inner.action_taken
+            executed = inner.executed
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: safe default %r failed for proposal_id=%s",
+                safe_default_action,
+                proposal_id,
+            )
+        return ActionResult(
+            action_name=action,
+            tier=tier,
+            executed=executed,
+            approved=False,
+            action_taken=action_taken,
+            timestamp=now_ms(),
+            operator_response="approval_error",
+            proposal_id=proposal_id,
+            safe_default_used=True,
+        )
+
+    async def _run_approval_workflow(
+        self,
+        action: str,
+        tier: str,
+        context: SkillContext,
+        result: ReasoningResult,
+        safe_default_action: str,
+        approval_timeout_seconds: int,
+        gate_token: Any = None,
+        *,
+        progress: _ApprovalProgress,
+    ) -> ActionResult:
         """Send an approval request and wait for YES/NO from the operator.
 
         Flow:
@@ -1359,6 +1486,7 @@ class ActionDispatcher:
 
         approval_started_at = now_ms()
         proposal_id = _generate_proposal_id()
+        progress.proposal_id = proposal_id
         if self._log_approval_workflow:
             logger.info(
                 "ActionDispatcher: triggering Tier C approval workflow for action=%r proposal_id=%s",
@@ -1440,12 +1568,25 @@ class ActionDispatcher:
         if local_console_mode:
             local_from_number = operator_contact or "local-operator"
             listen_started = time.monotonic()
-            operator_response = await self._listen_for_local_console_response(
-                store=store,
-                from_number=local_from_number,
-                timeout_seconds=approval_timeout_seconds,
-                proposal_id=proposal_id,
-            )
+            try:
+                operator_response = await self._listen_for_local_console_response(
+                    store=store,
+                    from_number=local_from_number,
+                    timeout_seconds=approval_timeout_seconds,
+                    proposal_id=proposal_id,
+                )
+            except (Exception, asyncio.CancelledError) as exc:
+                if _cancelled_here(exc):
+                    raise
+                # A listener that fails has heard nothing; the proposal still
+                # resolves to its safe default below.
+                logger.exception(
+                    "ActionDispatcher: local console approval listener raised "
+                    "for action=%r proposal_id=%s",
+                    action,
+                    proposal_id,
+                )
+                operator_response = None
             parsed_operator_response = operator_response
             if operator_response is not None:
                 operator_response = f"LOCAL:{operator_response}"
@@ -1502,6 +1643,22 @@ class ActionDispatcher:
                     approval_timeout_seconds,
                     safe_default_action,
                 )
+            except (Exception, asyncio.CancelledError) as exc:
+                if _cancelled_here(exc):
+                    raise
+                # A listener that fails has heard nothing; the proposal still
+                # resolves to its safe default below.
+                timed_out = True
+                approval_end = APPROVAL_LISTENER_ENDED
+                operator_response = None
+                parsed_operator_response = None
+                logger.exception(
+                    "ActionDispatcher: approval reply listener raised for "
+                    "action=%r proposal_id=%s — executing safe_default=%r",
+                    action,
+                    proposal_id,
+                    safe_default_action,
+                )
             else:
                 if operator_response is None:
                     timed_out = True
@@ -1539,14 +1696,28 @@ class ActionDispatcher:
                             safe_default_action,
                         )
 
+        # A reply that is not text is no reply. One UTF-8 cannot carry is not a
+        # decision, and is classified as such; only its stored and reported
+        # form is escaped, so escaping can never turn it into a valid reply.
+        operator_response = _storable_reply(operator_response)
+        parsed_operator_response = _classifiable_reply(parsed_operator_response)
+
         try:
             # Parse response
-            response_kind = _classify_approval_response(
-                parsed_operator_response,
-                proposal_id=proposal_id,
-                allow_offline_token=local_console_mode,
-                require_scoped=self._approval_require_scoped_replies,
-            )
+            try:
+                response_kind = _classify_approval_response(
+                    parsed_operator_response,
+                    proposal_id=proposal_id,
+                    allow_offline_token=local_console_mode,
+                    require_scoped=self._approval_require_scoped_replies,
+                )
+            except Exception:
+                logger.exception(
+                    "ActionDispatcher: approval reply for proposal_id=%s could not "
+                    "be classified; treating it as invalid",
+                    proposal_id,
+                )
+                response_kind = "invalid"
             if response_kind == "invalid" and parsed_operator_response is not None:
                 logger.warning(
                     "ActionDispatcher: invalid Tier C approval response for "
@@ -1568,12 +1739,24 @@ class ActionDispatcher:
                         "ActionDispatcher: offline token provided but verifier is disabled"
                     )
                 else:
-                    verify_result = await self._offline_token_verifier.verify_token(
-                        token_value,
-                        expected_device_id=device_id,
-                        expected_action=action,
-                        state_store=store,
-                    )
+                    try:
+                        verify_result = await self._offline_token_verifier.verify_token(
+                            token_value,
+                            expected_device_id=device_id,
+                            expected_action=action,
+                            state_store=store,
+                        )
+                    except Exception:
+                        # A token the verifier cannot judge approves nothing,
+                        # and the proposal still resolves to its safe default.
+                        logger.exception(
+                            "ActionDispatcher: offline token verification failed "
+                            "for action=%r; treating the token as refused",
+                            action,
+                        )
+                        verify_result = TokenVerificationResult(
+                            approved=False, reason="verifier_error"
+                        )
                     approved = bool(verify_result.approved)
                     if approved:
                         operator_response = (
@@ -1614,9 +1797,31 @@ class ActionDispatcher:
                 inner = await self._execute_immediately(action, tier, context)
                 action_taken = inner.action_taken
                 executed = inner.executed
+                progress.acted = ActionResult(
+                    action_name=action,
+                    tier=tier,
+                    executed=executed,
+                    approved=True,
+                    action_taken=action_taken,
+                    timestamp=now_ms(),
+                    operator_response=operator_response,
+                    proposal_id=proposal_id,
+                    safe_default_used=False,
+                )
             elif refused_late:
                 action_taken = "refused_late_approval"
                 executed = False
+                progress.acted = ActionResult(
+                    action_name=action,
+                    tier=tier,
+                    executed=False,
+                    approved=False,
+                    action_taken=action_taken,
+                    timestamp=now_ms(),
+                    operator_response=operator_response,
+                    proposal_id=proposal_id,
+                    safe_default_used=False,
+                )
             else:
                 # NO, None, or timeout → safe default
                 inner = await self._execute_immediately(
@@ -1624,6 +1829,17 @@ class ActionDispatcher:
                 )
                 action_taken = inner.action_taken
                 executed = inner.executed
+                progress.acted = ActionResult(
+                    action_name=action,
+                    tier=tier,
+                    executed=executed,
+                    approved=False,
+                    action_taken=action_taken,
+                    timestamp=now_ms(),
+                    operator_response=operator_response,
+                    proposal_id=proposal_id,
+                    safe_default_used=True,
+                )
                 if timed_out:
                     escalation_receipt = await self._escalate_to_secondary(
                         action,
@@ -1637,18 +1853,29 @@ class ActionDispatcher:
                 # Log operator rejection / timeout override to override_log
                 if store is not None and hasattr(store, "log_override"):
                     device_id = context.event.device_id if context.event else "unknown"
-                    await store.log_override(
-                        trigger_name=context.event.sensor_id if context.event else "",
-                        action=action,
-                        reason=(
-                            _APPROVAL_END_DECISION[approval_end]
-                            if timed_out
-                            else "operator_rejection"
-                        ),
-                        operator_response=operator_response,
-                        override_type="rejection",
-                        device_id=device_id,
-                    )
+                    try:
+                        await store.log_override(
+                            trigger_name=(
+                                context.event.sensor_id if context.event else ""
+                            ),
+                            action=action,
+                            reason=(
+                                _APPROVAL_END_DECISION[approval_end]
+                                if timed_out
+                                else "operator_rejection"
+                            ),
+                            operator_response=operator_response,
+                            override_type="rejection",
+                            device_id=device_id,
+                        )
+                    except Exception:
+                        # The safe default has run; a record that cannot be
+                        # written must not unresolve the proposal.
+                        logger.exception(
+                            "ActionDispatcher: failed to record the override for "
+                            "proposal_id=%s",
+                            proposal_id,
+                        )
                 if not timed_out and operator_response is not None:
                     await self._store_rejection_pattern(
                         store=store,
@@ -1694,7 +1921,15 @@ class ActionDispatcher:
             return action_result
         finally:
             if self._status_indicator is not None:
-                self._status_indicator.clear_tier_c_pending()
+                try:
+                    self._status_indicator.clear_tier_c_pending()
+                except Exception:
+                    # An indicator fault is not a decision; it must not
+                    # re-enter the failure path and change what is reported.
+                    logger.exception(
+                        "ActionDispatcher: status indicator failed to clear "
+                        "Tier C pending"
+                    )
 
     async def _log_tier_c_decision(
         self,
@@ -1943,14 +2178,15 @@ class ActionDispatcher:
         if not trigger_name:
             trigger_name = str(evt.sensor_id or "unknown_trigger")
 
-        value_bucket = round(float(reading.value) * 2.0) / 2.0
-        dt = datetime.datetime.fromtimestamp(
-            evt.timestamp / 1000.0, tz=datetime.timezone.utc
-        )
-        hour_bucket = (dt.hour // 2) * 2
-        day_of_week = dt.weekday()
-
         try:
+            # A reading or timestamp outside what these buckets can represent
+            # records no pattern; the rejection itself has already resolved.
+            value_bucket = round(float(reading.value) * 2.0) / 2.0
+            dt = datetime.datetime.fromtimestamp(
+                evt.timestamp / 1000.0, tz=datetime.timezone.utc
+            )
+            hour_bucket = (dt.hour // 2) * 2
+            day_of_week = dt.weekday()
             pattern_key = key_builder(
                 reading.sensor_type,
                 trigger_name,

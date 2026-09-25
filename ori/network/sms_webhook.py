@@ -243,7 +243,10 @@ class SMSWebhookServer:
         ctype = headers.get("content-type", "").lower()
         text = body.decode("utf-8", errors="replace")
         if "application/json" in ctype:
-            parsed = json.loads(text or "{}")
+            try:
+                parsed = json.loads(text or "{}")
+            except (ValueError, RecursionError):
+                return {}
             if isinstance(parsed, dict):
                 return parsed
             return {}

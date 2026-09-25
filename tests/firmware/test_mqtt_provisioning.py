@@ -132,6 +132,30 @@ def test_verifier_rejects_tampering_and_noncanonical_outer_order() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "message, reason",
+    [
+        (b'{"a":' * 50_000 + b"1" + b"}" * 50_000, "malformed device message"),
+        (b'{"a":' + b"9" * 5_000 + b"}", "malformed device message"),
+        (b"\xff\xfe{", "malformed device message"),
+        (b'{"a":1,"a":2}', "duplicate JSON field"),
+        (b'{"signature":"\\ud800","response":{}}', "malformed device message"),
+    ],
+    ids=[
+        "deep nesting",
+        "5000-digit integer",
+        "invalid UTF-8",
+        "duplicate field",
+        "lone surrogate",
+    ],
+)
+def test_verifier_refuses_hostile_json_with_its_own_reason(
+    message: bytes, reason: str
+) -> None:
+    with pytest.raises(FirmwareMqttProvisioningError, match=reason):
+        verify_device_message(message, device_public_key_bytes=DEVICE_PUBLIC_KEY)
+
+
 def test_signer_refuses_noncanonical_or_unknown_request_grammar() -> None:
     signer = FirmwareMqttProvisioningSigner(PA_SEED)
     with pytest.raises(FirmwareMqttProvisioningError, match="canonical"):

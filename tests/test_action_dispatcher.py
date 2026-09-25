@@ -2,9 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import base64
+import contextlib
 import json
+import sqlite3
 import time
 from dataclasses import dataclass, field
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -1816,6 +1820,552 @@ class TestOfflineTokenApproval:
         assert result.approved is False
         assert result.action_taken == "log_to_dashboard"
         safe_default.assert_awaited_once()
+
+    async def test_a_token_the_real_verifier_cannot_encode_runs_the_safe_default(
+        self,
+    ):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+        )
+
+        from ori.security.offline_tokens import OfflineTierCTokenVerifier
+
+        public_key = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+        d = ActionDispatcher(
+            offline_token_verifier=OfflineTierCTokenVerifier(
+                public_key_b64=base64.b64encode(public_key).decode("ascii")
+            ),
+            config={
+                "local_console_enabled": True,
+                "operator_contact": "+2348000000000",
+            },
+        )
+        action = AsyncMock()
+        safe_default = AsyncMock()
+        d.register_executor("close_gas_valve", action)
+        d.register_executor("log_to_dashboard", safe_default)
+        token = (
+            '{"token_id":"t\\ud800","device_id":"x","action_scope":"*",'
+            '"issued_at":0,"expires_at":9999999999,"signature":"ed25519:'
+            + base64.b64encode(b"\x00" * 64).decode("ascii")
+            + '"}'
+        )
+        with patch.object(
+            d,
+            "_listen_for_local_console_response",
+            new=AsyncMock(return_value="TOKEN:" + token),
+        ):
+            result = await d.dispatch(
+                "close_gas_valve",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(action_tier="C"),
+            )
+        assert result.approved is False
+        assert result.action_taken == "log_to_dashboard"
+        action.assert_not_awaited()
+        safe_default.assert_awaited_once()
+
+    async def test_a_verifier_that_raises_refuses_the_token(self):
+        verifier = AsyncMock()
+        verifier.verify_token = AsyncMock(side_effect=RuntimeError("verifier broke"))
+        d = ActionDispatcher(
+            offline_token_verifier=verifier,
+            config={
+                "local_console_enabled": True,
+                "operator_contact": "+2348000000000",
+            },
+        )
+        action = AsyncMock()
+        safe_default = AsyncMock()
+        d.register_executor("close_gas_valve", action)
+        d.register_executor("log_to_dashboard", safe_default)
+        with patch.object(
+            d,
+            "_listen_for_local_console_response",
+            new=AsyncMock(return_value="TOKEN:abc"),
+        ):
+            result = await d.dispatch(
+                "close_gas_valve",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(action_tier="C"),
+            )
+        assert result.approved is False
+        assert result.action_taken == "log_to_dashboard"
+        assert "verifier_error" in str(result.operator_response)
+        action.assert_not_awaited()
+        safe_default.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "ORI_COMMAND " + '{"a":' * 50_000 + "1" + "}" * 50_000,
+            'ORI_COMMAND {"command_id":' + "9" * 5_000 + "}",
+        ],
+        ids=["deep nesting", "5000-digit integer"],
+    )
+    async def test_a_hostile_local_console_reply_runs_the_safe_default(self, reply):
+        class _Store:
+            def __init__(self) -> None:
+                self.replies = [reply]
+
+            async def consume_incoming_message(self, **_: object) -> str | None:
+                return self.replies.pop(0) if self.replies else None
+
+            def __getattr__(self, _name: str):
+                async def _noop(*_: object, **__: object) -> None:
+                    return None
+
+                return _noop
+
+        d = ActionDispatcher(
+            config={"local_console_enabled": True, "local_console_poll_interval_ms": 1}
+        )
+        action = AsyncMock()
+        safe_default = AsyncMock()
+        d.register_executor("close_gas_valve", action)
+        d.register_executor("log_to_dashboard", safe_default)
+        context = _context()
+        context.state_store = _Store()
+        result = await d.dispatch(
+            "close_gas_valve",
+            ActionTier.HARD_PHYSICAL,
+            context,
+            _result(action_tier="C"),
+            approval_timeout_seconds=1,
+        )
+        assert result.approved is False
+        assert result.action_taken == "log_to_dashboard"
+        action.assert_not_awaited()
+        safe_default.assert_awaited_once()
+
+    @pytest.mark.parametrize("mode", ["local console", "remote"])
+    async def test_a_listener_that_raises_resolves_to_the_safe_default(self, mode):
+        config: dict[str, object] = {"operator_contact": "+2348000000000"}
+        if mode == "local console":
+            config["local_console_enabled"] = True
+        d = ActionDispatcher(config=config)
+        action = AsyncMock()
+        safe_default = AsyncMock()
+        d.register_executor("close_gas_valve", action)
+        d.register_executor("log_to_dashboard", safe_default)
+        listener = (
+            "_listen_for_local_console_response"
+            if mode == "local console"
+            else "_listen_for_response"
+        )
+        with (
+            patch.object(d, "_tier_c_comms_available", return_value=mode == "remote"),
+            patch.object(
+                d, listener, new=AsyncMock(side_effect=RuntimeError("listener broke"))
+            ),
+        ):
+            result = await d.dispatch(
+                "close_gas_valve",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(action_tier="C"),
+                approval_timeout_seconds=1,
+            )
+        assert result.approved is False
+        assert result.action_taken == "log_to_dashboard"
+        action.assert_not_awaited()
+        safe_default.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "NO-\ud800",
+            InboundApprovalResponse(
+                body="x\ud800", channel="whatsapp", from_number="+1", received_at_ms=1
+            ),
+            InboundApprovalResponse(
+                body=cast(Any, b"YES"),
+                channel="whatsapp",
+                from_number="+1",
+                received_at_ms=1,
+            ),
+            InboundApprovalResponse(
+                body=cast(Any, 5),
+                channel="whatsapp",
+                from_number="+1",
+                received_at_ms=1,
+            ),
+        ],
+        ids=["surrogate text", "surrogate body", "bytes body", "integer body"],
+    )
+    async def test_a_remote_reply_the_store_cannot_hold_still_resolves(
+        self, reply, tmp_path
+    ):
+        store = StateStore(str(tmp_path / "state.db"))
+        await store.open()
+        try:
+            d = ActionDispatcher(config={"operator_contact": "+2348000000000"})
+            action = AsyncMock()
+            safe_default = AsyncMock()
+            d.register_executor("close_gas_valve", action)
+            d.register_executor("log_to_dashboard", safe_default)
+            context = _context()
+            context.state_store = store
+            with (
+                patch.object(d, "_tier_c_comms_available", return_value=True),
+                patch.object(
+                    d, "_listen_for_response", new=AsyncMock(return_value=reply)
+                ),
+            ):
+                result = await d.dispatch(
+                    "close_gas_valve",
+                    ActionTier.HARD_PHYSICAL,
+                    context,
+                    _result(action_tier="C"),
+                    approval_timeout_seconds=1,
+                )
+        finally:
+            await store.close()
+        with sqlite3.connect(tmp_path / "state.db") as conn:
+            decisions = conn.execute(
+                "SELECT COUNT(*) FROM tier_c_decision_log"
+            ).fetchone()[0]
+        assert result.approved is False
+        assert result.action_taken == "log_to_dashboard"
+        action.assert_not_awaited()
+        safe_default.assert_awaited_once()
+        assert decisions == 1
+
+    @pytest.mark.parametrize("fault", ["override write fails", "classifier raises"])
+    async def test_a_fault_after_the_reply_still_resolves_the_proposal(
+        self, fault, tmp_path
+    ):
+        store = StateStore(str(tmp_path / "state.db"))
+        await store.open()
+        try:
+            d = ActionDispatcher(config={"operator_contact": "+2348000000000"})
+            action = AsyncMock()
+            safe_default = AsyncMock()
+            d.register_executor("close_gas_valve", action)
+            d.register_executor("log_to_dashboard", safe_default)
+            context = _context()
+            context.state_store = store
+            broken = (
+                patch.object(
+                    store,
+                    "log_override",
+                    new=AsyncMock(side_effect=OSError("disk full")),
+                )
+                if fault == "override write fails"
+                else patch(
+                    "ori.reasoning.action_dispatcher._classify_approval_response",
+                    side_effect=TypeError("unclassifiable"),
+                )
+            )
+            with (
+                patch.object(d, "_tier_c_comms_available", return_value=True),
+                patch.object(
+                    d, "_listen_for_response", new=AsyncMock(return_value="NO")
+                ),
+                broken,
+            ):
+                result = await d.dispatch(
+                    "close_gas_valve",
+                    ActionTier.HARD_PHYSICAL,
+                    context,
+                    _result(action_tier="C"),
+                    approval_timeout_seconds=1,
+                )
+        finally:
+            await store.close()
+        assert result.approved is False
+        assert result.action_taken == "log_to_dashboard"
+        action.assert_not_awaited()
+        safe_default.assert_awaited_once()
+
+    async def _remote_dispatch(
+        self,
+        tmp_path,
+        *,
+        reply: object = "NO",
+        context: SkillContext | None = None,
+        patches: tuple = (),
+    ):
+        store = StateStore(str(tmp_path / "state.db"))
+        await store.open()
+        d = ActionDispatcher(config={"operator_contact": "+2348000000000"})
+        action = AsyncMock()
+        safe_default = AsyncMock()
+        d.register_executor("close_gas_valve", action)
+        d.register_executor("log_to_dashboard", safe_default)
+        context = context or _context()
+        context.state_store = store
+        try:
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(
+                    patch.object(d, "_tier_c_comms_available", return_value=True)
+                )
+                stack.enter_context(
+                    patch.object(
+                        d, "_listen_for_response", new=AsyncMock(return_value=reply)
+                    )
+                )
+                for extra in patches:
+                    stack.enter_context(extra(d))
+                result = await d.dispatch(
+                    "close_gas_valve",
+                    ActionTier.HARD_PHYSICAL,
+                    context,
+                    _result(action_tier="C"),
+                    approval_timeout_seconds=1,
+                )
+        finally:
+            await store.close()
+        with sqlite3.connect(tmp_path / "state.db") as conn:
+            decisions = conn.execute(
+                "SELECT COUNT(*) FROM tier_c_decision_log"
+            ).fetchone()[0]
+        return result, action, safe_default, decisions
+
+    async def test_escaping_a_reply_never_makes_it_a_valid_approval(self, tmp_path):
+        # backslashreplace would spell the surrogate as "ud800", which is in the
+        # proposal alphabet; the raw reply must be what is classified.
+        result, action, safe_default, _ = await self._remote_dispatch(
+            tmp_path,
+            reply="YES-XY\ud8001",
+            patches=(
+                lambda _d: patch(
+                    "ori.reasoning.action_dispatcher._generate_proposal_id",
+                    return_value="XYUD8001",
+                ),
+            ),
+        )
+        assert result.approved is False
+        action.assert_not_awaited()
+        safe_default.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "reading_value, timestamp, reply",
+        [
+            (1e308, None, "NO"),
+            (1.0, 10**17, "NO"),
+            (1.0, 10**17, None),
+            (1.0, -(10**18), "NO"),
+        ],
+        ids=[
+            "huge reading, NO",
+            "far-future timestamp, NO",
+            "far-future timestamp, timeout",
+            "far-past timestamp, NO",
+        ],
+    )
+    async def test_a_reading_the_workflow_cannot_format_still_resolves(
+        self, tmp_path, reading_value, timestamp, reply
+    ):
+        context = _context()
+        assert context.event is not None and context.event.reading is not None
+        context.event.reading.value = reading_value
+        if timestamp is not None:
+            context.event.timestamp = timestamp
+            context.event.reading.timestamp = timestamp
+        result, action, safe_default, _ = await self._remote_dispatch(
+            tmp_path, reply=reply, context=context
+        )
+        assert result.approved is False
+        action.assert_not_awaited()
+        safe_default.assert_awaited_once()
+
+    async def test_a_fault_before_any_decision_runs_the_safe_default(self, tmp_path):
+        result, action, safe_default, _ = await self._remote_dispatch(
+            tmp_path,
+            patches=(
+                lambda d: patch.object(
+                    d, "_format_approval_message", side_effect=RuntimeError("boom")
+                ),
+            ),
+        )
+        assert result.approved is False
+        assert result.safe_default_used is True
+        action.assert_not_awaited()
+        safe_default.assert_awaited_once()
+
+    async def test_a_fault_after_the_safe_default_ran_does_not_run_it_again(
+        self, tmp_path
+    ):
+        result, action, safe_default, _ = await self._remote_dispatch(
+            tmp_path,
+            reply=None,
+            patches=(
+                lambda d: patch.object(
+                    d, "_escalate_to_secondary", side_effect=RuntimeError("boom")
+                ),
+            ),
+        )
+        assert result.approved is False
+        action.assert_not_awaited()
+        safe_default.assert_awaited_once()
+
+    async def test_a_fault_after_an_approved_act_reports_the_act(self, tmp_path):
+        result, action, safe_default, _ = await self._remote_dispatch(
+            tmp_path,
+            reply="YES-P0000001",
+            patches=(
+                lambda _d: patch(
+                    "ori.reasoning.action_dispatcher._generate_proposal_id",
+                    return_value="P0000001",
+                ),
+                lambda d: patch.object(
+                    d, "_log_tier_c_decision", side_effect=RuntimeError("boom")
+                ),
+            ),
+        )
+        assert result.approved is True
+        assert result.executed is True
+        action.assert_awaited_once()
+        safe_default.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"provider_message_id": "\ud800"},
+            {"from_number": "\ud800"},
+            {"channel": "\ud800"},
+            {"received_at_ms": 10**30},
+        ],
+        ids=["provider id", "from number", "channel", "received time"],
+    )
+    async def test_an_approval_is_recorded_whatever_its_provider_fields(
+        self, tmp_path, overrides
+    ):
+        fields = {
+            "body": "YES-P0000001",
+            "channel": "whatsapp",
+            "from_number": "+2348000000000",
+            "received_at_ms": 1,
+            "provider_message_id": "m1",
+        } | overrides
+        result, action, _, decisions = await self._remote_dispatch(
+            tmp_path,
+            reply=InboundApprovalResponse(**fields),
+            patches=(
+                lambda _d: patch(
+                    "ori.reasoning.action_dispatcher._generate_proposal_id",
+                    return_value="P0000001",
+                ),
+            ),
+        )
+        assert result.approved is True
+        action.assert_awaited_once()
+        assert decisions == 1
+
+    @pytest.mark.parametrize("mode", ["local console", "remote"])
+    async def test_a_listener_raising_cancelled_error_still_resolves(self, mode):
+        config: dict[str, object] = {"operator_contact": "+2348000000000"}
+        if mode == "local console":
+            config["local_console_enabled"] = True
+        d = ActionDispatcher(config=config)
+        action = AsyncMock()
+        safe_default = AsyncMock()
+        d.register_executor("close_gas_valve", action)
+        d.register_executor("log_to_dashboard", safe_default)
+        listener = (
+            "_listen_for_local_console_response"
+            if mode == "local console"
+            else "_listen_for_response"
+        )
+        with (
+            patch.object(d, "_tier_c_comms_available", return_value=mode == "remote"),
+            patch.object(
+                d, listener, new=AsyncMock(side_effect=asyncio.CancelledError())
+            ),
+        ):
+            result = await d.dispatch(
+                "close_gas_valve",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(action_tier="C"),
+                approval_timeout_seconds=1,
+            )
+        assert result.approved is False
+        action.assert_not_awaited()
+        safe_default.assert_awaited_once()
+
+    async def test_cancelling_the_dispatch_itself_is_not_a_listener_failure(self):
+        # Shutdown cancelling a pending approval is not treated as a failed
+        # listener: no safe default runs because of it. What dispatch returns
+        # on cancellation is unchanged by this guard.
+        d = ActionDispatcher(config={"operator_contact": "+2348000000000"})
+        safe_default = AsyncMock()
+        d.register_executor("close_gas_valve", AsyncMock())
+        d.register_executor("log_to_dashboard", safe_default)
+        listening = asyncio.Event()
+
+        async def _listen(*_: object, **__: object) -> str:
+            listening.set()
+            await asyncio.sleep(3600)
+            return "NO"
+
+        with (
+            patch.object(d, "_tier_c_comms_available", return_value=True),
+            patch.object(d, "_listen_for_response", new=_listen),
+        ):
+            task = asyncio.create_task(
+                d.dispatch(
+                    "close_gas_valve",
+                    ActionTier.HARD_PHYSICAL,
+                    _context(),
+                    _result(action_tier="C"),
+                    approval_timeout_seconds=3600,
+                )
+            )
+            await listening.wait()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        safe_default.assert_not_awaited()
+
+    async def test_a_late_refusal_survives_an_indicator_fault(self):
+        class _Gate:
+            async def reply_admitted(self, _token: object) -> bool:
+                return False
+
+        class _Indicator:
+            def set_tier_c_pending(self, **_: object) -> None:
+                return None
+
+            def clear_tier_c_pending(self) -> None:
+                raise RuntimeError("indicator broke")
+
+            def __getattr__(self, _name: str):
+                return lambda *_a, **_k: None
+
+        d = ActionDispatcher(config={"operator_contact": "+2348000000000"})
+        d._resource_gate = _Gate()  # type: ignore[assignment]
+        d._status_indicator = _Indicator()  # type: ignore[assignment]
+        action = AsyncMock()
+        safe_default = AsyncMock()
+        d.register_executor("release_relay", action)
+        d.register_executor("log_to_dashboard", safe_default)
+        with (
+            patch.object(d, "_tier_c_comms_available", return_value=True),
+            patch.object(
+                d, "_listen_for_response", new=AsyncMock(return_value="YES-P0000001")
+            ),
+            patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                return_value="P0000001",
+            ),
+        ):
+            result = await d._approval_workflow(
+                "release_relay",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(action_tier="C"),
+                "log_to_dashboard",
+                1,
+                gate_token=object(),
+            )
+        assert result.action_taken == "refused_late_approval"
+        assert result.operator_response != "approval_error"
+        action.assert_not_awaited()
+        safe_default.assert_not_awaited()
 
 
 class TestFirmwareProvenanceAtomicity:

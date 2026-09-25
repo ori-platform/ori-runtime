@@ -22,6 +22,17 @@ def _decode_canonical_base64(value: str, *, label: str) -> bytes:
     return decoded
 
 
+def _require_utf8(text: str, path: str) -> None:
+    """Refuse a string the canonical bytes cannot carry: a lone surrogate,
+    which JSON can escape but UTF-8 cannot encode."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise SkillSecurityError(
+            f"signed payload contains a lone surrogate at {path}"
+        ) from exc
+
+
 def _validate_canonical_json_value(
     value: Any,
     *,
@@ -29,7 +40,10 @@ def _validate_canonical_json_value(
     active_containers: set[int] | None = None,
 ) -> None:
     """Reject values that cannot be represented deterministically as JSON."""
-    if value is None or isinstance(value, (str, bool, int)):
+    if isinstance(value, str):
+        _require_utf8(value, path)
+        return
+    if value is None or isinstance(value, (bool, int)):
         return
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -61,6 +75,7 @@ def _validate_canonical_json_value(
                     raise SkillSecurityError(
                         f"signed payload contains non-string object key at {path}"
                     )
+                _require_utf8(key, f"{path} key")
                 _validate_canonical_json_value(
                     item,
                     path=f"{path}.{key}",
@@ -81,14 +96,22 @@ def canonical_signed_payload(raw_payload: dict[str, Any]) -> bytes:
     The signature field itself is excluded from the signed payload.
     """
     canonical_obj = {k: v for k, v in raw_payload.items() if k != "signature"}
-    _validate_canonical_json_value(canonical_obj)
-    canonical_json = json.dumps(
-        canonical_obj,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
+    try:
+        _validate_canonical_json_value(canonical_obj)
+        canonical_json = json.dumps(
+            canonical_obj,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except RecursionError as exc:
+        raise SkillSecurityError("signed payload is nested too deeply") from exc
+    except ValueError as exc:
+        # An integer past the conversion limit, which YAML can produce.
+        raise SkillSecurityError(
+            f"signed payload cannot be represented as canonical JSON ({exc})"
+        ) from exc
     return canonical_json.encode("utf-8")
 
 

@@ -370,13 +370,15 @@ class GatewayExportResponder:
     def _decode_payload(self, payload: bytes | str | dict[str, Any]) -> dict[str, Any]:
         if isinstance(payload, dict):
             return payload
-        if isinstance(payload, bytes):
-            text = payload.decode("utf-8")
-        else:
-            text = str(payload)
         try:
+            if isinstance(payload, bytes):
+                text = payload.decode("utf-8")
+            else:
+                text = str(payload)
             decoded = json.loads(text)
-        except json.JSONDecodeError as exc:
+            # A lone surrogate decodes but cannot be echoed into a response.
+            json.dumps(decoded, ensure_ascii=False).encode("utf-8")
+        except (ValueError, RecursionError) as exc:
             raise _ExportRequestError("request payload must be JSON") from exc
         if not isinstance(decoded, dict):
             raise _ExportRequestError("request payload must be a JSON object")
@@ -555,22 +557,27 @@ def _safe_topic_segment(value: str) -> str:
     return value
 
 
+_INT64_MAX = 2**63 - 1
+
+
 def _optional_int(value: Any, name: str) -> int | None:
     if value in (None, ""):
         return None
     try:
         parsed = int(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise _ExportRequestError(f"{name} must be an integer") from exc
     if parsed < 0:
         raise _ExportRequestError(f"{name} must be >= 0")
+    if parsed > _INT64_MAX:
+        raise _ExportRequestError(f"{name} is out of range")
     return parsed
 
 
 def _bounded_limit(value: Any) -> int:
     try:
         parsed = int(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise _ExportRequestError("limit must be an integer") from exc
     if parsed < 1:
         raise _ExportRequestError("limit must be >= 1")
@@ -582,10 +589,12 @@ def _page_offset(value: Any) -> int:
         return 0
     try:
         parsed = int(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise _ExportRequestError("page_token must be an integer offset") from exc
     if parsed < 0:
         raise _ExportRequestError("page_token must be >= 0")
+    if parsed > _INT64_MAX:
+        raise _ExportRequestError("page_token is out of range")
     return parsed
 
 
