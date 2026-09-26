@@ -1,0 +1,742 @@
+{
+  "contract": "offline-tokens/v2 Tier C binding, replayed through the tier-c-approval/v1 admission",
+  "note": "Replayed with the admission model of tier-c-approval/vectors/admission.json, whose note defines every event and expectation, against the `proposal` below. `token` holds the payload claims after decoding; signature verification precedes every rule here and is replayed by signing-domain.json, not here. `consumed_token_ids` lists the `token_id` values a durable approval already claimed. `token_consumed` is whether the step's `token_id` is claimed. `token_format` is how the payload parses: `v1` without a `token_version` claim, `v2` when it is the JSON integer 2, and `malformed` otherwise, including a Boolean, a string or `2.0`. `expires_at` and `issued_at` are unix seconds, as the contract states. `host_state_token_cases` present an offline token for a host-state Tier C action on the existing approval workflow, outside tier-c-approval/v1: `expected` is `refused` for a token of either version, because no v1 token approves any Tier C action and a host-state Tier C action has no commissioned zone for a v2 token to bind, and `token_consumed` is whether its `token_id` is claimed.",
+  "proposal": {
+    "proposal_id": "AB12CD34",
+    "device_id": "energy-monitor-ikeja-01",
+    "action": "trip_relay",
+    "target": "relay-gpio-26",
+    "zone": "zone-feeder-a",
+    "outcome": "open_protected_circuit",
+    "binding": "sha256:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "authority": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "created_at_ms": 1787000000000,
+    "expires_at_ms": 1787000300000,
+    "created_mono_ms": 40000000,
+    "safe_default_action": "log_to_dashboard"
+  },
+  "sequences": [
+    {
+      "name": "an offline token bound to another proposal, action, target or zone approves nothing and is not consumed",
+      "steps": [
+        {
+          "event": "reply",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-1",
+            "proposal_id": "ZZ99YY88",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-1",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "proposed",
+            "notice": "token_refused",
+            "token_consumed": false
+          }
+        },
+        {
+          "event": "reply",
+          "mono_ms": 40001100,
+          "wall_ms": 1787000001100,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-2",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "release_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-2",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "proposed",
+            "notice": "token_refused",
+            "token_consumed": false
+          }
+        },
+        {
+          "event": "reply",
+          "mono_ms": 40001200,
+          "wall_ms": 1787000001200,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-3",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-19",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-3",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "proposed",
+            "notice": "token_refused",
+            "token_consumed": false
+          }
+        },
+        {
+          "event": "reply",
+          "mono_ms": 40001300,
+          "wall_ms": 1787000001300,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-4",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-b",
+            "nonce": "n-4",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "proposed",
+            "notice": "token_refused",
+            "token_consumed": false
+          }
+        },
+        {
+          "event": "reply",
+          "mono_ms": 40001400,
+          "wall_ms": 1787000001400,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-5",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-02",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-5",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "proposed",
+            "notice": "token_refused",
+            "token_consumed": false
+          }
+        },
+        {
+          "event": "reply",
+          "mono_ms": 40001500,
+          "wall_ms": 1787000001500,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-6",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-6",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "approved_pending_dispatch",
+            "token_consumed": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "a wildcard offline token never authorizes Tier C",
+      "steps": [
+        {
+          "event": "reply",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-w",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "*",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-w",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "proposed",
+            "notice": "token_refused",
+            "token_consumed": false,
+            "actuations": 0
+          }
+        },
+        {
+          "event": "dispatch",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "marker_durable": true,
+          "unavailable": [],
+          "expect": {
+            "dispatch_refused": true,
+            "actuations": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "a token still valid after the proposal's deadline approves nothing",
+      "steps": [
+        {
+          "event": "reply",
+          "mono_ms": 40300001,
+          "wall_ms": 1787000300001,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-late",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-late",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "proposal_expired",
+            "notice": "proposal_expired",
+            "token_consumed": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "a token valid longer than the proposal cannot extend it",
+      "steps": [
+        {
+          "event": "reply",
+          "mono_ms": 40310000,
+          "wall_ms": 1787000310000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-long",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-long",
+            "issued_at": 1787000000,
+            "expires_at": 1787003600
+          },
+          "expect": {
+            "state": "proposal_expired",
+            "token_consumed": false,
+            "actuations": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "a failed approval commit consumes no token_id, and the same token then approves",
+      "steps": [
+        {
+          "event": "reply",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "held",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-atomic",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-atomic",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "proposed",
+            "notice": "commit_failed_retry",
+            "token_consumed": false
+          }
+        },
+        {
+          "event": "reply",
+          "mono_ms": 40002000,
+          "wall_ms": 1787000002000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-atomic",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-atomic",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "approved_pending_dispatch",
+            "token_consumed": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "a token_id already claimed approves nothing",
+      "consumed_token_ids": [
+        "tok-n-used"
+      ],
+      "steps": [
+        {
+          "event": "reply",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-used",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-used",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "proposed",
+            "notice": "token_replayed",
+            "token_consumed": true,
+            "actuations": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "a token presented to a proposal whose binding changed is not consumed",
+      "steps": [
+        {
+          "event": "binding_change",
+          "binding": "sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "expect": {}
+        },
+        {
+          "event": "reply",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-bind",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-bind",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "approval_binding_changed",
+            "token_consumed": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "a v1 token parses as v1 and is refused as Tier C authority, even naming the proposal's action",
+      "steps": [
+        {
+          "event": "reply",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_id": "tok-v1",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300,
+            "nonce": "n-v1"
+          },
+          "expect": {
+            "state": "proposed",
+            "token_format": "v1",
+            "notice": "token_v1_refused",
+            "token_consumed": false,
+            "actuations": 0
+          }
+        },
+        {
+          "event": "dispatch",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "marker_durable": true,
+          "unavailable": [],
+          "expect": {
+            "dispatch_refused": true,
+            "actuations": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "a v1 wildcard token is refused as Tier C authority",
+      "steps": [
+        {
+          "event": "reply",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_id": "tok-v1",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "*",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300,
+            "nonce": "n-v1w"
+          },
+          "expect": {
+            "state": "proposed",
+            "token_format": "v1",
+            "notice": "token_v1_refused",
+            "token_consumed": false,
+            "actuations": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "a v1 token carrying every v2 binding claim but no version is still v1 and refused",
+      "steps": [
+        {
+          "event": "reply",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_id": "tok-x",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300,
+            "nonce": "n-v1b"
+          },
+          "expect": {
+            "state": "proposed",
+            "token_format": "v1",
+            "notice": "token_v1_refused",
+            "token_consumed": false
+          }
+        },
+        {
+          "event": "reply",
+          "mono_ms": 40002000,
+          "wall_ms": 1787000002000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-x",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300,
+            "nonce": "n-v1b"
+          },
+          "expect": {
+            "state": "approved_pending_dispatch",
+            "token_format": "v2",
+            "token_consumed": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "a token with an unknown version is malformed and approves nothing",
+      "steps": [
+        {
+          "event": "reply",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 3,
+            "token_id": "tok-x",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300,
+            "nonce": "n-v3"
+          },
+          "expect": {
+            "state": "proposed",
+            "token_format": "malformed",
+            "notice": "token_refused",
+            "token_consumed": false
+          }
+        },
+        {
+          "event": "reply",
+          "mono_ms": 40001100,
+          "wall_ms": 1787000001100,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": "2",
+            "token_id": "tok-x",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300,
+            "nonce": "n-vs"
+          },
+          "expect": {
+            "state": "proposed",
+            "token_format": "malformed",
+            "notice": "token_refused",
+            "token_consumed": false
+          }
+        },
+        {
+          "event": "reply",
+          "mono_ms": 40001200,
+          "wall_ms": 1787000001200,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": true,
+            "token_id": "tok-x",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300,
+            "nonce": "n-vb"
+          },
+          "expect": {
+            "state": "proposed",
+            "token_format": "malformed",
+            "notice": "token_refused",
+            "token_consumed": false
+          }
+        },
+        {
+          "event": "reply",
+          "mono_ms": 40001300,
+          "wall_ms": 1787000001300,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2.0,
+            "token_id": "tok-x",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300,
+            "nonce": "n-vf"
+          },
+          "expect": {
+            "state": "proposed",
+            "token_format": "malformed",
+            "notice": "token_refused",
+            "token_consumed": false
+          }
+        }
+      ]
+    },
+    {
+      "name": "a fresh nonce under a claimed token_id approves nothing",
+      "consumed_token_ids": [
+        "tok-n-used"
+      ],
+      "steps": [
+        {
+          "event": "reply",
+          "mono_ms": 40001000,
+          "wall_ms": 1787000001000,
+          "path": "offline_token",
+          "authenticated": true,
+          "commit": "ok",
+          "decision": "yes",
+          "token": {
+            "token_version": 2,
+            "token_id": "tok-n-used",
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "action_scope": "trip_relay",
+            "target": "relay-gpio-26",
+            "zone_id": "zone-feeder-a",
+            "nonce": "n-fresh",
+            "issued_at": 1787000000,
+            "expires_at": 1787000300
+          },
+          "expect": {
+            "state": "proposed",
+            "notice": "token_replayed",
+            "token_consumed": true,
+            "actuations": 0
+          }
+        }
+      ]
+    }
+  ],
+  "host_state_token_cases": [
+    {
+      "name": "a v1 token for a host-state Tier C action is refused",
+      "action": "terminate_process",
+      "tier": "C",
+      "capability": "host_state",
+      "workflow": "existing",
+      "token": {
+        "token_id": "tok-hs-v1",
+        "device_id": "energy-monitor-ikeja-01",
+        "issued_at": 1787000000,
+        "expires_at": 1787000300,
+        "action_scope": "terminate_process",
+        "nonce": "n-hs1"
+      },
+      "expected": "refused",
+      "token_consumed": false
+    },
+    {
+      "name": "a v1 wildcard token for a host-state Tier C action is refused",
+      "action": "terminate_process",
+      "tier": "C",
+      "capability": "host_state",
+      "workflow": "existing",
+      "token": {
+        "token_id": "tok-hs-v1w",
+        "device_id": "energy-monitor-ikeja-01",
+        "issued_at": 1787000000,
+        "expires_at": 1787000300,
+        "action_scope": "*",
+        "nonce": "n-hs2"
+      },
+      "expected": "refused",
+      "token_consumed": false
+    },
+    {
+      "name": "a v2 token for a host-state Tier C action approves nothing, since the action has no commissioned zone",
+      "action": "terminate_process",
+      "tier": "C",
+      "capability": "host_state",
+      "workflow": "existing",
+      "token": {
+        "token_version": 2,
+        "token_id": "tok-hs-v2",
+        "device_id": "energy-monitor-ikeja-01",
+        "issued_at": 1787000000,
+        "expires_at": 1787000300,
+        "proposal_id": "HS12CD34",
+        "action_scope": "terminate_process",
+        "target": "pid:4242",
+        "zone_id": "",
+        "nonce": "n-hs3"
+      },
+      "expected": "refused",
+      "token_consumed": false
+    }
+  ]
+}

@@ -49,6 +49,8 @@ from dataclasses import dataclass
 # reason recorded below.
 _TIER_ORDER: dict[str, int] = {"A": 1, "B": 2, "C": 3, "D": 4}
 
+CONSEQUENCE_CLASSES: frozenset[str] = frozenset({"informational", "soft", "hard"})
+
 
 @dataclass(frozen=True)
 class ActionCapability:
@@ -67,6 +69,23 @@ class ActionCapability:
     physical: bool
     safe_default_eligible: bool
     summary: str
+    #: What the action does to the world: ``informational``, ``soft`` or
+    #: ``hard``. One of the two axes of the tier letter; the authority basis is
+    #: the other, and a registry entry never holds that one.
+    consequence_class: str = ""
+
+    def __post_init__(self) -> None:
+        if self.consequence_class not in CONSEQUENCE_CLASSES:
+            raise ValueError(
+                f"consequence_class {self.consequence_class!r} is not one of "
+                f"{sorted(CONSEQUENCE_CLASSES)}"
+            )
+        if self.physical and self.safe_default_eligible:
+            raise ValueError("a physical capability is never safe_default_eligible")
+        if self.consequence_class != "informational" and self.safe_default_eligible:
+            raise ValueError(
+                "only an informational capability may be safe_default_eligible"
+            )
 
 
 # The registry itself. Every action with an executor registered in
@@ -80,18 +99,21 @@ ACTION_REGISTRY: dict[str, ActionCapability] = {
         physical=False,
         safe_default_eligible=True,
         summary="sends a WhatsApp message",
+        consequence_class="informational",
     ),
     "alert_sms": ActionCapability(
         minimum_tier="A",
         physical=False,
         safe_default_eligible=True,
         summary="sends an SMS message",
+        consequence_class="informational",
     ),
     "log_to_dashboard": ActionCapability(
         minimum_tier="A",
         physical=False,
         safe_default_eligible=True,
         summary="records the decision to the action log",
+        consequence_class="informational",
     ),
     # ── Soft actions (Tier B) ─────────────────────────────────────────────
     # Reversible and low-consequence, but they change host or device state,
@@ -101,18 +123,21 @@ ACTION_REGISTRY: dict[str, ActionCapability] = {
         physical=False,
         safe_default_eligible=False,
         summary="terminates a running process",
+        consequence_class="soft",
     ),
     "reset_kernel_subsystem": ActionCapability(
         minimum_tier="B",
         physical=False,
         safe_default_eligible=False,
         summary="resets a kernel subsystem",
+        consequence_class="soft",
     ),
     "coap_command": ActionCapability(
         minimum_tier="B",
         physical=True,
         safe_default_eligible=False,
         summary="commands an actuator on a constrained device",
+        consequence_class="soft",
     ),
     # ── Hard physical (Tier C floor) ──────────────────────────────────────
     # The three actuator-specific names the runtime registers, each resolving
@@ -127,18 +152,21 @@ ACTION_REGISTRY: dict[str, ActionCapability] = {
         physical=True,
         safe_default_eligible=False,
         summary="operates the safety relay",
+        consequence_class="hard",
     ),
     "release_relay": ActionCapability(
         minimum_tier="C",
         physical=True,
         safe_default_eligible=False,
         summary="de-energises the safety relay, restoring the load circuit",
+        consequence_class="hard",
     ),
     "close_gas_valve": ActionCapability(
         minimum_tier="C",
         physical=True,
         safe_default_eligible=False,
         summary="closes the fail-safe gas valve",
+        consequence_class="hard",
     ),
 }
 

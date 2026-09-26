@@ -1,0 +1,374 @@
+{
+  "contract": "cli-commands/v1 Tier C reconciliation (`evidence reconcile-tier-c`), replayed through the tier-c-approval/v1 admission",
+  "note": "Replayed with the admission model of tier-c-approval/vectors/admission.json, whose note defines every other event and expectation, against the `proposal` below. `installed_operator_uid` is the installed operator identity. A `reconcile` step with `source` `operator_local` is one invocation: `caller` is the caller's identity, with `credentials` `peer` when the runtime obtained it from the kernel-provided peer credentials of the connection, `argument` when it was supplied by the caller, and `null` when the runtime could not establish one; `uid` is the effective numeric user ID, `login_uid` the Linux audit login user ID or `null`, `account` the account name and `groups` any group memberships. `operator_identity` `not_installed` means no valid installed operator identity exists for that step, and `operator_uid_file` names the `operator_uid_cases` entry whose verdict is the installed operator identity for that step; `runtime` `unreachable` means no running runtime answers on the operator socket and `lost_after_submit` that the runtime received the request and the connection ended before its answer reached the bridge; `runtime_store` `unavailable` means the runtime's state store cannot serve the checks or the append; `caller_store_access` `none` means the caller has no permission on the state store; `operation` is the request's `operation` member, `reconcile_tier_c` when the step omits it and `null` when the request carries none; `request_fields` are fields the caller added to the request, such as a user ID; `socket` `explicit` means the caller named the socket with `--socket`; `peer` `unverified` means the bridge could not verify the connected socket peer as the expected runtime service identity from kernel-provided credentials, `peer_answer` being what that peer answered, and the running runtime never received the request; `runtime_device` is the device identity of the running runtime that answers on the socket, the proposal's device when absent; `operational` names the operational outcome that ends the invocation (`state_store_locked` or `cancelled`), and `proposal_id`, `device_id`, `zone_id`, `outcome`, `reason` and optional `note` are the command's arguments; a missing one is a missing argument. `result` is what the bridge reports: `recorded`, `already_recorded`, `refused:<error.code>`, or the operational outcome; `response` is `reconciliation` when the answer carries the reconciliation and `{}` when it carries no state; `bridge_files_created` the files the bridge process created; `reconciliations` counts appended reconciliation records; `reconciliation` is the recorded one without its time; `audit_required` is whether the step's identical repeat requires an `identical_repeat` audit-attempt record, `audit_attempts` those appended, without their time, and `audit_principals` the distinct principals, by numeric and audit login user ID, holding at least one, which is the same whether or not a principal's own repeats were coalesced. `operator_uid_cases` are `operator-uid` files: `content` is the file's exact text, `file`, `install_root` and each of `ancestors` carry their owning user ID and octal `mode`, `file.symlink` is whether the path is a symbolic link, `service_uid` is the runtime service account's user ID, and `expected` is the installed operator identity the file yields, or `null` when none is installed. The reasons, the refusal codes and their order, the note bound and its excluded code points are read from cli-commands/v1. A `caller` with `pidfd_pinned` `false` is a peer the runtime could not pin by `SO_PEERPIDFD`, whose audit login user ID is recorded `null`; `duplicate_members` names request members the request carries twice. The recorded entry point is `local_operator_socket`.",
+  "installed_operator_uid": 1001,
+  "proposal": {"proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "action": "trip_relay", "target": "relay-gpio-26", "zone": "zone-feeder-a", "outcome": "open_protected_circuit", "binding": "sha256:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1", "authority": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "created_at_ms": 1787000000000, "expires_at_ms": 1787000300000, "created_mono_ms": 40000000, "safe_default_action": "log_to_dashboard"},
+  "sequences": [
+    {
+      "name": "an authenticated local reconcile is accepted, appended, and unblocks the same outcome on the same zone",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "recorded", "state": "reconciled_executed", "reconciliations": 1, "reconciliation": {"proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "decision_state": "reconciled_executed", "reason": "site_inspection", "note": null, "operator": {"uid": 1001, "account": "installer", "login_uid": 1001}, "entry_point": "local_operator_socket"}, "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "dispatch_outcome_unknown", "reconciled_executed"], "action_records": {"pending": 0, "outcome_unknown": 0, "dispatch_unproven": 0, "lost": 0}, "actuations": 1}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    },
+    {
+      "name": "an identical repeat appends no second reconciliation, and another principal's is audited",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breaker found open at the panel", "expect": {"result": "recorded", "reconciliations": 1}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breaker found open at the panel", "expect": {"result": "already_recorded", "reconciliations": 1, "state": "reconciled_executed", "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "dispatch_outcome_unknown", "reconciled_executed"], "audit_required": false}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 0, "account": "root", "login_uid": 1002}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breaker found open at the panel", "expect": {"result": "already_recorded", "reconciliations": 1, "audit_required": true, "audit_attempts": [{"kind": "identical_repeat", "caller": {"uid": 0, "account": "root", "login_uid": 1002}, "reconciliation": "AB12CD34"}], "state": "reconciled_executed", "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "dispatch_outcome_unknown", "reconciled_executed"], "reconciliation": {"proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "decision_state": "reconciled_executed", "reason": "site_inspection", "note": "breaker found open at the panel", "operator": {"uid": 1001, "account": "installer", "login_uid": 1001}, "entry_point": "local_operator_socket"}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "site-installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breaker found open at the panel", "expect": {"result": "already_recorded", "reconciliations": 1, "audit_required": false}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 0, "account": "root", "login_uid": 1002}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breaker found open at the panel", "expect": {"result": "already_recorded", "reconciliations": 1, "audit_required": true, "audit_principals": [{"uid": 0, "login_uid": 1002}], "state": "reconciled_executed", "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "dispatch_outcome_unknown", "reconciled_executed"]}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 0, "account": "root", "login_uid": 1003}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breaker found open at the panel", "expect": {"result": "already_recorded", "reconciliations": 1, "audit_required": true, "audit_principals": [{"uid": 0, "login_uid": 1002}, {"uid": 0, "login_uid": 1003}], "state": "reconciled_executed"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breaker found open at the panel", "expect": {"result": "already_recorded", "reconciliations": 1, "audit_required": false, "audit_principals": [{"uid": 0, "login_uid": 1002}, {"uid": 0, "login_uid": 1003}]}}
+      ]
+    },
+    {
+      "name": "an identical repeat by root from another login is audited, because the audit login user ID is authoritative",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 0, "account": "root", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "recorded", "reconciliations": 1}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 0, "account": "root", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "already_recorded", "audit_required": false}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 0, "account": "root", "login_uid": 1002}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "already_recorded", "reconciliations": 1, "audit_required": true, "audit_attempts": [{"kind": "identical_repeat", "caller": {"uid": 0, "account": "root", "login_uid": 1002}, "reconciliation": "AB12CD34"}], "state": "reconciled_executed"}}
+      ]
+    },
+    {
+      "name": "a different request after reconciliation is refused already_reconciled",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "recorded"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "not-executed", "reason": "site_inspection", "expect": {"result": "refused:already_reconciled", "state": "reconciled_executed", "reconciliations": 1, "notice": "reconcile_refused"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "instrument_measurement", "expect": {"result": "refused:already_reconciled", "reconciliations": 1}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "a note the first request did not carry", "expect": {"result": "refused:already_reconciled", "reconciliations": 1}}
+      ]
+    },
+    {
+      "name": "an unknown proposal is refused and the dispatch stays blocked",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "ZZ99YY88", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unknown_proposal", "state": "dispatch_outcome_unknown", "reconciliations": 0, "action_records": {"outcome_unknown": 1, "lost": 1}}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}}
+      ]
+    },
+    {
+      "name": "a device or zone mismatch is refused and the dispatch stays blocked",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_not_proven"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-02", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:device_mismatch", "state": "dispatch_not_proven", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-b", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:zone_mismatch", "state": "dispatch_not_proven", "reconciliations": 0}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "not-executed", "reason": "actuator_position_observed", "expect": {"result": "recorded", "state": "reconciled_not_executed", "reconciliations": 1, "action_records": {"dispatch_unproven": 0, "lost": 0}}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    },
+    {
+      "name": "an unauthenticated caller is refused before any record is read, and only root or the installed operator is admitted",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": null}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "state": "dispatch_outcome_unknown", "reconciliations": 0, "notice": "reconcile_refused"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1003}, "proposal_id": "ZZ99YY88", "device_id": "energy-monitor-ikeja-02", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "argument", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1004, "account": "installer", "login_uid": 1004}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1005, "account": "operator", "login_uid": 1005, "groups": ["ori-operator"]}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operator_identity": "not_installed", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1003}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}, "runtime_store": "unavailable"},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 0, "account": "root", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "runtime_store_unavailable", "reconciliations": 0}, "runtime_store": "unavailable"},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 0, "account": "root", "login_uid": null}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operator_identity": "not_installed", "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed"}}
+      ]
+    },
+    {
+      "name": "arguments outside the closed sets or bounds are refused, and the bound itself is accepted",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "operator_said_so", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "probably", "reason": "site_inspection", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "not_executed", "reason": "site_inspection", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breaker\u0007open", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breakeropen", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breakeropen", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breakeropen", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breaker\u001fopen", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "note": "breaker\u0000open", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "instrument_measurement", "note": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé", "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "instrument_measurement", "note": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé", "expect": {"result": "already_recorded"}}
+      ]
+    },
+    {
+      "name": "an unreachable runtime or unavailable runtime store commits nothing, and the bridge creates no file",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "runtime": "unreachable", "expect": {"result": "runtime_unavailable", "reconciliations": 0, "state": "dispatch_outcome_unknown", "bridge_files_created": [], "response": {}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "runtime_store": "unavailable", "expect": {"result": "runtime_store_unavailable", "reconciliations": 0, "state": "dispatch_outcome_unknown", "bridge_files_created": [], "response": {}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed", "bridge_files_created": []}}
+      ]
+    },
+    {
+      "name": "a proposal that is not uncertain is refused not_uncertain",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "outcome", "write": "ok", "result": "executed", "expect": {"state": "executed"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:not_uncertain", "state": "executed", "reconciliations": 0}}
+      ]
+    },
+    {
+      "name": "reconcile never replays the action and never reaches Tier D",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "propose", "tier": "D", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "tier-d-exec-0001", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unknown_proposal", "reconciliations": 0, "actuations": 1}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "not-executed", "reason": "site_inspection", "expect": {"result": "recorded", "state": "reconciled_not_executed", "actuations": 1, "reconciliations": 1}},
+        {"event": "propose", "tier": "D", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}},
+        {"event": "restart", "expect": {"state": "reconciled_not_executed", "actuations": 1}}
+      ]
+    },
+    {
+      "name": "checks run in the contract's order, and the first that fails is the answer",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "operator_said_so", "expect": {"result": "refused:invalid_arguments"}, "runtime_store": "unavailable"},
+        {"event": "reconcile", "source": "operator_local", "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "operator_said_so", "caller": {"credentials": null}, "expect": {"result": "refused:invalid_arguments"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "operator_said_so", "runtime": "unreachable", "expect": {"result": "refused:invalid_arguments"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": null}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "runtime": "unreachable", "expect": {"result": "runtime_unavailable"}},
+        {"event": "reconcile", "source": "operator_local", "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-02", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "expect": {"result": "runtime_store_unavailable"}, "runtime_store": "unavailable"},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": null}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated"}, "runtime_store": "unavailable"},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": null}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-02", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "ZZ99YY88", "device_id": "energy-monitor-ikeja-02", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:device_mismatch"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "ZZ99YY88", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-b", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unknown_proposal"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "recorded", "reconciliations": 1}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-b", "outcome": "not-executed", "reason": "site_inspection", "expect": {"result": "refused:zone_mismatch"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "not-executed", "reason": "site_inspection", "expect": {"result": "refused:already_reconciled"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "already_recorded", "reconciliations": 1}}
+      ]
+    },
+    {
+      "name": "operational outcomes commit no reconciliation",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operational": "state_store_locked", "expect": {"result": "state_store_locked", "reconciliations": 0, "state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operational": "cancelled", "expect": {"result": "cancelled", "reconciliations": 0, "state": "dispatch_outcome_unknown"}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed"}}
+      ]
+    },
+    {
+      "name": "the device is the running runtime's own",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-99", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:device_mismatch", "reconciliations": 0, "state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "runtime_device": "energy-monitor-ikeja-02", "expect": {"result": "refused:device_mismatch", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed"}}
+      ]
+    },
+    {
+      "name": "an admitted caller's audit login user ID neither admits nor refuses",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1003}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed", "reconciliation": {"proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "decision_state": "reconciled_executed", "reason": "site_inspection", "note": null, "operator": {"uid": 1001, "account": "installer", "login_uid": 1003}, "entry_point": "local_operator_socket"}}}
+      ]
+    },
+    {
+      "name": "the installed operator identity is read only from a trusted operator-uid file",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operator_uid_file": "a group-writable install root", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operator_uid_file": "a leading zero", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operator_uid_file": "a symbolic link to a valid file", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operator_uid_file": "a root-owned file with one user ID and a trailing LF", "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed"}}
+      ]
+    },
+    {
+      "name": "a request whose operation is absent or unknown is refused invalid_arguments",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operation": null, "expect": {"result": "refused:invalid_arguments", "reconciliations": 0, "state": "dispatch_outcome_unknown", "response": {}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operation": "reconcile", "expect": {"result": "refused:invalid_arguments", "reconciliations": 0, "state": "dispatch_outcome_unknown", "response": {}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operation": "reconcile_tier_c", "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed"}}
+      ]
+    },
+    {
+      "name": "spoofed user ID fields in the request do nothing",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1003}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "request_fields": {"uid": 0, "login_uid": 0}, "expect": {"result": "refused:invalid_arguments", "reconciliations": 0, "state": "dispatch_outcome_unknown", "response": {}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "request_fields": {"uid": 0}, "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "request_fields": {"account": "root"}, "expect": {"result": "refused:invalid_arguments", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1003}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "recorded", "reconciliations": 1, "reconciliation": {"proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "decision_state": "reconciled_executed", "reason": "site_inspection", "note": null, "operator": {"uid": 1001, "account": "installer", "login_uid": 1001}, "entry_point": "local_operator_socket"}}}
+      ]
+    },
+    {
+      "name": "an unauthorized peer learns no state",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1003}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "runtime_store": "unavailable", "expect": {"result": "refused:unauthenticated", "response": {}, "reconciliations": 0}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1003}, "proposal_id": "ZZ99YY88", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "response": {}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1003}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-02", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "response": {}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1003}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-b", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "response": {}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "recorded", "response": "reconciliation", "reconciliations": 1}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1003}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "response": {}, "reconciliations": 1, "audit_attempts": []}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1003, "account": "guest", "login_uid": 1003}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "not-executed", "reason": "site_inspection", "expect": {"result": "refused:unauthenticated", "response": {}}}
+      ]
+    },
+    {
+      "name": "the installed operator succeeds without database write permission",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "caller_store_access": "none", "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed", "bridge_files_created": []}}
+      ]
+    },
+    {
+      "name": "a lost connection cancels nothing the runtime began, and a repeat is idempotent",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "runtime": "lost_after_submit", "expect": {"result": "runtime_unavailable", "reconciliations": 1, "state": "reconciled_executed", "bridge_files_created": []}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "already_recorded", "reconciliations": 1, "audit_required": false}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    },
+    {
+      "name": "a request naming a member twice is refused invalid_arguments and decides nothing",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "duplicate_members": ["reason"], "expect": {"result": "refused:invalid_arguments", "reconciliations": 0, "state": "dispatch_outcome_unknown", "response": {}}},
+        {"event": "reconcile", "source": "operator_local", "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed"}}
+      ]
+    },
+    {
+      "name": "a request naming operation twice is refused invalid_arguments, even when both name the same operation",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operation": "reconcile_tier_c", "duplicate_members": ["operation"], "expect": {"result": "refused:invalid_arguments", "reconciliations": 0, "state": "dispatch_outcome_unknown", "response": {}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "operation": "reconcile_tier_c", "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed"}}
+      ]
+    },
+    {
+      "name": "a response from an unverified peer is runtime_unavailable, and an explicit --socket does not waive peer verification",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "peer": "unverified", "peer_answer": "recorded", "expect": {"result": "runtime_unavailable", "reconciliations": 0, "state": "dispatch_outcome_unknown", "response": {}, "bridge_files_created": []}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "socket": "explicit", "peer": "unverified", "peer_answer": "recorded", "expect": {"result": "runtime_unavailable", "reconciliations": 0, "state": "dispatch_outcome_unknown", "response": {}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "socket": "explicit", "expect": {"result": "recorded", "reconciliations": 1, "state": "reconciled_executed"}}
+      ]
+    },
+    {
+      "name": "an audit login user ID the runtime cannot pin to the peer is recorded null",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001, "pidfd_pinned": false}, "expect": {"result": "recorded", "reconciliations": 1, "reconciliation": {"proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "decision_state": "reconciled_executed", "reason": "site_inspection", "note": null, "operator": {"uid": 1001, "account": "installer", "login_uid": null}, "entry_point": "local_operator_socket"}}}
+      ]
+    },
+    {
+      "name": "a host-state Tier C approval on the existing workflow is not reconciled here",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "HOST-TERMINATE-01", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"result": "refused:unknown_proposal", "reconciliations": 0, "state": "dispatch_outcome_unknown", "actuations": 1}}
+      ]
+    }
+  ],
+  "operator_uid_cases": [
+    {"name": "a root-owned file with one user ID and a trailing LF", "content": "1001\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": 1001},
+    {"name": "a root-owned file with one user ID and no LF", "content": "1001", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": 1001},
+    {"name": "a leading zero", "content": "01001\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "user ID 0", "content": "0\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "the service account's user ID", "content": "998\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "surrounding whitespace", "content": " 1001 \n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "a CRLF terminator", "content": "1001\r\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "two LFs", "content": "1001\n\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "a sign", "content": "+1001\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "an underscore separator", "content": "1_001\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "non-ASCII digits", "content": "\u0661\u0660\u0660\u0661\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "an empty file", "content": "", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "two user IDs", "content": "1001\n1002\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "a symbolic link to a valid file", "content": "1001\n", "file": {"owner": 0, "mode": "0644", "symlink": true}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "a group-writable file", "content": "1001\n", "file": {"owner": 0, "mode": "0664", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "a file owned by another user", "content": "1001\n", "file": {"owner": 1001, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "an install root owned by the service account", "content": "1001\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 998, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "a group-writable install root", "content": "1001\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0775"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "an ancestor directory owned by another user", "content": "1001\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 1000, "mode": "0755"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null},
+    {"name": "a world-writable sticky ancestor", "content": "1001\n", "file": {"owner": 0, "mode": "0644", "symlink": false}, "install_root": {"path": "/opt/ori", "owner": 0, "mode": "0755"}, "ancestors": [{"path": "/opt", "owner": 0, "mode": "1777"}, {"path": "/", "owner": 0, "mode": "0755"}], "service_uid": 998, "expected": null}
+  ]
+}

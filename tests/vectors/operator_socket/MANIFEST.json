@@ -1,0 +1,9 @@
+{
+  "source_repository": "ori-platform/ori-specs",
+  "source_path": "operator-socket/vectors",
+  "source_commit": "06ba18e5923907e72a0bd82306747c1c4aa4af61",
+  "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
+  "files": {
+    "tier-c-reconcile.json": "d2733fe8d4ff9ead250004f43386e17830e87147b5c72855384751ff95295cc5"
+  }
+}

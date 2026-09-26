@@ -1,0 +1,533 @@
+{
+  "contract": "tier-c-approval/v1 admission and dispatch, with the runtime-config/v2 approval timeout bound",
+  "note": "`proposal` is the proposal every sequence replays unless the sequence overrides a field: `created_at_ms` and `expires_at_ms` are the wall-clock audit record, and `created_mono_ms` is the creating process's monotonic clock at creation, so its monotonic deadline is `created_mono_ms` plus the proposal's lifetime. `reply` is an operator reply on `path` (`remote`, `console` or `offline_token`, the last carrying its `token` claims) at monotonic `mono_ms` and wall-clock `wall_ms`, with `commit` `ok` or `held` for whether its durable commit succeeded and `reservation` `unavailable` when the commit could not reserve the terminal uncertainty record, and with `proposal` naming a later proposal a `propose` step opened when the reply is to that one; `dispatch` is the live attempt beginning dispatch, with `marker_durable` whether its `dispatch_started` record reached the store and `unavailable` the writers and services that are not available, none of which it waits for, and `pending_at_ceiling` when the pending-outcome ceiling has been reached; `outcome` is the outcome write, with `write` `ok`, `blocked` while the writer is held, or `failed` when the outcome cannot be appended, and `result` `executed`, `failed` when the executor affirms the commanded physical outcome did not occur, or `timeout`, `lost_response`, `partial` or `indeterminate`, none of which establishes the physical outcome; `crash` ends the process, with `non_dispatch_record` when an affirmative durable record that dispatch was never invoked had been committed; `restart` starts a new process, whose monotonic clock is unrelated to the old one; `binding_change` changes the in-force commissioned binding or authority snapshot; `reconcile` presents a reconciliation from `source`, an `operator_local` one carrying the request of `evidence reconcile-tier-c` in cli-commands/v1, with `installed_operator_uid` the installed operator identity (whose vectors, and whose `caller` shape, are cli-commands/vectors/tier-c-reconcile.json); `propose` asks whether a later proposal of `tier`, `outcome` and `zone` is admitted, and with `opens` creates it under that name when it is. `create` with `commit` `failed` is a proposal row that could not be committed, after which no proposal exists; `alert_result` is the alert provider's answer to the latest attempt, `delivered` or `ambiguous`. `reserved` is whether the terminal uncertainty record reserved at admission is held, `later` the state of each later proposal by name, and `later_safe_default_intents` how many safe-default intents each one created. `actuations` counts physical actuations, `safe_default` whether a safe-default intent exists and `safe_default_intents` how many were created, `alert_attempts` the proposal identifier each alert attempt carried, `log_records` the durable log records of the safe default, `proposal_sent` whether a proposal reached the operator, `safe_default_attempted` and `safe_default_recorded` whether the safe default was attempted and whether it was claimed durable, `events` the CRITICAL events raised, `notice` the last operator notice, `records` the durable decision records in append order, `action_records` the runtime-health/v2 counts, `unknown_live` among them, `evidence_status` what they make evidence health, and `token_consumed` whether the step's `token_id` is claimed. `config_cases` are `approval_timeout_seconds` values against a release maximum. `safe_default_cases` name a Tier C `safe_default_action`, the `tier` it resolves to, its `capability` as the runtime guard classifies it (`informational`, `host_state`, `physical` when any executor, command or transport it invokes can change physical state, or `unclassified` for an action the guard has not classified), and only an action classified `informational` can be admitted, and its action-registry entry as `registry` (`null` for an action the registry does not govern), and whether a proposal carrying it can exist; `registry` carries the entry's `minimum_tier`, `physical`, `consequence_class` and `safe_default_eligible`, and an action with none is refused. The `registry` values of the named runtime actions pin the ori-runtime registry; `unflagged_valve_command`, `ungoverned_actuator_command` and `flagged_notifier` are hypothetical actions whose registry entry disagrees with their capability, or that have none; `unclassed_notifier` is a hypothetical informational action whose registry entry carries no consequence class; `alert_sms_raised` is a hypothetical informational action a skill declared above Tier A, `tier_a_host_probe` a hypothetical Tier A action that changes host state, and `unclassified_hook_action` a hypothetical action with no registry entry that the guard has not classified, which the ori-runtime registry today treats as safe-default eligible. The actions safety-profile/vectors/legacy-actions.json names, the outcomes they map to, and `coap_command` are the pinned instance tier-c-approval/v1 names. The offline-token sequences are offline-tokens/vectors/tier-c-binding.json. `proposal_scope_cases` name a proposed action, its `tier`, whether it can change physical state (`capability`), the commissioned `zone` and `commissioned_outcome` it names, and whether tier-c-approval/v1 governs it, refuses it, or leaves it outside the contract on the existing workflow. `authority_snapshot_cases` are authority snapshots, as an object or as raw `snapshot_text`, each valid with the SHA-256 of its canonical bytes or malformed.",
+  "installed_operator_uid": 1001,
+  "proposal": {"proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "action": "trip_relay", "target": "relay-gpio-26", "zone": "zone-feeder-a", "outcome": "open_protected_circuit", "binding": "sha256:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1", "authority": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "created_at_ms": 1787000000000, "expires_at_ms": 1787000300000, "created_mono_ms": 40000000, "safe_default_action": "log_to_dashboard"},
+  "sequences": [
+    {
+      "name": "a live approval dispatches immediately and records its outcome",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch", "actuations": 0}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"state": "dispatch_started", "actuations": 1, "action_records": {"pending": 1, "lost": 0}}},
+        {"event": "outcome", "write": "ok", "result": "executed", "expect": {"state": "executed", "actuations": 1, "action_records": {"pending": 0, "outcome_unknown": 0, "dispatch_unproven": 0, "lost": 0}, "safe_default": false, "events": [], "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "executed"]}}
+      ]
+    },
+    {
+      "name": "a held state-store writer leaves the reply unapproved and nothing executes",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "held", "decision": "yes", "expect": {"state": "proposed", "notice": "commit_failed_retry", "actuations": 0}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0, "state": "proposed"}},
+        {"event": "reply", "mono_ms": 40005000, "wall_ms": 1787000005000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}},
+        {"event": "dispatch", "mono_ms": 40005000, "wall_ms": 1787000005000, "marker_durable": true, "unavailable": [], "expect": {"state": "dispatch_started", "actuations": 1}}
+      ]
+    },
+    {
+      "name": "a blocked outcome writer never delays or repeats the action; the approval survives and the outcome is unknown",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": ["action_log", "state_store"], "expect": {"state": "dispatch_started", "actuations": 1}},
+        {"event": "outcome", "write": "blocked", "result": "executed", "expect": {"state": "dispatch_started", "actuations": 1, "action_records": {"pending": 1, "lost": 0}}},
+        {"event": "crash", "expect": {"actuations": 1}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "events": ["critical_operator_audit"], "action_records": {"pending": 0, "outcome_unknown": 1, "dispatch_unproven": 0, "lost": 1}, "evidence_status": "degraded", "safe_default": false}}
+      ]
+    },
+    {
+      "name": "a reply after the monotonic deadline is not an approval",
+      "steps": [
+        {"event": "reply", "mono_ms": 40300001, "wall_ms": 1787000300001, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "proposal_expired", "notice": "proposal_expired", "actuations": 0, "events": []}},
+        {"event": "dispatch", "mono_ms": 40300002, "wall_ms": 1787000300002, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0}}
+      ]
+    },
+    {
+      "name": "expiry between commit and dispatch ends execution authority with the non-actuating safe default",
+      "steps": [
+        {"event": "reply", "mono_ms": 40299999, "wall_ms": 1787000299999, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}},
+        {"event": "dispatch", "mono_ms": 40300001, "wall_ms": 1787000300001, "marker_durable": true, "unavailable": [], "expect": {"state": "approval_expired_undispatched", "actuations": 0, "safe_default": true, "events": ["critical_operational"]}}
+      ]
+    },
+    {
+      "name": "a crash before the executor call with an affirmative non-dispatch record is aborted and kept",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}},
+        {"event": "crash", "non_dispatch_record": true, "expect": {"actuations": 0}},
+        {"event": "restart", "expect": {"state": "approval_aborted_undispatched", "actuations": 0, "safe_default": true, "events": ["critical_operational"], "action_records": {"pending": 0, "outcome_unknown": 0, "dispatch_unproven": 0, "lost": 0}, "evidence_status": "ok"}},
+        {"event": "dispatch", "mono_ms": 40002000, "wall_ms": 1787000002000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0}},
+        {"event": "reply", "mono_ms": 40003000, "wall_ms": 1787000003000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approval_aborted_undispatched", "actuations": 0}}
+      ]
+    },
+    {
+      "name": "a durable approval with neither marker nor proof is dispatch_not_proven after restart, and never replayed",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}},
+        {"event": "crash", "expect": {"actuations": 0}},
+        {"event": "restart", "expect": {"state": "dispatch_not_proven", "actuations": 0, "safe_default": false, "events": ["critical_operator_audit"], "action_records": {"pending": 0, "outcome_unknown": 0, "dispatch_unproven": 1, "lost": 1}, "evidence_status": "degraded"}},
+        {"event": "restart", "expect": {"state": "dispatch_not_proven", "actuations": 0, "events": ["critical_operator_audit"]}},
+        {"event": "dispatch", "mono_ms": 40002000, "wall_ms": 1787000002000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0}}
+      ]
+    },
+    {
+      "name": "a relay that actuated while its marker lost the race is dispatch_not_proven, never aborted",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": false, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_not_proven", "actuations": 1, "safe_default": false, "events": ["critical_operator_audit"], "action_records": {"pending": 0, "outcome_unknown": 0, "dispatch_unproven": 1, "lost": 1}}},
+        {"event": "restart", "expect": {"state": "dispatch_not_proven", "actuations": 1}}
+      ]
+    },
+    {
+      "name": "a durable marker without an outcome is dispatch_outcome_unknown, and a restart after dispatch began never replays",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {"actuations": 1}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "events": ["critical_operator_audit"]}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1}}
+      ]
+    },
+    {
+      "name": "a duplicate reply is idempotent",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "reply", "mono_ms": 40001500, "wall_ms": 1787000001500, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "dispatch_started", "actuations": 1}},
+        {"event": "outcome", "write": "ok", "result": "executed", "expect": {"state": "executed"}},
+        {"event": "reply", "mono_ms": 40002500, "wall_ms": 1787000002500, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "executed", "actuations": 1}}
+      ]
+    },
+    {
+      "name": "the local console and an offline token use the same admission boundary",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "console", "authenticated": true, "commit": "held", "decision": "yes", "expect": {"state": "proposed", "notice": "commit_failed_retry"}},
+        {"event": "reply", "mono_ms": 40002000, "wall_ms": 1787000002000, "path": "offline_token", "authenticated": true, "commit": "held", "decision": "yes", "token": {"token_version": 2, "token_id": "tok-n-console-1", "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "action_scope": "trip_relay", "target": "relay-gpio-26", "zone_id": "zone-feeder-a", "nonce": "n-console-1", "issued_at": 1787000000, "expires_at": 1787000300}, "expect": {"state": "proposed", "token_consumed": false, "token_format": "v2"}},
+        {"event": "reply", "mono_ms": 40003000, "wall_ms": 1787000003000, "path": "offline_token", "authenticated": true, "commit": "ok", "decision": "yes", "token": {"token_version": 2, "token_id": "tok-n-console-1", "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "action_scope": "trip_relay", "target": "relay-gpio-26", "zone_id": "zone-feeder-a", "nonce": "n-console-1", "issued_at": 1787000000, "expires_at": 1787000300}, "expect": {"state": "approved_pending_dispatch", "token_consumed": true, "token_format": "v2"}},
+        {"event": "dispatch", "mono_ms": 40003000, "wall_ms": 1787000003000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}}
+      ]
+    },
+    {
+      "name": "stopped or disabled evidence never delays dispatch after the approval commit",
+      "steps": [
+        {"event": "evidence_stopped", "expect": {"state": "proposed"}},
+        {"event": "evidence_disabled", "expect": {"state": "proposed"}},
+        {"event": "gateway_unavailable", "expect": {"state": "proposed"}},
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": ["evidence_signing", "evidence_delivery", "decision_export", "gateway"], "expect": {"state": "dispatch_started", "actuations": 1}}
+      ]
+    },
+    {
+      "name": "an unauthenticated reply changes nothing",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": false, "commit": "ok", "decision": "yes", "expect": {"state": "proposed", "notice": null}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0}}
+      ]
+    },
+    {
+      "name": "a refused proposal applies only the non-actuating safe default",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "no", "expect": {"state": "rejected", "actuations": 0, "safe_default": true}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0}}
+      ]
+    },
+    {
+      "name": "a contention refusal at dispatch never actuates and applies only the safe default",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "contention": true, "expect": {"state": "dispatch_refused_contention", "actuations": 0, "safe_default": true, "notice": "dispatch_refused_contention", "events": ["critical_operational"], "safe_default_intents": 1, "reserved": 0}},
+        {"event": "dispatch", "mono_ms": 40002000, "wall_ms": 1787000002000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0, "safe_default_intents": 1, "state": "dispatch_refused_contention"}},
+        {"event": "restart", "expect": {"state": "dispatch_refused_contention", "actuations": 0, "safe_default_intents": 1}}
+      ]
+    },
+    {
+      "name": "a failed actuation is recorded dispatch_failed, never executed",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "outcome", "write": "ok", "result": "failed", "expect": {"state": "dispatch_failed", "actuations": 1, "action_records": {"pending": 0, "outcome_unknown": 0, "dispatch_unproven": 0, "lost": 0}, "events": ["critical_operational"], "reserved": 0}},
+        {"event": "restart", "expect": {"state": "dispatch_failed", "actuations": 1}},
+        {"event": "dispatch", "mono_ms": 40002000, "wall_ms": 1787000002000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 1, "state": "dispatch_failed"}}
+      ]
+    },
+    {
+      "name": "a forward wall-clock jump does not shorten execution authority",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787003600000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787003600000, "marker_durable": true, "unavailable": [], "expect": {"state": "dispatch_started", "actuations": 1}}
+      ]
+    },
+    {
+      "name": "a backward wall-clock jump does not extend execution authority",
+      "steps": [
+        {"event": "reply", "mono_ms": 40300500, "wall_ms": 1786996400000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "proposal_expired", "notice": "proposal_expired", "actuations": 0}},
+        {"event": "dispatch", "mono_ms": 40300600, "wall_ms": 1786996400000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0}}
+      ]
+    },
+    {
+      "name": "a backward wall-clock jump between commit and dispatch does not extend execution authority",
+      "steps": [
+        {"event": "reply", "mono_ms": 40299000, "wall_ms": 1787000299000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}},
+        {"event": "dispatch", "mono_ms": 40300500, "wall_ms": 1786996400000, "marker_durable": true, "unavailable": [], "expect": {"state": "approval_expired_undispatched", "actuations": 0, "safe_default": true}}
+      ]
+    },
+    {
+      "name": "a restart with an open proposal closes it proposal_aborted_restart, and no later reply revives it from expires_at_ms",
+      "steps": [
+        {"event": "restart", "expect": {"state": "proposal_aborted_restart", "notice": "proposal_aborted_restart", "actuations": 0, "safe_default": true, "safe_default_intents": 1, "records": ["proposed", "proposal_aborted_restart"]}},
+        {"event": "reply", "mono_ms": 40002000, "wall_ms": 1787000002000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "proposal_aborted_restart", "actuations": 0}},
+        {"event": "dispatch", "mono_ms": 40002000, "wall_ms": 1787000002000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0}}
+      ]
+    },
+    {
+      "name": "an uncertain dispatch blocks only the same outcome on the same zone",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "propose", "tier": "C", "outcome": "close_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-b", "expect": {"admitted": true}},
+        {"event": "propose", "tier": "A", "outcome": "alert_sms", "zone": "zone-feeder-a", "expect": {"admitted": true}},
+        {"event": "propose", "tier": "B", "outcome": "terminate_process", "zone": "zone-feeder-a", "expect": {"admitted": true}},
+        {"event": "propose", "tier": "D", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    },
+    {
+      "name": "dispatch_not_proven blocks the same way and Tier D always continues",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_not_proven"}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "propose", "tier": "D", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}},
+        {"event": "propose", "tier": "C", "outcome": "close_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    },
+    {
+      "name": "an authenticated local operator command reconciles by appending, and the same outcome is admitted again",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown", "action_records": {"outcome_unknown": 1, "lost": 1}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"state": "reconciled_executed", "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "dispatch_outcome_unknown", "reconciled_executed"], "action_records": {"pending": 0, "outcome_unknown": 0, "dispatch_unproven": 0, "lost": 0}, "evidence_status": "ok", "actuations": 1}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "not-executed", "reason": "site_inspection", "expect": {"state": "reconciled_executed", "notice": "reconcile_refused"}}
+      ]
+    },
+    {
+      "name": "unauthenticated operator input and uncommissioned feedback reconcile nothing",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": false, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_not_proven"}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": null}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "executed", "reason": "site_inspection", "expect": {"state": "dispatch_not_proven", "notice": "reconcile_refused"}},
+        {"event": "reconcile", "source": "uncommissioned_sensor", "outcome": "executed", "zone": "zone-feeder-a", "mapping_proves": true, "authenticated": true, "expect": {"state": "dispatch_not_proven", "notice": "reconcile_refused"}},
+        {"event": "reconcile", "source": "model_inference", "outcome": "not_executed", "authenticated": true, "expect": {"state": "dispatch_not_proven", "notice": "reconcile_refused"}},
+        {"event": "reconcile", "source": "gateway_response", "outcome": "executed", "authenticated": true, "expect": {"state": "dispatch_not_proven", "notice": "reconcile_refused"}},
+        {"event": "reconcile", "source": "absence_of_alarm", "outcome": "executed", "authenticated": true, "expect": {"state": "dispatch_not_proven", "notice": "reconcile_refused"}},
+        {"event": "reconcile", "source": "commissioned_feedback", "outcome": "executed", "zone": "zone-feeder-b", "mapping_proves": true, "authenticated": true, "expect": {"state": "dispatch_not_proven", "notice": "reconcile_refused"}},
+        {"event": "reconcile", "source": "commissioned_feedback", "outcome": "executed", "zone": "zone-feeder-a", "mapping_proves": false, "authenticated": true, "expect": {"state": "dispatch_not_proven", "notice": "reconcile_refused", "action_records": {"dispatch_unproven": 1, "lost": 1}}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}}
+      ]
+    },
+    {
+      "name": "commissioned feedback for the zone reconciles dispatch_not_proven",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_not_proven"}},
+        {"event": "reconcile", "source": "commissioned_feedback", "outcome": "not_executed", "zone": "zone-feeder-a", "mapping_proves": true, "authenticated": true, "expect": {"state": "reconciled_not_executed", "records": ["proposed", "approved_pending_dispatch", "dispatch_not_proven", "reconciled_not_executed"], "action_records": {"pending": 0, "outcome_unknown": 0, "dispatch_unproven": 0, "lost": 0}, "actuations": 0}}
+      ]
+    },
+    {
+      "name": "a changed commissioned binding makes the reply no approval and applies no physical action",
+      "steps": [
+        {"event": "binding_change", "binding": "sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "expect": {}},
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approval_binding_changed", "notice": "approval_binding_changed", "actuations": 0, "safe_default": true, "safe_default_intents": 1}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0}}
+      ]
+    },
+    {
+      "name": "a changed authority snapshot makes the reply no approval",
+      "steps": [
+        {"event": "binding_change", "authority": "sha256:a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2", "expect": {}},
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approval_binding_changed", "notice": "approval_binding_changed", "actuations": 0, "safe_default": true, "safe_default_intents": 1}}
+      ]
+    },
+    {
+      "name": "a binding changed back after a mismatch revives nothing",
+      "steps": [
+        {"event": "binding_change", "binding": "sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", "expect": {}},
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approval_binding_changed", "safe_default_intents": 1}},
+        {"event": "binding_change", "binding": "sha256:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1", "expect": {"state": "approval_binding_changed"}},
+        {"event": "reply", "mono_ms": 40002000, "wall_ms": 1787000002000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approval_binding_changed", "actuations": 0, "safe_default_intents": 1}},
+        {"event": "dispatch", "mono_ms": 40002000, "wall_ms": 1787000002000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0}}
+      ]
+    },
+    {
+      "name": "an unchanged binding and authority admit the approval",
+      "steps": [
+        {"event": "binding_change", "binding": "sha256:b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1", "authority": "sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", "expect": {}},
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}}
+      ]
+    },
+    {
+      "name": "a restart repeated after proposal_aborted_restart creates one safe-default intent",
+      "steps": [
+        {"event": "restart", "expect": {"state": "proposal_aborted_restart", "safe_default_intents": 1, "actuations": 0}},
+        {"event": "restart", "expect": {"state": "proposal_aborted_restart", "safe_default_intents": 1, "actuations": 0, "records": ["proposed", "proposal_aborted_restart"]}},
+        {"event": "reply", "mono_ms": 40002000, "wall_ms": 1787000002000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "proposal_aborted_restart", "safe_default_intents": 1, "actuations": 0}}
+      ]
+    },
+    {
+      "name": "replies after approval_binding_changed create one safe-default intent and never the proposed action",
+      "steps": [
+        {"event": "binding_change", "authority": "sha256:a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2", "expect": {}},
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approval_binding_changed", "safe_default_intents": 1, "actuations": 0, "records": ["proposed", "approval_binding_changed"]}},
+        {"event": "reply", "mono_ms": 40001500, "wall_ms": 1787000001500, "path": "console", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approval_binding_changed", "safe_default_intents": 1, "actuations": 0}},
+        {"event": "restart", "expect": {"state": "approval_binding_changed", "safe_default_intents": 1, "actuations": 0}},
+        {"event": "dispatch", "mono_ms": 40002000, "wall_ms": 1787000002000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0, "safe_default_intents": 1}}
+      ]
+    },
+    {
+      "name": "a timeout result is dispatch_outcome_unknown, never dispatch_failed, and is never replayed",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch", "reserved": 1}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1, "state": "dispatch_started"}},
+        {"event": "outcome", "write": "ok", "result": "timeout", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "events": ["critical_operator_audit"], "action_records": {"pending": 0, "outcome_unknown": 1, "dispatch_unproven": 0, "lost": 1}, "evidence_status": "degraded", "reserved": 0, "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "dispatch_outcome_unknown"]}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "safe_default": false}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "propose", "tier": "D", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    },
+    {
+      "name": "a lost response result is dispatch_outcome_unknown, never dispatch_failed, and is never replayed",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch", "reserved": 1}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1, "state": "dispatch_started"}},
+        {"event": "outcome", "write": "ok", "result": "lost_response", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "events": ["critical_operator_audit"], "action_records": {"pending": 0, "outcome_unknown": 1, "dispatch_unproven": 0, "lost": 1}, "evidence_status": "degraded", "reserved": 0, "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "dispatch_outcome_unknown"]}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "safe_default": false}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "propose", "tier": "D", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    },
+    {
+      "name": "a partial result is dispatch_outcome_unknown, never dispatch_failed, and is never replayed",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch", "reserved": 1}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1, "state": "dispatch_started"}},
+        {"event": "outcome", "write": "ok", "result": "partial", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "events": ["critical_operator_audit"], "action_records": {"pending": 0, "outcome_unknown": 1, "dispatch_unproven": 0, "lost": 1}, "evidence_status": "degraded", "reserved": 0, "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "dispatch_outcome_unknown"]}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "safe_default": false}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "propose", "tier": "D", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    },
+    {
+      "name": "an indeterminate result is dispatch_outcome_unknown, never dispatch_failed, and is never replayed",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch", "reserved": 1}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1, "state": "dispatch_started"}},
+        {"event": "outcome", "write": "ok", "result": "indeterminate", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "events": ["critical_operator_audit"], "action_records": {"pending": 0, "outcome_unknown": 1, "dispatch_unproven": 0, "lost": 1}, "evidence_status": "degraded", "reserved": 0, "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "dispatch_outcome_unknown"]}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "safe_default": false}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "propose", "tier": "D", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    },
+    {
+      "name": "the approval commit reserves a terminal uncertainty record, released by a recorded outcome",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch", "reserved": 1}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"state": "dispatch_started", "reserved": 1, "action_records": {"pending": 1}}},
+        {"event": "outcome", "write": "ok", "result": "executed", "expect": {"state": "executed", "reserved": 0, "action_records": {"pending": 0, "lost": 0}}}
+      ]
+    },
+    {
+      "name": "a reply whose uncertainty record cannot be reserved is not an approval",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "reservation": "unavailable", "expect": {"state": "proposed", "notice": "commit_failed_retry", "reserved": 0, "actuations": 0}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0}},
+        {"event": "reply", "mono_ms": 40002000, "wall_ms": 1787000002000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch", "reserved": 1}}
+      ]
+    },
+    {
+      "name": "a full pending structure leaves a live unknown that is not durable, with no dispatch delay and no replay",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch", "reserved": 1}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "pending_at_ceiling": true, "expect": {"state": "dispatch_started", "actuations": 1, "dispatch_refused": false, "reserved": 1, "events": [], "action_records": {"pending": 0, "outcome_unknown": 0, "dispatch_unproven": 0, "lost": 0, "unknown_live": 1}, "evidence_status": "degraded", "safe_default": false, "records": ["proposed", "approved_pending_dispatch", "dispatch_started"]}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "propose", "tier": "C", "outcome": "close_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}},
+        {"event": "propose", "tier": "D", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}},
+        {"event": "crash", "expect": {"actuations": 1}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "safe_default": false, "reserved": 0, "events": ["critical_operator_audit"], "action_records": {"pending": 0, "outcome_unknown": 1, "dispatch_unproven": 0, "lost": 1, "unknown_live": 0}}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}}
+      ]
+    },
+    {
+      "name": "an outcome that cannot be appended stays pending while live, is never claimed durable, and resolves at restart by the marker",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"reserved": 1}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "outcome", "write": "failed", "result": "executed", "expect": {"state": "dispatch_started", "actuations": 1, "reserved": 1, "events": [], "action_records": {"pending": 1, "outcome_unknown": 0, "lost": 0}, "records": ["proposed", "approved_pending_dispatch", "dispatch_started"]}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": false}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_outcome_unknown", "actuations": 1, "events": ["critical_operator_audit"], "action_records": {"pending": 0, "outcome_unknown": 1, "lost": 1}}}
+      ]
+    },
+    {
+      "name": "a later proposal for a blocked outcome is refused at creation and none is opened",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "outcome", "write": "ok", "result": "timeout", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "opens": "P2", "expect": {"admitted": false, "later": {}}},
+        {"event": "propose", "tier": "C", "outcome": "close_protected_circuit", "zone": "zone-feeder-a", "opens": "P3", "expect": {"admitted": true, "later": {"P3": "proposed"}}}
+      ]
+    },
+    {
+      "name": "an uncertainty arising after a later proposal was created blocks its reply, and only its outcome and zone",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1, "state": "dispatch_started"}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "opens": "P2", "expect": {"admitted": true, "later": {"P2": "proposed"}}},
+        {"event": "propose", "tier": "C", "outcome": "close_protected_circuit", "zone": "zone-feeder-a", "opens": "P3", "expect": {"admitted": true}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-b", "opens": "P4", "expect": {"admitted": true}},
+        {"event": "outcome", "write": "failed", "result": "executed", "expect": {"state": "dispatch_started", "actuations": 1}},
+        {"event": "reply", "mono_ms": 40002000, "wall_ms": 1787000002000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "proposal": "P2", "expect": {"later": {"P2": "proposal_blocked_uncertain_outcome", "P3": "proposed", "P4": "proposed"}, "later_safe_default_intents": {"P2": 1}, "notice": "proposal_blocked_uncertain_outcome", "actuations": 1, "state": "dispatch_started"}},
+        {"event": "reply", "mono_ms": 40002500, "wall_ms": 1787000002500, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "proposal": "P2", "expect": {"later": {"P2": "proposal_blocked_uncertain_outcome", "P3": "proposed", "P4": "proposed"}, "later_safe_default_intents": {"P2": 1}, "actuations": 1}},
+        {"event": "reply", "mono_ms": 40003000, "wall_ms": 1787000003000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "proposal": "P3", "expect": {"later": {"P2": "proposal_blocked_uncertain_outcome", "P3": "approved_pending_dispatch", "P4": "proposed"}}},
+        {"event": "reply", "mono_ms": 40003500, "wall_ms": 1787000003500, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "proposal": "P4", "expect": {"later": {"P2": "proposal_blocked_uncertain_outcome", "P3": "approved_pending_dispatch", "P4": "approved_pending_dispatch"}, "later_safe_default_intents": {"P2": 1}}},
+        {"event": "propose", "tier": "D", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    },
+    {
+      "name": "reconciliation after a blocked reply revives nothing and admits a fresh proposal",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "opens": "P2", "expect": {"admitted": true}},
+        {"event": "outcome", "write": "ok", "result": "lost_response", "expect": {"state": "dispatch_outcome_unknown"}},
+        {"event": "reply", "mono_ms": 40002000, "wall_ms": 1787000002000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "proposal": "P2", "expect": {"later": {"P2": "proposal_blocked_uncertain_outcome"}, "later_safe_default_intents": {"P2": 1}}},
+        {"event": "reconcile", "source": "operator_local", "caller": {"credentials": "peer", "uid": 1001, "account": "installer", "login_uid": 1001}, "proposal_id": "AB12CD34", "device_id": "energy-monitor-ikeja-01", "zone_id": "zone-feeder-a", "outcome": "not-executed", "reason": "site_inspection", "expect": {"state": "reconciled_not_executed", "actuations": 1}},
+        {"event": "reply", "mono_ms": 40003000, "wall_ms": 1787000003000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "proposal": "P2", "expect": {"later": {"P2": "proposal_blocked_uncertain_outcome"}, "later_safe_default_intents": {"P2": 1}, "actuations": 1}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "opens": "P5", "expect": {"admitted": true, "later": {"P2": "proposal_blocked_uncertain_outcome", "P5": "proposed"}}},
+        {"event": "reply", "mono_ms": 40004000, "wall_ms": 1787000004000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "proposal": "P5", "expect": {"later": {"P2": "proposal_blocked_uncertain_outcome", "P5": "approved_pending_dispatch"}, "later_safe_default_intents": {"P2": 1}, "actuations": 1}}
+      ]
+    },
+    {
+      "name": "a full pending structure without a durable marker is dispatch_not_proven after restart, never a durable unknown",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"reserved": 1}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": false, "unavailable": [], "pending_at_ceiling": true, "expect": {"state": "dispatch_started", "actuations": 1, "action_records": {"unknown_live": 1, "outcome_unknown": 0}, "records": ["proposed", "approved_pending_dispatch", "dispatch_started"]}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_not_proven", "actuations": 1, "action_records": {"pending": 0, "outcome_unknown": 0, "dispatch_unproven": 1, "lost": 1, "unknown_live": 0}, "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "dispatch_not_proven"]}}
+      ]
+    },
+    {
+      "name": "a store that accepts the write while live records the outcome the executor reported",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"reserved": 1}},
+        {"event": "dispatch", "mono_ms": 40001000, "wall_ms": 1787000001000, "marker_durable": true, "unavailable": [], "expect": {"actuations": 1}},
+        {"event": "outcome", "write": "failed", "result": "executed", "expect": {"state": "dispatch_started", "action_records": {"pending": 1}}},
+        {"event": "outcome", "write": "ok", "result": "executed", "expect": {"state": "executed", "actuations": 1, "reserved": 0, "action_records": {"pending": 0, "lost": 0}, "records": ["proposed", "approved_pending_dispatch", "dispatch_started", "executed"]}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    },
+    {
+      "name": "an approval in flight for the same outcome and zone blocks a later proposal's reply inside the commit",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"state": "approved_pending_dispatch"}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "opens": "P2", "expect": {"admitted": true, "later": {"P2": "proposed"}}},
+        {"event": "reply", "mono_ms": 40001500, "wall_ms": 1787000001500, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "proposal": "P2", "expect": {"later": {"P2": "proposal_blocked_uncertain_outcome"}, "later_safe_default_intents": {"P2": 1}, "actuations": 0}},
+        {"event": "dispatch", "mono_ms": 40002000, "wall_ms": 1787000002000, "marker_durable": true, "unavailable": [], "expect": {"state": "dispatch_started", "actuations": 1}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "opens": "P3", "expect": {"admitted": true}},
+        {"event": "reply", "mono_ms": 40002500, "wall_ms": 1787000002500, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "proposal": "P3", "expect": {"later": {"P2": "proposal_blocked_uncertain_outcome", "P3": "proposal_blocked_uncertain_outcome"}, "later_safe_default_intents": {"P2": 1, "P3": 1}}},
+        {"event": "outcome", "write": "ok", "result": "executed", "expect": {"state": "executed"}},
+        {"event": "propose", "tier": "C", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "opens": "P4", "expect": {"admitted": true}},
+        {"event": "reply", "mono_ms": 40003000, "wall_ms": 1787000003000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "proposal": "P4", "expect": {"later": {"P2": "proposal_blocked_uncertain_outcome", "P3": "proposal_blocked_uncertain_outcome", "P4": "approved_pending_dispatch"}}}
+      ]
+    },
+    {
+      "name": "one safe-default intent per proposal: an ambiguous alert is retried with the proposal id, and a restart creates no second intent",
+      "proposal": {"safe_default_action": "alert_sms"},
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "no", "expect": {"state": "rejected", "safe_default_intents": 1, "alert_attempts": ["AB12CD34"], "actuations": 0}},
+        {"event": "alert_result", "result": "ambiguous", "expect": {"safe_default_intents": 1, "alert_attempts": ["AB12CD34", "AB12CD34"]}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "rejected", "safe_default_intents": 1, "alert_attempts": ["AB12CD34", "AB12CD34", "AB12CD34"], "actuations": 0}},
+        {"event": "alert_result", "result": "delivered", "expect": {"alert_attempts": ["AB12CD34", "AB12CD34", "AB12CD34"]}},
+        {"event": "restart", "expect": {"safe_default_intents": 1, "alert_attempts": ["AB12CD34", "AB12CD34", "AB12CD34"]}}
+      ]
+    },
+    {
+      "name": "local logging of the safe default is idempotent by proposal id across a restart",
+      "steps": [
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "no", "expect": {"state": "rejected", "safe_default_intents": 1, "log_records": 1, "alert_attempts": []}},
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"safe_default_intents": 1, "log_records": 1}},
+        {"event": "reply", "mono_ms": 40002000, "wall_ms": 1787000002000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "no", "expect": {"safe_default_intents": 1, "log_records": 1}}
+      ]
+    },
+    {
+      "name": "a proposal row that cannot be committed is never sent, approves nothing and claims nothing durable",
+      "steps": [
+        {"event": "create", "commit": "failed", "expect": {"proposal_sent": false, "safe_default_attempted": true, "safe_default_recorded": false, "safe_default_intents": 0, "events": ["critical_operational"], "actuations": 0}},
+        {"event": "reply", "mono_ms": 40001000, "wall_ms": 1787000001000, "path": "remote", "authenticated": true, "commit": "ok", "decision": "yes", "expect": {"notice": "no_proposal", "actuations": 0, "proposal_sent": false}},
+        {"event": "dispatch", "mono_ms": 40001500, "wall_ms": 1787000001500, "marker_durable": true, "unavailable": [], "expect": {"dispatch_refused": true, "actuations": 0}},
+        {"event": "propose", "tier": "D", "outcome": "open_protected_circuit", "zone": "zone-feeder-a", "expect": {"admitted": true}}
+      ]
+    }
+  ],
+  "config_cases": [
+    {"name": "the release maximum itself", "approval_timeout_seconds": 300, "release_maximum_seconds": 300, "expected": "accept"},
+    {"name": "a deployment shortening the lifetime", "approval_timeout_seconds": 120, "release_maximum_seconds": 300, "expected": "accept"},
+    {"name": "the minimum", "approval_timeout_seconds": 1, "release_maximum_seconds": 300, "expected": "accept"},
+    {"name": "one second above the release maximum", "approval_timeout_seconds": 301, "release_maximum_seconds": 300, "expected": "refuse"},
+    {"name": "a remote site extending the lifetime to a day", "approval_timeout_seconds": 86400, "release_maximum_seconds": 300, "expected": "refuse"},
+    {"name": "zero", "approval_timeout_seconds": 0, "release_maximum_seconds": 300, "expected": "refuse"},
+    {"name": "a fractional value", "approval_timeout_seconds": 30.5, "release_maximum_seconds": 300, "expected": "refuse"}
+  ],
+  "safe_default_cases": [
+    {"safe_default_action": "log_to_dashboard", "tier": "A", "capability": "informational", "registry": {"minimum_tier": "A", "physical": false, "consequence_class": "informational", "safe_default_eligible": true}, "expected": "admitted"},
+    {"safe_default_action": "alert_sms", "tier": "A", "capability": "informational", "registry": {"minimum_tier": "A", "physical": false, "consequence_class": "informational", "safe_default_eligible": true}, "expected": "admitted"},
+    {"safe_default_action": "alert_whatsapp", "tier": "A", "capability": "informational", "registry": {"minimum_tier": "A", "physical": false, "consequence_class": "informational", "safe_default_eligible": true}, "expected": "admitted"},
+    {"safe_default_action": "notify_site_supervisor", "tier": "A", "capability": "informational", "registry": null, "expected": "refused"},
+    {"safe_default_action": "terminate_process", "tier": "B", "capability": "host_state", "registry": {"minimum_tier": "B", "physical": false, "consequence_class": "soft", "safe_default_eligible": false}, "expected": "refused"},
+    {"safe_default_action": "reset_kernel_subsystem", "tier": "B", "capability": "host_state", "registry": {"minimum_tier": "B", "physical": false, "consequence_class": "soft", "safe_default_eligible": false}, "expected": "refused"},
+    {"safe_default_action": "coap_command", "tier": "B", "capability": "physical", "registry": {"minimum_tier": "B", "physical": true, "consequence_class": "soft", "safe_default_eligible": false}, "expected": "refused"},
+    {"safe_default_action": "trip_relay", "tier": "C", "capability": "physical", "registry": {"minimum_tier": "C", "physical": true, "consequence_class": "hard", "safe_default_eligible": false}, "expected": "refused"},
+    {"safe_default_action": "close_gas_valve", "tier": "C", "capability": "physical", "registry": {"minimum_tier": "C", "physical": true, "consequence_class": "hard", "safe_default_eligible": false}, "expected": "refused"},
+    {"safe_default_action": "release_relay", "tier": "C", "capability": "physical", "registry": {"minimum_tier": "C", "physical": true, "consequence_class": "hard", "safe_default_eligible": false}, "expected": "refused"},
+    {"safe_default_action": "open_protected_circuit", "tier": "C", "capability": "physical", "registry": null, "expected": "refused"},
+    {"safe_default_action": "close_protected_circuit", "tier": "C", "capability": "physical", "registry": null, "expected": "refused"},
+    {"safe_default_action": "unflagged_valve_command", "tier": "A", "capability": "physical", "registry": {"minimum_tier": "A", "physical": false, "consequence_class": "informational", "safe_default_eligible": true}, "expected": "refused"},
+    {"safe_default_action": "ungoverned_actuator_command", "tier": "A", "capability": "physical", "registry": null, "expected": "refused"},
+    {"safe_default_action": "flagged_notifier", "tier": "A", "capability": "informational", "registry": {"minimum_tier": "A", "physical": true, "consequence_class": "informational", "safe_default_eligible": true}, "expected": "refused"},
+    {"safe_default_action": "tier_a_host_probe", "tier": "A", "capability": "host_state", "registry": {"minimum_tier": "A", "physical": false, "consequence_class": "informational", "safe_default_eligible": true}, "expected": "refused"},
+    {"safe_default_action": "unclassified_hook_action", "tier": "A", "capability": "unclassified", "registry": null, "expected": "refused"},
+    {"safe_default_action": "alert_sms_raised", "tier": "B", "capability": "informational", "registry": {"minimum_tier": "A", "physical": false, "consequence_class": "informational", "safe_default_eligible": true}, "expected": "refused"},
+    {"safe_default_action": "ineligible_notifier", "tier": "A", "capability": "informational", "registry": {"minimum_tier": "A", "physical": false, "consequence_class": "informational", "safe_default_eligible": false}, "expected": "refused"},
+    {"safe_default_action": "unclassed_notifier", "tier": "A", "capability": "informational", "registry": {"minimum_tier": "A", "physical": false, "safe_default_eligible": true}, "expected": "refused"},
+    {"safe_default_action": "soft_classed_notifier", "tier": "A", "capability": "informational", "registry": {"minimum_tier": "A", "physical": false, "consequence_class": "soft", "safe_default_eligible": true}, "expected": "refused"}
+  ],
+  "authority_snapshot_cases": [
+    {"name": "a complete snapshot", "snapshot": {"action": "trip_relay", "action_capability": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "binding_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "outcome": "open_protected_circuit", "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "resource": "relay-gpio-26", "safety_profile": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "v": 1, "zone_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "zone_id": "zone-feeder-a"}, "expected": "valid", "canonical_sha256": "sha256:814178b00cb9f444453321cc6c0201a186a984c673a53a87407423d7a455b59a"},
+    {"name": "a zone with no safety profile in force", "snapshot": {"action": "trip_relay", "action_capability": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "binding_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "outcome": "open_protected_circuit", "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "resource": "relay-gpio-26", "safety_profile": "", "v": 1, "zone_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "zone_id": "zone-feeder-a"}, "expected": "valid", "canonical_sha256": "sha256:c9d9a9a170c87202e51ea83ddc8ef1f014ebb3c086c555540186ff76cdab18bc"},
+    {"name": "a snapshot missing the policy digest", "snapshot": {"action": "trip_relay", "action_capability": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "binding_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "outcome": "open_protected_circuit", "resource": "relay-gpio-26", "safety_profile": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "v": 1, "zone_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "zone_id": "zone-feeder-a"}, "expected": "malformed"},
+    {"name": "a snapshot carrying another member", "snapshot": {"action": "trip_relay", "action_capability": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "binding_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "outcome": "open_protected_circuit", "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "resource": "relay-gpio-26", "safety_profile": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "v": 1, "zone_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "zone_id": "zone-feeder-a", "operator": "installer"}, "expected": "malformed"},
+    {"name": "a snapshot whose version is a string", "snapshot": {"action": "trip_relay", "action_capability": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "binding_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "outcome": "open_protected_circuit", "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "resource": "relay-gpio-26", "safety_profile": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "v": "1", "zone_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "zone_id": "zone-feeder-a"}, "expected": "malformed"},
+    {"name": "a snapshot whose zone digest is not lowercase sha256 hex", "snapshot": {"action": "trip_relay", "action_capability": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "binding_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "outcome": "open_protected_circuit", "policy_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "resource": "relay-gpio-26", "safety_profile": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "v": 1, "zone_digest": "sha256:ABC", "zone_id": "zone-feeder-a"}, "expected": "malformed"},
+    {"name": "a snapshot naming a member twice", "snapshot_text": "{\"action\":\"trip_relay\",\"action_capability\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"binding_digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"outcome\":\"open_protected_circuit\",\"policy_digest\":\"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"resource\":\"relay-gpio-26\",\"safety_profile\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"v\":1,\"zone_digest\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"zone_id\":\"zone-feeder-a\",\"zone_id\":\"zone-feeder-b\"}", "expected": "malformed"}
+  ],
+  "proposal_scope_cases": [
+    {"name": "a relay trip on its commissioned zone", "action": "trip_relay", "tier": "C", "capability": "physical", "zone": "zone-feeder-a", "commissioned_outcome": "open_protected_circuit", "expected": "governed"},
+    {"name": "a CoAP-backed actuator through its commissioned zone and outcome", "action": "open_protected_circuit", "tier": "C", "capability": "physical", "zone": "zone-valve-b", "commissioned_outcome": "open_protected_circuit", "backend": "coap", "expected": "governed"},
+    {"name": "a generic coap_command with no zone", "action": "coap_command", "tier": "C", "capability": "physical", "zone": null, "commissioned_outcome": null, "expected": "refused"},
+    {"name": "a generic coap_command naming a zone", "action": "coap_command", "tier": "C", "capability": "physical", "zone": "zone-valve-b", "commissioned_outcome": null, "expected": "refused"},
+    {"name": "a generic coap_command naming a zone and an outcome", "action": "coap_command", "tier": "C", "capability": "physical", "zone": "zone-valve-b", "commissioned_outcome": "open_protected_circuit", "expected": "refused"},
+    {"name": "a physical action with no commissioned zone", "action": "trip_relay", "tier": "C", "capability": "physical", "zone": null, "commissioned_outcome": null, "expected": "refused"},
+    {"name": "a host-state Tier C action stays on the existing workflow", "action": "terminate_process", "tier": "C", "capability": "host_state", "zone": null, "commissioned_outcome": null, "expected": "outside_contract"},
+    {"name": "a host-state Tier B action requiring approval", "action": "terminate_process", "tier": "B", "capability": "host_state", "zone": null, "commissioned_outcome": null, "requires_approval": true, "expected": "outside_contract"},
+    {"name": "a physical Tier B action requiring approval", "action": "open_irrigation_valve", "tier": "B", "capability": "physical", "zone": null, "commissioned_outcome": null, "requires_approval": true, "expected": "outside_contract"}
+  ]
+}
