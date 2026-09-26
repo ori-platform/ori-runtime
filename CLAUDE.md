@@ -604,7 +604,14 @@ default; an approval with a durable marker and no outcome is
 `dispatch_outcome_unknown`; one with neither is `dispatch_not_proven`, because
 the absence of a marker proves nothing. This runtime writes nothing between the
 approval commit and the executor, so `approval_aborted_undispatched` is
-unreachable in it. A graceful stop closes open proposals the same way. An
+unreachable in it. Both uncertain states raise a CRITICAL operator and audit
+event at recovery. A graceful stop closes open proposals the same way. A store
+that cannot be read at recovery fails Tier C closed and nothing else: the start
+completes, Tier D runs, health degrades, and physical Tier C proposals are
+refused until a start settles the previous process's. A decision that precedes
+no act is written before it is reported, in one transaction with the proposal's
+safe-default intent, and the intent is an obligation attempted whenever it is
+still pending, never a receipt. An
 uncertain dispatch blocks only its outcome on its zone until an authenticated
 operator's observation (`reconcile_tier_c`, reached through the operator socket
 once that lands) or commissioned feedback appends a reconciliation; Tier D

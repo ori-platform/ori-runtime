@@ -522,7 +522,16 @@ class TestRestart:
                 else "outcome_unknown"
             )
             assert records[key] == 1
-            assert any("never replayed" in r.getMessage() for r in caplog.records)
+            assert any(
+                r.levelno == logging.CRITICAL and "never replayed" in r.getMessage()
+                for r in caplog.records
+            )
+            # The operator event beside the audit record: the operator is told
+            # the act may have run and what is blocked until they reconcile.
+            told = [n for n in operator.notices if "P1" in n]
+            assert len(told) == 1, operator.notices
+            assert "open_protected_circuit" in told[0] and ZONE in told[0]
+            assert expected.replace("_", " ") in told[0]
 
     async def test_a_repeated_restart_creates_one_safe_default_intent(
         self, tmp_path: Any
@@ -1128,3 +1137,172 @@ class TestTheRuntimeFactsProvider:
         with_profile = runtime._tier_c_authority_facts()
         assert with_profile is not None
         assert with_profile.safety_profile_digest == "sha256:" + "c" * 64
+
+
+class TestSafeDefaultIntentsAreObligations:
+    """A pending intent is work owed, never a record that the work was done."""
+
+    async def _closed_with_pending_intent(self, path: str) -> None:
+        store = StateStore(path)
+        await store.open()
+        try:
+            assert (
+                await store.create_tier_c_proposal(
+                    proposal_id="P1",
+                    device_id=DEVICE,
+                    action="trip_relay",
+                    target="relay-gpio-26",
+                    zone_id=ZONE,
+                    outcome="open_protected_circuit",
+                    safe_default_action="log_to_dashboard",
+                    binding_digest="sha256:" + "b" * 64,
+                    authority_json="{}",
+                    created_at_ms=now_ms(),
+                    expires_at_ms=now_ms() + 300_000,
+                )
+                == "committed"
+            )
+            # The process died after the close and its intent landed, before
+            # the safe default ran or before its outcome was marked.
+            assert await store.advance_tier_c_proposal(
+                "P1",
+                adm.REJECTED,
+                from_states=(adm.PROPOSED,),
+                reason="operator_no",
+                safe_default_action="log_to_dashboard",
+            )
+        finally:
+            await store.close()
+
+    async def test_a_restart_attempts_a_pending_intent_once_and_then_never_again(
+        self, tmp_path: Any
+    ) -> None:
+        path = str(tmp_path / "s.db")
+        await self._closed_with_pending_intent(path)
+        runs: list[list[str]] = []
+        for _ in range(2):
+            journal: list[str] = []
+            store = StateStore(path)
+            await store.open()
+            try:
+                dispatcher = _dispatcher(store, _Operator(), journal)
+                counts = await dispatcher.recover_tier_c_at_start(store)
+                await _settle(dispatcher)
+                intents = await store.get_tier_c_safe_default_intents("P1")
+                states = await _states(store)
+            finally:
+                await store.close()
+            runs.append(journal)
+        assert runs == [["act:log_to_dashboard"], []], runs
+        assert counts["safe_defaults_resumed"] == 0
+        assert [(i["outcome"], i["reason"]) for i in intents] == [
+            ("executed", "operator_no")
+        ]
+        assert states == [("P1", adm.REJECTED)]
+        assert "act:trip_relay" not in runs[0]
+
+    async def test_a_rejection_whose_close_cannot_land_is_a_lost_decision(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """The close and its intent are one transaction; neither lands alone."""
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator(reply="NO")
+
+        def _refuse(*_a: Any, **_k: Any) -> bool:
+            raise sqlite3.OperationalError("intents table unavailable")
+
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            monkeypatch.setattr(
+                StateStore, "_insert_tier_c_intent", staticmethod(_refuse)
+            )
+            outcome = await _propose(dispatcher, store)
+            await _settle(dispatcher)
+            states = await _states(store)
+            records = await store.get_tier_c_proposal_records(states[0][0])
+            intents = await store.get_tier_c_safe_default_intents()
+        finally:
+            await store.close()
+        assert outcome.approved is False and "act:trip_relay" not in journal
+        # The row says what it can answer for: nothing was closed, no intent
+        # exists, the lost decision is counted, and the safe default was still
+        # attempted without being claimed durable.
+        assert [state for _, state in states] == [adm.PROPOSED]
+        assert records == [adm.PROPOSED] and intents == []
+        assert dispatcher._decision_records_lost >= 1
+        assert journal == ["act:log_to_dashboard"]
+
+
+class TestTerminalDecisionsAreDurableBeforeTheyAreReported:
+    async def test_a_rejection_is_not_reported_until_its_row_has_moved(
+        self, tmp_path: Any
+    ) -> None:
+        released = asyncio.Event()
+        held: list[str] = []
+
+        class _Holding(StateStore):
+            async def advance_tier_c_proposal(
+                self, proposal_id: str, state: str, **kwargs: Any
+            ) -> bool:
+                if state == adm.REJECTED:
+                    held.append(proposal_id)
+                    await released.wait()
+                return await super().advance_tier_c_proposal(
+                    proposal_id, state, **kwargs
+                )
+
+        journal: list[str] = []
+        store = _Holding(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator(reply="NO")
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            task = asyncio.create_task(_propose(dispatcher, store))
+            for _ in range(400):
+                if held:
+                    break
+                await asyncio.sleep(0.005)
+            assert held, "the rejection never reached the store"
+            await asyncio.sleep(0.05)
+            # The decision is not reported while its row has not moved.
+            assert not task.done()
+            assert journal == []
+            released.set()
+            outcome = await asyncio.wait_for(task, 5)
+            await _settle(dispatcher)
+            states = await _states(store)
+            intents = await store.get_tier_c_safe_default_intents()
+        finally:
+            released.set()
+            await store.close()
+        assert outcome.approved is False
+        assert states == [(held[0], adm.REJECTED)]
+        assert [i["outcome"] for i in intents] == ["executed"]
+        assert journal == ["act:log_to_dashboard"]
+
+
+class TestRecoveryThatDidNotComplete:
+    async def test_no_proposal_is_raised_and_health_degrades(
+        self, tmp_path: Any
+    ) -> None:
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator()
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            assert not dispatcher.action_records_degrade_health()
+            dispatcher.mark_tier_c_recovery_failed("OperationalError: locked")
+            outcome = await _propose(dispatcher, store)
+            await _settle(dispatcher)
+            rows = await store.get_tier_c_proposals()
+        finally:
+            await store.close()
+        assert outcome.action_taken == "refused_recovery_incomplete"
+        assert outcome.approved is None and not outcome.executed
+        assert rows == [] and operator.proposals == []
+        assert journal == ["act:log_to_dashboard"]
+        assert any("could not settle" in n for n in operator.notices)
+        assert dispatcher.action_records_degrade_health()

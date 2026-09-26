@@ -3135,6 +3135,37 @@ class TestTierCProposalsAcrossTheProcess:
         # The provider was handed the notice, and it names the proposal.
         assert any("P1" in body for body in submitted), submitted
 
+    async def test_a_failing_recovery_refuses_tier_c_and_lets_the_start_finish(
+        self, minimal_config, monkeypatch, tmp_path
+    ):
+        """Tier C fails closed on its own; Tier D and the sensor loops still start."""
+        from ori.state.store import StateStore
+
+        _patch_external(monkeypatch)
+
+        async def _unreadable(self, *states):
+            raise RuntimeError("tier_c_proposals unreadable")
+
+        monkeypatch.setattr(StateStore, "get_tier_c_proposals", _unreadable)
+        runtime: Any = OriRuntime(config_path=str(minimal_config))
+        seen: dict[str, Any] = {}
+
+        async def _observe_then_stop():
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 15.0
+            while not runtime._startup_complete:
+                if loop.time() > deadline:
+                    raise AssertionError("startup never completed")
+                await asyncio.sleep(0.02)
+            dispatcher = runtime._dispatcher
+            seen["failed"] = dispatcher._tier_c_recovery_failed
+            seen["degraded"] = dispatcher.action_records_degrade_health()
+            await runtime.stop()
+
+        await asyncio.gather(runtime.start(), _observe_then_stop())
+        assert seen["failed"].startswith("RuntimeError")
+        assert seen["degraded"] is True
+
     async def test_a_graceful_stop_closes_an_open_proposal(
         self, minimal_config, monkeypatch, tmp_path
     ):

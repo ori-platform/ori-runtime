@@ -513,7 +513,15 @@ candidate or release is cut.
   `dispatch_outcome_unknown`, and one with neither becomes
   `dispatch_not_proven`, since the absence of a marker proves nothing; this
   runtime writes nothing between the approval commit and the executor, so
-  `approval_aborted_undispatched` is unreachable in it. A graceful stop closes
+  `approval_aborted_undispatched` is unreachable in it. Both uncertain states
+  raise a CRITICAL operator and audit event at recovery. A store that cannot be
+  read at recovery fails Tier C closed and nothing else: the start completes,
+  Tier D runs, health degrades, and physical Tier C proposals are refused
+  `refused_recovery_incomplete` until a start settles them. A decision that
+  precedes no act is written before it is reported, in one transaction with the
+  proposal's safe-default intent; the intent is attempted whenever it is still
+  pending, so a process that dies around the attempt leaves work the next start
+  finishes rather than a record that it was done. A graceful stop closes
   open proposals the same way within the shutdown drain, so a pending proposal
   is no longer lost silently and a stale `YES` after the restart approves
   nothing. An uncertain dispatch blocks only its outcome on its zone, at

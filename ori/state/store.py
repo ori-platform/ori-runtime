@@ -3275,6 +3275,13 @@ class StateStore:
                 self._move_tier_c(
                     conn, proposal_id, "approval_binding_changed", "", now
                 )
+                self._insert_tier_c_intent(
+                    conn,
+                    proposal_id,
+                    str(row["safe_default_action"]),
+                    "approval_binding_changed",
+                    now,
+                )
                 conn.commit()
                 return "binding_changed"
             if self._tier_c_outcome_blocked(
@@ -3282,6 +3289,13 @@ class StateStore:
             ):
                 self._move_tier_c(
                     conn, proposal_id, "proposal_blocked_uncertain_outcome", "", now
+                )
+                self._insert_tier_c_intent(
+                    conn,
+                    proposal_id,
+                    str(row["safe_default_action"]),
+                    "proposal_blocked_uncertain_outcome",
+                    now,
                 )
                 conn.commit()
                 return "blocked"
@@ -3366,12 +3380,16 @@ class StateStore:
         from_states: tuple[str, ...],
         reason: str = "",
         outcome_json: str | None = None,
+        safe_default_action: str | None = None,
     ) -> bool:
         """Move a proposal forward; never back. False when it was elsewhere.
 
         A target outside the closed decision states, or `proposed` itself, is
         refused: the store is the transaction boundary the contract makes
-        authoritative, and it does not take a state it cannot answer for.
+        authoritative, and it does not take a state it cannot answer for. With
+        *safe_default_action*, the proposal's one safe-default intent is created
+        in the same transaction as the move, so a close that applies a safe
+        default never lands without the obligation to attempt it.
         """
         if state not in _TIER_C_DECISION_STATES or state == "proposed":
             logger.error(
@@ -3388,6 +3406,7 @@ class StateStore:
             from_states,
             reason,
             outcome_json,
+            safe_default_action,
         )
 
     def _advance_tier_c_proposal_sync(
@@ -3397,6 +3416,7 @@ class StateStore:
         from_states: tuple[str, ...],
         reason: str,
         outcome_json: str | None,
+        safe_default_action: str | None = None,
     ) -> bool:
         assert self._conn is not None
         conn = self._conn
@@ -3416,6 +3436,10 @@ class StateStore:
             moved = int(cur.rowcount) > 0
             if moved:
                 self._append_tier_c_record(conn, proposal_id, state, reason, now)
+                if safe_default_action:
+                    self._insert_tier_c_intent(
+                        conn, proposal_id, safe_default_action, reason, now
+                    )
             conn.commit()
             return moved
         except BaseException:
@@ -3490,18 +3514,82 @@ class StateStore:
         self, proposal_id: str, action: str, reason: str
     ) -> bool:
         assert self._conn is not None
-        now = now_ms()
-        cur = self._conn.execute(
+        created = self._insert_tier_c_intent(
+            self._conn, proposal_id, action, reason, now_ms()
+        )
+        self._conn.commit()
+        return created
+
+    @staticmethod
+    def _insert_tier_c_intent(
+        conn: sqlite3.Connection, proposal_id: str, action: str, reason: str, at_ms: int
+    ) -> bool:
+        """The one pending intent a proposal may hold; False when it exists."""
+        if not action:
+            return False
+        cur = conn.execute(
             """
             INSERT INTO tier_c_safe_default_intents
                 (proposal_id, action, reason, outcome, created_at_ms, updated_at_ms)
             VALUES (?, ?, ?, 'pending', ?, ?)
             ON CONFLICT(proposal_id) DO NOTHING
             """,
-            (proposal_id, action, reason, now, now),
+            (proposal_id, action, reason, at_ms, at_ms),
         )
-        self._conn.commit()
         return int(cur.rowcount) > 0
+
+    async def ensure_tier_c_safe_default_intent(
+        self, proposal_id: str, action: str, *, reason: str = ""
+    ) -> str:
+        """The intent's outcome after making sure it exists.
+
+        ``pending`` is an obligation to attempt the safe default now, whether
+        the row was just created or a previous attempt never reported; any
+        other outcome means the proposal's one attempt has been made.
+        """
+        return await self._run_write(
+            self._ensure_tier_c_safe_default_intent_sync, proposal_id, action, reason
+        )
+
+    def _ensure_tier_c_safe_default_intent_sync(
+        self, proposal_id: str, action: str, reason: str
+    ) -> str:
+        assert self._conn is not None
+        conn = self._conn
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._insert_tier_c_intent(conn, proposal_id, action, reason, now_ms())
+            row = conn.execute(
+                "SELECT outcome FROM tier_c_safe_default_intents WHERE proposal_id = ?",
+                (proposal_id,),
+            ).fetchone()
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        return str(row["outcome"]) if row is not None else "pending"
+
+    async def get_pending_tier_c_safe_default_intents(self) -> list[dict]:
+        """Intents never reported done, with their proposal's identity for the attempt."""
+        return await self._run_read(self._get_pending_tier_c_safe_default_intents_sync)
+
+    def _get_pending_tier_c_safe_default_intents_sync(
+        self, conn: sqlite3.Connection
+    ) -> list[dict]:
+        cursor = conn.execute(
+            """
+            SELECT i.proposal_id, i.action AS safe_default_action, i.reason,
+                   p.action, p.device_id, p.zone_id, p.outcome, p.event_id,
+                   p.trigger_name, p.decision_state
+              FROM tier_c_safe_default_intents AS i
+              JOIN tier_c_proposals AS p ON p.proposal_id = i.proposal_id
+             WHERE i.outcome = 'pending'
+             ORDER BY i.created_at_ms, i.proposal_id
+            """
+        )
+        names = [c[0] for c in cursor.description]
+        return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
 
     async def mark_tier_c_safe_default_intent(
         self, proposal_id: str, outcome: str

@@ -346,3 +346,82 @@ async def test_the_store_refuses_a_reconcile_outcome_it_does_not_define(
     assert (await store.get_tier_c_proposal("AB12CD34"))["decision_state"] == (
         adm.DISPATCH_NOT_PROVEN
     )
+
+
+async def test_a_close_that_applies_a_safe_default_creates_its_intent_in_one_transaction(
+    store: Any, monkeypatch: Any
+) -> None:
+    await store.create_tier_c_proposal(**PROPOSAL)
+    assert await store.advance_tier_c_proposal(
+        "AB12CD34",
+        adm.REJECTED,
+        from_states=(adm.PROPOSED,),
+        reason="operator_no",
+        safe_default_action="log_to_dashboard",
+    )
+    intents = await store.get_tier_c_safe_default_intents("AB12CD34")
+    assert [(i["action"], i["outcome"], i["reason"]) for i in intents] == [
+        ("log_to_dashboard", "pending", "operator_no")
+    ]
+    # The intent is the obligation; a close that cannot record it does not land.
+    await store.create_tier_c_proposal(**{**PROPOSAL, "proposal_id": "EF56GH78"})
+
+    def _refuse(*_a: Any, **_k: Any) -> bool:
+        raise sqlite3.OperationalError("intents table unavailable")
+
+    monkeypatch.setattr(StateStore, "_insert_tier_c_intent", staticmethod(_refuse))
+    with pytest.raises(sqlite3.OperationalError):
+        await store.advance_tier_c_proposal(
+            "EF56GH78",
+            adm.REJECTED,
+            from_states=(adm.PROPOSED,),
+            safe_default_action="log_to_dashboard",
+        )
+    assert (await store.get_tier_c_proposal("EF56GH78"))["decision_state"] == (
+        adm.PROPOSED
+    )
+    assert await store.get_tier_c_proposal_records("EF56GH78") == [adm.PROPOSED]
+    assert await store.get_tier_c_safe_default_intents("EF56GH78") == []
+
+
+async def test_a_refusing_admission_carries_the_intent_and_a_pending_intent_is_read_back(
+    store: Any,
+) -> None:
+    await store.create_tier_c_proposal(**PROPOSAL)
+    assert (
+        await store.admit_tier_c_approval(
+            "AB12CD34",
+            binding_digest="sha256:" + "c" * 64,
+            authority_json=PROPOSAL["authority_json"],
+            reservation_ceiling=64,
+        )
+        == "binding_changed"
+    )
+    pending = await store.get_pending_tier_c_safe_default_intents()
+    assert [
+        (p["proposal_id"], p["safe_default_action"], p["action"]) for p in pending
+    ] == [("AB12CD34", "log_to_dashboard", "trip_relay")]
+    # Ensuring finds the pending obligation; marking it done retires it.
+    assert (
+        await store.ensure_tier_c_safe_default_intent(
+            "AB12CD34", "log_to_dashboard", reason="x"
+        )
+        == "pending"
+    )
+    await store.mark_tier_c_safe_default_intent("AB12CD34", "executed")
+    assert (
+        await store.ensure_tier_c_safe_default_intent(
+            "AB12CD34", "log_to_dashboard", reason="x"
+        )
+        == "executed"
+    )
+    assert await store.get_pending_tier_c_safe_default_intents() == []
+    # A proposal with no intent yet: ensuring creates it, once.
+    await store.create_tier_c_proposal(**{**PROPOSAL, "proposal_id": "EF56GH78"})
+    assert (
+        await store.ensure_tier_c_safe_default_intent(
+            "EF56GH78", "alert_sms", reason="expired"
+        )
+        == "pending"
+    )
+    assert len(await store.get_tier_c_safe_default_intents("EF56GH78")) == 1

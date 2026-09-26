@@ -1516,12 +1516,24 @@ class OriRuntime:
             # safe default, an approval without an outcome is recorded
             # uncertain, and none is replayed. After every executor is
             # registered, so the safe default can run, and before any sensor
-            # loop can raise a new proposal.
-            recovered = await dispatcher.recover_tier_c_at_start(self._state_store)
-            if any(recovered.values()):
-                logger.warning(
-                    "[runtime] Tier C proposals settled at start: %s", recovered
+            # loop can raise a new proposal. A store that cannot be read here
+            # fails Tier C closed, not the start: no governed proposal is raised
+            # over proposals this process never settled, and Tier D, which
+            # consults none of this, still starts.
+            try:
+                recovered = await dispatcher.recover_tier_c_at_start(self._state_store)
+            except Exception as exc:
+                logger.critical(
+                    "[runtime] Tier C recovery at start failed: %s; Tier C proposals "
+                    "are refused until a start settles them, Tier D is unaffected",
+                    exc,
                 )
+                dispatcher.mark_tier_c_recovery_failed(f"{type(exc).__name__}: {exc}")
+            else:
+                if any(recovered.values()):
+                    logger.warning(
+                        "[runtime] Tier C proposals settled at start: %s", recovered
+                    )
 
         for sensor_cfg in config.sensors:
             try:

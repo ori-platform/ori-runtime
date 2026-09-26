@@ -547,6 +547,9 @@ class ActionDispatcher:
         # Uncertain dispatches known to this process, by decision state, kept
         # in step with the store so health reads nothing.
         self._uncertain: dict[str, str] = {}
+        # Why Tier C recovery at start did not complete, or "" when it did. Set,
+        # no governed proposal is raised over proposals this process never read.
+        self._tier_c_recovery_failed: str = ""
         # The monotonic clock a proposal's deadline is decided on. Wall time is
         # record and display data only.
         self._clock: Callable[[], float] = time.monotonic
@@ -1807,6 +1810,17 @@ class ActionDispatcher:
             (records["lost"] or 0) > 0
             or (records["unknown_live"] or 0) > 0
             or (records["pending"] or 0) >= self._pending_ceiling
+            or self._tier_c_recovery_failed
+        )
+
+    def mark_tier_c_recovery_failed(self, reason: str) -> None:
+        """Tier C recovery did not complete: no governed proposal is raised."""
+        self._tier_c_recovery_failed = reason or "recovery_failed"
+        logger.critical(
+            "ActionDispatcher: Tier C recovery at start failed (%s); no physical "
+            "Tier C proposal is raised until a start settles the previous "
+            "process's proposals. Tier D is unaffected.",
+            self._tier_c_recovery_failed,
         )
 
     def tier_c_outcome_held_live(self, zone_id: str, outcome: str) -> bool:
@@ -1905,7 +1919,7 @@ class ActionDispatcher:
             asyncio.get_running_loop().create_task(send(), name="approval-notice")
         )
 
-    def _close_proposal(
+    async def _close_now(
         self,
         store: Any,
         proposal_id: str,
@@ -1913,36 +1927,54 @@ class ActionDispatcher:
         *,
         from_states: tuple[str, ...],
         reason: str = "",
-        outcome: dict[str, Any] | None = None,
-        landed: Callable[[], None] | None = None,
-        on_lost: Callable[[], None] | None = None,
-    ) -> None:
-        """Move the proposal row forward off the act's path, retried while busy."""
+        safe_default_action: str | None = None,
+        outcome_json: dict[str, Any] | None = None,
+    ) -> bool:
+        """Move the proposal row forward before the decision is reported.
+
+        A terminal decision that precedes no act is awaited, with the safe-default
+        intent in the same transaction, so the live result never says what the
+        durable row does not. A store that stays busy is retried briefly; a
+        close it will not take is a lost decision record, reported CRITICAL and
+        counted for health, and the row is left for the next start to settle.
+        """
         if store is None or not hasattr(store, "advance_tier_c_proposal"):
-            if on_lost is not None:
-                on_lost()
-            return
-        outcome_json = (
-            json.dumps(outcome, sort_keys=True) if outcome is not None else None
+            self._note_decision_lost()
+            return False
+        encoded = (
+            json.dumps(outcome_json, sort_keys=True)
+            if outcome_json is not None
+            else None
         )
-
-        async def write() -> None:
-            await store.advance_tier_c_proposal(
-                proposal_id,
-                state,
-                from_states=from_states,
-                reason=reason,
-                outcome_json=outcome_json,
-            )
-            if landed is not None:
-                landed()
-
-        self._defer_record(
-            write,
-            label=f"tier_c_proposal proposal_id={proposal_id} state={state}",
-            report=True,
-            on_lost=on_lost if on_lost is not None else self._note_decision_lost,
-        )
+        delay = 0.05
+        for attempt in range(6):
+            try:
+                return bool(
+                    await store.advance_tier_c_proposal(
+                        proposal_id,
+                        state,
+                        from_states=from_states,
+                        reason=reason,
+                        outcome_json=encoded,
+                        safe_default_action=safe_default_action,
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if attempt == 5:
+                    logger.critical(
+                        "ActionDispatcher: the decision %s of proposal %s could not be "
+                        "recorded (%s); the row is left for the next start to settle",
+                        state,
+                        proposal_id,
+                        exc,
+                    )
+                    self._note_decision_lost()
+                    return False
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 0.5)
+        return False
 
     async def _safe_default_intent(
         self,
@@ -1953,16 +1985,21 @@ class ActionDispatcher:
         *,
         reason: str,
     ) -> ActionResult | None:
-        """The proposal's one non-actuating safe default, created once.
+        """The proposal's one non-actuating safe default, attempted while pending.
 
-        Returns what the safe default did, or None when this proposal already
-        holds its intent and nothing more is done.
+        The intent row is the obligation: created here when the close did not
+        create it, and attempted whenever it is still ``pending``, so a process
+        that died between the row and the attempt leaves work the next start
+        finishes rather than a record that says it was done. Returns what the
+        safe default did, or None when this proposal's attempt was already made.
         """
-        created = True
-        if store is not None and hasattr(store, "create_tier_c_safe_default_intent"):
+        outcome = "pending"
+        if store is not None and hasattr(store, "ensure_tier_c_safe_default_intent"):
             try:
-                created = await store.create_tier_c_safe_default_intent(
-                    proposal_id, safe_default_action, reason=reason
+                outcome = str(
+                    await store.ensure_tier_c_safe_default_intent(
+                        proposal_id, safe_default_action, reason=reason
+                    )
                 )
             except Exception:
                 logger.exception(
@@ -1971,7 +2008,7 @@ class ActionDispatcher:
                     "durable",
                     proposal_id,
                 )
-        if not created:
+        if outcome != "pending":
             return None
         # Every attempt of the safe default names its proposal: the alert text
         # and the event context carry the identifier, so an alert and a log
@@ -1994,11 +2031,18 @@ class ActionDispatcher:
             safe_default_action, ActionTier.INFORMATIONAL, context
         )
         if store is not None and hasattr(store, "mark_tier_c_safe_default_intent"):
-            outcome = "executed" if inner.executed else "failed"
-            self._defer_record(
-                lambda: store.mark_tier_c_safe_default_intent(proposal_id, outcome),
-                label=f"safe_default_intent proposal_id={proposal_id} outcome={outcome}",
-            )
+            done = "executed" if inner.executed else "failed"
+            try:
+                await store.mark_tier_c_safe_default_intent(proposal_id, done)
+            except Exception:
+                # Left pending: the next start attempts it again, which for an
+                # alert is a duplicate the contract permits.
+                logger.exception(
+                    "ActionDispatcher: the safe default of proposal %s ran but its "
+                    "intent could not be marked %s",
+                    proposal_id,
+                    done,
+                )
         return inner
 
     async def _governed_approval_workflow(
@@ -2049,6 +2093,34 @@ class ActionDispatcher:
                 safe_default_used=inner.executed,
             )
         snapshot_now, binding_digest = authority
+        if self._tier_c_recovery_failed:
+            # The previous process's proposals were never read: a new proposal
+            # could approve an outcome an unresolved one already commands.
+            logger.critical(
+                "ActionDispatcher: refusing a Tier C proposal for %r — Tier C recovery "
+                "at start did not complete (%s)",
+                action,
+                self._tier_c_recovery_failed,
+            )
+            inner = await self._execute_immediately(
+                safe_default_action, ActionTier.INFORMATIONAL, context
+            )
+            self._governed_notify(
+                action,
+                context,
+                "no Tier C proposal can be raised: the runtime could not settle the "
+                "previous process's proposals at start",
+            )
+            return ActionResult(
+                action_name=action,
+                tier=tier,
+                executed=False,
+                approved=None,
+                action_taken="refused_recovery_incomplete",
+                timestamp=now_ms(),
+                operator_response=None,
+                safe_default_used=inner.executed,
+            )
         if not self.permits_relay_action(tier):
             # The deployment or the device policy withholds Tier C relay use.
             # Dispatch refused this already by class; this layer fails closed
@@ -2520,7 +2592,7 @@ class ActionDispatcher:
             terminal_from = (PROPOSED,)
             already_closed = decision_state not in (REJECTED, PROPOSAL_EXPIRED)
             if not already_closed:
-                self._close_proposal(
+                await self._close_now(
                     store,
                     proposal_id,
                     decision_state,
@@ -2530,6 +2602,7 @@ class ActionDispatcher:
                         if decision_state == PROPOSAL_EXPIRED
                         else state_reason
                     ),
+                    safe_default_action=safe_default_action,
                 )
             safe = await self._safe_default_intent(
                 store, proposal_id, safe_default_action, context, reason=decision_state
@@ -2703,12 +2776,13 @@ class ActionDispatcher:
                 "carried out, a fresh proposal is required",
                 proposal_id,
             )
-            self._close_proposal(
+            await self._close_now(
                 store,
                 proposal_id,
                 APPROVAL_EXPIRED_UNDISPATCHED,
                 from_states=(APPROVED_PENDING_DISPATCH,),
                 reason="expired",
+                safe_default_action=safe_default_action,
             )
             safe = await self._safe_default_intent(
                 store, proposal_id, safe_default_action, context, reason="expired"
@@ -2727,12 +2801,13 @@ class ActionDispatcher:
                 "opposing act holds its resource; not carried out",
                 proposal_id,
             )
-            self._close_proposal(
+            await self._close_now(
                 store,
                 proposal_id,
                 DISPATCH_REFUSED_CONTENTION,
                 from_states=(APPROVED_PENDING_DISPATCH,),
                 reason="resource_held",
+                safe_default_action=safe_default_action,
             )
             safe = await self._safe_default_intent(
                 store, proposal_id, safe_default_action, context, reason="contention"
@@ -2888,7 +2963,12 @@ class ActionDispatcher:
         does not prove dispatch never began. Both raise a CRITICAL event and
         block the same outcome on the same zone until reconciled.
         """
-        counts = {"aborted_proposals": 0, "outcome_unknown": 0, "dispatch_unproven": 0}
+        counts = {
+            "aborted_proposals": 0,
+            "outcome_unknown": 0,
+            "dispatch_unproven": 0,
+            "safe_defaults_resumed": 0,
+        }
         if store is None or not hasattr(store, "get_tier_c_proposals"):
             return counts
         rows = await store.get_tier_c_proposals(
@@ -2944,18 +3024,70 @@ class ActionDispatcher:
                 )
             if state in UNCERTAIN_STATES:
                 self._uncertain[proposal_id] = state
+                # The contract's operator event beside the audit record the
+                # move appended: the operator learns the act may have run.
+                self._governed_notify(
+                    str(row["action"]),
+                    self._recovery_context(store, row, "tier_c.dispatch_uncertain"),
+                    f"approved proposal {proposal_id} has no recorded outcome after a "
+                    f"restart ({state.replace('_', ' ')}); {row['outcome']} on zone "
+                    f"{row['zone_id']} is blocked until an operator reconciles it",
+                )
+        # Safe defaults a previous process committed to and never reported
+        # done: the intent is the obligation, so each is attempted now.
+        if hasattr(store, "get_pending_tier_c_safe_default_intents"):
+            for intent in await store.get_pending_tier_c_safe_default_intents():
+                safe_default = str(intent["safe_default_action"])
+                if not safe_default_admitted(safe_default):
+                    safe_default = _DEFAULT_SAFE_DEFAULT_ACTION
+                ran = await self._safe_default_intent(
+                    store,
+                    str(intent["proposal_id"]),
+                    safe_default,
+                    self._recovery_context(
+                        store, intent, "tier_c.safe_default_resumed"
+                    ),
+                    reason=str(intent.get("reason") or "runtime_restart"),
+                )
+                if ran is not None:
+                    counts["safe_defaults_resumed"] += 1
         return counts
+
+    def _recovery_context(
+        self, store: Any, row: dict[str, Any], event_type: str
+    ) -> SkillContext:
+        """A context for a proposal read back from the store, with no live event."""
+        return SkillContext(
+            skill=None,
+            event=OriEvent(
+                event_id=str(row.get("event_id") or row.get("proposal_id") or ""),
+                event_type=event_type,
+                device_id=str(row.get("device_id") or ""),
+                sensor_id="",
+                timestamp=now_ms(),
+                reading=None,
+            ),
+            state_store=store,
+            trigger_name=str(row.get("trigger_name") or ""),
+        )
 
     async def _abort_open_proposal(
         self, store: Any, row: dict[str, Any], *, reason: str
     ) -> None:
         proposal_id = str(row["proposal_id"])
         action = str(row["action"])
-        moved = await store.advance_tier_c_proposal(
+        safe_default = str(
+            row.get("safe_default_action") or _DEFAULT_SAFE_DEFAULT_ACTION
+        )
+        if not safe_default_admitted(safe_default):
+            safe_default = _DEFAULT_SAFE_DEFAULT_ACTION
+        moved = await self._close_now(
+            store,
             proposal_id,
             PROPOSAL_ABORTED_RESTART,
             from_states=(PROPOSED,),
             reason=reason,
+            safe_default_action=safe_default,
         )
         if not moved:
             return
@@ -2966,24 +3098,7 @@ class ActionDispatcher:
             action,
             reason,
         )
-        context = SkillContext(
-            skill=None,
-            event=OriEvent(
-                event_id=str(row.get("event_id") or proposal_id),
-                event_type="tier_c.proposal_aborted",
-                device_id=str(row.get("device_id") or ""),
-                sensor_id="",
-                timestamp=now_ms(),
-                reading=None,
-            ),
-            state_store=store,
-            trigger_name=str(row.get("trigger_name") or ""),
-        )
-        safe_default = str(
-            row.get("safe_default_action") or _DEFAULT_SAFE_DEFAULT_ACTION
-        )
-        if not safe_default_admitted(safe_default):
-            safe_default = _DEFAULT_SAFE_DEFAULT_ACTION
+        context = self._recovery_context(store, row, "tier_c.proposal_aborted")
         await self._safe_default_intent(
             store, proposal_id, safe_default, context, reason=reason
         )
