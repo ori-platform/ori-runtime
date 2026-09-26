@@ -836,6 +836,7 @@ class TestSealingOnTheActionTier:
             await dispatcher.dispatch(
                 action="alert_whatsapp", tier="A", context=context, result=result
             )
+            await dispatcher.drain_records()
 
             assert "trip_relay" in attested
             assert "alert_whatsapp" not in attested

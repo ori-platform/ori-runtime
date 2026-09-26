@@ -73,6 +73,7 @@ def _context(
     actions: dict | None = None,
     triggers: list | None = None,
     trigger_name: str = "",
+    state_store: object = None,
 ) -> SkillContext:
     skill = FakeSkill(
         config=skill_config or {},
@@ -82,7 +83,7 @@ def _context(
     return SkillContext(
         skill=skill,
         event=_event(),
-        state_store=None,
+        state_store=state_store,
         trigger_name=trigger_name,
     )
 
@@ -323,6 +324,8 @@ class TestTierD:
             result = await d.dispatch(
                 "close_gas_valve", ActionTier.SAFETY_CRITICAL, _context(), _result()
             )
+            # The notice is sent beside the act, not ahead of the next one.
+            await asyncio.gather(*d.get_inflight_tier_d_tasks())
 
         assert result.executed is False
         assert result.action_taken == NO_EXECUTOR_ACTION_TAKEN
@@ -379,6 +382,7 @@ class TestTierD:
             result = await d.dispatch(
                 "trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result()
             )
+            await asyncio.gather(*d.get_inflight_tier_d_tasks())
 
         assert result.executed is False
 
@@ -823,7 +827,7 @@ class TestTierC:
                 result = await d.dispatch(
                     "close_gas_valve",
                     ActionTier.HARD_PHYSICAL,
-                    _context(),
+                    _context(state_store=None),
                     _result(action_tier="C"),
                     approval_timeout_seconds=10,
                 )
@@ -840,6 +844,7 @@ class TestTierC:
                 "Detailed explanation" not in value
                 for value in sent_alert.template_variables
             )
+            await d.drain_records()
             action_rows = await store.get_action_log()
             assert action_rows[0]["proposal_id"] == "AB12CD34"
             decision_rows = await store.get_tier_c_decision_log()
@@ -922,6 +927,7 @@ class TestTierC:
                 _result(),
                 approval_timeout_seconds=10,
             )
+        await d.drain_records()
 
         store.log_action_for_event.assert_awaited_once()
 
@@ -955,6 +961,7 @@ class TestTierC:
             )
 
         assert result.approved is False
+        await d.drain_records()
         store.log_tier_c_decision.assert_awaited_once()
         kwargs = store.log_tier_c_decision.await_args.kwargs
         assert kwargs["device_id"] == "dev-01"
@@ -1005,6 +1012,7 @@ class TestTierC:
             )
 
         assert result.approved is True
+        await dispatcher.drain_records()
         fields = store.log_tier_c_decision.await_args.kwargs
         assert fields["operator_response"] == "YES-AB12CD34"
         assert fields["operator_response_channel"] == "whatsapp"
@@ -1158,7 +1166,7 @@ class TestTierC:
                 result = await d.dispatch(
                     "close_gas_valve",
                     ActionTier.HARD_PHYSICAL,
-                    _context(),
+                    _context(state_store=None),
                     _result(action_tier="C"),
                     approval_timeout_seconds=1,
                 )
@@ -1204,7 +1212,7 @@ class TestTierC:
                 result = await d.dispatch(
                     "close_gas_valve",
                     ActionTier.HARD_PHYSICAL,
-                    _context(),
+                    _context(state_store=None),
                     _result(action_tier="C"),
                     safe_default_action="log_to_dashboard",
                     approval_timeout_seconds=0,
@@ -2021,6 +2029,9 @@ class TestOfflineTokenApproval:
                     _result(action_tier="C"),
                     approval_timeout_seconds=1,
                 )
+            # The decision record lands after the act; the store must still
+            # be open when it does.
+            await d.drain_records()
         finally:
             await store.close()
         with sqlite3.connect(tmp_path / "state.db") as conn:
@@ -2116,6 +2127,9 @@ class TestOfflineTokenApproval:
                     _result(action_tier="C"),
                     approval_timeout_seconds=1,
                 )
+            # The decision record lands after the act; the store must still
+            # be open when it does.
+            await d.drain_records()
         finally:
             await store.close()
         with sqlite3.connect(tmp_path / "state.db") as conn:
@@ -2463,6 +2477,7 @@ class TestSnapshotBuildFailureIsContained:
             ctx,
             _result(action_tier="D"),
         )
+        await d.drain_records()
 
         store.log_action_for_event.assert_awaited()
         # The snapshot could not be built, so nothing spurious was logged.
@@ -2516,6 +2531,7 @@ class TestTierDIsIndependentOfEvidence:
         result = await d.dispatch(
             "trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result()
         )
+        await d.drain_records()
 
         assert attempted == ["attest"], "attestation was never attempted"
         assert result.executed is True
@@ -2546,6 +2562,7 @@ class TestTierDIsIndependentOfEvidence:
         result = await d.dispatch(
             "trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result()
         )
+        await d.drain_records()
 
         assert attempted == ["attest"]
         assert result.executed is True
@@ -2593,6 +2610,7 @@ class TestTierDIsIndependentOfEvidence:
         d.register_executor("trip_relay", _executor)
 
         await d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result())
+        await d.drain_records()
 
         assert "attest" in order, "attestation was never attempted"
         assert order[0] == "execute", order
@@ -2649,6 +2667,7 @@ class TestWhichTiersReachEvidence:
         d.register_executor("log_to_dashboard", AsyncMock(return_value=True))
 
         await d.dispatch("close_gas_valve", ActionTier.HARD_PHYSICAL, ctx, _result())
+        await d.drain_records()
 
         assert seen, "a Tier C action never reached the evidence path"
         tiers = [tier for tier, _reconciled in seen]
@@ -2664,6 +2683,7 @@ class TestWhichTiersReachEvidence:
         d = ActionDispatcher(evidence_attestor=self._attestor(seen))
         d.register_executor("trip_relay", AsyncMock(return_value=True))
         await d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result())
+        await d.drain_records()
         assert ("D", False) in seen, "a Tier D action was not attested"
 
     @pytest.mark.parametrize(
@@ -2721,6 +2741,7 @@ class TestAttestationFailureIsRecordedNotSilent:
         result = await d.dispatch(
             "trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result()
         )
+        await d.drain_records()
 
         assert result.executed is True
         store.set_action_attestation.assert_awaited()
@@ -2752,6 +2773,7 @@ class TestAttestationFailureIsRecordedNotSilent:
         d = ActionDispatcher(evidence_attestor=_Silent())
         d.register_executor("trip_relay", AsyncMock(return_value=True))
         await d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result())
+        await d.drain_records()
 
         statuses = [
             call.kwargs.get("status")
@@ -2814,6 +2836,7 @@ class TestAnUnansweredApprovalSaysWhyItEnded:
                 safe_default_action="log_to_dashboard",
                 approval_timeout_seconds=timeout,
             )
+            await dispatcher.drain_records()
 
             def records(conn):
                 decision = conn.execute(

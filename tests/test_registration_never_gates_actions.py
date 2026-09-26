@@ -288,6 +288,9 @@ async def _dispatch(state: str, tier: str, tmp_path: Path) -> dict[str, Any]:
                 approval_timeout_seconds=10,
             )
             elapsed = time.monotonic() - started
+        # The record lands after the act; wait for it before reading the log,
+        # so the comparison is between records, not between races.
+        await dispatcher.drain_records()
         rows = await store.get_action_log()
         return {
             "executor_awaits": executor.await_count,

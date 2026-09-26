@@ -488,6 +488,52 @@ candidate or release is cut.
 
 ## Fixed
 
+- No record of a Tier D act runs ahead of it any longer, or ahead of the next
+  act in the same event. The autonomous-dispatch entry in the override log was
+  written before the executor ran, and each act's action-log row, firmware
+  confirmation read and evidence signature were awaited before the next Tier D
+  act was attempted and before the event's reasoning was scheduled, so a store
+  busy with another write, or a signer that never returned, held a trip for as
+  long as it lasted, and held every other act of the event behind it, an
+  approved Tier C act included. A store held by another connection past its
+  busy timeout delayed a trip by that timeout and then lost its override entry
+  and action row, and lost an approved Tier C act's decision and action rows
+  outright. These records are now opened before the act and written by tracked
+  tasks once it settles, retried while the store is busy or locked, in the
+  order they became writable, and shutdown waits for them while the store and
+  the evidence attestor are still open, reporting any it could not write at
+  CRITICAL. One writer takes them from an in-memory queue capped at 1024: a
+  store that never answers cannot grow it further, and a record arriving at
+  the ceiling is counted lost and logged CRITICAL — never waited for by an
+  act. A lost record, or one waiting thirty seconds, degrades health `status`;
+  a lost operator-decision record, a Tier C decision row or a rejection's
+  override entry, makes it `critical`. That status is an alarm, not
+  durability: an operator's decision can still be lost at the writer's
+  ceiling, on a store error that is not a lock, or at shutdown, until the
+  approval admission that follows makes a lost approved decision structurally
+  impossible by committing the decision before it becomes one. This change
+  removes the record from the act's path and stops a busy or locked store from
+  dropping it; it does not yet make it durable. The mixed record queue has no
+  contract field of its own; `runtime-health/v3`'s `action_records` belongs to
+  that approval admission and is not reported here. A write still in flight
+  when the writer closes at shutdown is given the store's busy timeout to land
+  and is otherwise reported as outcome unknown rather than lost, because the
+  statement runs on a thread the cancel does not reach and the store may still
+  take it. The emergency SMS for a failed Tier D act is sent beside the next
+  act rather than ahead of it, and shutdown waits for it with the other Tier D
+  work. Only a locked or busy store is retried; any other store error counts
+  the record lost with its identity — an operator decision always named — and
+  a signer that does not answer within ten seconds leaves its row pending for
+  reconciliation instead of holding the queue. Tier D acts of one discovery
+  set start together, so an executor that never returns holds no protective
+  act on another resource, and an act interrupted while its executor kept
+  driving records what the executor reported. Because an operator's refusal is
+  now recorded after the act, rejection memory lags it while the store is
+  busy: a matching event evaluated before the pattern lands is not yet capped.
+  A process that stops after an act and before its row is written leaves that
+  act out of the action log; a row written and not yet signed stays pending
+  and is signed as `reconciled_late` at the next start, as before.
+
 - A trigger whose reasoning or approval is still running no longer matches
   again inside its own cooldown. The cooldown is charged when a trigger's plan
   settles, so every reading that arrived while its inference ran, or while its

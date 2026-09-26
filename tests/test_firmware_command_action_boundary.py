@@ -2278,6 +2278,11 @@ async def test_every_dispatch_route_leaves_the_gate_alone(
                             _result(),
                             approval_timeout_seconds=5,
                         )
+                        # The act's record is written after it, off its path;
+                        # it belongs to this window, so it lands before the
+                        # window closes and before the next one arms the
+                        # engine recorder against a connection mid-statement.
+                        await dispatcher.drain_records()
                     finally:
                         _close_window(token)
                     spent = clock() - started

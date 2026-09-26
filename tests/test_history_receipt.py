@@ -606,6 +606,7 @@ async def test_the_provider_template_slot_is_the_time_ori_proposed_not_the_devic
         assert sent.template_variables[2] == ActionDispatcher._format_local_time(
             NOW, "UTC"
         )
+        await d.drain_records()
     finally:
         await state.close()
 

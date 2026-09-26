@@ -23,9 +23,10 @@ import datetime
 import json
 import logging
 import secrets
+import sqlite3
 import string
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
 from ori.actions.alert_delivery import (
@@ -66,6 +67,7 @@ from ori.security.offline_tokens import (
     TokenVerificationResult,
 )
 from ori.security.remote_commands.commands import extract_remote_command_payload
+from ori.state.deferred_writer import DeferredWriter
 from ori.utils.bool_utils import is_truthy
 from ori.utils.time_utils import now_ms
 
@@ -108,6 +110,14 @@ _NO_TOKENS = frozenset({"no", "n", "cancel", "stop", "reject", "deny"})
 
 _DEFAULT_APPROVAL_TIMEOUT = 300  # seconds
 _DEFAULT_SAFE_DEFAULT_ACTION = "log_to_dashboard"
+# How long the record writer waits on one signature. A signer that does not
+# answer leaves its row pending for reconciliation rather than holding every
+# record behind it.
+_ATTESTATION_BOUND_S = 10.0
+# Records waiting for the store. A store that never answers must not grow this
+# without limit; past it, a record is counted lost and reported, never waited
+# for by an act.
+_RECORD_QUEUE_CEILING = 1024
 _PROPOSAL_ID_ALPHABET = string.ascii_uppercase + string.digits
 _TIER_RANK: dict[str, int] = {
     ActionTier.INFORMATIONAL: 1,
@@ -284,6 +294,26 @@ def _input_firmware_freshness(context: Any) -> tuple[str, int, int]:
     if not firmware_device_id or boot_id <= 0 or seq <= 0:
         return "", 0, 0
     return firmware_device_id, boot_id, seq
+
+
+def _record_label(action_result: ActionResult) -> str:
+    """Identify an action row well enough to be named if it is lost."""
+    return (
+        f"action_log action={action_result.action_name} tier={action_result.tier} "
+        f"executed={action_result.executed} approved={action_result.approved} "
+        f"proposal_id={action_result.proposal_id or '-'} "
+        f"taken={action_result.action_taken or '-'}"
+    )
+
+
+def _stamp_correlation_id(action_result: ActionResult, context: Any) -> None:
+    """Carry the event's correlation id onto a result that has none."""
+    event = getattr(context, "event", None)
+    if action_result.correlation_id or event is None:
+        return
+    raw = getattr(event, "context", None)
+    event_context = raw if isinstance(raw, dict) else {}
+    action_result.correlation_id = str(event_context.get("correlation_id") or "")
 
 
 def _normalize_proposal_id(value: str | None) -> str:
@@ -486,6 +516,20 @@ class ActionDispatcher:
         self._status_indicator = status_indicator
         self._logger_action = LoggerAction()
         self._inflight_tier_d_tasks: set[asyncio.Task[Any]] = set()
+        # Records of acts, written after the act and never ahead of the next
+        # one. The writer keeps them landing in the order the acts settled.
+        self._records = DeferredWriter(
+            "ActionDispatcher records", ceiling=_RECORD_QUEUE_CEILING
+        )
+        self._records_awaiting = 0
+        self._unsettled_at_close = 0
+        # Operator decisions whose record the store never took. A lost decision
+        # record is critical, not degraded: the operator's decision is what the
+        # record exists to keep.
+        self._decision_records_lost = 0
+        # Records whose act was interrupted while its executor kept driving:
+        # they wait for the executor rather than recording the interruption.
+        self._held_by_executor: set[int] = set()
         # The gate is consulted here, at the last point before an executor runs,
         # rather than by whatever built the plan. A check that holds only
         # because an earlier check held is not a boundary: an action reaching
@@ -670,6 +714,137 @@ class ActionDispatcher:
     def _track_tier_d_task(self, task: asyncio.Task[Any]) -> None:
         self._inflight_tier_d_tasks.add(task)
         task.add_done_callback(self._inflight_tier_d_tasks.discard)
+
+    def pending_record_count(self) -> int:
+        """Records not yet written: queued, or waiting on an act to settle."""
+        return self._records.pending + self._records_awaiting
+
+    def record_backlog(self) -> dict[str, int]:
+        """What is waiting for the store, how long, what was lost, the ceiling."""
+        return {
+            "pending": self._records.pending,
+            "unsettled": self._records_awaiting,
+            "oldest_pending_age_ms": self._records.oldest_pending_age_ms(),
+            "lost": self._records.lost,
+            "unknown": self._records.unknown,
+            "ceiling": self._records.ceiling,
+        }
+
+    def decision_records_lost(self) -> int:
+        """Operator decisions whose record the store never took."""
+        return self._decision_records_lost
+
+    def _note_decision_lost(self) -> None:
+        self._decision_records_lost += 1
+
+    async def drain_records(self, timeout: float = 5.0) -> None:
+        """Wait for deferred records to be written, for shutdown and tests.
+
+        A record whose act has not settled — an approval still waiting on its
+        operator — is not the store's to finish and is not waited for. One loop
+        turn lets an act that has just returned hand its record over first.
+        """
+        await asyncio.sleep(0)
+        await self._records.drain(timeout=timeout)
+
+    async def abandon_records(self) -> int:
+        """Stop writing; count records the store never took, and name the rest.
+
+        Records of acts that have not settled are reported apart: nothing was
+        lost by the store there, and when such an act settles later its record
+        is reported once, not counted a second time.
+        """
+        unsettled = self._records_awaiting
+        self._unsettled_at_close = unsettled
+        if unsettled:
+            logger.critical(
+                "ActionDispatcher: %d act(s) had not settled at shutdown — an "
+                "approval still open or an executor still driving — and were not "
+                "recorded",
+                unsettled,
+            )
+        lost = await self._records.close()
+        if lost:
+            logger.critical(
+                "ActionDispatcher: %d action record(s) were never written — the "
+                "store did not accept them before shutdown",
+                lost,
+            )
+        return lost
+
+    def _defer_record(
+        self,
+        write: Callable[[], Awaitable[None]],
+        *,
+        after: asyncio.Future[Any] | None = None,
+        label: Callable[[], str] | str = "",
+        report: bool = False,
+        on_lost: Callable[[], None] | None = None,
+    ) -> None:
+        """Write a record after *after* settles, off the path of every act.
+
+        Opened before the act runs, so the shutdown drain already counts it
+        while the executor is still driving. One writer takes records in the
+        order they became writable and retries a store that is busy or locked,
+        so a record that cannot land yet holds the ones behind it rather than
+        being overtaken. *label* names the record if it is lost; with *report*
+        every such loss is logged with it.
+        """
+
+        def name() -> str:
+            return label() if callable(label) else label
+
+        if after is None:
+            self._records.submit(write, label=name(), report=report, on_lost=on_lost)
+            return
+        self._records_awaiting += 1
+
+        def settled(future: asyncio.Future[Any]) -> None:
+            if self._records_awaiting > 0:
+                self._records_awaiting -= 1
+            if future.cancelled():
+                return
+            if self._records.closed and self._unsettled_at_close > 0:
+                # Already reported as unsettled at shutdown: said once, not
+                # counted again as a store loss.
+                self._unsettled_at_close -= 1
+                logger.critical(
+                    "ActionDispatcher: an act settled after shutdown and was not "
+                    "recorded (%s)",
+                    name(),
+                )
+                return
+            self._records.submit(write, label=name(), report=report, on_lost=on_lost)
+
+        after.add_done_callback(settled)
+
+    async def _record(
+        self,
+        action_result: ActionResult,
+        context: SkillContext,
+        pending: asyncio.Future[ActionResult] | None,
+    ) -> None:
+        """Log *action_result* now, or hand it to its deferred record."""
+        if pending is None:
+            await self._log_action(action_result, context)
+            return
+        _stamp_correlation_id(action_result, context)
+        if not pending.done():
+            pending.set_result(action_result)
+
+    async def _log_tier_d_override(self, action: str, context: SkillContext) -> None:
+        """Record an autonomous Tier D dispatch in the override log."""
+        store = self._resolve_state_store(context)
+        if store is None or not hasattr(store, "log_override"):
+            return
+        await store.log_override(
+            trigger_name=context.event.sensor_id if context.event else "",
+            action=action,
+            reason="autonomous_tier_d_safety_action",
+            operator_response=None,
+            override_type="autonomous_tier_d",
+            device_id=context.event.device_id if context.event else "unknown",
+        )
 
     def _vet_safe_default(self, safe_default_action: str) -> str:
         """Return a safe default that is actually safe.
@@ -889,29 +1064,68 @@ class ActionDispatcher:
                 action = safe_default_action
                 tier = ActionTier.INFORMATIONAL
 
-        if tier == ActionTier.SAFETY_CRITICAL:
-            _store = (
-                context.state_store
-                if hasattr(context, "state_store") and context.state_store is not None
-                else self._state_store
+        # Nothing that records a Tier D act runs ahead of it, or ahead of the
+        # next one: a busy store or a signer that never returns would otherwise
+        # hold a trip. Records of a Tier D act — the override entry an
+        # autonomous dispatch is, and the action row — and of an approved act
+        # are opened here, before the act, so the shutdown drain holds them
+        # while the executor is still driving; tracked tasks write them once
+        # there is something to write, and retry a store that is busy or
+        # locked rather than losing them.
+        record: asyncio.Future[ActionResult] | None = None
+        if tier in (ActionTier.SAFETY_CRITICAL, ActionTier.HARD_PHYSICAL) or (
+            tier == ActionTier.SOFT_PHYSICAL and self._tier_b_requires_approval(context)
+        ):
+            opened: asyncio.Future[ActionResult] = (
+                asyncio.get_running_loop().create_future()
             )
-            if _store is not None and hasattr(_store, "log_override"):
-                _device_id = context.event.device_id if context.event else "unknown"
-                try:
-                    await _store.log_override(
-                        trigger_name=context.event.sensor_id if context.event else "",
-                        action=action,
-                        reason="autonomous_tier_d_safety_action",
-                        operator_response=None,
-                        override_type="autonomous_tier_d",
-                        device_id=_device_id,
-                    )
-                except Exception:
-                    logger.exception(
-                        "ActionDispatcher: failed to log Tier D override for action=%r",
-                        action,
-                    )
+            record = opened
+            if tier == ActionTier.SAFETY_CRITICAL:
+                # Deferred on the same settled result as the row, and registered
+                # first, so it is written after the act and ahead of the row:
+                # a record submitted now would race the executor for the store.
+                self._defer_record(
+                    lambda: self._log_tier_d_override(action, context),
+                    after=opened,
+                    label=f"override_log autonomous_tier_d action={action}",
+                )
+            self._defer_record(
+                lambda: self._log_action(opened.result(), context, durable=True),
+                after=opened,
+                label=lambda: _record_label(opened.result()),
+                report=True,
+            )
+        try:
+            return await self._admit_and_run(
+                action,
+                tier,
+                context,
+                result,
+                safe_default_action,
+                timeout_value,
+                record,
+            )
+        finally:
+            # A path that left without a result has nothing to record, as when
+            # the dispatch is cancelled before it reached the gate.
+            if (
+                record is not None
+                and not record.done()
+                and id(record) not in self._held_by_executor
+            ):
+                record.cancel()
 
+    async def _admit_and_run(
+        self,
+        action: str,
+        tier: str,
+        context: SkillContext,
+        result: ReasoningResult,
+        safe_default_action: str,
+        timeout_value: int,
+        record: asyncio.Future[ActionResult] | None,
+    ) -> ActionResult:
+        """Admit *action* against its resource, run it, and record the attempt."""
         # Resource admission. Contention is decided on the resource an action
         # drives, never on its name: two names can be one act, and one name can
         # be two acts on different zones.
@@ -937,7 +1151,7 @@ class ActionDispatcher:
                 action_taken="refused_unresolved_resource",
                 timestamp=now_ms(),
             )
-            await self._log_action(unresolved, context)
+            await self._record(unresolved, context, record)
             return unresolved
 
         gate_token: Any = None
@@ -978,7 +1192,7 @@ class ActionDispatcher:
                     action_taken="coalesced",
                     timestamp=now_ms(),
                 )
-                await self._log_action(joined, context)
+                await self._record(joined, context, record)
                 return joined
 
             if not decision.may_execute:
@@ -1007,7 +1221,7 @@ class ActionDispatcher:
                     action_taken=f"refused_{decision.reason}",
                     timestamp=now_ms(),
                 )
-                await self._log_action(refusal, context)
+                await self._record(refusal, context, record)
                 return refusal
 
             gate_token = decision.token
@@ -1123,7 +1337,27 @@ class ActionDispatcher:
                     gate_token, bool(getattr(action_result, "executed", False))
                 )
 
-        await self._log_action(action_result, context)
+        if record is not None and inner_task is not None and not inner_task.done():
+            # The executor is still driving, so what this dispatch can say now
+            # — that it was interrupted — is not what happened. The row waits
+            # for the executor and records what it reports.
+            self._held_by_executor.add(id(record))
+            interrupted = action_result
+
+            def settle(finished: asyncio.Task[ActionResult]) -> None:
+                self._held_by_executor.discard(id(record))
+                if record.done():
+                    return
+                settled = interrupted
+                if not finished.cancelled() and finished.exception() is None:
+                    settled = finished.result()
+                _stamp_correlation_id(settled, context)
+                record.set_result(settled)
+
+            inner_task.add_done_callback(settle)
+            return action_result
+
+        await self._record(action_result, context, record)
         return action_result
 
     def _retire_when_settled(self, token: Any, finished: Any) -> None:
@@ -1349,7 +1583,15 @@ class ActionDispatcher:
                 if context and context.event
                 else "unknown"
             )
-            await self._emergency_sms(action, device_id)
+            # Sent beside the next act, never ahead of it: a channel that does
+            # not answer must not hold another trip. Tracked with Tier D work so
+            # shutdown waits for it; `_emergency_sms` reports its own failure.
+            self._track_tier_d_task(
+                asyncio.get_running_loop().create_task(
+                    self._emergency_sms(action, device_id),
+                    name="tier-d-emergency-notice",
+                )
+            )
 
         return ActionResult(
             action_name=action,
@@ -1850,38 +2092,51 @@ class ActionDispatcher:
                         safe_default_executed=executed,
                         approval_end=approval_end,
                     )
-                # Log operator rejection / timeout override to override_log
+                # The operator's refusal, or the window ending, is a decision
+                # the record keeps: written off this path, and retried until
+                # the store takes it.
                 if store is not None and hasattr(store, "log_override"):
-                    device_id = context.event.device_id if context.event else "unknown"
-                    try:
-                        await store.log_override(
+                    rejection_store = store
+                    rejection_response = operator_response
+                    rejection_reason = (
+                        _APPROVAL_END_DECISION[approval_end]
+                        if timed_out
+                        else "operator_rejection"
+                    )
+                    self._defer_record(
+                        lambda: rejection_store.log_override(
                             trigger_name=(
                                 context.event.sensor_id if context.event else ""
                             ),
                             action=action,
-                            reason=(
-                                _APPROVAL_END_DECISION[approval_end]
-                                if timed_out
-                                else "operator_rejection"
-                            ),
-                            operator_response=operator_response,
+                            reason=rejection_reason,
+                            operator_response=rejection_response,
                             override_type="rejection",
-                            device_id=device_id,
-                        )
-                    except Exception:
-                        # The safe default has run; a record that cannot be
-                        # written must not unresolve the proposal.
-                        logger.exception(
-                            "ActionDispatcher: failed to record the override for "
-                            "proposal_id=%s",
-                            proposal_id,
-                        )
+                            device_id=(
+                                context.event.device_id if context.event else "unknown"
+                            ),
+                        ),
+                        label=(
+                            f"override_log rejection action={action} "
+                            f"proposal_id={proposal_id} reason={rejection_reason}"
+                        ),
+                        report=True,
+                        on_lost=self._note_decision_lost,
+                    )
                 if not timed_out and operator_response is not None:
-                    await self._store_rejection_pattern(
-                        store=store,
-                        action=action,
-                        context=context,
-                        operator_response=operator_response,
+                    rejected_with = operator_response
+                    self._defer_record(
+                        lambda: self._store_rejection_pattern(
+                            store=store,
+                            action=action,
+                            context=context,
+                            operator_response=rejected_with,
+                            durable=True,
+                        ),
+                        label=(
+                            f"rejection_pattern action={action} "
+                            f"proposal_id={proposal_id}"
+                        ),
                     )
 
             completed_at = now_ms()
@@ -1896,27 +2151,42 @@ class ActionDispatcher:
                 proposal_id=proposal_id,
                 safe_default_used=not bool(approved),
             )
-            await self._log_tier_c_decision(
-                store=store,
-                context=context,
-                result=result,
-                action=action,
-                action_result=action_result,
-                operator_decision=(
-                    "approved"
-                    if approved
-                    else _APPROVAL_END_DECISION[approval_end]
-                    if timed_out
-                    else "rejected"
+            operator_decision = (
+                "approved"
+                if approved
+                else _APPROVAL_END_DECISION[approval_end]
+                if timed_out
+                else "rejected"
+            )
+            # The decision record is written off the act's path and retried
+            # until the store takes it: a busy store must not drop what the
+            # operator decided.
+            self._defer_record(
+                lambda: self._log_tier_c_decision(
+                    store=store,
+                    context=context,
+                    result=result,
+                    action=action,
+                    action_result=action_result,
+                    operator_decision=operator_decision,
+                    approval_started_at=approval_started_at,
+                    completed_at=completed_at,
+                    approval_timeout_seconds=approval_timeout_seconds,
+                    safe_default_action=safe_default_action,
+                    safe_default_used=not bool(approved),
+                    approval_receipt=approval_receipt,
+                    escalation_receipt=escalation_receipt,
+                    inbound_response=inbound_response,
+                    durable=True,
                 ),
-                approval_started_at=approval_started_at,
-                completed_at=completed_at,
-                approval_timeout_seconds=approval_timeout_seconds,
-                safe_default_action=safe_default_action,
-                safe_default_used=not bool(approved),
-                approval_receipt=approval_receipt,
-                escalation_receipt=escalation_receipt,
-                inbound_response=inbound_response,
+                label=(
+                    f"tier_c_decision action={action} proposal_id={proposal_id} "
+                    f"decision={operator_decision} "
+                    f"operator_response={operator_response!r} "
+                    f"taken={action_taken}"
+                ),
+                report=True,
+                on_lost=self._note_decision_lost,
             )
             return action_result
         finally:
@@ -1948,8 +2218,13 @@ class ActionDispatcher:
         approval_receipt: AlertSendReceipt,
         escalation_receipt: AlertSendReceipt,
         inbound_response: InboundApprovalResponse | None,
+        durable: bool = False,
     ) -> None:
-        """Persist the rich Tier C proposal/decision record if supported."""
+        """Persist the rich Tier C proposal/decision record if supported.
+
+        With *durable*, a store that is busy or failing is raised to the
+        caller, which retries, rather than the decision being dropped.
+        """
         if store is None or not hasattr(store, "log_tier_c_decision"):
             return
 
@@ -2048,6 +2323,13 @@ class ActionDispatcher:
                 proposal_id=action_result.proposal_id,
                 later_outcome=None,
                 created_at=completed_at,
+            )
+        except sqlite3.OperationalError:
+            if durable:
+                raise
+            logger.exception(
+                "ActionDispatcher: failed to log Tier C decision for action=%r",
+                action,
             )
         except Exception:
             logger.exception(
@@ -2155,8 +2437,13 @@ class ActionDispatcher:
         action: str,
         context: SkillContext,
         operator_response: str,
+        durable: bool = False,
     ) -> None:
-        """Persist a rejected Tier C pattern for future informational capping."""
+        """Persist a rejected Tier C pattern for future informational capping.
+
+        With *durable*, a busy or locked store is raised to the caller, which
+        retries, rather than the pattern being dropped.
+        """
         if store is None:
             return
         if not hasattr(type(store), "store_rejection") or not hasattr(
@@ -2211,6 +2498,13 @@ class ActionDispatcher:
             logger.info(
                 "Rejection stored for pattern %s — future identical patterns capped at Tier A",
                 pattern_key,
+            )
+        except sqlite3.OperationalError:
+            if durable:
+                raise
+            logger.exception(
+                "ActionDispatcher: failed to persist rejection pattern for action=%r",
+                action,
             )
         except Exception:
             logger.exception(
@@ -2482,6 +2776,8 @@ class ActionDispatcher:
         self,
         action_result: ActionResult,
         context: SkillContext,
+        *,
+        durable: bool = False,
     ) -> None:
         """Persist *action_result* to the ``action_log`` table.
 
@@ -2491,6 +2787,8 @@ class ActionDispatcher:
         Args:
             action_result: The result to persist.
             context: Skill execution context (carries state_store).
+            durable: Raise a store that is busy or failing to the caller, which
+                retries, rather than dropping the row.
         """
         store = None
         if hasattr(context, "state_store") and context.state_store is not None:
@@ -2501,15 +2799,7 @@ class ActionDispatcher:
         if store is None:
             return
 
-        if not action_result.correlation_id and context.event is not None:
-            event_context = (
-                context.event.context
-                if isinstance(getattr(context.event, "context", None), dict)
-                else {}
-            )
-            action_result.correlation_id = str(
-                event_context.get("correlation_id") or ""
-            )
+        _stamp_correlation_id(action_result, context)
 
         # The trigger that matched, kept apart from the sensor that reported.
         # `matched_trigger` is empty when no trigger name reached this dispatch,
@@ -2546,6 +2836,16 @@ class ActionDispatcher:
             firmware_registration = await self._build_firmware_registration_snapshot(
                 store, input_firmware_device_id
             )
+        except sqlite3.OperationalError:
+            if durable:
+                # Retried whole, so the row still lands with its provenance.
+                raise
+            logger.exception(
+                "ActionDispatcher: failed to build firmware registration "
+                "snapshot for device=%r; logging action without it",
+                input_firmware_device_id,
+            )
+            firmware_registration = None
         except Exception:
             logger.exception(
                 "ActionDispatcher: failed to build firmware registration "
@@ -2601,6 +2901,14 @@ class ActionDispatcher:
                 # does not hold would leave reconciliation nothing to replay.
                 attest = False
                 action_row_id = await store.log_action(action_result, trigger_name)
+        except sqlite3.OperationalError:
+            if durable:
+                raise
+            logger.exception(
+                "ActionDispatcher: failed to log action=%r to action_log",
+                action_result.action_name,
+            )
+            return
         except Exception:
             logger.exception(
                 "ActionDispatcher: failed to log action=%r to action_log",
@@ -2707,12 +3015,30 @@ class ActionDispatcher:
             # coordinator; it is never signed here under unconfirmed
             # authority. The lookup lives inside this boundary so a transient
             # store failure cannot escape and disturb action processing.
-            if not await self._firmware_source_confirmed(
-                store, input_firmware_device_id, firmware_registration
-            ):
-                return
+            # Bounded, because this runs in the record writer: a signer or a
+            # status read that never answers would otherwise hold every record
+            # behind it. The row stays pending and reconciliation signs it,
+            # idempotently on its event id should the late signature land.
             try:
-                seq = await self._evidence_attestor.attest_action(row)
+                confirmed = await asyncio.wait_for(
+                    self._firmware_source_confirmed(
+                        store, input_firmware_device_id, firmware_registration
+                    ),
+                    _ATTESTATION_BOUND_S,
+                )
+                if not confirmed:
+                    return
+                seq = await asyncio.wait_for(
+                    self._evidence_attestor.attest_action(row), _ATTESTATION_BOUND_S
+                )
+            except TimeoutError:
+                logger.warning(
+                    "ActionDispatcher: attestation of action_log id=%s did not "
+                    "answer within %.0fs; the row stays pending for reconciliation",
+                    action_row_id,
+                    _ATTESTATION_BOUND_S,
+                )
+                return
             except AuthorityUnavailableError as exc:
                 # Terminal, not transient. Retrying cannot recover a licence
                 # that was never recorded, and re-selecting the row would log

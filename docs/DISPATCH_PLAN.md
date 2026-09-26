@@ -431,6 +431,29 @@ Every refusal, preemption, coalescing, invalidation and delay is recorded. A
 dropped Tier C proposal that leaves no trace is indistinguishable from one that
 was never raised.
 
+The record comes after the act, never ahead of it: no store write, read or
+signature sits before a Tier D act, between two Tier D acts of one discovery
+set, or between an operator's decision and its act. The Tier D override entry,
+every Tier C/D action row with its confirmation read and signature, the Tier C
+decision record and a rejection's override and pattern are written in order by
+one bounded writer that retries a locked or busy store, and are drained at
+shutdown before the store and the attestor close. That makes the record
+eventual rather than immediate, and it has a loss window: a process that dies
+after an act and before its row lands leaves the act out of the action log, and
+a record the store will not take — past the writer's ceiling, refused outright,
+or still unwritten at shutdown — is counted lost, logged at CRITICAL with its
+identity, and degrades health. Tier D acts of one discovery set start together,
+so an executor that does not return holds no protective act on another
+resource; two naming one outcome on one resource still meet at the gate and
+join into one act. A record still in flight when the writer closes at shutdown is
+reported as outcome unknown, not lost. A lost operator-decision record makes
+health critical; any other lost record degrades it. That is an alarm, not
+durability: until an operator's reply becomes an approval only once durably
+committed, a decision record can still be lost at the writer's ceiling, on a
+store error that is not a lock, or at shutdown. The mixed record queue has no
+contract field; `runtime-health/v3`'s `action_records` belongs to that
+admission and is not reported by this runtime yet.
+
 ## Cooldown
 
 One owner: the plan builder. But "the plan was admitted" is not a fine enough

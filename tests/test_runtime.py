@@ -2857,6 +2857,104 @@ class TestShutdown:
         await asyncio.gather(runtime.start(), _inject_and_stop())
         assert completed == [True], "Tier D task was abandoned before completion"
 
+    async def test_shutdown_writes_the_record_of_a_completed_trip(
+        self, minimal_config, monkeypatch
+    ):
+        """A trip's record is kept off its path, so stop must wait for it."""
+        from ori.network.events import ReasoningResult
+
+        _patch_external(monkeypatch)
+        runtime: Any = OriRuntime(config_path=str(minimal_config))
+        written: list[str] = []
+        release = asyncio.Event()
+
+        class _SlowStore:
+            async def log_action_for_event(self, result, **_kwargs):
+                await release.wait()
+                written.append(result.action_name)
+                return len(written)
+
+        async def _inject_and_stop():
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 15.0
+            while runtime._dispatcher is None:
+                if loop.time() > deadline:
+                    raise AssertionError("startup never built a dispatcher")
+                await asyncio.sleep(0.02)
+
+            dispatcher = ActionDispatcher(state_store=_SlowStore())
+
+            async def _trip(*_args):
+                return True
+
+            dispatcher.register_executor("trip_relay", _trip)
+            skill = SimpleNamespace(
+                name="protector", first_party=True, actions={}, config={}
+            )
+            reading = SensorReading(
+                sensor_id="load-current",
+                sensor_type="current_clamp",
+                value=5.0,
+                unit="ampere",
+                timestamp=int(time.time() * 1000),
+                quality=1.0,
+            )
+            context = SkillContext(
+                skill=skill,
+                event=OriEvent.from_reading(reading, "test-device"),
+                state_store=None,
+                trigger_name="t",
+            )
+            outcome = await dispatcher.dispatch(
+                action="trip_relay",
+                tier="D",
+                context=context,
+                result=ReasoningResult(
+                    text="", tier="rule", model="m", tokens_used=0, latency_ms=0
+                ),
+            )
+            assert outcome.executed is True and written == []
+            runtime._dispatcher = dispatcher
+            loop.call_later(0.2, release.set)
+            await runtime.stop()
+            assert written == ["trip_relay"], "stop returned before the record"
+
+        await asyncio.gather(runtime.start(), _inject_and_stop())
+
+    async def test_a_lost_action_record_degrades_health(
+        self, minimal_config, monkeypatch
+    ):
+        """A record the store never took is gone from the action log; health says so.
+
+        The health contract defines no row for the record queue, so the loss is
+        reported through the aggregate status and the log, not a new field.
+        """
+        _patch_external(monkeypatch)
+        runtime: Any = OriRuntime(config_path=str(minimal_config))
+        observed: dict[str, Any] = {}
+
+        async def _observe_then_stop():
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 15.0
+            while runtime._dispatcher is None:
+                if loop.time() > deadline:
+                    raise AssertionError("startup never built a dispatcher")
+                await asyncio.sleep(0.02)
+            observed["before"] = await runtime._build_health_snapshot()
+            runtime._dispatcher._records.lose("test", report=True, why="test")
+            observed["after"] = await runtime._build_health_snapshot()
+            # An operator's decision the store never took is critical, not
+            # degraded: the decision is what the record exists to keep.
+            runtime._dispatcher._note_decision_lost()
+            observed["decision"] = await runtime._build_health_snapshot()
+            await runtime.stop()
+
+        await asyncio.gather(runtime.start(), _observe_then_stop())
+        assert observed["before"].get("status") != "degraded", observed["before"]
+        assert "record_writes" not in observed["before"]
+        assert observed["after"]["status"] == "degraded"
+        assert observed["decision"]["status"] == "critical"
+
 
 class TestWatchdog:
     async def test_watchdog_skipped_gracefully_without_device(
@@ -3429,6 +3527,7 @@ class TestSensorPolling:
                 "dev-01",
                 EventDeduplicator(),
             )
+        # History is written beside the event, so it lands after the poll.
 
         assert len(bus.events) == 1
         assert len(runtime._state_store.events) == 2
