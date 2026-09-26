@@ -813,6 +813,15 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                     )
 
                 await _until(acted)
+                if replay.marker_durable:
+                    # The marker is written beside the act, never awaited by
+                    # it; a loaded runner lands it after the actuation.
+                    async def marked() -> bool:
+                        return (
+                            await replay.state_of(main) != adm.APPROVED_PENDING_DISPATCH
+                        )
+
+                    await _until(marked)
                 await _turns()
                 replay.dispatch_released.clear()
                 t = replay.tasks.get(main)
