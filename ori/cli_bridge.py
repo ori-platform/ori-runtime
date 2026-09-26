@@ -777,6 +777,7 @@ async def _read_health_snapshot(socket_path: str, timeout_ms: int) -> dict[str, 
         try:
             await writer.wait_closed()
         except OSError:
+            # The reply is already in hand; a peer gone while closing changes nothing.
             pass
 
     try:

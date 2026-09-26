@@ -40,7 +40,7 @@ from ori.state.store import StateStore
 
 REPO = Path(__file__).resolve().parent.parent
 DEVICE = "bench-01"
-SECRET_ENV = "ORI_TEST_EVIDENCE_SECRET"
+DEVICE_KEY_ENV_NAME = "ORI_TEST_EVIDENCE_SECRET"
 REFERENCE = "sha256:" + "ab" * 32
 OTHER_REFERENCE = "sha256:" + "cd" * 32
 
@@ -74,7 +74,7 @@ def _config_text(root: Path, *, evidence: bool = True) -> str:
               enabled: true
               db_path: {root / "evidence.db"}
               key_path: {root / "evidence.key"}
-              device_secret_env: {SECRET_ENV}
+              device_secret_env: {DEVICE_KEY_ENV_NAME}
             """)
     return body
 
@@ -171,7 +171,7 @@ async def site() -> AsyncIterator[Site]:
 
 
 async def _bridge(site: Site, *args: str) -> tuple[int, dict[str, Any], str]:
-    env = {k: v for k, v in os.environ.items() if k != SECRET_ENV}
+    env = {k: v for k, v in os.environ.items() if k != DEVICE_KEY_ENV_NAME}
     env["PYTHONPATH"] = str(REPO)
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -741,6 +741,7 @@ async def _raw_socket(site: Site, payload: bytes) -> asyncio.AbstractServer:
             writer.write(payload)
             await writer.drain()
         except (ConnectionError, OSError):
+            # The bridge under test may close first; this stub only serves it.
             pass
         writer.close()
 

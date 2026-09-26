@@ -181,7 +181,9 @@ async def test_a_restart_does_not_bring_a_reoffer_forward(device) -> None:
 async def test_overdue_cases(device, case) -> None:
     """Overdue once the bound has elapsed since sealing, across restarts."""
     await _seal_at(device, T0 + _ms(case["pending_since_s"]))
-    for _restart_s in case["restarts_at_s"]:
+    # The corpus gives restart times; only their number matters to a wall-clock
+    # measure, and each restart reopens the same persisted obligation.
+    for _ in range(len(case["restarts_at_s"])):
         await _restart(device)
     assert device.attestor is not None
     fields = await _health(device.attestor, T0 + _ms(case["now_s"]))
