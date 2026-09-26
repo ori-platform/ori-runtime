@@ -306,3 +306,43 @@ async def test_reconciliation_refuses_in_the_contracts_order_and_appends_once(
         adm.DISPATCH_NOT_PROVEN,
         adm.RECONCILED_EXECUTED,
     ]
+
+
+async def test_the_store_refuses_a_target_outside_the_closed_states(store: Any) -> None:
+    from ori.state.store import _TIER_C_DECISION_STATES
+
+    assert _TIER_C_DECISION_STATES == adm.DECISION_STATES
+    await store.create_tier_c_proposal(**PROPOSAL)
+    await _admit(store)
+    assert not await store.advance_tier_c_proposal(
+        "AB12CD34",
+        "totally_unknown_state",
+        from_states=(adm.APPROVED_PENDING_DISPATCH,),
+    )
+    assert not await store.advance_tier_c_proposal(
+        "AB12CD34", adm.PROPOSED, from_states=(adm.APPROVED_PENDING_DISPATCH,)
+    )
+    assert (await store.get_tier_c_proposal("AB12CD34"))["decision_state"] == (
+        adm.APPROVED_PENDING_DISPATCH
+    )
+    assert await store.get_tier_c_proposal_records("AB12CD34") == [
+        adm.PROPOSED,
+        adm.APPROVED_PENDING_DISPATCH,
+    ]
+
+
+async def test_the_store_refuses_a_reconcile_outcome_it_does_not_define(
+    store: Any,
+) -> None:
+    await store.create_tier_c_proposal(**PROPOSAL)
+    await _admit(store)
+    await store.advance_tier_c_proposal(
+        "AB12CD34",
+        adm.DISPATCH_NOT_PROVEN,
+        from_states=(adm.APPROVED_PENDING_DISPATCH,),
+    )
+    answer = await _reconcile(store, outcome="maybe")
+    assert answer == {"ok": False, "error": "invalid_arguments"}
+    assert (await store.get_tier_c_proposal("AB12CD34"))["decision_state"] == (
+        adm.DISPATCH_NOT_PROVEN
+    )

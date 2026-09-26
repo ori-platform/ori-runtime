@@ -1202,6 +1202,31 @@ _SQLITE_INT_MIN = -(2**63)
 _SQLITE_INT_MAX = 2**63 - 1
 
 
+#: The closed decision states of tier-c-approval/v1 as this store spells them;
+#: `tests/test_tier_c_proposal_store.py` holds it equal to the admission module's.
+_TIER_C_DECISION_STATES: frozenset[str] = frozenset(
+    {
+        "proposed",
+        "proposal_expired",
+        "rejected",
+        "approved_pending_dispatch",
+        "dispatch_started",
+        "executed",
+        "approval_expired_undispatched",
+        "approval_aborted_undispatched",
+        "proposal_aborted_restart",
+        "approval_binding_changed",
+        "proposal_blocked_uncertain_outcome",
+        "dispatch_refused_contention",
+        "dispatch_failed",
+        "dispatch_outcome_unknown",
+        "dispatch_not_proven",
+        "reconciled_executed",
+        "reconciled_not_executed",
+    }
+)
+
+
 def _audit_bindable(value: Any) -> Any:
     """A value as an audit row can hold it, so a refusal or decision is never
     lost to how it was spelled: lone surrogates escaped, and an integer outside
@@ -3342,7 +3367,20 @@ class StateStore:
         reason: str = "",
         outcome_json: str | None = None,
     ) -> bool:
-        """Move a proposal forward; never back. False when it was elsewhere."""
+        """Move a proposal forward; never back. False when it was elsewhere.
+
+        A target outside the closed decision states, or `proposed` itself, is
+        refused: the store is the transaction boundary the contract makes
+        authoritative, and it does not take a state it cannot answer for.
+        """
+        if state not in _TIER_C_DECISION_STATES or state == "proposed":
+            logger.error(
+                "StateStore: refusing to move proposal %s to %r, which is not a "
+                "decision state a proposal may be moved to",
+                proposal_id,
+                state,
+            )
+            return False
         return await self._run_write(
             self._advance_tier_c_proposal_sync,
             proposal_id,
@@ -3551,6 +3589,8 @@ class StateStore:
 
     def _reconcile_tier_c_sync(self, req: dict[str, Any]) -> dict[str, Any]:
         assert self._conn is not None
+        if req.get("outcome") not in ("executed", "not-executed"):
+            return {"ok": False, "error": "invalid_arguments"}
         conn = self._conn
         now = now_ms()
         state = (

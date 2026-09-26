@@ -853,3 +853,278 @@ class TestHealth:
             assert dispatcher.action_records_degrade_health() is True
         finally:
             await store.close()
+
+
+class TestRelayPolicyIsDecidedByClass:
+    """Every action that drives the protected circuit answers to relay policy.
+
+    Suppression by name let `close_gas_valve`, registered to the same
+    executor and outcome as `trip_relay`, reach the relay with the relay
+    disabled for Tier C.
+    """
+
+    @pytest.mark.parametrize("withheld_by", ["relay_enabled", "device_policy"], ids=str)
+    async def test_no_protected_circuit_action_is_proposed_when_withheld(
+        self, tmp_path: Any, withheld_by: str
+    ) -> None:
+        import dataclasses
+
+        from ori.policy.device_policy import DevicePolicy
+        from ori.reasoning.action_registry import ACTION_REGISTRY
+        from ori.reasoning.tier_c_admission import governed_outcome
+
+        actions = sorted(
+            name
+            for name, entry in ACTION_REGISTRY.items()
+            if entry.physical and governed_outcome(name) is not None
+        )
+        assert "close_gas_valve" in actions
+        for action in actions:
+            journal: list[str] = []
+            store = StateStore(str(tmp_path / f"{withheld_by}-{action}.db"))
+            await store.open()
+            operator = _Operator()
+            try:
+                dispatcher = _dispatcher(store, operator, journal)
+                if withheld_by == "relay_enabled":
+                    dispatcher._relay_b_c_enabled = False
+                else:
+                    dispatcher.update_policy(
+                        dataclasses.replace(
+                            DevicePolicy.unrestricted(), relay_c_enabled=False
+                        )
+                    )
+                dispatcher.register_executor(
+                    action, lambda *_a, **_k: journal.append(f"act:{action}")
+                )
+                outcome = await dispatcher.dispatch(
+                    action=action,
+                    tier="C",
+                    context=SkillContext(
+                        skill=_Skill(),
+                        event=_event(),
+                        state_store=store,
+                        trigger_name="t",
+                    ),
+                    result=ReasoningResult(
+                        text="", tier="rule", model="m", tokens_used=0, latency_ms=0
+                    ),
+                    approval_timeout=30,
+                )
+                await _settle(dispatcher)
+                rows = await store.get_tier_c_proposals()
+                log = await store.get_action_log(limit=50)
+            finally:
+                await store.close()
+            assert not any(step.startswith(f"act:{action}") for step in journal), (
+                action,
+                journal,
+            )
+            assert rows == [], (action, rows)
+            assert operator.proposals == [], (action, operator.proposals)
+            assert outcome.approved is not True, (action, outcome)
+            # Dispatch itself suppressed it and wrote that audit, so the
+            # action never reached the proposal path at all.
+            assert any(
+                r["action_name"] == action and r["action_taken"] == "suppressed"
+                for r in log
+            ), (action, log)
+
+    async def test_the_governed_path_refuses_on_its_own_when_dispatch_did_not(
+        self, tmp_path: Any
+    ) -> None:
+        """The second layer: reached directly, with relay use withheld."""
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator()
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            dispatcher._relay_b_c_enabled = False
+            outcome = await dispatcher._governed_approval_workflow(  # type: ignore[attr-defined]
+                "trip_relay",
+                SkillContext(
+                    skill=_Skill(), event=_event(), state_store=store, trigger_name="t"
+                ),
+                ReasoningResult(
+                    text="", tier="rule", model="m", tokens_used=0, latency_ms=0
+                ),
+                "log_to_dashboard",
+                30,
+                None,
+            )
+            await _settle(dispatcher)
+            rows = await store.get_tier_c_proposals()
+        finally:
+            await store.close()
+        assert outcome.action_taken == "refused_policy"
+        assert rows == [] and operator.proposals == []
+        assert journal == ["act:log_to_dashboard"]
+
+
+class TestNoiseNeverClosesAProposal:
+    async def test_replies_that_decide_nothing_leave_the_proposal_open_to_its_deadline(
+        self, tmp_path: Any
+    ) -> None:
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        clock = {"now": 1000.0}
+
+        class Noisy(_Operator):
+            def __init__(self) -> None:
+                super().__init__()
+                self.heard = 0
+
+            async def listen_for_response(
+                self, *, from_number: str, timeout_seconds: int
+            ) -> str | None:
+                while not self.proposals:
+                    await asyncio.sleep(0)
+                self.heard += 1
+                if self.heard > 24:
+                    # The channel goes quiet; the deadline then passes.
+                    clock["now"] += 10_000
+                    return None
+                return f"BLAH-{self.proposals[-1]}"
+
+        operator = Noisy()
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            dispatcher._clock = lambda: clock["now"]
+            import ori.reasoning.action_dispatcher as module
+
+            original = module.asyncio.sleep
+
+            async def quick(delay: float, *args: Any) -> None:
+                # The one-second breather per noisy reply, without the second.
+                await original(0 if delay == 1.0 else delay, *args)
+
+            module.asyncio.sleep = quick  # type: ignore[assignment]
+            try:
+                outcome = await asyncio.wait_for(
+                    _propose(dispatcher, store, timeout=300), 20
+                )
+            finally:
+                module.asyncio.sleep = original  # type: ignore[assignment]
+            await _settle(dispatcher)
+            row = await store.get_tier_c_proposal(outcome.proposal_id)
+        finally:
+            await store.close()
+        assert operator.heard > 20
+        assert "act:trip_relay" not in journal
+        assert row["decision_state"] == adm.PROPOSAL_EXPIRED
+        assert row["state_reason"] != "reply_limit"
+
+
+class TestTheRuntimeFactsProvider:
+    """The commissioned facts the runtime hands the dispatcher, with real types.
+
+    A renamed attribute on the zone, the binding or the profile set would make
+    every governed proposal `refused_uncommissioned` through the provider's
+    guard; this holds the join with the objects the runtime actually holds.
+    """
+
+    def test_the_facts_come_from_the_zone_the_binding_and_the_profile_set(self) -> None:
+        from ori.actions.commissioned_actuator import CommissionedActuator
+        from ori.reasoning.tier_c_admission import AuthorityInputs, build_snapshot
+        from ori.runtime import OriRuntime
+        from ori.security.commissioning.binding import AcceptedBinding, AcceptedZone
+        from ori.security.commissioning.loader import CommissioningState
+
+        zone = AcceptedZone(
+            zone_id="zone-feeder-a",
+            sensor_id="clamp",
+            quantity="current",
+            unit="ampere",
+            direction="positive_is_load_draw",
+            range_min=0.0,
+            range_max=100.0,
+            noise_floor=0.05,
+            calibration_ref="bench",
+            rated_capacity_parameter="rated_capacity_amps",
+            rated_capacity_value=10.0,
+            kind="local_gpio",
+            identity={"gpio_pin": 26, "active_high": True},
+            mapping={
+                "open_protected_circuit": "de_energised",
+                "close_protected_circuit": "energised",
+                "de_energised_terminal_state": "open",
+            },
+            proof_method="actuate_and_observe",
+            proof_performed_at_ms=1,
+            control_proof_method="actuate_and_observe",
+            control_proof_performed_at_ms=2,
+        )
+        binding = AcceptedBinding(
+            binding_seq=7,
+            canonical_hash="sha256:" + "b" * 64,
+            inventory_generation=1,
+            device_id=DEVICE,
+            signer_id="signer",
+            issued_at_ms=1,
+            supersedes=None,
+            zones=(zone,),
+            canonical_bytes=b"{}",
+            signature="ed25519:x",
+        )
+
+        class _Driver:
+            connected = True
+
+            async def acquire_at(self, *_a: Any, **_k: Any) -> bool:
+                return True
+
+            async def trigger(self, duration_seconds: Any = None) -> bool:
+                return True
+
+            async def release(self) -> bool:
+                return True
+
+            @property
+            def is_simulated(self) -> bool:
+                return True
+
+            @property
+            def is_active(self) -> bool:
+                return False
+
+        runtime: Any = object.__new__(OriRuntime)
+        runtime._commissioned_actuator = CommissionedActuator(
+            driver=_Driver(), zone=zone, binding_seq=7
+        )
+        runtime._commissioning_state = CommissioningState.__new__(CommissioningState)
+        runtime._commissioning_state.in_force = binding
+        runtime._safety_registry = None
+        runtime._shipped_profile_digest = "c" * 64
+        runtime._tier_c_deployment_inputs = {"approval_timeout_seconds": 300}
+
+        facts = runtime._tier_c_authority_facts()
+        assert facts is not None
+        assert facts.zone_id == "zone-feeder-a"
+        assert facts.binding_digest == "sha256:" + "b" * 64
+        assert facts.safety_profile_digest == ""  # no active pair on the zone
+        assert facts.resource_for["open_protected_circuit"] == "relay-gpio-26"
+        assert runtime._tier_c_authority_facts("zone-feeder-a") == facts
+        assert runtime._tier_c_authority_facts("zone-other") is None
+        snapshot = build_snapshot(
+            AuthorityInputs(
+                action="trip_relay",
+                outcome="open_protected_circuit",
+                resource=facts.resource_for["open_protected_circuit"],
+                zone_id=facts.zone_id,
+                zone_document=facts.zone_document,
+                binding_canonical_hash=facts.binding_digest,
+                safety_profile_digest=facts.safety_profile_digest,
+                policy_inputs={"deployment": facts.deployment_inputs},
+            )
+        )
+        assert snapshot["zone_id"] == "zone-feeder-a" and snapshot["v"] == 1
+
+        class _Registry:
+            zones_with_active_pairs = frozenset({"zone-feeder-a"})
+
+        runtime._safety_registry = _Registry()
+        with_profile = runtime._tier_c_authority_facts()
+        assert with_profile is not None
+        assert with_profile.safety_profile_digest == "sha256:" + "c" * 64

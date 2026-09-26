@@ -1141,15 +1141,6 @@ class OriRuntime:
             },
         )
         self._dispatcher = dispatcher
-        if self._state_store is not None:
-            # Proposals a previous process left: an open one is closed, an
-            # approval without an outcome is recorded uncertain, and none is
-            # replayed. Before any sensor can raise a new one.
-            recovered = await dispatcher.recover_tier_c_at_start(self._state_store)
-            if any(recovered.values()):
-                logger.warning(
-                    "[runtime] Tier C proposals settled at start: %s", recovered
-                )
         await self._load_cached_device_policy(config, dispatcher)
         await self._maybe_refresh_remote_device_policy_once(config, dispatcher)
 
@@ -1519,6 +1510,18 @@ class OriRuntime:
         await self._restore_measurement_state()
         self._last_alert_timestamps_by_channel = {}
         self._last_alert_timestamps_by_trigger = {}
+
+        if self._state_store is not None:
+            # Proposals a previous process left: an open one is closed with its
+            # safe default, an approval without an outcome is recorded
+            # uncertain, and none is replayed. After every executor is
+            # registered, so the safe default can run, and before any sensor
+            # loop can raise a new proposal.
+            recovered = await dispatcher.recover_tier_c_at_start(self._state_store)
+            if any(recovered.values()):
+                logger.warning(
+                    "[runtime] Tier C proposals settled at start: %s", recovered
+                )
 
         for sensor_cfg in config.sensors:
             try:

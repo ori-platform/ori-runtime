@@ -258,7 +258,10 @@ async def _dispatch(state: str, tier: str, tmp_path: Path) -> dict[str, Any]:
             state_store=store,
             alert_sender=AsyncMock(),
             evidence_attestor=attestor,
-            config={"operator_contact": "+234800000000"},
+            # Relay use is permitted, so policy withholds nothing here: what
+            # this compares is registration state, and every protected-circuit
+            # action answers to relay policy before it is proposed.
+            config={"operator_contact": "+234800000000", "relay_enabled": True},
             # A physical Tier C proposal binds a commissioned zone, or it is
             # refused before any operator is asked.
             authority_facts=lambda zone_id=None: TierCAuthorityFacts(

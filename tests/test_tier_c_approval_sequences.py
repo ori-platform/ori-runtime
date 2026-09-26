@@ -66,6 +66,24 @@ NOT_REPRESENTED = {
     ),
 }
 
+#: The sequences this runtime cannot represent in full, pinned so the set cannot
+#: drift from what the PR body states. An unexpected skip fails.
+EXPECTED_NOT_REPRESENTED: frozenset[str] = frozenset(
+    {
+        # the affirmative non-dispatch record this runtime never writes
+        "a crash before the executor call with an affirmative non-dispatch record is aborted and kept",
+        # the alert provider's answer and the retry it drives (the outbox's)
+        "one safe-default intent per proposal: an ambiguous alert is retried with the proposal id, and a restart creates no second intent",
+        # a live state a marker the store never took cannot move
+        "a full pending structure without a durable marker is dispatch_not_proven after restart, never a durable unknown",
+        # a refusal is the socket's answer, not an operator notice
+        "an authenticated local operator command reconciles by appending, and the same outcome is admitted again",
+        "unauthenticated operator input and uncommissioned feedback reconcile nothing",
+        # no proposal exists, so no notice can name one
+        "a proposal row that cannot be committed is never sent, approves nothing and claims nothing durable",
+    }
+)
+
 #: The meaning of each operator notice the runtime sends, by a phrase it carries.
 NOTICES = (
     ("reply again to approve", "commit_failed_retry"),
@@ -169,6 +187,9 @@ class Replay:
         self.console_mode = False
         self.phase = "init"
         self.in_recovery = False
+        self.log_records: list[str] = []
+        self.alert_attempts: list[str] = []
+        self.alert_retry_unrepresented = False
         self.path = str(tmp_path / "s.db")
         self.proposal = proposal
         self.monkeypatch = monkeypatch
@@ -323,12 +344,20 @@ class Replay:
                 return answer
             raise RuntimeError(str(answer))
 
-        async def safe_default(*_a: Any, **_k: Any) -> bool:
+        async def log_to_dashboard(_action: str, ctx: Any) -> bool:
+            # The durable log of the safe default names its proposal.
+            self.log_records.append(str(ctx.event.context.get("proposal_id", "")))
+            return True
+
+        async def alert_sms(_action: str, ctx: Any) -> bool:
+            # Every alert attempt carries the proposal identifier.
+            self.alert_attempts.append(str(ctx.event.context.get("proposal_id", "")))
             return True
 
         for name in ("trip_relay", "release_relay", "close_gas_valve"):
             self.dispatcher.register_executor(name, act)
-        self.dispatcher.register_executor("log_to_dashboard", safe_default)
+        self.dispatcher.register_executor("log_to_dashboard", log_to_dashboard)
+        self.dispatcher.register_executor("alert_sms", alert_sms)
         if recover:
             self.phase += " start:recover"
             self.in_recovery = True
@@ -356,6 +385,9 @@ class Replay:
                 ),
                 result=ReasoningResult(
                     text="", tier="rule", model="m", tokens_used=0, latency_ms=0
+                ),
+                safe_default_action=str(
+                    self.proposal.get("safe_default_action", "log_to_dashboard")
                 ),
                 approval_timeout=timeout_s,
             )
@@ -572,9 +604,23 @@ async def _check(
         assert {1: "v1", 2: "v2", None: "malformed"}[version] == expect[
             "token_format"
         ], step
-    for key in ("alert_attempts", "log_records"):
-        if key in expect:
-            unrepresented.append(f"{key}: {NOT_REPRESENTED['alert_result']}")
+    if "log_records" in expect:
+        assert (
+            len([r for r in replay.log_records if r == main]) == expect["log_records"]
+        ), (
+            replay.log_records,
+            step,
+        )
+    if "alert_attempts" in expect:
+        if replay.alert_retry_unrepresented:
+            unrepresented.append(
+                f"alert_attempts after a provider answer: {NOT_REPRESENTED['alert_result']}"
+            )
+        else:
+            assert replay.alert_attempts == expect["alert_attempts"], (
+                replay.alert_attempts,
+                step,
+            )
     return unrepresented
 
 
@@ -704,6 +750,18 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                 )
 
             await _until(moved)
+
+            async def resolved() -> bool:
+                # A reply that closes the proposal resolves the whole workflow
+                # (the deferred close, the safe default, the decision record);
+                # an admitted one holds at the harness's dispatch gate, and a
+                # proposal left open keeps listening until the wait is up.
+                t = replay.tasks.get(target)
+                if t is None or t.done():
+                    return True
+                return await replay.state_of(target) in adm.ADMITTED_STATES
+
+            await _until(resolved, seconds=2.0)
             await _turns()
             task = replay.tasks.get(target)
             if task is not None and task.done():
@@ -918,11 +976,23 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                         "expect": {k: v for k, v in expect.items() if k != "notice"},
                     }
             else:
-                # No path reaches reconciliation from this source; nothing is
-                # appended, and the refusal has no operator notice here.
-                unrepresented.append(
-                    f"reconcile.source={source}: no such path in this runtime"
+                # A sensor, a model, a gateway answer or the absence of an alarm:
+                # none is commissioned feedback whose mapping proves the
+                # outcome, so the only path such an observation could take
+                # reconciles nothing. The refusal has no operator notice.
+                reconciled = (
+                    await replay.dispatcher.reconcile_from_commissioned_feedback(
+                        replay.store,
+                        zone_id=str(step.get("zone", proposal["zone"])),
+                        outcome_observed=step.get("outcome") == "executed",
+                        mapping_proves=False,
+                    )
                 )
+                assert reconciled == [], (source, reconciled)
+                if expect.get("notice") == "reconcile_refused":
+                    unrepresented.append(
+                        "notice:reconcile_refused (a refusal is the socket's answer, not an operator notice)"
+                    )
                 step = {
                     **step,
                     "expect": {k: v for k, v in expect.items() if k != "notice"},
@@ -939,6 +1009,9 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
             continue
 
         if event == "alert_result":
+            # The provider's answer and the retry it drives are the alert
+            # outbox's; from here the attempt count is not this harness's.
+            replay.alert_retry_unrepresented = True
             unrepresented.append(f"alert_result: {NOT_REPRESENTED['alert_result']}")
             continue
 
@@ -981,15 +1054,27 @@ async def _bounded_run(
 async def test_admission_sequence(
     sequence: dict[str, Any], tmp_path: Path, monkeypatch: Any, caplog: Any
 ) -> None:
-    replay = Replay(tmp_path, dict(ADMISSION["proposal"]), monkeypatch)
+    replay = Replay(
+        tmp_path, {**ADMISSION["proposal"], **sequence.get("proposal", {})}, monkeypatch
+    )
     try:
         unrepresented = await _bounded_run(replay, sequence, caplog)
     finally:
         if replay.store is not None and replay.store._conn is not None:
             await replay.crash()
     if unrepresented:
+        assert sequence["name"] in EXPECTED_NOT_REPRESENTED, (
+            "an unexpected sequence was not fully represented",
+            sequence["name"],
+            sorted(set(unrepresented)),
+        )
         pytest.skip(
             "not represented by this runtime: " + "; ".join(sorted(set(unrepresented)))
+        )
+    else:
+        assert sequence["name"] not in EXPECTED_NOT_REPRESENTED, (
+            "a sequence pinned as not represented now runs in full; unpin it",
+            sequence["name"],
         )
 
 
@@ -997,15 +1082,27 @@ async def test_admission_sequence(
 async def test_token_binding_sequence(
     sequence: dict[str, Any], tmp_path: Path, monkeypatch: Any, caplog: Any
 ) -> None:
-    replay = Replay(tmp_path, dict(BINDING["proposal"]), monkeypatch)
+    replay = Replay(
+        tmp_path, {**BINDING["proposal"], **sequence.get("proposal", {})}, monkeypatch
+    )
     try:
         unrepresented = await _bounded_run(replay, sequence, caplog)
     finally:
         if replay.store is not None and replay.store._conn is not None:
             await replay.crash()
     if unrepresented:
+        assert sequence["name"] in EXPECTED_NOT_REPRESENTED, (
+            "an unexpected sequence was not fully represented",
+            sequence["name"],
+            sorted(set(unrepresented)),
+        )
         pytest.skip(
             "not represented by this runtime: " + "; ".join(sorted(set(unrepresented)))
+        )
+    else:
+        assert sequence["name"] not in EXPECTED_NOT_REPRESENTED, (
+            "a sequence pinned as not represented now runs in full; unpin it",
+            sequence["name"],
         )
 
 
@@ -1070,3 +1167,10 @@ async def test_host_state_token_cases(case: dict[str, Any], tmp_path: Path) -> N
     assert result.approved is False
     acted.assert_not_awaited()
     assert bool(consumed) is bool(case["token_consumed"])
+
+
+def test_every_pinned_sequence_exists_in_the_corpora() -> None:
+    names = {seq["name"] for seq in ADMISSION["sequences"]} | {
+        seq["name"] for seq in BINDING["sequences"]
+    }
+    assert EXPECTED_NOT_REPRESENTED <= names, EXPECTED_NOT_REPRESENTED - names

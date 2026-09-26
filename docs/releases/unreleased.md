@@ -521,7 +521,11 @@ candidate or release is cut.
   authenticated operator's observation or commissioned feedback reconciles it by
   appending a record; Tier D consults none of this. A physical Tier C action
   with no commissioned zone, and the generic `coap_command` at Tier C, are
-  refused as proposals before any operator is asked. Health carries the Tier C
+  refused as proposals before any operator is asked. Relay policy
+  (`actions.relay.enabled`, the device policy) is decided by the outcome an
+  action drives, never by its name, so every action resolving to a
+  protected-circuit outcome is withheld with the relay; `close_gas_valve` had
+  reached the relay by name. Health carries the Tier C
   action records under `evidence.action_records` per `runtime-health/v3`, and an
   uncertain or unappended outcome degrades the aggregate `status`. Host-state
   Tier C actions and Tier B actions requiring approval stay on the existing

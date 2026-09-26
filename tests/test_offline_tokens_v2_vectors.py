@@ -106,3 +106,84 @@ def test_the_version_is_read_from_the_number_token(
 def test_a_member_named_twice_at_any_depth_is_refused() -> None:
     with pytest.raises(tokens.DuplicateMemberError):
         tokens.decode_token_text('{"a": {"b": 1, "b": 2}}')
+
+
+def _fresh_key() -> tuple[Any, str]:
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    key = Ed25519PrivateKey.generate()
+    public = base64.b64encode(
+        key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+        )
+    ).decode("ascii")
+    return key, public
+
+
+def _signed(key: Any, claims: dict[str, Any]) -> str:
+    import base64
+
+    from ori.skills.signing import canonical_signed_payload
+
+    payload = dict(claims)
+    signature = key.sign(
+        tokens.V2_SIGNATURE_DOMAIN + b"\x00" + canonical_signed_payload(payload)
+    )
+    payload["signature"] = "ed25519:" + base64.b64encode(signature).decode("ascii")
+    return json.dumps(payload)
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"token_id": "tok\x00-1"}, "malformed_token_id"),
+        ({"token_id": "tok\x7f"}, "malformed_token_id"),
+        (
+            {"issued_at": 1_787_000_400, "expires_at": 1_787_000_300},
+            "invalid_timestamp",
+        ),
+    ],
+)
+def test_a_malformed_identifier_or_an_inverted_window_is_refused(
+    change: dict[str, Any], reason: str, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(tokens, "now_ms", lambda: 1_787_000_100_000)
+    key, public = _fresh_key()
+    claims = {
+        "token_version": 2,
+        "token_id": "tok-1",
+        "device_id": "energy-monitor-ikeja-01",
+        "proposal_id": "AB12CD34",
+        "action_scope": "trip_relay",
+        "target": "relay-gpio-26",
+        "zone_id": "zone-feeder-a",
+        "issued_at": 1_787_000_000,
+        "expires_at": 1_787_000_300,
+        "nonce": "n-1",
+        **change,
+    }
+    verifier = tokens.OfflineTierCTokenVerifier(public_key_b64=public)
+    proposal = tokens.ProposalClaims(
+        proposal_id="AB12CD34",
+        device_id="energy-monitor-ikeja-01",
+        action="trip_relay",
+        target="relay-gpio-26",
+        zone_id="zone-feeder-a",
+    )
+    assert (
+        verifier.verify_tier_c_token(_signed(key, claims), proposal=proposal).reason
+        == reason
+    )
+    sound = {
+        **claims,
+        "token_id": "tok-1",
+        "issued_at": 1_787_000_000,
+        "expires_at": 1_787_000_300,
+    }
+    assert (
+        verifier.verify_tier_c_token(_signed(key, sound), proposal=proposal).approved
+        is True
+    )

@@ -2230,9 +2230,12 @@ async def test_every_dispatch_route_leaves_the_gate_alone(
     )
     replies: dict[str, str] = {}
 
-    async def _listen(*args: Any, **kwargs: Any) -> str:
+    async def _listen(*args: Any, **kwargs: Any) -> str | None:
         # What the operator is listened for is part of the act; a reply exists
-        # only where a proposal was sent to them in this dispatch.
+        # only where a proposal was sent to them in this dispatch. Where none
+        # does, the listener hears nothing and ends as the real one does at the
+        # window's end: None, never an empty reply, which is noise a proposal
+        # outlives.
         window = _WINDOW.get()
         label = window["label"] if window else ""
         hits.append(
@@ -2244,7 +2247,7 @@ async def test_every_dispatch_route_leaves_the_gate_alone(
             if leaf.startswith("AlertFailoverSender.send[")
         )
         reply = replies.get(label, "").replace(PROPOSAL_ID, current["id"])
-        return reply if proposed else ""
+        return reply if proposed and reply else None
 
     monkeypatch.setattr(dispatcher, "_listen_for_response", _listen)
     # Comms available, so a Tier C proposal is sent rather than skipped, and

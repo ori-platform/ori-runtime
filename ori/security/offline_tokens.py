@@ -245,6 +245,8 @@ class OfflineTierCTokenVerifier:
             )
         if not token_id:
             return TokenVerificationResult(False, "missing_token_id")
+        if any(ord(ch) < 0x20 or ch == "\x7f" for ch in token_id):
+            return TokenVerificationResult(False, "malformed_token_id")
         if set(payload) - set(V2_CLAIMS):
             return TokenVerificationResult(False, "unknown_claim", token_id)
         if self._anchor_is_published():
@@ -267,7 +269,11 @@ class OfflineTierCTokenVerifier:
                 return TokenVerificationResult(False, reason, token_id)
         issued_at = payload.get("issued_at")
         expires_at = payload.get("expires_at")
-        if type(issued_at) is not int or type(expires_at) is not int:
+        if (
+            type(issued_at) is not int
+            or type(expires_at) is not int
+            or expires_at < issued_at
+        ):
             return TokenVerificationResult(False, "invalid_timestamp", token_id)
         now_s = now_ms() // 1000
         if issued_at > now_s + self._max_clock_skew_s:

@@ -19,6 +19,7 @@ must never crash the runtime.
 """
 
 import asyncio
+import dataclasses
 import datetime
 import json
 import logging
@@ -1100,7 +1101,10 @@ class ActionDispatcher:
             timeout_value = _DEFAULT_APPROVAL_TIMEOUT
 
         # Tier D Bypass and Policy restrictions for B/C relay actions
-        if action in ("trip_relay", "release_relay") and tier in (
+        # Decided by what the action drives, never by its name: every action
+        # resolving to a protected-circuit outcome is the relay's, whatever a
+        # skill calls it.
+        if governed_outcome(action) is not None and tier in (
             ActionTier.SOFT_PHYSICAL,
             ActionTier.HARD_PHYSICAL,
         ):
@@ -1969,6 +1973,23 @@ class ActionDispatcher:
                 )
         if not created:
             return None
+        # Every attempt of the safe default names its proposal: the alert text
+        # and the event context carry the identifier, so an alert and a log
+        # record can be tied back to the decision they follow.
+        event = getattr(context, "event", None)
+        if event is not None:
+            named = dataclasses.replace(
+                event,
+                context={
+                    **(dict(event.context) if isinstance(event.context, dict) else {}),
+                    "proposal_id": proposal_id,
+                    "operator_message": (
+                        f"ORI: proposal {proposal_id} {reason.replace('_', ' ')}; "
+                        f"safe default {safe_default_action}."
+                    ),
+                },
+            )
+            context = dataclasses.replace(context, event=named)
         inner = await self._execute_immediately(
             safe_default_action, ActionTier.INFORMATIONAL, context
         )
@@ -2028,6 +2049,28 @@ class ActionDispatcher:
                 safe_default_used=inner.executed,
             )
         snapshot_now, binding_digest = authority
+        if not self.permits_relay_action(tier):
+            # The deployment or the device policy withholds Tier C relay use.
+            # Dispatch refused this already by class; this layer fails closed
+            # on its own, before any proposal row exists.
+            logger.warning(
+                "ActionDispatcher: refusing a Tier C proposal for %r — relay use at "
+                "Tier C is not permitted by relay.enabled or the device policy",
+                action,
+            )
+            inner = await self._execute_immediately(
+                safe_default_action, ActionTier.INFORMATIONAL, context
+            )
+            return ActionResult(
+                action_name=action,
+                tier=tier,
+                executed=False,
+                approved=None,
+                action_taken="refused_policy",
+                timestamp=now_ms(),
+                operator_response=None,
+                safe_default_used=inner.executed,
+            )
         if not safe_default_admitted(safe_default_action):
             logger.error(
                 "ActionDispatcher: %r cannot stand as a Tier C safe default; the "
@@ -2252,15 +2295,17 @@ class ActionDispatcher:
                 approval_end = approval_end or APPROVAL_WINDOW_ELAPSED
                 break
             if replies >= _MAX_REPLIES_PER_PROPOSAL:
-                logger.warning(
-                    "ActionDispatcher: proposal %s heard %d replies without a decision; "
-                    "closing it unanswered",
-                    proposal_id,
-                    replies,
-                )
-                approval_end = APPROVAL_WINDOW_ELAPSED
-                state_reason = "reply_limit"
-                break
+                # A channel answering with noise cannot retire the proposal: it
+                # stays open to its deadline, listened to no faster than once a
+                # second.
+                if replies == _MAX_REPLIES_PER_PROPOSAL:
+                    logger.warning(
+                        "ActionDispatcher: proposal %s heard %d replies without a "
+                        "decision; listening slows to one a second until it expires",
+                        proposal_id,
+                        replies,
+                    )
+                await asyncio.sleep(1.0)
             window = max(1, int(remaining))
             reply, inbound, ended = await self._governed_listen(
                 store,
@@ -2311,6 +2356,21 @@ class ActionDispatcher:
                             "ActionDispatcher: offline token verification failed for %r",
                             action,
                         )
+                if store is not None and hasattr(store, "log_offline_token_attempt"):
+                    audit_store = store
+                    audit_id = verdict.token_id
+                    audit_ok = bool(verdict.approved)
+                    audit_reason = verdict.reason
+                    self._defer_record(
+                        lambda: audit_store.log_offline_token_attempt(
+                            token_id=audit_id,
+                            device_id=device_id,
+                            action=action,
+                            approved=audit_ok,
+                            reason=audit_reason,
+                        ),
+                        label=f"offline_token_audit token_id={audit_id}",
+                    )
                 if not verdict.approved:
                     logger.warning(
                         "ActionDispatcher: offline token refused for proposal %s (%s)",
@@ -2466,7 +2526,7 @@ class ActionDispatcher:
                     decision_state,
                     from_states=terminal_from,
                     reason=(
-                        _APPROVAL_END_DECISION.get(approval_end, state_reason)
+                        state_reason or _APPROVAL_END_DECISION.get(approval_end, "")
                         if decision_state == PROPOSAL_EXPIRED
                         else state_reason
                     ),
