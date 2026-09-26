@@ -396,6 +396,95 @@ CREATE TABLE IF NOT EXISTS offline_token_audit (
     attempted_at INTEGER NOT NULL
 );
 
+-- A Tier C proposal and what became of it: one row per proposal, its
+-- decision_state moving forward only. The row is the proposal (committed
+-- before the operator is asked), the approval (the admission commit moves it
+-- to approved_pending_dispatch inside one transaction with the token claim
+-- and the same-outcome block), and the terminal uncertainty record that the
+-- admission reserves.
+CREATE TABLE IF NOT EXISTS tier_c_proposals (
+    proposal_id          TEXT    PRIMARY KEY,
+    device_id            TEXT    NOT NULL,
+    action               TEXT    NOT NULL,
+    target               TEXT    NOT NULL DEFAULT '',
+    zone_id              TEXT    NOT NULL DEFAULT '',
+    outcome              TEXT    NOT NULL DEFAULT '',
+    event_id             TEXT    NOT NULL DEFAULT '',
+    skill_name           TEXT    NOT NULL DEFAULT '',
+    trigger_name         TEXT    NOT NULL DEFAULT '',
+    safe_default_action  TEXT    NOT NULL DEFAULT '',
+    binding_digest       TEXT    NOT NULL DEFAULT '',
+    authority_json       TEXT    NOT NULL DEFAULT '',
+    created_at_ms        INTEGER NOT NULL,
+    expires_at_ms        INTEGER NOT NULL,
+    decision_state       TEXT    NOT NULL,
+    state_reason         TEXT    NOT NULL DEFAULT '',
+    ingress_channel      TEXT    NOT NULL DEFAULT '',
+    ingress_from         TEXT    NOT NULL DEFAULT '',
+    ingress_message_id   TEXT    NOT NULL DEFAULT '',
+    operator_response    TEXT    NOT NULL DEFAULT '',
+    offline_token_id     TEXT    NOT NULL DEFAULT '',
+    committed_at_ms      INTEGER,
+    outcome_json         TEXT,
+    updated_at_ms        INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tier_c_proposals_zone_outcome
+    ON tier_c_proposals (zone_id, outcome, decision_state);
+
+-- Every decision_state a proposal passed through, in order. Appended in the
+-- same transaction as the change; never rewritten.
+CREATE TABLE IF NOT EXISTS tier_c_proposal_records (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id    TEXT    NOT NULL,
+    decision_state TEXT    NOT NULL,
+    state_reason   TEXT    NOT NULL DEFAULT '',
+    recorded_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tier_c_proposal_records_proposal
+    ON tier_c_proposal_records (proposal_id, id);
+
+-- An operator's or commissioned feedback's observation of an uncertain
+-- dispatch, appended beside it and never rewriting it. One per proposal; a
+-- repeat by another principal is an audit attempt, not a second record.
+CREATE TABLE IF NOT EXISTS tier_c_reconciliations (
+    proposal_id    TEXT    PRIMARY KEY,
+    device_id      TEXT    NOT NULL,
+    zone_id        TEXT    NOT NULL,
+    decision_state TEXT    NOT NULL,
+    reason         TEXT    NOT NULL,
+    note           TEXT,
+    source         TEXT    NOT NULL,
+    principal_uid  INTEGER,
+    principal_account TEXT,
+    principal_login_uid INTEGER,
+    entry_point    TEXT    NOT NULL,
+    recorded_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tier_c_reconcile_attempts (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    proposal_id    TEXT    NOT NULL,
+    kind           TEXT    NOT NULL,
+    principal_uid  INTEGER,
+    principal_account TEXT,
+    principal_login_uid INTEGER,
+    recorded_at_ms INTEGER NOT NULL
+);
+
+-- The one non-actuating safe-default intent a proposal may create, keyed by
+-- the proposal, so a repeated reply, a restart or a later refusal of the same
+-- proposal creates no second one.
+CREATE TABLE IF NOT EXISTS tier_c_safe_default_intents (
+    proposal_id    TEXT    PRIMARY KEY,
+    action         TEXT    NOT NULL,
+    reason         TEXT    NOT NULL DEFAULT '',
+    outcome        TEXT    NOT NULL DEFAULT 'pending',
+    created_at_ms  INTEGER NOT NULL,
+    updated_at_ms  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS firmware_device_registry (
     device_id         TEXT    PRIMARY KEY,
     public_key_b64    TEXT    NOT NULL,
@@ -2971,6 +3060,580 @@ class StateStore:
             item["safe_default_used"] = bool(item["safe_default_used"])
             result.append(item)
         return result
+
+    # ─── tier_c_proposals ──────────────────────────────────────────────────────
+
+    async def create_tier_c_proposal(self, **row: Any) -> str:
+        """Commit a proposal row; only then does a proposal exist.
+
+        ``committed``, ``blocked`` when an unresolved approval already commands
+        the same outcome on the same zone, or ``duplicate``. Raises when the
+        store cannot take it, and then no proposal exists.
+        """
+        return await self._run_write(self._create_tier_c_proposal_sync, row)
+
+    def _create_tier_c_proposal_sync(self, row: dict[str, Any]) -> str:
+        assert self._conn is not None
+        conn = self._conn
+        now = now_ms()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if self._tier_c_outcome_blocked(conn, row["zone_id"], row["outcome"], None):
+                conn.rollback()
+                return "blocked"
+            inserted = conn.execute(
+                """
+                INSERT INTO tier_c_proposals
+                    (proposal_id, device_id, action, target, zone_id, outcome,
+                     event_id, skill_name, trigger_name, safe_default_action,
+                     binding_digest, authority_json, created_at_ms, expires_at_ms,
+                     decision_state, updated_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?)
+                ON CONFLICT(proposal_id) DO NOTHING
+                """,
+                (
+                    row["proposal_id"],
+                    row["device_id"],
+                    row["action"],
+                    row.get("target", ""),
+                    row["zone_id"],
+                    row["outcome"],
+                    row.get("event_id", ""),
+                    row.get("skill_name", ""),
+                    row.get("trigger_name", ""),
+                    row.get("safe_default_action", ""),
+                    row.get("binding_digest", ""),
+                    row.get("authority_json", ""),
+                    int(row["created_at_ms"]),
+                    int(row["expires_at_ms"]),
+                    now,
+                ),
+            )
+            if int(inserted.rowcount) == 0:
+                conn.rollback()
+                return "duplicate"
+            self._append_tier_c_record(conn, row["proposal_id"], "proposed", "", now)
+            conn.commit()
+            return "committed"
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+
+    @staticmethod
+    def _tier_c_outcome_blocked(
+        conn: sqlite3.Connection,
+        zone_id: str,
+        outcome: str,
+        except_proposal: str | None,
+    ) -> bool:
+        """Whether an unresolved approval commands *outcome* on *zone_id*."""
+        cur = conn.execute(
+            """
+            SELECT 1 FROM tier_c_proposals
+             WHERE zone_id = ? AND outcome = ?
+               AND decision_state IN ('approved_pending_dispatch', 'dispatch_started',
+                                      'dispatch_outcome_unknown', 'dispatch_not_proven')
+               AND (? IS NULL OR proposal_id != ?)
+             LIMIT 1
+            """,
+            (zone_id, outcome, except_proposal, except_proposal),
+        )
+        return cur.fetchone() is not None
+
+    @staticmethod
+    def _append_tier_c_record(
+        conn: sqlite3.Connection, proposal_id: str, state: str, reason: str, at_ms: int
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO tier_c_proposal_records
+                (proposal_id, decision_state, state_reason, recorded_at_ms)
+            VALUES (?, ?, ?, ?)
+            """,
+            (proposal_id, state, reason, at_ms),
+        )
+
+    async def admit_tier_c_approval(
+        self,
+        proposal_id: str,
+        *,
+        binding_digest: str,
+        authority_json: str,
+        reservation_ceiling: int,
+        ingress_channel: str = "",
+        ingress_from: str = "",
+        ingress_message_id: str = "",
+        operator_response: str = "",
+        offline_token_id: str = "",
+    ) -> str:
+        """Admit an operator's affirmative reply; one transaction, one answer.
+
+        ``committed`` and the reply is an approval. ``duplicate`` when it was
+        already admitted. ``binding_changed`` when the binding or authority
+        bytes differ from the proposal's (the proposal is closed so). ``blocked``
+        when an unresolved approval commands the same outcome on the same zone
+        (closed so). ``reservation_unavailable`` when the pending-outcome
+        ceiling leaves no room for this approval's terminal record; the proposal
+        stays open. ``token_replayed`` when the token was already claimed.
+        ``closed:<state>`` when the proposal is no longer open. Raises when the
+        store cannot answer, and the reply is then not an approval.
+        """
+        return await self._run_write(
+            self._admit_tier_c_approval_sync,
+            proposal_id,
+            binding_digest,
+            authority_json,
+            int(reservation_ceiling),
+            {
+                "ingress_channel": ingress_channel,
+                "ingress_from": ingress_from,
+                "ingress_message_id": ingress_message_id,
+                "operator_response": operator_response,
+                "offline_token_id": offline_token_id,
+            },
+        )
+
+    def _admit_tier_c_approval_sync(
+        self,
+        proposal_id: str,
+        binding_digest: str,
+        authority_json: str,
+        ceiling: int,
+        ingress: dict[str, str],
+    ) -> str:
+        assert self._conn is not None
+        conn = self._conn
+        now = now_ms()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM tier_c_proposals WHERE proposal_id = ?", (proposal_id,)
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return "closed:none"
+            state = str(row["decision_state"])
+            if state != "proposed":
+                conn.rollback()
+                admitted = (
+                    "approved_pending_dispatch",
+                    "dispatch_started",
+                    "executed",
+                    "approval_expired_undispatched",
+                    "approval_aborted_undispatched",
+                    "dispatch_refused_contention",
+                    "dispatch_failed",
+                    "dispatch_outcome_unknown",
+                    "dispatch_not_proven",
+                    "reconciled_executed",
+                    "reconciled_not_executed",
+                )
+                return "duplicate" if state in admitted else f"closed:{state}"
+            if str(row["binding_digest"]) != str(binding_digest) or str(
+                row["authority_json"]
+            ) != str(authority_json):
+                self._move_tier_c(
+                    conn, proposal_id, "approval_binding_changed", "", now
+                )
+                conn.commit()
+                return "binding_changed"
+            if self._tier_c_outcome_blocked(
+                conn, str(row["zone_id"]), str(row["outcome"]), proposal_id
+            ):
+                self._move_tier_c(
+                    conn, proposal_id, "proposal_blocked_uncertain_outcome", "", now
+                )
+                conn.commit()
+                return "blocked"
+            reserved = conn.execute(
+                """
+                SELECT count(*) FROM tier_c_proposals
+                 WHERE decision_state IN ('approved_pending_dispatch', 'dispatch_started')
+                """
+            ).fetchone()[0]
+            if int(reserved) >= ceiling:
+                conn.rollback()
+                return "reservation_unavailable"
+            token_id = str(ingress.get("offline_token_id") or "")
+            if token_id:
+                claimed = conn.execute(
+                    """
+                    INSERT INTO offline_token_consumption
+                        (token_id, device_id, action, consumed_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(token_id) DO NOTHING
+                    """,
+                    (token_id, str(row["device_id"]), str(row["action"]), now),
+                )
+                if int(claimed.rowcount) == 0:
+                    conn.rollback()
+                    return "token_replayed"
+            conn.execute(
+                """
+                UPDATE tier_c_proposals
+                   SET decision_state = 'approved_pending_dispatch', state_reason = '',
+                       ingress_channel = ?, ingress_from = ?, ingress_message_id = ?,
+                       operator_response = ?, offline_token_id = ?,
+                       committed_at_ms = ?, updated_at_ms = ?
+                 WHERE proposal_id = ? AND decision_state = 'proposed'
+                """,
+                (
+                    ingress.get("ingress_channel", ""),
+                    ingress.get("ingress_from", ""),
+                    ingress.get("ingress_message_id", ""),
+                    ingress.get("operator_response", ""),
+                    token_id,
+                    now,
+                    now,
+                    proposal_id,
+                ),
+            )
+            self._append_tier_c_record(
+                conn, proposal_id, "approved_pending_dispatch", "", now
+            )
+            conn.commit()
+            return "committed"
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+
+    @staticmethod
+    def _move_tier_c(
+        conn: sqlite3.Connection,
+        proposal_id: str,
+        state: str,
+        reason: str,
+        now: int,
+        outcome_json: str | None = None,
+    ) -> None:
+        conn.execute(
+            """
+            UPDATE tier_c_proposals
+               SET decision_state = ?, state_reason = ?,
+                   outcome_json = COALESCE(?, outcome_json), updated_at_ms = ?
+             WHERE proposal_id = ?
+            """,
+            (state, reason, outcome_json, now, proposal_id),
+        )
+        StateStore._append_tier_c_record(conn, proposal_id, state, reason, now)
+
+    async def advance_tier_c_proposal(
+        self,
+        proposal_id: str,
+        state: str,
+        *,
+        from_states: tuple[str, ...],
+        reason: str = "",
+        outcome_json: str | None = None,
+    ) -> bool:
+        """Move a proposal forward; never back. False when it was elsewhere."""
+        return await self._run_write(
+            self._advance_tier_c_proposal_sync,
+            proposal_id,
+            state,
+            from_states,
+            reason,
+            outcome_json,
+        )
+
+    def _advance_tier_c_proposal_sync(
+        self,
+        proposal_id: str,
+        state: str,
+        from_states: tuple[str, ...],
+        reason: str,
+        outcome_json: str | None,
+    ) -> bool:
+        assert self._conn is not None
+        conn = self._conn
+        now = now_ms()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            placeholders = ",".join("?" for _ in from_states)
+            cur = conn.execute(
+                f"""
+                UPDATE tier_c_proposals
+                   SET decision_state = ?, state_reason = ?,
+                       outcome_json = COALESCE(?, outcome_json), updated_at_ms = ?
+                 WHERE proposal_id = ? AND decision_state IN ({placeholders})
+                """,
+                (state, reason, outcome_json, now, proposal_id, *from_states),
+            )
+            moved = int(cur.rowcount) > 0
+            if moved:
+                self._append_tier_c_record(conn, proposal_id, state, reason, now)
+            conn.commit()
+            return moved
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+
+    async def get_tier_c_proposals(self, *states: str) -> list[dict]:
+        """Proposals in *states*, oldest first; every proposal when none named."""
+        return await self._run_read(self._get_tier_c_proposals_sync, states)
+
+    def _get_tier_c_proposals_sync(
+        self, conn: sqlite3.Connection, states: tuple[str, ...]
+    ) -> list[dict]:
+        query = "SELECT * FROM tier_c_proposals"
+        params: tuple[str, ...] = ()
+        if states:
+            query += f" WHERE decision_state IN ({','.join('?' for _ in states)})"
+            params = states
+        cursor = conn.execute(query + " ORDER BY created_at_ms, proposal_id", params)
+        names = [c[0] for c in cursor.description]
+        return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+
+    async def get_tier_c_proposal(self, proposal_id: str) -> dict | None:
+        rows = await self._run_read(self._get_tier_c_proposal_sync, proposal_id)
+        return rows[0] if rows else None
+
+    def _get_tier_c_proposal_sync(
+        self, conn: sqlite3.Connection, proposal_id: str
+    ) -> list[dict]:
+        cursor = conn.execute(
+            "SELECT * FROM tier_c_proposals WHERE proposal_id = ?", (proposal_id,)
+        )
+        names = [c[0] for c in cursor.description]
+        return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+
+    async def get_tier_c_proposal_records(self, proposal_id: str) -> list[str]:
+        """The decision states *proposal_id* passed through, in order."""
+        return await self._run_read(self._get_tier_c_proposal_records_sync, proposal_id)
+
+    def _get_tier_c_proposal_records_sync(
+        self, conn: sqlite3.Connection, proposal_id: str
+    ) -> list[str]:
+        cursor = conn.execute(
+            """
+            SELECT decision_state FROM tier_c_proposal_records
+             WHERE proposal_id = ? ORDER BY id
+            """,
+            (proposal_id,),
+        )
+        return [str(row[0]) for row in cursor.fetchall()]
+
+    async def tier_c_outcome_blocked(self, zone_id: str, outcome: str) -> bool:
+        """Whether an unresolved approval commands *outcome* on *zone_id* now."""
+        return await self._run_read(
+            lambda conn: self._tier_c_outcome_blocked(conn, zone_id, outcome, None)
+        )
+
+    async def create_tier_c_safe_default_intent(
+        self, proposal_id: str, action: str, *, reason: str = ""
+    ) -> bool:
+        """The one safe-default intent a proposal may hold. False when it exists."""
+        return await self._run_write(
+            self._create_tier_c_safe_default_intent_sync, proposal_id, action, reason
+        )
+
+    def _create_tier_c_safe_default_intent_sync(
+        self, proposal_id: str, action: str, reason: str
+    ) -> bool:
+        assert self._conn is not None
+        now = now_ms()
+        cur = self._conn.execute(
+            """
+            INSERT INTO tier_c_safe_default_intents
+                (proposal_id, action, reason, outcome, created_at_ms, updated_at_ms)
+            VALUES (?, ?, ?, 'pending', ?, ?)
+            ON CONFLICT(proposal_id) DO NOTHING
+            """,
+            (proposal_id, action, reason, now, now),
+        )
+        self._conn.commit()
+        return int(cur.rowcount) > 0
+
+    async def mark_tier_c_safe_default_intent(
+        self, proposal_id: str, outcome: str
+    ) -> None:
+        await self._run_write(
+            self._mark_tier_c_safe_default_intent_sync, proposal_id, outcome
+        )
+
+    def _mark_tier_c_safe_default_intent_sync(
+        self, proposal_id: str, outcome: str
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE tier_c_safe_default_intents
+               SET outcome = ?, updated_at_ms = ? WHERE proposal_id = ?
+            """,
+            (outcome, now_ms(), proposal_id),
+        )
+        self._conn.commit()
+
+    async def get_tier_c_safe_default_intents(
+        self, proposal_id: str = ""
+    ) -> list[dict]:
+        return await self._run_read(
+            self._get_tier_c_safe_default_intents_sync, proposal_id
+        )
+
+    def _get_tier_c_safe_default_intents_sync(
+        self, conn: sqlite3.Connection, proposal_id: str
+    ) -> list[dict]:
+        if proposal_id:
+            cursor = conn.execute(
+                "SELECT * FROM tier_c_safe_default_intents WHERE proposal_id = ?",
+                (proposal_id,),
+            )
+        else:
+            cursor = conn.execute(
+                "SELECT * FROM tier_c_safe_default_intents ORDER BY created_at_ms"
+            )
+        names = [c[0] for c in cursor.description]
+        return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+
+    async def reconcile_tier_c(
+        self,
+        *,
+        proposal_id: str,
+        device_id: str,
+        runtime_device_id: str,
+        zone_id: str,
+        outcome: str,
+        reason: str,
+        note: str | None,
+        source: str,
+        entry_point: str,
+        principal_uid: int | None,
+        principal_account: str | None,
+        principal_login_uid: int | None,
+    ) -> dict[str, Any]:
+        """Append an observed terminal outcome to an uncertain dispatch.
+
+        Returns ``{"ok": True, "record": {...}, "already_recorded": bool}`` or
+        ``{"ok": False, "error": code}`` with the contract's codes in its order:
+        ``device_mismatch``, ``unknown_proposal``, ``zone_mismatch``,
+        ``already_reconciled``, ``not_uncertain``. The append is durable before
+        the answer; a failure raises and records nothing.
+        """
+        return await self._run_write(
+            self._reconcile_tier_c_sync,
+            {
+                "proposal_id": proposal_id,
+                "device_id": device_id,
+                "runtime_device_id": runtime_device_id,
+                "zone_id": zone_id,
+                "outcome": outcome,
+                "reason": reason,
+                "note": note,
+                "source": source,
+                "entry_point": entry_point,
+                "principal_uid": principal_uid,
+                "principal_account": principal_account,
+                "principal_login_uid": principal_login_uid,
+            },
+        )
+
+    def _reconcile_tier_c_sync(self, req: dict[str, Any]) -> dict[str, Any]:
+        assert self._conn is not None
+        conn = self._conn
+        now = now_ms()
+        state = (
+            "reconciled_executed"
+            if req["outcome"] == "executed"
+            else "reconciled_not_executed"
+        )
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM tier_c_proposals WHERE proposal_id = ?",
+                (req["proposal_id"],),
+            ).fetchone()
+            if str(req["device_id"]) != str(req["runtime_device_id"]):
+                conn.rollback()
+                return {"ok": False, "error": "device_mismatch"}
+            if row is None or str(row["device_id"]) != str(req["device_id"]):
+                conn.rollback()
+                return {"ok": False, "error": "unknown_proposal"}
+            if str(row["zone_id"]) != str(req["zone_id"]):
+                conn.rollback()
+                return {"ok": False, "error": "zone_mismatch"}
+            existing = conn.execute(
+                "SELECT * FROM tier_c_reconciliations WHERE proposal_id = ?",
+                (req["proposal_id"],),
+            ).fetchone()
+            if existing is not None:
+                identical = (
+                    str(existing["decision_state"]) == state
+                    and str(existing["reason"]) == str(req["reason"])
+                    and existing["note"] == req["note"]
+                )
+                if not identical:
+                    conn.rollback()
+                    return {"ok": False, "error": "already_reconciled"}
+                same_principal = (
+                    existing["principal_uid"] == req["principal_uid"]
+                    and existing["principal_login_uid"] == req["principal_login_uid"]
+                )
+                if not same_principal:
+                    conn.execute(
+                        """
+                        INSERT INTO tier_c_reconcile_attempts
+                            (proposal_id, kind, principal_uid, principal_account,
+                             principal_login_uid, recorded_at_ms)
+                        VALUES (?, 'identical_repeat', ?, ?, ?, ?)
+                        """,
+                        (
+                            req["proposal_id"],
+                            req["principal_uid"],
+                            req["principal_account"],
+                            req["principal_login_uid"],
+                            now,
+                        ),
+                    )
+                conn.commit()
+                return {
+                    "ok": True,
+                    "already_recorded": True,
+                    "record": dict(existing),
+                }
+            if str(row["decision_state"]) not in (
+                "dispatch_outcome_unknown",
+                "dispatch_not_proven",
+            ):
+                conn.rollback()
+                return {"ok": False, "error": "not_uncertain"}
+            conn.execute(
+                """
+                INSERT INTO tier_c_reconciliations
+                    (proposal_id, device_id, zone_id, decision_state, reason, note,
+                     source, principal_uid, principal_account, principal_login_uid,
+                     entry_point, recorded_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    req["proposal_id"],
+                    req["device_id"],
+                    req["zone_id"],
+                    state,
+                    req["reason"],
+                    req["note"],
+                    req["source"],
+                    req["principal_uid"],
+                    req["principal_account"],
+                    req["principal_login_uid"],
+                    req["entry_point"],
+                    now,
+                ),
+            )
+            self._move_tier_c(conn, req["proposal_id"], state, str(req["source"]), now)
+            record = conn.execute(
+                "SELECT * FROM tier_c_reconciliations WHERE proposal_id = ?",
+                (req["proposal_id"],),
+            ).fetchone()
+            conn.commit()
+            return {"ok": True, "already_recorded": False, "record": dict(record)}
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
 
     # ─── tier_c_decision_log ───────────────────────────────────────────────────
 
