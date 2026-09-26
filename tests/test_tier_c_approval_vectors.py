@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from ori.reasoning import approval_bounds as bounds
 from ori.reasoning import tier_c_admission as admission
 from ori.reasoning.action_registry import ACTION_REGISTRY, ActionCapability
 
@@ -175,7 +176,7 @@ def test_proposal_scope_cases(case: dict[str, Any]) -> None:
 
 @pytest.mark.parametrize("case", VECTORS["config_cases"], ids=lambda c: c["name"])
 def test_approval_timeout_bound(case: dict[str, Any]) -> None:
-    accepted = admission.approval_timeout_accepted(
+    accepted = bounds.approval_timeout_accepted(
         case["approval_timeout_seconds"],
         release_maximum_s=case["release_maximum_seconds"],
     )
@@ -184,12 +185,10 @@ def test_approval_timeout_bound(case: dict[str, Any]) -> None:
 
 def test_the_release_maximum_is_a_release_constant_within_the_corpus_bound() -> None:
     """The runtime's own maximum: a bounded release duration, never a setting."""
-    assert 1 <= admission.MAX_PROPOSAL_LIFETIME_S <= 3600
-    assert admission.approval_timeout_accepted(admission.MAX_PROPOSAL_LIFETIME_S)
-    assert not admission.approval_timeout_accepted(
-        admission.MAX_PROPOSAL_LIFETIME_S + 1
-    )
-    assert not admission.approval_timeout_accepted(True)
+    assert 1 <= bounds.MAX_PROPOSAL_LIFETIME_S <= 3600
+    assert bounds.approval_timeout_accepted(bounds.MAX_PROPOSAL_LIFETIME_S)
+    assert not bounds.approval_timeout_accepted(bounds.MAX_PROPOSAL_LIFETIME_S + 1)
+    assert not bounds.approval_timeout_accepted(True)
 
 
 def test_decision_states_are_the_contracts_closed_set() -> None:

@@ -18,10 +18,6 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from ori.reasoning.action_registry import ACTION_REGISTRY, ActionCapability, capability
-from ori.reasoning.approval_bounds import (  # noqa: F401  (re-exported)
-    MAX_PROPOSAL_LIFETIME_S,
-    approval_timeout_accepted,
-)
 from ori.reasoning.dispatch_plan import commissioned_outcome
 
 # ── Decision states ───────────────────────────────────────────────────────────

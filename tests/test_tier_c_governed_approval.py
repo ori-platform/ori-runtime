@@ -538,6 +538,7 @@ class TestRestart:
     ) -> None:
         path = str(tmp_path / "s.db")
         await self._left_behind(path, adm.PROPOSED)
+        intents: list[dict] = []
         for _ in range(2):
             journal: list[str] = []
             store = StateStore(path)
@@ -657,6 +658,7 @@ class TestGracefulStop:
             await store.close()
         assert closed == 1
         assert states == [(operator.proposals[0], adm.PROPOSAL_ABORTED_RESTART)]
+        assert row is not None
         assert row["state_reason"] == "graceful_shutdown"
         assert [i["proposal_id"] for i in intents] == [operator.proposals[0]]
         assert journal == ["act:log_to_dashboard"]
@@ -860,6 +862,7 @@ class TestOfflineTokensV2:
         finally:
             await store.close()
         assert outcome.approved is True and outcome.executed is True
+        assert row is not None
         assert row["decision_state"] == adm.EXECUTED
         assert row["offline_token_id"] == "tok-1"
         assert row["ingress_channel"] == "local_console"
@@ -934,7 +937,7 @@ class TestRelayPolicyIsDecidedByClass:
                         )
                     )
                 dispatcher.register_executor(
-                    action, lambda *_a, **_k: journal.append(f"act:{action}")
+                    action, lambda *_a, _own=action, **_k: journal.append(f"act:{_own}")
                 )
                 outcome = await dispatcher.dispatch(
                     action=action,
@@ -1031,7 +1034,7 @@ class TestNoiseNeverClosesAProposal:
         try:
             dispatcher = _dispatcher(store, operator, journal)
             dispatcher._clock = lambda: clock["now"]
-            import ori.reasoning.action_dispatcher as module
+            from ori.reasoning import action_dispatcher as module
 
             original = module.asyncio.sleep
 
@@ -1052,6 +1055,7 @@ class TestNoiseNeverClosesAProposal:
             await store.close()
         assert operator.heard > 20
         assert "act:trip_relay" not in journal
+        assert row is not None
         assert row["decision_state"] == adm.PROPOSAL_EXPIRED
         assert row["state_reason"] != "reply_limit"
 
@@ -1111,10 +1115,10 @@ class TestTheRuntimeFactsProvider:
         class _Driver:
             connected = True
 
-            async def acquire_at(self, *_a: Any, **_k: Any) -> bool:
-                return True
+            async def acquire_at(self, *_a: Any, **_k: Any) -> None:
+                return None
 
-            async def trigger(self, duration_seconds: Any = None) -> bool:
+            async def trigger(self, duration_seconds: float | None = None) -> bool:
                 return True
 
             async def release(self) -> bool:
@@ -1210,6 +1214,9 @@ class TestSafeDefaultIntentsAreObligations:
         path = str(tmp_path / "s.db")
         await self._closed_with_pending_intent(path)
         runs: list[list[str]] = []
+        counts: dict[str, int] = {}
+        intents: list[dict] = []
+        states: list[tuple[str, str]] = []
         for _ in range(2):
             journal: list[str] = []
             store = StateStore(path)

@@ -82,7 +82,6 @@ def decode_token_text(raw: str) -> dict[str, Any] | None:
     text = str(raw or "").strip()
     if not text:
         return None
-    payload_txt = text
     try:
         padded = text + "=" * (-len(text) % 4)
         payload_txt = base64.b64decode(

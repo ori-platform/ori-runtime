@@ -3128,6 +3128,7 @@ class TestTierCProposalsAcrossTheProcess:
             intents = await store.get_tier_c_safe_default_intents("P1")
         finally:
             await store.close()
+        assert row is not None
         assert row["decision_state"] == adm.PROPOSAL_ABORTED_RESTART
         assert [(i["action"], i["outcome"]) for i in intents] == [
             ("alert_sms", "executed")
@@ -3211,6 +3212,7 @@ class TestTierCProposalsAcrossTheProcess:
             intents = await store.get_tier_c_safe_default_intents("P1")
         finally:
             await store.close()
+        assert row is not None
         assert row["decision_state"] == adm.PROPOSAL_ABORTED_RESTART
         assert row["state_reason"] == "graceful_shutdown"
         assert [i["proposal_id"] for i in intents] == ["P1"]

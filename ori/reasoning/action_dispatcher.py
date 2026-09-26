@@ -53,6 +53,7 @@ from ori.reasoning.action_registry import (
     is_safe_default_eligible,
     is_valid_tier,
 )
+from ori.reasoning.approval_bounds import MAX_PROPOSAL_LIFETIME_S
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.dispatch_plan import (
     is_informational as plan_is_informational,
@@ -70,7 +71,6 @@ from ori.reasoning.tier_c_admission import (
     DISPATCH_REFUSED_CONTENTION,
     DISPATCH_STARTED,
     EXECUTED,
-    MAX_PROPOSAL_LIFETIME_S,
     PROPOSAL_ABORTED_RESTART,
     PROPOSAL_BLOCKED_UNCERTAIN_OUTCOME,
     PROPOSAL_EXPIRED,
