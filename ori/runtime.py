@@ -22,6 +22,7 @@ import logging
 import os
 import signal
 import stat
+import sys
 from collections.abc import Awaitable, Callable
 from importlib import resources
 from pathlib import Path
@@ -103,6 +104,14 @@ from ori.network.events import (
     event_received_at_ms,
 )
 from ori.network.sms_webhook import SMSWebhookServer
+from ori.operator_socket import (
+    OperatorSocketServer,
+    PeerCredentials,
+    ReconcileRequest,
+    install_root_for_prefix,
+    read_operator_uid,
+    runtime_directory,
+)
 from ori.policy.alert_classes import alert_class_for_trigger
 from ori.policy.remote_fetch import (
     RemotePolicyFetchError,
@@ -501,6 +510,7 @@ class OriRuntime:
         self._last_alert_timestamps_by_channel: dict[str, int] = {}
         self._last_alert_timestamps_by_trigger: dict[str, int] = {}
         self._health_socket_server: RuntimeHealthSocketServer | None = None
+        self._operator_socket_server: OperatorSocketServer | None = None
         self._firmware_mqtt_operator_server: FirmwareMqttOperatorServer | None = None
         self._gateway_export_server: MqttGatewayExportServer | None = None
         self._runtime_node_heartbeat_publisher: (
@@ -1862,6 +1872,7 @@ class OriRuntime:
             return
 
         await self._start_health_socket_if_enabled(config)
+        await self._start_operator_socket(str(config.device.deployment_profile))
 
         await self._drain_pending_firmware_confirmations()
         if self._firmware_confirmation_reconciler is not None:
@@ -2073,6 +2084,14 @@ class OriRuntime:
                 logger.exception("[shutdown] error closing health socket")
             self._health_socket_server = None
             self._health_socket_path = ""
+
+        # 2e'. Stop the operator socket; an append already begun completes.
+        if self._operator_socket_server is not None:
+            try:
+                await self._operator_socket_server.close()
+            except Exception:
+                logger.exception("[shutdown] error closing the operator socket")
+            self._operator_socket_server = None
 
         # 2f. Stop the authenticated firmware MQTT operator service.
         if self._firmware_mqtt_operator_server is not None:
@@ -2852,6 +2871,68 @@ class OriRuntime:
         self._health_socket_server = server
         self._health_socket_path = bound_path
         logger.info("[runtime] health socket ready at %s", shown(bound_path))
+
+    async def _start_operator_socket(self, deployment_profile: str) -> None:
+        """Bind the operator socket in the runtime directory systemd created.
+
+        Only the service unit provides one. A development runtime run in the
+        foreground has none and says so; a staging or production runtime
+        without one has lost its only reconciliation surface, which is CRITICAL.
+        """
+        directory = runtime_directory()
+        if directory is None:
+            logger.log(
+                logging.WARNING
+                if deployment_profile == "development"
+                else logging.CRITICAL,
+                "[runtime] no runtime directory was provided (RUNTIME_DIRECTORY is "
+                "unset; only the service unit provides one), so the operator socket "
+                "is not bound and an uncertain Tier C dispatch cannot be reconciled "
+                "by this process",
+            )
+            return
+        install_root = install_root_for_prefix(sys.prefix)
+        service_uid = os.geteuid()
+        server = OperatorSocketServer(
+            directory=directory,
+            reconcile=self._reconcile_from_operator,
+            operator_uid=lambda: read_operator_uid(
+                install_root, service_uid=service_uid
+            ),
+        )
+        try:
+            bound = await server.start()
+        except Exception as exc:
+            logger.critical(
+                "[runtime] the operator socket at %s was not bound (%s: %s); no "
+                "socket is left behind, and an uncertain Tier C dispatch cannot be "
+                "reconciled until a start binds it",
+                shown(str(server.path)),
+                type(exc).__name__,
+                exc,
+            )
+            return
+        self._operator_socket_server = server
+        logger.info("[runtime] operator socket ready at %s", shown(str(bound)))
+
+    async def _reconcile_from_operator(
+        self, request: ReconcileRequest, peer: PeerCredentials, account: str | None
+    ) -> dict[str, Any]:
+        if self._dispatcher is None:
+            return {"ok": False, "error": "runtime_store_unavailable"}
+        return await self._dispatcher.reconcile_tier_c(
+            self._state_store,
+            proposal_id=request.proposal_id,
+            device_id=request.device_id,
+            runtime_device_id=self._device_id,
+            zone_id=request.zone_id,
+            outcome=request.outcome,
+            reason=request.reason,
+            note=request.note,
+            principal_uid=peer.uid,
+            principal_account=account,
+            principal_login_uid=peer.login_uid,
+        )
 
     async def _start_firmware_mqtt_operator_if_enabled(
         self,

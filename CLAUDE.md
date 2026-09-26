@@ -613,8 +613,8 @@ no act is written before it is reported, in one transaction with the proposal's
 safe-default intent, and the intent is an obligation attempted whenever it is
 still pending, never a receipt. An
 uncertain dispatch blocks only its outcome on its zone until an authenticated
-operator's observation (`reconcile_tier_c`, reached through the operator socket
-once that lands) or commissioned feedback appends a reconciliation; Tier D
+operator's observation (`evidence reconcile-tier-c`, submitted by the bridge
+over the operator socket) or commissioned feedback appends a reconciliation; Tier D
 consults none of this. Health carries `evidence.action_records`. A physical
 Tier C action with no commissioned zone, and `coap_command` at Tier C, are
 refused as proposals. A v1 offline token approves no physical action at any

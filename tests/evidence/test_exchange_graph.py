@@ -501,6 +501,10 @@ VECTOR_CONSUMERS = {
     ("runtime_evidence_anchor", "runtime-anchor-v2"): (
         "evidence/test_anchor.py::test_derivations_match_the_contract_vectors",
     ),
+    ("operator_socket", "tier-c-reconcile"): (
+        "test_operator_socket_reconcile_vectors.py::test_operator_socket_sequence",
+        "test_operator_socket_reconcile_vectors.py::test_operator_uid_cases",
+    ),
     ("sensor_configuration", "schema-load"): (
         "test_sensor_config_schema.py"
         "::test_schema_load_conforms_to_the_vendored_contract_vectors",
@@ -532,20 +536,6 @@ VECTOR_CONSUMERS = {
 #: tracked, because naming a repository says who is answerable rather than that
 #: the work is done.
 VECTOR_EXEMPTIONS = {
-    ("operator_socket", "tier-c-reconcile"): {
-        "owner": "the runtime",
-        "status": "proof_pending",
-        # The socket PR's issue is filed on the maintainer's approval of its
-        # text; until then this names the contract it implements.
-        "tracking": "ori-specs operator-socket/v1 (Tier C Reconciliation); runtime issue pending, see #674 for the rework it belongs to",
-        "reason": (
-            "The reconciliation's transport: peer-credential authentication, the "
-            "installed operator identity and the socket's refusal order. The "
-            "store-side semantics these sequences reach are driven by the "
-            "admission corpus's reconcile steps; the caller vectors wait for the "
-            "socket that authenticates them."
-        ),
-    },
     ("evidence_exchange", "routing-projection-v2"): {
         "owner": "the site gateway",
         "status": "proof_pending",

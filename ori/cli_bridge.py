@@ -16,6 +16,7 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
 import re
 import sqlite3
 import sys
@@ -36,6 +37,16 @@ from ori.config import (
 )
 from ori.gateway.mqtt_security import parse_gateway_broker_endpoint
 from ori.network.events import StoredReading
+from ori.operator_socket import (
+    RECONCILE_ERRORS,
+    SOCKET_NAME,
+    SYSTEM_RUNTIME_DIRECTORY,
+    OperatorRequestError,
+    install_root_for_prefix,
+    parse_request,
+    peer_credentials,
+    validate_reconcile_request,
+)
 from ori.security.commissioning.anchors import (
     COMMISSIONING_ANCHOR_ENV,
     AnchorError,
@@ -107,6 +118,7 @@ _PUBLIC_COMMANDS = {
     ("commissioning", "proof-export"): "commissioning-proof-export",
     ("commissioning", "binding-export"): "commissioning-binding-export",
     ("evidence", "commission"): "evidence-commission",
+    ("evidence", "reconcile-tier-c"): "evidence-reconcile-tier-c",
 }
 _DEFAULT_HEALTH_SOCKET = "/run/ori/health.sock"
 #: A health reply longer than this is refused. Far above any snapshot a runtime
@@ -214,6 +226,8 @@ def run_bridge(argv: list[str]) -> tuple[int, dict[str, Any]]:
             result = asyncio.run(_commissioning_binding_export(path))
         elif command == "evidence-commission":
             result = asyncio.run(_evidence_commission(args))
+        elif command == "evidence-reconcile-tier-c":
+            result = asyncio.run(_evidence_reconcile_tier_c(args))
         else:
             raise BridgeError(
                 "unknown_command",
@@ -1571,6 +1585,183 @@ async def _evidence_commission(args: list[str]) -> dict[str, Any]:
         "replaced": replaced,
         "registration_status": status.value,
     }
+
+
+_RECONCILE_OPTIONS = {
+    "--proposal-id": "proposal_id",
+    "--device-id": "device_id",
+    "--zone": "zone_id",
+    "--outcome": "outcome",
+    "--reason": "reason",
+    "--note": "note",
+    "--socket": "socket",
+}
+_RECONCILE_REQUIRED = (
+    "--proposal-id",
+    "--device-id",
+    "--zone",
+    "--outcome",
+    "--reason",
+)
+_OPERATOR_CONNECT_TIMEOUT_S = 3.0
+#: Longer than the store's busy timeout, so a held store is answered
+#: `state_store_locked` by the runtime rather than timed out here.
+_OPERATOR_ANSWER_TIMEOUT_S = 30.0
+_OPERATOR_REPLY_LIMIT_BYTES = 64 * 1024
+
+
+def _reconcile_arguments(args: list[str]) -> tuple[dict[str, Any], str | None]:
+    """The request's members and `--socket`; anything else is refused by name."""
+    command = "evidence reconcile-tier-c"
+    values: dict[str, str] = {}
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token not in _RECONCILE_OPTIONS:
+            raise BridgeError(
+                "invalid_arguments",
+                f"{command} does not accept {_argument_label(token)}; nothing was submitted",
+            )
+        if token in values:
+            raise BridgeError("invalid_arguments", f"{command} repeats {token}")
+        if index + 1 >= len(args):
+            raise BridgeError(
+                "invalid_arguments", f"{command} requires a value after {token}"
+            )
+        value = args[index + 1]
+        if not value.strip() or value.startswith("--"):
+            raise BridgeError(
+                "invalid_arguments",
+                f"{command} requires a non-empty value after {token}",
+            )
+        values[token] = value
+        index += 2
+    for required in _RECONCILE_REQUIRED:
+        if required not in values:
+            raise BridgeError("invalid_arguments", f"{command} requires {required}")
+    request: dict[str, Any] = {"operation": "reconcile_tier_c", "note": None}
+    for option, member in _RECONCILE_OPTIONS.items():
+        if option in values and member != "socket":
+            request[member] = values[option]
+    try:
+        validate_reconcile_request(request)
+    except OperatorRequestError as exc:
+        raise BridgeError(exc.code, f"{exc.detail}; nothing was submitted") from None
+    return request, values.get("--socket")
+
+
+def _operator_install() -> tuple[Path, int]:
+    """The default operator socket and the runtime service identity to verify.
+
+    Both come from the installation this bridge belongs to, never from a
+    configuration document. A bridge that belongs to none cannot say which
+    identity the runtime must have, so it trusts no answer.
+    """
+    root = install_root_for_prefix(sys.prefix)
+    if root is None:
+        raise BridgeError(
+            "runtime_unavailable",
+            "this bridge does not belong to an installation, so the runtime service "
+            "identity it must verify cannot be established; nothing was submitted",
+        )
+    from ori.installer.paths import SYSTEM_ROOT, SYSTEM_UNIT
+
+    try:
+        if root == SYSTEM_ROOT:
+            user = next(
+                (
+                    line.split("=", 1)[1].strip()
+                    for line in SYSTEM_UNIT.read_text(encoding="utf-8").splitlines()
+                    if line.startswith("User=")
+                ),
+                "",
+            )
+            uid = pwd.getpwnam(user).pw_uid
+            return SYSTEM_RUNTIME_DIRECTORY / SOCKET_NAME, uid
+        uid = os.lstat(root).st_uid
+    except (OSError, KeyError, UnicodeDecodeError) as exc:
+        raise BridgeError(
+            "runtime_unavailable",
+            f"the runtime service identity could not be established ({exc}); "
+            "nothing was submitted",
+        ) from None
+    return Path("/run/user") / str(uid) / "ori" / SOCKET_NAME, uid
+
+
+async def _evidence_reconcile_tier_c(args: list[str]) -> dict[str, Any]:
+    """Submit an observed outcome for one uncertain Tier C dispatch to the runtime.
+
+    The bridge opens no store and reads no configuration: it verifies the
+    socket's peer as the runtime service identity before sending anything,
+    and relays the runtime's answer.
+    """
+    request, explicit_socket = _reconcile_arguments(args)
+    default_socket, service_uid = _operator_install()
+    socket_path = explicit_socket or str(default_socket)
+    unavailable = "no running runtime answered on the operator socket"
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(
+                path=socket_path, limit=_OPERATOR_REPLY_LIMIT_BYTES
+            ),
+            timeout=_OPERATOR_CONNECT_TIMEOUT_S,
+        )
+    except (OSError, TimeoutError) as exc:
+        raise BridgeError(
+            "runtime_unavailable", f"{unavailable} ({type(exc).__name__})"
+        ) from None
+    try:
+        peer = peer_credentials(writer.get_extra_info("socket"))
+        if peer is None or peer.uid != service_uid:
+            raise BridgeError(
+                "runtime_unavailable",
+                "the operator socket's peer is not the runtime service identity; "
+                "nothing was submitted",
+            )
+        writer.write(json.dumps(request, separators=(",", ":")).encode("utf-8") + b"\n")
+        await asyncio.wait_for(writer.drain(), timeout=_OPERATOR_CONNECT_TIMEOUT_S)
+        raw = await asyncio.wait_for(
+            reader.readline(), timeout=_OPERATOR_ANSWER_TIMEOUT_S
+        )
+    except (OSError, TimeoutError, ValueError) as exc:
+        raise BridgeError(
+            "runtime_unavailable",
+            f"the connection ended before the runtime answered ({type(exc).__name__}); "
+            "whether a reconciliation was recorded is not established, and an "
+            "identical repeat answers already_recorded if it was",
+        ) from None
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+    if not raw.endswith(b"\n"):
+        raise BridgeError(
+            "runtime_unavailable",
+            "the connection ended before the runtime answered; whether a "
+            "reconciliation was recorded is not established, and an identical "
+            "repeat answers already_recorded if it was",
+        )
+    return _relayed_reconcile_answer(raw)
+
+
+def _relayed_reconcile_answer(raw: bytes) -> dict[str, Any]:
+    try:
+        answer = parse_request(raw)
+    except OperatorRequestError:
+        raise RuntimeError("the runtime's answer is not one JSON object") from None
+    result = answer.get("result")
+    if answer.get("ok") is True and isinstance(result, dict):
+        return result
+    error = answer.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    detail = error.get("detail") if isinstance(error, dict) else None
+    if answer.get("ok") is False and code in RECONCILE_ERRORS:
+        raise BridgeError(str(code), str(detail or "nothing was recorded"))
+    raise RuntimeError(
+        f"the runtime answered {code!r}, which is not a reconciliation answer"
+    )
 
 
 def _declared_gpio_pin(config: Config) -> int | None:
