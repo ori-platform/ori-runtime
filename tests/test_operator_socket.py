@@ -95,7 +95,7 @@ class Recorder:
 async def serving(
     directory: Path, recorder: Recorder, **kwargs: Any
 ) -> AsyncIterator[OperatorSocketServer]:
-    kwargs.setdefault("operator_uid", lambda: os.geteuid())
+    kwargs.setdefault("operator_uid", os.geteuid)
     kwargs.setdefault("grant", lambda _d, _s, _u: None)
     server = OperatorSocketServer(
         directory=directory / "run", reconcile=recorder, **kwargs
@@ -460,7 +460,7 @@ async def test_an_append_begun_completes_when_the_socket_closes(
     server = OperatorSocketServer(
         directory=short_dir / "run",
         reconcile=Recorder(slow),
-        operator_uid=lambda: os.geteuid(),
+        operator_uid=os.geteuid,
         grant=lambda _d, _s, _u: None,
     )
     await server.start()
@@ -529,7 +529,7 @@ async def test_a_held_append_lands_before_the_store_closes(
     server = OperatorSocketServer(
         directory=short_dir / "run",
         reconcile=reconcile,
-        operator_uid=lambda: os.geteuid(),
+        operator_uid=os.geteuid,
         grant=lambda _d, _s, _u: None,
     )
     await server.start()
@@ -864,8 +864,6 @@ async def test_a_socket_that_cannot_bind_is_critical_and_leaves_nothing(
 async def test_the_runtime_answers_through_its_dispatcher(
     short_dir: Path, monkeypatch: Any
 ) -> None:
-    import ori.runtime as runtime_module
-
     monkeypatch.setenv("RUNTIME_DIRECTORY", str(short_dir / "run"))
     installed: list[Any] = []
 
@@ -873,11 +871,10 @@ async def test_the_runtime_answers_through_its_dispatcher(
         installed.append((root, service_uid))
         return os.geteuid()
 
-    monkeypatch.setattr(runtime_module, "read_operator_uid", operator_uid)
+    monkeypatch.setattr("ori.runtime.read_operator_uid", operator_uid)
     # Access-control lists are Linux's; this proves the wiring, not the grant.
     monkeypatch.setattr(
-        runtime_module,
-        "OperatorSocketServer",
+        "ori.runtime.OperatorSocketServer",
         functools.partial(
             OperatorSocketServer,
             grant=lambda _d, _s, _u: None,

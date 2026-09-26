@@ -12,6 +12,7 @@ JSON envelopes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -1732,10 +1733,10 @@ async def _evidence_reconcile_tier_c(args: list[str]) -> dict[str, Any]:
         ) from None
     finally:
         writer.close()
-        try:
+        # The answer, or its absence, is already decided; a peer gone while
+        # closing changes neither.
+        with contextlib.suppress(OSError):
             await writer.wait_closed()
-        except OSError:
-            pass
     if not raw.endswith(b"\n"):
         raise BridgeError(
             "runtime_unavailable",

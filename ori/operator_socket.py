@@ -12,6 +12,7 @@ is one JSON object whose members are closed; the answer is the runtime's.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import errno
 import json
 import logging
@@ -666,16 +667,15 @@ class OperatorSocketServer:
             response = _error(
                 "internal_error", "the runtime could not complete the request"
             )
+        # A caller that left before its answer is not answered; the answer
+        # records nothing, and a begun append completes regardless.
         try:
-            await self._write(writer, response)
-        except (OSError, ConnectionError):
-            pass
+            with contextlib.suppress(OSError):
+                await self._write(writer, response)
         finally:
             writer.close()
-            try:
+            with contextlib.suppress(OSError):
                 await writer.wait_closed()
-            except (OSError, ConnectionError):
-                pass
 
     async def _write(
         self, writer: asyncio.StreamWriter, response: dict[str, Any]
