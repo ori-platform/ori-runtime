@@ -708,6 +708,9 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
             task = replay.tasks.get(target)
             if task is not None and task.done():
                 replay.results[target] = task.result()
+                # A proposal that resolved wrote its closing state off the act's
+                # path; read it after the writer has taken it.
+                await replay.dispatcher.drain_records(timeout=2)
             unrepresented += await _check(replay, step, main, caplog)
             continue
 
@@ -808,33 +811,47 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
 
         if event == "propose":
             assert replay.store is not None
-            if step["tier"] == "D":
-                # Tier D never consults the approval record.
+            if step["tier"] != "C":
+                # Tier D never consults the approval record, and neither do
+                # Tier A and Tier B: the block reaches only a Tier C proposal.
                 assert expect.get("admitted", True) is True
                 continue
             assert replay.dispatcher is not None
-            blocked = await replay.store.tier_c_outcome_blocked(
-                step["zone"], step["outcome"]
-            ) or replay.dispatcher.tier_c_outcome_held_live(
-                step["zone"], step["outcome"]
+            # Whether a proposal is admitted is decided by proposing one: the
+            # runtime's own creation path answers, not a rule the harness
+            # re-implements. A proposal the corpus does not name is scratch and
+            # ends quietly once its answer is read.
+            opens = str(step.get("opens") or f"scratch-{index}")
+            action = (
+                "release_relay"
+                if step["outcome"] == "close_protected_circuit"
+                else "trip_relay"
             )
-            assert (not blocked) is bool(expect["admitted"]), (blocked, step)
-            opens = step.get("opens")
-            if opens and not blocked:
-                action = (
-                    "release_relay"
-                    if step["outcome"] == "close_protected_circuit"
-                    else "trip_relay"
+            zone = str(step["zone"])
+            base_facts = replay.facts
+            # The later proposal is created on its own zone; admission asks
+            # for that zone's facts by name.
+            replay.facts = lambda zone_id=None, z=zone, f=base_facts: f(zone_id or z)  # type: ignore[method-assign]
+            await replay.propose(opens, action=action, timeout_s=lifetime_s)
+            replay.facts = base_facts  # type: ignore[method-assign]
+            answer = replay.results.get(opens)
+            blocked = (
+                answer is not None
+                and answer.action_taken == "refused_outcome_uncertain"
+            )
+            assert (not blocked) is bool(expect["admitted"]), (
+                getattr(answer, "action_taken", None),
+                step,
+            )
+            if not step.get("opens") and not blocked:
+                scratch = replay.tasks.pop(opens, None)
+                if scratch is not None and not scratch.done():
+                    scratch.cancel()
+                    await asyncio.gather(scratch, return_exceptions=True)
+                await replay.store.advance_tier_c_proposal(  # type: ignore[union-attr]
+                    opens, adm.REJECTED, from_states=(adm.PROPOSED,), reason="scratch"
                 )
-                zone = str(step["zone"])
-                base_facts = replay.facts
-                # The later proposal is created on its own zone; admission asks
-                # for that zone's facts by name.
-                replay.facts = lambda zone_id=None, z=zone, f=base_facts: f(
-                    zone_id or z
-                )  # type: ignore[method-assign]
-                await replay.propose(opens, action=action, timeout_s=lifetime_s)
-                replay.facts = base_facts  # type: ignore[method-assign]
+                replay.proposed.discard(opens)
             unrepresented += await _check(replay, step, main, caplog)
             continue
 
