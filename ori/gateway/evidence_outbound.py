@@ -613,7 +613,9 @@ class MqttEvidenceOutboundPublisher:
 
     async def _publish(self, artifact_type: str, wire: bytes) -> bool:
         client = self._client
-        if client is None:
+        # Checked before every artifact, not once per pass: the session can drop
+        # between two publishes of one drain, and nothing is carried after it.
+        if client is None or not self._connected:
             return False
         try:
             payload = carriage_payload(self._device_id, artifact_type, wire)

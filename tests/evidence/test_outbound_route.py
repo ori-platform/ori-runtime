@@ -557,6 +557,26 @@ async def test_nothing_is_carried_once_the_broker_drops_the_session(rig):
         await _stop(shutdown, task)
 
 
+async def test_a_drain_in_flight_stops_when_the_session_drops(rig):
+    """The session can drop between two publishes of one pass; the pass stops there."""
+    rig.seal(1)
+    rig.seal(2)
+    client = _FakeClient()
+    publisher = _publisher(rig, client, retry_interval_s=60.0)
+    carry = client.publish
+
+    def dropping(topic, payload, qos=0, retain=False):
+        carry(topic, payload, qos, retain)
+        # The broker drops the session as the first artifact goes out.
+        publisher._on_disconnect(client, None, 7)
+
+    client.publish = dropping  # type: ignore[method-assign]
+    publisher._client = client
+    publisher._connected = True
+    assert await publisher.drain() == 1
+    assert len(_carried(client)) == 1
+
+
 async def test_nothing_is_published_until_the_broker_grants_the_ack_subscription(rig):
     rig.seal(1)
     client = _FakeClient(granted_qos=0x80)
