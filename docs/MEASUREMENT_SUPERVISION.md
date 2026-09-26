@@ -178,7 +178,7 @@ never sooner than the floor — is degraded, alerted under suppression, and hold
 its trip state, because v1 never opens a circuit on loss. The pair-scoped health
 view exists too: `measurement_degraded` and `last_credible_at_ms` per pair in
 the registry's snapshot, and `measurement_degraded` on each entry of
-`safety_zones` in `runtime-health/v2`.
+`safety_zones` in `runtime-health/v3`.
 
 **What is genuinely missing**, and what an implementer at the Stage 5 cutover
 would still have to decide:

@@ -628,8 +628,8 @@ class EvidenceConfig:
     # anything. The cadence is release-owned, and its permitted maximum is
     # still open in the contract.
     #
-    # anchor_epoch_id and key_id -- derived per runtime-evidence-anchor/v1. They are derived per
-    # runtime-evidence-anchor/v1 from the device identity, evidence key, custody
+    # anchor_epoch_id and key_id -- derived per runtime-evidence-anchor/v2. They are derived per
+    # runtime-evidence-anchor/v2 from the device identity, evidence key, custody
     # posture and capability profile. Both are sealed into immutable envelopes
     # and recomputed by the evidence authority, so a value an operator could set
     # is one that would eventually be set wrongly and could not be corrected.
@@ -2039,7 +2039,7 @@ def _parse_actions(data: Any) -> ActionChannelConfig:
     # Polarity is a commissioned fact about the driver stage. It reaches the
     # actuator from the signed commissioned binding, never from this document:
     # a provisioning-signed value here would let one authority set what another
-    # was required to prove (commissioned-safety-binding/v1, runtime-config/v2
+    # was required to prove (commissioned-safety-binding/v2, runtime-config/v2
     # `foreign_field`).
     if "active_high" in relay:
         raise ConfigValidationError(
@@ -3204,6 +3204,18 @@ def _parse_evidence(data: Any) -> EvidenceConfig:
                 "root and the checkpoint cadence are owned by the signed "
                 "release, because a site operator is the party evidence exists "
                 "to constrain."
+            )
+    for carried in (
+        "commissioning_reference",
+        "commissioning_digest",
+        "commissioning_authorization",
+        "commissioning_authorisation",
+    ):
+        if carried in data:
+            raise ConfigValidationError(
+                f"'evidence.{carried}' cannot be configured. The commissioning "
+                "reference reaches a device only through `evidence commission` "
+                "at the device, and the authorisation never reaches it at all."
             )
 
     return EvidenceConfig(

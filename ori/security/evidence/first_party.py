@@ -7,7 +7,7 @@ This replaces the loader that imported a private evidence artifact named by
 three environment variables. The format it produced was never publicly
 specified, which meant a device could not be independently verified and the
 runtime could not be built or tested without an artifact most environments did
-not have. `evidence/v2.md` specifies the format, and this produces it.
+not have. `evidence/v3.md` specifies the format, and this produces it.
 
 The chain, the delivery ledger and the ingest service each hold a thread-bound
 SQLite connection, so all three are constructed on -- and reached only through
@@ -15,10 +15,12 @@ SQLite connection, so all three are constructed on -- and reached only through
 is structural rather than conventional.
 
 What this deliberately does not do is grant authority. Attesting an action
-records that it happened. It does not register an anchor, and it does not make
-an epoch active: only a signed epoch confirmation arriving through ingest does
-that. Nor does it gate anything -- attestation runs after the action executed,
-so a chain that will not open can never become the reason a relay failed.
+records that it happened. Sealing an anchor registration asks the evidence
+authority to register this device's key; it does not make an epoch active:
+only a signed epoch confirmation arriving through ingest does that. Nor does
+any of it gate anything -- attestation runs after the action executed, and
+registration state is read by health alone, so neither can become the reason
+a relay failed.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from ori.security.evidence.chain import (
 )
 from ori.security.evidence.custody_keys import CustodyKeyRegistry
 from ori.security.evidence.device_key import EvidenceDeviceKey
+from ori.security.evidence.disposition import DispositionVerifier
 from ori.security.evidence.executor import EvidenceExecutor
 from ori.security.evidence.ingest_service import (
     ConfirmedEpochReader,
@@ -51,10 +54,16 @@ from ori.security.evidence.ingest_service import (
 )
 from ori.security.evidence.ledger import EvidenceDeliveryLedger
 from ori.security.evidence.policy import safe_failure_reason
-from ori.security.evidence.registrar import (
-    AnchorRegistrationRequest,
-    RegistrationOutcome,
+from ori.security.evidence.registration import (
+    CONFIRMATION_OVERDUE_MS,
+    DELIVERY_EPOCH_STOPPED,
+    DELIVERY_IDENTITY_STOPPED,
+    DELIVERY_NOT_STOPPED,
+    DELIVERY_STATUS_FIELD,
+    RegistrationOffer,
     RegistrationStatus,
+    build_anchor_registration,
+    is_digest,
 )
 from ori.utils.time_utils import now_ms
 
@@ -62,33 +71,6 @@ logger = logging.getLogger(__name__)
 
 #: Chain event type for a Tier C/D action.
 ACTION_EVENT_TYPE = "SAFETY_ACTION_EXECUTED"
-
-
-class PendingAuthorisationRegistrar:
-    """Produces no registration, because no authorisation is available.
-
-    `evidence-exchange/v1` requires a separately signed commissioning
-    authorisation, and nothing delivers one to a device today -- how it should
-    is open as ori-specs#91. The registrar exists so the gap has a named,
-    testable shape instead of an unimplemented call site, and so the outcome is
-    a durable pending state the caller retries rather than a silent no-op.
-
-    It must never synthesise an authorisation from locally recorded attribution.
-    A registration carrying `actor` and `reason` as plain fields proves only
-    that whoever holds the key wrote those strings, which is exactly the
-    collapse of control into authority the contract exists to prevent.
-    """
-
-    def register(self, request: AnchorRegistrationRequest) -> RegistrationOutcome:
-        logger.info(
-            "[evidence] anchor registration for epoch %s is pending: no "
-            "commissioning authorisation is held",
-            request.anchor_epoch_id,
-        )
-        return RegistrationOutcome(
-            status=RegistrationStatus.PENDING_AUTHORISATION,
-            detail="no commissioning authorisation is held for this epoch",
-        )
 
 
 class FirstPartyEvidenceAttestor:
@@ -103,6 +85,7 @@ class FirstPartyEvidenceAttestor:
         device_id: str,
         custody_keys: CustodyKeyRegistry | None = None,
         authority_keys: dict[tuple[str, str], Any] | None = None,
+        disposition_verifier: DispositionVerifier | None = None,
     ) -> None:
         self._db_path = str(db_path)
         self._key_path = str(key_path)
@@ -114,6 +97,9 @@ class FirstPartyEvidenceAttestor:
         self._anchor: RuntimeAnchor | None = None
         self._custody_keys = custody_keys
         self._authority_keys = dict(authority_keys or {})
+        # The seam a disposition verifier drops into once its contract exists;
+        # the ingest service installs one that verifies nothing when None.
+        self._disposition_verifier = disposition_verifier
 
         self._executor = EvidenceExecutor()
         self._chain: EvidenceChain | None = None
@@ -122,6 +108,7 @@ class FirstPartyEvidenceAttestor:
         self._outbound: BoundOutboundQueue | None = None
         self._sealed_listener: Callable[[], None] | None = None
         self._public_key_hex = ""
+        self._device_key: EvidenceDeviceKey | None = None
 
     @property
     def available(self) -> bool:
@@ -269,8 +256,11 @@ class FirstPartyEvidenceAttestor:
             device_id=self._device_id,
             device_pubkey_hex=key.public_key_hex,
             custody_keys=self._custody_keys,
+            disposition_verifier=self._disposition_verifier,
         )
+        ledger.record_current_anchor(posture=anchor.posture, recorded_at_ms=now_ms())
         self._anchor = anchor
+        self._device_key = key
         self._chain = chain
         self._ledger = ledger
         self._ingest = BoundIngestService(self._executor, service)
@@ -280,7 +270,7 @@ class FirstPartyEvidenceAttestor:
     def attestation_event_id(self, action_log_id: int) -> str:
         """Deterministic idempotency key for one action_log row.
 
-        Derived per `evidence/v2`, which binds the device into the identity and
+        Derived per `evidence/v3`, which binds the device into the identity and
         uses the neutral namespace. It deliberately does not reproduce the v1
         identifier: that namespace encodes a private product name in its bytes,
         and a v2 row carrying a v1 identity would be wrong on both counts.
@@ -418,12 +408,21 @@ class FirstPartyEvidenceAttestor:
                 safe_failure_reason(exc),
             )
             return None
+        if queued is None:
+            return None
 
         self._notify_sealed()
         return queued
 
-    def _checkpoint_sync(self, issued_at_ms: int) -> dict[str, Any]:
+    def _checkpoint_sync(self, issued_at_ms: int) -> dict[str, Any] | None:
         assert self._ledger is not None
+        # An authority disposition that stopped this identity's or this epoch's
+        # offers stops checkpoints with them. Action evidence is still signed
+        # and sealed locally; only the offer stops.
+        if self._anchor is not None and self._ledger.offers_stopped(
+            self._anchor.anchor_epoch_id
+        ):
+            return None
         return dict(self._ledger.issue_checkpoint(issued_at_ms=issued_at_ms))
 
     def confirmation_backend(self) -> ExecutorBoundConfirmationBackend | None:
@@ -431,10 +430,141 @@ class FirstPartyEvidenceAttestor:
         if self._ledger is None:
             return None
         return ExecutorBoundConfirmationBackend(
-            self._executor,
-            ConfirmedEpochReader(self._ledger),
-            PendingAuthorisationRegistrar(),
+            self._executor, ConfirmedEpochReader(self._ledger)
         )
+
+    async def reconcile_registration(
+        self, commissioning_reference: str | None
+    ) -> RegistrationStatus | None:
+        """Bring the anchor registration in line with the recorded reference.
+
+        Seals a registration when a reference is held for the current epoch
+        and no obligation under it is open, and does nothing otherwise: an
+        open obligation already holds the bytes that are re-offered. None when
+        evidence is unavailable. Never raises, and gates nothing.
+        """
+        if self._ledger is None or self._anchor is None:
+            return None
+        try:
+            status, sealed = await self._executor.run_async(
+                self._reconcile_registration_sync, commissioning_reference, now_ms()
+            )
+        except Exception as exc:
+            logger.warning(
+                "[evidence] anchor registration could not be reconciled (%s); "
+                "the next interval retries",
+                safe_failure_reason(exc),
+            )
+            return None
+        if sealed:
+            logger.info(
+                "[evidence] anchor registration sealed for the current epoch; "
+                "awaiting its confirmation"
+            )
+            self._notify_sealed()
+        return status
+
+    def _reconcile_registration_sync(
+        self, commissioning_reference: str | None, at_ms: int
+    ) -> tuple[RegistrationStatus, bool]:
+        assert self._ledger is not None
+        assert self._anchor is not None
+        assert self._device_key is not None
+        anchor = self._anchor
+        epoch = anchor.anchor_epoch_id
+        if self._ledger.registration_confirmed(epoch, anchor.pubkey_hex):
+            return RegistrationStatus.CONFIRMED, False
+        # The latest attempt, open or closed by a terminal disposition. A closed
+        # attempt is not resealed under the same reference: repair is a fresh
+        # reference recorded by the operator. It stays `pending_confirmation`,
+        # since the reference is held and no confirmation arrived; health
+        # reports the closure as `registration_offer: closed`.
+        current = self._ledger.current_registration_obligation(epoch)
+        if current is None:
+            held = RegistrationStatus.PENDING_AUTHORISATION
+        else:
+            held = RegistrationStatus.PENDING_CONFIRMATION
+        if not is_digest(commissioning_reference) or self._ledger.offers_stopped(epoch):
+            return held, False
+        if current is not None and (
+            str(current["commissioning_reference"]) == commissioning_reference
+        ):
+            return held, False
+        assert commissioning_reference is not None
+        registration = build_anchor_registration(
+            device_key=self._device_key,
+            device_id=anchor.device_id,
+            anchor_epoch_id=epoch,
+            posture=anchor.posture,
+            key_id=anchor.key_id,
+            registered_at_ms=at_ms,
+            commissioning_reference=commissioning_reference,
+            capability_profile=anchor.profile.as_document(),
+        )
+        self._ledger.seal_registration(registration, sealed_at_ms=at_ms)
+        return RegistrationStatus.PENDING_CONFIRMATION, True
+
+    async def registration_health(self, at_ms: int) -> dict[str, Any] | None:
+        """The three `runtime-health/v3` registration fields; None when unknown."""
+        if self._ledger is None or self._anchor is None:
+            return None
+        try:
+            return await self._executor.run_async(self._registration_health_sync, at_ms)
+        except Exception as exc:
+            logger.warning(
+                "[evidence] registration status read failed (%s)",
+                safe_failure_reason(exc),
+            )
+            return None
+
+    def _registration_health_sync(self, at_ms: int) -> dict[str, Any]:
+        assert self._ledger is not None
+        assert self._anchor is not None
+        ledger = self._ledger
+        epoch = self._anchor.anchor_epoch_id
+        stop_scope = ledger.offer_stop_scope(epoch)
+        stopped = stop_scope is not None
+        current = ledger.current_registration_obligation(epoch)
+        if ledger.registration_confirmed(epoch, self._anchor.pubkey_hex):
+            status, since, offer = RegistrationStatus.CONFIRMED, None, None
+        elif current is None:
+            status, since, offer = RegistrationStatus.PENDING_AUTHORISATION, None, None
+        else:
+            status = RegistrationStatus.PENDING_CONFIRMATION
+            since = int(current["sealed_at_ms"])
+            if stopped or str(current["state"]) == "closed":
+                offer = RegistrationOffer.CLOSED
+            elif current["suspended_at_ms"] is not None:
+                offer = RegistrationOffer.SUSPENDED
+            else:
+                offer = RegistrationOffer.OFFERING
+        fields = _registration_fields(status, since, at_ms)
+        fields["registration_offer"] = (offer or RegistrationOffer.NOT_APPLICABLE).value
+        fields[DELIVERY_STATUS_FIELD] = {
+            None: DELIVERY_NOT_STOPPED,
+            "epoch": DELIVERY_EPOCH_STOPPED,
+            "identity": DELIVERY_IDENTITY_STOPPED,
+        }[stop_scope]
+        # Copies another identity sealed, which this identity never carries.
+        fields["foreign_identity_pending_count"] = (
+            ledger.foreign_identity_pending_count()
+        )
+        # Retained under a stop, current and earlier epochs alike. Diagnostics.
+        count, size, since = ledger.stopped_local()
+        fields["stopped_local_artifact_count"] = count
+        fields["stopped_local_bytes"] = size
+        fields["oldest_stopped_local_since_ms"] = since
+        last = ledger.last_disposition()
+        fields["last_disposition"] = (
+            None
+            if last is None
+            else {
+                "disposition": str(last["disposition"]),
+                "scope": str(last["scope"]),
+                "observed_at_ms": int(last["observed_at_ms"]),
+            }
+        )
+        return fields
 
     def close(self) -> None:
         """Close the chain and ledger on their owning thread, then stop it."""
@@ -453,8 +583,30 @@ class FirstPartyEvidenceAttestor:
             self._chain = None
             self._ledger = None
             self._ingest = None
+            self._device_key = None
 
         self._executor.close(teardown=_teardown)
+
+
+def _registration_fields(
+    status: RegistrationStatus, pending_since_ms: int | None, at_ms: int
+) -> dict[str, Any]:
+    """`registration_status`, `registration_pending_since_ms` and the overdue flag."""
+    pending = status is RegistrationStatus.PENDING_CONFIRMATION
+    since = pending_since_ms if pending else None
+    # Overdue once the bound has elapsed, at the bound itself. A sealing time
+    # later than the clock means the clock stepped back and the time spent
+    # pending cannot be measured. Reported overdue rather than not: the flag
+    # exists to surface a stall, and `false` would hide one for as long as the
+    # step was large.
+    return {
+        "registration_status": status.value,
+        "registration_pending_since_ms": since,
+        "registration_confirmation_overdue": bool(
+            since is not None
+            and (at_ms < since or at_ms - since >= CONFIRMATION_OVERDUE_MS)
+        ),
+    }
 
 
 #: Stored on the action row when attestation is refused for good. A closed
@@ -467,14 +619,14 @@ class AuthorityUnavailableError(Exception):
     """A row's licence cannot be recovered, so it must not be sealed.
 
     Raised rather than returning a payload without `authority`, because
-    `evidence/v2` requires the field: a row emitted without it is one a verifier
+    `evidence/v3` requires the field: a row emitted without it is one a verifier
     must treat as licensing-unknown and must not present as a protection action.
     Refusing to sign leaves the action row intact and the gap visible, which is
     the honest outcome for a row whose authority was never recorded.
     """
 
 
-#: Exact field sets per authority kind, from `evidence/v2`. Every field is
+#: Exact field sets per authority kind, from `evidence/v3`. Every field is
 #: required and no other is permitted, so there is no extension point.
 _AUTHORITY_KINDS: dict[str, frozenset[str]] = {
     "tier_c_approval": frozenset({"proposal_id"}),

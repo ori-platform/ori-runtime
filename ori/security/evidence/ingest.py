@@ -1,7 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""Verifying what arrives back, per `ori-specs/evidence-exchange/v1`.
+"""Verifying what arrives back, per `ori-specs/evidence-exchange/v2`.
 
 The runtime seals evidence and hands it to a courier. Three things come back,
 and each says something different that the runtime is entitled to act on only
@@ -94,8 +94,11 @@ REJECT_BAD_AUTHENTICATOR = "bad_authenticator"
 REJECT_UNKNOWN_SEQUENCE = "unknown_sequence"
 REJECT_BINDING_MISMATCH = "binding_mismatch"
 REJECT_NON_CONTIGUOUS = "non_contiguous_range"
+#: A disposition whose effect is already in force.
+REJECT_SUPERSEDED = "superseded"
 REJECT_REASONS = frozenset(
     {
+        REJECT_SUPERSEDED,
         REJECT_UNRECOGNISED_VERSION,
         REJECT_MALFORMED,
         REJECT_UNKNOWN_KEY,

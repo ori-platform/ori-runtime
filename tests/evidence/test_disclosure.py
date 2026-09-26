@@ -228,11 +228,16 @@ REVIEWED_OPERATOR_MESSAGES = frozenset(
         "[evidence] evidence signing is unavailable (%s); Tier C/D "
         "actions continue and are recorded as attestation gaps until "
         "signing is restored.",
-        # Reviewed: names a local epoch identifier and the fact that an
-        # authorisation is absent. Says nothing about who issues one, where
-        # they are held, or that any off-device party exists.
-        "[evidence] anchor registration for epoch %s is pending: no "
-        "commissioning authorisation is held",
+        # Reviewed: this device's own registration state, with a sanitised
+        # reason or an exception type name. No reference, epoch, endpoint or
+        # party, and nothing about who confirms a registration.
+        "[evidence] anchor registration could not be reconciled (%s); "
+        "the next interval retries",
+        "[evidence] anchor registration sealed for the current epoch; "
+        "awaiting its confirmation",
+        "[evidence] registration status read failed (%s)",
+        "[evidence] the commissioning reference could not be read (%s); "
+        "the next interval retries",
         # Reviewed: a sanitised failure reason for a local handle. No path,
         # no identity, no exception detail.
         "[evidence] an evidence handle did not close cleanly (%s)",
@@ -463,6 +468,17 @@ EVIDENCE_HEALTH_KEYS = {
     "ingest_refusal_count",
     "last_ingest_refusal",
     "posture_problems",
+    "anchor_epoch_id",
+    "registration_status",
+    "registration_pending_since_ms",
+    "registration_confirmation_overdue",
+    "registration_offer",
+    "last_disposition",
+    "delivery_stop_status",
+    "foreign_identity_pending_count",
+    "stopped_local_artifact_count",
+    "stopped_local_bytes",
+    "oldest_stopped_local_since_ms",
 }
 
 EVIDENCE_HEARTBEAT_KEYS = {
@@ -473,25 +489,81 @@ EVIDENCE_HEARTBEAT_KEYS = {
 }
 
 
+#: Fields an unavailable evidence stack omits because it cannot read them: a
+#: consumer treats their absence as unknown, per `runtime-health/v2`.
+_UNKNOWN_WHEN_UNREAD = {
+    "registration_status",
+    "registration_pending_since_ms",
+    "registration_confirmation_overdue",
+    "registration_offer",
+    "last_disposition",
+}
+#: Only a readable, available stack reports delivery; absence is unknown.
+_AVAILABLE_ONLY = {"delivery_stop_status"}
+
+
 @pytest.mark.asyncio
-async def test_health_evidence_block_matches_ori_specs_runtime_health_v2():
+@pytest.mark.parametrize(
+    "path", ["no-attestor", "disabled", "enabled-unavailable", "available"]
+)
+async def test_health_evidence_block_matches_ori_specs_runtime_health_v2(
+    path, tmp_path
+):
     """The field set is a published contract, not a local choice.
 
+    Every path the health builder takes is checked, and the available path
+    must carry exactly the reviewed set, so a stray key there fails. The
+    other paths may omit what they cannot read and add nothing.
+
     `artifact_version` is absent because `ori-specs/runtime-health/v2` removes
-    it. It was briefly removed during this audit and restored while v1 still
-    required it — the disclosure argument did not license changing a published
-    structured response ahead of the contract defining it.
+    it.
     """
+    import types
+
     from ori.runtime import OriRuntime
+    from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
 
     runtime = object.__new__(OriRuntime)
     runtime._evidence_attestor = None
     runtime._config = None
     runtime._state_store = None
     runtime._evidence_inbound_subscriber = None
+    attestor = None
+    if path != "no-attestor":
+        # Only `evidence.enabled` is read on this path.
+        setattr(
+            runtime,
+            "_config",
+            types.SimpleNamespace(
+                evidence=types.SimpleNamespace(enabled=path != "disabled")
+            ),
+        )
+    if path == "available":
+        attestor = FirstPartyEvidenceAttestor(
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "evidence.key"),
+            device_secret="install-secret-for-disclosure-tests",
+            device_id="dev-01",
+        )
+        assert await attestor.start()
+        runtime._evidence_attestor = attestor
+    try:
+        health = await runtime._evidence_health()
+    finally:
+        if attestor is not None:
+            attestor.close()
 
-    health = await runtime._evidence_health()
-    assert set(health) == EVIDENCE_HEALTH_KEYS
+    if path == "available":
+        assert set(health) == EVIDENCE_HEALTH_KEYS
+        assert isinstance(health["foreign_identity_pending_count"], int)
+    else:
+        assert set(health) <= EVIDENCE_HEALTH_KEYS
+        assert EVIDENCE_HEALTH_KEYS - _UNKNOWN_WHEN_UNREAD - _AVAILABLE_ONLY <= set(
+            health
+        )
+        assert health["foreign_identity_pending_count"] is None
+    if path in ("no-attestor", "disabled"):
+        assert health["registration_status"] == "disabled"
 
 
 def test_heartbeat_evidence_block_matches_its_reviewed_schema():

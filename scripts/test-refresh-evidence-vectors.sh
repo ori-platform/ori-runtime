@@ -522,6 +522,105 @@ else
   bad "drifted bytes in one set and a stale pin in another are both reported" "exit ${code}: ${out}"
 fi
 
+# ── 11. a set vendors the version it claims, and nothing from a later one ─────
+#
+# A vector directory can hold more than one version of its contract. The
+# exchange set claims v2: for each stem it takes the newest tokened file at or
+# below v2, the untokened file only when no tokened one is at or below v2, and
+# nothing tokened above it. The gateway-api set claims no version and takes
+# untokened files only.
+
+box="$(new_fixture claimed-version)"
+ex="${box}/specs/evidence-exchange/vectors"
+printf '{"stem":"a","v":1}\n' > "${ex}/a.json"
+printf '{"stem":"a","v":2}\n' > "${ex}/a-v2.json"
+printf '{"stem":"b","v":3}\n' > "${ex}/b-v3.json"
+printf '{"stem":"c","v":1}\n' > "${ex}/c-v1.json"
+printf '{"stem":"d","v":2}\n' > "${box}/specs/gateway-api/vectors/d-v2.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: open later versions"
+vendor "${box}"
+vendored="${box}/consumer/tests/vectors/evidence_exchange"
+if [ -f "${vendored}/a-v2.json" ] && [ ! -f "${vendored}/a.json" ]; then
+  ok "the newest tokened file at or below the claim replaces the untokened one"
+else
+  bad "the newest tokened file at or below the claim replaces the untokened one" \
+      "$(ls "${vendored}")"
+fi
+if [ -f "${vendored}/c-v1.json" ] && [ -f "${vendored}/vectors.json" ]; then
+  ok "an earlier tokened file and an unreplaced untokened file are both vendored"
+else
+  bad "an earlier tokened file and an unreplaced untokened file are both vendored" \
+      "$(ls "${vendored}")"
+fi
+if [ ! -f "${vendored}/b-v3.json" ]; then
+  ok "a file from a later version than the claim is not vendored"
+else
+  bad "a file from a later version than the claim is not vendored" "b-v3.json present"
+fi
+if [ ! -f "${box}/consumer/tests/vectors/gateway_api/d-v2.json" ]; then
+  ok "a set claiming no version vendors untokened files only"
+else
+  bad "a set claiming no version vendors untokened files only" "d-v2.json present"
+fi
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("contract_version")=="v2" and sorted(d["files"])==["a-v2.json","c-v1.json","vectors.json"] else 1)' \
+     "${vendored}/MANIFEST.json"; then
+  ok "the manifest records the claimed version and exactly the selected files"
+else
+  bad "the manifest records the claimed version and exactly the selected files" \
+      "$(cat "${vendored}/MANIFEST.json")"
+fi
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if "contract_version" not in d else 1)' \
+     "${box}/consumer/tests/vectors/gateway_api/MANIFEST.json"; then
+  ok "a set claiming no version records none"
+else
+  bad "a set claiming no version records none" "contract_version present"
+fi
+out="$(check "${box}")"; code=$?
+if [ "${code}" -eq 0 ]; then
+  ok "the selected set passes the drift check"
+else
+  bad "the selected set passes the drift check" "exit ${code}: ${out}"
+fi
+
+# Drift is judged over the selection: a change to a later version's file is
+# not this set's drift, a change to a selected file is, and a new file at the
+# claimed version is new.
+printf '{"stem":"b","v":3,"changed":true}\n' > "${ex}/b-v3.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: a later version moves"
+out="$(check "${box}")"; code=$?
+if [ "${code}" -eq 0 ]; then
+  ok "a change to a later version's file is not drift for this claim"
+else
+  bad "a change to a later version's file is not drift for this claim" "exit ${code}: ${out}"
+fi
+printf '{"stem":"a","v":2,"changed":true}\n' > "${ex}/a-v2.json"
+printf '{"stem":"e","v":2}\n' > "${ex}/e-v2.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: the claimed version moves"
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "CHANGED  evidence-exchange/vectors/a-v2.json" <<< "${out}" \
+   && grep -q "NEW      evidence-exchange/vectors/e-v2.json" <<< "${out}"; then
+  ok "a change and an addition at the claimed version are reported"
+else
+  bad "a change and an addition at the claimed version are reported" "exit ${code}: ${out}"
+fi
+
+# A stale pin is judged over the same selection: a later version's file that
+# the pin never carried is not a stale pin for this claim.
+box="$(new_fixture claimed-version-pin)"
+vendor "${box}"
+printf '{"stem":"z","v":9}\n' > "${box}/specs/evidence-exchange/vectors/z-v9.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: a far later version"
+out="$(check "${box}")"; code=$?
+if [ "${code}" -eq 0 ] && ! grep -q "STALE PIN" <<< "${out}"; then
+  ok "a later version's file the pin never carried is not a stale pin"
+else
+  bad "a later version's file the pin never carried is not a stale pin" "exit ${code}: ${out}"
+fi
+
 echo
 printf '%d passed, %d failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" -eq 0 ]

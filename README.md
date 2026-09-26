@@ -241,7 +241,7 @@ Ori is designed for [physical actuation trust](PRINCIPLES.md). The safety archit
 - **Alert transport failover** — approval requests use the configured primary channel first, then fail over to the secondary channel if delivery fails
 - **Evidence chain for high-authority actions** — when configured, the Ori
   runtime signs Tier C/D dispatch records into its own local hash-chained store,
-  in the publicly specified `evidence/v2` format, and seals each row into a
+  in the publicly specified `evidence/v3` format, and seals each row into a
   delivery envelope. Health exposes the chain head, the attestation gap count,
   the action-event vocabulary, and a count of envelopes no courier has yet
   acknowledged holding. `protocol_version` names the chain format this device

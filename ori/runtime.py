@@ -153,6 +153,11 @@ from ori.security.evidence.first_party import (
     FirstPartyEvidenceAttestor,
 )
 from ori.security.evidence.ledger import DEFAULT_CHECKPOINT_INTERVAL_S
+from ori.security.evidence.registration import (
+    RECONCILE_INTERVAL_S,
+    RegistrationOffer,
+    RegistrationStatus,
+)
 from ori.security.firmware.confirmation import (
     CONFIRMED as _FIRMWARE_CONFIRMED,
 )
@@ -1702,6 +1707,21 @@ class OriRuntime:
                 )
             )
 
+        if (
+            evidence_attestor is not None
+            and evidence_attestor.available
+            and self._state_store is not None
+        ):
+            # Independent of the courier: a registration is sealed and held
+            # whether or not a gateway is configured to carry it.
+            self._background_tasks.append(
+                asyncio.create_task(
+                    self._evidence_registration_loop(evidence_attestor),
+                    name="evidence-registration",
+                )
+            )
+            logger.info("[runtime] evidence anchor registration reconciler started")
+
         evidence_outbound_publisher = _build_evidence_outbound_publisher(
             config, evidence_attestor
         )
@@ -2865,6 +2885,46 @@ class OriRuntime:
                 pass
             await attestor.issue_checkpoint()
 
+    async def _evidence_registration_loop(
+        self, attestor: FirstPartyEvidenceAttestor
+    ) -> None:
+        """Reconcile the anchor registration with the recorded reference, forever.
+
+        Reads the reference at startup and every interval, so one recorded by
+        `evidence commission` while the runtime runs is sealed without a
+        restart. The cadence is release-owned.
+        """
+        while not self._shutdown_event.is_set():
+            await self._reconcile_evidence_registration(attestor)
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=RECONCILE_INTERVAL_S
+                )
+                return
+            except asyncio.TimeoutError:
+                pass
+
+    async def _reconcile_evidence_registration(
+        self, attestor: FirstPartyEvidenceAttestor
+    ) -> RegistrationStatus | None:
+        """One reconciliation. A failed read seals nothing and is retried."""
+        anchor = attestor.anchor
+        store = self._state_store
+        if anchor is None or store is None:
+            return None
+        try:
+            reference = await store.get_evidence_commissioning_reference(
+                device_id=anchor.device_id, anchor_epoch_id=anchor.anchor_epoch_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "[evidence] the commissioning reference could not be read (%s); "
+                "the next interval retries",
+                type(exc).__name__,
+            )
+            return None
+        return await attestor.reconcile_registration(reference)
+
     async def _issue_shutdown_checkpoint(self) -> None:
         attestor = self._evidence_attestor
         if attestor is None or not attestor.available:
@@ -3136,7 +3196,7 @@ class OriRuntime:
             # This device's own anchor, which is its own property to report.
             "public_key_hex": attestor.public_key_hex if attestor else "",
             # `artifact_version` is deliberately absent: ori-specs
-            # runtime-health/v2 removes it. The private component's version is
+            # runtime-health/v2 removed it and v3 keeps it absent. The private component's version is
             # implementation metadata an operator has no part in, and
             # `available` with `protocol_version` already answer whether this
             # device can sign and against which public contract.
@@ -3178,8 +3238,30 @@ class OriRuntime:
             # Why evidence trust is not established, from a closed vocabulary;
             # empty when it is. Signing can be available while trust is not.
             "posture_problems": list(getattr(self, "_evidence_posture_problems", ())),
+            "anchor_epoch_id": "",
+            "foreign_identity_pending_count": None,
+            "stopped_local_artifact_count": None,
+            "stopped_local_bytes": None,
+            "oldest_stopped_local_since_ms": None,
         }
+        if not enabled:
+            health.update(
+                registration_status=RegistrationStatus.DISABLED.value,
+                registration_pending_since_ms=None,
+                registration_confirmation_overdue=False,
+                registration_offer=RegistrationOffer.NOT_APPLICABLE.value,
+                last_disposition=None,
+            )
         if attestor is not None and attestor.available:
+            anchor = getattr(attestor, "anchor", None)
+            health["anchor_epoch_id"] = anchor.anchor_epoch_id if anchor else ""
+            # Omitted, not guessed, when it cannot be read: a consumer treats
+            # absence as unknown, and never as confirmed.
+            read_registration = getattr(attestor, "registration_health", None)
+            if read_registration is not None:
+                registration = await read_registration(now_ms())
+                if registration is not None:
+                    health.update(registration)
             health["chain_head_hash"] = await attestor.chain_head_hash()
             health["pending_export_count"] = await attestor.pending_export_count()
             refusals = await attestor.ingest_refusal_summary()
@@ -3367,7 +3449,7 @@ class OriRuntime:
             "firmware_liveness": firmware_liveness_health,
             "telemetry_export": self._telemetry_export_health(),
         }
-        # `runtime-health/v2` types this as an array and reads absence as
+        # `runtime-health/v3` types this as an array and reads absence as
         # unknown, so a device with no registry omits the key entirely rather
         # than carrying a null a consumer would iterate.
         safety_zones: list[dict[str, Any]] = []
@@ -3434,7 +3516,7 @@ class OriRuntime:
             for zone in safety_zones
         ):
             # An active pair is one the device has undertaken to protect, and
-            # `unprotected` says it is not doing so. `runtime-health/v2` does
+            # `unprotected` says it is not doing so. `runtime-health/v3` does
             # not require this, so it is a decision rather than a conformance
             # gap: a fleet view aggregating `status` would otherwise show
             # nothing wrong while a zone the device claims to protect is not

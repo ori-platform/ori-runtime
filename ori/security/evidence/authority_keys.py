@@ -8,7 +8,7 @@ believe: that evidence arrived, that an epoch is active. The keys that make
 those statements trustworthy are therefore trust roots, and where they come
 from decides whether any of it means anything.
 
-They come from the signed release, and only from there. `evidence-exchange/v1`
+They come from the signed release, and only from there. `evidence-exchange/v2`
 is explicit: a device MUST NOT accept an authority key delivered through the
 exchange itself. An authority that can hand a device new trust roots over the
 channel it is being trusted on has no independent standing — it could replace

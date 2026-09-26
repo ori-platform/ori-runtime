@@ -1,6 +1,6 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
-"""Verify a commissioned safety binding per commissioned-safety-binding/v1.
+"""Verify a commissioned safety binding per commissioned-safety-binding/v2.
 
 The runtime is the first consumer of the contract. Verification is the
 contract's twelve ordered stages, and every refusal names the stage it was
@@ -444,7 +444,7 @@ def parse_document(text: str) -> Any:
     A repeated key collapses before any grammar check can see it, and which
     occurrence survives depends on the parser: this one keeps the last, a
     first-wins parser on a device reads the other, and the signature verifies
-    over whichever this side kept. evidence/v2 requires a verifier parsing
+    over whichever this side kept. evidence/v3 requires a verifier parsing
     bytes to reject the duplicate during parsing, so the wire form is refused
     here rather than repaired.
     """

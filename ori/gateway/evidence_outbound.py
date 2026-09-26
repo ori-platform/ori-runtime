@@ -9,8 +9,10 @@ topic with an authenticated transport decision. That acknowledgement is a
 statement about the courier's queue, never about the evidence: a `queued`
 envelope stays awaiting custody until the separately authenticated custody
 acknowledgement arrives through the inbound route, while a `queued`
-checkpoint or registration is retired because the gateway's durable queue now
-owns retry.
+checkpoint or registration retires its courier handoff copy because the
+gateway's durable queue now owns retry. For a registration that retires only
+the copy: its confirmation obligation keeps the sealed bytes and re-offers
+them until a verified epoch confirmation closes it.
 
 Nothing here is authenticated by the carriage itself. Every artifact carries
 its own device signature end to end, so a carriage HMAC would prove nothing a
@@ -32,10 +34,17 @@ from typing import Any, Callable
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.security.evidence.bound import BoundOutboundQueue
 from ori.security.evidence.ledger import (
+    FAULT_HOLDER_ENVELOPE,
+    FAULT_HOLDER_OBLIGATION,
+    FAULT_HOLDER_OUTBOX,
+    OUTBOX_ANCHOR_REGISTRATION,
     OUTBOX_ARTIFACT_TYPES,
+    OUTBOX_CHECKPOINT,
     RETIRE_QUEUED,
     RETIRE_REFUSED,
+    copy_fault,
 )
+from ori.security.evidence.registration import MAX_DOUBLINGS
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
@@ -57,6 +66,7 @@ EVIDENCE_OUTBOUND_ACK_TOPIC_TEMPLATE = "ori/{device_id}/evidence/outbound/ack"
 EVIDENCE_OUTBOUND_ACK_MESSAGE_TYPE = "evidence_outbound_ack"
 
 ARTIFACT_DELIVERY_ENVELOPE = "delivery_envelope"
+ARTIFACT_ANCHOR_REGISTRATION = OUTBOX_ANCHOR_REGISTRATION
 OUTBOUND_ARTIFACT_TYPES = (
     frozenset({ARTIFACT_DELIVERY_ENVELOPE}) | OUTBOX_ARTIFACT_TYPES
 )
@@ -107,8 +117,23 @@ def retry_due(attempts: int, last_attempt_ms: int | None, *, at_ms: int) -> bool
     """Whether an artifact's next attempt is due under exponential backoff."""
     if attempts <= 0 or last_attempt_ms is None:
         return True
-    delay_s = min(RETRY_INTERVAL_S * 2.0 ** (attempts - 1), RETRY_BACKOFF_MAX_S)
+    # A clock moved back past the last attempt makes it due at once; waiting
+    # for the clock to catch up would hold the only copy for the whole step.
+    if at_ms < int(last_attempt_ms):
+        return True
+    # The attempt count is unbounded; the exponent is not.
+    doublings = min(int(attempts) - 1, MAX_DOUBLINGS)
+    delay_s = min(RETRY_INTERVAL_S * (1 << doublings), RETRY_BACKOFF_MAX_S)
     return at_ms - int(last_attempt_ms) >= delay_s * 1000.0
+
+
+def _row_due(row: dict[str, Any], at_ms: int, what: str) -> bool:
+    """A row whose schedule cannot be computed is due, never a reason the route drops."""
+    try:
+        return retry_due(int(row["attempts"]), row["last_attempt_ms"], at_ms=at_ms)
+    except Exception:
+        logger.warning("[evidence-outbound] a %s's retry schedule is unreadable", what)
+        return True
 
 
 @dataclass(frozen=True)
@@ -238,6 +263,15 @@ class EvidenceOutboundAckRouter:
                 artifact_type,
             )
             return AckRouted(ROUTED_IGNORED, "unknown artifact", artifact_type, digest)
+        # The courier can only answer for bytes it was given. An answer for a
+        # copy never handed off would retire it, queued or refused, unsent.
+        if int(row["attempts"]) == 0:
+            logger.warning(
+                "[evidence-outbound] acknowledgement names a %s never handed off; "
+                "refused",
+                artifact_type,
+            )
+            return AckRouted(ROUTED_REFUSED, "never handed off", artifact_type, digest)
         if outcome == ACK_QUEUED:
             await self._outbox.retire_artifact(
                 digest, outcome=RETIRE_QUEUED, at_ms=at_ms
@@ -292,6 +326,7 @@ class MqttEvidenceOutboundPublisher:
         self._granted: asyncio.Event | None = None
         self._wake: asyncio.Event | None = None
         self._drain_lock = asyncio.Lock()
+        self._published = 0
 
     @property
     def topic(self) -> str:
@@ -389,33 +424,184 @@ class MqttEvidenceOutboundPublisher:
     async def _drain(self) -> int:
         if not self._connected or self._client is None:
             return 0
-        published = 0
         at_ms = self._now()
-        for row in await self._outbox.awaiting_custody(DRAIN_BATCH):
-            if not retry_due(int(row["attempts"]), row["last_attempt_ms"], at_ms=at_ms):
-                continue
-            wire = str(row["envelope_json"]).encode("utf-8")
-            sent = await self._publish(ARTIFACT_DELIVERY_ENVELOPE, wire)
-            await self._outbox.record_attempt(
-                int(row["local_seq"]),
-                at_ms=at_ms,
-                failure=None if sent else "unreachable",
+        self._published = 0
+        # Each stage returns False when the route failed; the rest wait.
+        for stage in (
+            self._drain_envelopes,
+            self._drain_checkpoint,
+            self._drain_registrations,
+            self._drain_reoffers,
+        ):
+            if not await stage(at_ms):
+                break
+        return self._published
+
+    async def _carriable(
+        self, holder: str, holder_id: int, wire: bytes, digest: str, at_ms: int
+    ) -> bool:
+        """The bytes are what was sealed; if not, the copy leaves the route.
+
+        Its bytes stay where they are and the fault is recorded once, so a
+        damaged copy is neither carried nor left to hold anything behind it.
+        """
+        fault = copy_fault(wire, digest)
+        if fault is None:
+            return True
+        logger.error(
+            "[evidence-outbound] a retained %s copy cannot be carried as sealed "
+            "(%s); it is kept and taken off the route",
+            holder,
+            fault,
+        )
+        await self._outbox.record_artifact_fault(
+            holder, holder_id, reason=fault, at_ms=at_ms
+        )
+        return False
+
+    async def _drain_envelopes(self, at_ms: int) -> bool:
+        """Carry due envelopes, reading past any that are not yet due."""
+        published = 0
+        after = 0
+        while published < DRAIN_BATCH:
+            rows = await self._outbox.awaiting_custody(DRAIN_BATCH, after_seq=after)
+            if not rows:
+                break
+            for row in rows:
+                local_seq = int(row["local_seq"])
+                after = local_seq
+                if not _row_due(row, at_ms, ARTIFACT_DELIVERY_ENVELOPE):
+                    continue
+                wire = bytes(row["envelope_bytes"])
+                if not await self._carriable(
+                    FAULT_HOLDER_ENVELOPE,
+                    local_seq,
+                    wire,
+                    str(row["envelope_digest"]),
+                    at_ms,
+                ):
+                    continue
+                # A stop applied since the page was read holds this one too.
+                if not await self._outbox.awaiting_custody(1, only_seq=local_seq):
+                    continue
+                sent = await self._publish(ARTIFACT_DELIVERY_ENVELOPE, wire)
+                await self._outbox.record_attempt(
+                    local_seq, at_ms=at_ms, failure=None if sent else "unreachable"
+                )
+                if not sent:
+                    return False
+                published += 1
+                self._published += 1
+                if published >= DRAIN_BATCH:
+                    break
+        return True
+
+    async def _drain_checkpoint(self, at_ms: int) -> bool:
+        """Carry the earliest checkpoint still awaiting its acknowledgement.
+
+        Checkpoints leave in production order: a later one is never handed
+        off while an earlier one lacks its `queued` acknowledgement, and when
+        the earliest is not yet due the later ones wait with it. The earliest
+        is selected in SQL, so no number of later checkpoints can crowd
+        anything else out. A copy whose bytes are damaged leaves the order.
+        """
+        # Bounded: each pass either ends the drain or takes one damaged copy
+        # off the route, which makes the next checkpoint the earliest.
+        for _ in range(DRAIN_BATCH):
+            head = await self._outbox.pending_artifacts(
+                1, artifact_type=OUTBOX_CHECKPOINT
             )
-            if not sent:
-                return published
-            published += 1
-        for row in await self._outbox.pending_artifacts(DRAIN_BATCH):
-            if not retry_due(int(row["attempts"]), row["last_attempt_ms"], at_ms=at_ms):
+            if not head:
+                return True
+            row = head[0]
+            wire = bytes(row["artifact_bytes"])
+            if not await self._carriable(
+                FAULT_HOLDER_OUTBOX,
+                int(row["id"]),
+                wire,
+                str(row["artifact_digest"]),
+                at_ms,
+            ):
                 continue
-            wire = str(row["artifact_json"]).encode("utf-8")
-            sent = await self._publish(str(row["artifact_type"]), wire)
-            await self._outbox.note_artifact_attempt(
+            if not _row_due(row, at_ms, OUTBOX_CHECKPOINT):
+                return True
+            return await self._hand_off(row, wire, at_ms)
+        return True
+
+    async def _drain_registrations(self, at_ms: int) -> bool:
+        """Carry due registration copies; checkpoints never hold them."""
+        published = 0
+        after = 0
+        while published < DRAIN_BATCH:
+            rows = await self._outbox.pending_artifacts(
+                DRAIN_BATCH, artifact_type=OUTBOX_ANCHOR_REGISTRATION, after_id=after
+            )
+            if not rows:
+                break
+            for row in rows:
+                after = int(row["id"])
+                if not _row_due(row, at_ms, OUTBOX_ANCHOR_REGISTRATION):
+                    continue
+                wire = bytes(row["artifact_bytes"])
+                if not await self._carriable(
+                    FAULT_HOLDER_OUTBOX,
+                    int(row["id"]),
+                    wire,
+                    str(row["artifact_digest"]),
+                    at_ms,
+                ):
+                    continue
+                before = self._published
+                if not await self._hand_off(row, wire, at_ms):
+                    return False
+                published += self._published - before
+                if published >= DRAIN_BATCH:
+                    break
+        return True
+
+    async def _hand_off(self, row: dict[str, Any], wire: bytes, at_ms: int) -> bool:
+        """Publish one outbox copy; False only when the route failed."""
+        # A stop applied since the row was read holds it too.
+        if not await self._outbox.pending_artifacts(1, only_id=int(row["id"])):
+            return True
+        # The attempt is recorded before the bytes leave, so an acknowledgement
+        # that overtakes this call still finds them handed off.
+        await self._outbox.note_artifact_attempt(
+            str(row["artifact_digest"]), at_ms=at_ms
+        )
+        if not await self._publish(str(row["artifact_type"]), wire):
+            return False
+        self._published += 1
+        return True
+
+    async def _drain_reoffers(self, at_ms: int) -> bool:
+        """Re-offer unconfirmed registrations from their obligations, byte for byte."""
+        for row in await self._outbox.registration_reoffers_due(
+            at_ms=at_ms, limit=DRAIN_BATCH
+        ):
+            wire = bytes(row["artifact_bytes"])
+            if not await self._carriable(
+                FAULT_HOLDER_OBLIGATION,
+                int(row["id"]),
+                wire,
+                str(row["artifact_digest"]),
+                at_ms,
+            ):
+                continue
+            if not await self._outbox.registration_reoffers_due(
+                at_ms=at_ms, limit=1, only_id=int(row["id"])
+            ):
+                continue
+            # The attempt is persisted before the bytes leave, as for the
+            # courier copy: the next delay runs from every attempted offer,
+            # including one the route or the process loses.
+            await self._outbox.note_registration_offer(
                 str(row["artifact_digest"]), at_ms=at_ms
             )
-            if not sent:
-                return published
-            published += 1
-        return published
+            if not await self._publish(ARTIFACT_ANCHOR_REGISTRATION, wire):
+                return False
+            self._published += 1
+        return True
 
     async def flush(self, timeout_s: float) -> int:
         """Drain once, bounded, for a clean shutdown. Returns the count."""

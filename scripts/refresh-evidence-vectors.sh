@@ -27,16 +27,24 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPLY="${ORI_VECTORS_APPLY:-0}"
 CLEANUP=""
 
-# "<path in ori-specs>:<path in this repo>"
+# "<path in ori-specs>:<path in this repo>[:<contract version>]"
+#
+# A vector directory in ori-specs can hold more than one version of its
+# contract: a file named `<stem>-v<N>.json` belongs to version N, and a file
+# with no version token belongs to the directory's original version and to
+# every later version that has not replaced it. The third field names the
+# version this runtime claims; the set then vendors, for each stem, the newest
+# file at or below that version and nothing from a later one. A set with no
+# third field claims the original version and vendors only untokened files.
 SETS=(
-  "evidence/vectors:tests/vectors/evidence_v2"
-  "evidence-exchange/vectors:tests/vectors/evidence_exchange"
-  "runtime-evidence-anchor/vectors:tests/vectors/runtime_evidence_anchor"
+  "evidence/vectors:tests/vectors/evidence:v3"
+  "evidence-exchange/vectors:tests/vectors/evidence_exchange:v2"
+  "runtime-evidence-anchor/vectors:tests/vectors/runtime_evidence_anchor:v2"
   # Receiver-state vectors are a separate set because the copy loop below is a
   # flat glob. They cover the rules a wire artifact cannot express -- the ones
   # a byte-level suite silently omits, and therefore the ones most worth
   # drift-checking.
-  "evidence-exchange/vectors/receiver-state:tests/vectors/evidence_exchange_receiver_state"
+  "evidence-exchange/vectors/receiver-state:tests/vectors/evidence_exchange_receiver_state:v2"
   # Transport rather than artifact: gateway-api fixes how an inbound artifact
   # travels, and versions independently of the evidence contracts. Vendored
   # here so the same drift check covers it, and pinned separately because it
@@ -46,7 +54,7 @@ SETS=(
   # vendored set whose vectors describe physical commissioning rather than
   # evidence carriage. It pins independently because it has no reason to move
   # when the evidence contracts do.
-  "commissioned-safety-binding:tests/vectors/commissioned_safety_binding"
+  "commissioned-safety-binding:tests/vectors/commissioned_safety_binding:v2"
   # Safety profiles ship with the release and their corpus proves the loader,
   # activation, evaluation and lifecycle rules; the binding verifier reads the
   # profile set for its trip-point bound. Pinned on its own like the binding.
@@ -129,32 +137,76 @@ overall_stale=0
 overall_pin=0
 
 write_manifest() {
-  python3 - "$1" "$2" "$3" <<'PY'
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
 import hashlib, json, pathlib, sys
-commit, source, dest = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3])
-(dest / "MANIFEST.json").write_text(json.dumps({
+commit, source, dest, version = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3]), sys.argv[4]
+manifest = {
     "source_repository": "ori-platform/ori-specs",
     "source_path": source,
     "source_commit": commit,
+}
+if version:
+    manifest["contract_version"] = version
+manifest.update({
     "note": ("Vendored copies of the normative vectors. The runtime must produce and "
              "accept the bytes they describe, so they are its conformance fixtures. "
              "Digests detect a local edit; the source commit is the provenance trail."),
     "files": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
               for p in sorted(dest.glob("*.json")) if p.name != "MANIFEST.json"},
-}, indent=2) + "\n")
+})
+(dest / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
 PY
 }
 
+# The files a claimed version owns, from the names on stdin: for each stem the
+# newest `<stem>-v<N>.json` with N at or below the claimed version, or the
+# untokened `<stem>.json` when no tokened file is at or below it. Nothing from
+# a later version is vendored, so a directory that opens its next version does
+# not change what this runtime claims until the claim is moved here.
+SELECT_NAMES_PY='
+import re, sys
+claimed = int(sys.argv[1][1:]) if sys.argv[1] else 0
+token = re.compile(r"^(.*)-v([1-9][0-9]*)\.json$")
+best = {}
+for name in sys.stdin.read().split("\n"):
+    if not name.endswith(".json") or name == "MANIFEST.json":
+        continue
+    m = token.match(name)
+    stem, version = (m.group(1), int(m.group(2))) if m else (name[:-5], 0)
+    if not stem or version > claimed:
+        continue
+    if stem not in best or version > best[stem][0]:
+        best[stem] = (version, name)
+for _, name in sorted(best.values(), key=lambda pair: pair[1]):
+    print(name)
+'
+select_names() {  # the names arrive on stdin, so the script cannot be a heredoc
+  python3 -c "${SELECT_NAMES_PY}" "$1"
+}
+
+selected() {  # selected <name>: is this vendored name in the current selection
+  case "${SELECTED}" in *"|$1|"*) return 0 ;; esac
+  return 1
+}
+
 for entry in "${SETS[@]}"; do
-  SRC="${SPECS}/${entry%%:*}"
-  DEST="${REPO}/${entry##*:}"
-  label="${entry%%:*}"
+  IFS=: read -r src_rel dest_rel version <<< "${entry}"
+  if [ -n "${version}" ] && ! [[ "${version}" =~ ^v[1-9][0-9]*$ ]]; then
+    echo "SETS entry '${entry}': the claimed version must be 'v<N>' or absent" >&2
+    exit 1
+  fi
+  SRC="${SPECS}/${src_rel}"
+  DEST="${REPO}/${dest_rel}"
+  label="${src_rel}"
   test -d "${SRC}" || { echo "no vectors at ${SRC}" >&2; exit 1; }
   mkdir -p "${DEST}"
+  # "|a.json|b.json|", so `selected` is one substring match.
+  SELECTED="|$(ls "${SRC}" | select_names "${version}" | tr '\n' '|')"
 
   drift=0
   for file in "${SRC}"/*.json; do
     name="$(basename "${file}")"
+    selected "${name}" || continue
     if [ ! -f "${DEST}/${name}" ]; then
       echo "NEW      ${label}/${name}"; drift=1; continue
     fi
@@ -163,7 +215,7 @@ for entry in "${SETS[@]}"; do
   for file in "${DEST}"/*.json; do
     name="$(basename "${file}")"
     [ "${name}" = "MANIFEST.json" ] && continue
-    [ -f "${SRC}/${name}" ] || { echo "REMOVED  ${label}/${name}"; drift=1; }
+    selected "${name}" || { echo "REMOVED  ${label}/${name}"; drift=1; }
   done
 
   # Contents matching is not the whole story. The manifest also records which
@@ -218,8 +270,13 @@ for entry in "${SETS[@]}"; do
   # can also hold prose and subdirectories.
   stale=0
   if [ "${drift}" -eq 0 ] && [ "${reachable}" -eq 1 ]; then
+    # The same selection, applied to the pinned tree: a version the pinned
+    # commit had not yet opened is simply absent there.
+    PIN_SELECTED="|$(git -C "${SPECS}" ls-tree --name-only "${PINNED}:${label}" 2>/dev/null \
+      | select_names "${version}" | tr '\n' '|')"
     while IFS= read -r -d '' name; do
       case "${name}" in *.json) ;; *) continue ;; esac
+      case "${PIN_SELECTED}" in *"|${name}|"*) ;; *) continue ;; esac
       if [ ! -f "${DEST}/${name}" ]; then
         echo "STALE PIN ${label}/${name}: at ${PINNED} but not vendored here"
         stale=1
@@ -288,10 +345,13 @@ for entry in "${SETS[@]}"; do
   for file in "${DEST}"/*.json; do
     name="$(basename "${file}")"
     [ "${name}" = "MANIFEST.json" ] && continue
-    [ -f "${SRC}/${name}" ] || { rm -f "${file}"; echo "deleted  ${label}/${name}"; }
+    selected "${name}" || { rm -f "${file}"; echo "deleted  ${label}/${name}"; }
   done
-  cp "${SRC}"/*.json "${DEST}/"
-  write_manifest "${COMMIT}" "${entry%%:*}" "${DEST}"
+  for file in "${SRC}"/*.json; do
+    name="$(basename "${file}")"
+    selected "${name}" && cp "${file}" "${DEST}/${name}"
+  done
+  write_manifest "${COMMIT}" "${src_rel}" "${DEST}" "${version}"
   echo "${label}: updated to ${COMMIT}"
 done
 

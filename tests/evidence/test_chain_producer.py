@@ -35,7 +35,7 @@ from ori.security.evidence.chain import (
 )
 from ori.security.evidence.device_key import DeviceKeyError, EvidenceDeviceKey
 
-VECTORS = pathlib.Path(__file__).parent.parent / "vectors" / "evidence_v2"
+VECTORS = pathlib.Path(__file__).parent.parent / "vectors" / "evidence"
 DEVICE = "energy-monitor-ikeja-01"
 
 

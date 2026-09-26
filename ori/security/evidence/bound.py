@@ -22,10 +22,6 @@ from typing import Any, Protocol
 
 from ori.security.evidence.executor import EvidenceExecutor
 from ori.security.evidence.ingest_service import IngestOutcome
-from ori.security.evidence.registrar import (
-    AnchorRegistrationRequest,
-    RegistrationOutcome,
-)
 
 
 class IngestBackend(Protocol):
@@ -41,6 +37,10 @@ class IngestBackend(Protocol):
 
     def accept_epoch_confirmation(self, artifact: object) -> IngestOutcome:
         """Activate an anchor epoch the authority has confirmed."""
+        raise NotImplementedError
+
+    def accept_disposition(self, artifact: object) -> IngestOutcome:
+        """Suspend or close a registration attempt on a verified disposition."""
         raise NotImplementedError
 
     @property
@@ -79,6 +79,9 @@ class BoundIngestService:
     def accept_epoch_confirmation(self, artifact: object) -> IngestOutcome:
         return self._executor.run(self._service.accept_epoch_confirmation, artifact)
 
+    def accept_disposition(self, artifact: object) -> IngestOutcome:
+        return self._executor.run(self._service.accept_disposition, artifact)
+
     @property
     def rejections(self) -> tuple[IngestOutcome, ...]:
         return self._executor.run(lambda: self._service.rejections)
@@ -87,10 +90,24 @@ class BoundIngestService:
 class OutboundLedger(Protocol):
     """What the outbound façade needs. Implemented by EvidenceDeliveryLedger."""
 
-    def awaiting_custody(self, limit: int = 100) -> list[Any]:
+    def awaiting_custody(
+        self, limit: int = 100, *, after_seq: int = 0, only_seq: int | None = None
+    ) -> list[Any]:
         raise NotImplementedError
 
-    def pending_artifacts(self, limit: int = 100) -> list[Any]:
+    def pending_artifacts(
+        self,
+        limit: int = 100,
+        *,
+        artifact_type: str | None = None,
+        after_id: int = 0,
+        only_id: int | None = None,
+    ) -> list[Any]:
+        raise NotImplementedError
+
+    def record_artifact_fault(
+        self, holder: str, holder_id: int, *, reason: str, at_ms: int
+    ) -> None:
         raise NotImplementedError
 
     def find_by_envelope_digest(self, envelope_digest: str) -> Any:
@@ -117,6 +134,14 @@ class OutboundLedger(Protocol):
     ) -> bool:
         raise NotImplementedError
 
+    def registration_reoffers_due(
+        self, *, at_ms: int, limit: int = 100, only_id: int | None = None
+    ) -> list[Any]:
+        raise NotImplementedError
+
+    def note_registration_offer(self, artifact_digest: str, *, at_ms: int) -> None:
+        raise NotImplementedError
+
 
 def _rows(rows: list[Any]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
@@ -138,14 +163,45 @@ class BoundOutboundQueue:
         self._executor = executor
         self._ledger = ledger
 
-    async def awaiting_custody(self, limit: int = 100) -> list[dict[str, Any]]:
+    async def awaiting_custody(
+        self, limit: int = 100, *, after_seq: int = 0, only_seq: int | None = None
+    ) -> list[dict[str, Any]]:
         return await self._executor.run_async(
-            lambda: _rows(self._ledger.awaiting_custody(limit))
+            lambda: _rows(
+                self._ledger.awaiting_custody(
+                    limit, after_seq=after_seq, only_seq=only_seq
+                )
+            )
         )
 
-    async def pending_artifacts(self, limit: int = 100) -> list[dict[str, Any]]:
+    async def pending_artifacts(
+        self,
+        limit: int = 100,
+        *,
+        artifact_type: str | None = None,
+        after_id: int = 0,
+        only_id: int | None = None,
+    ) -> list[dict[str, Any]]:
         return await self._executor.run_async(
-            lambda: _rows(self._ledger.pending_artifacts(limit))
+            lambda: _rows(
+                self._ledger.pending_artifacts(
+                    limit,
+                    artifact_type=artifact_type,
+                    after_id=after_id,
+                    only_id=only_id,
+                )
+            )
+        )
+
+    async def record_artifact_fault(
+        self, holder: str, holder_id: int, *, reason: str, at_ms: int
+    ) -> None:
+        await self._executor.run_async(
+            self._ledger.record_artifact_fault,
+            holder,
+            holder_id,
+            reason=reason,
+            at_ms=at_ms,
         )
 
     async def find_envelope(self, envelope_digest: str) -> dict[str, Any] | None:
@@ -187,47 +243,46 @@ class BoundOutboundQueue:
             self._ledger.retire_artifact, artifact_digest, outcome=outcome, at_ms=at_ms
         )
 
+    async def registration_reoffers_due(
+        self, *, at_ms: int, limit: int = 100, only_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        return await self._executor.run_async(
+            lambda: _rows(
+                self._ledger.registration_reoffers_due(
+                    at_ms=at_ms, limit=limit, only_id=only_id
+                )
+            )
+        )
+
+    async def note_registration_offer(
+        self, artifact_digest: str, *, at_ms: int
+    ) -> None:
+        await self._executor.run_async(
+            self._ledger.note_registration_offer, artifact_digest, at_ms=at_ms
+        )
+
 
 class ExecutorBoundConfirmationBackend:
     """The confirmation coordinator's view of evidence state.
 
-    The coordinator was written against a chain object that answered both
-    questions from a private artifact in this process. Under the off-device
-    topology they are answered differently, and the difference is the point:
+    ``active_anchor_epoch_id`` reads epochs proven by a signed confirmation
+    arriving through ingest. Until one arrives it returns ``None``, and the
+    coordinator holds the obligation pending rather than treating an
+    unanswered registration as authority.
 
-    ``register_layer1_device`` no longer promotes anything. It produces a signed
-    anchor registration and records it as pending outbound. Authority is granted
-    only by a signed confirmation arriving back through ingest, so a device
-    cannot confirm its own epoch by asserting it locally.
-
-    ``active_anchor_epoch_id`` reads epochs proven by such a confirmation. Until
-    one arrives it returns ``None``, and the coordinator holds the obligation
-    pending rather than treating an unanswered registration as authority.
+    It offers no way to register an anchor. The runtime registers only its own
+    anchor, through the registration producer and under the commissioning
+    reference recorded at the device, so nothing reached through this view
+    can cause a confirmation.
     """
 
     def __init__(
         self,
         executor: EvidenceExecutor,
         reader: ConfirmedEpochProvider,
-        registrar: AnchorRegistrar,
     ) -> None:
         self._executor = executor
         self._reader = reader
-        self._registrar = registrar
-
-    def register_anchor(
-        self, request: AnchorRegistrationRequest
-    ) -> RegistrationOutcome:
-        """Ask the authority to register an anchor. Grants nothing locally."""
-        return self._executor.run(self._registrar.register, request)
 
     def active_anchor_epoch_id(self, device_id: str) -> str | None:
         return self._executor.run(self._reader.active_anchor_epoch_id, device_id)
-
-
-class AnchorRegistrar(Protocol):
-    """Produces an anchor registration, or reports why it cannot."""
-
-    def register(self, request: AnchorRegistrationRequest) -> RegistrationOutcome:
-        """Request registration. Grants nothing locally, whatever it returns."""
-        raise NotImplementedError

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Authoring tool for the commissioned-safety-binding v1 golden vectors.
 
-Reproduces `ori-specs/commissioned-safety-binding/binding-vectors-v1.json`
+Reproduces `ori-specs/commissioned-safety-binding/binding-vectors-v2.json`
 byte-for-byte. The tool is not the authority; the committed file is.
 
 Case expectations are authored from the contract, not recorded from an

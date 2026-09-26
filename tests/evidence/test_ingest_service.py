@@ -49,7 +49,8 @@ from ori.security.evidence.ledger import (
 )
 
 DEVICE = "energy-monitor-ikeja-01"
-EPOCH = "epoch-0002"
+EPOCH = "sha256:" + "2" * 64
+EARLIER_EPOCH = "sha256:" + "3" * 64
 KEY_ID = "anchor-key-2"
 CUSTODY_SECRET = "site-custody-secret"
 PREVIOUS_CUSTODY_SECRET = "site-custody-secret-previous"
@@ -188,6 +189,20 @@ def _confirmation(
         },
         EPOCH_DOMAIN,
         seed,
+    )
+
+
+def _register(ledger, key, epoch: str = EPOCH) -> None:
+    """Seal a registration for *epoch*, which is what a confirmation answers."""
+    ledger.seal_registration(
+        {
+            "v": 1,
+            "device_id": DEVICE,
+            "pubkey_hex": key.public_key_hex,
+            "anchor_epoch_id": epoch,
+            "commissioning_digest": "sha256:" + "a" * 64,
+        },
+        sealed_at_ms=1787000001000,
     )
 
 
@@ -420,8 +435,19 @@ def test_a_verified_confirmation_is_what_the_coordinator_reads(rig):
     reader = ConfirmedEpochReader(ledger)
     assert reader.active_anchor_epoch_id(DEVICE) is None, "authority by default"
 
+    _register(ledger, key)
     assert service.accept_epoch_confirmation(_confirmation(key.public_key_hex)).accepted
     assert reader.active_anchor_epoch_id(DEVICE) == EPOCH
+
+
+def test_a_confirmation_for_the_current_epoch_with_nothing_sealed_is_refused(rig):
+    """A confirmation answers a registration; one this device never sealed is refused."""
+    key, _, ledger, service = rig
+    outcome = service.accept_epoch_confirmation(_confirmation(key.public_key_hex))
+    assert not outcome.accepted
+    assert outcome.reason == REJECT_BINDING_MISMATCH
+    assert ConfirmedEpochReader(ledger).active_anchor_epoch_id(DEVICE) is None
+    assert not ledger.registration_confirmed(EPOCH, key.public_key_hex)
 
 
 @pytest.mark.parametrize(
@@ -458,18 +484,38 @@ def test_a_confirmation_signed_by_an_impostor_leaves_the_epoch_unset(rig):
     assert ConfirmedEpochReader(ledger).active_anchor_epoch_id(DEVICE) is None
 
 
-def test_a_later_confirmation_supersedes_an_earlier_one(rig):
-    """The authority is the sole source of epoch truth; a device does not adjudicate."""
+def test_a_late_confirmation_for_an_earlier_epoch_does_not_roll_back(rig):
+    """It closes that epoch's obligation, and the active epoch stays current."""
     key, _, ledger, service = rig
+    _register(ledger, key)
+    _register(ledger, key, EARLIER_EPOCH)
     assert service.accept_epoch_confirmation(_confirmation(key.public_key_hex)).accepted
 
-    later = _confirmation(key.public_key_hex)
-    later["anchor_epoch_id"] = "epoch-0003"
-    later["confirmed_at_ms"] = 1787000009000
-    _sign(later, EPOCH_DOMAIN, EPOCH_SEED)
-    assert service.accept_epoch_confirmation(later).accepted
+    late = _confirmation(key.public_key_hex)
+    late["anchor_epoch_id"] = EARLIER_EPOCH
+    late["confirmed_at_ms"] = 1787000000500
+    _sign(late, EPOCH_DOMAIN, EPOCH_SEED)
+    assert service.accept_epoch_confirmation(late).accepted
 
-    assert ConfirmedEpochReader(ledger).active_anchor_epoch_id(DEVICE) == "epoch-0003"
+    assert ConfirmedEpochReader(ledger).active_anchor_epoch_id(DEVICE) == EPOCH
+    assert ledger.registration_confirmed(EARLIER_EPOCH, key.public_key_hex)
+    assert ledger.open_registration_obligation(EARLIER_EPOCH) is None
+
+
+def test_a_confirmation_for_an_epoch_under_another_key_is_refused(rig):
+    """Sealed under this device, but not under the key the confirmation names."""
+    key, _, ledger, service = rig
+    _register(ledger, key)
+    other = _confirmation("11" * 32)
+    service_other = EvidenceIngestService(
+        ledger=ledger,
+        registry=service._registry,
+        device_id=DEVICE,
+        device_pubkey_hex="11" * 32,
+    )
+    outcome = service_other.accept_epoch_confirmation(other)
+    assert not outcome.accepted and outcome.reason == REJECT_BINDING_MISMATCH
+    assert ConfirmedEpochReader(ledger).active_anchor_epoch_id(DEVICE) is None
 
 
 # --------------------------------------------------------------------------
@@ -511,6 +557,7 @@ def test_an_artifact_lost_between_verification_and_application_is_safely_replaya
 
 def test_epoch_state_survives_a_restart(rig, tmp_path):
     key, _, ledger, service = rig
+    _register(ledger, key)
     assert service.accept_epoch_confirmation(_confirmation(key.public_key_hex)).accepted
     ledger.close()
 

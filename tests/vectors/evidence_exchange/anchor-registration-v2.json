@@ -10,6 +10,7 @@
   "signing_key_public_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
   "derivation_note": "key_id and anchor_epoch_id are derived per runtime-evidence-anchor/v1. An authority MUST recompute BOTH before accepting the registration -- key_id from device_id and the public key, anchor_epoch_id from those plus posture and capability_profile -- and MUST refuse the registration if either claimed value differs. pubkey_hex is converted to public_key_b64 by the normative bridge in evidence-exchange/v1: 64 lowercase hex characters, decoded to 32 bytes, re-encoded as padded RFC 4648 standard Base64.",
   "quarantine_note": "Two conforming registrations cannot naturally produce the same epoch with different keys, because the epoch is derived from the key; that would require a hash collision. The quarantine rule is a receiver-state invariant against corrupted, migrated, or pre-derivation rows, and is exercised in receiver-state/anchor-quarantine.json rather than here.",
+  "resolution_note": "Every case here is decided by the registration alone. Whether its commissioning_digest resolves, stays pending, conflicts or is refused commissioning_digest_mismatch depends on the authorisations the authority holds, so those outcomes live in receiver-state/commissioning-resolution.json.",
   "cases": [
     {
       "name": "valid",
@@ -39,36 +40,6 @@
         "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
         "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
         "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
-      }
-    },
-    {
-      "name": "commissioning_digest_mismatch",
-      "authenticator": "valid",
-      "expected": "reject",
-      "note": "Correctly self-signed, but names a commissioning digest that is not the digest of the authorisation the authority holds for this device and epoch. The device never presents the authorisation; the authority resolves the digest against what it holds.",
-      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a31313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
-      "artifact": {
-        "v": 1,
-        "device_id": "energy-monitor-ikeja-01",
-        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
-        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
-        "alg": "ed25519",
-        "posture": "software_wrapped",
-        "capability_profile": {
-          "artifact_purposes": [
-            "evidence_authority_epoch",
-            "evidence_authority_receipt",
-            "gateway_custody"
-          ],
-          "chain_protocol": "ori.evidence.v2",
-          "firmware_freshness_verified": false,
-          "signing_alg": "ed25519",
-          "v": 1
-        },
-        "registered_at_ms": 1787000000000,
-        "commissioning_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
-        "signature": "ed25519:t7X2VIC5VfDFVQV+woc5MGaFNVG4brBXY2a0OtfP3etO2E4M3HiceVvdRcWZILan0dJBCOzwc/fsjQPdBcx+Dw=="
       }
     },
     {

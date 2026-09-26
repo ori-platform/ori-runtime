@@ -91,6 +91,10 @@ class Rig:
     def queue_checkpoint(self) -> dict[str, Any]:
         return dict(self.executor.run(self.ledger.issue_checkpoint, issued_at_ms=5))
 
+    def hand_off(self, digest: str) -> None:
+        """Record the attempt the publisher records before a copy leaves."""
+        self.executor.run(self.ledger.note_artifact_attempt, digest, at_ms=2)
+
     def envelope(self, local_seq: int) -> dict[str, Any]:
         row = self.executor.run(self.ledger.find_by_local_seq, local_seq)
         assert row is not None
@@ -200,6 +204,7 @@ async def test_the_published_acknowledgement_retires_the_published_checkpoint(ri
         rig.ledger.queue_artifact, OUTBOX_CHECKPOINT, wire, created_at_ms=1
     )
     assert queued["artifact_digest"] == ack["payload"]["artifact_digest"]
+    rig.hand_off(queued["artifact_digest"])
 
     router = EvidenceOutboundAckRouter(
         device_id=DEVICE,
@@ -217,6 +222,7 @@ async def test_the_published_acknowledgement_retires_the_published_checkpoint(ri
 
 async def test_a_queued_acknowledgement_retires_a_checkpoint_once(rig):
     queued = rig.queue_checkpoint()
+    rig.hand_off(queued["artifact_digest"])
     router = _router(rig)
     first_ack = _ack("checkpoint", queued["artifact_digest"])
     first = await router.handle_ack(first_ack)
@@ -249,6 +255,7 @@ async def test_a_queued_acknowledgement_never_marks_custody_on_an_envelope(rig):
 async def test_a_full_queue_defers_without_dropping(rig):
     sealed = rig.seal(1)
     queued = rig.queue_checkpoint()
+    rig.hand_off(queued["artifact_digest"])
     router = _router(rig)
     for artifact_type, digest in (
         (ARTIFACT_DELIVERY_ENVELOPE, sealed["envelope_digest"]),
@@ -263,7 +270,8 @@ async def test_a_full_queue_defers_without_dropping(rig):
     assert envelope["custody_state"] == "none"
     artifact = rig.artifact(queued["artifact_digest"])
     assert artifact is not None
-    assert artifact["retired_at_ms"] is None and artifact["attempts"] == 1
+    # One handoff, and the deferral counted as a further attempt.
+    assert artifact["retired_at_ms"] is None and artifact["attempts"] == 2
     assert rig.failures() == []
 
 
@@ -315,6 +323,7 @@ async def test_a_refusal_episode_is_recorded_once_while_retries_continue(rig):
 @pytest.mark.parametrize("reason", ["malformed", "binding_mismatch"])
 async def test_a_refused_checkpoint_is_retired_as_refused(rig, reason):
     queued = rig.queue_checkpoint()
+    rig.hand_off(queued["artifact_digest"])
     await _router(rig).handle_ack(
         _ack("checkpoint", queued["artifact_digest"], outcome="refused", reason=reason)
     )

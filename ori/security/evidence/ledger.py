@@ -1,7 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""The runtime's delivery ledger, per `ori-specs/evidence-exchange/v1`.
+"""The runtime's delivery ledger, per `ori-specs/evidence-exchange/v2`.
 
 A chain row is evidence. Getting it to the off-device authority is a separate
 problem with separate failure modes, and this is where that problem lives: what
@@ -39,6 +39,8 @@ from typing import Any
 from ori.security.evidence.canonical import canonical_json
 from ori.security.evidence.chain import ENVELOPE_FIELDS, SCHEMA_VERSION
 from ori.security.evidence.device_key import EvidenceDeviceKey
+from ori.security.evidence.disposition import DispositionValue, VerifiedDisposition
+from ori.security.evidence.registration import reoffer_due
 
 ENVELOPE_VERSION = 1
 ENVELOPE_DOMAIN = b"ori.evidence_delivery_envelope.v1\x00"
@@ -58,7 +60,7 @@ RECEIPT_ACCEPTED = "accepted"
 #
 # Failing before an envelope is sealed is deliberately not here. It allocates
 # no sequence and produces no envelope, so there is nothing that could be
-# missing in transit — the contract calls that an evidence/v2 attestation gap,
+# missing in transit — the contract calls that an evidence/v3 attestation gap,
 # recorded against the action row, and duplicating it here would report one
 # failure as two in different registers.
 FAILURE_SEND = "send_failed"
@@ -74,7 +76,7 @@ FAILURE_REASONS = frozenset(
     }
 )
 
-_SCHEMA = """
+_DELIVERY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS evidence_delivery_ledger (
     local_seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id          TEXT    NOT NULL UNIQUE,
@@ -322,6 +324,213 @@ BEGIN
     SELECT RAISE(ABORT, 'a retired artifact cannot be requeued or restated');
 END;
 
+-- A retained copy whose bytes can no longer be carried as sealed: they are
+-- not UTF-8 text, or no longer hash to the digest recorded with them. The
+-- bytes stay where they are; the copy leaves the courier route and the
+-- checkpoint order, so it holds nothing behind it. Recorded once, and final.
+CREATE TABLE IF NOT EXISTS evidence_artifact_fault (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    holder         TEXT    NOT NULL,
+    holder_id      INTEGER NOT NULL,
+    reason         TEXT    NOT NULL,
+    observed_at_ms INTEGER NOT NULL,
+    CHECK (holder IN ('outbox', 'obligation', 'envelope')),
+    CHECK (reason IN ('unreadable', 'digest_mismatch')),
+    UNIQUE (holder, holder_id)
+);
+
+CREATE TRIGGER IF NOT EXISTS evidence_artifact_fault_no_delete
+BEFORE DELETE ON evidence_artifact_fault
+BEGIN
+    SELECT RAISE(ABORT, 'a recorded artifact fault cannot be cleared');
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_artifact_fault_no_update
+BEFORE UPDATE ON evidence_artifact_fault
+BEGIN
+    SELECT RAISE(ABORT, 'a recorded artifact fault cannot be cleared');
+END;
+"""
+
+#: Every table the anchor registration and its dispositions keep, and nothing
+#: else. Kept apart so what counts as registration state is derivable.
+_REGISTRATION_SCHEMA = """
+-- The confirmation obligation for a sealed anchor registration. Separate from
+-- the outbox row, which is only the courier handoff copy: a `queued`
+-- acknowledgement retires that copy and never this. The exact sealed bytes
+-- stay here and are re-offered until a verified epoch confirmation for the
+-- epoch closes the obligation, or a replacement reference supersedes it.
+CREATE TABLE IF NOT EXISTS evidence_registration_obligation (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id               TEXT    NOT NULL,
+    anchor_epoch_id         TEXT    NOT NULL,
+    pubkey_hex              TEXT    NOT NULL,
+    commissioning_reference TEXT    NOT NULL,
+    artifact_json           TEXT    NOT NULL,
+    artifact_digest         TEXT    NOT NULL UNIQUE,
+    sealed_at_ms            INTEGER NOT NULL,
+    offers                  INTEGER NOT NULL DEFAULT 0,
+    last_offer_ms           INTEGER,
+    state                   TEXT    NOT NULL DEFAULT 'open',
+    closed_at_ms            INTEGER,
+    -- A verified `retained_pending` disposition: re-offers stop, the
+    -- obligation stays open.
+    suspended_at_ms         INTEGER,
+    -- The terminal disposition value that closed the attempt.
+    closed_reason           TEXT,
+    CHECK (state IN ('open', 'confirmed', 'superseded', 'closed')),
+    CHECK (
+        (state = 'open' AND closed_at_ms IS NULL)
+     OR (state <> 'open' AND closed_at_ms IS NOT NULL)
+    ),
+    CHECK ((state = 'closed') = (closed_reason IS NOT NULL)),
+    CHECK (
+        length(anchor_epoch_id) = 71
+        AND substr(anchor_epoch_id, 1, 7) = 'sha256:'
+        AND substr(anchor_epoch_id, 8) NOT GLOB '*[^0-9a-f]*'
+    ),
+    CHECK (
+        length(commissioning_reference) = 71
+        AND substr(commissioning_reference, 1, 7) = 'sha256:'
+        AND substr(commissioning_reference, 8) NOT GLOB '*[^0-9a-f]*'
+    )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registration_obligation_open
+    ON evidence_registration_obligation (anchor_epoch_id) WHERE state = 'open';
+
+CREATE TRIGGER IF NOT EXISTS evidence_registration_obligation_no_delete
+BEFORE DELETE ON evidence_registration_obligation
+BEGIN
+    SELECT RAISE(ABORT, 'a registration obligation cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_registration_obligation_sealed
+BEFORE UPDATE ON evidence_registration_obligation
+WHEN OLD.device_id               IS NOT NEW.device_id
+  OR OLD.anchor_epoch_id         IS NOT NEW.anchor_epoch_id
+  OR OLD.pubkey_hex              IS NOT NEW.pubkey_hex
+  OR OLD.commissioning_reference IS NOT NEW.commissioning_reference
+  OR OLD.artifact_json           IS NOT NEW.artifact_json
+  OR OLD.artifact_digest         IS NOT NEW.artifact_digest
+  OR OLD.sealed_at_ms            IS NOT NEW.sealed_at_ms
+BEGIN
+    SELECT RAISE(ABORT, 'sealed registration bytes are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_registration_obligation_closed_is_final
+BEFORE UPDATE ON evidence_registration_obligation
+WHEN OLD.state <> 'open'
+ AND (NEW.state IS NOT OLD.state
+   OR NEW.closed_at_ms IS NOT OLD.closed_at_ms
+   OR NEW.closed_reason IS NOT OLD.closed_reason)
+BEGIN
+    SELECT RAISE(ABORT, 'a closed registration obligation cannot be reopened');
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_registration_obligation_suspension_is_final
+BEFORE UPDATE ON evidence_registration_obligation
+WHEN OLD.suspended_at_ms IS NOT NULL
+ AND NEW.suspended_at_ms IS NOT OLD.suspended_at_ms
+BEGIN
+    SELECT RAISE(ABORT, 'a suspended re-offer is resumed only by a new attempt');
+END;
+
+-- Verified epoch confirmations for epochs this device sealed a registration
+-- under, keyed by epoch. What `confirmed` is read from. The first verified
+-- confirmation for an epoch stands; a replay changes nothing.
+CREATE TABLE IF NOT EXISTS evidence_registration_confirmation (
+    anchor_epoch_id TEXT    PRIMARY KEY,
+    device_id       TEXT    NOT NULL,
+    pubkey_hex      TEXT    NOT NULL,
+    actor           TEXT    NOT NULL,
+    confirmed_at_ms INTEGER NOT NULL,
+    key_id          TEXT    NOT NULL,
+    applied_at_ms   INTEGER NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS evidence_registration_confirmation_final
+BEFORE UPDATE ON evidence_registration_confirmation
+BEGIN
+    SELECT RAISE(ABORT, 'a recorded confirmation cannot be rewritten');
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_registration_confirmation_no_delete
+BEFORE DELETE ON evidence_registration_confirmation
+BEGIN
+    SELECT RAISE(ABORT, 'a recorded confirmation cannot be deleted');
+END;
+
+-- The anchor this runtime is sealing under, recorded each time it opens its
+-- evidence, so a local tool can bind the epoch a health socket reports to the
+-- configured installation's own files.
+CREATE TABLE IF NOT EXISTS evidence_current_anchor (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    device_id       TEXT    NOT NULL,
+    anchor_epoch_id TEXT    NOT NULL,
+    key_id          TEXT    NOT NULL,
+    pubkey_hex      TEXT    NOT NULL,
+    posture         TEXT    NOT NULL,
+    recorded_at_ms  INTEGER NOT NULL
+);
+
+-- Every verified disposition applied, keyed by its own digest so a
+-- byte-identical repetition adds nothing. Immutable.
+CREATE TABLE IF NOT EXISTS evidence_disposition (
+    digest            TEXT    PRIMARY KEY,
+    triggering_digest TEXT    NOT NULL,
+    artifact_type     TEXT    NOT NULL,
+    device_id         TEXT    NOT NULL,
+    anchor_epoch_id   TEXT    NOT NULL,
+    scope             TEXT    NOT NULL,
+    disposition       TEXT    NOT NULL,
+    decided_at_ms     INTEGER NOT NULL,
+    key_id            TEXT    NOT NULL,
+    observed_at_ms    INTEGER NOT NULL,
+    CHECK (scope IN ('artifact', 'epoch', 'identity'))
+);
+
+CREATE TRIGGER IF NOT EXISTS evidence_disposition_final
+BEFORE UPDATE ON evidence_disposition
+BEGIN
+    SELECT RAISE(ABORT, 'an applied disposition cannot be rewritten');
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_disposition_no_delete
+BEFORE DELETE ON evidence_disposition
+BEGIN
+    SELECT RAISE(ABORT, 'an applied disposition cannot be deleted');
+END;
+
+-- Offers an authority disposition stopped: every checkpoint and registration
+-- re-offer for the identity, or those for one epoch. Neither restart,
+-- acknowledgement nor configuration clears one, so rows are immutable.
+CREATE TABLE IF NOT EXISTS evidence_offer_stop (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope           TEXT    NOT NULL,
+    device_id       TEXT    NOT NULL,
+    anchor_epoch_id TEXT,
+    disposition     TEXT    NOT NULL,
+    artifact_digest TEXT    NOT NULL,
+    stopped_at_ms   INTEGER NOT NULL,
+    CHECK (scope IN ('epoch', 'identity')),
+    CHECK ((scope = 'epoch') = (anchor_epoch_id IS NOT NULL))
+);
+
+CREATE TRIGGER IF NOT EXISTS evidence_offer_stop_no_delete
+BEFORE DELETE ON evidence_offer_stop
+BEGIN
+    SELECT RAISE(ABORT, 'a stopped offer cannot be cleared');
+END;
+
+CREATE TRIGGER IF NOT EXISTS evidence_offer_stop_no_update
+BEFORE UPDATE ON evidence_offer_stop
+BEGIN
+    SELECT RAISE(ABORT, 'a stopped offer cannot be cleared');
+END;
+"""
+
+_REFUSAL_SCHEMA = """
 -- Authority artifacts ingest refused, kept so a refused receipt is
 -- distinguishable from one that never arrived after a restart. Bounded: the
 -- newest rows are what an operator diagnoses from, and an attacker who can
@@ -351,6 +560,12 @@ BEGIN
 END;
 """
 
+_SCHEMA = _DELIVERY_SCHEMA + _REGISTRATION_SCHEMA + _REFUSAL_SCHEMA
+
+#: The column the outbox gains for a withdrawn registration copy, which the
+#: registration schema cannot declare because the table predates it.
+OUTBOX_WITHDRAWAL_COLUMN = "withdrawn_at_ms"
+
 #: Rows the refusal history keeps; older rows are dropped by trigger.
 INGEST_REFUSAL_RETENTION = 200
 
@@ -361,7 +576,24 @@ OUTBOX_ARTIFACT_TYPES = frozenset({OUTBOX_CHECKPOINT, OUTBOX_ANCHOR_REGISTRATION
 RETIRE_QUEUED = "queued"
 RETIRE_REFUSED = "refused"
 
-# The chain row's immutable columns, exactly as evidence/v2 defines them.
+#: Where a faulted copy is held, and why it cannot be carried.
+FAULT_HOLDER_OUTBOX = "outbox"
+FAULT_HOLDER_OBLIGATION = "obligation"
+FAULT_HOLDER_ENVELOPE = "envelope"
+FAULT_UNREADABLE = "unreadable"
+FAULT_DIGEST_MISMATCH = "digest_mismatch"
+
+OBLIGATION_OPEN = "open"
+OBLIGATION_CONFIRMED = "confirmed"
+OBLIGATION_SUPERSEDED = "superseded"
+OBLIGATION_CLOSED = "closed"
+
+#: What applying a verified disposition did: applied, or a byte-identical
+#: repetition of one already applied, which adds no state.
+DISPOSITION_APPLIED = "applied"
+DISPOSITION_REPEATED = "repeated"
+
+# The chain row's immutable columns, exactly as evidence/v3 defines them.
 # These are what travel, and therefore what "the same evidence" means.
 CARRIED_CHAIN_COLUMNS = (
     "seq",
@@ -431,6 +663,92 @@ class DeliveryLedgerError(RuntimeError):
     """The ledger could not seal, record, or be trusted."""
 
 
+class DispositionRefusedError(DeliveryLedgerError):
+    """A verified disposition this ledger will not apply; `reason` says why."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+
+
+def _reoffer_due_row(row: sqlite3.Row, at_ms: int) -> bool:
+    """Whether an obligation's next re-offer is due.
+
+    The delay runs from the previous attempted offer of these bytes: the last
+    re-offer when there has been one, otherwise the courier copy's last
+    handoff attempt. Sealing time is never the anchor. A row with no attempt
+    recorded, or whose schedule cannot be computed, is due rather than an
+    error in the drain.
+    """
+    try:
+        last = row["last_offer_ms"]
+        if last is None:
+            last = row["copy_attempt_ms"]
+        if last is None:
+            return True
+        return reoffer_due(int(row["offers"]), int(last), at_ms=at_ms)
+    except (TypeError, ValueError, OverflowError):
+        return True
+
+
+def copy_fault(wire: bytes, digest: str) -> str | None:
+    """Why a retained copy's bytes cannot be carried as sealed, or None."""
+    try:
+        wire.decode("utf-8")
+    except UnicodeDecodeError:
+        return FAULT_UNREADABLE
+    if "sha256:" + hashlib.sha256(wire).hexdigest() != digest:
+        return FAULT_DIGEST_MISMATCH
+    return None
+
+
+def _copy(row: sqlite3.Row, name: str) -> dict[str, Any]:
+    """One retained copy, its text columns read as bytes so none can fail the read.
+
+    `<name>_bytes` is exactly what is stored; `<name>_json` is its text, or
+    None when it is not UTF-8; the digest is decoded leniently, so a damaged
+    one reads as a digest that matches nothing.
+    """
+    out = dict(row)
+    wire = bytes(out.pop(f"{name}_bytes"))
+    out[f"{name}_bytes"] = wire
+    try:
+        out[f"{name}_json"] = wire.decode("utf-8")
+    except UnicodeDecodeError:
+        out[f"{name}_json"] = None
+    digest_field = "envelope_digest" if name == "envelope" else "artifact_digest"
+    out[digest_field] = bytes(out.pop("digest_bytes")).decode("utf-8", "replace")
+    return out
+
+
+def read_current_anchor(db_path: str | Path) -> dict[str, Any] | None:
+    """The anchor a runtime last recorded in this evidence store, read-only.
+
+    Creates nothing: an absent file is None, and a store with no write-ahead
+    log is read immutable, as the state store's read-only tools do.
+    """
+    path = Path(db_path)
+    if not path.is_file() or path.stat().st_size == 0:
+        return None
+    mode = "ro" if Path(f"{path}-wal").exists() else "ro&immutable=1"
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode={mode}", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        try:
+            row = conn.execute(
+                "SELECT device_id, anchor_epoch_id, key_id, pubkey_hex, posture"
+                " FROM evidence_current_anchor WHERE id = 1"
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if str(exc).startswith("no such table"):
+                return None
+            raise
+        return None if row is None else dict(row)
+    finally:
+        conn.close()
+
+
 class EvidenceDeliveryLedger:
     """Seals chain rows into signed envelopes and tracks what became of them."""
 
@@ -475,7 +793,44 @@ class EvidenceDeliveryLedger:
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._connection.execute("PRAGMA synchronous=FULL")
         self._connection.executescript(_SCHEMA)
+        self._add_outbox_withdrawal_column()
         self._boot_id: int | None = None
+
+    def _add_outbox_withdrawal_column(self) -> None:
+        """`withdrawn_at_ms` on an outbox created before the column existed.
+
+        Added rather than folded into the retirement outcome: the shipped
+        table's CHECK admits only `queued` and `refused`, and a withdrawn
+        courier copy was neither.
+        """
+        columns = {
+            str(row["name"])
+            for row in self._connection.execute("PRAGMA table_info(evidence_outbox)")
+        }
+        if "withdrawn_at_ms" not in columns:
+            self._connection.execute(
+                "ALTER TABLE evidence_outbox ADD COLUMN withdrawn_at_ms INTEGER"
+            )
+        self._connection.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS evidence_outbox_withdrawal_is_final
+            BEFORE UPDATE ON evidence_outbox
+            WHEN OLD.withdrawn_at_ms IS NOT NULL
+             AND NEW.withdrawn_at_ms IS NOT OLD.withdrawn_at_ms
+            BEGIN
+                SELECT RAISE(ABORT, 'a withdrawn courier copy cannot be restored');
+            END
+            """
+        )
+        # Every drain reads the few copies still waiting from an outbox that
+        # only grows; retired rows are the bulk and are never read again.
+        self._connection.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_evidence_outbox_waiting
+                ON evidence_outbox (id)
+             WHERE retired_at_ms IS NULL AND withdrawn_at_ms IS NULL
+            """
+        )
 
     @property
     def boot_id(self) -> int:
@@ -606,18 +961,115 @@ class EvidenceDeliveryLedger:
         ).fetchone()
         return row
 
-    def pending_artifacts(self, limit: int = 100) -> list[sqlite3.Row]:
-        """Queued artifacts no acknowledgement has retired, oldest first."""
-        return list(
-            self._connection.execute(
-                """
-                SELECT * FROM evidence_outbox
-                 WHERE retired_at_ms IS NULL
-                 ORDER BY id
+    def pending_artifacts(
+        self,
+        limit: int = 100,
+        *,
+        artifact_type: str | None = None,
+        after_id: int = 0,
+        only_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Queued artifacts no acknowledgement has retired, oldest first.
+
+        Narrowed by type and by position in the SQL itself, so every row the
+        limit admits is one the caller can carry; and by `only_id` to ask
+        whether one copy is still carriable, under the same conditions.
+
+        Text columns are read as bytes (`_copy`): a row whose bytes are not
+        UTF-8 must not make this query fail. A copy with a recorded fault is
+        not carried.
+
+        A copy an evidence disposition has stopped is not carried: a
+        checkpoint or registration whose epoch, or whose identity, is under an
+        offer stop, and a registration a `retained_pending` suspended. Nor is
+        a copy sealed under another device identity, which the courier can
+        only refuse. The outbox holds only those two types, so a delivery
+        envelope's handoff is unaffected by any stop.
+
+        A copy is another identity's only when its bytes are a JSON object
+        naming a text `device_id` other than this one. Anything else -- bytes
+        that are not JSON, a non-object, a missing or non-text `device_id` --
+        is carried, so the courier's refusal can retire it, and bytes that are
+        not JSON are never read as JSON here: one such row must not make this
+        query, and with it the route, fail.
+        """
+        rows = self._connection.execute(
+            """
+                SELECT b.id, b.artifact_type, b.created_at_ms, b.attempts,
+                       b.last_attempt_ms,
+                       CAST(b.artifact_json AS BLOB) AS artifact_bytes,
+                       CAST(b.artifact_digest AS BLOB) AS digest_bytes
+                  FROM evidence_outbox AS b
+                 WHERE b.retired_at_ms IS NULL AND b.withdrawn_at_ms IS NULL
+                   AND b.id > ?
+                   AND (? IS NULL OR b.id = ?)
+                   AND (? IS NULL OR b.artifact_type = ?)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM evidence_artifact_fault AS f
+                        WHERE f.holder = 'outbox' AND f.holder_id = b.id
+                   )
+                   AND NOT COALESCE(
+                       CASE WHEN json_valid(b.artifact_json)
+                            THEN json_type(b.artifact_json, '$.device_id') = 'text'
+                             AND json_extract(b.artifact_json, '$.device_id') <> ?
+                       END, 0)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM evidence_offer_stop AS s
+                        WHERE s.device_id = CASE WHEN json_valid(b.artifact_json)
+                              THEN json_extract(b.artifact_json, '$.device_id') END
+                          AND (s.scope = 'identity'
+                               OR s.anchor_epoch_id = CASE
+                                  WHEN json_valid(b.artifact_json)
+                                  THEN json_extract(b.artifact_json, '$.anchor_epoch_id')
+                                  END)
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM evidence_registration_obligation AS o
+                        WHERE o.artifact_digest = b.artifact_digest
+                          AND o.suspended_at_ms IS NOT NULL
+                   )
+                 ORDER BY b.id
                  LIMIT ?
                 """,
-                (int(limit),),
-            )
+            (
+                int(after_id),
+                only_id,
+                only_id,
+                artifact_type,
+                artifact_type,
+                self._device_id,
+                int(limit),
+            ),
+        )
+        return [_copy(row, "artifact") for row in rows]
+
+    def foreign_identity_pending_count(self) -> int:
+        """Unretired copies sealed under another device identity, never carried."""
+        row = self._connection.execute(
+            """
+            SELECT COUNT(*) AS n FROM evidence_outbox
+             WHERE retired_at_ms IS NULL AND withdrawn_at_ms IS NULL
+               AND COALESCE(
+                   CASE WHEN json_valid(artifact_json)
+                        THEN json_type(artifact_json, '$.device_id') = 'text'
+                         AND json_extract(artifact_json, '$.device_id') <> ?
+                   END, 0)
+            """,
+            (self._device_id,),
+        ).fetchone()
+        return int(row["n"])
+
+    def record_artifact_fault(
+        self, holder: str, holder_id: int, *, reason: str, at_ms: int
+    ) -> None:
+        """Take a copy that cannot be carried as sealed off the route, once."""
+        self._connection.execute(
+            """
+            INSERT OR IGNORE INTO evidence_artifact_fault (
+                holder, holder_id, reason, observed_at_ms
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (str(holder), int(holder_id), str(reason), int(at_ms)),
         )
 
     def note_artifact_attempt(self, artifact_digest: str, *, at_ms: int) -> None:
@@ -649,6 +1101,487 @@ class EvidenceDeliveryLedger:
             (int(at_ms), outcome, str(artifact_digest)),
         )
         return cursor.rowcount == 1
+
+    # -- registration obligation -----------------------------------------
+
+    def open_registration_obligation(self, anchor_epoch_id: str) -> sqlite3.Row | None:
+        """The open confirmation obligation for *anchor_epoch_id*, if any."""
+        row: sqlite3.Row | None = self._connection.execute(
+            """
+            SELECT * FROM evidence_registration_obligation
+             WHERE anchor_epoch_id = ? AND state = ?
+            """,
+            (str(anchor_epoch_id), OBLIGATION_OPEN),
+        ).fetchone()
+        return row
+
+    def current_registration_obligation(
+        self, anchor_epoch_id: str
+    ) -> sqlite3.Row | None:
+        """The latest attempt for *anchor_epoch_id* that a replacement has not superseded."""
+        row: sqlite3.Row | None = self._connection.execute(
+            """
+            SELECT * FROM evidence_registration_obligation
+             WHERE anchor_epoch_id = ? AND state <> ?
+             ORDER BY id DESC
+             LIMIT 1
+            """,
+            (str(anchor_epoch_id), OBLIGATION_SUPERSEDED),
+        ).fetchone()
+        return row
+
+    def offers_stopped(self, anchor_epoch_id: str) -> bool:
+        """Whether a disposition stopped this identity's, or this epoch's, offers."""
+        row = self._connection.execute(
+            """
+            SELECT 1 FROM evidence_offer_stop
+             WHERE device_id = ?
+               AND (scope = 'identity' OR anchor_epoch_id = ?)
+             LIMIT 1
+            """,
+            (self._device_id, str(anchor_epoch_id)),
+        ).fetchone()
+        return row is not None
+
+    def offer_stop_scope(self, anchor_epoch_id: str) -> str | None:
+        """`identity` or `epoch` when a stop covers this epoch; identity wins."""
+        if self._identity_stopped():
+            return "identity"
+        row = self._connection.execute(
+            """
+            SELECT 1 FROM evidence_offer_stop
+             WHERE device_id = ? AND scope = 'epoch' AND anchor_epoch_id = ?
+             LIMIT 1
+            """,
+            (self._device_id, str(anchor_epoch_id)),
+        ).fetchone()
+        return "epoch" if row is not None else None
+
+    def registration_confirmed(self, anchor_epoch_id: str, pubkey_hex: str) -> bool:
+        """Whether a verified confirmation of a registration sealed here is held."""
+        row = self._connection.execute(
+            """
+            SELECT 1 FROM evidence_registration_confirmation
+             WHERE anchor_epoch_id = ? AND device_id = ? AND pubkey_hex = ?
+            """,
+            (str(anchor_epoch_id), self._device_id, str(pubkey_hex).lower()),
+        ).fetchone()
+        return row is not None
+
+    def registration_sealed(self, anchor_epoch_id: str, pubkey_hex: str) -> bool:
+        """Whether this device sealed a registration for this epoch and key."""
+        row = self._connection.execute(
+            """
+            SELECT 1 FROM evidence_registration_obligation
+             WHERE anchor_epoch_id = ? AND device_id = ? AND pubkey_hex = ?
+             LIMIT 1
+            """,
+            (str(anchor_epoch_id), self._device_id, str(pubkey_hex).lower()),
+        ).fetchone()
+        return row is not None
+
+    def record_current_anchor(self, *, posture: str, recorded_at_ms: int) -> None:
+        """Record the anchor this ledger seals under, for a local tool to bind to."""
+        self._connection.execute(
+            """
+            INSERT INTO evidence_current_anchor (
+                id, device_id, anchor_epoch_id, key_id, pubkey_hex, posture,
+                recorded_at_ms
+            ) VALUES (1, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                device_id       = excluded.device_id,
+                anchor_epoch_id = excluded.anchor_epoch_id,
+                key_id          = excluded.key_id,
+                pubkey_hex      = excluded.pubkey_hex,
+                posture         = excluded.posture,
+                recorded_at_ms  = excluded.recorded_at_ms
+            """,
+            (
+                self._device_id,
+                self._anchor_epoch_id,
+                self._key_id,
+                self._key.public_key_hex,
+                str(posture),
+                int(recorded_at_ms),
+            ),
+        )
+
+    def seal_registration(
+        self, registration: dict[str, Any], *, sealed_at_ms: int
+    ) -> sqlite3.Row:
+        """Retain a signed registration as its obligation and its courier copy.
+
+        One transaction, so the obligation never exists without the handoff
+        copy or the reverse. An open obligation for the same epoch under a
+        different reference is superseded in the same transaction: the
+        replacement reference is what the operator recorded with ``--force``.
+        """
+        if registration.get("device_id") != self._device_id:
+            raise DeliveryLedgerError(
+                "a registration must name the device this ledger is bound to"
+            )
+        wire = canonical_json(registration)
+        digest = "sha256:" + hashlib.sha256(wire).hexdigest()
+        epoch = str(registration["anchor_epoch_id"])
+        reference = str(registration["commissioning_digest"])
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            current = self.open_registration_obligation(epoch)
+            if current is not None and str(current["commissioning_reference"]) == (
+                reference
+            ):
+                self._connection.execute("ROLLBACK")
+                return current
+            if current is not None:
+                self._connection.execute(
+                    """
+                    UPDATE evidence_registration_obligation
+                       SET state = ?, closed_at_ms = ?
+                     WHERE id = ?
+                    """,
+                    (OBLIGATION_SUPERSEDED, int(sealed_at_ms), int(current["id"])),
+                )
+                # The superseded registration's courier copy is withdrawn with
+                # it: carrying bytes the operator replaced would ask the
+                # authority to retain the reference they corrected.
+                self._connection.execute(
+                    """
+                    UPDATE evidence_outbox
+                       SET withdrawn_at_ms = ?
+                     WHERE artifact_digest = ?
+                       AND retired_at_ms IS NULL
+                       AND withdrawn_at_ms IS NULL
+                    """,
+                    (int(sealed_at_ms), str(current["artifact_digest"])),
+                )
+            self._connection.execute(
+                """
+                INSERT INTO evidence_registration_obligation (
+                    device_id, anchor_epoch_id, pubkey_hex, commissioning_reference,
+                    artifact_json, artifact_digest, sealed_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self._device_id,
+                    epoch,
+                    str(registration["pubkey_hex"]).lower(),
+                    reference,
+                    wire.decode("utf-8"),
+                    digest,
+                    int(sealed_at_ms),
+                ),
+            )
+            self._connection.execute(
+                """
+                INSERT OR IGNORE INTO evidence_outbox (
+                    artifact_type, artifact_json, artifact_digest, created_at_ms
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    OUTBOX_ANCHOR_REGISTRATION,
+                    wire.decode("utf-8"),
+                    digest,
+                    int(sealed_at_ms),
+                ),
+            )
+            self._connection.execute("COMMIT")
+        except BaseException:
+            self._connection.execute("ROLLBACK")
+            raise
+        sealed = self.open_registration_obligation(epoch)
+        if sealed is None:  # pragma: no cover - the insert committed
+            raise DeliveryLedgerError("the sealed registration could not be read back")
+        return sealed
+
+    def registration_reoffers_due(
+        self, *, at_ms: int, limit: int = 100, only_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Open obligations whose courier copy is retired and whose delay has run.
+
+        While the handoff copy is still pending the outbox carries it on its
+        own schedule; offering the obligation as well would carry it twice.
+        Each epoch's obligation is independent: one left open under an earlier
+        epoch is re-offered under the same rules until it resolves, because
+        evidence sealed under that epoch is accepted only once it is confirmed.
+
+        Whether the delay has run is computed here, not in SQL, so candidates
+        are read page by page until `limit` due ones are found: a page of
+        obligations not yet due must not hide one that is. `only_id` asks
+        whether one obligation is still due to be offered.
+        """
+        due: list[dict[str, Any]] = []
+        after_id = 0
+        while len(due) < limit:
+            rows = self._connection.execute(
+                """
+                SELECT o.id, o.device_id, o.anchor_epoch_id, o.sealed_at_ms,
+                       o.offers, o.last_offer_ms,
+                       (SELECT MAX(b.last_attempt_ms) FROM evidence_outbox AS b
+                         WHERE b.artifact_digest = o.artifact_digest)
+                         AS copy_attempt_ms,
+                       CAST(o.artifact_json AS BLOB) AS artifact_bytes,
+                       CAST(o.artifact_digest AS BLOB) AS digest_bytes
+                  FROM evidence_registration_obligation AS o
+                 WHERE o.state = ?
+                   AND o.device_id = ?
+                   AND o.suspended_at_ms IS NULL
+                   AND o.id > ?
+                   AND (? IS NULL OR o.id = ?)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM evidence_artifact_fault AS f
+                        WHERE f.holder = 'obligation' AND f.holder_id = o.id
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM evidence_outbox AS b
+                        WHERE b.artifact_digest = o.artifact_digest
+                          AND b.retired_at_ms IS NULL
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM evidence_offer_stop AS s
+                        WHERE s.device_id = o.device_id
+                          AND (s.scope = 'identity' OR s.anchor_epoch_id = o.anchor_epoch_id)
+                   )
+                 ORDER BY o.id
+                 LIMIT ?
+                """,
+                (
+                    OBLIGATION_OPEN,
+                    self._device_id,
+                    after_id,
+                    only_id,
+                    only_id,
+                    int(limit),
+                ),
+            ).fetchall()
+            if not rows:
+                break
+            after_id = int(rows[-1]["id"])
+            due.extend(
+                _copy(row, "artifact") for row in rows if _reoffer_due_row(row, at_ms)
+            )
+        return due[:limit]
+
+    def _apply_verified_disposition(
+        self, disposition: VerifiedDisposition, *, at_ms: int
+    ) -> str:
+        """Verification steps 4 to 6 and the effect, in one transaction.
+
+        Not a public boundary: it trusts the signature it is told was checked.
+        It checks everything local state can decide -- the device, that the
+        triggering digest names an artifact this device sealed for delivery
+        under the epoch the disposition names, and whether the effect is
+        already in force -- and raises `DispositionRefusedError` otherwise,
+        changing nothing.
+        """
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            outcome = self._apply_disposition_in_transaction(disposition, at_ms)
+            self._connection.execute("COMMIT")
+        except BaseException:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            raise
+        return outcome
+
+    def _apply_disposition_in_transaction(
+        self, disposition: VerifiedDisposition, at_ms: int
+    ) -> str:
+        applied = self._connection.execute(
+            "SELECT 1 FROM evidence_disposition WHERE digest = ?",
+            (str(disposition.digest),),
+        ).fetchone()
+        if applied is not None:
+            return DISPOSITION_REPEATED
+        if disposition.device_id != self._device_id:
+            raise DispositionRefusedError(
+                "binding_mismatch", "the disposition names another device"
+            )
+        sealed = self.sealed_artifact(disposition.triggering_digest)
+        if sealed is None:
+            raise DispositionRefusedError(
+                "binding_mismatch",
+                "the disposition names an artifact this device did not seal",
+            )
+        artifact_type, artifact_epoch, artifact_device = sealed
+        if artifact_device != self._device_id:
+            raise DispositionRefusedError(
+                "binding_mismatch",
+                "the disposition names an artifact another device identity sealed",
+            )
+        if disposition.anchor_epoch_id not in ("", artifact_epoch):
+            raise DispositionRefusedError(
+                "binding_mismatch",
+                "the disposition names an epoch its artifact does not",
+            )
+        value = disposition.value
+        registration = artifact_type == OUTBOX_ANCHOR_REGISTRATION
+        if value is DispositionValue.RETAINED_PENDING and not registration:
+            raise DispositionRefusedError(
+                "binding_mismatch", "retained_pending names no anchor registration"
+            )
+
+        row: sqlite3.Row | None = None
+        if registration and value in (
+            DispositionValue.RETAINED_PENDING,
+            DispositionValue.ARTIFACT_TERMINAL,
+        ):
+            row = self._connection.execute(
+                "SELECT * FROM evidence_registration_obligation WHERE artifact_digest = ?",
+                (str(disposition.triggering_digest),),
+            ).fetchone()
+            if row is None or str(row["state"]) != OBLIGATION_OPEN:
+                raise DispositionRefusedError(
+                    "superseded", "that registration is already confirmed or closed"
+                )
+        if value is DispositionValue.EPOCH_REPROVISIONING_REQUIRED and (
+            self.offers_stopped(artifact_epoch)
+        ):
+            raise DispositionRefusedError(
+                "superseded", "offers under that epoch are already stopped"
+            )
+        if value is DispositionValue.IDENTITY_REPLACEMENT_REQUIRED and (
+            self._identity_stopped()
+        ):
+            raise DispositionRefusedError(
+                "superseded", "offers for this identity are already stopped"
+            )
+
+        if value is DispositionValue.RETAINED_PENDING:
+            assert row is not None
+            if row["suspended_at_ms"] is None:
+                self._connection.execute(
+                    "UPDATE evidence_registration_obligation"
+                    " SET suspended_at_ms = ? WHERE id = ?",
+                    (int(at_ms), int(row["id"])),
+                )
+        elif value is DispositionValue.ARTIFACT_TERMINAL and row is not None:
+            self._connection.execute(
+                """
+                UPDATE evidence_registration_obligation
+                   SET state = ?, closed_at_ms = ?, closed_reason = ?
+                 WHERE id = ?
+                """,
+                (OBLIGATION_CLOSED, int(at_ms), value.value, int(row["id"])),
+            )
+            self._connection.execute(
+                """
+                UPDATE evidence_outbox
+                   SET withdrawn_at_ms = ?
+                 WHERE artifact_digest = ?
+                   AND retired_at_ms IS NULL
+                   AND withdrawn_at_ms IS NULL
+                """,
+                (int(at_ms), str(disposition.triggering_digest)),
+            )
+        elif value in (
+            DispositionValue.EPOCH_REPROVISIONING_REQUIRED,
+            DispositionValue.IDENTITY_REPLACEMENT_REQUIRED,
+        ):
+            identity = value is DispositionValue.IDENTITY_REPLACEMENT_REQUIRED
+            self._connection.execute(
+                """
+                INSERT INTO evidence_offer_stop (
+                    scope, device_id, anchor_epoch_id, disposition,
+                    artifact_digest, stopped_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "identity" if identity else "epoch",
+                    self._device_id,
+                    None if identity else artifact_epoch,
+                    value.value,
+                    str(disposition.triggering_digest),
+                    int(at_ms),
+                ),
+            )
+        self._connection.execute(
+            """
+            INSERT INTO evidence_disposition (
+                digest, triggering_digest, artifact_type, device_id,
+                anchor_epoch_id, scope, disposition, decided_at_ms, key_id,
+                observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(disposition.digest),
+                str(disposition.triggering_digest),
+                artifact_type,
+                self._device_id,
+                artifact_epoch,
+                disposition.scope.value,
+                value.value,
+                int(disposition.decided_at_ms),
+                str(disposition.key_id),
+                int(at_ms),
+            ),
+        )
+        return DISPOSITION_APPLIED
+
+    def sealed_artifact(self, digest: str) -> tuple[str, str, str] | None:
+        """The type, epoch and device of an artifact sealed for delivery here.
+
+        Answered from the tables that hold every sealed artifact for the life
+        of the identity, none of which permits deletion: registrations and
+        checkpoints in the outbox, envelopes in the delivery ledger. The device
+        is the one the artifact names, which is not necessarily this ledger's:
+        the same files can outlive a change of device identity.
+        """
+        row = self._connection.execute(
+            "SELECT artifact_type, artifact_json FROM evidence_outbox"
+            " WHERE artifact_digest = ?",
+            (str(digest),),
+        ).fetchone()
+        if row is not None:
+            try:
+                artifact = json.loads(str(row["artifact_json"]))
+            except ValueError:
+                return None
+            if not isinstance(artifact, dict):
+                return None
+            return (
+                str(row["artifact_type"]),
+                str(artifact.get("anchor_epoch_id") or ""),
+                str(artifact.get("device_id") or ""),
+            )
+        envelope = self._connection.execute(
+            "SELECT anchor_epoch_id, device_id FROM evidence_delivery_ledger"
+            " WHERE envelope_digest = ?",
+            (str(digest),),
+        ).fetchone()
+        if envelope is not None:
+            return (
+                "delivery_envelope",
+                str(envelope["anchor_epoch_id"]),
+                str(envelope["device_id"]),
+            )
+        return None
+
+    def _identity_stopped(self) -> bool:
+        row = self._connection.execute(
+            "SELECT 1 FROM evidence_offer_stop"
+            " WHERE device_id = ? AND scope = 'identity' LIMIT 1",
+            (self._device_id,),
+        ).fetchone()
+        return row is not None
+
+    def last_disposition(self) -> sqlite3.Row | None:
+        """The most recently applied disposition, if any."""
+        row: sqlite3.Row | None = self._connection.execute(
+            "SELECT disposition, scope, observed_at_ms FROM evidence_disposition"
+            " ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        return row
+
+    def note_registration_offer(self, artifact_digest: str, *, at_ms: int) -> None:
+        """Record one re-offer of an open obligation's sealed bytes."""
+        self._connection.execute(
+            """
+            UPDATE evidence_registration_obligation
+               SET offers = offers + 1, last_offer_ms = ?
+             WHERE artifact_digest = ? AND state = ?
+            """,
+            (int(at_ms), str(artifact_digest), OBLIGATION_OPEN),
+        )
 
     # -- ingest refusals -------------------------------------------------
 
@@ -791,7 +1724,7 @@ class EvidenceDeliveryLedger:
         if not isinstance(envelope, dict) or set(envelope) != set(ENVELOPE_FIELDS):
             raise DeliveryLedgerError(
                 "the chain row's signed envelope does not carry exactly the "
-                "fields evidence/v2 defines"
+                "fields evidence/v3 defines"
             )
         if envelope.get("schema_version") != SCHEMA_VERSION:
             raise DeliveryLedgerError(
@@ -973,6 +1906,87 @@ class EvidenceDeliveryLedger:
             ),
         )
 
+    def _apply_verified_epoch_confirmation(
+        self,
+        device_id: str,
+        *,
+        anchor_epoch_id: str,
+        pubkey_hex: str,
+        actor: str,
+        confirmed_at_ms: int,
+        key_id: str,
+        closed_at_ms: int,
+    ) -> int:
+        """Persist a verified confirmation and close the obligation it answers.
+
+        Bound to a registration this device sealed for that epoch and key, and
+        refused otherwise: a confirmation is an answer, and one naming nothing
+        this device asked for answers nothing. The active epoch moves only
+        when the confirmed epoch is the one this ledger seals under, so a late
+        confirmation for an earlier epoch never rolls it back.
+
+        One transaction: a confirmation recorded without closing its
+        obligation would leave the device re-offering an applied registration,
+        and an obligation closed without the confirmation would report
+        `confirmed` with nothing held. Returns the obligations closed.
+        """
+        pubkey = str(pubkey_hex).lower()
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            if str(device_id) != self._device_id or not self.registration_sealed(
+                anchor_epoch_id, pubkey
+            ):
+                raise DeliveryLedgerError(
+                    "the confirmation names no registration this device sealed"
+                )
+            self._connection.execute(
+                """
+                INSERT OR IGNORE INTO evidence_registration_confirmation (
+                    anchor_epoch_id, device_id, pubkey_hex, actor,
+                    confirmed_at_ms, key_id, applied_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(anchor_epoch_id),
+                    self._device_id,
+                    pubkey,
+                    str(actor),
+                    int(confirmed_at_ms),
+                    str(key_id),
+                    int(closed_at_ms),
+                ),
+            )
+            if str(anchor_epoch_id) == self._anchor_epoch_id:
+                self._apply_verified_epoch(
+                    device_id,
+                    anchor_epoch_id=anchor_epoch_id,
+                    pubkey_hex=pubkey,
+                    actor=actor,
+                    confirmed_at_ms=confirmed_at_ms,
+                    key_id=key_id,
+                )
+            cursor = self._connection.execute(
+                """
+                UPDATE evidence_registration_obligation
+                   SET state = ?, closed_at_ms = ?
+                 WHERE anchor_epoch_id = ? AND pubkey_hex = ? AND state = ?
+                """,
+                (
+                    OBLIGATION_CONFIRMED,
+                    int(closed_at_ms),
+                    str(anchor_epoch_id),
+                    pubkey,
+                    OBLIGATION_OPEN,
+                ),
+            )
+            closed = cursor.rowcount
+            self._connection.execute("COMMIT")
+        except BaseException:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            raise
+        return closed
+
     def active_anchor_epoch_id(self, device_id: str) -> str | None:
         """The epoch the authority last confirmed for this device, if any.
 
@@ -1101,7 +2115,7 @@ class EvidenceDeliveryLedger:
 
         It must name a sealed envelope. A delivery failure without one has no
         referent — failing before sealing allocates nothing and is an
-        evidence/v2 attestation gap against the action row, not a hole in a
+        evidence/v3 attestation gap against the action row, not a hole in a
         delivery sequence that never had a member.
 
         It cannot describe anything but sending. A runtime cannot witness a
@@ -1143,24 +2157,50 @@ class EvidenceDeliveryLedger:
         ).fetchone()
         return row
 
-    def awaiting_custody(self, limit: int = 100) -> list[sqlite3.Row]:
+    def awaiting_custody(
+        self, limit: int = 100, *, after_seq: int = 0, only_seq: int | None = None
+    ) -> list[dict[str, Any]]:
         """Sealed envelopes no courier has acknowledged holding, oldest first.
 
         What the publisher carries. Retained until a verified custody
         acknowledgement arrives through ingest: a `queued` transport
         acknowledgement does not release an envelope, per gateway-api/v1.
+        `after_seq` pages through them; `only_seq` asks whether one envelope
+        is still carriable, under the same conditions.
+
+        An envelope whose epoch or identity an evidence disposition stopped
+        is not handed off: it stays sealed and durable here, its delivery
+        state `stopped`, which is derived from the stop record rather than
+        written onto the envelope, so nothing sealed is rewritten. Nor is one
+        with a recorded fault. The envelope is read as bytes (`_copy`), so a
+        damaged row cannot make this query fail.
         """
-        return list(
-            self._connection.execute(
-                """
-                SELECT * FROM evidence_delivery_ledger
-                 WHERE custody_state = ?
-                 ORDER BY local_seq
+        rows = self._connection.execute(
+            """
+                SELECT l.local_seq, l.chain_seq, l.sealed_at_ms, l.attempts,
+                       l.last_attempt_ms,
+                       CAST(l.envelope_json AS BLOB) AS envelope_bytes,
+                       CAST(l.envelope_digest AS BLOB) AS digest_bytes
+                  FROM evidence_delivery_ledger AS l
+                 WHERE l.custody_state = ?
+                   AND l.local_seq > ?
+                   AND (? IS NULL OR l.local_seq = ?)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM evidence_artifact_fault AS f
+                        WHERE f.holder = 'envelope' AND f.holder_id = l.local_seq
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM evidence_offer_stop AS s
+                        WHERE s.device_id = l.device_id
+                          AND (s.scope = 'identity'
+                               OR s.anchor_epoch_id = l.anchor_epoch_id)
+                   )
+                 ORDER BY l.local_seq
                  LIMIT ?
                 """,
-                (CUSTODY_NONE, int(limit)),
-            )
+            (CUSTODY_NONE, int(after_seq), only_seq, only_seq, int(limit)),
         )
+        return [_copy(row, "envelope") for row in rows]
 
     def find_by_local_seq(self, local_seq: int) -> sqlite3.Row | None:
         row: sqlite3.Row | None = self._connection.execute(
@@ -1189,12 +2229,75 @@ class EvidenceDeliveryLedger:
         those degrade for different reasons. A rising custody count means
         delivery has stalled at the first hop, which is the failure this metric
         exists to make visible.
+
+        An envelope under a stop is still counted: it is sealed and no courier
+        holds it, which is what the field means; `stopped_local` says how many
+        of them a stop keeps here.
         """
         row = self._connection.execute(
-            "SELECT COUNT(*) AS pending FROM evidence_delivery_ledger "
-            "WHERE custody_state = 'none'"
+            """
+            SELECT COUNT(*) AS pending FROM evidence_delivery_ledger AS l
+             WHERE l.custody_state = 'none'
+            """
         ).fetchone()
         return int(row["pending"])
+
+    def stopped_local(self) -> tuple[int, int, int | None]:
+        """Count, bytes and earliest entry into stopped custody, across epochs.
+
+        Retained artifacts a durable stop covers, matched by the predicate the
+        carry queries exclude them by: envelopes no courier holds, and outbox
+        copies neither retired nor withdrawn. An artifact entered stopped
+        custody when the first stop covering it was recorded, or when it was
+        sealed if that was later. Diagnostics only.
+        """
+        row = self._connection.execute(
+            """
+            WITH stopped (size, since) AS (
+                SELECT length(CAST(l.envelope_json AS BLOB)),
+                       MAX(l.sealed_at_ms, (
+                           SELECT MIN(s.stopped_at_ms) FROM evidence_offer_stop AS s
+                            WHERE s.device_id = l.device_id
+                              AND (s.scope = 'identity'
+                                   OR s.anchor_epoch_id = l.anchor_epoch_id)))
+                  FROM evidence_delivery_ledger AS l
+                 WHERE l.custody_state = 'none'
+                   AND EXISTS (
+                       SELECT 1 FROM evidence_offer_stop AS s
+                        WHERE s.device_id = l.device_id
+                          AND (s.scope = 'identity'
+                               OR s.anchor_epoch_id = l.anchor_epoch_id)
+                   )
+                UNION ALL
+                SELECT length(CAST(b.artifact_json AS BLOB)),
+                       MAX(b.created_at_ms, (
+                           SELECT MIN(s.stopped_at_ms) FROM evidence_offer_stop AS s
+                            WHERE s.device_id = CASE WHEN json_valid(b.artifact_json)
+                                  THEN json_extract(b.artifact_json, '$.device_id') END
+                              AND (s.scope = 'identity'
+                                   OR s.anchor_epoch_id = CASE
+                                      WHEN json_valid(b.artifact_json)
+                                      THEN json_extract(b.artifact_json, '$.anchor_epoch_id')
+                                      END)))
+                  FROM evidence_outbox AS b
+                 WHERE b.retired_at_ms IS NULL AND b.withdrawn_at_ms IS NULL
+                   AND EXISTS (
+                       SELECT 1 FROM evidence_offer_stop AS s
+                        WHERE s.device_id = CASE WHEN json_valid(b.artifact_json)
+                              THEN json_extract(b.artifact_json, '$.device_id') END
+                          AND (s.scope = 'identity'
+                               OR s.anchor_epoch_id = CASE
+                                  WHEN json_valid(b.artifact_json)
+                                  THEN json_extract(b.artifact_json, '$.anchor_epoch_id')
+                                  END)
+                   )
+            )
+            SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS size, MIN(since) AS since
+              FROM stopped
+            """
+        ).fetchone()
+        count = int(row["n"])
+        return count, int(row["size"]), (None if count == 0 else int(row["since"]))
 
     def awaiting_receipt_count(self) -> int:
         """Envelopes held by a courier but not yet receipted by the authority.

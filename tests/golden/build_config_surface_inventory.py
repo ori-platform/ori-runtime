@@ -82,7 +82,7 @@ ENTRY_POINTS = {
 RELOCATE = {
     "device.rated_capacity_amps": {
         "authority": "commissioning",
-        "destination": "commissioned-safety-binding/v1 zone rated_capacity",
+        "destination": "commissioned-safety-binding/v2 zone rated_capacity",
         "why": (
             "A release-owned multiplier turns it into a trip point, so whoever "
             "supplies it decides when a cutoff fires."

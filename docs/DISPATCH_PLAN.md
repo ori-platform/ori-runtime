@@ -480,7 +480,7 @@ that lost — or never matched — currently spends its cooldown.
 ## The evidence record
 
 This half is not the runtime's to choose, and it is constrained further than it
-first appears. `runtime_action` is not an opaque payload: `evidence/v2.md` in
+first appears. `runtime_action` is not an opaque payload: `evidence/v3.md` in
 `ori-specs` specifies it, and **requires** an `authority` object on every one —
 a discriminated union whose `kind` selects the remaining required fields, where
 an unrecognised kind, a missing field, or a field belonging to another kind is a
@@ -523,17 +523,12 @@ What this contract requires is narrower and unblocked: emit `authority` as
 already specified, and stop claiming the incident is fully represented until
 those land.
 
-**The runtime does not emit it.** `_action_payload` builds fourteen fields and
-`authority` is not among them, so by the merged contract every Tier C/D row the
-runtime has sealed is one whose licensing authority a verifier must treat as
-unknown, must not present as a protection action, and must distinguish in a
-finding from a row that declared one. That is not a gap this contract can
-absorb — it is prior work this contract sits on, and it is tracked separately.
-
-Nothing caught this, because the requirement is exercised by no vector: the
-`evidence_v2` corpus carries two `runtime_action` payloads and neither has an
-`authority` object, so the shape the amendment forbids is the one published as
-the example. Raised against `ori-specs`.
+**The runtime emits it.** Every Tier C/D row the runtime seals carries an
+`authority` object naming the licence the action was logged with, and the
+`evidence` corpus vendored here exercises the requirement: its
+`runtime_action` payloads carry one, and the rejection rules refuse a row
+without it. A verifier meeting an older row without one treats it as
+licensing-unknown, never as evidence of protection.
 
 **`trigger_name` therefore stops being cosmetic.** It is a required field of
 `tier_d_legacy_skill`, and the nearest value the runtime holds is wrong: on the
@@ -562,7 +557,7 @@ the record exists only by way of the defect this contract removes.
 tamper-evident record can hold. But entering it means widening
 `SAFETY_ACTION_EXECUTED` from "a physical action executed" to "a
 physical-authority incident occurred", and that type is defined in
-`evidence/v2.md`, not here. It would also need an `authority` kind of its own:
+`evidence/v3.md`, not here. It would also need an `authority` kind of its own:
 the four defined kinds all licence an action, and an incident that produced no
 action was licensed by none of them.
 

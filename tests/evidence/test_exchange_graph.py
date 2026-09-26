@@ -89,7 +89,7 @@ GRAPH_VECTOR_SETS = frozenset(
     {
         "evidence_exchange",
         "evidence_exchange_receiver_state",
-        "evidence_v2",
+        "evidence",
         "runtime_evidence_anchor",
     }
 )
@@ -141,7 +141,7 @@ def test_every_vendored_set_is_either_a_graph_set_or_declares_why_not() -> None:
 #: note warning against exactly that class of mistake. Semantic reconstruction
 #: stayed green throughout, because nothing asked whether the schema survived.
 REQUIRED_SCHEMA: dict[str, dict[str, set[str]]] = {
-    "anchor-registration": {
+    "anchor-registration-v2": {
         "top": {
             "artifact",
             "domain_ascii",
@@ -400,12 +400,12 @@ VECTOR_CONSUMERS = {
         "test_telemetry_refusal_contract.py"
         "::test_every_recorded_case_is_classified_under_the_route_that_records_it",
     ),
-    ("commissioned_safety_binding", "binding-vectors-v1"): (
+    ("commissioned_safety_binding", "binding-vectors-v2"): (
         "test_commissioned_binding_vectors.py::test_accept_cases_pass_every_stage",
         "test_commissioned_binding_vectors.py"
         "::test_reject_cases_refuse_at_their_declared_stage",
     ),
-    ("commissioned_safety_binding", "revision-misreadings-v1"): (
+    ("commissioned_safety_binding", "revision-misreadings-v2"): (
         "test_revision_rule_mutation_adequacy.py"
         "::test_the_corpus_refuses_every_misreading_of_the_rule",
     ),
@@ -415,7 +415,7 @@ VECTOR_CONSUMERS = {
     ("safety_profile", "profile-load"): (
         "commissioning/test_profiles.py::test_profile_load_cases_agree_with_the_contract",
     ),
-    ("evidence_exchange", "anchor-registration"): (
+    ("evidence_exchange", "anchor-registration-v2"): (
         "evidence/test_registration.py"
         "::test_the_registration_reproduces_the_contract_vector_byte_for_byte",
         "evidence/test_registration.py"
@@ -426,9 +426,8 @@ VECTOR_CONSUMERS = {
         "::test_the_checkpoint_reproduces_the_contract_vector_byte_for_byte",
     ),
     ("evidence_exchange", "commissioning-authorization"): (
-        "evidence/test_registration.py::test_the_digest_covers_the_complete_authorisation",
         "evidence/test_registration.py"
-        "::test_an_authorisation_that_does_not_describe_this_registration_is_refused",
+        "::test_the_vector_reference_is_the_digest_of_the_complete_authorisation",
     ),
     ("evidence_exchange", "custody-acknowledgement"): (
         "evidence/test_ingest.py::test_the_registry_the_vectors_describe_reproduces_from_the_secrets",
@@ -448,24 +447,30 @@ VECTOR_CONSUMERS = {
         "evidence/test_ingest.py::test_the_valid_epoch_confirmation_verifies",
         "evidence/test_ingest.py::test_a_confirmation_signed_with_the_receipt_key_is_refused",
     ),
+    ("evidence_exchange", "evidence-disposition-v2"): (
+        "evidence/test_disposition_vectors.py::test_anchor_cases",
+        "evidence/test_disposition_vectors.py::test_overdue_cases",
+        "evidence/test_disposition_vectors.py"
+        "::test_the_runtime_canonical_form_reproduces_each_dispositions_bytes",
+    ),
     ("evidence_exchange_receiver_state", "custody-key-purpose"): (
         "evidence/test_ingest.py::test_a_key_id_held_for_another_purpose_is_refused_as_such",
         "evidence/test_ingest.py::test_the_same_artifact_is_unknown_key_when_no_purpose_holds_it",
     ),
-    ("evidence_v2", "canonical-form"): (
+    ("evidence", "canonical-form"): (
         "evidence/test_chain_producer.py::test_canonical_form_matches_the_contract_vector",
     ),
-    ("evidence_v2", "chain-row"): (
+    ("evidence", "chain-row-v3"): (
         "evidence/test_v2_vectors.py::test_rows_chain_hash_and_verify",
         "evidence/test_v2_vectors.py::test_each_rejection_case_violates_exactly_the_rule_it_names",
     ),
-    ("evidence_v2", "event-id"): (
+    ("evidence", "event-id"): (
         "evidence/test_chain_producer.py::test_event_ids_match_the_contract_vector",
     ),
-    ("evidence_v2", "genesis"): (
+    ("evidence", "genesis"): (
         "evidence/test_chain_producer.py::test_genesis_matches_the_contract_vector",
     ),
-    ("evidence_v2", "key-rotation"): (
+    ("evidence", "key-rotation"): (
         "evidence/test_v2_vectors.py::test_rotation_proof_uses_the_neutral_context",
         "evidence/test_v2_vectors.py::test_rotation_is_dual_signed",
     ),
@@ -479,7 +484,7 @@ VECTOR_CONSUMERS = {
         "evidence/test_inbound_route.py"
         "::test_the_runtime_reproduces_the_published_acknowledgement_fixture",
     ),
-    ("runtime_evidence_anchor", "runtime-anchor"): (
+    ("runtime_evidence_anchor", "runtime-anchor-v2"): (
         "evidence/test_anchor.py::test_derivations_match_the_contract_vectors",
     ),
     ("sensor_configuration", "schema-load"): (
@@ -513,6 +518,17 @@ VECTOR_CONSUMERS = {
 #: tracked, because naming a repository says who is answerable rather than that
 #: the work is done.
 VECTOR_EXEMPTIONS = {
+    ("evidence_exchange", "routing-projection-v2"): {
+        "owner": "the site gateway",
+        "status": "proof_pending",
+        "tracking": "ori-gateway#94",
+        "reason": (
+            "Courier-side. Each case is an artifact as a courier sees it and "
+            "whether its routing projection is present; the runtime produces "
+            "artifacts and routes none. Vendored so the drift check covers "
+            "the bytes the courier must match."
+        ),
+    },
     ("evidence_exchange_receiver_state", "anchor-quarantine"): {
         "owner": "the evidence authority",
         "status": "proof_pending",
@@ -525,7 +541,7 @@ VECTOR_EXEMPTIONS = {
             "anchor, so there is no code path here to drive."
         ),
     },
-    ("evidence_exchange_receiver_state", "commissioning-resolution"): {
+    ("evidence_exchange_receiver_state", "commissioning-resolution-v2"): {
         "owner": "the evidence authority",
         "status": "proof_pending",
         "tracking": "ori-specs#130",

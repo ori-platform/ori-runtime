@@ -1,0 +1,2348 @@
+{
+  "artifact": "commissioning_resolution_state",
+  "domain_ascii": "ori.evidence_anchor_registration.v1",
+  "authorisation_domain_ascii": "ori.evidence_commissioning_authorization.v1",
+  "domain_note": "Authenticated bytes are the ASCII domain, one NUL byte, then the canonical payload with signature or mac removed.",
+  "canonicalisation": "json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False).encode('utf-8')",
+  "authenticator_note": "Cases marked authenticator=valid must pass cryptographic verification so the semantic rule under test is actually reached. Cases marked invalid fail verification itself.",
+  "warning": "Seeds below are published test values and must never sign anything real.",
+  "key_purpose": "evidence_device",
+  "signing_key_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "signing_key_public_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+  "commissioning_key_seed_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "commissioning_key_public_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+  "why_this_file_exists": "The authority resolves a registration's commissioning_digest against authorisations delivered to it through the commissioning path, never presented by the device. Whether a registration is applied, retained pending, or refused therefore depends on what the authority already holds, which no single wire artifact can express. Each case names the held state, the arriving artifact and its source, and the outcome the contract requires. The artifacts reuse the published registration and authorisation vectors so a verifier that already reproduces those bytes needs nothing new to sign; one registration is newly signed with the published device seed so that a resolved authorisation naming another key can be exercised. Cancellations are signed with the published recovery seed, which the commissioning-ingest registry designates for cancellation.",
+  "resolution_order": [
+    "parses",
+    "key_selection",
+    "signature",
+    "recompute_epoch_and_key_id",
+    "resolve_commissioning_digest",
+    "apply"
+  ],
+  "state_note": "receiver_state holds every artifact in full, so the state can be rebuilt through the real entry points. In authority_state_after, retained_registrations and refused_registrations are full state named by digest, while confirmed_epochs lists only the epochs this case newly confirms; an epoch confirmed earlier is never withdrawn. receiver_state.cancellations holds every applied cancellation in full; tombstoned_digests in authority_state_after is full state. dispositions lists every evidence disposition the decision carries, with delivery `response` when it returns in the response to the arriving artifact and `return_set` when the authority commits it to the device's return set; confirmation_delivery says the same of the epoch confirmation, and is null when none is carried.",
+  "cancellation_domain_ascii": "ori.evidence_commissioning_cancellation.v1",
+  "cancellation_key_id": "comm-recovery-1",
+  "cancellation_key_seed_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+  "cancellation_key_public_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+  "cases": [
+    {
+      "name": "registration_before_authorisation_is_retained",
+      "note": "No authorisation is held for this device and epoch. The registration verifies and is retained pending: accepted, no confirmation, no gap. The authorisation may still arrive through the commissioning path.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ],
+        "confirmed_epochs": [],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63",
+          "scope": "artifact",
+          "disposition": "retained_pending",
+          "delivery": "response"
+        }
+      ]
+    },
+    {
+      "name": "authorisation_promotes_retained_registration",
+      "note": "The registration is already retained pending. The matching authorisation arrives through the commissioning path, not the courier: verify, register, promote and confirm happen in one transaction, and a byte-identical retry of the registration now returns the confirmation.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+          }
+        ],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "actor": "commissioning@site",
+        "reason": "initial commissioning",
+        "issued_at_ms": 1786999000000,
+        "key_id": "comm-key-1",
+        "signature": "ed25519:loKBcGHuMgVzrPc/o3AznxgbIbLHwU/J2sNguuW2rMU6QCyICSRwlDrlsUuY03xeB8aE0rNQvOUayXeVxZ1VCQ=="
+      },
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738363939393030303030302c226b65795f6964223a22636f6d6d2d6b65792d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [
+          "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a"
+        ],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": true,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": "return_set",
+      "dispositions": []
+    },
+    {
+      "name": "registration_with_held_authorisation_is_applied",
+      "note": "The authorisation is already held when the registration arrives. Applied and confirmed in the same step.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "actor": "commissioning@site",
+            "reason": "initial commissioning",
+            "issued_at_ms": 1786999000000,
+            "key_id": "comm-key-1",
+            "signature": "ed25519:loKBcGHuMgVzrPc/o3AznxgbIbLHwU/J2sNguuW2rMU6QCyICSRwlDrlsUuY03xeB8aE0rNQvOUayXeVxZ1VCQ=="
+          }
+        ],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [
+          "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a"
+        ],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": true,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": "response",
+      "dispositions": []
+    },
+    {
+      "name": "named_authorisation_promotes_its_registration_while_a_sibling_is_held",
+      "note": "A sibling authorisation for the same device, key and epoch is already held, and a registration naming a different authorisation is retained pending. When the named authorisation arrives it promotes that registration; the sibling decides nothing.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "actor": "commissioning@site",
+            "reason": "earlier commissioning, since re-issued",
+            "issued_at_ms": 1786912600000,
+            "key_id": "comm-key-1",
+            "signature": "ed25519:0TK5LM6oxqJqrV+r0E4mkbuzcyQ/wMPWE03WBXx/eOsvqDa8vRwRWDcurGMnf+cxFUtwXxJzhQ/ImfFFmQBuBg=="
+          }
+        ],
+        "retained_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+          }
+        ],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "actor": "commissioning@site",
+        "reason": "initial commissioning",
+        "issued_at_ms": 1786999000000,
+        "key_id": "comm-key-1",
+        "signature": "ed25519:loKBcGHuMgVzrPc/o3AznxgbIbLHwU/J2sNguuW2rMU6QCyICSRwlDrlsUuY03xeB8aE0rNQvOUayXeVxZ1VCQ=="
+      },
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738363939393030303030302c226b65795f6964223a22636f6d6d2d6b65792d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [
+          "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a"
+        ],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": true,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": "return_set",
+      "dispositions": []
+    },
+    {
+      "name": "unresolved_reference_with_sibling_authorisation_is_retained",
+      "note": "The authority holds an authorisation for exactly this device, key and epoch, and the registration names a different digest that the authority does not hold. A sibling never substitutes for the named reference, and the named authorisation may still arrive through the commissioning path, so the registration is retained pending: accepted, no confirmation, no gap.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "actor": "commissioning@site",
+            "reason": "initial commissioning",
+            "issued_at_ms": 1786999000000,
+            "key_id": "comm-key-1",
+            "signature": "ed25519:loKBcGHuMgVzrPc/o3AznxgbIbLHwU/J2sNguuW2rMU6QCyICSRwlDrlsUuY03xeB8aE0rNQvOUayXeVxZ1VCQ=="
+          }
+        ],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:t7X2VIC5VfDFVQV+woc5MGaFNVG4brBXY2a0OtfP3etO2E4M3HiceVvdRcWZILan0dJBCOzwc/fsjQPdBcx+Dw=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a31313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [
+          "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        ],
+        "confirmed_epochs": [],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:fdb526cf42f3e9bed4610b4c3f8ace0048f39d38a1b681dc8f62522004f0d192",
+          "scope": "artifact",
+          "disposition": "retained_pending",
+          "delivery": "response"
+        }
+      ]
+    },
+    {
+      "name": "resolved_authorisation_names_another_key",
+      "note": "The registration names the digest of a held authorisation, and that authorisation licenses a different public key. Resolution succeeds and the bound facts disagree: refused as commissioning_digest_mismatch, never applied, no quarantine, no gap.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "actor": "commissioning@site",
+            "reason": "initial commissioning",
+            "issued_at_ms": 1786999000000,
+            "key_id": "comm-key-1",
+            "signature": "ed25519:KyorK72P4YKQ6Vb7MQ/W/65wQ6t1E+R1UvFome+rWF/0oh30NnRFsuc5FD/IzIvFj6MdfZ3HhVQTg3FQBHhHBQ=="
+          }
+        ],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:ee92b9907cbf6d9c77ae5022918c98db82da7a297ba88c94c53754991baacdf7",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:ZqudI7uEKuRAdXZhE51/5FvGIr9m9NGiNObns5hcvY3bjJiXES1k2YOq/BLiroie3RBw7zYzUfujBAGHs871Ag=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a65653932623939303763626636643963373761653530323239313863393864623832646137613239376261383863393463353337353439393162616163646637222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "commissioning_digest_mismatch",
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:8abdde0e7ae9d0b182fd1c934ebb007c37300d1bde2afff16b40815c06751097"
+        ],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:8abdde0e7ae9d0b182fd1c934ebb007c37300d1bde2afff16b40815c06751097",
+          "scope": "artifact",
+          "disposition": "artifact_terminal",
+          "delivery": "response"
+        }
+      ]
+    },
+    {
+      "name": "refused_registration_stays_refused_after_its_authorisation_is_revoked",
+      "note": "The registration was refused commissioning_digest_mismatch because the authorisation it names binds a different key. That authorisation has since been revoked, which marks it rather than forgetting it, and the authority retains the resolution, so the same bytes are refused again, final, whatever the revocation.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:ee92b9907cbf6d9c77ae5022918c98db82da7a297ba88c94c53754991baacdf7",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:ZqudI7uEKuRAdXZhE51/5FvGIr9m9NGiNObns5hcvY3bjJiXES1k2YOq/BLiroie3RBw7zYzUfujBAGHs871Ag=="
+          }
+        ],
+        "revoked_authorisations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "actor": "commissioning@site",
+            "reason": "initial commissioning",
+            "issued_at_ms": 1786999000000,
+            "key_id": "comm-key-1",
+            "signature": "ed25519:KyorK72P4YKQ6Vb7MQ/W/65wQ6t1E+R1UvFome+rWF/0oh30NnRFsuc5FD/IzIvFj6MdfZ3HhVQTg3FQBHhHBQ=="
+          }
+        ],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:ee92b9907cbf6d9c77ae5022918c98db82da7a297ba88c94c53754991baacdf7",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:ZqudI7uEKuRAdXZhE51/5FvGIr9m9NGiNObns5hcvY3bjJiXES1k2YOq/BLiroie3RBw7zYzUfujBAGHs871Ag=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a65653932623939303763626636643963373761653530323239313863393864623832646137613239376261383863393463353337353439393162616163646637222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "commissioning_digest_mismatch",
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:8abdde0e7ae9d0b182fd1c934ebb007c37300d1bde2afff16b40815c06751097"
+        ],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:8abdde0e7ae9d0b182fd1c934ebb007c37300d1bde2afff16b40815c06751097",
+          "scope": "artifact",
+          "disposition": "artifact_terminal",
+          "delivery": "response"
+        }
+      ]
+    },
+    {
+      "name": "authorisation_from_courier_is_refused",
+      "note": "A commissioning authorisation arriving from the device side. It is refused at transport as a type the courier does not carry, before any verifier is invoked, and nothing is retained.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "actor": "commissioning@site",
+        "reason": "initial commissioning",
+        "issued_at_ms": 1786999000000,
+        "key_id": "comm-key-1",
+        "signature": "ed25519:loKBcGHuMgVzrPc/o3AznxgbIbLHwU/J2sNguuW2rMU6QCyICSRwlDrlsUuY03xeB8aE0rNQvOUayXeVxZ1VCQ=="
+      },
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738363939393030303030302c226b65795f6964223a22636f6d6d2d6b65792d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "authenticator": "not_reached",
+      "expected": "reject",
+      "reject_reason": "malformed",
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": []
+    },
+    {
+      "name": "revoked_named_authorisation_refuses_an_agreeing_registration",
+      "note": "The registration names an authorisation that agrees with it in every field, but that authorisation has been revoked. A revoked authorisation licenses nothing: refused commissioning_digest_mismatch, recorded as the terminal refusal, no confirmation and no gap.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "actor": "commissioning@site",
+            "reason": "initial commissioning",
+            "issued_at_ms": 1786999000000,
+            "key_id": "comm-key-1",
+            "signature": "ed25519:loKBcGHuMgVzrPc/o3AznxgbIbLHwU/J2sNguuW2rMU6QCyICSRwlDrlsUuY03xeB8aE0rNQvOUayXeVxZ1VCQ=="
+          }
+        ],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "commissioning_digest_mismatch",
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63"
+        ],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63",
+          "scope": "artifact",
+          "disposition": "artifact_terminal",
+          "delivery": "response"
+        }
+      ]
+    },
+    {
+      "name": "resigned_registration_with_the_same_binding_is_idempotent",
+      "note": "A registration is retained pending under its commissioning digest. A later registration names the same digest and the same device, key and epoch, re-signed with a later registered_at_ms. It is accepted idempotently and the first retained bytes are kept.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+          }
+        ],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000001,
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:fLe22h2T+M5AFJdgQ685L+Y0g7cdkexNfGTJFI7kWh/psoT6PrAAngmlrS4DQJRF+6iojzsJVfzYS/3nKiIgBA=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030312c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ],
+        "confirmed_epochs": [],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63",
+          "scope": "artifact",
+          "disposition": "retained_pending",
+          "delivery": "response"
+        }
+      ]
+    },
+    {
+      "name": "different_binding_under_a_pending_digest_conflicts",
+      "note": "A registration is retained pending under its commissioning digest. Another registration names the same digest for the same device and key under a different evidence capability profile, so a different epoch and a different binding. It is refused 409 pending_registration_conflict; the first retained bytes remain unchanged and the refused bytes are not retained.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+          }
+        ],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:6a826cbe5a0b07e83241f26ea1ac3f5dcc866f1c25ad87cf38402ff7cee9ae69",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": true,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:NNVxuQMSxhxMXbXnuC23vqkoC8Aa/zABnWCOXFoehHLO4IIN5YKxepMLVoENst8icznZIfL6Az1BfYW4USnmBw=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a36613832366362653561306230376538333234316632366561316163336635646363383636663163323561643837636633383430326666376365653961653639222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a747275652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "pending_registration_conflict",
+      "authority_state_after": {
+        "retained_registrations": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ],
+        "confirmed_epochs": [],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": []
+    },
+    {
+      "name": "disagreeing_named_authorisation_arrival_refuses_the_retained_registration",
+      "note": "A registration is retained pending, and the authorisation it names then arrives through the commissioning path binding a different key. The authority atomically removes the registration from retention and records commissioning_digest_mismatch as its terminal refusal; no epoch confirmation. A later submission of those exact bytes is refused.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:ee92b9907cbf6d9c77ae5022918c98db82da7a297ba88c94c53754991baacdf7",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:ZqudI7uEKuRAdXZhE51/5FvGIr9m9NGiNObns5hcvY3bjJiXES1k2YOq/BLiroie3RBw7zYzUfujBAGHs871Ag=="
+          }
+        ],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "actor": "commissioning@site",
+        "reason": "initial commissioning",
+        "issued_at_ms": 1786999000000,
+        "key_id": "comm-key-1",
+        "signature": "ed25519:KyorK72P4YKQ6Vb7MQ/W/65wQ6t1E+R1UvFome+rWF/0oh30NnRFsuc5FD/IzIvFj6MdfZ3HhVQTg3FQBHhHBQ=="
+      },
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738363939393030303030302c226b65795f6964223a22636f6d6d2d6b65792d31222c227075626b65795f686578223a2230303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:8abdde0e7ae9d0b182fd1c934ebb007c37300d1bde2afff16b40815c06751097"
+        ],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:8abdde0e7ae9d0b182fd1c934ebb007c37300d1bde2afff16b40815c06751097",
+          "scope": "artifact",
+          "disposition": "artifact_terminal",
+          "delivery": "return_set"
+        }
+      ]
+    },
+    {
+      "name": "applied_registration_retried_after_its_authorisation_is_revoked_returns_the_original_confirmation",
+      "note": "The registration applied under the authorisation it names and its epoch was confirmed; that authorisation has since been revoked. A byte-identical retry is answered with its retained response, including the original epoch confirmation, before any resolution: revocation never withdraws a confirmation already issued. No new epoch is confirmed and nothing is refused.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "actor": "commissioning@site",
+            "reason": "initial commissioning",
+            "issued_at_ms": 1787000000100,
+            "key_id": "comm-key-1",
+            "signature": "ed25519:/jsP8W2fdCUq4vbpnHRpv6N5kVzq0PnsK4kjl28gj8hhriefebBZlHR1eAqBrAYvj0p2dEqTYPKzQBscafZ1Cw=="
+          }
+        ],
+        "applied_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:cdabf47f9256a159712c9a5a2c1cbfcc8b04a999acaca8c970a7082580e38293",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:AJDr2Jw2CK+x41iQZufUGuvBhHR6aQ+NMranfMnePApeZ8UoB0sdbDGOUsQ0LIUb3Zc1SeMzDzcfhZjTqehTAw=="
+          }
+        ],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:cdabf47f9256a159712c9a5a2c1cbfcc8b04a999acaca8c970a7082580e38293",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:AJDr2Jw2CK+x41iQZufUGuvBhHR6aQ+NMranfMnePApeZ8UoB0sdbDGOUsQ0LIUb3Zc1SeMzDzcfhZjTqehTAw=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a63646162663437663932353661313539373132633961356132633163626663633862303461393939616361636138633937306137303832353830653338323933222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": true,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": "response",
+      "dispositions": []
+    },
+    {
+      "name": "pending_conflict_applies_once_the_first_registration_is_refused_and_the_authorisation_binds_it",
+      "note": "A registration was refused 409 pending_registration_conflict while another was retained pending under the same commissioning digest. The named authorisation then arrived binding this registration, so the retained one became a terminal refusal. The same refused bytes, resubmitted, now apply and the epoch confirmation is issued.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:6a826cbe5a0b07e83241f26ea1ac3f5dcc866f1c25ad87cf38402ff7cee9ae69",
+            "actor": "commissioning@site",
+            "reason": "initial commissioning",
+            "issued_at_ms": 1787000000200,
+            "key_id": "comm-key-1",
+            "signature": "ed25519:7LI0NvJBNTA+yWvbih0aMB/oRclOKpgDyhlfWsBYZAVWr8YaLBL0U1+lMuxFg5TibrHdfwpo7t/Kxdu4XFjCDQ=="
+          }
+        ],
+        "retained_registrations": [],
+        "refused_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:9190e455871c688924f4581333e932f9db9cbbb693aa2ea9031e820547e9609a",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:wKS1h754vYK6eKj3dcCBorCu0ky/ZZi/NXK8ZKwp7c5HPFTAZAksWbnxNLw4VrOQByuFxZB6zGO9mcTEwQr1AQ=="
+          }
+        ],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:6a826cbe5a0b07e83241f26ea1ac3f5dcc866f1c25ad87cf38402ff7cee9ae69",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": true,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:9190e455871c688924f4581333e932f9db9cbbb693aa2ea9031e820547e9609a",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:cCs6KSAXQEB/0LTfWWih3flN0Qlz8RnxyvIhHKRvgxI3w9W+G6sStTAloA1m4S881LCKYquyN9P1L1tv3VfAAA=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a36613832366362653561306230376538333234316632366561316163336635646363383636663163323561643837636633383430326666376365653961653639222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a747275652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a39313930653435353837316336383839323466343538313333336539333266396462396362626236393361613265613930333165383230353437653936303961222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [
+          "sha256:6a826cbe5a0b07e83241f26ea1ac3f5dcc866f1c25ad87cf38402ff7cee9ae69"
+        ],
+        "refused_registrations": [
+          "sha256:9f1e2bf8bdaf2863d92c4bffb4a83eb707c7f1d6695142036932905c796d02d6"
+        ],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": true,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": "response",
+      "dispositions": []
+    },
+    {
+      "name": "pending_conflict_is_refused_once_the_authorisation_binds_the_first_registration",
+      "note": "A registration was refused 409 pending_registration_conflict while another was retained pending under the same commissioning digest. The named authorisation then arrived binding the retained one, which applied. The refused bytes, resubmitted, name a held authorisation that binds another epoch: refused commissioning_digest_mismatch, final for those bytes.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "actor": "commissioning@site",
+            "reason": "initial commissioning",
+            "issued_at_ms": 1787000000100,
+            "key_id": "comm-key-1",
+            "signature": "ed25519:/jsP8W2fdCUq4vbpnHRpv6N5kVzq0PnsK4kjl28gj8hhriefebBZlHR1eAqBrAYvj0p2dEqTYPKzQBscafZ1Cw=="
+          }
+        ],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:cdabf47f9256a159712c9a5a2c1cbfcc8b04a999acaca8c970a7082580e38293",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:AJDr2Jw2CK+x41iQZufUGuvBhHR6aQ+NMranfMnePApeZ8UoB0sdbDGOUsQ0LIUb3Zc1SeMzDzcfhZjTqehTAw=="
+          }
+        ],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:6a826cbe5a0b07e83241f26ea1ac3f5dcc866f1c25ad87cf38402ff7cee9ae69",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": true,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:cdabf47f9256a159712c9a5a2c1cbfcc8b04a999acaca8c970a7082580e38293",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:0cr6CR6WsXotoM1vZXzPRx9Q3r7Hn7ktUzHbj9PTn2ZhTaOUvUXIc+F17UuSnP57z4CSjCvsUdTuzd2mP9/1Dw=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a36613832366362653561306230376538333234316632366561316163336635646363383636663163323561643837636633383430326666376365653961653639222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a747275652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a63646162663437663932353661313539373132633961356132633163626663633862303461393939616361636138633937306137303832353830653338323933222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "commissioning_digest_mismatch",
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:d9d095aa9474a622bcac486853f083c21e8a210927ef79b08f3f61c7e9764790"
+        ],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:d9d095aa9474a622bcac486853f083c21e8a210927ef79b08f3f61c7e9764790",
+          "scope": "artifact",
+          "disposition": "artifact_terminal",
+          "delivery": "response"
+        }
+      ]
+    },
+    {
+      "name": "registration_accepted_pending_and_since_promoted_is_re_offered_and_returns_its_confirmation",
+      "note": "The registration was accepted pending, and its named authorisation later arrived and promoted it, so the confirmation was committed on the commissioning path and never delivered. The runtime re-offers the identical bytes, and the authority answers with the retained confirmation. No new epoch is confirmed here, since the promotion already confirmed it.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "actor": "commissioning@site",
+            "reason": "initial commissioning",
+            "issued_at_ms": 1787000000100,
+            "key_id": "comm-key-1",
+            "signature": "ed25519:/jsP8W2fdCUq4vbpnHRpv6N5kVzq0PnsK4kjl28gj8hhriefebBZlHR1eAqBrAYvj0p2dEqTYPKzQBscafZ1Cw=="
+          }
+        ],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:cdabf47f9256a159712c9a5a2c1cbfcc8b04a999acaca8c970a7082580e38293",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:AJDr2Jw2CK+x41iQZufUGuvBhHR6aQ+NMranfMnePApeZ8UoB0sdbDGOUsQ0LIUb3Zc1SeMzDzcfhZjTqehTAw=="
+          }
+        ],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:cdabf47f9256a159712c9a5a2c1cbfcc8b04a999acaca8c970a7082580e38293",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:AJDr2Jw2CK+x41iQZufUGuvBhHR6aQ+NMranfMnePApeZ8UoB0sdbDGOUsQ0LIUb3Zc1SeMzDzcfhZjTqehTAw=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a63646162663437663932353661313539373132633961356132633163626663633862303461393939616361636138633937306137303832353830653338323933222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": true,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": "response",
+      "dispositions": []
+    },
+    {
+      "name": "cancellation_removes_the_pending_registration_and_releases_its_place",
+      "note": "A registration is retained pending under a digest whose authorisation will never arrive. A permitted cancellation naming the same device, epoch and digest removes it from the pending bound, retains its bytes as a terminal refusal, tombstones the digest, and commits artifact_terminal to the device's return set.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+          }
+        ],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "expected_authorisation_key_id": "comm-key-1",
+        "cancellation_id": "cancel-0001",
+        "reason": "commissioning abandoned",
+        "issued_at_ms": 1787000400000,
+        "key_id": "comm-recovery-1",
+        "signature": "ed25519:5YTfboMUMHhSGOP7wdMeOss0PBxpZkc84zUI4Vq3D9WRjlKFTNkuz57ha31lhKsoBWKfx6UXJRpI8wSSZLfADw=="
+      },
+      "canonical_hex": "7b22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c2263616e63656c6c6174696f6e5f6964223a2263616e63656c2d30303031222c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2265787065637465645f617574686f7269736174696f6e5f6b65795f6964223a22636f6d6d2d6b65792d31222c226973737565645f61745f6d73223a313738373030303430303030302c226b65795f6964223a22636f6d6d2d7265636f766572792d31222c22726561736f6e223a22636f6d6d697373696f6e696e67206162616e646f6e6564222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63"
+        ],
+        "tombstoned_digests": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ]
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63",
+          "scope": "artifact",
+          "disposition": "artifact_terminal",
+          "delivery": "return_set"
+        }
+      ]
+    },
+    {
+      "name": "cancellation_before_registration_terminates_the_later_registration",
+      "note": "The digest was cancelled before any registration named it. A registration naming it later is refused commissioning_digest_mismatch, terminally, with artifact_terminal in the response.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "expected_authorisation_key_id": "comm-key-1",
+            "cancellation_id": "cancel-0001",
+            "reason": "commissioning abandoned",
+            "issued_at_ms": 1787000400000,
+            "key_id": "comm-recovery-1",
+            "signature": "ed25519:5YTfboMUMHhSGOP7wdMeOss0PBxpZkc84zUI4Vq3D9WRjlKFTNkuz57ha31lhKsoBWKfx6UXJRpI8wSSZLfADw=="
+          }
+        ]
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "commissioning_digest_mismatch",
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63"
+        ],
+        "tombstoned_digests": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ]
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63",
+          "scope": "artifact",
+          "disposition": "artifact_terminal",
+          "delivery": "response"
+        }
+      ]
+    },
+    {
+      "name": "cancelled_authorisation_arriving_later_is_refused_and_revives_nothing",
+      "note": "The digest is tombstoned and its registration was removed. The cancelled authorisation then arrives through the commissioning path: it is refused cancelled, promotes nothing, and the tombstone stays.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+          }
+        ],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "expected_authorisation_key_id": "comm-key-1",
+            "cancellation_id": "cancel-0001",
+            "reason": "commissioning abandoned",
+            "issued_at_ms": 1787000400000,
+            "key_id": "comm-recovery-1",
+            "signature": "ed25519:5YTfboMUMHhSGOP7wdMeOss0PBxpZkc84zUI4Vq3D9WRjlKFTNkuz57ha31lhKsoBWKfx6UXJRpI8wSSZLfADw=="
+          }
+        ]
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "actor": "commissioning@site",
+        "reason": "initial commissioning",
+        "issued_at_ms": 1786999000000,
+        "key_id": "comm-key-1",
+        "signature": "ed25519:loKBcGHuMgVzrPc/o3AznxgbIbLHwU/J2sNguuW2rMU6QCyICSRwlDrlsUuY03xeB8aE0rNQvOUayXeVxZ1VCQ=="
+      },
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738363939393030303030302c226b65795f6964223a22636f6d6d2d6b65792d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "cancelled",
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63"
+        ],
+        "tombstoned_digests": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ]
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": []
+    },
+    {
+      "name": "cancellation_of_one_digest_leaves_another_pending",
+      "note": "Two registrations are pending under different digests. Cancelling one removes only it; the other stays pending and keeps its place.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+          },
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:t7X2VIC5VfDFVQV+woc5MGaFNVG4brBXY2a0OtfP3etO2E4M3HiceVvdRcWZILan0dJBCOzwc/fsjQPdBcx+Dw=="
+          }
+        ],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "commissioning_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "expected_authorisation_key_id": "comm-key-1",
+        "cancellation_id": "cancel-0004",
+        "reason": "reference never issued",
+        "issued_at_ms": 1787000400000,
+        "key_id": "comm-recovery-1",
+        "signature": "ed25519:h5zrxs8TggbFcPx4qtz99WL1qfyDpyx+tOy2mryXrnWXrLO47pG5SeKquRXgfysOzn6iho+VVj7RKAkOjfDMAA=="
+      },
+      "canonical_hex": "7b22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c2263616e63656c6c6174696f6e5f6964223a2263616e63656c2d30303034222c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a31313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2265787065637465645f617574686f7269736174696f6e5f6b65795f6964223a22636f6d6d2d6b65792d31222c226973737565645f61745f6d73223a313738373030303430303030302c226b65795f6964223a22636f6d6d2d7265636f766572792d31222c22726561736f6e223a227265666572656e6365206e6576657220697373756564222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:fdb526cf42f3e9bed4610b4c3f8ace0048f39d38a1b681dc8f62522004f0d192"
+        ],
+        "tombstoned_digests": [
+          "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        ]
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:fdb526cf42f3e9bed4610b4c3f8ace0048f39d38a1b681dc8f62522004f0d192",
+          "scope": "artifact",
+          "disposition": "artifact_terminal",
+          "delivery": "return_set"
+        }
+      ]
+    },
+    {
+      "name": "cancellation_naming_another_epoch_changes_nothing",
+      "note": "The registration pending under the digest names another epoch than the cancellation. The cancellation is refused cancellation_mismatch, and the pending registration, its place and the digest are unchanged.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:6a826cbe5a0b07e83241f26ea1ac3f5dcc866f1c25ad87cf38402ff7cee9ae69",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": true,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:NNVxuQMSxhxMXbXnuC23vqkoC8Aa/zABnWCOXFoehHLO4IIN5YKxepMLVoENst8icznZIfL6Az1BfYW4USnmBw=="
+          }
+        ],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "expected_authorisation_key_id": "comm-key-1",
+        "cancellation_id": "cancel-0001",
+        "reason": "commissioning abandoned",
+        "issued_at_ms": 1787000400000,
+        "key_id": "comm-recovery-1",
+        "signature": "ed25519:5YTfboMUMHhSGOP7wdMeOss0PBxpZkc84zUI4Vq3D9WRjlKFTNkuz57ha31lhKsoBWKfx6UXJRpI8wSSZLfADw=="
+      },
+      "canonical_hex": "7b22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c2263616e63656c6c6174696f6e5f6964223a2263616e63656c2d30303031222c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2265787065637465645f617574686f7269736174696f6e5f6b65795f6964223a22636f6d6d2d6b65792d31222c226973737565645f61745f6d73223a313738373030303430303030302c226b65795f6964223a22636f6d6d2d7265636f766572792d31222c22726561736f6e223a22636f6d6d697373696f6e696e67206162616e646f6e6564222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "cancellation_mismatch",
+      "authority_state_after": {
+        "retained_registrations": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ],
+        "confirmed_epochs": [],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": []
+    },
+    {
+      "name": "cancellation_of_a_held_authorisation_is_refused",
+      "note": "The authority holds the authorisation the digest names, so nothing is pending under it and revocation is the path. The cancellation is refused authorisation_held and changes nothing.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "actor": "commissioning@site",
+            "reason": "initial commissioning",
+            "issued_at_ms": 1786999000000,
+            "key_id": "comm-key-1",
+            "signature": "ed25519:loKBcGHuMgVzrPc/o3AznxgbIbLHwU/J2sNguuW2rMU6QCyICSRwlDrlsUuY03xeB8aE0rNQvOUayXeVxZ1VCQ=="
+          }
+        ],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": []
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "expected_authorisation_key_id": "comm-key-1",
+        "cancellation_id": "cancel-0001",
+        "reason": "commissioning abandoned",
+        "issued_at_ms": 1787000400000,
+        "key_id": "comm-recovery-1",
+        "signature": "ed25519:5YTfboMUMHhSGOP7wdMeOss0PBxpZkc84zUI4Vq3D9WRjlKFTNkuz57ha31lhKsoBWKfx6UXJRpI8wSSZLfADw=="
+      },
+      "canonical_hex": "7b22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c2263616e63656c6c6174696f6e5f6964223a2263616e63656c2d30303031222c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2265787065637465645f617574686f7269736174696f6e5f6b65795f6964223a22636f6d6d2d6b65792d31222c226973737565645f61745f6d73223a313738373030303430303030302c226b65795f6964223a22636f6d6d2d7265636f766572792d31222c22726561736f6e223a22636f6d6d697373696f6e696e67206162616e646f6e6564222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "authorisation_held",
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [],
+        "tombstoned_digests": []
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": []
+    },
+    {
+      "name": "repeated_cancellation_is_idempotent",
+      "note": "A byte-identical cancellation resubmitted is accepted with the same outcome and changes nothing.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+          }
+        ],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "expected_authorisation_key_id": "comm-key-1",
+            "cancellation_id": "cancel-0001",
+            "reason": "commissioning abandoned",
+            "issued_at_ms": 1787000400000,
+            "key_id": "comm-recovery-1",
+            "signature": "ed25519:5YTfboMUMHhSGOP7wdMeOss0PBxpZkc84zUI4Vq3D9WRjlKFTNkuz57ha31lhKsoBWKfx6UXJRpI8wSSZLfADw=="
+          }
+        ]
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "expected_authorisation_key_id": "comm-key-1",
+        "cancellation_id": "cancel-0001",
+        "reason": "commissioning abandoned",
+        "issued_at_ms": 1787000400000,
+        "key_id": "comm-recovery-1",
+        "signature": "ed25519:5YTfboMUMHhSGOP7wdMeOss0PBxpZkc84zUI4Vq3D9WRjlKFTNkuz57ha31lhKsoBWKfx6UXJRpI8wSSZLfADw=="
+      },
+      "canonical_hex": "7b22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c2263616e63656c6c6174696f6e5f6964223a2263616e63656c2d30303031222c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2265787065637465645f617574686f7269736174696f6e5f6b65795f6964223a22636f6d6d2d6b65792d31222c226973737565645f61745f6d73223a313738373030303430303030302c226b65795f6964223a22636f6d6d2d7265636f766572792d31222c22726561736f6e223a22636f6d6d697373696f6e696e67206162616e646f6e6564222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63"
+        ],
+        "tombstoned_digests": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ]
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": []
+    },
+    {
+      "name": "distinct_cancellation_of_a_tombstoned_digest_changes_nothing",
+      "note": "A second, distinct cancellation of a digest already tombstoned for the same device and epoch is accepted and audited, and changes nothing.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+          }
+        ],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "expected_authorisation_key_id": "comm-key-1",
+            "cancellation_id": "cancel-0001",
+            "reason": "commissioning abandoned",
+            "issued_at_ms": 1787000400000,
+            "key_id": "comm-recovery-1",
+            "signature": "ed25519:5YTfboMUMHhSGOP7wdMeOss0PBxpZkc84zUI4Vq3D9WRjlKFTNkuz57ha31lhKsoBWKfx6UXJRpI8wSSZLfADw=="
+          }
+        ]
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "expected_authorisation_key_id": "comm-key-1",
+        "cancellation_id": "cancel-0002",
+        "reason": "second request",
+        "issued_at_ms": 1787000500000,
+        "key_id": "comm-recovery-1",
+        "signature": "ed25519:sknaw3nvZkPp3tDAbmC57Uuzp9sVVX3QdCaAPDFAJXDyZ0joXLdXqzXiZ8AG9njYJkbNWmEZGsAgZ2HwIuwTDA=="
+      },
+      "canonical_hex": "7b22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c2263616e63656c6c6174696f6e5f6964223a2263616e63656c2d30303032222c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2265787065637465645f617574686f7269736174696f6e5f6b65795f6964223a22636f6d6d2d6b65792d31222c226973737565645f61745f6d73223a313738373030303530303030302c226b65795f6964223a22636f6d6d2d7265636f766572792d31222c22726561736f6e223a227365636f6e642072657175657374222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63"
+        ],
+        "tombstoned_digests": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ]
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": []
+    },
+    {
+      "name": "fresh_reference_registers_after_a_cancellation",
+      "note": "After a cancellation, a registration under a fresh commissioning reference is retained pending as any registration is, with its retained_pending disposition.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+          }
+        ],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "expected_authorisation_key_id": "comm-key-1",
+            "cancellation_id": "cancel-0001",
+            "reason": "commissioning abandoned",
+            "issued_at_ms": 1787000400000,
+            "key_id": "comm-recovery-1",
+            "signature": "ed25519:5YTfboMUMHhSGOP7wdMeOss0PBxpZkc84zUI4Vq3D9WRjlKFTNkuz57ha31lhKsoBWKfx6UXJRpI8wSSZLfADw=="
+          }
+        ]
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:cdabf47f9256a159712c9a5a2c1cbfcc8b04a999acaca8c970a7082580e38293",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:AJDr2Jw2CK+x41iQZufUGuvBhHR6aQ+NMranfMnePApeZ8UoB0sdbDGOUsQ0LIUb3Zc1SeMzDzcfhZjTqehTAw=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a63646162663437663932353661313539373132633961356132633163626663633862303461393939616361636138633937306137303832353830653338323933222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [
+          "sha256:cdabf47f9256a159712c9a5a2c1cbfcc8b04a999acaca8c970a7082580e38293"
+        ],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63"
+        ],
+        "tombstoned_digests": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ]
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:cc6c24ccd8c59e439ab4d7eb439a83d32ba977086ab41bc769f4f247c49dbde5",
+          "scope": "artifact",
+          "disposition": "retained_pending",
+          "delivery": "response"
+        }
+      ]
+    },
+    {
+      "name": "pending_conflict_resolves_once_its_digest_is_cancelled",
+      "note": "A reservation under another epoch held the digest pending, so the genuine registration was refused pending_registration_conflict. The reservation is cancelled and archived; the genuine registration's re-offer then resolves afresh, to a terminal commissioning_digest_mismatch, and a fresh reference repairs it.",
+      "source": "courier",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:6a826cbe5a0b07e83241f26ea1ac3f5dcc866f1c25ad87cf38402ff7cee9ae69",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": true,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:NNVxuQMSxhxMXbXnuC23vqkoC8Aa/zABnWCOXFoehHLO4IIN5YKxepMLVoENst8icznZIfL6Az1BfYW4USnmBw=="
+          }
+        ],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:6a826cbe5a0b07e83241f26ea1ac3f5dcc866f1c25ad87cf38402ff7cee9ae69",
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "expected_authorisation_key_id": "comm-key-1",
+            "cancellation_id": "cancel-0003",
+            "reason": "reservation by an unknown key",
+            "issued_at_ms": 1787000400000,
+            "key_id": "comm-recovery-1",
+            "signature": "ed25519:1MsY7tYLJ0Q8eYuHjzaR0z0lhKZLXJsoDjg1+/nVbX73AurpObAsgx4Sk0IPhb4lNW7w2KnXHHC8+MF+/IhfCA=="
+          }
+        ]
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "alg": "ed25519",
+        "posture": "software_wrapped",
+        "capability_profile": {
+          "artifact_purposes": [
+            "evidence_authority_epoch",
+            "evidence_authority_receipt",
+            "gateway_custody"
+          ],
+          "chain_protocol": "ori.evidence.v2",
+          "firmware_freshness_verified": false,
+          "signing_alg": "ed25519",
+          "v": 1
+        },
+        "registered_at_ms": 1787000000000,
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+        "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+      },
+      "canonical_hex": "7b22616c67223a2265643235353139222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226361706162696c6974795f70726f66696c65223a7b2261727469666163745f707572706f736573223a5b2265766964656e63655f617574686f726974795f65706f6368222c2265766964656e63655f617574686f726974795f72656365697074222c22676174657761795f637573746f6479225d2c22636861696e5f70726f746f636f6c223a226f72692e65766964656e63652e7632222c226669726d776172655f66726573686e6573735f7665726966696564223a66616c73652c227369676e696e675f616c67223a2265643235353139222c2276223a317d2c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226b65795f6964223a227368613235363a36336136313133373466303937353461376263613663363066643531636632616530356136656238663763353866626265376666353930363132333738346130222c22706f7374757265223a22736f6674776172655f77726170706564222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726567697374657265645f61745f6d73223a313738373030303030303030302c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "commissioning_digest_mismatch",
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:8b002ecfcbace236c7470fde7129a0176fd233296611a70b167c7e32a1ee124b",
+          "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63"
+        ],
+        "tombstoned_digests": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ]
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": [
+        {
+          "triggering_digest": "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63",
+          "scope": "artifact",
+          "disposition": "artifact_terminal",
+          "delivery": "response"
+        }
+      ]
+    },
+    {
+      "name": "authorisation_naming_another_issuer_than_its_tombstone_is_refused_terminally",
+      "note": "The digest was cancelled on the expectation that comm-key-2 would issue it. The authorisation that arrives under that digest was signed by comm-key-1. It is refused 409 cancellation_issuer_mismatch: the authority promotes nothing, keeps the tombstone, records the inconsistency and returns a terminal decision, never a 503 to retry.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "expected_authorisation_key_id": "comm-key-2",
+            "cancellation_id": "cancel-0005",
+            "reason": "expected another issuer",
+            "issued_at_ms": 1787000400000,
+            "key_id": "comm-recovery-1",
+            "signature": "ed25519:z9J1+Lw5XOLAxW4M4tz5Dz+re8vbHciN4BTxHsB9TAXMq/YsH7mV3/1x0HVV0EwatNeOycYpKftuznO3Cq+PAg=="
+          }
+        ]
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "actor": "commissioning@site",
+        "reason": "initial commissioning",
+        "issued_at_ms": 1786999000000,
+        "key_id": "comm-key-1",
+        "signature": "ed25519:loKBcGHuMgVzrPc/o3AznxgbIbLHwU/J2sNguuW2rMU6QCyICSRwlDrlsUuY03xeB8aE0rNQvOUayXeVxZ1VCQ=="
+      },
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738363939393030303030302c226b65795f6964223a22636f6d6d2d6b65792d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "cancellation_issuer_mismatch",
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [],
+        "tombstoned_digests": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ]
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": []
+    },
+    {
+      "name": "repeated_issuer_mismatch_stays_terminal_and_idempotent",
+      "note": "The same authorisation is submitted again under the same mismatched tombstone, with a registration pending under the digest's sibling. The decision is the same terminal 409 cancellation_issuer_mismatch, the tombstone stays, and nothing else changes.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:cdabf47f9256a159712c9a5a2c1cbfcc8b04a999acaca8c970a7082580e38293",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:AJDr2Jw2CK+x41iQZufUGuvBhHR6aQ+NMranfMnePApeZ8UoB0sdbDGOUsQ0LIUb3Zc1SeMzDzcfhZjTqehTAw=="
+          }
+        ],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "expected_authorisation_key_id": "comm-key-2",
+            "cancellation_id": "cancel-0005",
+            "reason": "expected another issuer",
+            "issued_at_ms": 1787000400000,
+            "key_id": "comm-recovery-1",
+            "signature": "ed25519:z9J1+Lw5XOLAxW4M4tz5Dz+re8vbHciN4BTxHsB9TAXMq/YsH7mV3/1x0HVV0EwatNeOycYpKftuznO3Cq+PAg=="
+          }
+        ]
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "actor": "commissioning@site",
+        "reason": "initial commissioning",
+        "issued_at_ms": 1786999000000,
+        "key_id": "comm-key-1",
+        "signature": "ed25519:loKBcGHuMgVzrPc/o3AznxgbIbLHwU/J2sNguuW2rMU6QCyICSRwlDrlsUuY03xeB8aE0rNQvOUayXeVxZ1VCQ=="
+      },
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738363939393030303030302c226b65795f6964223a22636f6d6d2d6b65792d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "cancellation_issuer_mismatch",
+      "authority_state_after": {
+        "retained_registrations": [
+          "sha256:cdabf47f9256a159712c9a5a2c1cbfcc8b04a999acaca8c970a7082580e38293"
+        ],
+        "confirmed_epochs": [],
+        "refused_registrations": [],
+        "tombstoned_digests": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ]
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": []
+    },
+    {
+      "name": "fresh_authorisation_under_a_new_digest_proceeds_after_an_issuer_mismatch",
+      "note": "The mismatched digest stays tombstoned. A newly issued authorisation under a new digest, named by a fresh reference already retained pending, promotes that registration and confirms the epoch as any authorisation does.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:cdabf47f9256a159712c9a5a2c1cbfcc8b04a999acaca8c970a7082580e38293",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:AJDr2Jw2CK+x41iQZufUGuvBhHR6aQ+NMranfMnePApeZ8UoB0sdbDGOUsQ0LIUb3Zc1SeMzDzcfhZjTqehTAw=="
+          }
+        ],
+        "refused_registrations": [],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "expected_authorisation_key_id": "comm-key-2",
+            "cancellation_id": "cancel-0005",
+            "reason": "expected another issuer",
+            "issued_at_ms": 1787000400000,
+            "key_id": "comm-recovery-1",
+            "signature": "ed25519:z9J1+Lw5XOLAxW4M4tz5Dz+re8vbHciN4BTxHsB9TAXMq/YsH7mV3/1x0HVV0EwatNeOycYpKftuznO3Cq+PAg=="
+          }
+        ]
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "actor": "commissioning@site",
+        "reason": "initial commissioning",
+        "issued_at_ms": 1787000000100,
+        "key_id": "comm-key-1",
+        "signature": "ed25519:/jsP8W2fdCUq4vbpnHRpv6N5kVzq0PnsK4kjl28gj8hhriefebBZlHR1eAqBrAYvj0p2dEqTYPKzQBscafZ1Cw=="
+      },
+      "canonical_hex": "7b226163746f72223a22636f6d6d697373696f6e696e674073697465222c22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c226973737565645f61745f6d73223a313738373030303030303130302c226b65795f6964223a22636f6d6d2d6b65792d31222c227075626b65795f686578223a2230336131303762666633636531306265316437306464313865373462633039393637653464363330396261353064356631646463383636343132353533316238222c22726561736f6e223a22696e697469616c20636f6d6d697373696f6e696e67222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "accept",
+      "reject_reason": null,
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [
+          "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a"
+        ],
+        "refused_registrations": [],
+        "tombstoned_digests": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ]
+      },
+      "epoch_confirmation_issued": true,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": "return_set",
+      "dispositions": []
+    },
+    {
+      "name": "cancellation_naming_another_expected_issuer_than_the_tombstone_is_refused",
+      "note": "The digest is already tombstoned for comm-key-1. A cancellation of it naming comm-key-2 as the expected issuer is refused cancellation_mismatch and changes nothing.",
+      "source": "commissioning_path",
+      "receiver_state": {
+        "held_authorisations": [],
+        "retained_registrations": [],
+        "refused_registrations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "alg": "ed25519",
+            "posture": "software_wrapped",
+            "capability_profile": {
+              "artifact_purposes": [
+                "evidence_authority_epoch",
+                "evidence_authority_receipt",
+                "gateway_custody"
+              ],
+              "chain_protocol": "ori.evidence.v2",
+              "firmware_freshness_verified": false,
+              "signing_alg": "ed25519",
+              "v": 1
+            },
+            "registered_at_ms": 1787000000000,
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "key_id": "sha256:63a611374f09754a7bca6c60fd51cf2ae05a6eb8f7c58fbbe7ff5906123784a0",
+            "signature": "ed25519:KvnHPSThb5gQ3QWfCRmNfzoFUIezDfp5rlV8eqeQ2nIGa5QVJ9hN0BFO5BJty6POZTcCOltqExiIygH4xJgYCw=="
+          }
+        ],
+        "revoked_authorisations": [],
+        "applied_registrations": [],
+        "cancellations": [
+          {
+            "v": 1,
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+            "expected_authorisation_key_id": "comm-key-1",
+            "cancellation_id": "cancel-0001",
+            "reason": "commissioning abandoned",
+            "issued_at_ms": 1787000400000,
+            "key_id": "comm-recovery-1",
+            "signature": "ed25519:5YTfboMUMHhSGOP7wdMeOss0PBxpZkc84zUI4Vq3D9WRjlKFTNkuz57ha31lhKsoBWKfx6UXJRpI8wSSZLfADw=="
+          }
+        ]
+      },
+      "artifact": {
+        "v": 1,
+        "device_id": "energy-monitor-ikeja-01",
+        "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+        "commissioning_digest": "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71",
+        "expected_authorisation_key_id": "comm-key-2",
+        "cancellation_id": "cancel-0005",
+        "reason": "expected another issuer",
+        "issued_at_ms": 1787000400000,
+        "key_id": "comm-recovery-1",
+        "signature": "ed25519:z9J1+Lw5XOLAxW4M4tz5Dz+re8vbHciN4BTxHsB9TAXMq/YsH7mV3/1x0HVV0EwatNeOycYpKftuznO3Cq+PAg=="
+      },
+      "canonical_hex": "7b22616e63686f725f65706f63685f6964223a227368613235363a37663162363562386232346636393830373434316438306338393031323037636632323635376139363330623132393031343138613939656662643336663061222c2263616e63656c6c6174696f6e5f6964223a2263616e63656c2d30303035222c22636f6d6d697373696f6e696e675f646967657374223a227368613235363a66636562656336376539613162646334313865323734326263313531316639353463666438343932376266313838393234383563313935393766633332643731222c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2265787065637465645f617574686f7269736174696f6e5f6b65795f6964223a22636f6d6d2d6b65792d32222c226973737565645f61745f6d73223a313738373030303430303030302c226b65795f6964223a22636f6d6d2d7265636f766572792d31222c22726561736f6e223a22657870656374656420616e6f7468657220697373756572222c2276223a317d",
+      "authenticator": "valid",
+      "expected": "reject",
+      "reject_reason": "cancellation_mismatch",
+      "authority_state_after": {
+        "retained_registrations": [],
+        "confirmed_epochs": [],
+        "refused_registrations": [
+          "sha256:da1a98e210bb6e35f6463229eb17760b22c4381cad77a3d7bb40ddfd436c6b63"
+        ],
+        "tombstoned_digests": [
+          "sha256:fcebec67e9a1bdc418e2742bc1511f954cfd84927bf18892485c19597fc32d71"
+        ]
+      },
+      "epoch_confirmation_issued": false,
+      "quarantined": false,
+      "gap_recorded": false,
+      "confirmation_delivery": null,
+      "dispositions": []
+    }
+  ]
+}

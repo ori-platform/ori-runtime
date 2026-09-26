@@ -637,7 +637,7 @@ class SafetyRegistry:
         return False
 
     def _protection_claim(self, pair: tuple[str, str], activation: str) -> str:
-        """`runtime-health/v2`'s conjunction, decided here rather than by a reader.
+        """`runtime-health/v3`'s conjunction, decided here rather than by a reader.
 
         Each conjunct is present because a pair can satisfy the obvious ones
         and protect nothing: one whose sensor stopped reporting has nothing to
@@ -700,7 +700,7 @@ class SafetyRegistry:
         pair = (zone_id, profile_id)
         if activation is None:
             if pair not in self._active:
-                # `runtime-health/v2` closes this field to `active`,
+                # `runtime-health/v3` closes this field to `active`,
                 # `pending_ratification`, or a refusal verdict from
                 # `safety-profile/v1`. A pair that is neither active nor
                 # carrying a verdict has no value in that vocabulary, so this
@@ -726,7 +726,7 @@ class SafetyRegistry:
         }
 
     def safety_zones(self) -> list[dict[str, Any]]:
-        """Per-pair protection posture, in `runtime-health/v2`'s shape.
+        """Per-pair protection posture, in `runtime-health/v3`'s shape.
 
         One entry per eligible pair, not per active one: a consumer that does
         not find a pair here knows nothing about it, and absence reads as
