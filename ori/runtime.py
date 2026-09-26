@@ -278,6 +278,9 @@ WATCHDOG_TIMEOUT = 60  # seconds — kernel reboots if no ping within this windo
 EXTERNAL_WATCHDOG_GPIO = 17  # BCM pin for optional external watchdog heartbeat
 EXTERNAL_WATCHDOG_PING_S = 30  # heartbeat interval for external watchdog devices
 TIER_D_DRAIN_TIMEOUT = 5.0  # seconds — wait for in-flight Tier D tasks on shutdown
+# An action record waiting this long means the store is not answering; health
+# degrades rather than report a stalled record queue as healthy.
+RECORD_STALL_MS = 30_000
 EVIDENCE_SHUTDOWN_FLUSH_TIMEOUT_S = 5.0
 ALERT_OUTBOX_RETRY_INTERVAL_S = 30.0
 ALERT_OUTBOX_BATCH_SIZE = 50
@@ -1943,12 +1946,30 @@ class OriRuntime:
 
         # 2. Cancel tracked background tasks only — never cancel the task
         #    running start() itself, which returns naturally once the shutdown
-        #    event is set.
+        #    event is set. This stops the sensor loops, so no act starts after
+        #    its records have been closed below.
         tasks = [t for t in self._background_tasks if not t.done()]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 2a. Write the records of acts. They are kept off each act's path, so
+        #     they settle afterwards, and must land while the store and the
+        #     evidence attestor are still open. What the store has not taken by
+        #     the deadline is reported lost; an act that has not settled — an
+        #     approval still open — is reported apart.
+        dispatcher = self._dispatcher
+        if dispatcher is not None and hasattr(dispatcher, "pending_record_count"):
+            pending_records = dispatcher.pending_record_count()
+            if pending_records:
+                logger.warning(
+                    "[shutdown] waiting up to %.1fs for %d action record(s)",
+                    TIER_D_DRAIN_TIMEOUT,
+                    pending_records,
+                )
+            await dispatcher.drain_records(timeout=TIER_D_DRAIN_TIMEOUT)
+            await dispatcher.abandon_records()
 
         # 2b. Stop gateway export responder.
         if self._gateway_export_server is not None:
@@ -3091,6 +3112,23 @@ class OriRuntime:
             return None
         return state.in_force.binding_seq
 
+    def _records_lost_or_stalled(self) -> bool:
+        """Whether an action record was lost, or has waited past the stall bound."""
+        dispatcher = self._dispatcher
+        if dispatcher is None or not hasattr(dispatcher, "record_backlog"):
+            return False
+        backlog = dispatcher.record_backlog()
+        return bool(
+            backlog.get("lost")
+            or backlog.get("oldest_pending_age_ms", 0) > RECORD_STALL_MS
+        )
+
+    def _decision_records_lost(self) -> int:
+        dispatcher = self._dispatcher
+        if dispatcher is None or not hasattr(dispatcher, "decision_records_lost"):
+            return 0
+        return int(dispatcher.decision_records_lost())
+
     def _commissioning_health(self) -> dict[str, Any]:
         state = self._commissioning_state
         if state is None:
@@ -3505,6 +3543,20 @@ class OriRuntime:
             # Evidence trust not established is degraded, not critical: the
             # safety path is unaffected, and what is at risk is the record.
             snapshot["status"] = "degraded"
+        if self._records_lost_or_stalled():
+            # A record the store never took is gone from the action log, and
+            # one that has waited this long is a store that is not answering.
+            # Losses are logged CRITICAL; health is degraded rather than
+            # critical for the same reason as above — the acts ran, the record
+            # did not. runtime-health/v3 defines no row for the record queue,
+            # so the condition is reported through `status` and the log alone.
+            snapshot["status"] = "degraded"
+        if self._decision_records_lost():
+            # An operator's decision whose record the store never took. The
+            # decision invariant is the one PATF names critical, and the
+            # contract's `action_records` row, which the approval admission
+            # brings, classifies a lost approved decision record the same way.
+            snapshot["status"] = "critical"
         commissioning = getattr(self, "_commissioning_state", None)
         if commissioning is not None and commissioning.problems:
             # Declared actuating hardware with no accepted binding is a device

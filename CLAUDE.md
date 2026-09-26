@@ -927,7 +927,12 @@ The dispatcher is called after every reasoning result. It MUST:
 1. Never block the event loop while waiting for operator approval
 2. Use asyncio.wait_for() with timeout for approval responses
 3. Always produce an ActionResult, even on failure
-4. Log every action attempt to the action_log table in SQLite
+4. Log every action attempt to the action_log table in SQLite — after the act,
+   never ahead of it. Records of Tier C/D acts and operator decisions go
+   through one ordered, bounded writer that retries a locked store;
+   a record past the ceiling, refused outright, or still unwritten at shutdown
+   is counted lost and reported, never waited for. A process that dies before
+   a row lands leaves that act out of the action log — see `docs/DISPATCH_PLAN.md`.
 
 **SQLite tables (add to store.py):**
 

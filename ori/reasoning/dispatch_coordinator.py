@@ -189,9 +189,17 @@ class DispatchCoordinator:
             plans = self._hold_in_flight(discovered)
             # Phase 2 — a Tier D match anywhere in the discovery set is
             # attempted before any reasoning task is scheduled anywhere in it.
-            for plan in plans:
-                if plan.grants_tier_d:
-                    await self._attempt_tier_d(plan, event)
+            # The attempts start together, in plan order, so an executor that
+            # does not return cannot hold a protective act on another resource.
+            # Two naming one outcome on one resource still meet at the gate,
+            # which joins them into one act.
+            await asyncio.gather(
+                *(
+                    self._attempt_tier_d(plan, event)
+                    for plan in plans
+                    if plan.grants_tier_d
+                )
+            )
 
             # Phase 3 — the rest of each plan, through the reasoning path.
             for plan in plans:
@@ -382,23 +390,29 @@ class DispatchCoordinator:
         """
         if self._dispatcher is None:
             return
-        for planned in plan.actions:
-            if not planned.tier_d_granted or not planned.admitted:
-                continue
-            outcome = await self._dispatch(plan, planned, event)
-            # A refusal at the gate is not a turn taken. Charging it would let a
-            # trip that never acted sit out its cooldown, and the next event is
-            # what re-raises it against the state that actually obtains.
-            refused = str(getattr(outcome, "action_taken", "") or "").startswith(
-                "refused_"
+        await asyncio.gather(
+            *(
+                self._attempt_one(plan, planned, event)
+                for planned in plan.actions
+                if planned.tier_d_granted and planned.admitted
             )
-            if refused:
-                planned.outcome = DispatchOutcome.FULLY_REFUSED
-                planned.refusal = str(outcome.action_taken)[len("refused_") :]
-            elif str(getattr(outcome, "action_taken", "")) == "coalesced":
-                planned.outcome = DispatchOutcome.JOINED_ATTEMPT
-            else:
-                planned.outcome = DispatchOutcome.ATTEMPTED
+        )
+
+    async def _attempt_one(
+        self, plan: TriggerPlan, planned: PlannedAction, event: OriEvent
+    ) -> None:
+        outcome = await self._dispatch(plan, planned, event)
+        # A refusal at the gate is not a turn taken. Charging it would let a
+        # trip that never acted sit out its cooldown, and the next event is
+        # what re-raises it against the state that actually obtains.
+        refused = str(getattr(outcome, "action_taken", "") or "").startswith("refused_")
+        if refused:
+            planned.outcome = DispatchOutcome.FULLY_REFUSED
+            planned.refusal = str(outcome.action_taken)[len("refused_") :]
+        elif str(getattr(outcome, "action_taken", "")) == "coalesced":
+            planned.outcome = DispatchOutcome.JOINED_ATTEMPT
+        else:
+            planned.outcome = DispatchOutcome.ATTEMPTED
 
     async def _dispatch(
         self,

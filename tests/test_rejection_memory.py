@@ -369,6 +369,7 @@ class TestRejectionMemory:
             context=ctx,
             result=res,
         )
+        await dispatcher.drain_records()
         key = store._build_rejection_pattern_key(
             _reading_of(evt).sensor_type,
             "overcurrent_trip",

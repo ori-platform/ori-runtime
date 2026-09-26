@@ -1308,6 +1308,7 @@ class TestReasonAndDispatch:
                 return_value="AB12CD34",
             ):
                 await elevator.reason_and_dispatch(event, skill, store, dispatcher)
+            await dispatcher.drain_records()
 
             rows = await store.get_tier_c_decision_log()
             assert len(rows) == 1

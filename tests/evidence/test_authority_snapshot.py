@@ -619,6 +619,7 @@ class TestAMissingTriggerNeverBecomesAnAuthority:
             # The physical action is not withheld for want of provenance.
             assert result.executed is True
             executed.assert_awaited_once()
+            await dispatcher.drain_records()
 
             rows = await store._run_read(
                 lambda conn: conn.execute(
@@ -743,6 +744,7 @@ class TestADispatchedActionIsAttested:
                 safe_default_action="log_to_dashboard",
                 approval_timeout_seconds=1,
             )
+            await dispatcher.drain_records()
 
             def rows_at_tier(conn):
                 return conn.execute(
