@@ -855,6 +855,15 @@ def _epoch(device: str) -> str:
 
 
 PROPOSAL_ID = "FWB00001"
+#: Every proposal gets its own identifier (they are rows), so a leaf that
+#: carries one is compared across sources with the identifier normalised.
+_PROPOSAL_IDS = re.compile(r"FWB0\d{4}")
+
+
+def _norm(leaf: str) -> str:
+    return _PROPOSAL_IDS.sub(PROPOSAL_ID, leaf)
+
+
 RUNTIME_KEY_ENV = "ORI_TEST_FWB_RUNTIME_COMMAND_SEED"
 PROVISIONER_KEY_ENV = "ORI_TEST_FWB_PROVISIONER_SEED"
 
@@ -1891,11 +1900,11 @@ def _install_leaves(
     def _record(leaf: str) -> None:
         window = _WINDOW.get()
         if window is None:
-            hits.append((OUTSIDE, leaf))
+            hits.append((OUTSIDE, _norm(leaf)))
         elif window.get("closed"):
-            hits.append((LATE, f"after {window['label']}: {leaf}"))
+            hits.append((LATE, f"after {window['label']}: {_norm(leaf)}"))
         else:
-            hits.append((window["label"], leaf))
+            hits.append((window["label"], _norm(leaf)))
 
     async def _send(self: Any, *args: Any, **kwargs: Any) -> AlertSendReceipt:
         _record("AlertFailoverSender.send")
@@ -2207,8 +2216,17 @@ async def test_every_dispatch_route_leaves_the_gate_alone(
             return 1
 
     monkeypatch.setattr(dispatcher, "_evidence_attestor", _Attestor())
+    # Every proposal is a row keyed by its identifier, so each dispatch gets
+    # its own; a reply names the one currently proposed.
+    current: dict[str, str] = {"id": PROPOSAL_ID}
+    issued = itertools.count(1)
+
+    def _next_proposal_id(*_: Any) -> str:
+        current["id"] = f"{PROPOSAL_ID[:-4]}{next(issued):04d}"
+        return current["id"]
+
     monkeypatch.setattr(
-        "ori.reasoning.action_dispatcher._generate_proposal_id", lambda *_: PROPOSAL_ID
+        "ori.reasoning.action_dispatcher._generate_proposal_id", _next_proposal_id
     )
     replies: dict[str, str] = {}
 
@@ -2225,7 +2243,8 @@ async def test_every_dispatch_route_leaves_the_gate_alone(
             for seen, leaf in hits
             if leaf.startswith("AlertFailoverSender.send[")
         )
-        return replies.get(label, "") if proposed else ""
+        reply = replies.get(label, "").replace(PROPOSAL_ID, current["id"])
+        return reply if proposed else ""
 
     monkeypatch.setattr(dispatcher, "_listen_for_response", _listen)
     # Comms available, so a Tier C proposal is sent rather than skipped, and
@@ -2336,11 +2355,24 @@ async def test_every_dispatch_route_leaves_the_gate_alone(
         if (entry := capability(action)) is not None and entry.physical
     )
     assert "trip_relay" in physical
+    # A generic CoAP command is never a Tier C proposal: it names no
+    # commissioned zone or outcome, so the approval path refuses it before any
+    # operator is asked. Its Tier C route is proven by that refusal, and its
+    # Tier B and Tier D routes are exercised like every other action's.
+    refused_as_tier_c = {"coap_command"}
+    for route, by_source in outcomes.items():
+        if route.startswith("coap_command tier=C "):
+            for source, results in by_source.items():
+                assert all(
+                    not executed_flag and taken == "refused_uncommissioned"
+                    for executed_flag, taken in results
+                ), (route, source, results)
     unexercised = [
         f"{action}@{tier}"
         for action in physical
         for tier in ("C", "D")
         if f"{action}@{tier}" not in executed
+        and not (tier == "C" and action in refused_as_tier_c)
     ]
     assert not unexercised, (
         f"{unexercised} never executed, so the approved Tier C and Tier D routes "

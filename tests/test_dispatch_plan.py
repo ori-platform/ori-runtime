@@ -1286,13 +1286,37 @@ class TestTierDDoesNotWaitOnAnApproval:
         assert _token(trip) is not _token(holder)
         assert _token(holder).invalidated is True
 
-    async def test_the_dispatcher_admits_a_tier_c_action_as_a_proposal(self):
-        """Driven through the real dispatcher, not the gate alone."""
+    async def test_the_dispatcher_admits_a_tier_c_action_as_a_proposal(self, tmp_path):
+        """Driven through the real dispatcher, not the gate alone.
+
+        A governed proposal needs a store to commit its row and a commissioned
+        zone to bind; the gate holds the resource as a proposal while the
+        operator is listened for.
+        """
         from ori.network.events import ReasoningResult
         from ori.reasoning.elevator import SkillContext
+        from ori.reasoning.tier_c_admission import TierCAuthorityFacts
+        from ori.state.store import StateStore
 
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        facts = TierCAuthorityFacts(
+            zone_id="zone-a",
+            zone_document={"zone_id": "zone-a", "identity": {"gpio_pin": 26}},
+            binding_digest="sha256:" + "b" * 64,
+            safety_profile_digest="",
+            resource_for={
+                OPEN_PROTECTED_CIRCUIT: "relay-gpio-26",
+                CLOSE_PROTECTED_CIRCUIT: "relay-gpio-26",
+            },
+            deployment_inputs={},
+        )
         gate = ResourceGate()
-        dispatcher = ActionDispatcher(config={"relay_enabled": True})
+        dispatcher = ActionDispatcher(
+            state_store=store,
+            config={"relay_enabled": True},
+            authority_facts=lambda: facts,
+        )
         dispatcher.bind_resource_gate(gate, BOUND)
         seen: list[str] = []
 
@@ -1309,13 +1333,17 @@ class TestTierDDoesNotWaitOnAnApproval:
         result = ReasoningResult(
             text="", tier="rule", model="m", tokens_used=0, latency_ms=0
         )
-        await dispatcher.dispatch(
-            action="trip_relay",
-            tier="C",
-            context=context,
-            result=result,
-            approval_timeout=1,
-        )
+        try:
+            await dispatcher.dispatch(
+                action="trip_relay",
+                tier="C",
+                context=context,
+                result=result,
+                approval_timeout=1,
+            )
+            await dispatcher.drain_records(timeout=5)
+        finally:
+            await store.close()
         assert seen == [HolderState.PROPOSAL], seen
 
 

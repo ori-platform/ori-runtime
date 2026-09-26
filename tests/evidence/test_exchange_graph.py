@@ -371,6 +371,20 @@ EXEMPTION_OWNERS = frozenset(
 #: a comment, a dead helper, or a `json.load` with no assertions all read as
 #: consumption, which is the false green this accounting exists to refuse.
 VECTOR_CONSUMERS = {
+    ("tier_c_approval", "admission"): (
+        "test_tier_c_approval_vectors.py::test_authority_snapshots",
+        "test_tier_c_approval_vectors.py::test_safe_default_cases",
+        "test_tier_c_approval_vectors.py::test_proposal_scope_cases",
+        "test_tier_c_approval_vectors.py::test_approval_timeout_bound",
+        "test_tier_c_approval_sequences.py::test_admission_sequence",
+    ),
+    ("offline_tokens", "signing-domain-v2"): (
+        "test_offline_tokens_v2_vectors.py::test_signing_domain",
+    ),
+    ("offline_tokens", "tier-c-binding-v2"): (
+        "test_tier_c_approval_sequences.py::test_token_binding_sequence",
+        "test_tier_c_approval_sequences.py::test_host_state_token_cases",
+    ),
     ("telemetry_delivery", "delivery_cases"): (
         "test_telemetry_delivery_contract.py"
         "::test_every_delivery_vector_reaches_its_recorded_outcome",
@@ -518,6 +532,20 @@ VECTOR_CONSUMERS = {
 #: tracked, because naming a repository says who is answerable rather than that
 #: the work is done.
 VECTOR_EXEMPTIONS = {
+    ("operator_socket", "tier-c-reconcile"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        # The socket PR's issue is filed on the maintainer's approval of its
+        # text; until then this names the contract it implements.
+        "tracking": "ori-specs operator-socket/v1 (Tier C Reconciliation); runtime issue pending, see #674 for the rework it belongs to",
+        "reason": (
+            "The reconciliation's transport: peer-credential authentication, the "
+            "installed operator identity and the socket's refusal order. The "
+            "store-side semantics these sequences reach are driven by the "
+            "admission corpus's reconcile steps; the caller vectors wait for the "
+            "socket that authenticates them."
+        ),
+    },
     ("evidence_exchange", "routing-projection-v2"): {
         "owner": "the site gateway",
         "status": "proof_pending",

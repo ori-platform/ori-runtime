@@ -110,7 +110,11 @@ from ori.policy.remote_fetch import (
     fetch_remote_device_policy_bundle,
     fetch_remote_device_policy_bundle_by_reference,
 )
-from ori.reasoning.action_dispatcher import ALERT_SUPPRESSED, ActionDispatcher
+from ori.reasoning.action_dispatcher import (
+    ACTUATION_NOT_PERFORMED,
+    ALERT_SUPPRESSED,
+    ActionDispatcher,
+)
 from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
 from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfig
 from ori.reasoning.dispatch_coordinator import DispatchCoordinator
@@ -122,6 +126,7 @@ from ori.reasoning.dispatch_plan import (
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.reasoning.local_llm import LocalLLM, local_llm_backend_available
 from ori.reasoning.resource_gate import ResourceGate
+from ori.reasoning.tier_c_admission import TierCAuthorityFacts
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.safety.commander import ActuatorOutcomeCommander
 from ori.safety.registry import SafetyRegistry
@@ -838,8 +843,11 @@ class OriRuntime:
         assert self._state_store is not None
         self._safety_commander = ActuatorOutcomeCommander()
         self._safety_alert_sink = _SafetyAlertAdapter(self)
+        shipped_profiles = load_shipped_profile_set()
+        # The digest a governed Tier C proposal binds as the profile in force.
+        self._shipped_profile_digest = str(shipped_profiles.digest or "")
         self._safety_registry = SafetyRegistry(
-            load_shipped_profile_set(),
+            shipped_profiles,
             in_force_zones,
             TripJournal(self._state_store),
             self._safety_commander,
@@ -1002,6 +1010,12 @@ class OriRuntime:
         # Dispatcher-level fallback timeout (used only when trigger-level timeout
         # is unavailable): select the maximum declared skill timeout.
         _approval_timeout = _resolve_dispatcher_approval_timeout(config.skills, 300)
+        # The deployment settings that can change Tier C admission, bound into
+        # every proposal's authority snapshot through its policy digest.
+        self._tier_c_deployment_inputs = {
+            "approval_timeout_seconds": int(_approval_timeout),
+            "relay_enabled": bool(relay_enabled),
+        }
 
         primary_alert_channel = config.actions.primary_alert_channel
         self._primary_alert_channel = primary_alert_channel
@@ -1098,6 +1112,7 @@ class OriRuntime:
             status_indicator=status_indicator,
             evidence_attestor=evidence_attestor,
             binding_seq_in_force=self._binding_seq_in_force,
+            authority_facts=self._tier_c_authority_facts,
             config={
                 "operator_contact": _operator_contact,
                 "secondary_contact": _secondary_contact,
@@ -1126,6 +1141,15 @@ class OriRuntime:
             },
         )
         self._dispatcher = dispatcher
+        if self._state_store is not None:
+            # Proposals a previous process left: an open one is closed, an
+            # approval without an outcome is recorded uncertain, and none is
+            # replayed. Before any sensor can raise a new one.
+            recovered = await dispatcher.recover_tier_c_at_start(self._state_store)
+            if any(recovered.values()):
+                logger.warning(
+                    "[runtime] Tier C proposals settled at start: %s", recovered
+                )
         await self._load_cached_device_policy(config, dispatcher)
         await self._maybe_refresh_remote_device_policy_once(config, dispatcher)
 
@@ -1301,20 +1325,30 @@ class OriRuntime:
         actuator_in_force = self._commissioned_actuator
         if relay_action is not None and actuator_in_force is not None:
             actuator_bound = actuator_in_force
+            relay_action_bound = relay_action
 
-            async def _exec_trip_relay(*_: Any) -> bool:
+            def _reported(executed: bool) -> bool | str:
+                # A driver that refused because it was never connected drove
+                # nothing: the one refusal an approved dispatch may record as
+                # failed rather than unknown. A failure on a connected line is
+                # unknown, since the coil may have moved before it was reported.
+                if not executed and not relay_action_bound.connected:
+                    return ACTUATION_NOT_PERFORMED
+                return executed
+
+            async def _exec_trip_relay(*_: Any) -> bool | str:
                 # `trip_relay` and `close_gas_valve` name one outcome: isolate
                 # the load. The zone's mapping decides the coil state.
                 executed = await actuator_bound.command("open_protected_circuit")
                 if status_indicator is not None:
                     status_indicator.set_relay_energized(actuator_bound.coil_energised)
-                return executed
+                return _reported(executed)
 
-            async def _exec_release_relay(*_: Any) -> bool:
+            async def _exec_release_relay(*_: Any) -> bool | str:
                 executed = await actuator_bound.command("close_protected_circuit")
                 if status_indicator is not None:
                     status_indicator.set_relay_energized(actuator_bound.coil_energised)
-                return executed
+                return _reported(executed)
 
             dispatcher.register_executor("trip_relay", _exec_trip_relay)
             dispatcher.register_executor("release_relay", _exec_release_relay)
@@ -1954,7 +1988,26 @@ class OriRuntime:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        # 2a. Write the records of acts. They are kept off each act's path, so
+        # 2a. An open proposal has no live process to admit its reply once this
+        #     one stops: closed now, with its one non-actuating safe default,
+        #     so nothing is lost silently and nothing is approved later.
+        if self._dispatcher is not None and self._state_store is not None:
+            try:
+                closed = await asyncio.wait_for(
+                    self._dispatcher.close_open_proposals(
+                        self._state_store, reason="graceful_shutdown"
+                    ),
+                    timeout=TIER_D_DRAIN_TIMEOUT,
+                )
+                if closed:
+                    logger.warning(
+                        "[shutdown] closed %d open Tier C proposal(s); none is approved",
+                        closed,
+                    )
+            except Exception:
+                logger.exception("[shutdown] open Tier C proposals could not be closed")
+
+        # 2b. Write the records of acts. They are kept off each act's path, so
         #     they settle afterwards, and must land while the store and the
         #     evidence attestor are still open. What the store has not taken by
         #     the deadline is reported lost; an act that has not settled — an
@@ -3112,6 +3165,43 @@ class OriRuntime:
             return None
         return state.in_force.binding_seq
 
+    def _tier_c_authority_facts(self) -> TierCAuthorityFacts | None:
+        """What a governed Tier C proposal binds, from the commissioned facts.
+
+        None until a zone is accepted and its actuator connected: a physical
+        Tier C proposal is refused rather than bound to nothing.
+        """
+        actuator = getattr(self, "_commissioned_actuator", None)
+        state = self._commissioning_state
+        if actuator is None or state is None or state.in_force is None:
+            return None
+        zone = actuator.zone
+        registry = getattr(self, "_safety_registry", None)
+        profile_digest = ""
+        if registry is not None and zone.zone_id in registry.zones_with_active_pairs:
+            digest = str(getattr(self, "_shipped_profile_digest", "") or "")
+            profile_digest = f"sha256:{digest}" if digest else ""
+        resource = f"relay-gpio-{zone.identity.get('gpio_pin', '')}"
+        return TierCAuthorityFacts(
+            zone_id=zone.zone_id,
+            zone_document={
+                "zone_id": zone.zone_id,
+                "kind": zone.kind,
+                "identity": dict(zone.identity),
+                "mapping": dict(zone.mapping),
+                "sensor": zone.sensor,
+            },
+            binding_digest=str(state.in_force.canonical_hash),
+            safety_profile_digest=profile_digest,
+            resource_for={
+                OPEN_PROTECTED_CIRCUIT: resource,
+                CLOSE_PROTECTED_CIRCUIT: resource,
+            },
+            deployment_inputs=dict(
+                getattr(self, "_tier_c_deployment_inputs", {}) or {}
+            ),
+        )
+
     def _records_lost_or_stalled(self) -> bool:
         """Whether an action record was lost, or has waited past the stall bound."""
         dispatcher = self._dispatcher
@@ -3281,6 +3371,14 @@ class OriRuntime:
             "stopped_local_artifact_count": None,
             "stopped_local_bytes": None,
             "oldest_stopped_local_since_ms": None,
+            # Tier C action-outcome records, per tier-c-approval/v1; None
+            # until the dispatcher exists.
+            "action_records": (
+                dispatcher.action_records()
+                if (dispatcher := getattr(self, "_dispatcher", None)) is not None
+                and hasattr(dispatcher, "action_records")
+                else None
+            ),
         }
         if not enabled:
             health.update(
@@ -3542,6 +3640,17 @@ class OriRuntime:
         if getattr(self, "_evidence_posture_problems", ()):
             # Evidence trust not established is degraded, not critical: the
             # safety path is unaffected, and what is at risk is the record.
+            snapshot["status"] = "degraded"
+        records_dispatcher = getattr(self, "_dispatcher", None)
+        if (
+            records_dispatcher is not None
+            and hasattr(records_dispatcher, "action_records_degrade_health")
+            and records_dispatcher.action_records_degrade_health()
+        ):
+            # An uncertain or unappended Tier C outcome, or the pending
+            # structure full: the evidence object carries no status of its
+            # own, so this is the aggregate's to say. Degraded, never critical:
+            # the approval stands, and no act was replayed or delayed.
             snapshot["status"] = "degraded"
         if self._records_lost_or_stalled():
             # A record the store never took is gone from the action log, and

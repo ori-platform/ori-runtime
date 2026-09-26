@@ -24,6 +24,10 @@ from ori.hal.config_schema import (
     validate_schema,
 )
 from ori.hal.protocol_registry import SUPPORTED_SENSOR_PROTOCOLS, protocol_schemas
+from ori.reasoning.approval_bounds import (
+    MAX_PROPOSAL_LIFETIME_S,
+    approval_timeout_accepted,
+)
 from ori.security.config_signatures import (
     CONFIG_REQUIRE_SIGNED_ENV,
     DEFAULT_CONFIG_TRUST_ANCHOR_ENV,
@@ -1399,6 +1403,14 @@ def _validate_skill_config(cfg: dict, context: str) -> None:
                     f"{context}.config.action_tier must be one of "
                     f"{sorted(_VALID_ACTION_TIERS)}, got: {value!r}"
                 )
+        if key == "approval_timeout_seconds" and not approval_timeout_accepted(value):
+            # A deployment may shorten a Tier C proposal's lifetime and never
+            # extend it past the release maximum; a fraction is refused, not
+            # rounded.
+            raise ConfigValidationError(
+                f"{context}.config.approval_timeout_seconds must be an integer "
+                f"from 1 to {MAX_PROPOSAL_LIFETIME_S}, got: {value!r}"
+            )
         if isinstance(value, dict):
             _validate_skill_config(value, f"{context}.config.{key}")
         if isinstance(value, list):

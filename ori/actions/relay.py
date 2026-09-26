@@ -458,6 +458,11 @@ class RelayAction:
     # ── State ─────────────────────────────────────────────────────────────────
 
     @property
+    def connected(self) -> bool:
+        """Whether connect() succeeded and the pin is initialised."""
+        return self._connected
+
+    @property
     def is_simulated(self) -> bool:
         """True when no hardware line was taken, so nothing was commanded."""
         return self._simulated

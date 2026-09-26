@@ -18,6 +18,10 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from ori.reasoning.action_registry import ACTION_REGISTRY, ActionCapability, capability
+from ori.reasoning.approval_bounds import (  # noqa: F401  (re-exported)
+    MAX_PROPOSAL_LIFETIME_S,
+    approval_timeout_accepted,
+)
 from ori.reasoning.dispatch_plan import commissioned_outcome
 
 # ── Decision states ───────────────────────────────────────────────────────────
@@ -103,24 +107,7 @@ RECONCILE_REASONS: Final[frozenset[str]] = frozenset(
 )
 
 # ── The proposal's lifetime ───────────────────────────────────────────────────
-#: The release-defined maximum Tier C proposal lifetime. A deployment may
-#: shorten it through `approval_timeout_seconds` and never extend it. Physical
-#: authority left open longer than this is stale against the conditions that
-#: produced it.
-MAX_PROPOSAL_LIFETIME_S: Final = 3600
-
-
-def approval_timeout_accepted(
-    value: Any, *, release_maximum_s: int = MAX_PROPOSAL_LIFETIME_S
-) -> bool:
-    """Whether *value* is an `approval_timeout_seconds` a deployment may set.
-
-    An integer from 1 to the release maximum. A fraction, a Boolean, a string
-    and anything outside the bound are refused, never rounded or clamped.
-    """
-    return type(value) is int and 1 <= value <= int(release_maximum_s)
-
-
+# Held in `approval_bounds`, which config and the skill loader import at load.
 # ── The authority snapshot ────────────────────────────────────────────────────
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SNAPSHOT_MEMBERS: Final[tuple[str, ...]] = (
@@ -230,6 +217,18 @@ def capability_digest(entry: ActionCapability) -> str:
             }
         )
     )
+
+
+@dataclass(frozen=True)
+class TierCAuthorityFacts:
+    """The commissioned facts the runtime hands the dispatcher for a proposal."""
+
+    zone_id: str
+    zone_document: Any
+    binding_digest: str
+    safety_profile_digest: str
+    resource_for: dict[str, str]
+    deployment_inputs: dict[str, Any]
 
 
 @dataclass(frozen=True)

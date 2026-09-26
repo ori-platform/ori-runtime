@@ -142,11 +142,11 @@ class TestParseApprovalResponse:
     async def test_string_false_scoped_reply_config_allows_legacy_bare_yes(self):
         d = ActionDispatcher(config={"approval_require_scoped_replies": "false"})
         exec_mock = AsyncMock()
-        d.register_executor("close_gas_valve", exec_mock)
+        d.register_executor("terminate_process", exec_mock)
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="YES")):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -417,8 +417,8 @@ class TestMissingExecutorNeverReportsExecution:
         [
             ("alert_whatsapp", ActionTier.INFORMATIONAL),
             ("coap_command", ActionTier.SOFT_PHYSICAL),
-            ("close_gas_valve", ActionTier.HARD_PHYSICAL),
-            ("trip_relay", ActionTier.SAFETY_CRITICAL),
+            ("terminate_process", ActionTier.HARD_PHYSICAL),
+            ("terminate_process", ActionTier.SAFETY_CRITICAL),
         ],
     )
     async def test_no_executor_reports_not_executed(self, action, tier):
@@ -440,7 +440,7 @@ class TestMissingExecutorNeverReportsExecution:
         d = ActionDispatcher(config={"approval_require_scoped_replies": "false"})
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="YES")):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -604,7 +604,7 @@ class TestTierC:
             "_approval_workflow",
             new=AsyncMock(
                 return_value=ActionResult(
-                    action_name="close_gas_valve",
+                    action_name="terminate_process",
                     tier=ActionTier.HARD_PHYSICAL,
                     executed=False,
                     approved=False,
@@ -614,14 +614,14 @@ class TestTierC:
             ),
         ) as mock_wf:
             await d.dispatch(
-                "close_gas_valve", ActionTier.HARD_PHYSICAL, ctx, _result()
+                "terminate_process", ActionTier.HARD_PHYSICAL, ctx, _result()
             )
 
         mock_wf.assert_awaited_once()
 
     async def test_tier_c_with_yes_response_executes_action(self):
         d = ActionDispatcher()
-        d.register_executor("close_gas_valve", AsyncMock(return_value=True))
+        d.register_executor("terminate_process", AsyncMock(return_value=True))
         mock_sender = AsyncMock()
         d._alert_sender = mock_sender
         d._config = {"operator_contact": "+234800000000"}
@@ -639,7 +639,7 @@ class TestTierC:
             ),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -648,7 +648,7 @@ class TestTierC:
 
         assert result.approved is True
         assert result.executed is True
-        assert result.action_taken == "close_gas_valve"
+        assert result.action_taken == "terminate_process"
 
     async def test_tier_c_with_no_response_executes_safe_default(self):
         d = ActionDispatcher()
@@ -656,7 +656,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -678,7 +678,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=slow_listen):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -708,7 +708,7 @@ class TestTierC:
                 new=AsyncMock(side_effect=fake_wait_for),
             ):
                 result = await d.dispatch(
-                    "close_gas_valve",
+                    "terminate_process",
                     ActionTier.HARD_PHYSICAL,
                     ctx,
                     _result(),
@@ -737,7 +737,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=slow_listen):
             await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -766,7 +766,7 @@ class TestTierC:
             ),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -791,7 +791,7 @@ class TestTierC:
             ),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -811,7 +811,7 @@ class TestTierC:
                 config={"operator_contact": "+234800000000"},
             )
             exec_mock = AsyncMock()
-            d.register_executor("close_gas_valve", exec_mock)
+            d.register_executor("terminate_process", exec_mock)
 
             with (
                 patch(
@@ -825,7 +825,7 @@ class TestTierC:
                 ),
             ):
                 result = await d.dispatch(
-                    "close_gas_valve",
+                    "terminate_process",
                     ActionTier.HARD_PHYSICAL,
                     _context(state_store=None),
                     _result(action_tier="C"),
@@ -869,7 +869,7 @@ class TestTierC:
             ),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -900,7 +900,7 @@ class TestTierC:
             ),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -921,7 +921,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
             await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -952,7 +952,7 @@ class TestTierC:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
             result = await d.dispatch(
-                "trip_relay",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(action_tier="C"),
@@ -971,7 +971,7 @@ class TestTierC:
         assert kwargs["history_window"] == [{"timestamp": 1, "value": 5.0}]
         assert kwargs["skill_name"] == "energy-anomaly-detector"
         assert kwargs["trigger_name"] == "overcurrent"
-        assert kwargs["proposed_action"] == "trip_relay"
+        assert kwargs["proposed_action"] == "terminate_process"
         assert kwargs["operator_decision"] == "rejected"
         assert kwargs["operator_response"] == "NO"
         assert kwargs["safe_default_action"] == "log_to_dashboard"
@@ -1004,7 +1004,7 @@ class TestTierC:
             ),
         ):
             result = await dispatcher.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(action_tier="C"),
@@ -1033,7 +1033,7 @@ class TestTierC:
                 "local_console_channel_id": "local_console",
             }
         )
-        d.register_executor("close_gas_valve", AsyncMock(return_value=True))
+        d.register_executor("terminate_process", AsyncMock(return_value=True))
         d.update_capability_posture(
             CapabilityPosture(
                 sms_available=False,
@@ -1065,7 +1065,7 @@ class TestTierC:
             ) as remote_listener,
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -1076,7 +1076,7 @@ class TestTierC:
         remote_listener.assert_not_awaited()
         assert result.approved is True
         assert result.operator_response == "LOCAL:YES-AB12CD34"
-        assert result.action_taken == "close_gas_valve"
+        assert result.action_taken == "terminate_process"
 
     async def test_tier_c_local_console_no_response_runs_safe_default(self):
         d = ActionDispatcher(
@@ -1107,7 +1107,7 @@ class TestTierC:
             new=AsyncMock(return_value=None),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -1154,7 +1154,7 @@ class TestTierC:
                 },
             )
             exec_mock = AsyncMock()
-            d.register_executor("close_gas_valve", exec_mock)
+            d.register_executor("terminate_process", exec_mock)
 
             with (
                 patch("ori.reasoning.action_dispatcher.now_ms", return_value=10_000),
@@ -1164,7 +1164,7 @@ class TestTierC:
                 ),
             ):
                 result = await d.dispatch(
-                    "close_gas_valve",
+                    "terminate_process",
                     ActionTier.HARD_PHYSICAL,
                     _context(state_store=None),
                     _result(action_tier="C"),
@@ -1210,7 +1210,7 @@ class TestTierC:
 
             with patch("ori.reasoning.action_dispatcher.now_ms", return_value=10_000):
                 result = await d.dispatch(
-                    "close_gas_valve",
+                    "terminate_process",
                     ActionTier.HARD_PHYSICAL,
                     _context(state_store=None),
                     _result(action_tier="C"),
@@ -1252,7 +1252,7 @@ class TestTierC:
             ) as local_listener,
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -1539,7 +1539,10 @@ class TestCapabilityTierGuard:
             result = await d.dispatch("trip_relay", "B", ctx, _result(action_tier="B"))
 
         assert result.tier == "C"
-        assert d._alert_sender.send.called
+        # Raised to the floor, and then refused as a proposal: no commissioned
+        # zone binds it, so no operator is asked and nothing actuates.
+        assert result.action_taken == "refused_uncommissioned"
+        assert not d._alert_sender.send.called
 
     async def test_capability_tier_never_downgrades(self):
         d = ActionDispatcher(
@@ -1552,7 +1555,8 @@ class TestCapabilityTierGuard:
             result = await d.dispatch("trip_relay", "C", ctx, _result(action_tier="C"))
 
         assert result.tier == "C"
-        assert d._alert_sender.send.called
+        assert result.action_taken == "refused_uncommissioned"
+        assert not d._alert_sender.send.called
 
 
 # ─── Unknown tier fallback ────────────────────────────────────────────────────
@@ -1684,7 +1688,7 @@ class TestStatusSignalingHooks:
 
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
             await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 ctx,
                 _result(),
@@ -1762,7 +1766,8 @@ class TestEmergencySmsSender:
 
 
 class TestOfflineTokenApproval:
-    async def test_local_console_token_approves_tier_c(self):
+    async def test_a_v1_token_never_approves_a_tier_c_action(self):
+        """A v1 token names no proposal; it is refused before it is verified."""
         verifier = AsyncMock()
         verifier.verify_token = AsyncMock(
             return_value=TokenVerificationResult(
@@ -1779,22 +1784,28 @@ class TestOfflineTokenApproval:
             },
         )
         exec_mock = AsyncMock()
-        d.register_executor("close_gas_valve", exec_mock)
+        safe_default = AsyncMock()
+        d.register_executor("terminate_process", exec_mock)
+        d.register_executor("log_to_dashboard", safe_default)
         with patch.object(
             d,
             "_listen_for_local_console_response",
             new=AsyncMock(return_value="TOKEN:abc"),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
             )
-        assert result.approved is True
-        assert result.executed is True
-        verifier.verify_token.assert_awaited_once()
-        exec_mock.assert_awaited_once()
+        assert result.approved is False
+        assert result.executed is True and result.safe_default_used is True
+        assert (
+            result.operator_response == "LOCAL:TOKEN_REJECTED:v1_token_is_not_approval"
+        )
+        verifier.verify_token.assert_not_awaited()
+        exec_mock.assert_not_awaited()
+        safe_default.assert_awaited_once()
 
     async def test_local_console_token_rejected_runs_safe_default(self):
         verifier = AsyncMock()
@@ -1820,7 +1831,7 @@ class TestOfflineTokenApproval:
             new=AsyncMock(return_value="TOKEN:abc"),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -1850,7 +1861,7 @@ class TestOfflineTokenApproval:
         )
         action = AsyncMock()
         safe_default = AsyncMock()
-        d.register_executor("close_gas_valve", action)
+        d.register_executor("terminate_process", action)
         d.register_executor("log_to_dashboard", safe_default)
         token = (
             '{"token_id":"t\\ud800","device_id":"x","action_scope":"*",'
@@ -1864,7 +1875,7 @@ class TestOfflineTokenApproval:
             new=AsyncMock(return_value="TOKEN:" + token),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -1886,7 +1897,7 @@ class TestOfflineTokenApproval:
         )
         action = AsyncMock()
         safe_default = AsyncMock()
-        d.register_executor("close_gas_valve", action)
+        d.register_executor("terminate_process", action)
         d.register_executor("log_to_dashboard", safe_default)
         with patch.object(
             d,
@@ -1894,10 +1905,10 @@ class TestOfflineTokenApproval:
             new=AsyncMock(return_value="TOKEN:abc"),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
-                ActionTier.HARD_PHYSICAL,
-                _context(),
-                _result(action_tier="C"),
+                "terminate_process",
+                ActionTier.SOFT_PHYSICAL,
+                _context(skill_config={"requires_approval": True}),
+                _result(action_tier="B"),
             )
         assert result.approved is False
         assert result.action_taken == "log_to_dashboard"
@@ -1932,12 +1943,12 @@ class TestOfflineTokenApproval:
         )
         action = AsyncMock()
         safe_default = AsyncMock()
-        d.register_executor("close_gas_valve", action)
+        d.register_executor("terminate_process", action)
         d.register_executor("log_to_dashboard", safe_default)
         context = _context()
         context.state_store = _Store()
         result = await d.dispatch(
-            "close_gas_valve",
+            "terminate_process",
             ActionTier.HARD_PHYSICAL,
             context,
             _result(action_tier="C"),
@@ -1956,7 +1967,7 @@ class TestOfflineTokenApproval:
         d = ActionDispatcher(config=config)
         action = AsyncMock()
         safe_default = AsyncMock()
-        d.register_executor("close_gas_valve", action)
+        d.register_executor("terminate_process", action)
         d.register_executor("log_to_dashboard", safe_default)
         listener = (
             "_listen_for_local_console_response"
@@ -1970,7 +1981,7 @@ class TestOfflineTokenApproval:
             ),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -2012,7 +2023,7 @@ class TestOfflineTokenApproval:
             d = ActionDispatcher(config={"operator_contact": "+2348000000000"})
             action = AsyncMock()
             safe_default = AsyncMock()
-            d.register_executor("close_gas_valve", action)
+            d.register_executor("terminate_process", action)
             d.register_executor("log_to_dashboard", safe_default)
             context = _context()
             context.state_store = store
@@ -2023,7 +2034,7 @@ class TestOfflineTokenApproval:
                 ),
             ):
                 result = await d.dispatch(
-                    "close_gas_valve",
+                    "terminate_process",
                     ActionTier.HARD_PHYSICAL,
                     context,
                     _result(action_tier="C"),
@@ -2054,7 +2065,7 @@ class TestOfflineTokenApproval:
             d = ActionDispatcher(config={"operator_contact": "+2348000000000"})
             action = AsyncMock()
             safe_default = AsyncMock()
-            d.register_executor("close_gas_valve", action)
+            d.register_executor("terminate_process", action)
             d.register_executor("log_to_dashboard", safe_default)
             context = _context()
             context.state_store = store
@@ -2078,7 +2089,7 @@ class TestOfflineTokenApproval:
                 broken,
             ):
                 result = await d.dispatch(
-                    "close_gas_valve",
+                    "terminate_process",
                     ActionTier.HARD_PHYSICAL,
                     context,
                     _result(action_tier="C"),
@@ -2104,7 +2115,7 @@ class TestOfflineTokenApproval:
         d = ActionDispatcher(config={"operator_contact": "+2348000000000"})
         action = AsyncMock()
         safe_default = AsyncMock()
-        d.register_executor("close_gas_valve", action)
+        d.register_executor("terminate_process", action)
         d.register_executor("log_to_dashboard", safe_default)
         context = context or _context()
         context.state_store = store
@@ -2121,7 +2132,7 @@ class TestOfflineTokenApproval:
                 for extra in patches:
                     stack.enter_context(extra(d))
                 result = await d.dispatch(
-                    "close_gas_valve",
+                    "terminate_process",
                     ActionTier.HARD_PHYSICAL,
                     context,
                     _result(action_tier="C"),
@@ -2277,7 +2288,7 @@ class TestOfflineTokenApproval:
         d = ActionDispatcher(config=config)
         action = AsyncMock()
         safe_default = AsyncMock()
-        d.register_executor("close_gas_valve", action)
+        d.register_executor("terminate_process", action)
         d.register_executor("log_to_dashboard", safe_default)
         listener = (
             "_listen_for_local_console_response"
@@ -2291,7 +2302,7 @@ class TestOfflineTokenApproval:
             ),
         ):
             result = await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),
@@ -2307,7 +2318,7 @@ class TestOfflineTokenApproval:
         # on cancellation is unchanged by this guard.
         d = ActionDispatcher(config={"operator_contact": "+2348000000000"})
         safe_default = AsyncMock()
-        d.register_executor("close_gas_valve", AsyncMock())
+        d.register_executor("terminate_process", AsyncMock())
         d.register_executor("log_to_dashboard", safe_default)
         listening = asyncio.Event()
 
@@ -2322,7 +2333,7 @@ class TestOfflineTokenApproval:
         ):
             task = asyncio.create_task(
                 d.dispatch(
-                    "close_gas_valve",
+                    "terminate_process",
                     ActionTier.HARD_PHYSICAL,
                     _context(),
                     _result(action_tier="C"),
@@ -2357,7 +2368,7 @@ class TestOfflineTokenApproval:
         d._status_indicator = _Indicator()  # type: ignore[assignment]
         action = AsyncMock()
         safe_default = AsyncMock()
-        d.register_executor("release_relay", action)
+        d.register_executor("terminate_process", action)
         d.register_executor("log_to_dashboard", safe_default)
         with (
             patch.object(d, "_tier_c_comms_available", return_value=True),
@@ -2370,7 +2381,7 @@ class TestOfflineTokenApproval:
             ),
         ):
             result = await d._approval_workflow(
-                "release_relay",
+                "terminate_process",
                 ActionTier.HARD_PHYSICAL,
                 _context(),
                 _result(action_tier="C"),

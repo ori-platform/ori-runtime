@@ -588,7 +588,7 @@ async def test_the_provider_template_slot_is_the_time_ori_proposed_not_the_devic
             alert_sender=sender,
             config={"operator_contact": "+234800000000", "device_timezone": "UTC"},
         )
-        d.register_executor("close_gas_valve", AsyncMock())
+        d.register_executor("terminate_process", AsyncMock())
         event = _event(_reading(1.0, timestamp=NOW + 6 * HOUR))
         event.received_at_ms = NOW
         context = SkillContext(
@@ -596,7 +596,7 @@ async def test_the_provider_template_slot_is_the_time_ori_proposed_not_the_devic
         )
         with patch.object(d, "_listen_for_response", new=AsyncMock(return_value="NO")):
             await d.dispatch(
-                "close_gas_valve",
+                "terminate_process",
                 "C",
                 context,
                 _result(action_tier="C"),

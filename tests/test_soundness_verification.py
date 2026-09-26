@@ -127,9 +127,12 @@ async def test_dispatcher_never_downgrades_tier():
             ),
         )
 
-    # Tier C must stay Tier C (approval workflow, no downgrade).
+    # Tier C must stay Tier C (no downgrade). A physical action with no
+    # commissioned zone is then refused as a proposal before any operator is
+    # asked, which is the approval path holding, not a downgrade.
     assert result.tier == "C"
-    assert mock_sender.send.called
+    assert result.action_taken == "refused_uncommissioned"
+    assert not mock_sender.send.called
 
 
 @pytest.mark.asyncio

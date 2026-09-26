@@ -468,6 +468,9 @@ EVIDENCE_HEALTH_KEYS = {
     "ingest_refusal_count",
     "last_ingest_refusal",
     "posture_problems",
+    # runtime-health/v3: the Tier C action-outcome records, None until the
+    # dispatcher exists.
+    "action_records",
     "anchor_epoch_id",
     "registration_status",
     "registration_pending_since_ms",

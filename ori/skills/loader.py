@@ -47,6 +47,10 @@ from ori.reasoning.action_registry import (
     minimum_tier,
     tier_rank,
 )
+from ori.reasoning.approval_bounds import (
+    MAX_PROPOSAL_LIFETIME_S,
+    approval_timeout_accepted,
+)
 from ori.reasoning.rule_engine import RESERVED_CONTEXT_NAMES
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
@@ -1771,6 +1775,12 @@ class SkillLoader:
                     f"must not be able to actuate anything."
                 )
 
+            approval_timeout = raw.get("approval_timeout_seconds", 300)
+            if not approval_timeout_accepted(approval_timeout):
+                raise SkillValidationError(
+                    f"trigger {name!r}: approval_timeout_seconds must be an integer "
+                    f"from 1 to {MAX_PROPOSAL_LIFETIME_S}, got {approval_timeout!r}"
+                )
             triggers.append(
                 Trigger(
                     name=name,
@@ -1781,9 +1791,7 @@ class SkillLoader:
                     bypass_llm=bypass_llm,
                     requires_approval=requires_approval,
                     reasoning_policy=reasoning_policy,
-                    approval_timeout_seconds=int(
-                        raw.get("approval_timeout_seconds", 300)
-                    ),
+                    approval_timeout_seconds=int(approval_timeout),
                     safe_default_action=safe_default_action,
                 )
             )
