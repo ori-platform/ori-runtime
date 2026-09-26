@@ -552,7 +552,6 @@ class TestAnotherConnectionHoldingTheDatabase:
         holder = sqlite3.connect(path, isolation_level=None)
         holder.execute("BEGIN IMMEDIATE")
         started = time.monotonic()
-        fired_after = -1.0
         try:
             context = SkillContext(
                 skill=_Skill("protector", tier, [action]),
@@ -937,9 +936,7 @@ class TestAStoreThatWillNotAnswerIsReported:
     async def test_a_signer_that_never_answers_leaves_its_row_pending(
         self, monkeypatch: Any
     ) -> None:
-        import ori.reasoning.action_dispatcher as dispatcher_module
-
-        monkeypatch.setattr(dispatcher_module, "_ATTESTATION_BOUND_S", 0.2)
+        monkeypatch.setattr("ori.reasoning.action_dispatcher._ATTESTATION_BOUND_S", 0.2)
         store = _RecordStore()
         signer = _Signer(block=True)
         _, dispatcher, ran = _build(store, signer=signer, approver=_Approver())

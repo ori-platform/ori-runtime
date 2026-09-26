@@ -1729,6 +1729,12 @@ class _EngineRecorder:
         # Strong references: a Connection takes no weak reference, and the
         # authorizer cannot be set inside the audit hook that reports it.
         self.connections: list[sqlite3.Connection] = []
+        # Authorized as they were opened; never touched again. Setting the
+        # authorizer from this thread while a statement runs on the store's
+        # thread deadlocks: the setter holds the GIL and waits for the
+        # connection's mutex, the statement holds the mutex and waits for the
+        # GIL.
+        self.authorized_at_connect: list[sqlite3.Connection] = []
 
     def authorize(self, action: int, table: str | None, *_: str | None) -> int:
         if self.armed and action == sqlite3.SQLITE_READ and table in ENGINE_TABLES:
@@ -1741,8 +1747,10 @@ class _EngineRecorder:
         return sqlite3.SQLITE_OK
 
     def adopt(self) -> None:
-        """Authorize every connection the audit hook has seen open."""
+        """Authorize every connection that reached the audit hook unauthorized."""
         for conn in self.connections:
+            if any(conn is seen for seen in self.authorized_at_connect):
+                continue
             try:
                 conn.set_authorizer(self.authorize)
             except sqlite3.ProgrammingError:
@@ -1787,6 +1795,7 @@ def _install_engine_recorder(
         kwargs["cached_statements"] = 0
         conn = real_connect(*args, **kwargs)
         conn.set_authorizer(recorder.authorize)
+        recorder.authorized_at_connect.append(conn)
         return conn
 
     monkeypatch.setattr(sqlite3, "connect", _connect)

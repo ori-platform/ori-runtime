@@ -86,7 +86,8 @@ async def test_close_counts_what_the_store_never_took() -> None:
 
     writer.submit(held)
     writer.submit(held)
-    assert await writer.close() == 2
+    counted_lost = await writer.close()
+    assert counted_lost == 2
     assert writer.lost == 2
     assert writer.submit(held) is False
     assert writer.lost == 3
@@ -154,7 +155,8 @@ async def test_a_write_in_flight_at_close_is_unknown_not_lost() -> None:
     writer.submit(head, label="head")
     writer.submit(queued, label="queued")
     await asyncio.wait_for(started.wait(), 1.0)
-    assert await writer.close(grace_s=0.05) == 1
+    counted_lost = await writer.close(grace_s=0.05)
+    assert counted_lost == 1
     assert writer.lost == 1 and writer.unknown == 1
     assert landed == []
 
@@ -171,7 +173,8 @@ async def test_close_gives_the_write_in_flight_the_stores_grace() -> None:
 
     writer.submit(slow)
     await asyncio.wait_for(started.wait(), 1.0)
-    assert await writer.close(grace_s=1.0) == 0
+    counted_lost = await writer.close(grace_s=1.0)
+    assert counted_lost == 0
     assert landed == ["slow"]
     assert writer.lost == 0 and writer.unknown == 0
 

@@ -2930,15 +2930,39 @@ class TestShutdown:
         reported through the aggregate status and the log, not a new field.
         """
         _patch_external(monkeypatch)
-        runtime: Any = OriRuntime(config_path=str(minimal_config))
+        # No skills: the fixture's community skill has no trust anchor and is
+        # refused at load, which is itself degraded. The baseline here is a
+        # runtime at rest with nothing wrong.
+        no_skills = minimal_config.with_name("no-skills.yaml")
+        empty_dir = minimal_config.with_name("no-skills")
+        empty_dir.mkdir()
+        lines = minimal_config.read_text().splitlines(keepends=True)
+        kept: list[str] = []
+        skipping = False
+        for line in lines:
+            if line.startswith("skills:"):
+                kept.append("skills: []\n")
+                skipping = True
+                continue
+            if skipping and line.strip() and not line.startswith(" "):
+                skipping = False
+            if skipping:
+                continue
+            if line.startswith("skills_dir:"):
+                line = f"skills_dir: {empty_dir}\n"
+            kept.append(line)
+        no_skills.write_text("".join(kept))
+        runtime: Any = OriRuntime(config_path=str(no_skills))
         observed: dict[str, Any] = {}
 
         async def _observe_then_stop():
             loop = asyncio.get_running_loop()
             deadline = loop.time() + 15.0
-            while runtime._dispatcher is None:
+            # The baseline is the runtime at rest, not a startup step caught
+            # half-way.
+            while runtime._dispatcher is None or not runtime._startup_complete:
                 if loop.time() > deadline:
-                    raise AssertionError("startup never built a dispatcher")
+                    raise AssertionError("startup never completed")
                 await asyncio.sleep(0.02)
             observed["before"] = await runtime._build_health_snapshot()
             runtime._dispatcher._records.lose("test", report=True, why="test")
@@ -2950,7 +2974,9 @@ class TestShutdown:
             await runtime.stop()
 
         await asyncio.gather(runtime.start(), _observe_then_stop())
-        assert observed["before"].get("status") != "degraded", observed["before"]
+        assert observed["before"].get("status") != "degraded", json.dumps(
+            observed["before"], indent=1, default=str
+        )
         assert "record_writes" not in observed["before"]
         assert observed["after"]["status"] == "degraded"
         assert observed["decision"]["status"] == "critical"
