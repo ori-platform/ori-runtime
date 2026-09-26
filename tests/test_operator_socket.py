@@ -686,6 +686,8 @@ def _set_acl(path: Path, entries: list[tuple[int, int, int]]) -> None:
 def test_an_ancestor_gains_search_for_the_operator_and_nothing_else(
     short_dir: Path,
 ) -> None:
+    # An operator other than whoever runs the test, which owns these directories.
+    operator = 1001 if os.geteuid() != 1001 else 1002
     parent = short_dir / "parent"
     parent.mkdir(mode=0o700)
     run = parent / "run"
@@ -695,14 +697,14 @@ def test_an_ancestor_gains_search_for_the_operator_and_nothing_else(
     s.bind(str(sock))
     s.close()
     try:
-        op.grant_access(run, sock, 1001)
+        op.grant_access(run, sock, operator)
     except AccessGrantError as exc:
         pytest.skip(f"this filesystem refuses access-control lists: {exc}")
     entries = sorted(op._decode_acl(os.getxattr(parent, op._ACL_XATTR)))  # type: ignore[attr-defined,unused-ignore]
     assert entries == sorted(
         [
             (op._ACL_USER_OBJ, 0o7, op._ACL_UNDEFINED_ID),
-            (op._ACL_USER, 0o1, 1001),
+            (op._ACL_USER, 0o1, operator),
             (op._ACL_GROUP_OBJ, 0, op._ACL_UNDEFINED_ID),
             (op._ACL_MASK, 0o1, op._ACL_UNDEFINED_ID),
             (op._ACL_OTHER, 0, op._ACL_UNDEFINED_ID),
