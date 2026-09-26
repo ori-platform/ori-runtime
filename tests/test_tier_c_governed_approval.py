@@ -726,6 +726,32 @@ class TestBindingAndBlocking:
         store = StateStore(str(tmp_path / "s.db"))
         await store.open()
         try:
+            # An admitted approval, as the store holds one when dispatch begins.
+            assert (
+                await store.create_tier_c_proposal(
+                    proposal_id="P9",
+                    device_id=DEVICE,
+                    action="trip_relay",
+                    target="relay-gpio-26",
+                    zone_id=ZONE,
+                    outcome="open_protected_circuit",
+                    safe_default_action="log_to_dashboard",
+                    binding_digest="sha256:" + "b" * 64,
+                    authority_json="{}",
+                    created_at_ms=now_ms(),
+                    expires_at_ms=now_ms() + 300_000,
+                )
+                == "committed"
+            )
+            assert (
+                await store.admit_tier_c_approval(
+                    "P9",
+                    binding_digest="sha256:" + "b" * 64,
+                    authority_json="{}",
+                    reservation_ceiling=64,
+                )
+                == "committed"
+            )
             dispatcher = _dispatcher(store, _Operator(), journal)
             dispatcher._resource_gate = _Gate()  # type: ignore[assignment]
             # The gate is consulted through the token the admission handed out;
@@ -746,10 +772,14 @@ class TestBindingAndBlocking:
                 "YES-P9",
             )
             await _settle(dispatcher)
+            states = await _states(store)
+            intents = await store.get_tier_c_safe_default_intents("P9")
         finally:
             await store.close()
         assert outcome.approved is True and outcome.executed is False
         assert outcome.action_taken == "dispatch_refused_contention"
+        assert states == [("P9", adm.DISPATCH_REFUSED_CONTENTION)]
+        assert [i["outcome"] for i in intents] == ["executed"]
         assert journal == ["act:log_to_dashboard"]
 
 
@@ -1306,3 +1336,67 @@ class TestRecoveryThatDidNotComplete:
         assert journal == ["act:log_to_dashboard"]
         assert any("could not settle" in n for n in operator.notices)
         assert dispatcher.action_records_degrade_health()
+
+
+class TestARefusedTransitionIsNeverReportedAsRecorded:
+    async def _rejected_through(self, store: Any) -> tuple[Any, ActionDispatcher, list]:
+        journal: list[str] = []
+        dispatcher = _dispatcher(store, _Operator(reply="NO"), journal)
+        outcome = await _propose(dispatcher, store)
+        await _settle(dispatcher)
+        return outcome, dispatcher, journal
+
+    async def test_a_transition_the_store_refuses_is_a_lost_decision(
+        self, tmp_path: Any
+    ) -> None:
+        class _Refusing(StateStore):
+            async def advance_tier_c_proposal(
+                self, proposal_id: str, state: str, **kwargs: Any
+            ) -> bool:
+                # The store answers, and says no: the row is not moved.
+                if state == adm.REJECTED:
+                    return False
+                return await super().advance_tier_c_proposal(
+                    proposal_id, state, **kwargs
+                )
+
+        store = _Refusing(str(tmp_path / "s.db"))
+        await store.open()
+        try:
+            outcome, dispatcher, journal = await self._rejected_through(store)
+            states = await _states(store)
+            decisions = await store.get_tier_c_decision_log()
+        finally:
+            await store.close()
+        assert outcome.approved is False and "act:trip_relay" not in journal
+        assert states == [(states[0][0], adm.PROPOSED)]
+        assert outcome.action_taken == "rejected_unrecorded"
+        assert dispatcher._decision_records_lost >= 1
+        assert [d["operator_decision"] for d in decisions] == ["rejected_unrecorded"]
+        assert journal == ["act:log_to_dashboard"]
+
+    async def test_a_row_already_holding_the_state_is_the_same_decision_once(
+        self, tmp_path: Any
+    ) -> None:
+        class _AlreadyThere(StateStore):
+            async def advance_tier_c_proposal(
+                self, proposal_id: str, state: str, **kwargs: Any
+            ) -> bool:
+                moved = await super().advance_tier_c_proposal(
+                    proposal_id, state, **kwargs
+                )
+                # A second writer got there first with the same decision.
+                return False if state == adm.REJECTED else moved
+
+        store = _AlreadyThere(str(tmp_path / "s.db"))
+        await store.open()
+        try:
+            outcome, dispatcher, journal = await self._rejected_through(store)
+            states = await _states(store)
+            decisions = await store.get_tier_c_decision_log()
+        finally:
+            await store.close()
+        assert states == [(states[0][0], adm.REJECTED)]
+        assert outcome.action_taken == "log_to_dashboard"
+        assert dispatcher._decision_records_lost == 0
+        assert [d["operator_decision"] for d in decisions] == ["rejected"]

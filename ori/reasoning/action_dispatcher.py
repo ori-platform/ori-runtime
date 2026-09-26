@@ -1949,7 +1949,7 @@ class ActionDispatcher:
         delay = 0.05
         for attempt in range(6):
             try:
-                return bool(
+                moved = bool(
                     await store.advance_tier_c_proposal(
                         proposal_id,
                         state,
@@ -1959,6 +1959,26 @@ class ActionDispatcher:
                         safe_default_action=safe_default_action,
                     )
                 )
+                if moved:
+                    return True
+                # Refused: the row was elsewhere. Already holding the state is
+                # the same decision recorded once; anything else is a decision
+                # this process cannot claim.
+                held = None
+                if hasattr(store, "get_tier_c_proposal"):
+                    row = await store.get_tier_c_proposal(proposal_id)
+                    held = str(row["decision_state"]) if row is not None else None
+                if held == state:
+                    return True
+                logger.critical(
+                    "ActionDispatcher: the decision %s of proposal %s was not recorded; "
+                    "the row holds %s",
+                    state,
+                    proposal_id,
+                    held,
+                )
+                self._note_decision_lost()
+                return False
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -2591,8 +2611,9 @@ class ActionDispatcher:
                     approval_end = APPROVAL_WINDOW_ELAPSED
             terminal_from = (PROPOSED,)
             already_closed = decision_state not in (REJECTED, PROPOSAL_EXPIRED)
+            recorded = True
             if not already_closed:
-                await self._close_now(
+                recorded = await self._close_now(
                     store,
                     proposal_id,
                     decision_state,
@@ -2633,6 +2654,13 @@ class ActionDispatcher:
                 if decision_state == PROPOSAL_EXPIRED
                 else decision_state
             )
+            if not recorded:
+                # The row does not hold this decision, so nothing reports it as
+                # durable: the safe default ran and the loss is counted.
+                operator_decision = f"{operator_decision}_unrecorded"
+                action_result = dataclasses.replace(
+                    action_result, action_taken=f"{decision_state}_unrecorded"
+                )
             if decision_state == REJECTED and operator_response is not None:
                 rejected_with = operator_response
                 self._defer_record(
@@ -2776,7 +2804,7 @@ class ActionDispatcher:
                 "carried out, a fresh proposal is required",
                 proposal_id,
             )
-            await self._close_now(
+            recorded = await self._close_now(
                 store,
                 proposal_id,
                 APPROVAL_EXPIRED_UNDISPATCHED,
@@ -2790,7 +2818,13 @@ class ActionDispatcher:
             self._governed_notify(
                 action, context, f"approval {proposal_id} not carried out: expired"
             )
-            return resolved(False, "approval_expired_undispatched", safe is not None)
+            return resolved(
+                False,
+                "approval_expired_undispatched"
+                if recorded
+                else "approval_expired_undispatched_unrecorded",
+                safe is not None,
+            )
         if (
             gate_token is not None
             and self._resource_gate is not None
@@ -2801,7 +2835,7 @@ class ActionDispatcher:
                 "opposing act holds its resource; not carried out",
                 proposal_id,
             )
-            await self._close_now(
+            recorded = await self._close_now(
                 store,
                 proposal_id,
                 DISPATCH_REFUSED_CONTENTION,
@@ -2818,7 +2852,13 @@ class ActionDispatcher:
                 f"approval {proposal_id} not carried out: the resource is held; "
                 "a fresh evaluation is required",
             )
-            return resolved(False, "dispatch_refused_contention", safe is not None)
+            return resolved(
+                False,
+                "dispatch_refused_contention"
+                if recorded
+                else "dispatch_refused_contention_unrecorded",
+                safe is not None,
+            )
 
         # The act. The marker lands beside it, never ahead of it.
         self._pending_outcomes[proposal_id] = time.monotonic()
