@@ -1315,7 +1315,7 @@ class TestTierDDoesNotWaitOnAnApproval:
         dispatcher = ActionDispatcher(
             state_store=store,
             config={"relay_enabled": True},
-            authority_facts=lambda: facts,
+            authority_facts=lambda zone_id=None: facts,
         )
         dispatcher.bind_resource_gate(gate, BOUND)
         seen: list[str] = []

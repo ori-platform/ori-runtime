@@ -155,7 +155,7 @@ def _dispatcher(
         state_store=store,
         alert_sender=operator,
         config={"operator_contact": "+2348000000000", "relay_enabled": True},
-        authority_facts=lambda: holder["facts"],
+        authority_facts=lambda zone_id=None: holder["facts"],
     )
     dispatcher.facts_holder = holder  # type: ignore[attr-defined]
 
@@ -294,6 +294,8 @@ class TestLiveImmediateDispatch:
         assert outcome.approved is True and outcome.executed is True
         committed = journal.index("admitted:committed")
         acted = journal.index("act:trip_relay")
+        # The act follows the commit, and nothing is written between them.
+        assert committed < acted, journal
         between = journal[committed + 1 : acted]
         assert all(not step.startswith("write:") for step in between), journal
         assert states == [(outcome.proposal_id, adm.EXECUTED)]

@@ -488,6 +488,54 @@ candidate or release is cut.
 
 ## Fixed
 
+- A physical Tier C action on a commissioned zone is proposed and admitted
+  under `tier-c-approval/v1`. The proposal is a store row committed before the
+  operator is asked, bound to the zone, the commissioned binding's digest and
+  a closed authority snapshot, with a lifetime bounded by the release maximum
+  (`approval_timeout_seconds` may shorten it, never extend it, and is refused at
+  config and skill load outside 1 to that maximum) and a deadline on the
+  process's monotonic clock. An affirmative reply becomes an approval only
+  inside one store transaction, which refuses it when the binding or authority
+  bytes have changed (`approval_binding_changed`), when an unresolved dispatch
+  commands the same outcome on the same zone
+  (`proposal_blocked_uncertain_outcome`), when the pending-outcome ceiling
+  leaves no room for its terminal record, or when its offline token was already
+  claimed; the token is claimed in that same transaction. A reply the store
+  cannot commit leaves the proposal open and asks the operator to reply again.
+  Dispatch follows in the same live attempt with nothing written ahead of the
+  executor; the dispatch marker lands beside it, the outcome is appended after
+  it and retried while the process lives, and an outcome the store will not
+  take stays pending and is never claimed durable. Only an executor's
+  affirmation that nothing was driven records `dispatch_failed`; a failure or
+  a raise is `dispatch_outcome_unknown`. A restart replays nothing: an open
+  proposal closes `proposal_aborted_restart` with its one non-actuating
+  safe-default intent, an approval with a durable marker and no outcome becomes
+  `dispatch_outcome_unknown`, and one with neither becomes
+  `dispatch_not_proven`, since the absence of a marker proves nothing; this
+  runtime writes nothing between the approval commit and the executor, so
+  `approval_aborted_undispatched` is unreachable in it. A graceful stop closes
+  open proposals the same way within the shutdown drain, so a pending proposal
+  is no longer lost silently and a stale `YES` after the restart approves
+  nothing. An uncertain dispatch blocks only its outcome on its zone, at
+  proposal creation and inside the admission of a later reply, until an
+  authenticated operator's observation or commissioned feedback reconciles it by
+  appending a record; Tier D consults none of this. A physical Tier C action
+  with no commissioned zone, and the generic `coap_command` at Tier C, are
+  refused as proposals before any operator is asked. Health carries the Tier C
+  action records under `evidence.action_records` per `runtime-health/v3`, and an
+  uncertain or unappended outcome degrades the aggregate `status`. Host-state
+  Tier C actions and Tier B actions requiring approval stay on the existing
+  workflow. The local transport for `evidence reconcile-tier-c`, the
+  authenticated operator socket, is not in this release; the reconciliation it
+  will carry is.
+- A v1 offline token approves no physical action at any tier and no Tier C
+  action: it names no proposal, target or zone, so a wildcard token could
+  approve a physical Tier B action that required approval. Offline tokens gain
+  a v2 format bound to one proposal, device, exact action, target and zone,
+  signed in its own domain and read by exact integer version before any
+  signature is verified; a v2 token is admitted only through the durable
+  approval above, and a v1 token still approves a host-state Tier B action
+  that requires approval.
 - No record of a Tier D act runs ahead of it any longer, or ahead of the next
   act in the same event. The autonomous-dispatch entry in the override log was
   written before the executor ran, and each act's action-log row, firmware

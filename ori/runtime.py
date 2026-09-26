@@ -3165,17 +3165,22 @@ class OriRuntime:
             return None
         return state.in_force.binding_seq
 
-    def _tier_c_authority_facts(self) -> TierCAuthorityFacts | None:
+    def _tier_c_authority_facts(
+        self, zone_id: str | None = None
+    ) -> TierCAuthorityFacts | None:
         """What a governed Tier C proposal binds, from the commissioned facts.
 
         None until a zone is accepted and its actuator connected: a physical
-        Tier C proposal is refused rather than bound to nothing.
+        Tier C proposal is refused rather than bound to nothing. With
+        *zone_id*, None unless it names the commissioned zone.
         """
         actuator = getattr(self, "_commissioned_actuator", None)
         state = self._commissioning_state
         if actuator is None or state is None or state.in_force is None:
             return None
         zone = actuator.zone
+        if zone_id is not None and zone_id != zone.zone_id:
+            return None
         registry = getattr(self, "_safety_registry", None)
         profile_digest = ""
         if registry is not None and zone.zone_id in registry.zones_with_active_pairs:

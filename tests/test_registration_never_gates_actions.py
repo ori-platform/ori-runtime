@@ -261,7 +261,7 @@ async def _dispatch(state: str, tier: str, tmp_path: Path) -> dict[str, Any]:
             config={"operator_contact": "+234800000000"},
             # A physical Tier C proposal binds a commissioned zone, or it is
             # refused before any operator is asked.
-            authority_facts=lambda: TierCAuthorityFacts(
+            authority_facts=lambda zone_id=None: TierCAuthorityFacts(
                 zone_id="zone-a",
                 zone_document={"zone_id": "zone-a", "identity": {"gpio_pin": 26}},
                 binding_digest="sha256:" + "b" * 64,

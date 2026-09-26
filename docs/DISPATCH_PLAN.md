@@ -447,12 +447,18 @@ so an executor that does not return holds no protective act on another
 resource; two naming one outcome on one resource still meet at the gate and
 join into one act. A record still in flight when the writer closes at shutdown is
 reported as outcome unknown, not lost. A lost operator-decision record makes
-health critical; any other lost record degrades it. That is an alarm, not
-durability: until an operator's reply becomes an approval only once durably
-committed, a decision record can still be lost at the writer's ceiling, on a
-store error that is not a lock, or at shutdown. The mixed record queue has no
-contract field; `runtime-health/v3`'s `action_records` belongs to that
-admission and is not reported by this runtime yet.
+health critical; any other lost record degrades it.
+
+For a physical Tier C action on a commissioned zone the operator's decision is
+not a record written after the fact: the reply becomes an approval only inside
+the store transaction that commits it (`tier-c-approval/v1`), so a lost approved
+decision is structurally impossible there, and the approval commit reserves the
+terminal record its outcome will resolve into. The outcome is appended after
+the act and retried while the process lives; an outcome the store will not take
+stays pending, never claimed durable, and a restart resolves it from the
+durable dispatch marker. `runtime-health/v3`'s `action_records` reports these:
+pending, unknown and unproven outcomes, live unknowns and the ceiling. The
+mixed record queue behind the other records still has no contract field.
 
 ## Cooldown
 

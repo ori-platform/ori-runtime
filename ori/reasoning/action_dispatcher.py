@@ -521,7 +521,7 @@ class ActionDispatcher:
         config: dict | None = None,
         evidence_attestor: Any = None,
         binding_seq_in_force: Callable[[], int | None] | None = None,
-        authority_facts: Callable[[], Any] | None = None,
+        authority_facts: Callable[[str | None], Any] | None = None,
     ) -> None:
         self._state_store = state_store
         # The commissioned binding in force when a physical action is logged,
@@ -537,11 +537,19 @@ class ActionDispatcher:
         # monotonic time their dispatch began; those the store refused to
         # take while live; and the proposals this process holds a deadline for.
         self._pending_outcomes: dict[str, float] = {}
-        self._unknown_live: set[str] = set()
+        # Outcomes the live runtime could not hold or has failed to append, by
+        # proposal, with the zone and outcome they command: each blocks a later
+        # proposal at creation as an unresolved uncertainty does.
+        self._unknown_live: dict[str, tuple[str, str]] = {}
+        self._append_failed: dict[str, tuple[str, str]] = {}
         self._proposal_deadlines: dict[str, float] = {}
         # Uncertain dispatches known to this process, by decision state, kept
         # in step with the store so health reads nothing.
         self._uncertain: dict[str, str] = {}
+        # The monotonic clock a proposal's deadline is decided on. Wall time is
+        # record and display data only.
+        self._clock: Callable[[], float] = time.monotonic
+        self._pending_ceiling: int = _PENDING_OUTCOME_CEILING
         self._alert_sender = alert_sender
         self._emergency_sms_sender = emergency_sms_sender
         self._offline_token_verifier = offline_token_verifier
@@ -1783,7 +1791,7 @@ class ActionDispatcher:
             "outcome_unknown": unknown,
             "dispatch_unproven": unproven,
             "lost": unknown + unproven,
-            "ceiling": _PENDING_OUTCOME_CEILING,
+            "ceiling": self._pending_ceiling,
             "unknown_live": len(self._unknown_live),
             "oldest_pending_age_ms": oldest,
         }
@@ -1794,15 +1802,28 @@ class ActionDispatcher:
         return bool(
             (records["lost"] or 0) > 0
             or (records["unknown_live"] or 0) > 0
-            or (records["pending"] or 0) >= _PENDING_OUTCOME_CEILING
+            or (records["pending"] or 0) >= self._pending_ceiling
         )
 
-    def _governed_facts(self) -> Any:
-        """The commissioned facts a governed proposal binds, or None."""
+    def tier_c_outcome_held_live(self, zone_id: str, outcome: str) -> bool:
+        """Whether this process holds an unappended outcome for *outcome* on *zone_id*.
+
+        A live unknown, or an outcome the store has refused at least once,
+        blocks a later proposal at creation as a durable uncertainty does.
+        """
+        held = set(self._unknown_live.values()) | set(self._append_failed.values())
+        return (zone_id, outcome) in held
+
+    def _governed_facts(self, zone_id: str | None = None) -> Any:
+        """The commissioned facts a governed proposal binds, or None.
+
+        With *zone_id*, the facts for that zone or None when it is not this
+        device's; without, the zone a new proposal would bind.
+        """
         if self._authority_facts is None:
             return None
         try:
-            return self._authority_facts()
+            return self._authority_facts(zone_id)
         except Exception:
             logger.exception("ActionDispatcher: authority facts could not be read")
             return None
@@ -1980,7 +2001,6 @@ class ActionDispatcher:
         without a committed approval.
         """
         tier = ActionTier.HARD_PHYSICAL
-        loop = asyncio.get_running_loop()
         store = self._resolve_state_store(context)
         device_id = context.event.device_id if context.event else "unknown"
         facts = self._governed_facts()
@@ -2021,7 +2041,7 @@ class ActionDispatcher:
         proposal_id = _generate_proposal_id()
         created_at_ms = now_ms()
         expires_at_ms = created_at_ms + lifetime_s * 1000
-        deadline = loop.time() + lifetime_s
+        deadline = self._clock() + lifetime_s
         self._proposal_deadlines[proposal_id] = deadline
         target = str(getattr(facts, "resource_for", {}).get(outcome, "") or "")
         skill_name = str(getattr(getattr(context, "skill", None), "name", "") or "")
@@ -2081,7 +2101,6 @@ class ActionDispatcher:
         deadline: float,
     ) -> ActionResult:
         tier = ActionTier.HARD_PHYSICAL
-        loop = asyncio.get_running_loop()
         proposal_id = str(row["proposal_id"])
         device_id = str(row["device_id"])
         zone_id = str(row["zone_id"])
@@ -2108,9 +2127,13 @@ class ActionDispatcher:
                 safe_default_used=safe_default_used,
             )
 
-        # 1. The proposal row, committed before anyone is asked.
+        # 1. The proposal row, committed before anyone is asked. An outcome this
+        #    process could not append or hold blocks it as a durable uncertainty
+        #    would; one merely in flight is caught when the reply is admitted.
         creation = "store_unavailable"
-        if store is not None and hasattr(store, "create_tier_c_proposal"):
+        if self.tier_c_outcome_held_live(zone_id, outcome):
+            creation = "blocked"
+        elif store is not None and hasattr(store, "create_tier_c_proposal"):
             for _attempt in range(3):
                 try:
                     creation = str(await store.create_tier_c_proposal(**row))
@@ -2224,7 +2247,7 @@ class ActionDispatcher:
         acted: ActionResult | None = None
         replies = 0
         while True:
-            remaining = deadline - loop.time()
+            remaining = deadline - self._clock()
             if remaining <= 0:
                 approval_end = approval_end or APPROVAL_WINDOW_ELAPSED
                 break
@@ -2295,7 +2318,9 @@ class ActionDispatcher:
                         verdict.reason,
                     )
                     self._governed_notify(
-                        action, context, f"token refused for proposal {proposal_id}"
+                        action,
+                        context,
+                        f"token refused for proposal {proposal_id} ({verdict.reason})",
                     )
                     operator_response = f"LOCAL:TOKEN_REJECTED:{verdict.reason}"
                     continue
@@ -2312,13 +2337,15 @@ class ActionDispatcher:
                 decision_state = REJECTED
                 break
             # An affirmative reply: expiry, then admission, in one transaction.
-            if loop.time() > deadline:
+            if self._clock() > deadline:
                 decision_state = PROPOSAL_EXPIRED
                 self._governed_notify(
                     action, context, f"proposal {proposal_id} had expired; not approved"
                 )
                 break
-            authority = self._authority_now(action, self._governed_facts())
+            # The proposal's own zone: the facts are re-read for it, so the
+            # binding and authority in force are compared for that zone.
+            authority = self._authority_now(action, self._governed_facts(zone_id))
             snapshot_now, binding_now = (
                 authority if authority is not None else (b"", "")
             )
@@ -2330,7 +2357,7 @@ class ActionDispatcher:
                             proposal_id,
                             binding_digest=binding_now,
                             authority_json=snapshot_now.decode("utf-8"),
-                            reservation_ceiling=_PENDING_OUTCOME_CEILING,
+                            reservation_ceiling=self._pending_ceiling,
                             ingress_channel=(
                                 inbound.channel
                                 if inbound is not None
@@ -2610,7 +2637,7 @@ class ActionDispatcher:
                 safe_default_used=safe_default_used,
             )
 
-        if loop.time() > deadline:
+        if self._clock() > deadline:
             logger.critical(
                 "ActionDispatcher: approved proposal %s expired before dispatch; not "
                 "carried out, a fresh proposal is required",
@@ -2684,7 +2711,7 @@ class ActionDispatcher:
             if _cancelled_here(exc):
                 # The executor may still be driving; the outcome is unknown.
                 self._record_outcome(
-                    store, proposal_id, DISPATCH_OUTCOME_UNKNOWN, {"interrupted": True}
+                    store, row, DISPATCH_OUTCOME_UNKNOWN, {"interrupted": True}
                 )
                 raise
             logger.exception(
@@ -2692,7 +2719,7 @@ class ActionDispatcher:
             )
             self._record_outcome(
                 store,
-                proposal_id,
+                row,
                 DISPATCH_OUTCOME_UNKNOWN,
                 {"raised": type(exc).__name__},
             )
@@ -2705,7 +2732,7 @@ class ActionDispatcher:
             state = DISPATCH_OUTCOME_UNKNOWN
         self._record_outcome(
             store,
-            proposal_id,
+            row,
             state,
             {"executed": inner.executed, "action_taken": inner.action_taken},
         )
@@ -2721,32 +2748,74 @@ class ActionDispatcher:
         return resolved(inner.executed, inner.action_taken, False)
 
     def _record_outcome(
-        self, store: Any, proposal_id: str, state: str, outcome: dict[str, Any]
+        self,
+        store: Any,
+        row: dict[str, Any],
+        state: str,
+        outcome: dict[str, Any],
     ) -> None:
-        """Append the outcome after the act; a record the store refuses stays live."""
+        """Append the outcome after the act; retried while live, never claimed early.
 
-        def landed() -> None:
+        The approval commit reserved this record, so an outcome the store will
+        not take yet stays `pending` and is retried until it lands or the
+        process stops; a restart then resolves it from the durable marker. Only
+        a pending structure already at its ceiling leaves a live unknown, which
+        is diagnostic and never a durable `dispatch_outcome_unknown`. Either
+        blocks a later proposal for the same outcome on the same zone at
+        creation.
+        """
+        proposal_id = str(row["proposal_id"])
+        commanded = (str(row.get("zone_id", "")), str(row.get("outcome", "")))
+        if (
+            len(self._pending_outcomes) > self._pending_ceiling
+            or store is None
+            or not hasattr(store, "advance_tier_c_proposal")
+        ):
             self._pending_outcomes.pop(proposal_id, None)
-            if state in UNCERTAIN_STATES:
-                self._uncertain[proposal_id] = state
-
-        def lost() -> None:
-            self._pending_outcomes.pop(proposal_id, None)
-            self._unknown_live.add(proposal_id)
+            self._unknown_live[proposal_id] = commanded
             logger.critical(
-                "ActionDispatcher: the outcome of approved proposal %s could not be "
-                "appended; it is unknown until reconciled and is not claimed durable",
+                "ActionDispatcher: the outcome of approved proposal %s cannot be held; "
+                "it is unknown until reconciled and is not claimed durable",
                 proposal_id,
             )
+            return
+        outcome_json = json.dumps(outcome, sort_keys=True)
 
-        self._close_proposal(
-            store,
-            proposal_id,
-            state,
-            from_states=(APPROVED_PENDING_DISPATCH, DISPATCH_STARTED),
-            outcome=outcome,
-            landed=landed,
-            on_lost=lost,
+        async def append() -> None:
+            delay = 0.05
+            while True:
+                try:
+                    await store.advance_tier_c_proposal(
+                        proposal_id,
+                        state,
+                        from_states=(APPROVED_PENDING_DISPATCH, DISPATCH_STARTED),
+                        outcome_json=outcome_json,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if proposal_id not in self._append_failed:
+                        self._append_failed[proposal_id] = commanded
+                        logger.critical(
+                            "ActionDispatcher: the outcome of approved proposal %s could "
+                            "not be appended (%s); it stays pending and is retried, and "
+                            "is not claimed durable",
+                            proposal_id,
+                            exc,
+                        )
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 2.0)
+                    continue
+                self._pending_outcomes.pop(proposal_id, None)
+                self._append_failed.pop(proposal_id, None)
+                if state in UNCERTAIN_STATES:
+                    self._uncertain[proposal_id] = state
+                return
+
+        self._track_tier_d_task(
+            asyncio.get_running_loop().create_task(
+                append(), name=f"tier-c-outcome:{proposal_id}"
+            )
         )
 
     async def recover_tier_c_at_start(self, store: Any) -> dict[str, int]:
@@ -2922,7 +2991,7 @@ class ActionDispatcher:
         )
         if answer.get("ok"):
             self._uncertain.pop(proposal_id, None)
-            self._unknown_live.discard(proposal_id)
+            self._unknown_live.pop(proposal_id, None)
         return dict(answer)
 
     async def reconcile_from_commissioned_feedback(
@@ -2957,7 +3026,7 @@ class ActionDispatcher:
             )
             if answer.get("ok"):
                 self._uncertain.pop(proposal_id, None)
-                self._unknown_live.discard(proposal_id)
+                self._unknown_live.pop(proposal_id, None)
                 reconciled.append(proposal_id)
         return reconciled
 

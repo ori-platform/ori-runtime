@@ -571,6 +571,8 @@ class ActionDispatcher:
             return await self._approval_workflow(action, context, result)
 
     async def _approval_workflow(self, action, context, result) -> ActionResult:
+        # The existing workflow: host-state Tier C actions and Tier B actions
+        # that require approval.
         # 1. Send WhatsApp/SMS with reasoning + proposed action via AlertFailoverSender
         #    (tries primary channel first, falls back to secondary on failure)
         # 2. Wait for YES-<proposal_id>/NO-<proposal_id>
@@ -579,7 +581,37 @@ class ActionDispatcher:
         # 4. Scoped NO, invalid reply, or timeout → execute safe_default_action
         # 5. No response after 2x timeout → escalate to secondary_contact
         ...
+
+    async def _governed_approval_workflow(self, action, context, result, ...) -> ActionResult:
+        # A physical Tier C action on a commissioned zone, under tier-c-approval/v1.
+        # 1. Commit the proposal row before anyone is asked: zone, binding digest,
+        #    closed authority snapshot, created/expires for audit, a monotonic deadline.
+        # 2. Ask, then listen. An affirmative reply is an approval only inside one
+        #    store transaction: binding and authority bytes must match, no unresolved
+        #    dispatch may command the same outcome on the same zone, a terminal record
+        #    is reserved under the pending ceiling, and any v2 token is claimed there.
+        # 3. Dispatch at once, in this live attempt, with nothing written ahead of the
+        #    executor; the dispatch marker lands beside it; the outcome is appended
+        #    after it and retried while the process lives.
+        # 4. Expired, rejected, blocked, or changed: one non-actuating safe-default
+        #    intent per proposal, the operator told why.
+        ...
 ```
+
+**Restart and reconciliation for governed approvals.** A restart replays
+nothing: an open proposal closes `proposal_aborted_restart` with its safe
+default; an approval with a durable marker and no outcome is
+`dispatch_outcome_unknown`; one with neither is `dispatch_not_proven`, because
+the absence of a marker proves nothing. This runtime writes nothing between the
+approval commit and the executor, so `approval_aborted_undispatched` is
+unreachable in it. A graceful stop closes open proposals the same way. An
+uncertain dispatch blocks only its outcome on its zone until an authenticated
+operator's observation (`reconcile_tier_c`, reached through the operator socket
+once that lands) or commissioned feedback appends a reconciliation; Tier D
+consults none of this. Health carries `evidence.action_records`. A physical
+Tier C action with no commissioned zone, and `coap_command` at Tier C, are
+refused as proposals. A v1 offline token approves no physical action at any
+tier and no Tier C action; a v2 token binds one proposal.
 
 The approval message template that appears on the operator's WhatsApp:
 
@@ -1045,6 +1077,9 @@ wiring does — observe it at commissioning and record it.
   defines a Tier C action, the approval workflow runs. No exceptions.
   Remote replies are scoped by default; bare `YES`/`NO` must not approve Tier C
   unless a legacy/test deployment explicitly disables scoped reply enforcement.
+  For a physical Tier C action a reply is an approval only once the store has
+  committed it; nothing actuates on a reply the store did not take, and a
+  restart never replays an approval.
 - **No LLM for Tier D.** Safety-critical actions fire from the rule engine.
   `bypass_llm: true` is set automatically for any trigger with `action_tier: D`.
 - **No trusting a skill's own tier declaration.** Every action with an executor

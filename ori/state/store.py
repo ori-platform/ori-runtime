@@ -3078,7 +3078,9 @@ class StateStore:
         now = now_ms()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            if self._tier_c_outcome_blocked(conn, row["zone_id"], row["outcome"], None):
+            if self._tier_c_outcome_blocked(
+                conn, row["zone_id"], row["outcome"], None, in_flight_blocks=False
+            ):
                 conn.rollback()
                 return "blocked"
             inserted = conn.execute(
@@ -3126,14 +3128,26 @@ class StateStore:
         zone_id: str,
         outcome: str,
         except_proposal: str | None,
+        *,
+        in_flight_blocks: bool = True,
     ) -> bool:
-        """Whether an unresolved approval commands *outcome* on *zone_id*."""
+        """Whether an unresolved approval commands *outcome* on *zone_id*.
+
+        At reply admission an approval still in flight blocks too; at proposal
+        creation only an unresolved uncertainty does, and one merely in flight
+        is caught when the later reply is admitted.
+        """
+        states = (
+            "('approved_pending_dispatch', 'dispatch_started', "
+            "'dispatch_outcome_unknown', 'dispatch_not_proven')"
+            if in_flight_blocks
+            else "('dispatch_outcome_unknown', 'dispatch_not_proven')"
+        )
         cur = conn.execute(
-            """
+            f"""
             SELECT 1 FROM tier_c_proposals
              WHERE zone_id = ? AND outcome = ?
-               AND decision_state IN ('approved_pending_dispatch', 'dispatch_started',
-                                      'dispatch_outcome_unknown', 'dispatch_not_proven')
+               AND decision_state IN {states}
                AND (? IS NULL OR proposal_id != ?)
              LIMIT 1
             """,
@@ -3416,10 +3430,14 @@ class StateStore:
         )
         return [str(row[0]) for row in cursor.fetchall()]
 
-    async def tier_c_outcome_blocked(self, zone_id: str, outcome: str) -> bool:
-        """Whether an unresolved approval commands *outcome* on *zone_id* now."""
+    async def tier_c_outcome_blocked(
+        self, zone_id: str, outcome: str, *, in_flight_blocks: bool = False
+    ) -> bool:
+        """Whether an unresolved uncertainty blocks a proposal for *outcome* on *zone_id*."""
         return await self._run_read(
-            lambda conn: self._tier_c_outcome_blocked(conn, zone_id, outcome, None)
+            lambda conn: self._tier_c_outcome_blocked(
+                conn, zone_id, outcome, None, in_flight_blocks=in_flight_blocks
+            )
         )
 
     async def create_tier_c_safe_default_intent(
