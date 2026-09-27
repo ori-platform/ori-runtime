@@ -1407,3 +1407,122 @@ class TestARefusedTransitionIsNeverReportedAsRecorded:
         assert outcome.action_taken == "log_to_dashboard"
         assert dispatcher._decision_records_lost == 0
         assert [d["operator_decision"] for d in decisions] == ["rejected"]
+
+
+class TestAJoinedContributorReportsTheProposedAct:
+    """A second Tier C dispatch of the same outcome joins the open proposal.
+
+    What it reports is what the proposed act did. After a NO or a timeout the
+    act never ran, so the joiner is not executed, even though the safe default
+    succeeded; the safe default's success is the holder's own record, never the
+    joiner's. After a YES the act ran once, and the joiner says so.
+    """
+
+    @pytest.mark.parametrize(
+        ("reply", "proposed_ran"),
+        [
+            pytest.param("NO", False, id="no"),
+            pytest.param(None, False, id="timeout"),
+            pytest.param("YES", True, id="yes"),
+        ],
+    )
+    async def test_a_joiner_reports_what_the_proposed_act_did(
+        self, tmp_path: Any, reply: str | None, proposed_ran: bool
+    ) -> None:
+        from ori.reasoning.dispatch_plan import (
+            CLOSE_PROTECTED_CIRCUIT,
+            OPEN_PROTECTED_CIRCUIT,
+            BindingView,
+        )
+        from ori.reasoning.resource_gate import ResourceGate
+
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator(reply=reply, delay_s=0.2)
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            dispatcher.bind_resource_gate(
+                ResourceGate(),
+                BindingView(
+                    zone_identity_key=("local_gpio", "pin:26"),
+                    binding_revision="7",
+                    consequence_by_outcome={
+                        OPEN_PROTECTED_CIRCUIT: "hard",
+                        CLOSE_PROTECTED_CIRCUIT: "hard",
+                    },
+                ),
+            )
+            holder_task = asyncio.create_task(_propose(dispatcher, store, timeout=1))
+            while not operator.proposals:
+                await asyncio.sleep(0)
+            joiner = await asyncio.wait_for(_propose(dispatcher, store, timeout=1), 10)
+            holder = await asyncio.wait_for(holder_task, 10)
+            await _settle(dispatcher)
+            rows = await store.get_action_log(limit=50)
+        finally:
+            await store.close()
+
+        assert joiner.action_taken == "coalesced"
+        assert joiner.executed is proposed_ran, joiner
+        assert journal.count("act:trip_relay") == (1 if proposed_ran else 0), journal
+        executed_proposed = [
+            row
+            for row in rows
+            if row["executed"] and row["action_taken"] in ("trip_relay", "coalesced")
+        ]
+        if proposed_ran:
+            assert holder.approved is True and holder.executed is True
+        else:
+            # The safe default ran and is the holder's record; nothing records
+            # the proposed act as executed.
+            assert "act:log_to_dashboard" in journal, journal
+            assert holder.approved is not True and holder.safe_default_used is True
+            assert executed_proposed == [], rows
+
+    async def test_an_uncertain_command_settles_on_the_proposed_act(self) -> None:
+        """A shielded attempt that ends in its safe default resolves as not accepted.
+
+        The executor reports after the dispatch was interrupted, and the gate
+        is resolved from what it reports: the safe default's success is not the
+        proposed act's, so a joiner waiting on the command is not told it ran.
+        """
+        from ori.network.events import ActionResult
+        from ori.reasoning.dispatch_plan import resource_identity
+        from ori.reasoning.resource_gate import Contributor, ResourceGate
+
+        gate = ResourceGate()
+        dispatcher = ActionDispatcher(config={})
+        dispatcher.bind_resource_gate(gate)
+        identity = resource_identity(
+            "trip_relay", zone_identity_key=("local_gpio", "pin:26")
+        )
+        assert identity is not None
+        decision = await gate.request(
+            identity,
+            "C",
+            Contributor(
+                skill_name="s", trigger_name="t", action="trip_relay", dispatch_tier="C"
+            ),
+        )
+        token = decision.token
+        assert token is not None
+        await gate.mark_uncertain(token)
+        settled: asyncio.Future[ActionResult] = (
+            asyncio.get_running_loop().create_future()
+        )
+        settled.set_result(
+            ActionResult(
+                action_name="trip_relay",
+                tier="C",
+                executed=True,
+                approved=False,
+                action_taken="log_to_dashboard",
+                timestamp=now_ms(),
+                safe_default_used=True,
+            )
+        )
+        dispatcher._retire_when_settled(token, settled)
+        await asyncio.wait(dispatcher.get_inflight_tier_d_tasks(), timeout=5)
+        assert token.done.is_set()
+        assert token.result is False

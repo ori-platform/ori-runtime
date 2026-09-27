@@ -346,6 +346,19 @@ def _record_label(action_result: ActionResult) -> str:
     )
 
 
+def _proposed_act_executed(result: Any) -> bool:
+    """Whether the act the gate admitted ran, as a joined contributor reports it.
+
+    After a NO, a timeout or any other end that is not an approval, `executed`
+    says whether the non-actuating safe default ran. That is the holder's own
+    record and never the proposed act: a contributor that joined the proposal
+    must not report a physical act that did not happen.
+    """
+    return bool(getattr(result, "executed", False)) and not bool(
+        getattr(result, "safe_default_used", False)
+    )
+
+
 def _stamp_correlation_id(action_result: ActionResult, context: Any) -> None:
     """Carry the event's correlation id onto a result that has none."""
     event = getattr(context, "event", None)
@@ -1415,9 +1428,7 @@ class ActionDispatcher:
                     lambda finished: self._retire_when_settled(gate_token, finished)
                 )
             else:
-                await gate.retire(
-                    gate_token, bool(getattr(action_result, "executed", False))
-                )
+                await gate.retire(gate_token, _proposed_act_executed(action_result))
 
         if record is not None and inner_task is not None and not inner_task.done():
             # The executor is still driving, so what this dispatch can say now
@@ -1447,7 +1458,7 @@ class ActionDispatcher:
         if self._resource_gate is None:
             return
         try:
-            accepted = bool(getattr(finished.result(), "executed", False))
+            accepted = _proposed_act_executed(finished.result())
         except Exception:
             accepted = False
         task = asyncio.ensure_future(
