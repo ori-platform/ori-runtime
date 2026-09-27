@@ -139,6 +139,24 @@ candidate or release is cut.
   abandoned, dropped and refused since start, and the counts queued and
   retained now — so a phone dropping readings or sitting on a backlog is
   visible to whoever receives the reports rather than only in its own logs.
+- The authenticated operator socket (`ori-specs/operator-socket/v1`, Tier C
+  reconciliation only). The runtime binds `operator.sock` in the runtime
+  directory the service unit provides, granting no group or world access, and
+  serves `reconcile_tier_c` to root and the installed operator identity,
+  established from the kernel's peer credentials alone; the audit login user
+  ID is recorded only for a peer pinned by `SO_PEERPIDFD`. The installed
+  identity is read from `operator-uid` at the install root only when the file,
+  the root and every ancestor are root-owned and writable by no one else; the
+  installer does not yet write that file, so an installed runtime admits root
+  alone. `evidence reconcile-tier-c` in the bridge refuses a bad argument
+  before connecting, verifies the socket's peer as the runtime service identity
+  of its installation before sending anything, never opens the state store,
+  and relays the runtime's answer; the record is appended and durable before
+  success, and an append once begun completes before the runtime closes its
+  store. A socket that cannot be bound or granted is CRITICAL and leaves
+  nothing behind; without `RUNTIME_DIRECTORY` nothing is bound, a warning in
+  development and CRITICAL in staging and production. `evidence commission`
+  over the socket is not in this release.
 - The runtime produces, delivers and confirms its own evidence anchor
   registration (`ori-specs/evidence-exchange/v2`). `evidence commission`
   records the commissioning reference at the device against the epoch the
@@ -150,8 +168,8 @@ candidate or release is cut.
   bridge reads the configuration document and the health socket and records
   the reference in the state store itself, with its own refusal codes. The
   socket-served command `operator-socket/v1` specifies, whose bridge opens no
-  store, is the open gap the contract repository records against the runtime
-  and lands with the operator socket. The
+  store, is still open: the operator socket below serves reconciliation only,
+  and answers `evidence_commission` as an argument it does not accept. The
   runtime seals a registration under the recorded reference and keeps a
   durable confirmation obligation holding its exact bytes: a courier `queued`
   retires only the handoff copy, and the obligation re-offers the identical
@@ -537,9 +555,8 @@ candidate or release is cut.
   action records under `evidence.action_records` per `runtime-health/v3`, and an
   uncertain or unappended outcome degrades the aggregate `status`. Host-state
   Tier C actions and Tier B actions requiring approval stay on the existing
-  workflow. The local transport for `evidence reconcile-tier-c`, the
-  authenticated operator socket, is not in this release; the reconciliation it
-  will carry is.
+  workflow. An uncertain dispatch is reconciled through the authenticated
+  operator socket, under Added.
 - A v1 offline token approves no physical action at any tier and no Tier C
   action: it names no proposal, target or zone, so a wildcard token could
   approve a physical Tier B action that required approval. Offline tokens gain
