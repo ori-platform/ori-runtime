@@ -765,6 +765,19 @@ candidate or release is cut.
   line without a colon and ended the process — the failure a phone hit on a
   Wi-Fi blip.
 
+- A record the store refuses with anything other than a lock is now counted
+  lost. The Tier C decision, rejection-pattern and action-log stages re-raised
+  only a locked or busy store to the record writer and logged every other
+  error themselves, so the writer read the record as written: a lost operator
+  decision on the existing approval workflow left health healthy and was never
+  counted. Every failure of a durable record now reaches the writer, which
+  retries only a locked or busy store and counts anything else lost; a lost
+  operator decision makes health critical. This detects the loss and does not
+  prevent it: a commissioned physical Tier C decision is committed before its
+  outcome is reported, while decisions on the existing approval workflow,
+  host-state Tier C and approval-gated Tier B, remain deferred records that can
+  still be lost at the writer's ceiling, on a store error or at shutdown.
+
 ## Security
 
 - A trust anchor whose private key this repository publishes is refused, at

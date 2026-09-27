@@ -3908,14 +3908,11 @@ class ActionDispatcher:
                 later_outcome=None,
                 created_at=completed_at,
             )
-        except sqlite3.OperationalError:
+        except Exception:
+            # A durable record is the writer's to retry or count lost; any
+            # failure swallowed here would read to it as a record written.
             if durable:
                 raise
-            logger.exception(
-                "ActionDispatcher: failed to log Tier C decision for action=%r",
-                action,
-            )
-        except Exception:
             logger.exception(
                 "ActionDispatcher: failed to log Tier C decision for action=%r",
                 action,
@@ -4083,14 +4080,11 @@ class ActionDispatcher:
                 "Rejection stored for pattern %s — future identical patterns capped at Tier A",
                 pattern_key,
             )
-        except sqlite3.OperationalError:
+        except Exception:
+            # A durable record is the writer's to retry or count lost; any
+            # failure swallowed here would read to it as a record written.
             if durable:
                 raise
-            logger.exception(
-                "ActionDispatcher: failed to persist rejection pattern for action=%r",
-                action,
-            )
-        except Exception:
             logger.exception(
                 "ActionDispatcher: failed to persist rejection pattern for action=%r",
                 action,
@@ -4485,15 +4479,11 @@ class ActionDispatcher:
                 # does not hold would leave reconciliation nothing to replay.
                 attest = False
                 action_row_id = await store.log_action(action_result, trigger_name)
-        except sqlite3.OperationalError:
+        except Exception:
+            # A durable record is the writer's to retry or count lost; any
+            # failure swallowed here would read to it as a record written.
             if durable:
                 raise
-            logger.exception(
-                "ActionDispatcher: failed to log action=%r to action_log",
-                action_result.action_name,
-            )
-            return
-        except Exception:
             logger.exception(
                 "ActionDispatcher: failed to log action=%r to action_log",
                 action_result.action_name,
