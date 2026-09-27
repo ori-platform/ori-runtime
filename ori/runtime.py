@@ -510,6 +510,10 @@ class OriRuntime:
         self._measurement_notify_attempts: dict[str, int] = {}
         self._measurement_degraded_since: dict[str, int] = {}
         self._measurement_notice_stage: dict[str, int] = {}
+        # A recovery is recorded beside the reading, never ahead of it; one
+        # pending clear per sensor, and a count of those that did not land.
+        self._measurement_clears: dict[str, asyncio.Task[None]] = {}
+        self._measurement_clears_failed = 0
         self._runtime_started_at_ms: int = 0
         self._configured_sensors: list[Any] = []
         self._connected_sensor_ids: set[str] = set()
@@ -2127,7 +2131,21 @@ class OriRuntime:
             except Exception:
                 logger.exception("[shutdown] error closing adapter")
 
-        # 4. Close StateStore
+        # 4. Close StateStore, after any recovery still being recorded. One
+        #    that does not land leaves the sensor degraded on disk, so a
+        #    restart reports a fault that had cleared rather than hide one.
+        clears = [task for task in self._measurement_clears.values() if not task.done()]
+        if clears:
+            _done, unfinished = await asyncio.wait(clears, timeout=5.0)
+            for task in unfinished:
+                task.cancel()
+            if unfinished:
+                self._measurement_clears_failed += len(unfinished)
+                logger.warning(
+                    "[shutdown] %d measurement recoveries were not recorded; "
+                    "those sensors restart degraded",
+                    len(unfinished),
+                )
         if self._state_store is not None:
             await self._state_store.close()
 
@@ -2457,6 +2475,16 @@ class OriRuntime:
             )
 
         if threshold_key in tier_d_config_keys(skill):
+            admission = getattr(self._state_store, "history_admission", None)
+            if admission is not None and admission.pending > 0:
+                # A reading already evaluated may not be stored yet, so the
+                # latest stored reading cannot stand for the current condition.
+                return command_result(
+                    command,
+                    status=STATUS_PRECONDITION_FAILED,
+                    detail="SET_THRESHOLD for a Tier D key waits until every evaluated reading is stored; retry",
+                    executed=False,
+                )
             readings = await self._latest_readings_for_skill(skill)
             if readings is None:
                 return command_result(
@@ -4391,10 +4419,39 @@ class OriRuntime:
         self._measurement_valid_streak[sensor_id] = streak
         if streak < MEASUREMENT_WINDOWS_TO_RECOVER:
             return
-        # Persisted before the in-memory state is cleared. The other order
-        # would let a store failure leave a sensor healthy in memory and
-        # degraded on disk, so the next restart resurrects a resolved fault.
-        if not await self._clear_measurement_state(sensor_id):
+        pending = self._measurement_clears.get(sensor_id)
+        if pending is not None and not pending.done():
+            return
+        # Queued, never awaited: recovery is bookkeeping, and the reading that
+        # completed it is evaluated now. The sensor stays degraded in memory
+        # until the clear lands, so memory is never healthier than disk.
+        task = asyncio.get_running_loop().create_task(
+            self._settle_measurement_recovery(sensor_id, streak),
+            name=f"measurement-recovery:{sensor_id}",
+        )
+        self._measurement_clears[sensor_id] = task
+
+    async def _settle_measurement_recovery(self, sensor_id: str, streak: int) -> None:
+        """Persist a recovery, then clear it in memory if nothing broke the run."""
+        try:
+            if not await self._clear_measurement_state(sensor_id):
+                # The next valid window queues it again.
+                self._measurement_clears_failed += 1
+                return
+        finally:
+            if self._measurement_clears.get(sensor_id) is asyncio.current_task():
+                self._measurement_clears.pop(sensor_id, None)
+        if sensor_id not in self._measurement_degraded:
+            return
+        if (
+            self._measurement_valid_streak.get(sensor_id, 0)
+            < MEASUREMENT_WINDOWS_TO_RECOVER
+        ):
+            # A refused window arrived while the clear was being written: the
+            # sensor is still degraded, so the disk is put back to match.
+            await self._persist_measurement_state(
+                sensor_id, notified=sensor_id not in self._measurement_unnotified
+            )
             return
         self._measurement_degraded.discard(sensor_id)
         self._measurement_unnotified.discard(sensor_id)

@@ -974,3 +974,61 @@ async def test_apply_policy_requires_device_policy_enabled(store):
     rows = await store.get_remote_command_execution_log()
     assert rows[0]["command"] == "APPLY_POLICY"
     assert rows[0]["status"] == STATUS_PRECONDITION_FAILED
+
+
+async def test_set_threshold_for_tier_d_waits_for_unstored_readings(store):
+    """The latest stored reading stands for the condition only once none is queued."""
+    import asyncio
+
+    from ori.network.events import OriEvent, SensorReading
+
+    skill = _make_skill()
+    runtime = _runtime_with_skill(skill, store)
+    command = _command(
+        "SET_THRESHOLD",
+        args={
+            "skill_name": "test-skill",
+            "threshold_key": "dangerous_threshold",
+            "value": 15.0,
+        },
+    )
+    released = asyncio.Event()
+    write = store.append_history
+
+    async def held(event: OriEvent) -> None:
+        await released.wait()
+        await write(event)
+
+    store.append_history = held  # type: ignore[method-assign]
+    reading = SensorReading(
+        sensor_id="sensor-1",
+        sensor_type="current",
+        value=25.0,
+        unit="ampere",
+        timestamp=1_780_000_000_000,
+        quality=1.0,
+    )
+    store.admit_history(OriEvent.from_reading(reading, "dev-01"))
+    assert store.history_admission.pending == 1
+
+    refused = await runtime._handle_remote_command(command)
+
+    assert refused.status == STATUS_PRECONDITION_FAILED
+    assert refused.executed is False
+    assert "evaluated reading is stored" in refused.detail
+    assert skill.config["dangerous_threshold"] == 20.0
+
+    released.set()
+    await store.history_admission.drain(5.0)
+    applied = await runtime._handle_remote_command(
+        _command(
+            "SET_THRESHOLD",
+            command_id="cmd-2",
+            args={
+                "skill_name": "test-skill",
+                "threshold_key": "dangerous_threshold",
+                "value": 15.0,
+            },
+        )
+    )
+    assert applied.status == STATUS_EXECUTED

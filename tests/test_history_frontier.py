@@ -277,9 +277,15 @@ async def test_a_row_past_the_admission_ceiling_is_counted_lost_and_named(
     ), "the lost row does not name its reading"
 
 
-async def test_a_locked_store_neither_delays_nor_drops_a_firmware_reading(
+async def test_the_history_write_is_off_a_firmware_readings_path(
     tmp_path: Path,
 ) -> None:
+    """The history row never holds a firmware reading.
+
+    The gate here does not touch the store. The real gate's freshness write
+    does, and stays ahead of publication: a firmware reading still waits on a
+    locked store for that write, and is refused if it fails.
+    """
     from tests.firmware.test_mqtt import _FakeFirmwareGate, _subscriber
 
     path = str(tmp_path / "state.db")
@@ -404,6 +410,7 @@ _HISTORY_READS = {
     "hooks_get_history",
     "hooks_avg_last_hours",
     "hooks_avg_last_n",
+    "get_latest_readings_snapshot",
 }
 
 
@@ -429,6 +436,7 @@ class _Recording:
 async def test_tier_selection_prompts_and_the_sandbox_read_to_the_frontier(
     store: StateStore, tmp_path: Path
 ) -> None:
+    from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfig
     from ori.reasoning.rule_engine import RuleResult
     from ori.skills.os_sandbox import OSSandboxHookRunner
 
@@ -465,6 +473,8 @@ async def test_tier_selection_prompts_and_the_sandbox_read_to_the_frontier(
     await elevator._resolve_history_expression(
         expression=f"history.last_n('{SENSOR}', 5)", event=event, state_store=recording
     )
+    enricher = ContextEnricher(ContextEnricherConfig(enabled=True))
+    await enricher.enrich("prompt", event, recording)
     runner = OSSandboxHookRunner(
         hooks_path=tmp_path / "hooks.py",
         state_store=recording,
@@ -483,6 +493,7 @@ async def test_tier_selection_prompts_and_the_sandbox_read_to_the_frontier(
     reads = {name for name, _ in recording.calls}
     assert {"get_history", "avg_last_hours", "hooks_get_history"} <= reads
     assert {"hooks_avg_last_hours", "hooks_avg_last_n"} <= reads
+    assert "get_latest_readings_snapshot" in reads
     unbounded = [name for name, frontier in recording.calls if frontier != 2]
     assert unbounded == [], f"history read past the frontier: {unbounded}"
 
@@ -529,3 +540,123 @@ async def test_the_sustained_window_counts_this_reading(store: StateStore) -> No
 
     assert derived["sustained_high_count"] == 1
     assert derived["sustained_high_ratio"] == pytest.approx(1 / 6)
+
+
+async def test_the_cross_sensor_snapshot_stops_at_the_frontier(
+    store: StateStore,
+) -> None:
+    before = _reading(30.0, timestamp=T0, sensor_id="grid-voltage", unit="volt")
+    store.admit_history(OriEvent.from_reading(before, "dev-01"))
+    await store.history_admission.drain(5.0)
+    event = OriEvent.from_reading(_reading(20.0, timestamp=T0), "dev-01")
+    store.admit_history(event)
+    after = _reading(31.0, timestamp=T0, sensor_id="grid-voltage", unit="volt")
+    store.admit_history(OriEvent.from_reading(after, "dev-01"))
+    await store.history_admission.drain(5.0)
+
+    snapshot = await store.get_latest_readings_snapshot(
+        SENSOR, T0 - 60_000, 10, **history_as_of(event)
+    )
+
+    assert [(row.sensor_id, row.value) for row in snapshot] == [("grid-voltage", 30.0)]
+
+
+async def test_a_recovering_reading_is_published_before_its_recovery_lands(
+    store: StateStore,
+) -> None:
+    from ori.runtime import MEASUREMENT_WINDOWS_TO_RECOVER
+
+    await store.set_measurement_degraded(SENSOR, notified=True)
+    released = asyncio.Event()
+    clear = store.clear_measurement_degraded
+
+    async def held(sensor_id: str) -> None:
+        await released.wait()
+        await clear(sensor_id)
+
+    store.clear_measurement_degraded = held  # type: ignore[method-assign]
+    runtime = _runtime(store)
+    runtime._measurement_degraded = {SENSOR}
+    runtime._measurement_valid_streak = {SENSOR: MEASUREMENT_WINDOWS_TO_RECOVER - 1}
+    runtime._measurement_degraded_since = {}
+    runtime._measurement_notice_stage = {}
+    delivered: list[bool] = []
+
+    async def handler(event: OriEvent) -> None:
+        delivered.append(SENSOR in runtime._measurement_degraded)
+
+    bus = EventBus()
+    bus.subscribe("current_clamp", handler)
+    sensor_cfg: Any = SimpleNamespace(id=SENSOR, poll_interval_ms=1)
+    await asyncio.wait_for(
+        runtime._poll_sensor(
+            cast(Any, _Sequence(runtime, store, [_reading(10.0, timestamp=T0)])),
+            sensor_cfg,
+            bus,
+            "dev-01",
+        ),
+        timeout=2.0,
+    )
+
+    assert delivered == [True], "the reading waited on its recovery being recorded"
+    released.set()
+    await asyncio.gather(*runtime._measurement_clears.values())
+    assert SENSOR not in runtime._measurement_degraded
+    assert await store.get_measurement_degradation() == {}
+
+
+async def test_firmware_freshness_admission_stays_ahead_of_publication(
+    store: StateStore,
+) -> None:
+    """Replay safety is durable: a reading waits for its freshness write.
+
+    A locked store therefore still delays a firmware reading, and a failed
+    freshness write refuses it; only the history write is off its path.
+    """
+    from ori.runtime import _build_firmware_telemetry_subscriber
+    from ori.security.firmware.liveness import FirmwareLivenessSupervisor
+    from tests.firmware.test_liveness_composition import (
+        _cfg,
+        _provision,
+        _telemetry_message,
+    )
+
+    bus = EventBus()
+    delivered: list[OriEvent] = []
+
+    async def handler(event: OriEvent) -> None:
+        delivered.append(event)
+
+    bus.subscribe("*", handler)
+    subscriber = _build_firmware_telemetry_subscriber(
+        _cfg(), bus, store, None, FirmwareLivenessSupervisor()
+    )
+    assert subscriber is not None
+    await _provision(store)
+
+    released = asyncio.Event()
+    advance = store.advance_firmware_freshness
+
+    async def held(*args: Any, **kwargs: Any) -> Any:
+        await released.wait()
+        return await advance(*args, **kwargs)
+
+    store.advance_firmware_freshness = held  # type: ignore[method-assign]
+    ingest = asyncio.ensure_future(
+        subscriber._ingest_telemetry(_telemetry_message("telemetry_single_reading"))
+    )
+    await asyncio.sleep(0.05)
+    assert delivered == [], "published before its freshness was recorded"
+    released.set()
+    await ingest
+    assert len(delivered) == 1
+
+    async def locked(*_: Any, **__: Any) -> Any:
+        raise sqlite3.OperationalError("database is locked")
+
+    store.advance_firmware_freshness = locked  # type: ignore[method-assign]
+    with pytest.raises(sqlite3.OperationalError):
+        await subscriber._ingest_telemetry(
+            _telemetry_message("telemetry_multi_reading")
+        )
+    assert len(delivered) == 1, "a reading whose freshness failed was published"

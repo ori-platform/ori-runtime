@@ -1246,7 +1246,9 @@ def _audit_bindable(value: Any) -> Any:
 
 #: History rows that may wait for a busy store before one is counted lost.
 HISTORY_ADMISSION_CEILING = 1024
-#: How long a closing store gives admitted history rows to land.
+#: How long a closing store waits for admitted history rows before it closes
+#: the writer. A write still in flight then has the writer's own grace, the
+#: store's busy timeout, so a close under a held lock takes several seconds.
 HISTORY_DRAIN_S = 2.0
 
 
@@ -2611,6 +2613,8 @@ class StateStore:
         exclude_sensor_id: str,
         since_ms: int,
         max_entries: int,
+        *,
+        frontier: int | None = None,
     ) -> list[StoredReading]:
         """Return the latest-arrived reading per sensor_id if its age is within since_ms.
 
@@ -2623,13 +2627,15 @@ class StateStore:
 
         The triggering sensor (exclude_sensor_id) is always excluded.
         Results are bounded to max_entries, ordered by sensor_id for
-        deterministic prompt output across calls.
+        deterministic prompt output across calls. With *frontier*, only rows
+        committed at or before it are candidates.
         """
         return await self._run_read(
             self._get_latest_readings_snapshot_sync,
             exclude_sensor_id,
             since_ms,
             max_entries,
+            frontier,
         )
 
     def _get_latest_readings_snapshot_sync(
@@ -2638,6 +2644,7 @@ class StateStore:
         exclude_sensor_id: str,
         since_ms: int,
         max_entries: int,
+        frontier: int | None = None,
     ) -> list[StoredReading]:
         # The latest reading per sensor is the last one the store received
         # (MAX(id) is arrival order), chosen over every row for the sensor.
@@ -2652,7 +2659,7 @@ class StateStore:
             INNER JOIN (
                 SELECT sensor_id, MAX(id) AS latest_id
                 FROM sensor_history
-                WHERE sensor_id != ?
+                WHERE sensor_id != ? AND (? IS NULL OR id <= ?)
                 GROUP BY sensor_id
             ) AS latest
               ON h.id = latest.latest_id
@@ -2663,6 +2670,8 @@ class StateStore:
             """,
             (
                 exclude_sensor_id,
+                frontier,
+                frontier,
                 since_ms,
                 now_ms() + RECEIPT_READ_TOLERANCE_MS,
                 since_ms,

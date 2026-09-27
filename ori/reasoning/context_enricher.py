@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ori.network.events import OriEvent, SensorReading
+from ori.network.events import OriEvent, SensorReading, history_as_of
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ class ContextEnricher:
                 exclude_sensor_id=event.sensor_id,
                 since_ms=cutoff_ms,
                 max_entries=self._config.max_entries,
+                **history_as_of(event),
             )
             if self._config.include_sources:
                 allowed = set(self._config.include_sources)

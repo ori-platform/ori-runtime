@@ -576,6 +576,8 @@ class _Runtime:
         self.runtime._measurement_notify_attempts = {}
         self.runtime._measurement_degraded_since = {}
         self.runtime._measurement_notice_stage = {}
+        self.runtime._measurement_clears = {}
+        self.runtime._measurement_clears_failed = 0
         self.runtime._secondary_contact = ""
         self.runtime._alert_sender = None
         self.runtime._state_store = None
@@ -600,6 +602,13 @@ class _Runtime:
     async def accept(self, times: int, sensor_id: str = "load-current") -> None:
         for _ in range(times):
             await self.runtime._note_measurement_accepted(sensor_id)
+            await self.settle()
+
+    async def settle(self) -> None:
+        """Let any recovery queued beside a reading land."""
+        pending = list(self.runtime._measurement_clears.values())
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     @property
     def degraded(self) -> set:
@@ -1392,3 +1401,91 @@ async def test_a_write_for_an_absent_row_creates_it(tmp_path) -> None:
         assert await store.get_measurement_degradation() == {"never-degraded": True}
     finally:
         await store.close()
+
+
+# ── recovery is recorded beside the reading ───────────────────────────────────
+
+
+class _RecoveryStore:
+    """Records clears and degradations; a clear can be held or fail."""
+
+    def __init__(self, *, fail_first: bool = False) -> None:
+        self.release = asyncio.Event()
+        self.release.set()
+        self.clears = 0
+        self.degraded: list[tuple[str, bool]] = []
+        self._fail_first = fail_first
+
+    async def clear_measurement_degraded(self, sensor_id: str) -> None:
+        self.clears += 1
+        await self.release.wait()
+        if self._fail_first:
+            self._fail_first = False
+            raise RuntimeError("store refused the recovery")
+
+    async def set_measurement_degraded(self, sensor_id: str, *, notified: bool) -> None:
+        self.degraded.append((sensor_id, notified))
+
+
+async def _degraded_harness(store: _RecoveryStore) -> _Runtime:
+    from ori.runtime import MEASUREMENT_REFUSALS_BEFORE_DEGRADED
+
+    harness = _Runtime()
+    harness.runtime._state_store = cast(Any, store)
+    await harness.refuse(MEASUREMENT_REFUSALS_BEFORE_DEGRADED)
+    store.degraded.clear()
+    return harness
+
+
+async def test_a_pending_recovery_is_recorded_once_and_clears_memory_after() -> None:
+    from ori.runtime import MEASUREMENT_WINDOWS_TO_RECOVER
+
+    store = _RecoveryStore()
+    harness = await _degraded_harness(store)
+    store.release.clear()
+    for _ in range(MEASUREMENT_WINDOWS_TO_RECOVER + 3):
+        # A recovery awaited on the reading's path would never return here.
+        await asyncio.wait_for(
+            harness.runtime._note_measurement_accepted("load-current"), 1.0
+        )
+        await asyncio.sleep(0)
+
+    assert store.clears == 1, "a pending recovery was queued again"
+    assert harness.degraded == {"load-current"}, "memory cleared before the disk"
+    store.release.set()
+    await harness.settle()
+    assert harness.degraded == set()
+
+
+async def test_a_failed_recovery_is_counted_and_retried() -> None:
+    from ori.runtime import MEASUREMENT_WINDOWS_TO_RECOVER
+
+    store = _RecoveryStore(fail_first=True)
+    harness = await _degraded_harness(store)
+    await harness.accept(MEASUREMENT_WINDOWS_TO_RECOVER)
+
+    assert harness.runtime._measurement_clears_failed == 1
+    assert harness.degraded == {"load-current"}
+    await harness.accept(1)
+    assert store.clears == 2
+    assert harness.degraded == set()
+
+
+async def test_a_refusal_during_a_pending_recovery_keeps_the_disk_degraded() -> None:
+    from ori.runtime import MEASUREMENT_WINDOWS_TO_RECOVER
+
+    store = _RecoveryStore()
+    harness = await _degraded_harness(store)
+    store.release.clear()
+    for _ in range(MEASUREMENT_WINDOWS_TO_RECOVER):
+        await asyncio.wait_for(
+            harness.runtime._note_measurement_accepted("load-current"), 1.0
+        )
+    await harness.refuse(1)
+    store.release.set()
+    await harness.settle()
+
+    assert harness.degraded == {"load-current"}
+    assert store.degraded == [("load-current", True)], (
+        "the cleared disk was not put back to degraded"
+    )

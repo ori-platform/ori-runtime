@@ -1666,6 +1666,7 @@ class IntelligenceElevator:
                 timestamp=now_ms(),
                 received_at_ms=now_ms(),
                 reading=event.reading,
+                history_frontier=event.history_frontier,
             )
             synthetic_event.context["operator_message"] = str(result.text)
 
