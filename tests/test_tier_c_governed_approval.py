@@ -1407,3 +1407,214 @@ class TestARefusedTransitionIsNeverReportedAsRecorded:
         assert outcome.action_taken == "log_to_dashboard"
         assert dispatcher._decision_records_lost == 0
         assert [d["operator_decision"] for d in decisions] == ["rejected"]
+
+
+class TestAJoinedContributorReportsTheProposedAct:
+    """A second Tier C dispatch of the same outcome joins the open proposal.
+
+    What it reports is what the proposed act did. After a NO or a timeout the
+    act never ran, so the joiner is not executed, even though the safe default
+    succeeded; the safe default's success is the holder's own record, never the
+    joiner's. After a YES the act ran once, and the joiner says so.
+    """
+
+    @pytest.mark.parametrize(
+        ("reply", "executor_succeeds", "proposed_ran"),
+        [
+            pytest.param("NO", True, False, id="no"),
+            pytest.param(None, True, False, id="timeout"),
+            pytest.param("YES", True, True, id="yes"),
+            pytest.param("YES", False, False, id="yes-but-the-executor-failed"),
+        ],
+    )
+    async def test_a_joiner_reports_what_the_proposed_act_did(
+        self,
+        tmp_path: Any,
+        reply: str | None,
+        executor_succeeds: bool,
+        proposed_ran: bool,
+    ) -> None:
+        from ori.reasoning.dispatch_plan import (
+            CLOSE_PROTECTED_CIRCUIT,
+            OPEN_PROTECTED_CIRCUIT,
+            BindingView,
+        )
+        from ori.reasoning.resource_gate import ResourceGate
+
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator(reply=reply, delay_s=0.2)
+        try:
+
+            async def act(*_args: Any, **_kwargs: Any) -> bool:
+                journal.append("act:trip_relay")
+                return executor_succeeds
+
+            dispatcher = _dispatcher(store, operator, journal, executor=act)
+            dispatcher.bind_resource_gate(
+                ResourceGate(),
+                BindingView(
+                    zone_identity_key=("local_gpio", "pin:26"),
+                    binding_revision="7",
+                    consequence_by_outcome={
+                        OPEN_PROTECTED_CIRCUIT: "hard",
+                        CLOSE_PROTECTED_CIRCUIT: "hard",
+                    },
+                ),
+            )
+            holder_task = asyncio.create_task(_propose(dispatcher, store, timeout=1))
+            while not operator.proposals:
+                await asyncio.sleep(0)
+            joiner = await asyncio.wait_for(_propose(dispatcher, store, timeout=1), 10)
+            holder = await asyncio.wait_for(holder_task, 10)
+            await _settle(dispatcher)
+            rows = await store.get_action_log(limit=50)
+        finally:
+            await store.close()
+
+        assert joiner.action_taken == "coalesced"
+        assert joiner.executed is proposed_ran, joiner
+        approved = reply == "YES"
+        assert journal.count("act:trip_relay") == (1 if approved else 0), journal
+        executed_proposed = [
+            row
+            for row in rows
+            if row["executed"] and row["action_taken"] in ("trip_relay", "coalesced")
+        ]
+        if approved:
+            assert holder.approved is True
+            assert holder.executed is proposed_ran
+            if not proposed_ran:
+                assert executed_proposed == [], rows
+        else:
+            # The safe default ran and is the holder's record; nothing records
+            # the proposed act as executed.
+            assert "act:log_to_dashboard" in journal, journal
+            assert holder.approved is not True and holder.safe_default_used is True
+            assert executed_proposed == [], rows
+
+    async def test_an_uncertain_command_settles_on_the_proposed_act(self) -> None:
+        """The uncertain-command settle applies the same rule, defensively.
+
+        Only a Tier D act is shielded and settled this way today, and it never
+        has a safe default, so this result is synthetic. It holds the settle to
+        the same rule as retirement, so a future path that settles an attempt
+        ended by its safe default cannot report the proposed act as accepted.
+        """
+        from ori.network.events import ActionResult
+        from ori.reasoning.dispatch_plan import resource_identity
+        from ori.reasoning.resource_gate import Contributor, ResourceGate
+
+        gate = ResourceGate()
+        dispatcher = ActionDispatcher(config={})
+        dispatcher.bind_resource_gate(gate)
+        identity = resource_identity(
+            "trip_relay", zone_identity_key=("local_gpio", "pin:26")
+        )
+        assert identity is not None
+        decision = await gate.request(
+            identity,
+            "C",
+            Contributor(
+                skill_name="s", trigger_name="t", action="trip_relay", dispatch_tier="C"
+            ),
+        )
+        token = decision.token
+        assert token is not None
+        await gate.mark_uncertain(token)
+        settled: asyncio.Future[ActionResult] = (
+            asyncio.get_running_loop().create_future()
+        )
+        settled.set_result(
+            ActionResult(
+                action_name="trip_relay",
+                tier="C",
+                executed=True,
+                approved=False,
+                action_taken="log_to_dashboard",
+                timestamp=now_ms(),
+                safe_default_used=True,
+            )
+        )
+        dispatcher._retire_when_settled(token, settled)
+        await asyncio.wait(dispatcher.get_inflight_tier_d_tasks(), timeout=5)
+        assert token.done.is_set()
+        assert token.result is False
+
+
+class _HostSkill:
+    name = "host-guard"
+    version = "1.0.0"
+    first_party = True
+    config: dict[str, Any] = {}
+    triggers: list[Any] = []
+    actions: dict[str, Any] = {
+        "available": [{"name": "terminate_process", "tier": "C"}],
+        "defaults": {"t": ["terminate_process"]},
+    }
+    sensors_required = [{"type": "cpu_percent"}]
+
+
+async def test_a_joiner_on_the_host_state_workflow_is_not_executed_after_a_no(
+    tmp_path: Any,
+) -> None:
+    """The same rule on the other approval workflow a joiner can wait on."""
+    from ori.reasoning.resource_gate import ResourceGate
+
+    store = StateStore(str(tmp_path / "s.db"))
+    await store.open()
+    operator = _Operator(reply="NO", delay_s=0.2)
+    ran: list[str] = []
+    try:
+        dispatcher = ActionDispatcher(
+            state_store=store,
+            alert_sender=operator,
+            config={"operator_contact": "+2348000000000"},
+        )
+        dispatcher.bind_resource_gate(ResourceGate())
+
+        async def terminate(*_args: Any, **_kwargs: Any) -> bool:
+            ran.append("terminate_process")
+            return True
+
+        dispatcher.register_executor("terminate_process", terminate)
+        dispatcher.register_resource_resolver(
+            "terminate_process", lambda _context: {"target": "pid:4242"}
+        )
+
+        async def propose() -> Any:
+            return await dispatcher.dispatch(
+                action="terminate_process",
+                tier="C",
+                context=SkillContext(
+                    skill=_HostSkill(),
+                    event=_event(),
+                    state_store=store,
+                    trigger_name="t",
+                ),
+                result=ReasoningResult(
+                    text="", tier="rule", model="m", tokens_used=0, latency_ms=0
+                ),
+                approval_timeout=1,
+            )
+
+        holder_task = asyncio.create_task(propose())
+        while not operator.proposals:
+            await asyncio.sleep(0)
+        joiner = await asyncio.wait_for(propose(), 10)
+        holder = await asyncio.wait_for(holder_task, 10)
+        await _settle(dispatcher)
+        rows = await store.get_action_log(limit=50)
+    finally:
+        await store.close()
+
+    assert ran == []
+    assert holder.safe_default_used is True
+    assert joiner.action_taken == "coalesced"
+    assert joiner.executed is False, joiner
+    assert [
+        row
+        for row in rows
+        if row["executed"] and row["action_taken"] in ("terminate_process", "coalesced")
+    ] == [], rows
