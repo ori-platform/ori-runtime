@@ -17,18 +17,22 @@ class HookHistoryAdapter:
         *,
         reference_timestamp_ms: int | None = None,
         timezone: str = "UTC",
+        frontier: int | None = None,
     ):
         self._store = store
         self._reference_timestamp_ms = reference_timestamp_ms
         self._timezone = str(timezone or "UTC")
+        # Rows committed after the evaluated reading was admitted are not its
+        # history, and neither is the reading's own row.
+        self._as_of: dict[str, int] = {} if frontier is None else {"frontier": frontier}
 
-    def _read(self, method_name: str, *args: Any) -> Any:
+    def _read(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
         """Execute a stable StateStore hook-sync method."""
         if not self._store:
             return None
         method = getattr(self._store, method_name, None)
         if callable(method):
-            return method(*args)
+            return method(*args, **kwargs)
         return None
 
     @staticmethod
@@ -47,18 +51,20 @@ class HookHistoryAdapter:
         if not self._store:
             return None
         return self._optional_float(
-            self._read("hooks_avg_last_hours", sensor_id, hours)
+            self._read("hooks_avg_last_hours", sensor_id, hours, **self._as_of)
         )
 
     def avg_last_n(self, sensor_id: str, n: int) -> Optional[float]:
         if not self._store:
             return None
-        return self._optional_float(self._read("hooks_avg_last_n", sensor_id, n))
+        return self._optional_float(
+            self._read("hooks_avg_last_n", sensor_id, n, **self._as_of)
+        )
 
     def last_value(self, sensor_id: str) -> Optional[float]:
         if not self._store:
             return None
-        history = self._read("hooks_get_history", sensor_id, 1) or []
+        history = self._read("hooks_get_history", sensor_id, 1, **self._as_of) or []
         if history:
             return self._optional_float(getattr(history[0], "value", None))
         return None
@@ -66,7 +72,7 @@ class HookHistoryAdapter:
     def last_timestamp(self, sensor_id: str) -> Optional[int]:
         if not self._store:
             return None
-        history = self._read("hooks_get_history", sensor_id, 1) or []
+        history = self._read("hooks_get_history", sensor_id, 1, **self._as_of) or []
         if history:
             return self._optional_int(getattr(history[0], "timestamp", None))
         return None
@@ -74,7 +80,7 @@ class HookHistoryAdapter:
     def fetch_history(self, sensor_id: str, limit: int = 1) -> list[dict[str, Any]]:
         if not self._store:
             return []
-        history = self._read("hooks_get_history", sensor_id, limit) or []
+        history = self._read("hooks_get_history", sensor_id, limit, **self._as_of) or []
         return [
             {
                 "sensor_id": r.sensor_id,
@@ -200,6 +206,7 @@ class HookContext:
                 store,
                 reference_timestamp_ms=event.timestamp if event else None,
                 timezone=tz_name,
+                frontier=event.history_frontier if event else None,
             ),
             state=HookStateAdapter(store, skill_name),
             timestamp=event.timestamp if event else now_ms(),

@@ -317,7 +317,9 @@ def pre_trigger_eval(context):
             (current_value - baseline_24h) / baseline_24h
         ) * 100.0
 
-    history_rows = context.history.fetch_history(sensor_id, limit=history_window)
+    # History holds the readings before this one, newest first; the windows
+    # below count this reading and the ones before it.
+    history_rows = context.history.fetch_history(sensor_id, limit=history_window - 1)
     values = [
         as_float(item.get("value", 0.0), 0.0)
         for item in history_rows
@@ -330,7 +332,7 @@ def pre_trigger_eval(context):
             context.derived["spike_ratio"] = current_value / last_value
 
         if baseline_valid == 1:
-            volatility = _stddev(values)
+            volatility = _stddev([current_value, *values])
             context.derived["recent_volatility_percent"] = (
                 volatility / baseline_24h
             ) * 100.0
@@ -338,7 +340,7 @@ def pre_trigger_eval(context):
             sustained_threshold = baseline_24h * (
                 1.0 + (context.derived["overdraw_threshold_percent"] / 100.0)
             )
-            recent_values = values[:persistence_window]
+            recent_values = [current_value, *values][:persistence_window]
             if recent_values:
                 sustained_count = sum(
                     1 for v in recent_values if v >= sustained_threshold
@@ -388,7 +390,7 @@ def pre_trigger_eval(context):
     observed_hours = 0.0
     history_rows = context.history.fetch_history(
         sensor_id,
-        limit=max(2, persistence_window),
+        limit=max(1, persistence_window - 1),
     )
     # How long the runtime has been observing is the span of its own
     # receipts; a span of the readings' own clocks could be stretched by one
@@ -396,9 +398,8 @@ def pre_trigger_eval(context):
     # A row with no receipt is not evidence of observation and would stretch
     # the span to the epoch; it is left out rather than counted from zero. So
     # is one received well after this event, which only a clock that ran ahead
-    # can write; the event's own row is stamped just after the event, so the
-    # bound carries the store's read tolerance. The span never exceeds what raw
-    # history retains.
+    # can write; the bound carries the store's read tolerance. The span runs to
+    # this reading's own receipt and never exceeds what raw history retains.
     now = as_int(getattr(context, "received_at_ms", 0), 0)
     timestamps = [
         received
@@ -409,6 +410,8 @@ def pre_trigger_eval(context):
         )
         if received > 0 and (now <= 0 or received <= now + _RECEIPT_TOLERANCE_MS)
     ]
+    if now > 0:
+        timestamps.append(now)
     if len(timestamps) >= 2:
         span_ms = min(max(timestamps) - min(timestamps), _RAW_RETENTION_MS)
         if span_ms > 0:

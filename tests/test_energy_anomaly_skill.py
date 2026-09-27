@@ -559,13 +559,24 @@ def _observed_hours(receipts: list[int], event_received_at_ms: int) -> float:
 
 
 def test_a_receipt_after_the_event_does_not_stretch_the_observed_window():
-    """Only a clock that ran ahead writes a receipt later than the event itself."""
+    """Only a clock that ran ahead writes a receipt later than the event itself.
+
+    The span runs from the oldest earlier receipt to this reading's own.
+    """
     base = 1_710_000_000_000
     now = base + 5 * 60_000
     ahead = now + 365 * 86_400_000
     receipts = [ahead] + [base + index * 60_000 for index in range(5)]
 
-    assert _observed_hours(receipts, now) == pytest.approx(4 / 60)
+    assert _observed_hours(receipts, now) == pytest.approx(5 / 60)
+
+
+def test_the_observed_window_spans_this_reading_and_the_five_before_it():
+    """Six readings at one-minute intervals span five minutes, this one included."""
+    now = 1_710_000_000_000
+    receipts = [now - (index + 1) * 60_000 for index in range(8)]
+
+    assert _observed_hours(receipts, now) == pytest.approx(5 / 60)
 
 
 def test_the_observed_window_never_exceeds_raw_retention():

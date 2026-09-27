@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ori.network.events import OriEvent, ReasoningResult
+from ori.network.events import OriEvent, ReasoningResult, history_as_of
 from ori.reasoning.capability_posture import (
     CapabilityPosture,
 )
@@ -597,7 +597,7 @@ class IntelligenceElevator:
         # in the reasoning path.
         energy_cfg = self._energy_aware_cfg()
         if bool(energy_cfg.get("enabled", False)):
-            battery_pct = await self._get_battery_percent(state_store)
+            battery_pct = await self._get_battery_percent(state_store, event)
             if battery_pct is not None:
                 critical = float(energy_cfg.get("critical_threshold_percent", 10))
                 throttle = float(energy_cfg.get("throttle_threshold_percent", 20))
@@ -653,9 +653,11 @@ class IntelligenceElevator:
 
         if state_store is not None and event.reading is not None:
             try:
-                avg_24h = await state_store.avg_last_hours(event.reading.sensor_id, 24)
+                avg_24h = await state_store.avg_last_hours(
+                    event.reading.sensor_id, 24, **history_as_of(event)
+                )
                 readings = await state_store.get_history(
-                    event.reading.sensor_id, limit=10
+                    event.reading.sensor_id, limit=10, **history_as_of(event)
                 )
                 history = [r.value for r in readings]
             except Exception:
@@ -729,7 +731,9 @@ class IntelligenceElevator:
         raw = getattr(cfg, "energy_aware_reasoning", {}) or {}
         return raw if isinstance(raw, dict) else {}
 
-    async def _get_battery_percent(self, state_store: Any) -> float | None:
+    async def _get_battery_percent(
+        self, state_store: Any, event: OriEvent | None = None
+    ) -> float | None:
         """Read latest battery percentage from configured history sensor."""
         cfg = self._energy_aware_cfg()
         battery_sensor_id = str(cfg.get("battery_sensor_id", "")).strip()
@@ -738,7 +742,9 @@ class IntelligenceElevator:
         if state_store is None or not hasattr(state_store, "get_history"):
             return None
         try:
-            rows = await state_store.get_history(battery_sensor_id, limit=1)
+            rows = await state_store.get_history(
+                battery_sensor_id, limit=1, **history_as_of(event)
+            )
         except Exception:
             logger.debug(
                 "IntelligenceElevator: failed to read battery history for %s",
@@ -1766,6 +1772,7 @@ class IntelligenceElevator:
             readings = await state_store.get_history(
                 event.reading.sensor_id,
                 limit=_DECISION_HISTORY_WINDOW_LIMIT,
+                **history_as_of(event),
             )
         except Exception:
             logger.debug(
@@ -1959,6 +1966,7 @@ class IntelligenceElevator:
             state_store,
             reference_timestamp_ms=event.timestamp,
             timezone=str(event_context.get("device_timezone") or "UTC"),
+            frontier=event.history_frontier,
         )
         try:
             raw = await asyncio.to_thread(

@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1649,6 +1649,13 @@ def _treat_scratch_skills_as_packaged(monkeypatch):
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
+
+
+def _store_mock() -> AsyncMock:
+    """A store double whose history admission is synchronous, like the store's."""
+    store = AsyncMock()
+    store.admit_history = MagicMock(return_value=True)
+    return store
 
 
 class TestRequiredRuntimeCapabilities:
@@ -3634,7 +3641,7 @@ class TestSensorPolling:
         from ori.hal.base import AdapterReadError
 
         runtime = OriRuntime(config_path="ori.yaml")
-        runtime._state_store = AsyncMock()
+        runtime._state_store = _store_mock()
         runtime._shutdown_event = asyncio.Event()
         runtime._measurement_refusals = {}
         runtime._measurement_valid_streak = {}
@@ -3661,7 +3668,7 @@ class TestSensorPolling:
 
     async def test_poll_sensor_sets_non_empty_fingerprint(self):
         runtime = OriRuntime(config_path="ori.yaml")
-        runtime._state_store = AsyncMock()
+        runtime._state_store = _store_mock()
         runtime._shutdown_event = asyncio.Event()
 
         reading = SensorReading(
@@ -3691,7 +3698,7 @@ class TestSensorPolling:
 
     async def test_poll_sensor_sets_site_context_from_device_site_type(self):
         runtime = OriRuntime(config_path="ori.yaml")
-        runtime._state_store = AsyncMock()
+        runtime._state_store = _store_mock()
         runtime._shutdown_event = asyncio.Event()
 
         reading = SensorReading(
@@ -3738,7 +3745,7 @@ class TestSensorPolling:
 
     async def test_poll_sensor_fingerprint_stable_across_timestamp_changes(self):
         runtime = OriRuntime(config_path="ori.yaml")
-        runtime._state_store = AsyncMock()
+        runtime._state_store = _store_mock()
         bus = AsyncMock()
         sensor_cfg: Any = SimpleNamespace(id="cpu-sensor", poll_interval_ms=1)
 
@@ -3813,8 +3820,9 @@ class TestSensorPolling:
             def __init__(self) -> None:
                 self.events: list[OriEvent] = []
 
-            async def append_history(self, event: OriEvent) -> None:
+            def admit_history(self, event: OriEvent) -> bool:
                 self.events.append(event)
+                return True
 
         class _Bus:
             def __init__(self) -> None:
@@ -3880,8 +3888,9 @@ class TestSensorPolling:
             def __init__(self) -> None:
                 self.events: list[OriEvent] = []
 
-            async def append_history(self, event: OriEvent) -> None:
+            def admit_history(self, event: OriEvent) -> bool:
                 self.events.append(event)
+                return True
 
         class _Bus:
             def __init__(self) -> None:
@@ -4053,7 +4062,7 @@ class TestCompactionLoop:
         async def _compact(*_args, **_kwargs) -> None:
             runtime._shutdown_event.set()
 
-        runtime._state_store = AsyncMock()
+        runtime._state_store = _store_mock()
         runtime._state_store.compact_history.side_effect = _compact
 
         async def _fake_wait_for(awaitable, timeout):  # noqa: ARG001

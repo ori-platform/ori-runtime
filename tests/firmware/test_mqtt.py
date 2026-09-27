@@ -61,8 +61,9 @@ class _FakeStore:
     def __init__(self) -> None:
         self.history = []
 
-    async def append_history(self, event):
+    def admit_history(self, event):
         self.history.append(event)
+        return True
 
 
 #: Structural double for the declared parameter type.

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
-from ori.network.events import OriEvent, ReasoningResult
+from ori.network.events import OriEvent, ReasoningResult, history_as_of
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
@@ -293,6 +293,7 @@ async def _history_points(
         rows = await state_store.get_history(
             event.reading.sensor_id,
             limit=MAX_CONTEXT_HISTORY_POINTS,
+            **history_as_of(event),
         )
     except Exception:
         logger.debug(

@@ -20,6 +20,7 @@ from ori.network.events import (
     SensorReading,
     StoredReading,
 )
+from ori.state.deferred_writer import DeferredWriter
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -1243,6 +1244,12 @@ def _audit_bindable(value: Any) -> Any:
     return value
 
 
+#: History rows that may wait for a busy store before one is counted lost.
+HISTORY_ADMISSION_CEILING = 1024
+#: How long a closing store gives admitted history rows to land.
+HISTORY_DRAIN_S = 2.0
+
+
 class StateStore:
     """Async-safe SQLite state store.
 
@@ -1272,6 +1279,10 @@ class StateStore:
         self._future_receipts_logged: tuple[dict[str, int], int] | None = None
         self._write_lock = asyncio.Lock()
         self._lifecycle_lock = asyncio.Lock()
+        # The last sensor_history row committed; ids are assigned in commit
+        # order, so every row at or below it was committed before it was read.
+        self._history_frontier = 0
+        self._history_writer = self._new_history_writer()
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -1281,7 +1292,28 @@ class StateStore:
             if self._conn is not None:
                 return
             conn = await asyncio.to_thread(self._open_sync)
+            if not self._read_only:
+                self._history_frontier = await asyncio.to_thread(
+                    self._history_sequence_sync, conn
+                )
+            if self._history_writer.closed:
+                self._history_writer = self._new_history_writer()
             self._conn = conn
+
+    @staticmethod
+    def _new_history_writer() -> DeferredWriter:
+        return DeferredWriter(
+            "history", ceiling=HISTORY_ADMISSION_CEILING, loss_level=logging.WARNING
+        )
+
+    @staticmethod
+    def _history_sequence_sync(conn: sqlite3.Connection) -> int:
+        # AUTOINCREMENT never reuses an id, so the sequence bounds every row,
+        # including ones compaction has since removed.
+        row = conn.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = 'sensor_history'"
+        ).fetchone()
+        return int(row[0]) if row is not None and row[0] is not None else 0
 
     def _open_sync(self) -> sqlite3.Connection:
         # Refuse here rather than at import, so a tool that merely imports this
@@ -1323,6 +1355,10 @@ class StateStore:
             return
 
     async def close(self) -> None:
+        # Admitted history lands before the connection goes, within a bound;
+        # what the store never took is counted lost with its reading named.
+        await self._history_writer.drain(HISTORY_DRAIN_S)
+        await self._history_writer.close()
         async with self._lifecycle_lock:
             async with self._write_lock:
                 conn = self._conn
@@ -2250,6 +2286,34 @@ class StateStore:
             kept,
         )
 
+    @property
+    def history_frontier(self) -> int:
+        """The last history row committed; evaluation-time reads stop at a frontier."""
+        return self._history_frontier
+
+    @property
+    def history_admission(self) -> DeferredWriter:
+        return self._history_writer
+
+    def admit_history(self, event: OriEvent) -> bool:
+        """Queue *event*'s history row without waiting, stamping its frontier first.
+
+        The frontier is taken before the row is queued, so the reading is never
+        in its own evaluation-time history. False when the row was counted lost.
+        """
+        event.history_frontier = self._history_frontier
+        if event.reading is None:
+            return True
+        reading = event.reading
+        return self._history_writer.submit(
+            lambda: self.append_history(event),
+            label=(
+                f"history sensor={reading.sensor_id} timestamp={reading.timestamp} "
+                f"event={event.event_id}"
+            ),
+            report=True,
+        )
+
     async def append_history(self, event: OriEvent) -> None:
         """Persist a sensor reading from an OriEvent."""
         if event.reading is None:
@@ -2259,7 +2323,7 @@ class StateStore:
 
     def _insert_reading_sync(self, r: SensorReading) -> None:
         assert self._conn is not None
-        self._conn.execute(
+        cursor = self._conn.execute(
             """
             INSERT INTO sensor_history
                 (sensor_id, sensor_type, value, unit, timestamp, quality, metadata,
@@ -2278,44 +2342,61 @@ class StateStore:
             ),
         )
         self._conn.commit()
+        if cursor.lastrowid is not None:
+            self._history_frontier = max(self._history_frontier, cursor.lastrowid)
 
     async def get_history(
-        self, sensor_id: str, limit: int = 100
+        self, sensor_id: str, limit: int = 100, *, frontier: int | None = None
     ) -> list[StoredReading]:
-        return await self._run_read(self._get_history_sync, sensor_id, limit)
+        """Newest first. With *frontier*, only rows committed at or before it."""
+        return await self._run_read(self._get_history_sync, sensor_id, limit, frontier)
 
     def hooks_get_history(
-        self, sensor_id: str, limit: int = 100
+        self, sensor_id: str, limit: int = 100, *, frontier: int | None = None
     ) -> list[StoredReading]:
         """Stable sync facade for hook history lookups."""
-        return self._run_read_with_conn(self._get_history_sync, sensor_id, limit)
+        return self._run_read_with_conn(
+            self._get_history_sync, sensor_id, limit, frontier
+        )
 
     def _get_history_sync(
-        self, conn: sqlite3.Connection, sensor_id: str, limit: int
+        self,
+        conn: sqlite3.Connection,
+        sensor_id: str,
+        limit: int,
+        frontier: int | None = None,
     ) -> list[StoredReading]:
         rows = conn.execute(
             """
             SELECT sensor_id, sensor_type, value, unit, timestamp, quality, metadata,
                    received_at_ms
             FROM sensor_history
-            WHERE sensor_id = ?
+            WHERE sensor_id = ? AND (? IS NULL OR id <= ?)
             ORDER BY id DESC
             LIMIT ?
             """,
-            (sensor_id, limit),
+            (sensor_id, frontier, frontier, limit),
         ).fetchall()
         return [_stored_reading(row) for row in rows]
 
-    async def avg_last_n(self, sensor_id: str, n: int) -> Optional[float]:
+    async def avg_last_n(
+        self, sensor_id: str, n: int, *, frontier: int | None = None
+    ) -> Optional[float]:
         """Average of the n most-recent readings for a sensor."""
-        return await self._run_read(self._avg_last_n_sync, sensor_id, n)
+        return await self._run_read(self._avg_last_n_sync, sensor_id, n, frontier)
 
-    def hooks_avg_last_n(self, sensor_id: str, n: int) -> Optional[float]:
+    def hooks_avg_last_n(
+        self, sensor_id: str, n: int, *, frontier: int | None = None
+    ) -> Optional[float]:
         """Stable sync facade for hook rolling-N average lookups."""
-        return self._run_read_with_conn(self._avg_last_n_sync, sensor_id, n)
+        return self._run_read_with_conn(self._avg_last_n_sync, sensor_id, n, frontier)
 
     def _avg_last_n_sync(
-        self, conn: sqlite3.Connection, sensor_id: str, n: int
+        self,
+        conn: sqlite3.Connection,
+        sensor_id: str,
+        n: int,
+        frontier: int | None = None,
     ) -> Optional[float]:
         row = conn.execute(
             """
@@ -2323,25 +2404,37 @@ class StateStore:
             FROM (
                 SELECT value
                 FROM sensor_history
-                WHERE sensor_id = ?
+                WHERE sensor_id = ? AND (? IS NULL OR id <= ?)
                 ORDER BY id DESC
                 LIMIT ?
             )
             """,
-            (sensor_id, n),
+            (sensor_id, frontier, frontier, n),
         ).fetchone()
         return row["avg_val"] if row else None
 
-    async def avg_last_hours(self, sensor_id: str, hours: int) -> Optional[float]:
+    async def avg_last_hours(
+        self, sensor_id: str, hours: int, *, frontier: int | None = None
+    ) -> Optional[float]:
         """Average of all readings within the last *hours* hours."""
-        return await self._run_read(self._avg_last_hours_sync, sensor_id, hours)
+        return await self._run_read(
+            self._avg_last_hours_sync, sensor_id, hours, frontier
+        )
 
-    def hooks_avg_last_hours(self, sensor_id: str, hours: int) -> Optional[float]:
+    def hooks_avg_last_hours(
+        self, sensor_id: str, hours: int, *, frontier: int | None = None
+    ) -> Optional[float]:
         """Stable sync facade for hook average-over-hours lookups."""
-        return self._run_read_with_conn(self._avg_last_hours_sync, sensor_id, hours)
+        return self._run_read_with_conn(
+            self._avg_last_hours_sync, sensor_id, hours, frontier
+        )
 
     def _avg_last_hours_sync(
-        self, conn: sqlite3.Connection, sensor_id: str, hours: int
+        self,
+        conn: sqlite3.Connection,
+        sensor_id: str,
+        hours: int,
+        frontier: int | None = None,
     ) -> Optional[float]:
         current_ms = now_ms()
         cutoff_ms = current_ms - hours * 3_600_000
@@ -2359,7 +2452,7 @@ class StateStore:
                 SELECT value AS val, 1 AS cnt
                 FROM sensor_history
                 WHERE sensor_id = ? AND received_at_ms BETWEEN ? AND ?
-                  AND timestamp >= ?
+                  AND timestamp >= ? AND (? IS NULL OR id <= ?)
                 UNION ALL
                 SELECT avg_value AS val, sample_count AS cnt
                 FROM sensor_history_5min
@@ -2378,8 +2471,19 @@ class StateStore:
             )
             HAVING SUM(cnt) > 0
             """,
-            (sensor_id, cutoff_ms, current_ms + RECEIPT_READ_TOLERANCE_MS, cutoff_ms)
-            * 4,
+            # A frontier bounds raw rows only: compaction takes a raw row once
+            # it is RAW_HISTORY_RETENTION_MS old by the store's clock, so an
+            # aggregate never holds a row admitted during an evaluation.
+            (
+                sensor_id,
+                cutoff_ms,
+                current_ms + RECEIPT_READ_TOLERANCE_MS,
+                cutoff_ms,
+                frontier,
+                frontier,
+            )
+            + (sensor_id, cutoff_ms, current_ms + RECEIPT_READ_TOLERANCE_MS, cutoff_ms)
+            * 3,
         ).fetchone()
         return row["avg_val"] if row and row["avg_val"] is not None else None
 

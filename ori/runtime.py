@@ -4121,7 +4121,9 @@ class OriRuntime:
                 # protocol provenance through reading.metadata["source"].
                 event.source = reading.metadata.get("source", "")
                 event.fingerprint = compute_fingerprint(reading, event.device_id)
-                await self._state_store.append_history(event)
+                # Queued, never awaited: a busy store must not delay or drop the
+                # reading's evaluation. Its row lands after, or is counted lost.
+                self._state_store.admit_history(event)
                 if event.reading is not None and deduplicator is not None:
                     if deduplicator.process(event) is None:
                         logger.debug(

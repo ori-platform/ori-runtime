@@ -23,6 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
+from ori.network.events import history_as_of
 from ori.skills.sandbox import SkillSecurityError, load_hooks_restricted
 
 logger = logging.getLogger(__name__)
@@ -266,7 +267,9 @@ class OSSandboxHookRunner:
 
     async def pre_trigger_eval(self, hook_ctx: Any) -> None:
         payload = _serialize_hook_context(hook_ctx, include_result=False)
-        result = await self._invoke_child("pre_trigger_eval", payload)
+        result = await self._invoke_child(
+            "pre_trigger_eval", payload, _history_as_of(hook_ctx)
+        )
         if not result.get("ok", False):
             raise SkillSecurityError(result.get("error", "pre_trigger_eval failed"))
         _apply_hook_updates(hook_ctx, result.get("hook_ctx", {}))
@@ -277,14 +280,16 @@ class OSSandboxHookRunner:
             include_result=True,
             reasoning_result=reasoning_result,
         )
-        result = await self._invoke_child("post_reasoning", payload)
+        result = await self._invoke_child(
+            "post_reasoning", payload, _history_as_of(hook_ctx)
+        )
         if not result.get("ok", False):
             raise SkillSecurityError(result.get("error", "post_reasoning failed"))
         _apply_hook_updates(hook_ctx, result.get("hook_ctx", {}))
         _apply_reasoning_updates(reasoning_result, result.get("reasoning_result", {}))
 
     async def _invoke_child(
-        self, method: str, payload: dict[str, Any]
+        self, method: str, payload: dict[str, Any], as_of: dict[str, int]
     ) -> dict[str, Any]:
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -340,7 +345,7 @@ class OSSandboxHookRunner:
                     msg_type = str(msg.get("type", ""))
                     if msg_type == _RPC_REQ:
                         req_id = int(msg.get("id", req_id + 1))
-                        response = self._handle_rpc_request(msg)
+                        response = self._handle_rpc_request(msg, as_of)
                         response["id"] = req_id
                         proc.stdin.write(
                             (
@@ -366,7 +371,10 @@ class OSSandboxHookRunner:
             raise SkillSecurityError(f"os_sandbox_ipc_protocol_error:{err}")
         return dict(result_msg)
 
-    def _handle_rpc_request(self, msg: dict[str, Any]) -> dict[str, Any]:
+    def _handle_rpc_request(
+        self, msg: dict[str, Any], as_of: dict[str, int] | None = None
+    ) -> dict[str, Any]:
+        bound = as_of or {}
         method = str(msg.get("method", "")).strip()
         params = msg.get("params", {}) or {}
         try:
@@ -388,13 +396,15 @@ class OSSandboxHookRunner:
                 sensor_id = str(params.get("sensor_id", ""))
                 hours = int(params.get("hours", 0))
                 return self._history_read_response(
-                    "hooks_avg_last_hours", sensor_id, hours
+                    "hooks_avg_last_hours", sensor_id, hours, **bound
                 )
 
             if method == "history.avg_last_n":
                 sensor_id = str(params.get("sensor_id", ""))
                 n = int(params.get("n", 0))
-                return self._history_read_response("hooks_avg_last_n", sensor_id, n)
+                return self._history_read_response(
+                    "hooks_avg_last_n", sensor_id, n, **bound
+                )
 
             if method == "history.same_weekday_hour_baseline":
                 sensor_id = str(params.get("sensor_id", ""))
@@ -419,9 +429,9 @@ class OSSandboxHookRunner:
                 sensor_id = str(params.get("sensor_id", ""))
                 limit = int(params.get("limit", 1))
                 history = (
-                    self._history_read_response("hooks_get_history", sensor_id, limit)[
-                        "result"
-                    ]
+                    self._history_read_response(
+                        "hooks_get_history", sensor_id, limit, **bound
+                    )["result"]
                     or []
                 )
                 if method == "history.fetch_history":
@@ -453,10 +463,16 @@ class OSSandboxHookRunner:
         except Exception as exc:
             return {"type": _RPC_RESP, "ok": False, "error": str(exc)}
 
-    def _history_read_response(self, method_name: str, *args: Any) -> dict[str, Any]:
+    def _history_read_response(
+        self, method_name: str, *args: Any, **kwargs: Any
+    ) -> dict[str, Any]:
         fn = getattr(self._state_store, method_name, None)
-        val = fn(*args) if callable(fn) else None
+        val = fn(*args, **kwargs) if callable(fn) else None
         return {"type": _RPC_RESP, "ok": True, "result": val}
+
+
+def _history_as_of(hook_ctx: Any) -> dict[str, int]:
+    return history_as_of(getattr(hook_ctx, "event", None))
 
 
 def _serialize_hook_context(

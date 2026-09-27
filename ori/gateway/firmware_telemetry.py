@@ -216,7 +216,9 @@ class MqttFirmwareTelemetrySubscriber:
             event.event_type = f"sensor.{reading.sensor_type}"
             event.source = reading.metadata.get("source", "firmware")
             event.fingerprint = compute_fingerprint(reading, event.device_id)
-            await self._state_store.append_history(event)
+            # Freshness was verified in the gate, ahead of this; the history
+            # row is queued so a busy store cannot delay or drop the reading.
+            self._state_store.admit_history(event)
             if (
                 self._deduplicator is not None
                 and self._deduplicator.process(event) is None

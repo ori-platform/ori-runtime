@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
-from ori.network.events import OriEvent
+from ori.network.events import OriEvent, history_as_of
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -469,7 +469,9 @@ class RuleEngine:
                     if key in history_cache:
                         continue
                     try:
-                        val = await state_store.avg_last_hours(args[0], 24)
+                        val = await state_store.avg_last_hours(
+                            args[0], 24, **history_as_of(event)
+                        )
                         history_cache[key] = val if val is not None else 0.0
                     except Exception:
                         history_cache[key] = 0.0
@@ -483,7 +485,9 @@ class RuleEngine:
                     if key in history_cache:
                         continue
                     try:
-                        readings = await state_store.get_history(args[0], limit=args[1])
+                        readings = await state_store.get_history(
+                            args[0], limit=args[1], **history_as_of(event)
+                        )
                         history_cache[key] = (
                             [r.value for r in readings] if readings else []
                         )

@@ -42,6 +42,10 @@ class OriEvent:
     fingerprint: str = ""
     # The runtime's clock when it built the event; 0 means never stamped.
     received_at_ms: int = 0
+    # The last history row the store had committed when this reading was
+    # admitted to it. Evaluation-time history reads rows up to it, so the
+    # reading is never part of its own history. None: not admitted.
+    history_frontier: Optional[int] = None
 
     @classmethod
     def from_reading(cls, reading: SensorReading, device_id: str) -> "OriEvent":
@@ -55,6 +59,14 @@ class OriEvent:
             source=reading.metadata.get("source", ""),
             received_at_ms=now_ms(),
         )
+
+
+def history_as_of(event: Optional[OriEvent]) -> dict[str, int]:
+    """The keyword that bounds an evaluation-time history read to *event*'s frontier."""
+    frontier = getattr(event, "history_frontier", None) if event is not None else None
+    if isinstance(frontier, int) and not isinstance(frontier, bool):
+        return {"frontier": frontier}
+    return {}
 
 
 def event_received_at_ms(event: Optional[OriEvent]) -> int:
