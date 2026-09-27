@@ -600,7 +600,7 @@ async def test_a_recovering_reading_is_published_before_its_recovery_lands(
 
     assert delivered == [True], "the reading waited on its recovery being recorded"
     released.set()
-    await asyncio.gather(*runtime._measurement_clears.values())
+    await runtime._measurement_writer.drain(5.0)
     assert SENSOR not in runtime._measurement_degraded
     assert await store.get_measurement_degradation() == {}
 

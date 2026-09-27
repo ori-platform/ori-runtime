@@ -3305,6 +3305,41 @@ class TestSensorPolling:
             await runtime._poll_sensor(_nevercalledadapter(), sensor_cfg, bus, "dev-01")
         assert "state_store unavailable for sensor poll task" in caplog.text
 
+    async def test_stop_settles_measurement_writes_before_closing_the_store(
+        self, minimal_config, monkeypatch
+    ):
+        """A measurement write never runs against a closed store."""
+        from ori.state.store import StateStore
+
+        _patch_external(monkeypatch)
+        order: list[str] = []
+        runtime = OriRuntime(config_path=str(minimal_config))
+        settle = runtime._close_measurement_writer
+
+        async def recorded_settle(*args: Any, **kwargs: Any) -> None:
+            order.append("measurement-writer")
+            await settle(*args, **kwargs)
+
+        runtime._close_measurement_writer = recorded_settle  # type: ignore[method-assign]
+        close = StateStore.close
+
+        async def recorded_close(self: StateStore) -> None:
+            order.append("store")
+            await close(self)
+
+        monkeypatch.setattr(StateStore, "close", recorded_close)
+
+        async def _stop():
+            deadline = time.monotonic() + 5.0
+            while runtime._state_store is None and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            await runtime.stop()
+
+        await asyncio.gather(runtime.start(), _stop())
+
+        assert order[:2] == ["measurement-writer", "store"]
+        assert runtime._measurement_writer.closed
+
     async def test_sensor_read_error_does_not_crash_runtime(
         self, minimal_config, monkeypatch, caplog
     ):
