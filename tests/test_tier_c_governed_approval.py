@@ -1419,15 +1419,20 @@ class TestAJoinedContributorReportsTheProposedAct:
     """
 
     @pytest.mark.parametrize(
-        ("reply", "proposed_ran"),
+        ("reply", "executor_succeeds", "proposed_ran"),
         [
-            pytest.param("NO", False, id="no"),
-            pytest.param(None, False, id="timeout"),
-            pytest.param("YES", True, id="yes"),
+            pytest.param("NO", True, False, id="no"),
+            pytest.param(None, True, False, id="timeout"),
+            pytest.param("YES", True, True, id="yes"),
+            pytest.param("YES", False, False, id="yes-but-the-executor-failed"),
         ],
     )
     async def test_a_joiner_reports_what_the_proposed_act_did(
-        self, tmp_path: Any, reply: str | None, proposed_ran: bool
+        self,
+        tmp_path: Any,
+        reply: str | None,
+        executor_succeeds: bool,
+        proposed_ran: bool,
     ) -> None:
         from ori.reasoning.dispatch_plan import (
             CLOSE_PROTECTED_CIRCUIT,
@@ -1441,7 +1446,12 @@ class TestAJoinedContributorReportsTheProposedAct:
         await store.open()
         operator = _Operator(reply=reply, delay_s=0.2)
         try:
-            dispatcher = _dispatcher(store, operator, journal)
+
+            async def act(*_args: Any, **_kwargs: Any) -> bool:
+                journal.append("act:trip_relay")
+                return executor_succeeds
+
+            dispatcher = _dispatcher(store, operator, journal, executor=act)
             dispatcher.bind_resource_gate(
                 ResourceGate(),
                 BindingView(
@@ -1465,14 +1475,18 @@ class TestAJoinedContributorReportsTheProposedAct:
 
         assert joiner.action_taken == "coalesced"
         assert joiner.executed is proposed_ran, joiner
-        assert journal.count("act:trip_relay") == (1 if proposed_ran else 0), journal
+        approved = reply == "YES"
+        assert journal.count("act:trip_relay") == (1 if approved else 0), journal
         executed_proposed = [
             row
             for row in rows
             if row["executed"] and row["action_taken"] in ("trip_relay", "coalesced")
         ]
-        if proposed_ran:
-            assert holder.approved is True and holder.executed is True
+        if approved:
+            assert holder.approved is True
+            assert holder.executed is proposed_ran
+            if not proposed_ran:
+                assert executed_proposed == [], rows
         else:
             # The safe default ran and is the holder's record; nothing records
             # the proposed act as executed.
@@ -1481,11 +1495,12 @@ class TestAJoinedContributorReportsTheProposedAct:
             assert executed_proposed == [], rows
 
     async def test_an_uncertain_command_settles_on_the_proposed_act(self) -> None:
-        """A shielded attempt that ends in its safe default resolves as not accepted.
+        """The uncertain-command settle applies the same rule, defensively.
 
-        The executor reports after the dispatch was interrupted, and the gate
-        is resolved from what it reports: the safe default's success is not the
-        proposed act's, so a joiner waiting on the command is not told it ran.
+        Only a Tier D act is shielded and settled this way today, and it never
+        has a safe default, so this result is synthetic. It holds the settle to
+        the same rule as retirement, so a future path that settles an attempt
+        ended by its safe default cannot report the proposed act as accepted.
         """
         from ori.network.events import ActionResult
         from ori.reasoning.dispatch_plan import resource_identity
@@ -1526,3 +1541,80 @@ class TestAJoinedContributorReportsTheProposedAct:
         await asyncio.wait(dispatcher.get_inflight_tier_d_tasks(), timeout=5)
         assert token.done.is_set()
         assert token.result is False
+
+
+class _HostSkill:
+    name = "host-guard"
+    version = "1.0.0"
+    first_party = True
+    config: dict[str, Any] = {}
+    triggers: list[Any] = []
+    actions: dict[str, Any] = {
+        "available": [{"name": "terminate_process", "tier": "C"}],
+        "defaults": {"t": ["terminate_process"]},
+    }
+    sensors_required = [{"type": "cpu_percent"}]
+
+
+async def test_a_joiner_on_the_host_state_workflow_is_not_executed_after_a_no(
+    tmp_path: Any,
+) -> None:
+    """The same rule on the other approval workflow a joiner can wait on."""
+    from ori.reasoning.resource_gate import ResourceGate
+
+    store = StateStore(str(tmp_path / "s.db"))
+    await store.open()
+    operator = _Operator(reply="NO", delay_s=0.2)
+    ran: list[str] = []
+    try:
+        dispatcher = ActionDispatcher(
+            state_store=store,
+            alert_sender=operator,
+            config={"operator_contact": "+2348000000000"},
+        )
+        dispatcher.bind_resource_gate(ResourceGate())
+
+        async def terminate(*_args: Any, **_kwargs: Any) -> bool:
+            ran.append("terminate_process")
+            return True
+
+        dispatcher.register_executor("terminate_process", terminate)
+        dispatcher.register_resource_resolver(
+            "terminate_process", lambda _context: {"target": "pid:4242"}
+        )
+
+        async def propose() -> Any:
+            return await dispatcher.dispatch(
+                action="terminate_process",
+                tier="C",
+                context=SkillContext(
+                    skill=_HostSkill(),
+                    event=_event(),
+                    state_store=store,
+                    trigger_name="t",
+                ),
+                result=ReasoningResult(
+                    text="", tier="rule", model="m", tokens_used=0, latency_ms=0
+                ),
+                approval_timeout=1,
+            )
+
+        holder_task = asyncio.create_task(propose())
+        while not operator.proposals:
+            await asyncio.sleep(0)
+        joiner = await asyncio.wait_for(propose(), 10)
+        holder = await asyncio.wait_for(holder_task, 10)
+        await _settle(dispatcher)
+        rows = await store.get_action_log(limit=50)
+    finally:
+        await store.close()
+
+    assert ran == []
+    assert holder.safe_default_used is True
+    assert joiner.action_taken == "coalesced"
+    assert joiner.executed is False, joiner
+    assert [
+        row
+        for row in rows
+        if row["executed"] and row["action_taken"] in ("terminate_process", "coalesced")
+    ] == [], rows
