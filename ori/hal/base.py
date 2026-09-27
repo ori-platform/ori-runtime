@@ -43,6 +43,21 @@ class MeasurementRefusedError(AdapterReadError):
 _SQLITE_INT_MAX = 2**63 - 1
 
 
+def refuse_quality_above_one(reading: Any) -> None:
+    """Refuse a numeric quality above 1, outside the reading's defined domain.
+
+    Only this is refused ahead of the safety registry: every other unusable
+    quality is the registry's own rejected input, which owes an immediate alert.
+    """
+    quality = reading.quality
+    if (
+        isinstance(quality, (int, float))
+        and not isinstance(quality, bool)
+        and quality > 1
+    ):
+        raise MeasurementRefusedError("reading quality is above 1")
+
+
 def refuse_unusable_reading(reading: Any) -> None:
     """Refuse a reading that cannot be stored, compared or evaluated.
 

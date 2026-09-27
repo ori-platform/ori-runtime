@@ -89,6 +89,7 @@ from ori.hal.base import (
     AdapterReadError,
     BaseAdapter,
     MeasurementRefusedError,
+    refuse_quality_above_one,
     refuse_unusable_reading,
 )
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
@@ -4065,6 +4066,9 @@ class OriRuntime:
         while not self._shutdown_event.is_set():
             try:
                 reading = await adapter.read(sensor_cfg.id)
+                # Outside the reading's quality domain, this is a refused window
+                # rather than an input the safety profile can judge.
+                refuse_quality_above_one(reading)
                 # The safety registry consumes every reading synchronously,
                 # before deduplication, history, the EventBus, or any skill:
                 # a duplicate is irrelevant to skills and still matters to

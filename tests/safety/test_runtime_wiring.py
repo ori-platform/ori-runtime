@@ -532,3 +532,107 @@ def _write_config_with_contact(tmp_path: Path) -> Path:
     assert spliced != text, "the config splice found no actions block"
     cfg.write_text(spliced)
     return cfg
+
+
+_PRE_REGISTRY = [
+    pytest.param(1.5, id="above-one"),
+    pytest.param(float("inf"), id="positive-infinity"),
+    pytest.param(10**400, id="huge-positive-integer"),
+]
+_REGISTRY_REJECTS = [
+    pytest.param(float("nan"), id="nan"),
+    pytest.param(float("-inf"), id="negative-infinity"),
+    pytest.param(0.0, id="zero"),
+    pytest.param(True, id="boolean"),
+    pytest.param("high", id="non-numeric"),
+]
+
+
+async def _poll_once(tmp_path: Path, quality: Any) -> tuple[OriRuntime, Any, list]:
+    from types import SimpleNamespace
+
+    from ori.network.event_bus import EventBus
+    from ori.network.events import SensorReading
+    from ori.state.store import StateStore
+    from ori.utils.time_utils import now_ms
+    from tests.safety.test_registry import build
+
+    store = StateStore(str(tmp_path / "state.db"))
+    await store.open()
+    registry, _commander = build(store)
+    await registry.start()
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._state_store = store
+    runtime._safety_registry = registry
+    runtime._shutdown_event = asyncio.Event()
+    runtime._measurement_refusals = {}
+    runtime._measurement_valid_streak = {}
+    runtime._measurement_refusal_reason = {}
+    runtime._measurement_degraded = set()
+    runtime._measurement_unnotified = set()
+    runtime._measurement_notify_attempts = {}
+
+    observed: list = []
+    real_observe = registry.observe_reading
+
+    async def spy(sensor_id, value, unit, q):
+        decisions = await real_observe(sensor_id, value, unit, q)
+        observed.extend(decisions)
+        return decisions
+
+    registry.observe_reading = spy  # type: ignore[method-assign]
+    sensor = "main-distribution-current"
+
+    class _Adapter:
+        async def read(self, sensor_id: str) -> SensorReading:
+            runtime._shutdown_event.set()
+            return SensorReading(
+                sensor_id=sensor,
+                sensor_type="current",
+                value=5.0,
+                unit="ampere",
+                timestamp=now_ms(),
+                quality=quality,
+            )
+
+    bus = EventBus()
+    published: list = []
+
+    async def _handler(event: Any) -> None:
+        published.append(event)
+
+    bus.subscribe("current", _handler)
+    sensor_cfg: Any = SimpleNamespace(id=sensor, poll_interval_ms=1)
+    await runtime._poll_sensor(_Adapter(), sensor_cfg, bus, DEVICE)  # type: ignore[arg-type]
+    history = await store.get_history(sensor)
+    await store.close()
+    return runtime, (published, history), observed
+
+
+@pytest.mark.parametrize("quality", _PRE_REGISTRY)
+async def test_a_quality_above_one_never_reaches_the_registry(
+    tmp_path: Path, quality: Any
+) -> None:
+    runtime, (published, history), observed = await _poll_once(tmp_path, quality)
+    assert observed == [], "the registry judged a reading outside the quality domain"
+    assert "main-distribution-current" not in runtime._sensor_last_seen_ms
+    assert published == [] and history == []
+    assert runtime._measurement_refusals.get("main-distribution-current") == 1
+
+
+@pytest.mark.parametrize("quality", _REGISTRY_REJECTS)
+async def test_a_quality_v1_rejects_reaches_the_registry_and_is_rejected_there(
+    tmp_path: Path, quality: Any
+) -> None:
+    _runtime, _stored, observed = await _poll_once(tmp_path, quality)
+    assert [(d.verdict, d.reason) for d in observed] == [
+        ("rejected_input", "zero_quality")
+    ]
+
+
+async def test_a_quality_of_exactly_one_is_credible_to_the_registry(
+    tmp_path: Path,
+) -> None:
+    _runtime, (published, _history), observed = await _poll_once(tmp_path, 1.0)
+    assert [(d.verdict, d.reason) for d in observed] == [("no_trip", None)]
+    assert len(published) == 1
