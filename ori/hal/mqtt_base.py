@@ -18,6 +18,22 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+
+def load_json_payload(text: str, adapter_name: str) -> Any:
+    """Parse one message's JSON, refusing anything `json.loads` refuses.
+
+    `json.loads` raises more than `JSONDecodeError`: `ValueError` for an
+    integer past the digit limit and `RecursionError` for deep nesting. Each is
+    an invalid payload, refused like any other.
+    """
+    try:
+        return json.loads(text)
+    except (ValueError, RecursionError) as exc:
+        raise AdapterReadError(
+            f"{adapter_name}: payload is not valid JSON: {exc}"
+        ) from exc
+
+
 try:
     import aiomqtt as _aiomqtt  # type: ignore[import-untyped]
 
@@ -453,6 +469,15 @@ class MqttCachedAdapter(BaseAdapter):
                         topic,
                         exc,
                     )
+                except Exception:
+                    # No single message ends the listener: a payload a parser
+                    # did not anticipate is refused like any other, and the
+                    # next one is still consumed.
+                    logger.exception(
+                        "%s: skipping a payload that could not be handled on topic=%s",
+                        self.adapter_name,
+                        topic,
+                    )
         except asyncio.CancelledError:
             return
         except Exception:
@@ -461,6 +486,21 @@ class MqttCachedAdapter(BaseAdapter):
                 self.adapter_name,
                 self._broker_host,
                 self._port,
+            )
+
+    def _require_listener(self) -> None:
+        """Refuse a read once the listener has stopped.
+
+        The cache holds the last value the listener delivered. Served after the
+        listener ends, it reads as a live measurement: the runtime records the
+        sensor as seen, the staleness watch stays quiet, and a Tier D condition
+        evaluates a frozen value. A stopped listener is a silent sensor.
+        """
+        task = self._listener_task
+        if task is None or task.done():
+            raise AdapterReadError(
+                f"{self.adapter_name}: the MQTT listener is not running; "
+                "the cached value is no longer a live reading"
             )
 
     async def _handle_message(self, topic: str, payload: Any) -> None:
@@ -491,10 +531,7 @@ class MqttCachedAdapter(BaseAdapter):
 
         parsed: Any = text
         if text.startswith("{") or text.startswith("["):
-            try:
-                parsed = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise AdapterReadError(f"Invalid JSON payload: {exc}") from exc
+            parsed = load_json_payload(text, "MQTT")
 
         if isinstance(parsed, dict):
             if "value" not in parsed:
@@ -506,7 +543,7 @@ class MqttCachedAdapter(BaseAdapter):
 
         try:
             return float(value_candidate), raw_payload
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise AdapterReadError(
                 f"MQTT payload value is not numeric: {value_candidate!r}"
             ) from exc

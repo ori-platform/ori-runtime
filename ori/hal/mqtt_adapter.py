@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from ori.hal.base import AdapterConnectionError, AdapterReadError
-from ori.hal.mqtt_base import MQTT_CONNECTION_SCHEMA, MqttCachedAdapter
+from ori.hal.mqtt_base import (
+    MQTT_CONNECTION_SCHEMA,
+    MqttCachedAdapter,
+    load_json_payload,
+)
 from ori.network.events import SensorReading
 from ori.utils.time_utils import now_ms
 
@@ -131,6 +134,7 @@ class MqttAdapter(MqttCachedAdapter):
         self._ensure_aiomqtt_available()
         if not self._connected:
             raise AdapterReadError("MqttAdapter: not connected — call connect() first")
+        self._require_listener()
         if self._breaker is None:
             raise AdapterReadError("MqttAdapter: circuit breaker is not initialized")
 
@@ -174,12 +178,7 @@ class MqttAdapter(MqttCachedAdapter):
             text = str(payload).strip()
         if not text:
             raise AdapterReadError("MqttAdapter: empty MQTT payload")
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise AdapterReadError(
-                f"MqttAdapter: payload is not valid JSON: {exc}"
-            ) from exc
+        parsed = load_json_payload(text, "MqttAdapter")
         if not isinstance(parsed, dict):
             raise AdapterReadError("MqttAdapter: payload must be a JSON object")
         return parsed

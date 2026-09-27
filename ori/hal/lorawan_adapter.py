@@ -1,11 +1,14 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-import json
 from typing import Any
 
 from ori.hal.base import AdapterConnectionError, AdapterReadError
-from ori.hal.mqtt_base import MQTT_CONNECTION_SCHEMA, MqttCachedAdapter
+from ori.hal.mqtt_base import (
+    MQTT_CONNECTION_SCHEMA,
+    MqttCachedAdapter,
+    load_json_payload,
+)
 from ori.network.events import SensorReading
 from ori.utils.time_utils import now_ms
 
@@ -173,6 +176,7 @@ class LoraWanAdapter(MqttCachedAdapter):
             raise AdapterReadError(
                 "LoraWanAdapter: not connected — call connect() first"
             )
+        self._require_listener()
         if self._breaker is None:
             raise AdapterReadError("LoraWanAdapter: circuit breaker is not initialized")
 
@@ -216,12 +220,7 @@ class LoraWanAdapter(MqttCachedAdapter):
             text = str(payload).strip()
         if not text:
             raise AdapterReadError("LoraWanAdapter: empty MQTT payload")
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise AdapterReadError(
-                f"LoraWanAdapter: payload is not valid JSON: {exc}"
-            ) from exc
+        parsed = load_json_payload(text, "LoraWanAdapter")
         if not isinstance(parsed, dict):
             raise AdapterReadError("LoraWanAdapter: payload must be a JSON object")
         return parsed
