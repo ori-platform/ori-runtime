@@ -54,7 +54,12 @@ def refuse_unusable_reading(reading: Any) -> None:
     value = reading.value
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise MeasurementRefusedError(f"reading value {value!r} is not a number")
-    if not math.isfinite(value):
+    # math.isfinite raises converting an int past float range, and the store
+    # cannot bind an int past its integer range.
+    if isinstance(value, int):
+        if not -_SQLITE_INT_MAX - 1 <= value <= _SQLITE_INT_MAX:
+            raise MeasurementRefusedError("reading value is out of range")
+    elif not math.isfinite(value):
         raise MeasurementRefusedError(f"reading value {value!r} is not finite")
     timestamp = reading.timestamp
     if (
@@ -69,7 +74,7 @@ def refuse_unusable_reading(reading: Any) -> None:
     if (
         isinstance(quality, bool)
         or not isinstance(quality, (int, float))
-        or not math.isfinite(quality)
+        or (isinstance(quality, float) and not math.isfinite(quality))
         or not 0.0 <= quality <= 1.0
     ):
         raise MeasurementRefusedError(f"reading quality {quality!r} is not in 0..1")

@@ -370,12 +370,14 @@ def _reading(**overrides: Any) -> SensorReading:
         pytest.param({"value": math.nan}, id="nan-value"),
         pytest.param({"value": math.inf}, id="infinite-value"),
         pytest.param({"value": True}, id="boolean-value"),
+        pytest.param({"value": 2**63}, id="integer-past-sqlite-integer"),
         pytest.param({"value": "27.4"}, id="string-value"),
         pytest.param({"timestamp": 2**63}, id="timestamp-past-sqlite-integer"),
         pytest.param({"timestamp": -1}, id="negative-timestamp"),
         pytest.param({"timestamp": 1.5}, id="float-timestamp"),
         pytest.param({"quality": math.nan}, id="nan-quality"),
         pytest.param({"quality": 1.5}, id="quality-above-one"),
+        pytest.param({"quality": 10**400}, id="quality-past-float-range"),
     ],
 )
 def test_an_unusable_reading_is_refused_as_a_measurement(
@@ -388,3 +390,4 @@ def test_an_unusable_reading_is_refused_as_a_measurement(
 def test_a_usable_reading_passes() -> None:
     refuse_unusable_reading(_reading())
     refuse_unusable_reading(_reading(value=0, timestamp=2**63 - 1, quality=1.0))
+    refuse_unusable_reading(_reading(value=-(2**63)))

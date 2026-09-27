@@ -3416,6 +3416,7 @@ class TestSensorPolling:
         [
             pytest.param({"value": float("nan")}, id="nan-value"),
             pytest.param({"timestamp": 2**63}, id="timestamp-past-sqlite-integer"),
+            pytest.param({"value": 10**400}, id="integer-past-float-range"),
         ],
     )
     async def test_an_unusable_reading_is_refused_before_the_sensor_counts_as_seen(
