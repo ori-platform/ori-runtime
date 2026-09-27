@@ -3411,6 +3411,83 @@ class TestSensorPolling:
 
         await store.close()
 
+    @pytest.mark.parametrize(
+        "unusable",
+        [
+            pytest.param({"value": float("nan")}, id="nan-value"),
+            pytest.param({"timestamp": 2**63}, id="timestamp-past-sqlite-integer"),
+        ],
+    )
+    async def test_an_unusable_reading_is_refused_before_the_sensor_counts_as_seen(
+        self, tmp_path, unusable
+    ):
+        """One unusable reading is a refused measurement, never a live sensor.
+
+        Counting it as seen first would keep the staleness watch quiet while
+        every poll then failed before any skill evaluated a reading.
+        """
+        from ori.state.store import StateStore
+
+        store = StateStore(str(tmp_path / "state.db"))
+        await store.open()
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = store
+        runtime._shutdown_event = asyncio.Event()
+        runtime._measurement_refusals = {}
+        runtime._measurement_valid_streak = {}
+        runtime._measurement_refusal_reason = {}
+        runtime._measurement_degraded = set()
+        runtime._measurement_unnotified = set()
+        runtime._measurement_notify_attempts = {}
+
+        def _reading(**overrides: Any) -> SensorReading:
+            fields: dict[str, Any] = {
+                "sensor_id": "load-current",
+                "sensor_type": "current",
+                "value": 8.2,
+                "unit": "ampere",
+                "timestamp": int(time.time() * 1000),
+                "quality": 0.95,
+            }
+            fields.update(overrides)
+            return SensorReading(**fields)
+
+        seen_before_valid: list[bool] = []
+        refused_before_valid: list[str] = []
+
+        class _Adapter:
+            reads = 0
+
+            async def read(self, sensor_id: str) -> SensorReading:
+                self.reads += 1
+                if self.reads == 1:
+                    return _reading(**unusable)
+                seen_before_valid.append(sensor_id in runtime._sensor_last_seen_ms)
+                refused_before_valid.append(
+                    runtime._measurement_refusal_reason.get(sensor_id, "")
+                )
+                runtime._shutdown_event.set()
+                return _reading()
+
+        bus = EventBus()
+        delivered: list[OriEvent] = []
+
+        async def _handler(event: OriEvent) -> None:
+            delivered.append(event)
+
+        bus.subscribe("current", _handler)
+        sensor_cfg: Any = SimpleNamespace(id="load-current", poll_interval_ms=1)
+        await runtime._poll_sensor(cast(Any, _Adapter()), sensor_cfg, bus, "dev-01")
+
+        assert seen_before_valid == [False], "the unusable reading counted as seen"
+        assert len(refused_before_valid) == 1 and refused_before_valid[0], (
+            "the unusable reading was not noted as a refused measurement"
+        )
+        assert [event.reading.value for event in delivered if event.reading] == [8.2]
+        assert [row.value for row in await store.get_history("load-current")] == [8.2]
+        assert "load-current" in runtime._sensor_last_seen_ms
+        await store.close()
+
     async def test_a_warning_that_never_reached_anyone_is_still_owed(self, tmp_path):
         """The failure this durability exists to prevent, from the other side.
 

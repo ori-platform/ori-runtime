@@ -5,6 +5,7 @@ import asyncio
 import inspect
 import json
 import logging
+import math
 import ssl
 from typing import Any, Iterable
 
@@ -19,15 +20,29 @@ from ori.utils.time_utils import now_ms
 logger = logging.getLogger(__name__)
 
 
+def _refuse_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not a JSON number")
+
+
+def _finite_float(text: str) -> float:
+    number = float(text)
+    if not math.isfinite(number):
+        raise ValueError(f"{text} does not fit a float")
+    return number
+
+
 def load_json_payload(text: str, adapter_name: str) -> Any:
-    """Parse one message's JSON, refusing anything `json.loads` refuses.
+    """Parse one message's JSON, refusing anything that is not JSON.
 
     `json.loads` raises more than `JSONDecodeError`: `ValueError` for an
-    integer past the digit limit and `RecursionError` for deep nesting. Each is
-    an invalid payload, refused like any other.
+    integer past the digit limit and `RecursionError` for deep nesting. It also
+    accepts `NaN` and `Infinity`, and reads `1e400` as infinity; none is a JSON
+    number, and each would reach a cached reading as a value or timestamp.
     """
     try:
-        return json.loads(text)
+        return json.loads(
+            text, parse_constant=_refuse_constant, parse_float=_finite_float
+        )
     except (ValueError, RecursionError) as exc:
         raise AdapterReadError(
             f"{adapter_name}: payload is not valid JSON: {exc}"
@@ -542,8 +557,11 @@ class MqttCachedAdapter(BaseAdapter):
             value_candidate = parsed
 
         try:
-            return float(value_candidate), raw_payload
+            value = float(value_candidate)
         except (TypeError, ValueError, OverflowError) as exc:
             raise AdapterReadError(
                 f"MQTT payload value is not numeric: {value_candidate!r}"
             ) from exc
+        if not math.isfinite(value):
+            raise AdapterReadError(f"MQTT payload value is not finite: {value!r}")
+        return value, raw_payload

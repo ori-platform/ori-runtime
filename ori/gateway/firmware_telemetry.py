@@ -19,6 +19,7 @@ from concurrent.futures import Future as ConcurrentFuture
 from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
+from ori.hal.base import MeasurementRefusedError, refuse_unusable_reading
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, compute_fingerprint
@@ -200,6 +201,17 @@ class MqttFirmwareTelemetrySubscriber:
             capability_hash=verification.capability_hash,
         )
         for reading in readings:
+            try:
+                refuse_unusable_reading(reading)
+            except MeasurementRefusedError as exc:
+                # One unusable reading is refused alone; the batch's other
+                # readings are still evaluated.
+                logger.warning(
+                    "[firmware-telemetry] refused a reading on %s: %s",
+                    reading.sensor_id,
+                    exc,
+                )
+                continue
             event = OriEvent.from_reading(reading, self._runtime_device_id)
             event.event_type = f"sensor.{reading.sensor_type}"
             event.source = reading.metadata.get("source", "firmware")

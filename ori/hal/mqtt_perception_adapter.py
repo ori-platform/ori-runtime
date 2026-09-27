@@ -79,13 +79,13 @@ class MqttPerceptionAdapter(MqttCachedAdapter):
             raise AdapterReadError(
                 "MqttPerceptionAdapter: not connected — call connect() first"
             )
-        self._require_listener()
         if self._breaker is None:
             raise AdapterReadError(
                 "MqttPerceptionAdapter: circuit breaker is not initialized"
             )
 
         async with self._breaker:
+            self._require_listener()
             cached = self._cache.get(self._topic)
             if cached is None:
                 raise AdapterReadError(

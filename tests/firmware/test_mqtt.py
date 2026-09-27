@@ -222,3 +222,40 @@ def test_paho_unavailable_raises():
                 runtime_device_id="runtime-01",
                 liveness_supervisor=FirmwareLivenessSupervisor(),
             )
+
+
+async def test_an_unusable_firmware_reading_is_refused_alone():
+    """One unusable reading in an accepted batch is refused; the rest are evaluated."""
+
+    def _reading(channel: str, value: float) -> SensorReading:
+        return SensorReading(
+            sensor_id=f"ori-fw-7c9f2b3a:{channel}",
+            sensor_type="current",
+            value=value,
+            unit="ampere",
+            timestamp=1_752_537_600_000,
+            quality=0.95,
+            metadata={"source": "firmware"},
+        )
+
+    class _Gate(_FakeFirmwareGate):
+        async def ingest(self, payload: dict):
+            return _FakeVerification(), [
+                _reading("ch0", float("nan")),
+                _reading("ch1", 8.21),
+            ]
+
+    store = _fakestore()
+    bus = EventBus()
+    delivered = []
+
+    async def _handler(event):
+        delivered.append(event)
+
+    bus.subscribe("current", _handler)
+    sub, _fake = _subscriber(gate=_Gate(), store=store, bus=bus)
+
+    await sub._ingest_telemetry({"envelope": {}, "signature": "x"})
+
+    assert [event.sensor_id for event in store.history] == ["ori-fw-7c9f2b3a:ch1"]
+    assert [event.sensor_id for event in delivered] == ["ori-fw-7c9f2b3a:ch1"]

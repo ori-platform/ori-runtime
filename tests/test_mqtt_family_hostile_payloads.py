@@ -13,18 +13,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from ori.hal.base import AdapterReadError
+from ori.hal.base import (
+    AdapterReadError,
+    MeasurementRefusedError,
+    refuse_unusable_reading,
+)
 from ori.hal.lorawan_adapter import LoraWanAdapter
 from ori.hal.mqtt_adapter import MqttAdapter
 from ori.hal.mqtt_perception_adapter import MqttPerceptionAdapter
 from ori.hal.victron_adapter import VictronAdapter
 from ori.hal.zigbee_adapter import ZigbeeAdapter
+from ori.network.events import SensorReading
 from tests.test_lorawan_adapter import _config as lorawan_config
 from tests.test_mqtt_adapter import _config as mqtt_config
 from tests.test_mqtt_adapter import _FakeClient
@@ -189,6 +195,54 @@ async def test_a_hostile_payload_is_refused_and_the_next_one_is_read(
             await adapter.close()
 
 
+NOT_JSON_NUMBERS = ["NaN", "Infinity", "-Infinity", "1e400"]
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "config", "sensor_id", "valid", "value", "wrap"), ADAPTERS
+)
+async def test_a_number_json_does_not_have_never_replaces_the_cached_value(
+    adapter_type: type,
+    config: dict[str, Any],
+    sensor_id: str,
+    valid: Any,
+    value: float,
+    wrap: Any,
+) -> None:
+    """Python's json reads NaN, Infinity and 1e400; none of them is JSON."""
+    available, module = _patched()
+    with available, module:
+        adapter, client, topic = await _connected(adapter_type, config)
+        try:
+            await _delivered(client, topic, valid)
+            for token in NOT_JSON_NUMBERS:
+                await _delivered(client, topic, wrap(token).encode())
+            reading = await adapter.read(sensor_id)
+            assert reading.value == pytest.approx(value)
+        finally:
+            await adapter.close()
+
+
+@pytest.mark.parametrize("token", NOT_JSON_NUMBERS)
+async def test_a_perception_timestamp_json_does_not_have_is_refused(token: str) -> None:
+    """A cached non-finite timestamp made every read raise until the next message."""
+    available, module = _patched()
+    with available, module:
+        config = perception_config()
+        adapter, client, topic = await _connected(MqttPerceptionAdapter, config)
+        try:
+            body = (
+                '{"schema": "ori.perception.v1", "sensor_type": '
+                '"ppe_hardhat_violation_score", "value": 0.5, "confidence": 0.9, '
+                '"timestamp_ms": ' + token + "}"
+            )
+            await _delivered(client, topic, body.encode())
+            with pytest.raises(AdapterReadError, match="no perception message"):
+                await adapter.read("ppe-hardhat-cam-01")
+        finally:
+            await adapter.close()
+
+
 async def test_an_unexpected_handler_error_does_not_end_the_listener() -> None:
     """A payload no parser anticipated is skipped like any refused one."""
     available, module = _patched()
@@ -252,7 +306,13 @@ async def test_a_stopped_listener_makes_the_sensor_silent(
             assert listener is not None and listener.done(), (
                 "the listener survived its stream"
             )
-            with pytest.raises(AdapterReadError, match="listener is not running"):
+            threshold = adapter._breaker.failure_threshold
+            for _ in range(threshold):
+                with pytest.raises(AdapterReadError, match="listener is not running"):
+                    await adapter.read(sensor_id)
+            # The refusal counts against the breaker, so a dead listener opens
+            # it like any other failing sensor.
+            with pytest.raises(AdapterReadError, match="circuit breaker OPEN"):
                 await adapter.read(sensor_id)
         finally:
             await adapter.close()
@@ -264,9 +324,12 @@ async def test_a_stopped_listener_makes_the_sensor_silent(
         pytest.param("[" + "9" * 5000 + "]", id="integer-past-the-digit-limit"),
         pytest.param("[" * 20000, id="nesting-past-the-recursion-limit"),
         pytest.param("{", id="truncated"),
+        pytest.param('{"value": NaN}', id="nan"),
+        pytest.param('{"value": -Infinity}', id="infinity"),
+        pytest.param('{"value": 1e400}', id="float-overflowing-to-infinity"),
     ],
 )
-def test_the_shared_loader_refuses_what_json_refuses(text: str) -> None:
+def test_the_shared_loader_refuses_what_is_not_json(text: str) -> None:
     from ori.hal.mqtt_base import load_json_payload
 
     with pytest.raises(AdapterReadError, match="not valid JSON"):
@@ -278,3 +341,50 @@ def test_a_value_float_cannot_hold_is_refused() -> None:
 
     with pytest.raises(AdapterReadError, match="not numeric"):
         MqttCachedAdapter.parse_numeric_payload('{"value": ' + "9" * 400 + "}")
+
+
+@pytest.mark.parametrize("text", ["nan", "inf", "-Infinity", "1e400"])
+def test_a_plain_text_value_that_is_not_finite_is_refused(text: str) -> None:
+    from ori.hal.mqtt_base import MqttCachedAdapter
+
+    with pytest.raises(AdapterReadError, match="not finite"):
+        MqttCachedAdapter.parse_numeric_payload(text)
+
+
+def _reading(**overrides: Any) -> SensorReading:
+    fields: dict[str, Any] = {
+        "sensor_id": "chiller-temp-01",
+        "sensor_type": "temperature",
+        "value": 27.4,
+        "unit": "celsius",
+        "timestamp": 1_710_000_000_123,
+        "quality": 0.9,
+    }
+    fields.update(overrides)
+    return SensorReading(**fields)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"value": math.nan}, id="nan-value"),
+        pytest.param({"value": math.inf}, id="infinite-value"),
+        pytest.param({"value": True}, id="boolean-value"),
+        pytest.param({"value": "27.4"}, id="string-value"),
+        pytest.param({"timestamp": 2**63}, id="timestamp-past-sqlite-integer"),
+        pytest.param({"timestamp": -1}, id="negative-timestamp"),
+        pytest.param({"timestamp": 1.5}, id="float-timestamp"),
+        pytest.param({"quality": math.nan}, id="nan-quality"),
+        pytest.param({"quality": 1.5}, id="quality-above-one"),
+    ],
+)
+def test_an_unusable_reading_is_refused_as_a_measurement(
+    overrides: dict[str, Any],
+) -> None:
+    with pytest.raises(MeasurementRefusedError):
+        refuse_unusable_reading(_reading(**overrides))
+
+
+def test_a_usable_reading_passes() -> None:
+    refuse_unusable_reading(_reading())
+    refuse_unusable_reading(_reading(value=0, timestamp=2**63 - 1, quality=1.0))

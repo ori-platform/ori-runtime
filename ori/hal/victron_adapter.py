@@ -73,7 +73,6 @@ class VictronAdapter(MqttCachedAdapter):
             raise AdapterReadError(
                 "VictronAdapter: not connected — call connect() first"
             )
-        self._require_listener()
         if self._breaker is None:
             raise AdapterReadError("VictronAdapter: circuit breaker is not initialized")
 
@@ -81,6 +80,7 @@ class VictronAdapter(MqttCachedAdapter):
         _suffix, unit = _SENSOR_MAP[self._sensor_type]
 
         async with self._breaker:
+            self._require_listener()
             cached = self._cache.get(topic)
             if cached is None:
                 raise AdapterReadError(

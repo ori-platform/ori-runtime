@@ -4,6 +4,7 @@
 import asyncio
 import enum
 import logging
+import math
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
@@ -36,6 +37,42 @@ class MeasurementRefusedError(AdapterReadError):
     tracking and the operator alert that depend on it, while every arithmetic
     test stays green.
     """
+
+
+# The largest value an SQLite INTEGER column holds; history timestamps are one.
+_SQLITE_INT_MAX = 2**63 - 1
+
+
+def refuse_unusable_reading(reading: Any) -> None:
+    """Refuse a reading that cannot be stored, compared or evaluated.
+
+    A non-finite value compares false against every threshold, and a timestamp
+    outside the store's integer range cannot be persisted. Either arrives from
+    one message a sensor passes through, so it is refused as a measurement
+    rather than counted as a live reading that then fails before evaluation.
+    """
+    value = reading.value
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise MeasurementRefusedError(f"reading value {value!r} is not a number")
+    if not math.isfinite(value):
+        raise MeasurementRefusedError(f"reading value {value!r} is not finite")
+    timestamp = reading.timestamp
+    if (
+        isinstance(timestamp, bool)
+        or not isinstance(timestamp, int)
+        or not 0 <= timestamp <= _SQLITE_INT_MAX
+    ):
+        raise MeasurementRefusedError(
+            f"reading timestamp {timestamp!r} is out of range"
+        )
+    quality = reading.quality
+    if (
+        isinstance(quality, bool)
+        or not isinstance(quality, (int, float))
+        or not math.isfinite(quality)
+        or not 0.0 <= quality <= 1.0
+    ):
+        raise MeasurementRefusedError(f"reading quality {quality!r} is not in 0..1")
 
 
 class CircuitState(enum.Enum):

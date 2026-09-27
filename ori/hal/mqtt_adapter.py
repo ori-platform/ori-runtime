@@ -134,11 +134,11 @@ class MqttAdapter(MqttCachedAdapter):
         self._ensure_aiomqtt_available()
         if not self._connected:
             raise AdapterReadError("MqttAdapter: not connected — call connect() first")
-        self._require_listener()
         if self._breaker is None:
             raise AdapterReadError("MqttAdapter: circuit breaker is not initialized")
 
         async with self._breaker:
+            self._require_listener()
             cached = self._cache.get(self._topic)
             if cached is None:
                 raise AdapterReadError("MqttAdapter: no MQTT data cached yet")
