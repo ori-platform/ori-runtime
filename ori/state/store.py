@@ -1066,126 +1066,6 @@ def require_supported_sqlite() -> None:
     )
 
 
-#: How long `evidence commission` waits for the store's write lock before
-#: reporting a lock failure rather than writing unserialised.
-REFERENCE_LOCK_TIMEOUT_S = 3.0
-
-
-class CommissioningReferenceError(RuntimeError):
-    """A commissioning reference was not recorded; `code` says why."""
-
-    def __init__(self, code: str, detail: str) -> None:
-        super().__init__(detail)
-        self.code = code
-        self.detail = detail
-
-
-def record_evidence_commissioning_reference(
-    db_path: str | Path,
-    *,
-    device_id: str,
-    anchor_epoch_id: str,
-    commissioning_reference: str,
-    force: bool,
-    recorded_at_ms: int,
-    lock_timeout_s: float = REFERENCE_LOCK_TIMEOUT_S,
-) -> bool:
-    """Record the reference for one epoch in an existing store; True if replaced.
-
-    Opens the file read-write without creating it and applies no DDL: this is
-    reached from an installer's tool, and a store older than the table is
-    reported rather than migrated. The read, the decision and the write are
-    one `BEGIN IMMEDIATE` transaction, so two invocations serialise on the
-    store's own lock and a crash leaves either the previous row or the new one.
-    """
-    path = Path(db_path)
-    conn = sqlite3.connect(
-        f"{path.resolve().as_uri()}?mode=rw",
-        uri=True,
-        timeout=lock_timeout_s,
-        isolation_level=None,
-    )
-    try:
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-        except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc) and "busy" not in str(exc):
-                raise
-            raise CommissioningReferenceError(
-                "state_store_locked",
-                f"the state store's write lock was not granted within "
-                f"{lock_timeout_s:.0f}s ({exc}); nothing was recorded",
-            ) from exc
-        try:
-            table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-                ("evidence_commissioning_reference",),
-            ).fetchone()
-            if table is None:
-                raise CommissioningReferenceError(
-                    "state_migration_required",
-                    "the state store predates the commissioning reference; start "
-                    "the runtime under this release to migrate it. Nothing was "
-                    "recorded.",
-                )
-            row = conn.execute(
-                """
-                SELECT device_id, commissioning_reference
-                  FROM evidence_commissioning_reference
-                 WHERE anchor_epoch_id = ?
-                """,
-                (anchor_epoch_id,),
-            ).fetchone()
-            replaced = False
-            if row is None:
-                conn.execute(
-                    """
-                    INSERT INTO evidence_commissioning_reference (
-                        anchor_epoch_id, device_id, commissioning_reference,
-                        recorded_at_ms
-                    ) VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        anchor_epoch_id,
-                        device_id,
-                        commissioning_reference,
-                        recorded_at_ms,
-                    ),
-                )
-            elif str(row[0]) != device_id:
-                raise CommissioningReferenceError(
-                    "reference_device_mismatch",
-                    "this epoch's recorded reference names another device; "
-                    "nothing was recorded",
-                )
-            elif str(row[1]) == commissioning_reference:
-                pass
-            elif not force:
-                raise CommissioningReferenceError(
-                    "reference_already_recorded",
-                    "a different commissioning reference is already recorded for "
-                    "this epoch; pass --force to replace it",
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE evidence_commissioning_reference
-                       SET commissioning_reference = ?, recorded_at_ms = ?,
-                           replacements = replacements + 1
-                     WHERE anchor_epoch_id = ?
-                    """,
-                    (commissioning_reference, recorded_at_ms, anchor_epoch_id),
-                )
-                replaced = True
-            conn.execute("COMMIT")
-        except BaseException:
-            conn.execute("ROLLBACK")
-            raise
-        return replaced
-    finally:
-        conn.close()
-
-
 def _stored_reading(row: sqlite3.Row) -> StoredReading:
     return StoredReading(
         sensor_id=row["sensor_id"],
@@ -6919,6 +6799,94 @@ class StateStore:
             ),
         )
         self._conn.commit()
+
+    async def record_evidence_commissioning_reference(
+        self,
+        *,
+        device_id: str,
+        anchor_epoch_id: str,
+        commissioning_reference: str,
+        force: bool,
+        recorded_at_ms: int,
+    ) -> dict[str, Any]:
+        """Record the reference for one epoch, durably before the answer.
+
+        Returns ``{"ok": True, "replaced": bool}`` or ``{"ok": False, "error":
+        code}`` with `reference_device_mismatch` or `reference_already_recorded`.
+        The read, the decision and the write are one `BEGIN IMMEDIATE`
+        transaction; a failure raises and records nothing.
+        """
+        return await self._run_write(
+            self._record_evidence_commissioning_reference_sync,
+            str(device_id),
+            str(anchor_epoch_id),
+            str(commissioning_reference),
+            bool(force),
+            int(recorded_at_ms),
+        )
+
+    def _record_evidence_commissioning_reference_sync(
+        self,
+        device_id: str,
+        anchor_epoch_id: str,
+        commissioning_reference: str,
+        force: bool,
+        recorded_at_ms: int,
+    ) -> dict[str, Any]:
+        conn = self._conn
+        if conn is None:
+            raise sqlite3.ProgrammingError("the state store is not open")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT device_id, commissioning_reference
+                  FROM evidence_commissioning_reference
+                 WHERE anchor_epoch_id = ?
+                """,
+                (anchor_epoch_id,),
+            ).fetchone()
+            replaced = False
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO evidence_commissioning_reference (
+                        anchor_epoch_id, device_id, commissioning_reference,
+                        recorded_at_ms
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        anchor_epoch_id,
+                        device_id,
+                        commissioning_reference,
+                        recorded_at_ms,
+                    ),
+                )
+            elif str(row[0]) != device_id:
+                conn.rollback()
+                return {"ok": False, "error": "reference_device_mismatch"}
+            elif str(row[1]) == commissioning_reference:
+                pass
+            elif not force:
+                conn.rollback()
+                return {"ok": False, "error": "reference_already_recorded"}
+            else:
+                conn.execute(
+                    """
+                    UPDATE evidence_commissioning_reference
+                       SET commissioning_reference = ?, recorded_at_ms = ?,
+                           replacements = replacements + 1
+                     WHERE anchor_epoch_id = ?
+                    """,
+                    (commissioning_reference, recorded_at_ms, anchor_epoch_id),
+                )
+                replaced = True
+            conn.commit()
+            return {"ok": True, "replaced": replaced}
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
 
     async def get_evidence_commissioning_reference(
         self, *, device_id: str, anchor_epoch_id: str

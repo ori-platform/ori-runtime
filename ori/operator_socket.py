@@ -4,9 +4,10 @@
 """The authenticated local operator socket (operator-socket/v1).
 
 A person at the device reaches the running runtime here, and only here, to
-record what they observed of an uncertain Tier C dispatch. The caller is
-established from the kernel's peer credentials and nothing else; the request
-is one JSON object whose members are closed; the answer is the runtime's.
+record the commissioning reference for its evidence epoch and what they
+observed of an uncertain Tier C dispatch. The caller is established from the
+kernel's peer credentials and nothing else; the request is one JSON object
+whose members are closed; the answer is the runtime's.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from ori.runtime_health_socket import (
     _socket_has_a_listener,
     _socket_identity,
 )
+from ori.security.evidence.registration import is_digest
 from ori.utils.path_utils import shown
 
 logger = logging.getLogger(__name__)
@@ -47,6 +49,7 @@ COMMISSION_OPERATION: Final = "evidence_commission"
 RECONCILE_MEMBERS: Final = frozenset(
     {"operation", "proposal_id", "device_id", "zone_id", "outcome", "reason", "note"}
 )
+COMMISSION_MEMBERS: Final = frozenset({"operation", "reference", "force"})
 RECONCILE_OUTCOMES: Final = ("executed", "not-executed")
 NOTE_MAX_BYTES: Final = 280
 ENTRY_POINT: Final = "local_operator_socket"
@@ -70,6 +73,20 @@ RECONCILE_ERRORS: Final = frozenset(
         "zone_mismatch",
         "already_reconciled",
         "not_uncertain",
+        "runtime_store_unavailable",
+        "state_store_locked",
+        "cancelled",
+    }
+)
+#: The same, for `evidence_commission`.
+COMMISSION_ERRORS: Final = frozenset(
+    {
+        "invalid_arguments",
+        "invalid_reference",
+        "unauthenticated",
+        "evidence_epoch_unavailable",
+        "reference_device_mismatch",
+        "reference_already_recorded",
         "runtime_store_unavailable",
         "state_store_locked",
         "cancelled",
@@ -109,6 +126,12 @@ class ReconcileRequest:
             "reason": self.reason,
             "note": self.note,
         }
+
+
+@dataclass(frozen=True)
+class CommissionRequest:
+    reference: str
+    force: bool
 
 
 @dataclass(frozen=True)
@@ -163,29 +186,57 @@ def validate_note(note: str) -> None:
         ) from exc
 
 
-def validate_reconcile_request(request: Mapping[str, Any]) -> ReconcileRequest:
-    """The request's closed members and sets, decided before any state is read."""
-    operation = request.get("operation")
-    if operation == COMMISSION_OPERATION:
+def validate_request(
+    request: Mapping[str, Any],
+) -> ReconcileRequest | CommissionRequest:
+    """Either operation's request, decided before any state is read."""
+    if request.get("operation") == COMMISSION_OPERATION:
+        return validate_commission_request(request)
+    return validate_reconcile_request(request)
+
+
+def _require_members(request: Mapping[str, Any], expected: frozenset[str]) -> None:
+    members = set(request)
+    if members == expected:
+        return
+    missing = sorted(expected - members)
+    if missing:
         raise OperatorRequestError(
-            "invalid_arguments", "this runtime does not serve evidence_commission here"
+            "invalid_arguments", "missing request member: " + ", ".join(missing)
         )
-    if operation != RECONCILE_OPERATION:
+    # Counted, never named: an unaccepted member may carry what must not echo.
+    raise OperatorRequestError(
+        "invalid_arguments",
+        f"{len(members - expected)} request member(s) this operation does not accept",
+    )
+
+
+def validate_commission_request(request: Mapping[str, Any]) -> CommissionRequest:
+    """Members, then the reference's form: `invalid_arguments` before `invalid_reference`."""
+    if request.get("operation") != COMMISSION_OPERATION:
         raise OperatorRequestError(
             "invalid_arguments", "the request names no operation this socket serves"
         )
-    members = set(request)
-    if members != RECONCILE_MEMBERS:
-        missing = sorted(RECONCILE_MEMBERS - members)
-        if missing:
-            raise OperatorRequestError(
-                "invalid_arguments", "missing request member: " + ", ".join(missing)
-            )
+    _require_members(request, COMMISSION_MEMBERS)
+    if not isinstance(request["force"], bool):
+        raise OperatorRequestError("invalid_arguments", "force must be true or false")
+    reference = request["reference"]
+    if not isinstance(reference, str) or not is_digest(reference):
         raise OperatorRequestError(
-            "invalid_arguments",
-            f"{len(members - RECONCILE_MEMBERS)} request member(s) this operation "
-            "does not accept",
+            "invalid_reference",
+            "the commissioning reference must be exactly sha256: followed by 64 "
+            "lowercase hexadecimal characters",
         )
+    return CommissionRequest(reference=reference, force=request["force"])
+
+
+def validate_reconcile_request(request: Mapping[str, Any]) -> ReconcileRequest:
+    """The request's closed members and sets, decided before any state is read."""
+    if request.get("operation") != RECONCILE_OPERATION:
+        raise OperatorRequestError(
+            "invalid_arguments", "the request names no operation this socket serves"
+        )
+    _require_members(request, RECONCILE_MEMBERS)
     for name in ("proposal_id", "device_id", "zone_id"):
         value = request[name]
         if not isinstance(value, str) or not value:
@@ -563,16 +614,20 @@ def grant_access(directory: Path, socket_path: Path, operator_uid: int | None) -
 Reconciler = Callable[
     [ReconcileRequest, PeerCredentials, str | None], Awaitable[Mapping[str, Any]]
 ]
+Commissioner = Callable[
+    [CommissionRequest, PeerCredentials, str | None], Awaitable[Mapping[str, Any]]
+]
 
 
 class OperatorSocketServer:
-    """Serve `reconcile_tier_c` to root and the installed operator identity."""
+    """Serve both operations to root and the installed operator identity."""
 
     def __init__(
         self,
         *,
         directory: Path,
         reconcile: Reconciler,
+        commission: Commissioner,
         operator_uid: Callable[[], int | None],
         peer_credentials: Callable[[Any], PeerCredentials | None] = peer_credentials,
         grant: Callable[[Path, Path, int | None], None] = grant_access,
@@ -581,6 +636,7 @@ class OperatorSocketServer:
         self._directory = directory
         self._path = directory / SOCKET_NAME
         self._reconcile = reconcile
+        self._commission = commission
         self._operator_uid = operator_uid
         self._peer_credentials = peer_credentials
         self._grant = grant
@@ -697,7 +753,7 @@ class OperatorSocketServer:
         if len(raw) > MAX_REQUEST_BYTES:
             return _error("invalid_arguments", "the request exceeds its bound")
         try:
-            request = validate_reconcile_request(parse_request(raw))
+            request = validate_request(parse_request(raw))
         except OperatorRequestError as exc:
             return _error(exc.code, exc.detail)
 
@@ -718,7 +774,11 @@ class OperatorSocketServer:
         # append never begins after close() has stopped waiting for them.
         if self._closing:
             return _error("cancelled", "the runtime is stopping; nothing was recorded")
-        append = asyncio.ensure_future(self._reconcile(request, peer, account))
+        append = asyncio.ensure_future(
+            self._reconcile(request, peer, account)
+            if isinstance(request, ReconcileRequest)
+            else self._commission(request, peer, account)
+        )
         self._appends.add(append)
         append.add_done_callback(self._appends.discard)
         try:
@@ -732,7 +792,39 @@ class OperatorSocketServer:
             return _store_unavailable(exc)
         except (sqlite3.Error, OSError) as exc:
             return _store_unavailable(exc)
+        if isinstance(request, CommissionRequest):
+            return self._commissioned(peer, answer)
         return self._reconciled(request, peer, answer)
+
+    def _commissioned(
+        self, peer: PeerCredentials, answer: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        if not answer.get("ok"):
+            code = str(answer.get("error", ""))
+            if code not in COMMISSION_ERRORS:
+                raise RuntimeError(f"the runtime answered an unknown refusal {code!r}")
+            logger.info(
+                "[operator-socket] commissioning reference from uid %s refused: %s",
+                peer.uid,
+                code,
+            )
+            return _error(code, "nothing was recorded")
+        result = {
+            "device_id": str(answer["device_id"]),
+            "anchor_epoch_id": str(answer["anchor_epoch_id"]),
+            "commissioning_reference": str(answer["commissioning_reference"]),
+            "replaced": bool(answer["replaced"]),
+            "registration_status": str(answer["registration_status"]),
+        }
+        logger.warning(
+            "[operator-socket] commissioning reference %s for epoch %s by uid %s "
+            "(login %s)",
+            "replaced" if result["replaced"] else "recorded",
+            result["anchor_epoch_id"],
+            peer.uid,
+            peer.login_uid,
+        )
+        return {"schema_version": 1, "ok": True, "result": result}
 
     def _reconciled(
         self,
@@ -802,7 +894,7 @@ def _locked(exc: sqlite3.OperationalError) -> bool:
 
 
 def _store_unavailable(exc: BaseException) -> dict[str, Any]:
-    logger.error("[operator-socket] the state store cannot serve a reconcile: %s", exc)
+    logger.error("[operator-socket] the state store cannot serve a request: %s", exc)
     return _error(
         "runtime_store_unavailable", "the state store cannot serve this request"
     )

@@ -39,6 +39,8 @@ from ori.config import (
 from ori.gateway.mqtt_security import parse_gateway_broker_endpoint
 from ori.network.events import StoredReading
 from ori.operator_socket import (
+    COMMISSION_ERRORS,
+    COMMISSION_OPERATION,
     RECONCILE_ERRORS,
     SOCKET_NAME,
     SYSTEM_RUNTIME_DIRECTORY,
@@ -46,6 +48,7 @@ from ori.operator_socket import (
     install_root_for_prefix,
     parse_request,
     peer_credentials,
+    validate_commission_request,
     validate_reconcile_request,
 )
 from ori.security.commissioning.anchors import (
@@ -74,25 +77,13 @@ from ori.security.commissioning.profiles import (
     ProfileSetError,
     load_shipped_profile_set,
 )
-from ori.security.evidence.anchor import AnchorDerivationError, derive_runtime_anchor
-from ori.security.evidence.ledger import read_current_anchor
-from ori.security.evidence.registration import (
-    DELIVERY_EPOCH_STOPPED,
-    DELIVERY_IDENTITY_STOPPED,
-    DELIVERY_STATUS_FIELD,
-    RegistrationStatus,
-    is_digest,
-)
 from ori.skills.loader import Skill, SkillLoader, SkillValidationError
 from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
 from ori.state.store import (
-    CommissioningReferenceError,
     HistoryReceiptMigrationRequiredError,
     StateStore,
-    record_evidence_commissioning_reference,
 )
 from ori.utils.bool_utils import is_truthy
-from ori.utils.time_utils import now_ms
 
 _SCHEMA_VERSION = 1
 _DEFAULT_HEALTH_TIMEOUT_MS = 3000
@@ -1335,17 +1326,17 @@ async def _commissioning_proof_export(config_path: str) -> dict[str, Any]:
         await store.close()
 
 
-_COMMISSION_OPTIONS = ("--path", "--reference", "--socket")
+_COMMISSION_OPTIONS = ("--reference", "--socket")
 _COMMISSION_FLAGS = ("--force",)
 _OPTION_NAME = re.compile(r"--[a-z][a-z0-9-]{0,31}")
 
 
-def _commission_arguments(args: list[str]) -> tuple[str, str, str, bool]:
-    """`--path`, `--reference`, `--socket` and `--force`, and nothing else.
+def _commission_arguments(args: list[str]) -> tuple[dict[str, Any], str | None]:
+    """The request and `--socket`; anything else is refused by name alone.
 
-    Anything more is refused by name alone, never echoed with its value: an
-    unrecognised argument may be exactly the endpoint or credential this
-    command must not accept.
+    Never echoed with its value: an unrecognised argument may be exactly the
+    endpoint or credential this command must not accept. The reference's form
+    is decided after every argument, before anything is connected to.
     """
     command = "evidence commission"
     values: dict[str, str] = {}
@@ -1377,17 +1368,20 @@ def _commission_arguments(args: list[str]) -> tuple[str, str, str, bool]:
             continue
         raise BridgeError(
             "invalid_arguments",
-            f"{command} does not accept {_argument_label(token)}; nothing was recorded",
+            f"{command} does not accept {_argument_label(token)}; nothing was submitted",
         )
-    for required in ("--path", "--reference"):
-        if required not in values:
-            raise BridgeError("invalid_arguments", f"{command} requires {required}")
-    return (
-        values["--path"],
-        values["--reference"],
-        values.get("--socket", _DEFAULT_HEALTH_SOCKET),
-        force,
-    )
+    if "--reference" not in values:
+        raise BridgeError("invalid_arguments", f"{command} requires --reference")
+    request: dict[str, Any] = {
+        "operation": COMMISSION_OPERATION,
+        "reference": values["--reference"],
+        "force": force,
+    }
+    try:
+        validate_commission_request(request)
+    except OperatorRequestError as exc:
+        raise BridgeError(exc.code, f"{exc.detail}; nothing was submitted") from None
+    return request, values.get("--socket")
 
 
 def _argument_label(token: str) -> str:
@@ -1400,192 +1394,23 @@ def _argument_label(token: str) -> str:
     return "a positional argument"
 
 
-def _commission_health_evidence(
-    response: dict[str, Any], device_id: str
-) -> dict[str, Any]:
-    """The `evidence` object of a success snapshot from this device, epoch checked."""
-    health = response.get("health")
-    if response.get("ok") is not True or not isinstance(health, dict):
-        raise BridgeError(
-            "health_unavailable",
-            "the runtime health socket did not return a success snapshot; "
-            "nothing was recorded",
-        )
-    if health.get("device_id") != device_id:
-        raise BridgeError(
-            "health_device_mismatch",
-            "the runtime answering on this socket is not the device this "
-            "configuration declares; nothing was recorded",
-        )
-    evidence = health.get("evidence")
-    if (
-        not isinstance(evidence, dict)
-        or evidence.get("enabled") is not True
-        or evidence.get("available") is not True
-    ):
-        raise BridgeError(
-            "evidence_epoch_unavailable",
-            "the runtime reports no available evidence signing, so it holds no "
-            "evidence epoch to record a reference against; nothing was recorded",
-        )
-    if not is_digest(evidence.get("anchor_epoch_id")):
-        raise BridgeError(
-            "evidence_epoch_unavailable",
-            "the runtime reports no well-formed anchor_epoch_id; nothing was recorded",
-        )
-    try:
-        RegistrationStatus(str(evidence.get("registration_status")))
-    except ValueError:
-        raise BridgeError(
-            "health_unavailable",
-            "the runtime reports no registration status this bridge recognises, "
-            "so the status it will report cannot be stated; nothing was recorded",
-        ) from None
-    return evidence
-
-
-def _status_after_recording(evidence: dict[str, Any]) -> RegistrationStatus:
-    """The registration status the runtime reports once a reference is held.
-
-    Holding a reference leads to `pending_confirmation` unless the snapshot
-    shows it cannot: a confirmed epoch stays confirmed, and an epoch or
-    identity stop means no registration is sealed under any reference, so the
-    status stays what the runtime reports. An attempt a terminal disposition
-    closed is already `pending_confirmation`, reported closed through the
-    offer rather than the status, and recording the same reference again does
-    not reopen it.
-    """
-    # Validated before anything was written, so this cannot fail here.
-    current = RegistrationStatus(str(evidence.get("registration_status")))
-    if current is RegistrationStatus.CONFIRMED:
-        return current
-    if evidence.get(DELIVERY_STATUS_FIELD) in (
-        DELIVERY_EPOCH_STOPPED,
-        DELIVERY_IDENTITY_STOPPED,
-    ):
-        return current
-    return RegistrationStatus.PENDING_CONFIRMATION
-
-
-def _bind_epoch_to_installation(config: Config, evidence: dict[str, Any]) -> None:
-    """The epoch the socket reported is the one this installation's files hold.
-
-    Whatever answers on `--socket` is only a claim. The configured evidence
-    store records the anchor its runtime seals under, and the epoch is derived
-    again here from that record and this configuration's device, so a socket
-    that is not this installation's runtime cannot choose the epoch a
-    reference is recorded against. A store that cannot be read refuses the
-    command.
-    """
-    try:
-        recorded = read_current_anchor(config.evidence.db_path)
-    except sqlite3.DatabaseError as exc:
-        raise BridgeError(
-            "evidence_epoch_unbound",
-            f"this installation's evidence store cannot be read ({exc}); "
-            "nothing was recorded",
-        ) from None
-    if recorded is None:
-        raise BridgeError(
-            "evidence_epoch_unbound",
-            "this installation's evidence store records no anchor; the runtime "
-            "records it when it opens its evidence. Nothing was recorded.",
-        )
-    device_id = str(config.device.id)
-    try:
-        derived = derive_runtime_anchor(
-            device_id=device_id,
-            pubkey_hex=str(recorded["pubkey_hex"]),
-            posture=str(recorded["posture"]),
-        )
-    except (AnchorDerivationError, ValueError):
-        derived = None
-    if (
-        derived is None
-        or str(recorded["device_id"]) != device_id
-        or str(recorded["anchor_epoch_id"]) != derived.anchor_epoch_id
-        or str(recorded["key_id"]) != derived.key_id
-        or evidence.get("anchor_epoch_id") != derived.anchor_epoch_id
-        or evidence.get("public_key_hex") != derived.pubkey_hex
-    ):
-        raise BridgeError(
-            "evidence_epoch_unbound",
-            "the epoch reported on the health socket is not the one this "
-            "installation's evidence store holds; nothing was recorded",
-        )
-
-
-def _require_live_store(path: Path) -> None:
-    """The store exists and the running runtime holds it open.
-
-    A missing store is refused rather than created, and one with no write-ahead
-    log is not open by a runtime: writing it would create the log files owned
-    by whoever ran this, which the service account might then not open.
-    """
-    if not _store_present(path):
-        raise BridgeError(
-            "state_store_unavailable",
-            f"no state store at {path}; the runtime creates it when it first "
-            "starts. Nothing was recorded.",
-        )
-    if not Path(f"{path}-wal").is_file():
-        raise BridgeError(
-            "state_store_unavailable",
-            f"the state store at {path} is not held open by a running runtime; "
-            "nothing was recorded",
-        )
-
-
 async def _evidence_commission(args: list[str]) -> dict[str, Any]:
-    """Record the commissioning reference for this device's current evidence epoch."""
-    config_path, reference, socket_path, force = _commission_arguments(args)
-    if not is_digest(reference):
-        raise BridgeError(
-            "invalid_reference",
-            "the commissioning reference must be exactly sha256: followed by 64 "
-            "lowercase hexadecimal characters; nothing was recorded",
-        )
-    config = Config.load(config_path)
-    device_id = str(config.device.id)
-    if not config.evidence.enabled:
-        raise BridgeError(
-            "evidence_epoch_unavailable",
-            "this installation does not enable evidence, so it has no evidence "
-            "epoch to record a reference against; nothing was recorded",
-        )
-    evidence = _commission_health_evidence(
-        await _read_health_snapshot(socket_path, _DEFAULT_HEALTH_TIMEOUT_MS), device_id
+    """Submit the commissioning reference to the running runtime.
+
+    The runtime records it against its own device and current evidence epoch.
+    The bridge opens no store, reads no configuration and no health snapshot,
+    and relays the runtime's answer from a peer it verified.
+    """
+    request, explicit_socket = _commission_arguments(args)
+    raw = await _submit_to_operator(
+        request,
+        explicit_socket,
+        unestablished=(
+            "whether the reference was recorded is not established; submitting "
+            "the same reference again records nothing new and reports the epoch"
+        ),
     )
-    epoch = str(evidence["anchor_epoch_id"])
-    await asyncio.to_thread(_bind_epoch_to_installation, config, evidence)
-    db_path = Path(config.database_path)
-    _require_live_store(db_path)
-    try:
-        replaced = await asyncio.to_thread(
-            record_evidence_commissioning_reference,
-            db_path,
-            device_id=device_id,
-            anchor_epoch_id=epoch,
-            commissioning_reference=reference,
-            force=force,
-            recorded_at_ms=now_ms(),
-        )
-    except CommissioningReferenceError as exc:
-        raise BridgeError(exc.code, exc.detail) from None
-    except sqlite3.DatabaseError as exc:
-        raise BridgeError(
-            "state_store_unavailable",
-            f"the state store could not record the reference ({exc}); "
-            "nothing was recorded",
-        ) from None
-    status = _status_after_recording(evidence)
-    return {
-        "device_id": device_id,
-        "anchor_epoch_id": epoch,
-        "commissioning_reference": reference,
-        "replaced": replaced,
-        "registration_status": status.value,
-    }
+    return _relayed_answer(raw, COMMISSION_ERRORS, "a commissioning answer")
 
 
 _RECONCILE_OPTIONS = {
@@ -1697,6 +1522,21 @@ async def _evidence_reconcile_tier_c(args: list[str]) -> dict[str, Any]:
     and relays the runtime's answer.
     """
     request, explicit_socket = _reconcile_arguments(args)
+    raw = await _submit_to_operator(
+        request,
+        explicit_socket,
+        unestablished=(
+            "whether a reconciliation was recorded is not established, and an "
+            "identical repeat answers already_recorded if it was"
+        ),
+    )
+    return _relayed_answer(raw, RECONCILE_ERRORS, "a reconciliation answer")
+
+
+async def _submit_to_operator(
+    request: dict[str, Any], explicit_socket: str | None, *, unestablished: str
+) -> bytes:
+    """Send one request to a peer verified as the runtime; its answer line."""
     default_socket, service_uid = _operator_install()
     socket_path = explicit_socket or str(default_socket)
     unavailable = "no running runtime answered on the operator socket"
@@ -1728,8 +1568,7 @@ async def _evidence_reconcile_tier_c(args: list[str]) -> dict[str, Any]:
         raise BridgeError(
             "runtime_unavailable",
             f"the connection ended before the runtime answered ({type(exc).__name__}); "
-            "whether a reconciliation was recorded is not established, and an "
-            "identical repeat answers already_recorded if it was",
+            + unestablished,
         ) from None
     finally:
         writer.close()
@@ -1740,14 +1579,14 @@ async def _evidence_reconcile_tier_c(args: list[str]) -> dict[str, Any]:
     if not raw.endswith(b"\n"):
         raise BridgeError(
             "runtime_unavailable",
-            "the connection ended before the runtime answered; whether a "
-            "reconciliation was recorded is not established, and an identical "
-            "repeat answers already_recorded if it was",
+            "the connection ended before the runtime answered; " + unestablished,
         )
-    return _relayed_reconcile_answer(raw)
+    return raw
 
 
-def _relayed_reconcile_answer(raw: bytes) -> dict[str, Any]:
+def _relayed_answer(
+    raw: bytes, refusals: frozenset[str], expected: str
+) -> dict[str, Any]:
     try:
         answer = parse_request(raw)
     except OperatorRequestError:
@@ -1758,11 +1597,9 @@ def _relayed_reconcile_answer(raw: bytes) -> dict[str, Any]:
     error = answer.get("error")
     code = error.get("code") if isinstance(error, dict) else None
     detail = error.get("detail") if isinstance(error, dict) else None
-    if answer.get("ok") is False and code in RECONCILE_ERRORS:
+    if answer.get("ok") is False and code in refusals:
         raise BridgeError(str(code), str(detail or "nothing was recorded"))
-    raise RuntimeError(
-        f"the runtime answered {code!r}, which is not a reconciliation answer"
-    )
+    raise RuntimeError(f"the runtime answered {code!r}, which is not {expected}")
 
 
 def _declared_gpio_pin(config: Config) -> int | None:

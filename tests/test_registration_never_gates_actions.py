@@ -46,7 +46,7 @@ from ori.security.evidence.registration import (
     DELIVERY_STATUS_FIELD,
 )
 from ori.state import store as state_store_module
-from ori.state.store import StateStore, record_evidence_commissioning_reference
+from ori.state.store import StateStore
 
 DEVICE = "dev-01"
 REFERENCE = "sha256:" + "ab" * 32
@@ -150,8 +150,7 @@ async def _commission(
 ) -> None:
     """Record the reference the way the command does, and reconcile from the store."""
     assert attestor.anchor is not None
-    record_evidence_commissioning_reference(
-        db_path,
+    await store.record_evidence_commissioning_reference(
         device_id=DEVICE,
         anchor_epoch_id=attestor.anchor.anchor_epoch_id,
         commissioning_reference=REFERENCE,
@@ -472,7 +471,6 @@ _REVIEWED_COLLISIONS = {"start", "_open_sync"}
 
 #: Modules that exist to hold or carry registration state, named whole.
 _READERS = {
-    "cli_bridge.py",
     "gateway/evidence_inbound.py",
     "gateway/evidence_outbound.py",
     *_REGISTRATION_MODULES,
@@ -484,6 +482,7 @@ _READERS = {
 _SCOPED_READERS: dict[str, set[str]] = {
     "runtime.py": {
         "_evidence_health",
+        "_commission_from_operator",
         "_evidence_registration_loop",
         "_reconcile_evidence_registration",
         "_evidence_checkpoint_loop",
@@ -494,7 +493,13 @@ _SCOPED_READERS: dict[str, set[str]] = {
         "get_evidence_commissioning_reference",
         "_get_evidence_commissioning_reference_sync",
         "record_evidence_commissioning_reference",
+        "_record_evidence_commissioning_reference_sync",
         "<assign:EVIDENCE_REFERENCE_DDL>",
+    },
+    "operator_socket.py": {
+        "validate_commission_request",
+        "_commissioned",
+        "<import>",
     },
 }
 

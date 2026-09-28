@@ -91,11 +91,16 @@ class Recorder:
         )
 
 
+async def _no_commission(*_args: Any) -> Any:
+    raise AssertionError("a reconciliation request reached the commission handler")
+
+
 @contextlib.asynccontextmanager
 async def serving(
     directory: Path, recorder: Recorder, **kwargs: Any
 ) -> AsyncIterator[OperatorSocketServer]:
     kwargs.setdefault("operator_uid", os.geteuid)
+    kwargs.setdefault("commission", _no_commission)
     kwargs.setdefault("grant", lambda _d, _s, _u: None)
     server = OperatorSocketServer(
         directory=directory / "run", reconcile=recorder, **kwargs
@@ -460,6 +465,7 @@ async def test_an_append_begun_completes_when_the_socket_closes(
     server = OperatorSocketServer(
         directory=short_dir / "run",
         reconcile=Recorder(slow),
+        commission=_no_commission,
         operator_uid=os.geteuid,
         grant=lambda _d, _s, _u: None,
     )
@@ -529,6 +535,7 @@ async def test_a_held_append_lands_before_the_store_closes(
     server = OperatorSocketServer(
         directory=short_dir / "run",
         reconcile=reconcile,
+        commission=_no_commission,
         operator_uid=os.geteuid,
         grant=lambda _d, _s, _u: None,
     )
@@ -564,6 +571,7 @@ async def test_the_socket_and_directory_grant_no_group_or_world_access(
     server = OperatorSocketServer(
         directory=short_dir / "run",
         reconcile=Recorder(),
+        commission=_no_commission,
         operator_uid=lambda: None,
     )
     await server.start()
@@ -582,6 +590,7 @@ async def test_a_grant_that_fails_leaves_no_socket(short_dir: Path) -> None:
     server = OperatorSocketServer(
         directory=short_dir / "run",
         reconcile=Recorder(),
+        commission=_no_commission,
         operator_uid=lambda: 1001,
         grant=refuse,
     )
@@ -597,7 +606,10 @@ async def test_an_operator_identity_without_access_control_lists_binds_nothing(
     short_dir: Path,
 ) -> None:
     server = OperatorSocketServer(
-        directory=short_dir / "run", reconcile=Recorder(), operator_uid=lambda: 1001
+        directory=short_dir / "run",
+        reconcile=Recorder(),
+        commission=_no_commission,
+        operator_uid=lambda: 1001,
     )
     with pytest.raises(AccessGrantError):
         await server.start()
@@ -609,6 +621,7 @@ async def test_a_live_listener_is_never_displaced(short_dir: Path) -> None:
         second = OperatorSocketServer(
             directory=short_dir / "run",
             reconcile=Recorder(),
+            commission=_no_commission,
             operator_uid=lambda: None,
             grant=lambda _d, _s, _u: None,
         )
@@ -633,6 +646,7 @@ async def test_a_stale_socket_is_replaced_and_a_file_is_refused(
     server = OperatorSocketServer(
         directory=run,
         reconcile=Recorder(),
+        commission=_no_commission,
         operator_uid=lambda: None,
         grant=lambda _d, _s, _u: None,
     )
@@ -743,7 +757,10 @@ async def test_a_runtime_directory_another_user_owns_is_refused(
     run.mkdir(mode=0o700)
     os.chown(run, 12345, 12345)
     server = OperatorSocketServer(
-        directory=run, reconcile=Recorder(), operator_uid=lambda: None
+        directory=run,
+        reconcile=Recorder(),
+        commission=_no_commission,
+        operator_uid=lambda: None,
     )
     with pytest.raises(RuntimeError, match="this runtime owns"):
         await server.start()

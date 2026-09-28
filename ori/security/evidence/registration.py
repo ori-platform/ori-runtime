@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import re
+from collections.abc import Mapping
 from enum import Enum
 from typing import Any
 
@@ -107,6 +108,27 @@ class RegistrationError(RuntimeError):
 def is_digest(value: object) -> bool:
     """Whether *value* is exactly `sha256:` plus 64 lowercase hex."""
     return isinstance(value, str) and DIGEST_PATTERN.match(value) is not None
+
+
+def status_after_recording(registration: Mapping[str, Any]) -> RegistrationStatus:
+    """The status the runtime reports once a reference is recorded.
+
+    *registration* is the health it reported before. Holding a reference leads
+    to `pending_confirmation` unless that shows it cannot: a confirmed epoch
+    stays confirmed, and under an epoch or identity stop no registration is
+    sealed under any reference, so the status stays what it was. An attempt a
+    terminal disposition closed is already `pending_confirmation`, reported
+    closed through the offer, and recording its reference again reopens nothing.
+    """
+    current = RegistrationStatus(str(registration.get("registration_status")))
+    if current is RegistrationStatus.CONFIRMED:
+        return current
+    if registration.get(DELIVERY_STATUS_FIELD) in (
+        DELIVERY_EPOCH_STOPPED,
+        DELIVERY_IDENTITY_STOPPED,
+    ):
+        return current
+    return RegistrationStatus.PENDING_CONFIRMATION
 
 
 def reoffer_due(offers: int, last_offer_ms: int, *, at_ms: int) -> bool:

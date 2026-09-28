@@ -111,6 +111,7 @@ from ori.network.events import (
 )
 from ori.network.sms_webhook import SMSWebhookServer
 from ori.operator_socket import (
+    CommissionRequest,
     OperatorSocketServer,
     PeerCredentials,
     ReconcileRequest,
@@ -177,6 +178,7 @@ from ori.security.evidence.registration import (
     RECONCILE_INTERVAL_S,
     RegistrationOffer,
     RegistrationStatus,
+    status_after_recording,
 )
 from ori.security.firmware.confirmation import (
     CONFIRMED as _FIRMWARE_CONFIRMED,
@@ -2912,7 +2914,8 @@ class OriRuntime:
 
         Only the service unit provides one. A development runtime run in the
         foreground has none and says so; a staging or production runtime
-        without one has lost its only reconciliation surface, which is CRITICAL.
+        without one has lost its only reconciliation and commissioning-reference
+        surface, which is CRITICAL.
         """
         directory = runtime_directory()
         if directory is None:
@@ -2931,6 +2934,7 @@ class OriRuntime:
         server = OperatorSocketServer(
             directory=directory,
             reconcile=self._reconcile_from_operator,
+            commission=self._commission_from_operator,
             operator_uid=lambda: read_operator_uid(
                 install_root, service_uid=service_uid
             ),
@@ -2968,6 +2972,46 @@ class OriRuntime:
             principal_account=account,
             principal_login_uid=peer.login_uid,
         )
+
+    async def _commission_from_operator(
+        self, request: CommissionRequest, peer: PeerCredentials, account: str | None
+    ) -> dict[str, Any]:
+        """Record the reference against this runtime's own device and epoch.
+
+        The status is the one the runtime reports once the next reconciliation
+        reads the record, stated from the registration it reports now.
+        """
+        attestor = self._evidence_attestor
+        anchor = (
+            attestor.anchor if attestor is not None and attestor.available else None
+        )
+        if attestor is None or anchor is None:
+            return {"ok": False, "error": "evidence_epoch_unavailable"}
+        registration = await attestor.registration_health(now_ms())
+        if registration is None:
+            return {"ok": False, "error": "evidence_epoch_unavailable"}
+        # Decided before the record, so nothing can fail after it is durable.
+        status = status_after_recording(registration)
+        store = self._state_store
+        if store is None:
+            return {"ok": False, "error": "runtime_store_unavailable"}
+        answer = await store.record_evidence_commissioning_reference(
+            device_id=anchor.device_id,
+            anchor_epoch_id=anchor.anchor_epoch_id,
+            commissioning_reference=request.reference,
+            force=request.force,
+            recorded_at_ms=now_ms(),
+        )
+        if not answer.get("ok"):
+            return answer
+        return {
+            "ok": True,
+            "device_id": anchor.device_id,
+            "anchor_epoch_id": anchor.anchor_epoch_id,
+            "commissioning_reference": request.reference,
+            "replaced": bool(answer["replaced"]),
+            "registration_status": status.value,
+        }
 
     async def _start_firmware_mqtt_operator_if_enabled(
         self,
@@ -3095,8 +3139,8 @@ class OriRuntime:
     ) -> None:
         """Reconcile the anchor registration with the recorded reference, forever.
 
-        Reads the reference at startup and every interval, so one recorded by
-        `evidence commission` while the runtime runs is sealed without a
+        Reads the reference at startup and every interval, so one recorded
+        over the operator socket while the runtime runs is sealed without a
         restart. The cadence is release-owned.
         """
         while not self._shutdown_event.is_set():

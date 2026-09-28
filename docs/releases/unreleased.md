@@ -139,10 +139,10 @@ candidate or release is cut.
   abandoned, dropped and refused since start, and the counts queued and
   retained now — so a phone dropping readings or sitting on a backlog is
   visible to whoever receives the reports rather than only in its own logs.
-- The authenticated operator socket (`ori-specs/operator-socket/v1`, Tier C
-  reconciliation only). The runtime binds `operator.sock` in the runtime
-  directory the service unit provides, granting no group or world access, and
-  serves `reconcile_tier_c` to root and the installed operator identity,
+- The authenticated operator socket (`ori-specs/operator-socket/v1`). The
+  runtime binds `operator.sock` in the runtime directory the service unit
+  provides, granting no group or world access, and serves `reconcile_tier_c`
+  and `evidence_commission` to root and the installed operator identity,
   established from the kernel's peer credentials alone; the audit login user
   ID is recorded only for a peer pinned by `SO_PEERPIDFD`. The installed
   identity is read from `operator-uid` at the install root only when the file,
@@ -155,23 +155,26 @@ candidate or release is cut.
   success, and an append once begun completes before the runtime closes its
   store. A socket that cannot be bound or granted is CRITICAL and leaves
   nothing behind; without `RUNTIME_DIRECTORY` nothing is bound, a warning in
-  development and CRITICAL in staging and production. `evidence commission`
-  over the socket is not in this release.
+  development and CRITICAL in staging and production.
 - The runtime produces, delivers and confirms its own evidence anchor
-  registration (`ori-specs/evidence-exchange/v2`). `evidence commission`
-  records the commissioning reference at the device against the epoch the
-  running runtime reports on its health socket, once that epoch is shown to be
-  the one the configured evidence store holds, refusing a malformed reference
-  before touching anything, a missing epoch, a store the runtime does not hold
-  open, and a different reference for the same epoch without `--force`. The
-  command implements the mechanism that predates the operator socket: the
-  bridge reads the configuration document and the health socket and records
-  the reference in the state store itself, with its own refusal codes. The
-  socket-served command `operator-socket/v1` specifies, whose bridge opens no
-  store, is still open: the operator socket below serves reconciliation only,
-  and answers `evidence_commission` as an argument it does not accept. The
-  runtime seals a registration under the recorded reference and keeps a
-  durable confirmation obligation holding its exact bytes: a courier `queued`
+  registration (`ori-specs/evidence-exchange/v2`). `evidence commission
+  --reference <sha256:hex> [--force] [--socket <path>]` submits the
+  commissioning reference to the running runtime over its operator socket,
+  with the peer verification of `evidence reconcile-tier-c`; the bridge reads
+  no configuration document and no health snapshot, opens no store and
+  creates no file. It refuses a bad argument, then a malformed reference,
+  before it connects. The runtime decides `invalid_arguments`,
+  `invalid_reference` and `unauthenticated` again in that order before reading
+  anything, then records the reference through its own state-store writer
+  against its own device and current anchor epoch, durably before it answers:
+  `evidence_epoch_unavailable` when evidence is not enabled, did not start or
+  cannot state its registration, `reference_device_mismatch` when the epoch's
+  recorded reference names another device, and `reference_already_recorded`
+  for a different reference without `--force`, with `runtime_store_unavailable`,
+  `state_store_locked` and `cancelled` as operational outcomes. The socket is
+  the only path by which a reference is recorded. The runtime seals a
+  registration under the recorded reference and keeps a durable confirmation
+  obligation holding its exact bytes: a courier `queued`
   retires only the handoff copy, and the obligation re-offers the identical
   bytes under the release-owned schedule, across restarts, until a verified
   epoch confirmation for that epoch completes it: the first re-offer 60
@@ -255,10 +258,9 @@ candidate or release is cut.
   that are not JSON are never read as JSON, so no row can take the courier
   route down. A disposition for a registration already confirmed or closed,
   or a stop already in force, is refused `superseded`. `evidence commission`
-  reports the status the runtime will actually hold after the reference is
-  recorded: `confirmed`, the current status under a stop, and otherwise
-  `pending_confirmation`; a snapshot naming no recognised status refuses the
-  command rather than guessing. Health reports, per `runtime-health/v3`,
+  reports the status the runtime will hold once it reads the recorded
+  reference: `confirmed`, the current status under a stop, and otherwise
+  `pending_confirmation`. Health reports, per `runtime-health/v3`,
   `anchor_epoch_id`, `registration_status` (`disabled`,
   `pending_authorisation`, `pending_confirmation` or `confirmed`; an attempt a
   terminal disposition closed stays `pending_confirmation`, keeps its pending
@@ -300,12 +302,11 @@ candidate or release is cut.
   confirmation without a sealed registration reports `pending_authorisation`
   here, while the firmware confirmation coordinator still reads that epoch as
   active from the table the earlier release wrote. `evidence commission`
-  records the reference in a short `BEGIN IMMEDIATE` transaction on the live
-  state store, bounded by a 3-second lock wait; while it holds the lock, and
-  for as long as a stalled command held it, the runtime's own state-store
-  writes wait up to the store's busy timeout. Action executors do not wait on
-  it; the writes that do are records, such as the action log and the
-  offline-token audit. Opening a store written by the previous release is
+  is recorded by the runtime in one short `BEGIN IMMEDIATE` transaction on its
+  own store connection under the store's write lock, so other runtime record
+  writes queue behind it for that transaction, including its wait of up to the
+  store's busy timeout for a lock another process holds. Action executors do
+  not wait on it. Opening a store written by the previous release is
   tested for the evidence ledger against the schema v2.5.0-rc.11 shipped,
   vendored as a fixture; the state-store half of that test simulates the
   older store by dropping the new reference table rather than vendoring the

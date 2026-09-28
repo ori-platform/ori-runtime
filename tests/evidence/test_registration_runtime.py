@@ -3,15 +3,17 @@
 
 """A started runtime registers itself: the command records, the runtime seals.
 
-The runtime is started for real, serves its own health socket and holds its
-own store; `evidence commission` runs as a subprocess against both; the
-runtime's reconciliation loop seals the registration without a restart; and a
-second start reports the same pending-since time.
+The runtime is started for real, binds its own operator socket and holds its
+own store; `evidence commission` runs as a subprocess of an installation whose
+service identity is this process and submits over that socket; the runtime's
+reconciliation loop seals the registration without a restart; and a second
+start reports the same pending-since time.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 import shutil
@@ -24,7 +26,10 @@ from typing import Any
 
 import pytest
 
+from ori import operator_socket as op
+from ori.operator_socket import OperatorSocketServer
 from ori.runtime import OriRuntime
+from tests.test_evidence_commission import run_installed_bridge
 
 REPO = Path(__file__).resolve().parent.parent.parent
 DEVICE = "bench-01"
@@ -74,7 +79,11 @@ async def _started(config: Path) -> tuple[OriRuntime, asyncio.Task[None]]:
     while time.monotonic() < deadline:
         if task.done():
             raise AssertionError(f"the runtime did not start: {task.exception()!r}")
-        if (config.parent / "h.sock").exists() and runtime._evidence_attestor:
+        if (
+            (config.parent / "h.sock").exists()
+            and runtime._evidence_attestor
+            and runtime._operator_socket_server is not None
+        ):
             return runtime, task
         await asyncio.sleep(0.05)
     raise AssertionError("the runtime never served health")
@@ -102,6 +111,16 @@ def root(monkeypatch):
     path = Path(tempfile.mkdtemp(prefix="ori-rr-", dir="/tmp"))
     monkeypatch.setenv(SECRET_ENV, "install-secret-for-runtime-registration")
     monkeypatch.setattr("ori.runtime.RECONCILE_INTERVAL_S", 0.1)
+    monkeypatch.setenv("RUNTIME_DIRECTORY", str(path / "run"))
+    # This process is the installed operator. Access-control lists are
+    # Linux's, and granting is the operator socket tests' concern.
+    monkeypatch.setattr(
+        "ori.runtime.read_operator_uid", lambda _root, *, service_uid: os.geteuid()
+    )
+    monkeypatch.setattr(
+        "ori.runtime.OperatorSocketServer",
+        functools.partial(OperatorSocketServer, grant=lambda _d, _s, _u: None),
+    )
     try:
         yield path
     finally:
@@ -115,28 +134,17 @@ async def test_a_started_runtime_registers_itself_and_the_state_survives_restart
         before = await _until_status(runtime, "pending_authorisation")
         assert before["anchor_epoch_id"].startswith("sha256:")
 
-        env = {k: v for k, v in os.environ.items() if k != SECRET_ENV}
-        env["PYTHONPATH"] = str(REPO)
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "ori.cli_bridge",
+        run = await run_installed_bridge(
+            root / "run" / op.SOCKET_NAME,
+            root,
             "evidence",
             "commission",
-            "--path",
-            str(config),
             "--reference",
             REFERENCE,
-            "--socket",
-            str(root / "h.sock"),
-            cwd=str(root),
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
         )
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
-        assert proc.returncode == 0, (out, err)
-        result = json.loads(out)["result"]
+        assert run.rc == 0, run.payload
+        assert run.touched("sqlite3.connect") == [] and run.touched("open") == []
+        result = run.payload["result"]
         assert result["anchor_epoch_id"] == before["anchor_epoch_id"]
         assert result["registration_status"] == "pending_confirmation"
 
@@ -144,6 +152,8 @@ async def test_a_started_runtime_registers_itself_and_the_state_survives_restart
         # bridge's read limit rather than assumed to fit.
         from ori.cli_bridge import _HEALTH_REPLY_LIMIT_BYTES
 
+        env = {k: v for k, v in os.environ.items() if k != SECRET_ENV}
+        env["PYTHONPATH"] = str(REPO)
         probe = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",

@@ -255,6 +255,7 @@ class SocketTransport:
         server = _Server(
             directory=directory,
             reconcile=reconcile,
+            commission=runtime._commission_from_operator,
             operator_uid=lambda: operator_uid,
             peer_credentials=lambda _sock: peer,
             grant=lambda _d, _s, _u: None,
