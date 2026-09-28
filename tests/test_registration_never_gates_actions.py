@@ -233,6 +233,7 @@ def _arm(attestor: FirstPartyEvidenceAttestor) -> None:
         raise AssertionError("the dispatch path consulted registration state")
 
     attestor.registration_health = consulted  # type: ignore[method-assign]
+    attestor.read_registration_health = consulted  # type: ignore[method-assign]
     attestor.reconcile_registration = consulted  # type: ignore[method-assign]
 
 

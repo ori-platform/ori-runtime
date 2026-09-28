@@ -172,6 +172,7 @@ from ori.security.evidence.first_party import (
     AUTHORITY_UNAVAILABLE_REASON,
     AuthorityUnavailableError,
     FirstPartyEvidenceAttestor,
+    RegistrationUnreadableError,
 )
 from ori.security.evidence.ledger import DEFAULT_CHECKPOINT_INTERVAL_S
 from ori.security.evidence.registration import (
@@ -2987,7 +2988,14 @@ class OriRuntime:
         )
         if attestor is None or anchor is None:
             return {"ok": False, "error": "evidence_epoch_unavailable"}
-        registration = await attestor.registration_health(now_ms())
+        try:
+            registration = await attestor.read_registration_health(now_ms())
+        except RegistrationUnreadableError as exc:
+            logger.warning(
+                "[runtime] commissioning refused: registration state unreadable (%s)",
+                exc,
+            )
+            return {"ok": False, "error": "runtime_store_unavailable"}
         if registration is None:
             return {"ok": False, "error": "evidence_epoch_unavailable"}
         # Decided before the record, so nothing can fail after it is durable.

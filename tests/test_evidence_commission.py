@@ -158,13 +158,13 @@ class Site:
                 device_id=DEVICE,
             )
             assert await self.attestor.start() is True
-            read = self.attestor.registration_health
+            read = self.attestor.read_registration_health
 
             async def counted(at_ms: int) -> dict[str, Any] | None:
                 self.health_reads.append(at_ms)
                 return await read(at_ms)
 
-            self.attestor.registration_health = counted  # type: ignore[method-assign]
+            self.attestor.read_registration_health = counted  # type: ignore[method-assign]
             runtime._evidence_attestor = self.attestor
         self.runtime = runtime
         await self.serve()
@@ -189,14 +189,14 @@ class Site:
     def override_registration(self, **fields: Any) -> None:
         """The attestor's own registration health, with *fields* changed."""
         assert self.attestor is not None
-        read = self.attestor.registration_health
+        read = self.attestor.read_registration_health
 
         async def provide(at_ms: int) -> dict[str, Any] | None:
             health = await read(at_ms)
             assert health is not None
             return {**health, **fields}
 
-        self.attestor.registration_health = provide  # type: ignore[method-assign]
+        self.attestor.read_registration_health = provide  # type: ignore[method-assign]
 
     async def stop(self) -> None:
         if self.server is not None:
@@ -658,16 +658,50 @@ async def test_evidence_that_did_not_start_has_no_epoch(site):
     assert site.references() == []
 
 
-async def test_registration_that_cannot_be_read_records_nothing(site):
+async def test_no_registration_state_is_no_epoch(site):
     await site.start_runtime()
     assert site.attestor is not None
 
-    async def unreadable(_at_ms: int) -> None:
+    async def absent(_at_ms: int) -> None:
         return None
 
-    site.attestor.registration_health = unreadable  # type: ignore[method-assign]
+    site.attestor.read_registration_health = absent  # type: ignore[method-assign]
     _refused(await site.bridge(*_commission()), "evidence_epoch_unavailable")
     assert site.references() == []
+
+
+async def test_signing_that_is_not_available_has_no_epoch_and_reads_nothing(site):
+    """Decided on availability alone, whatever the ledger would still answer."""
+    await site.start_runtime()
+    assert site.attestor is not None and site.attestor.anchor is not None
+    chain = site.attestor._chain
+    site.attestor._chain = None
+    try:
+        _refused(await site.bridge(*_commission()), "evidence_epoch_unavailable")
+    finally:
+        site.attestor._chain = chain
+    assert site.health_reads == []
+    assert site.references() == []
+
+
+async def test_registration_that_cannot_be_read_is_store_unavailable(site):
+    """A failed read of the evidence store is not the absence of an epoch."""
+    await site.start_runtime()
+    assert site.attestor is not None
+    conn = sqlite3.connect(str(site.root / "evidence.db"))
+    try:
+        conn.execute(
+            "ALTER TABLE evidence_registration_obligation RENAME TO unreadable"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _refused(await site.bridge(*_commission()), "runtime_store_unavailable")
+    assert len(site.health_reads) == 1
+    assert site.references() == []
+    # Health still omits what it cannot read rather than failing.
+    assert await site.attestor.registration_health(0) is None
 
 
 async def test_a_status_the_runtime_cannot_state_records_nothing(site):
@@ -887,6 +921,85 @@ async def test_a_recorded_reference_stays_bound_to_its_epoch(site, statement):
     try:
         with pytest.raises(sqlite3.DatabaseError):
             conn.execute(statement)
+    finally:
+        conn.close()
+
+
+async def _record(store: StateStore, **changes: Any) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "device_id": DEVICE,
+        "anchor_epoch_id": "sha256:" + "e" * 64,
+        "commissioning_reference": REFERENCE,
+        "force": False,
+        "recorded_at_ms": 1,
+    }
+    fields.update(changes)
+    return await store.record_evidence_commissioning_reference(**fields)
+
+
+@pytest.mark.parametrize(
+    "refused,code",
+    [
+        ({"commissioning_reference": OTHER_REFERENCE}, "reference_already_recorded"),
+        ({"device_id": "another-device"}, "reference_device_mismatch"),
+    ],
+    ids=["already-recorded", "device-mismatch"],
+)
+async def test_a_refusal_leaves_the_store_able_to_record(tmp_path, refused, code):
+    """A refusal ends its transaction; nothing it began is left open or held."""
+    store = StateStore(str(tmp_path / "state.db"))
+    await store.open()
+    try:
+        assert (await _record(store))["ok"] is True
+        assert await _record(store, **refused) == {"ok": False, "error": code}
+        assert await _record(
+            store, commissioning_reference=OTHER_REFERENCE, force=True
+        ) == {"ok": True, "replaced": True}
+    finally:
+        await store.close()
+
+
+async def test_the_record_holds_the_write_lock_from_its_read(tmp_path):
+    """A write committed between the record's read and its write never lands in it.
+
+    Under WAL a deferred transaction reads a snapshot, and its write then fails
+    with SQLITE_BUSY_SNAPSHOT once another writer has committed; taking the
+    write lock at BEGIN refuses that writer instead.
+    """
+    db = tmp_path / "state.db"
+    store = StateStore(str(db))
+    await store.open()
+    other = sqlite3.connect(
+        str(db), isolation_level=None, timeout=0, check_same_thread=False
+    )
+    other.execute("CREATE TABLE interloper (n INTEGER)")
+    interloper: list[str] = []
+
+    def between_read_and_write(statement: str) -> None:
+        if statement.lstrip().startswith(
+            "INSERT INTO evidence_commissioning_reference"
+        ):
+            try:
+                other.execute("INSERT INTO interloper VALUES (1)")
+                interloper.append("committed")
+            except sqlite3.OperationalError as exc:
+                interloper.append(str(exc))
+
+    assert store._conn is not None
+    store._conn.set_trace_callback(between_read_and_write)
+    try:
+        assert await _record(store) == {"ok": True, "replaced": False}
+    finally:
+        store._conn.set_trace_callback(None)
+        other.close()
+        await store.close()
+    assert interloper == ["database is locked"]
+    conn = sqlite3.connect(str(db))
+    try:
+        assert conn.execute(
+            "SELECT commissioning_reference FROM evidence_commissioning_reference"
+        ).fetchall() == [(REFERENCE,)]
+        assert conn.execute("SELECT COUNT(*) FROM interloper").fetchone() == (0,)
     finally:
         conn.close()
 
