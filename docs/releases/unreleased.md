@@ -151,7 +151,8 @@ candidate or release is cut.
   alone. `evidence reconcile-tier-c` in the bridge refuses a bad argument
   before connecting, verifies the socket's peer as the runtime service identity
   of its installation before sending anything, never opens the state store,
-  and relays the runtime's answer; the record is appended and durable before
+  and relays the runtime's answer, a success only when it names the proposal,
+  device and zone submitted; the record is appended and durable before
   success, and an append once begun completes before the runtime closes its
   store. A socket that cannot be bound or granted is CRITICAL and leaves
   nothing behind; without `RUNTIME_DIRECTORY` nothing is bound, a warning in
@@ -167,12 +168,16 @@ candidate or release is cut.
   `invalid_reference` and `unauthenticated` again in that order before reading
   anything, then records the reference through its own state-store writer
   against its own device and current anchor epoch, durably before it answers:
-  `evidence_epoch_unavailable` when evidence is not enabled, did not start or
-  cannot state its registration, `reference_device_mismatch` when the epoch's
-  recorded reference names another device, and `reference_already_recorded`
-  for a different reference without `--force`, with `runtime_store_unavailable`,
-  `state_store_locked` and `cancelled` as operational outcomes. The socket is
-  the only path by which a reference is recorded. The runtime seals a
+  `evidence_epoch_unavailable` when evidence is not enabled, signing is not
+  available or there is no current anchor epoch, `reference_device_mismatch`
+  when the epoch's recorded reference names another device, and
+  `reference_already_recorded` for a different reference without `--force`,
+  with `runtime_store_unavailable` (including a registration that cannot be
+  read), `state_store_locked` and `cancelled` as operational outcomes. The
+  bridge relays a success only when it carries exactly the contract's five
+  fields for the submitted reference; anything else is exit 1,
+  `internal_error`. The socket is the only path by which a reference is
+  recorded. The runtime seals a
   registration under the recorded reference and keeps a durable confirmation
   obligation holding its exact bytes: a courier `queued`
   retires only the handoff copy, and the obligation re-offers the identical
@@ -507,6 +512,13 @@ candidate or release is cut.
 
 ## Fixed
 
+- A request carrying a JSON integer longer than the interpreter's
+  string-conversion limit is refused as malformed by the firmware MQTT
+  operator socket (`invalid_request`) and the operator socket
+  (`invalid_arguments`), and a health reply carrying one is
+  `health_socket_invalid_json` at the bridge; each was answered as an internal
+  fault. The firmware operator socket refuses nesting past the recursion limit
+  the same way.
 - A physical Tier C action on a commissioned zone is proposed and admitted
   under `tier-c-approval/v1`. The proposal is a store row committed before the
   operator is asked, bound to the zone, the commissioned binding's digest and
