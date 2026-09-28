@@ -270,6 +270,46 @@ def test_cli_bridge_health_snapshot_preserves_device_policy_caps(monkeypatch, ca
     )
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        b'{"ok": true, "n": ' + b"9" * 5000 + b"}\n",
+        b"[" * 12000 + b"]" * 12000 + b"\n",
+        b'{"ok": \xff}\n',
+    ],
+    ids=[
+        "an integer past the digit limit",
+        "nesting past the recursion limit",
+        "invalid utf-8",
+    ],
+)
+async def test_a_health_reply_that_is_not_json_is_refused_as_invalid_json(reply):
+    import tempfile
+
+    directory = Path(tempfile.mkdtemp(prefix="ori-hs-", dir="/tmp"))
+    path = directory / "health.sock"
+
+    async def answer(reader, writer):
+        await reader.readline()
+        writer.write(reply)
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_unix_server(answer, path=str(path))
+    try:
+        rc, payload = await asyncio.to_thread(
+            cli_bridge.run_bridge, ["health", "snapshot", "--socket", str(path)]
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+        path.unlink(missing_ok=True)
+        directory.rmdir()
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "health_socket_invalid_json", payload
+    assert rc == 2
+
+
 def test_cli_bridge_state_action_log_reads_runtime_store(tmp_path, monkeypatch, capsys):
     config_path = _relative_store_config(tmp_path / "data")
     asyncio.run(_seed_state_store(tmp_path / "data" / "ori_state.db"))

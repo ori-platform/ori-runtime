@@ -318,6 +318,10 @@ HOSTILE: list[tuple[str, bytes]] = [
     ("an array", b"[1,2]\n"),
     ("a string", b'"reconcile_tier_c"\n'),
     ("nesting past the recursion limit", b"[" * 4000 + b"]" * 4000 + b"\n"),
+    (
+        "an integer past the digit limit",
+        request()[:-2] + b', "n": ' + b"9" * 5000 + b"}\n",
+    ),
     ("invalid utf-8", b'{"operation":"\xff"}\n'),
     ("a NUL in the note", request(note="a\x00b")),
     (

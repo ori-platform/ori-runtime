@@ -393,6 +393,53 @@ async def test_operator_socket_rejects_unauthorized_peer() -> None:
         await server.close()
 
 
+@pytest.mark.parametrize(
+    "raw,detail",
+    [
+        (
+            json.dumps(_request("create_csr")).encode()[:-1]
+            + b', "n": '
+            + b"9" * 5000
+            + b"}\n",
+            "request must be one JSON object",
+        ),
+        (b"[" * 16000 + b"]" * 16000 + b"\n", "request must be one JSON object"),
+        (b'{"operation":"a","operation":"b"}\n', "duplicate JSON field"),
+    ],
+    ids=[
+        "an integer past the digit limit",
+        "nesting past the recursion limit",
+        "a duplicate member",
+    ],
+)
+async def test_operator_socket_refuses_hostile_json_as_invalid_request(
+    raw: bytes, detail: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    controller = _CapturingController()
+    socket_path = f"/tmp/ori-op-{os.getpid()}-{id(controller)}.sock"
+    server = FirmwareMqttOperatorServer(
+        socket_path=socket_path,
+        mode=0o600,
+        allowed_uids={501},
+        controller=controller,  # type: ignore[arg-type]
+        peer_uid_provider=lambda _: 501,
+    )
+    await server.start()
+    try:
+        reader, writer = await asyncio.open_unix_connection(socket_path)
+        writer.write(raw)
+        await writer.drain()
+        response = json.loads(await reader.readline())
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await server.close()
+    assert response["ok"] is False
+    assert response["error"] == {"code": "invalid_request", "detail": detail}
+    assert controller.actor == ""
+    assert "request failed" not in caplog.text
+
+
 def stat_mode(path: str) -> int:
     return os.stat(path).st_mode & 0o777
 

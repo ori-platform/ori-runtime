@@ -158,7 +158,9 @@ def parse_request(raw: bytes) -> dict[str, Any]:
 
     try:
         value = json.loads(raw.decode("utf-8"), object_pairs_hook=refuse_duplicates)
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+    except (ValueError, RecursionError) as exc:
+        # ValueError covers invalid UTF-8, malformed JSON and an integer past
+        # the conversion limit; RecursionError, nesting past the recursion limit.
         raise OperatorRequestError(
             "invalid_arguments", "the request must be one JSON object"
         ) from exc

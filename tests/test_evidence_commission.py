@@ -788,6 +788,16 @@ HOSTILE: list[tuple[str, bytes, str]] = [
         "invalid_arguments",
     ),
     ("reconcile members", _request(proposal_id="AB12CD34"), "invalid_arguments"),
+    (
+        "force as an integer past the digit limit",
+        _request().replace(b'"force": false', b'"force": ' + b"9" * 5000),
+        "invalid_arguments",
+    ),
+    (
+        "an extra member past the digit limit",
+        _request()[:-2] + b', "n": ' + b"9" * 5000 + b"}\n",
+        "invalid_arguments",
+    ),
     ("a reference as an integer", _request(reference=7), "invalid_reference"),
     ("a reference null", _request(reference=None), "invalid_reference"),
     ("a reference as a list", _request(reference=[REFERENCE]), "invalid_reference"),

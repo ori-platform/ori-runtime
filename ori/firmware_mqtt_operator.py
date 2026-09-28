@@ -579,7 +579,11 @@ def _strict_request(raw: bytes) -> dict[str, Any]:
 
     try:
         value = json.loads(raw, object_pairs_hook=reject_duplicates)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except FirmwareMqttOperatorError:
+        raise
+    except (ValueError, RecursionError) as exc:
+        # Not UTF-8 JSON, an integer past the conversion limit, or nesting past
+        # the recursion limit.
         raise FirmwareMqttOperatorError(
             "invalid_request",
             "request must be one JSON object",

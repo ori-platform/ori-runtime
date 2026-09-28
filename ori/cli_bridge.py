@@ -788,7 +788,7 @@ async def _read_health_snapshot(socket_path: str, timeout_ms: int) -> dict[str, 
 
     try:
         response = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+    except (ValueError, RecursionError) as exc:
         raise BridgeError(
             "health_socket_invalid_json",
             "health socket returned invalid JSON",
