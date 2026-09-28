@@ -4422,6 +4422,10 @@ class OriRuntime:
             self._reconcile_measurement(sensor_id, clear=False)
             return
         if sensor_id in self._measurement_disk_recovered:
+            if sensor_id in self._measurement_reconciling:
+                # A restore is in flight and will put the degraded row back;
+                # its landing queues the clear this completed run is owed.
+                return
             # The disk already says recovered, and now memory agrees.
             self._measurement_disk_recovered.discard(sensor_id)
             self._finish_measurement_recovery(sensor_id, streak)
@@ -4464,6 +4468,13 @@ class OriRuntime:
             )
             self._measurement_reconciling.discard(sensor_id)
             self._measurement_disk_recovered.discard(sensor_id)
+            completed = self._measurement_valid_streak.get(sensor_id, 0)
+            if (
+                sensor_id in self._measurement_degraded
+                and completed >= MEASUREMENT_WINDOWS_TO_RECOVER
+            ):
+                # The run completed while the row was being restored.
+                self._reconcile_measurement(sensor_id, clear=True, streak=completed)
 
         def lost() -> None:
             self._measurement_reconciling.discard(sensor_id)

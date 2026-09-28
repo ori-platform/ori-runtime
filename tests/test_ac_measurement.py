@@ -1418,6 +1418,8 @@ class _RecoveryStore:
     def __init__(self, *, fail_first: bool = False, fail_restore: int = 0) -> None:
         self.release = asyncio.Event()
         self.release.set()
+        self.restore_release = asyncio.Event()
+        self.restore_release.set()
         self.clears = 0
         self.degraded: list[tuple[str, bool]] = []
         self.on_disk: set[str] = set()
@@ -1434,6 +1436,8 @@ class _RecoveryStore:
 
     async def set_measurement_degraded(self, sensor_id: str, *, notified: bool) -> None:
         self.degraded.append((sensor_id, notified))
+        if self.clears:
+            await self.restore_release.wait()
         # Only a restore follows a clear; the initial degradation never fails.
         if self._fail_restore and self.clears:
             self._fail_restore -= 1
@@ -1601,3 +1605,41 @@ async def test_shutdown_settles_measurement_writes_as_unknown_or_lost(
         "grid-voltage",
     }
     await reopened.close()
+
+
+async def test_a_run_completed_during_a_restore_is_cleared_after_it_lands() -> None:
+    """The restore puts the degraded row back; the completed run then clears it.
+
+    Clearing memory while the restore was still in flight would leave the
+    sensor healthy in memory and degraded on disk once the restore landed.
+    """
+    from ori.runtime import MEASUREMENT_WINDOWS_TO_RECOVER
+
+    store = _RecoveryStore()
+    harness = await _degraded_harness(store)
+    store.on_disk.add("load-current")
+    store.release.clear()
+    for _ in range(MEASUREMENT_WINDOWS_TO_RECOVER):
+        await asyncio.wait_for(
+            harness.runtime._note_measurement_accepted("load-current"), 1.0
+        )
+    await harness.refuse(1)
+    store.restore_release.clear()
+    store.release.set()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert harness.runtime._measurement_disk_recovered == {"load-current"}
+
+    for _ in range(MEASUREMENT_WINDOWS_TO_RECOVER):
+        await asyncio.wait_for(
+            harness.runtime._note_measurement_accepted("load-current"), 1.0
+        )
+    assert harness.degraded == {"load-current"}, (
+        "memory cleared while the restore was still in flight"
+    )
+
+    store.restore_release.set()
+    await harness.settle()
+    assert harness.degraded == set()
+    assert "load-current" not in store.on_disk, "memory and disk disagree"
+    assert store.clears == 2
