@@ -1018,6 +1018,59 @@ async def test_the_bridge_relays_an_internal_error_as_exit_one(
     assert "internal_error" not in op.RECONCILE_ERRORS
 
 
+_RECONCILED = {
+    "proposal_id": "AB12CD34",
+    "device_id": "dev-1",
+    "zone_id": "zone-a",
+    "decision_state": "reconciled_executed",
+    "reason": "site_inspection",
+    "note": None,
+    "operator": {"uid": 0, "account": "root", "login_uid": None},
+    "entry_point": "local_operator_socket",
+    "recorded_at_ms": 1,
+    "already_recorded": False,
+}
+
+
+@pytest.mark.parametrize(
+    "result,expected",
+    [
+        (_RECONCILED, (0, None)),
+        ({"lie": True}, (1, "internal_error")),
+        ({**_RECONCILED, "proposal_id": "ZZ99ZZ99"}, (1, "internal_error")),
+        ({**_RECONCILED, "device_id": "dev-2"}, (1, "internal_error")),
+        ({**_RECONCILED, "zone_id": "zone-b"}, (1, "internal_error")),
+    ],
+    ids=["bound", "a lie", "another proposal", "another device", "another zone"],
+)
+async def test_a_reconcile_success_is_relayed_only_for_this_request(
+    short_dir: Path, monkeypatch: Any, result: dict[str, Any], expected: Any
+) -> None:
+    path = short_dir / "fake.sock"
+
+    async def answer(reader: Any, writer: Any) -> None:
+        await reader.readline()
+        writer.write(
+            json.dumps({"schema_version": 1, "ok": True, "result": result}).encode()
+            + b"\n"
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_unix_server(answer, path=str(path))
+    monkeypatch.setattr(cli_bridge, "_operator_install", lambda: (path, os.geteuid()))
+    try:
+        rc, payload = await asyncio.to_thread(cli_bridge.run_bridge, _bridge_argv())
+    finally:
+        server.close()
+        await server.wait_closed()
+    if expected[1] is None:
+        assert (rc, payload["ok"], payload["result"]) == (0, True, result), payload
+    else:
+        assert payload["ok"] is False, payload
+        assert (rc, payload["error"]["code"]) == expected
+
+
 def test_the_bridge_derives_the_user_scope_identity(
     short_dir: Path, monkeypatch: Any
 ) -> None:

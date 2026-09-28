@@ -498,6 +498,7 @@ _SCOPED_READERS: dict[str, set[str]] = {
         "<assign:EVIDENCE_REFERENCE_DDL>",
     },
     "operator_socket.py": {
+        "<assign:COMMISSION_RESULT_FIELDS>",
         "validate_commission_request",
         "_commissioned",
         "<import>",

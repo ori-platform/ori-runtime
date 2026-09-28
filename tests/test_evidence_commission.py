@@ -754,6 +754,87 @@ async def test_a_stopping_runtime_cancels_before_the_record(site):
     assert site.references() == []
 
 
+_BOUND_RESULT = {
+    "device_id": DEVICE,
+    "anchor_epoch_id": "sha256:" + "e" * 64,
+    "commissioning_reference": REFERENCE,
+    "replaced": False,
+    "registration_status": "pending_confirmation",
+}
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"lie": True},
+        {},
+        {**_BOUND_RESULT, "commissioning_reference": OTHER_REFERENCE},
+        {**_BOUND_RESULT, "replaced": "false"},
+        {**_BOUND_RESULT, "replaced": 0},
+        {**_BOUND_RESULT, "replaced": True},
+        {**_BOUND_RESULT, "extra": 1},
+        {k: v for k, v in _BOUND_RESULT.items() if k != "registration_status"},
+        {**_BOUND_RESULT, "device_id": 7},
+    ],
+    ids=[
+        "a lie",
+        "empty",
+        "another reference",
+        "replaced as a string",
+        "replaced as an integer",
+        "replaced without force",
+        "an extra field",
+        "a missing field",
+        "a device that is not text",
+    ],
+)
+async def test_a_success_not_bound_to_the_request_is_not_a_success(site, result):
+    """A peer answering ok for something else is an unexpected fault, exit 1."""
+
+    async def answer(reader: Any, writer: Any) -> None:
+        await reader.readline()
+        writer.write(
+            json.dumps({"schema_version": 1, "ok": True, "result": result}).encode()
+            + b"\n"
+        )
+        await writer.drain()
+        writer.close()
+
+    site.socket.parent.mkdir(parents=True, exist_ok=True)
+    server = await asyncio.start_unix_server(answer, path=str(site.socket))
+    try:
+        run = await site.bridge(*_commission())
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert run.payload["ok"] is False, run.payload
+    assert (run.rc, run.payload["error"]["code"]) == (1, "internal_error")
+
+
+async def test_the_bound_success_is_relayed(site):
+    """The same fake peer, answering the five fields for this reference, succeeds."""
+
+    async def answer(reader: Any, writer: Any) -> None:
+        await reader.readline()
+        writer.write(
+            json.dumps(
+                {"schema_version": 1, "ok": True, "result": _BOUND_RESULT}
+            ).encode()
+            + b"\n"
+        )
+        await writer.drain()
+        writer.close()
+
+    site.socket.parent.mkdir(parents=True, exist_ok=True)
+    server = await asyncio.start_unix_server(answer, path=str(site.socket))
+    try:
+        run = await site.bridge(*_commission())
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert (run.rc, run.payload["result"]) == (0, _BOUND_RESULT)
+
+
 async def test_an_answer_the_runtime_does_not_define_is_internal(site):
     await site.start_runtime()
     assert site.runtime is not None

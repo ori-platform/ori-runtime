@@ -22,7 +22,7 @@ import re
 import sqlite3
 import sys
 import tempfile
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -41,6 +41,7 @@ from ori.network.events import StoredReading
 from ori.operator_socket import (
     COMMISSION_ERRORS,
     COMMISSION_OPERATION,
+    COMMISSION_RESULT_FIELDS,
     RECONCILE_ERRORS,
     SOCKET_NAME,
     SYSTEM_RUNTIME_DIRECTORY,
@@ -1410,7 +1411,9 @@ async def _evidence_commission(args: list[str]) -> dict[str, Any]:
             "the same reference again records nothing new and reports the epoch"
         ),
     )
-    return _relayed_answer(raw, COMMISSION_ERRORS, "a commissioning answer")
+    return _relayed_answer(
+        raw, COMMISSION_ERRORS, "a commissioning answer", _commission_bound(request)
+    )
 
 
 _RECONCILE_OPTIONS = {
@@ -1530,7 +1533,9 @@ async def _evidence_reconcile_tier_c(args: list[str]) -> dict[str, Any]:
             "identical repeat answers already_recorded if it was"
         ),
     )
-    return _relayed_answer(raw, RECONCILE_ERRORS, "a reconciliation answer")
+    return _relayed_answer(
+        raw, RECONCILE_ERRORS, "a reconciliation answer", _reconcile_bound(request)
+    )
 
 
 async def _submit_to_operator(
@@ -1584,8 +1589,42 @@ async def _submit_to_operator(
     return raw
 
 
+def _commission_bound(request: dict[str, Any]) -> Callable[[dict[str, Any]], bool]:
+    """Exactly the contract's fields, for the reference submitted."""
+
+    def bound(result: dict[str, Any]) -> bool:
+        return (
+            set(result) == COMMISSION_RESULT_FIELDS
+            and result["commissioning_reference"] == request["reference"]
+            and isinstance(result["replaced"], bool)
+            and (request["force"] or not result["replaced"])
+            and all(
+                isinstance(value, str)
+                for name, value in result.items()
+                if name != "replaced"
+            )
+        )
+
+    return bound
+
+
+def _reconcile_bound(request: dict[str, Any]) -> Callable[[dict[str, Any]], bool]:
+    """The proposal, device and zone submitted."""
+
+    def bound(result: dict[str, Any]) -> bool:
+        return all(
+            name in result and result[name] == request[name]
+            for name in ("proposal_id", "device_id", "zone_id")
+        )
+
+    return bound
+
+
 def _relayed_answer(
-    raw: bytes, refusals: frozenset[str], expected: str
+    raw: bytes,
+    refusals: frozenset[str],
+    expected: str,
+    bound: Callable[[dict[str, Any]], bool],
 ) -> dict[str, Any]:
     try:
         answer = parse_request(raw)
@@ -1593,6 +1632,10 @@ def _relayed_answer(
         raise RuntimeError("the runtime's answer is not one JSON object") from None
     result = answer.get("result")
     if answer.get("ok") is True and isinstance(result, dict):
+        if not bound(result):
+            raise RuntimeError(
+                f"the runtime's success is not {expected} to this request"
+            )
         return result
     error = answer.get("error")
     code = error.get("code") if isinstance(error, dict) else None

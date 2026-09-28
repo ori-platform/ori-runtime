@@ -92,6 +92,16 @@ COMMISSION_ERRORS: Final = frozenset(
         "cancelled",
     }
 )
+#: The members of an `evidence_commission` success result; the list is closed.
+COMMISSION_RESULT_FIELDS = frozenset(
+    {
+        "device_id",
+        "anchor_epoch_id",
+        "commissioning_reference",
+        "replaced",
+        "registration_status",
+    }
+)
 
 _UID_TEXT = re.compile(rb"[1-9][0-9]{0,9}\n?")
 # Linux's SO_PEERPIDFD (6.5 and later); Python names it only on recent builds.
