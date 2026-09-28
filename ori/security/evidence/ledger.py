@@ -722,33 +722,6 @@ def _copy(row: sqlite3.Row, name: str) -> dict[str, Any]:
     return out
 
 
-def read_current_anchor(db_path: str | Path) -> dict[str, Any] | None:
-    """The anchor a runtime last recorded in this evidence store, read-only.
-
-    Creates nothing: an absent file is None, and a store with no write-ahead
-    log is read immutable, as the state store's read-only tools do.
-    """
-    path = Path(db_path)
-    if not path.is_file() or path.stat().st_size == 0:
-        return None
-    mode = "ro" if Path(f"{path}-wal").exists() else "ro&immutable=1"
-    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode={mode}", uri=True)
-    conn.row_factory = sqlite3.Row
-    try:
-        try:
-            row = conn.execute(
-                "SELECT device_id, anchor_epoch_id, key_id, pubkey_hex, posture"
-                " FROM evidence_current_anchor WHERE id = 1"
-            ).fetchone()
-        except sqlite3.OperationalError as exc:
-            if str(exc).startswith("no such table"):
-                return None
-            raise
-        return None if row is None else dict(row)
-    finally:
-        conn.close()
-
-
 class EvidenceDeliveryLedger:
     """Seals chain rows into signed envelopes and tracks what became of them."""
 

@@ -113,7 +113,6 @@ _PUBLIC_COMMANDS = {
     ("evidence", "commission"): "evidence-commission",
     ("evidence", "reconcile-tier-c"): "evidence-reconcile-tier-c",
 }
-_DEFAULT_HEALTH_SOCKET = "/run/ori/health.sock"
 #: A health reply longer than this is refused. Far above any snapshot a runtime
 #: produces, which a test measures, and finite so a peer cannot stream forever.
 _HEALTH_REPLY_LIMIT_BYTES = 4 * 1024 * 1024
