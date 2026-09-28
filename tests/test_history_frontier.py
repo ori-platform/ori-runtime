@@ -648,7 +648,7 @@ async def test_firmware_freshness_admission_stays_ahead_of_publication(
     await asyncio.sleep(0.05)
     assert delivered == [], "published before its freshness was recorded"
     released.set()
-    await ingest
+    await asyncio.wait_for(ingest, 1.0)
     assert len(delivered) == 1
 
     async def locked(*_: Any, **__: Any) -> Any:
