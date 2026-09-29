@@ -4215,18 +4215,24 @@ class OriRuntime:
                 # Queued, never awaited: a busy store must not delay or drop the
                 # reading's evaluation. Its row lands after, or is counted lost.
                 self._state_store.admit_history(event)
-                if event.reading is not None and deduplicator is not None:
-                    if deduplicator.process(event) is None:
-                        logger.debug(
-                            "Deduplicator suppressed duplicate event for sensor %s "
-                            "(fingerprint %s...)",
-                            event.sensor_id,
-                            event.fingerprint[:8],
-                        )
-                        continue
-                await event_bus.publish(event)
-                if self._status_indicator is not None:
-                    _sync_power_state_from_reading(self._status_indicator, reading)
+                # A suppressed duplicate still waits out the poll interval: a
+                # cached adapter answers without yielding, so skipping the
+                # sleep would re-read at CPU speed and starve the event loop.
+                if (
+                    event.reading is not None
+                    and deduplicator is not None
+                    and deduplicator.process(event) is None
+                ):
+                    logger.debug(
+                        "Deduplicator suppressed duplicate event for sensor %s "
+                        "(fingerprint %s...)",
+                        event.sensor_id,
+                        event.fingerprint[:8],
+                    )
+                else:
+                    await event_bus.publish(event)
+                    if self._status_indicator is not None:
+                        _sync_power_state_from_reading(self._status_indicator, reading)
             except AdapterReadError as exc:
                 self._log_read_failure(str(sensor_cfg.id), exc)
                 if isinstance(exc, MeasurementRefusedError):

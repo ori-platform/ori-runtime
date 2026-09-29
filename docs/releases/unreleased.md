@@ -583,6 +583,17 @@ candidate or release is cut.
   attestation for want of one. A NO, an invalid reply, a v1 offline token or an
   unanswered request still records a rejection and the safe default it ran,
   and a late refusal still spends no cooldown.
+- A sensor poll waits its configured interval after a reading the deduplicator
+  suppresses. The suppression skipped the interval, so an unchanged value
+  inside the five-second window was re-read at once. An adapter that answers
+  from a cache without yielding — MQTT, MQTT perception, LoRaWAN, Zigbee,
+  Victron, HTTP and CoAP — then held the event loop for the rest of the window:
+  every other sensor's poll, including its safety evaluation, and the listener
+  that would have delivered this sensor's next value waited up to about four
+  seconds, and each re-read queued a history row the store could not take, so
+  history loss was logged per read. An adapter that reads in a thread — I2C,
+  serial, Modbus, psutil — did not stall the loop but polled its bus
+  back-to-back for the same window.
 - A request carrying a JSON integer longer than the interpreter's
   string-conversion limit is refused as malformed by the firmware MQTT
   operator socket (`invalid_request`) and the operator socket
