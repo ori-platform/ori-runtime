@@ -2391,6 +2391,8 @@ class TestOfflineTokenApproval:
             )
         assert result.action_taken == "refused_late_approval"
         assert result.operator_response != "approval_error"
+        assert result.safe_default_used is False
+        assert result.approved is True and result.executed is False
         action.assert_not_awaited()
         safe_default.assert_not_awaited()
 

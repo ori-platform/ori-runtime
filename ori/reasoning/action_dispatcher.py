@@ -3618,10 +3618,27 @@ class ActionDispatcher:
                         action,
                         proposal_id,
                     )
-                    approved = False
                     refused_late = True
 
-            if approved:
+            # True only where the safe default is dispatched below.
+            safe_default_used = False
+            if refused_late:
+                # The operator approved; the act did not run. `approved` records
+                # the authority given, `executed` what happened.
+                action_taken = "refused_late_approval"
+                executed = False
+                progress.acted = ActionResult(
+                    action_name=action,
+                    tier=tier,
+                    executed=False,
+                    approved=True,
+                    action_taken=action_taken,
+                    timestamp=now_ms(),
+                    operator_response=operator_response,
+                    proposal_id=proposal_id,
+                    safe_default_used=safe_default_used,
+                )
+            elif approved:
                 inner = await self._execute_immediately(action, tier, context)
                 action_taken = inner.action_taken
                 executed = inner.executed
@@ -3634,24 +3651,11 @@ class ActionDispatcher:
                     timestamp=now_ms(),
                     operator_response=operator_response,
                     proposal_id=proposal_id,
-                    safe_default_used=False,
-                )
-            elif refused_late:
-                action_taken = "refused_late_approval"
-                executed = False
-                progress.acted = ActionResult(
-                    action_name=action,
-                    tier=tier,
-                    executed=False,
-                    approved=False,
-                    action_taken=action_taken,
-                    timestamp=now_ms(),
-                    operator_response=operator_response,
-                    proposal_id=proposal_id,
-                    safe_default_used=False,
+                    safe_default_used=safe_default_used,
                 )
             else:
                 # NO, None, or timeout → safe default
+                safe_default_used = True
                 inner = await self._execute_immediately(
                     safe_default_action, tier, context
                 )
@@ -3666,7 +3670,7 @@ class ActionDispatcher:
                     timestamp=now_ms(),
                     operator_response=operator_response,
                     proposal_id=proposal_id,
-                    safe_default_used=True,
+                    safe_default_used=safe_default_used,
                 )
                 if timed_out:
                     escalation_receipt = await self._escalate_to_secondary(
@@ -3735,7 +3739,7 @@ class ActionDispatcher:
                 timestamp=completed_at,
                 operator_response=operator_response,
                 proposal_id=proposal_id,
-                safe_default_used=not bool(approved),
+                safe_default_used=safe_default_used,
             )
             operator_decision = (
                 "approved"
@@ -3759,7 +3763,7 @@ class ActionDispatcher:
                     completed_at=completed_at,
                     approval_timeout_seconds=approval_timeout_seconds,
                     safe_default_action=safe_default_action,
-                    safe_default_used=not bool(approved),
+                    safe_default_used=safe_default_used,
                     approval_receipt=approval_receipt,
                     escalation_receipt=escalation_receipt,
                     inbound_response=inbound_response,
