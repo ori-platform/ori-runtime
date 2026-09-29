@@ -127,22 +127,23 @@ def cache_arrival() -> float:
 def refuse_stale_cache(
     arrived_at: float | None, poll_interval_ms: int, adapter_name: str
 ) -> None:
-    """Refuse a cached value older than the sensor's silence bound.
+    """Refuse a cached value whose arrival is older than the sensor's silence bound.
 
     Age runs from the receiver's monotonic arrival time, so neither a producer
-    timestamp nor a wall-clock step can make an old value look new.
+    timestamp nor a wall-clock step changes it. A value delivered late by a
+    broker is timed from its delivery; nothing here can know its true age.
     """
     bound_ms = silence_bound_ms(poll_interval_ms)
     if arrived_at is None:
         raise AdapterReadError(
             f"{adapter_name}: the cached value has no arrival time; "
-            "it is not a live reading"
+            "its age cannot be known"
         )
     age_ms = (_arrival_clock() - arrived_at) * 1000.0
     if not 0.0 <= age_ms <= bound_ms:
         raise AdapterReadError(
             f"{adapter_name}: no new value for {age_ms:.0f} ms (bound {bound_ms} ms); "
-            "the cached value is no longer a live reading"
+            "the cached value is past the silence bound"
         )
 
 

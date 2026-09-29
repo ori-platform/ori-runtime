@@ -407,7 +407,7 @@ async def test_a_value_past_the_silence_bound_is_refused(
         await source.adapter.read(SENSOR)  # at the bound: still live
         clock.advance_ms(1)
         await source.fail()
-        with pytest.raises(AdapterReadError, match="no longer a live reading"):
+        with pytest.raises(AdapterReadError, match="past the silence bound"):
             await source.adapter.read(SENSOR)
 
 
@@ -427,7 +427,7 @@ async def test_a_producer_timestamp_does_not_change_the_age(
         clock.advance_ms(BOUND_MS - 1)
         assert _value(await source.adapter.read(SENSOR)) > 0
         clock.advance_ms(2)
-        with pytest.raises(AdapterReadError, match="no longer a live reading"):
+        with pytest.raises(AdapterReadError, match="past the silence bound"):
             await source.adapter.read(SENSOR)
 
 
@@ -444,7 +444,7 @@ async def test_a_wall_clock_step_does_not_change_the_age(
         with patch.object(time_utils, "time", SimpleNamespace(time=lambda: stepped)):
             assert _value(await source.adapter.read(SENSOR)) > 0
             clock.advance_ms(BOUND_MS + 1)
-            with pytest.raises(AdapterReadError, match="no longer a live reading"):
+            with pytest.raises(AdapterReadError, match="past the silence bound"):
                 await source.adapter.read(SENSOR)
 
 
@@ -461,7 +461,7 @@ async def test_the_bound_follows_the_sensors_own_poll_interval(
         clock.advance_ms(silence_bound_ms(poll_ms))
         assert _value(await source.adapter.read(SENSOR)) > 0
         clock.advance_ms(1)
-        with pytest.raises(AdapterReadError, match="no longer a live reading"):
+        with pytest.raises(AdapterReadError, match="past the silence bound"):
             await source.adapter.read(SENSOR)
     finally:
         await source.stop()
@@ -513,7 +513,7 @@ async def test_a_silence_does_not_open_the_breaker(
         await source.send(12.0)
         clock.advance_ms(BOUND_MS + 1)
         for _ in range(source.adapter._breaker.failure_threshold + 2):
-            with pytest.raises(AdapterReadError, match="no longer a live reading"):
+            with pytest.raises(AdapterReadError, match="past the silence bound"):
                 await source.adapter.read(SENSOR)
         await source.send(13.0)
         assert _value(await source.adapter.read(SENSOR)) > 0
@@ -538,7 +538,7 @@ def test_a_cached_value_with_no_arrival_is_refused(clock: _Clock) -> None:
 
 
 def test_a_value_that_arrived_after_now_is_refused(clock: _Clock) -> None:
-    with pytest.raises(AdapterReadError, match="no longer a live reading"):
+    with pytest.raises(AdapterReadError, match="past the silence bound"):
         hal_base.refuse_stale_cache(clock.now + 1.0, POLL_MS, "Probe")
 
 
@@ -630,7 +630,9 @@ async def test_the_runtime_refuses_a_value_past_the_bound(
         clock.advance_ms(BOUND_MS + 1)
         await source.fail()
         await _poll(harness, source.adapter)
-        assert len(harness.observed) == 1, "the registry observed a frozen value"
+        assert len(harness.observed) == 1, (
+            "the registry observed a value past the silence bound"
+        )
         assert SENSOR not in harness.runtime._sensor_last_seen_ms
         assert len(harness.published) <= 1
 
