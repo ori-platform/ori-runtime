@@ -95,6 +95,10 @@ def _coerce_value(value: Any) -> float:
 class ZigbeeAdapter(MqttCachedAdapter):
     """Zigbee sensor adapter via MQTT bridge (zigbee2mqtt or equivalent)."""
 
+    # Zigbee devices report on change, with a steady value often reported only
+    # hourly, so silence between reports is not staleness.
+    SILENCE_BOUNDED = False
+
     def __init__(self) -> None:
         super().__init__()
         self._sensor_type: str = ""

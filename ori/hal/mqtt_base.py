@@ -224,8 +224,8 @@ class MqttCachedAdapter(BaseAdapter):
     """Reusable base for MQTT adapters that subscribe and cache latest values."""
 
     # Reads past the silence bound are refused and retained replays ignored.
-    # False only for a producer that publishes on change with no keepalive this
-    # adapter sends: silence then cannot be told from a steady value.
+    # False for a publish-on-change or duty-cycled producer, where silence is
+    # not staleness, until a keepalive or reporting guarantee bounds it.
     SILENCE_BOUNDED: ClassVar[bool] = True
 
     def __init__(self) -> None:

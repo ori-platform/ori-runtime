@@ -91,6 +91,10 @@ def _coerce_value(value: Any) -> float:
 class LoraWanAdapter(MqttCachedAdapter):
     """LoRaWAN sensor adapter via MQTT uplink brokers (TTN/ChirpStack)."""
 
+    # Uplinks are duty-cycled, commonly minutes apart and beyond the largest
+    # silence bound, so silence between them is not staleness.
+    SILENCE_BOUNDED = False
+
     def __init__(self) -> None:
         super().__init__()
         self._sensor_type: str = ""

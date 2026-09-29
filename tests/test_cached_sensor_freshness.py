@@ -363,9 +363,13 @@ def _victron() -> _MqttSource:
 
 MQTT_FAMILY = [
     pytest.param(_mqtt, id="mqtt"),
+    pytest.param(_perception, id="mqtt_perception"),
+]
+# Publish-on-change or duty-cycled: silence does not show a value is stale.
+UNBOUNDED = [
+    pytest.param(_victron, id="victron"),
     pytest.param(_lorawan, id="lorawan"),
     pytest.param(_zigbee, id="zigbee"),
-    pytest.param(_perception, id="mqtt_perception"),
 ]
 ALL_CACHED = [
     *MQTT_FAMILY,
@@ -723,7 +727,7 @@ async def test_the_health_stale_flag_uses_the_same_silence_bound(poll_ms: int) -
     assert stale == {"inside": False, "past": True}
 
 
-# ── Victron is excluded from the bound ───────────────────────────────────────
+# ── Victron, LoRaWAN and Zigbee are excluded from the bound ──────────────────
 
 
 def _mqtt_family_classes() -> set[type]:
@@ -738,23 +742,30 @@ def _mqtt_family_classes() -> set[type]:
     return found
 
 
-def test_only_victron_is_excluded_from_the_silence_bound() -> None:
+def test_exactly_the_on_change_adapters_are_excluded_from_the_bound() -> None:
     excluded = {c for c in _mqtt_family_classes() if not c.SILENCE_BOUNDED}
-    assert excluded == {VictronAdapter}, (
-        "an MQTT adapter left the silence bound; this guard sees only subclasses "
-        "of MqttCachedAdapter, not a read() that skips _require_fresh"
+    assert excluded == {VictronAdapter, LoraWanAdapter, ZigbeeAdapter}, (
+        "the set of MQTT adapters outside the silence bound changed; this guard "
+        "sees only subclasses of MqttCachedAdapter, not a read() that skips "
+        "_require_fresh"
     )
 
 
-async def test_a_silent_victron_source_is_still_served(clock: _Clock) -> None:
-    async with _running(_victron) as source:
+@pytest.mark.parametrize("factory", UNBOUNDED)
+async def test_an_old_value_from_an_on_change_source_is_still_served(
+    factory: Callable[[], Any], clock: _Clock
+) -> None:
+    async with _running(factory) as source:
         await source.send(84.5)
         clock.advance_ms(10 * BOUND_MS)
         assert _value(await source.adapter.read(SENSOR)) == 84.5
 
 
-async def test_a_victron_retained_replay_is_still_cached(clock: _Clock) -> None:
-    async with _running(_victron) as source:
+@pytest.mark.parametrize("factory", UNBOUNDED)
+async def test_an_on_change_retained_replay_is_still_cached(
+    factory: Callable[[], Any], clock: _Clock
+) -> None:
+    async with _running(factory) as source:
         await source.replay(84.5)
         assert _value(await source.adapter.read(SENSOR)) == 84.5
 
@@ -794,10 +805,14 @@ def _alerting(
     return sent
 
 
-async def test_a_silent_victron_source_raises_no_stale_alert(
-    clock: _Clock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("factory", UNBOUNDED)
+async def test_a_silent_on_change_source_raises_no_stale_alert(
+    factory: Callable[[], Any],
+    clock: _Clock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async with _runtime(tmp_path) as harness, _running(_victron) as source:
+    async with _runtime(tmp_path) as harness, _running(factory) as source:
         sent = _alerting(harness, monkeypatch, clock)
         await source.send(84.5)
         for _ in range(10):
