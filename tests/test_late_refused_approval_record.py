@@ -269,3 +269,35 @@ class TestALateRefusalUsesNoSafeDefault:
         assert outcome.action_taken == "refused_late_approval"
         assert h.ran == []
         assert decisions == []
+
+    async def test_a_late_refusal_whose_decision_record_fails_reports_no_safe_default(
+        self, tmp_path
+    ):
+        # A fault after the refusal returns the in-flight result, which is then
+        # what the action log records.
+        h = await _harness(tmp_path)
+        defer = h.dispatcher._defer_record
+
+        def failing_defer(write: Any, **kwargs: Any) -> None:
+            label = kwargs.get("label", "")
+            if isinstance(label, str) and label.startswith("tier_c_decision"):
+                raise RuntimeError("decision record failed")
+            defer(write, **kwargs)
+
+        async def listen(**_k: Any) -> str:
+            await h.displace()
+            return f"YES-{PROPOSAL}"
+
+        try:
+            with patch.object(h.dispatcher, "_defer_record", new=failing_defer):
+                outcome = await h.run(listen)
+            actions = await h.action_rows()
+        finally:
+            await h.store.close()
+        assert outcome.action_taken == "refused_late_approval"
+        assert outcome.operator_response != "approval_error"
+        assert outcome.safe_default_used is False
+        assert h.ran == []
+        assert [(r["action_taken"], r["safe_default_used"]) for r in actions] == [
+            ("refused_late_approval", False)
+        ]
