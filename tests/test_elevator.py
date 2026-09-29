@@ -5,10 +5,12 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import yaml
 
 from ori.network.events import (
     OriEvent,
@@ -21,6 +23,7 @@ from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext, _complexity_score
 from ori.reasoning.escalation_policy import GATEWAY_ESCALATION_CONTEXT_KEY
 from ori.reasoning.rule_engine import RuleResult
+from ori.skills.loader import Skill, SkillLoader, Trigger
 from ori.state.store import StateStore
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1721,6 +1724,92 @@ class TestReasonAndDispatch:
         dispatcher.dispatch.assert_not_called()
         local_llm.reason.assert_not_called()
         store.log_reasoning.assert_not_called()
+
+    @staticmethod
+    def _loaded_post_action_skill(tmp_path: Path) -> Skill:
+        skill_dir = tmp_path / "loaded-post-action"
+        skill_dir.mkdir()
+        (skill_dir / "skill.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "loaded-post-action",
+                    "version": "0.1.0",
+                    "author": "test",
+                    "signature": "bundled",
+                    "sensors_required": [{"type": "current_clamp"}],
+                    "triggers": [
+                        {
+                            "name": "soft_switch",
+                            "condition": "value > 3.0",
+                            "action_tier": "B",
+                            "reasoning_policy": "post_action",
+                        }
+                    ],
+                    "actions": {
+                        "available": [
+                            {"name": "coap_command", "tier": "B"},
+                            {"name": "alert_whatsapp", "tier": "A"},
+                        ],
+                        "defaults": {"soft_switch": ["alert_whatsapp", "coap_command"]},
+                    },
+                }
+            )
+        )
+        loader = SkillLoader()
+        loader._is_core_bundled_skill = lambda _skill_dir: True  # type: ignore[method-assign]
+        skill = loader.load_one(skill_dir, load_hooks=False)
+        assert isinstance(skill.triggers[0], Trigger)
+        return skill
+
+    async def test_tier_b_post_action_refused_on_loaded_trigger_requiring_approval(
+        self, tmp_path
+    ):
+        skill = self._loaded_post_action_skill(tmp_path)
+        skill.triggers[0].requires_approval = True
+        event = _event(value=5.0)
+        event.context["__rule_result"] = RuleResult(
+            matched=True,
+            rule_name="soft_switch",
+            action_tier="B",
+            reasoning_policy="post_action",
+            requires_approval=False,
+        )
+        local_llm = AsyncMock()
+        dispatcher = AsyncMock()
+        store = _mock_state_store(avg=4.0, history=[4.0, 4.1])
+
+        await IntelligenceElevator(local_llm=local_llm).reason_and_dispatch(
+            event, skill, store, dispatcher
+        )
+
+        dispatcher.dispatch.assert_not_called()
+        local_llm.reason.assert_not_called()
+
+    @pytest.mark.parametrize("shape", ["loaded_trigger", "dict_trigger"])
+    async def test_tier_b_post_action_ignores_config_when_trigger_matched(
+        self, tmp_path, shape
+    ):
+        skill: Any
+        if shape == "loaded_trigger":
+            skill = self._loaded_post_action_skill(tmp_path)
+        else:
+            skill = _tier_b_post_action_skill()
+        skill.config["requires_approval"] = True
+        dispatched: list[tuple[str, str]] = []
+
+        async def record_dispatch(**kwargs):
+            dispatched.append((kwargs["action"], kwargs["tier"]))
+            assert not ActionDispatcher._tier_b_requires_approval(kwargs["context"])
+
+        dispatcher = AsyncMock()
+        dispatcher.dispatch.side_effect = record_dispatch
+        store = _mock_state_store(avg=4.0, history=[4.0, 4.1])
+
+        await IntelligenceElevator(local_llm=None).reason_and_dispatch(
+            _event(value=5.0), skill, store, dispatcher
+        )
+
+        assert dispatched == [("coap_command", "B"), ("alert_whatsapp", "A")]
 
     async def test_tier_b_post_action_notification_failure_does_not_taint_action(
         self, tmp_path
