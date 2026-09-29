@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ori import runtime as runtime_module
 from ori.hal.base import AdapterReadError
 from ori.hal.mqtt_adapter import MqttAdapter
 from ori.network.deduplicator import EventDeduplicator
@@ -275,13 +276,22 @@ async def test_a_failed_read_still_waits_the_poll_interval(
     _paced(adapter, elapsed)
 
 
-async def test_cancelling_the_poll_after_a_suppressed_duplicate_is_prompt(
+async def test_each_suppressed_duplicate_sleeps_once_and_cancels_promptly_in_the_sleep(
     store: StateStore,
 ) -> None:
+    """Observe the poll's own sleeps: one per read, and cancellable while asleep.
+
+    The runtime's sleeps are told apart from any other caller's by the
+    interval they wait. The task is cancelled inside the sleep that follows
+    the second suppressed duplicate, after the sleep following the first has
+    been counted, so both a skipped and a doubled sleep are visible here.
+    """
     runtime = _runtime(store)
-    poll_ms = 300
-    blocked = asyncio.Event()
+    interval = 0.317
+    real_sleep = asyncio.sleep
     published: list[float] = []
+    sleeps: list[tuple[int, int]] = []
+    in_sleep_after_third_read = asyncio.Event()
     bus = EventBus()
 
     async def on_reading(event: Any) -> None:
@@ -289,8 +299,78 @@ async def test_cancelling_the_poll_after_a_suppressed_duplicate_is_prompt(
 
     bus.subscribe("voltage", on_reading)
 
+    async def stable(sensor_id: str) -> SensorReading:
+        return _reading(sensor_id)
+
+    adapter = _Paced(runtime, stable)
+
+    async def observed_sleep(delay: float, result: Any = None) -> Any:
+        if delay == interval:
+            sleeps.append((adapter.reads, len(published)))
+            if adapter.reads == 3:
+                in_sleep_after_third_read.set()
+        return await real_sleep(delay, result)
+
+    with patch.object(runtime_module.asyncio, "sleep", observed_sleep):
+        task = asyncio.create_task(
+            runtime._poll_sensor(
+                adapter,
+                SimpleNamespace(id=SENSOR, poll_interval_ms=interval * 1000),
+                bus,
+                "dev-01",
+                deduplicator=EventDeduplicator(),
+            )
+        )
+        try:
+            waiter = asyncio.create_task(in_sleep_after_third_read.wait())
+            await asyncio.wait(
+                {waiter, task},
+                timeout=HARD_CEILING_S,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            waiter.cancel()
+            assert in_sleep_after_third_read.is_set(), (
+                f"no poll-interval sleep after the third read ({adapter.reads} "
+                f"reads, sleeps at {sleeps}): a suppressed duplicate skipped it"
+            )
+            cancelled_at = time.monotonic()
+            task.cancel()
+            await asyncio.wait_for(
+                asyncio.gather(task, return_exceptions=True), HARD_CEILING_S
+            )
+            took = time.monotonic() - cancelled_at
+        finally:
+            runtime._shutdown_event.set()
+            task.cancel()
+
+    assert not adapter.tripped
+    assert published == [230.0], "the second and third reads were not suppressed"
+    assert sleeps == [(1, 1), (2, 1), (3, 1)], (
+        f"sleeps (reads, published) {sleeps}: each read must be followed by "
+        "exactly one poll-interval sleep"
+    )
+    assert task.cancelled()
+    assert took < interval / 3, (
+        f"cancellation inside the sleep took {took * 1000:.0f} ms at a "
+        f"{interval * 1000:.0f} ms interval"
+    )
+    assert adapter.reads == 3, "a read happened after the poll was cancelled"
+
+
+async def test_cancelling_the_poll_during_a_read_is_not_delayed_by_the_interval(
+    store: StateStore,
+) -> None:
+    """A cancel delivered inside the read ends the poll without a last sleep.
+
+    This is what a sleep moved into ``finally`` breaks: the cancellation raised
+    by the read would run the full interval before it propagated.
+    """
+    runtime = _runtime(store)
+    poll_ms = 300
+    blocked = asyncio.Event()
+
     async def then_block(sensor_id: str) -> SensorReading:
-        if adapter.reads <= 2:
+        if adapter.reads == 1:
             return _reading(sensor_id)
         blocked.set()
         await asyncio.Event().wait()
@@ -301,14 +381,13 @@ async def test_cancelling_the_poll_after_a_suppressed_duplicate_is_prompt(
         runtime._poll_sensor(
             adapter,
             SimpleNamespace(id=SENSOR, poll_interval_ms=poll_ms),
-            bus,
+            EventBus(),
             "dev-01",
             deduplicator=EventDeduplicator(),
         )
     )
     try:
         await asyncio.wait_for(blocked.wait(), HARD_CEILING_S)
-        assert published == [230.0], "the second read was not a suppressed duplicate"
         cancelled_at = time.monotonic()
         task.cancel()
         await asyncio.wait_for(
@@ -322,5 +401,6 @@ async def test_cancelling_the_poll_after_a_suppressed_duplicate_is_prompt(
     assert not adapter.tripped
     assert task.cancelled()
     assert took < poll_ms / 1000 / 3, (
-        f"cancellation took {took * 1000:.0f} ms at a {poll_ms} ms interval"
+        f"cancellation during a read took {took * 1000:.0f} ms at a "
+        f"{poll_ms} ms interval"
     )
