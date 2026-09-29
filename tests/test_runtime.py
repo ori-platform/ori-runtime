@@ -3527,6 +3527,7 @@ class TestSensorPolling:
             "the unusable reading was not noted as a refused measurement"
         )
         assert [event.reading.value for event in delivered if event.reading] == [8.2]
+        await store.history_admission.drain(5.0)
         assert [row.value for row in await store.get_history("load-current")] == [8.2]
         assert "load-current" in runtime._sensor_last_seen_ms
         await store.close()
@@ -4074,6 +4075,7 @@ class TestSensorPolling:
                     EventDeduplicator(),
                 )
 
+            await runtime._state_store.history_admission.drain(5.0)
             history = await runtime._state_store.get_history("cpu-sensor", limit=10)
             assert len(history) == 2
             assert len(bus.events) == 1
