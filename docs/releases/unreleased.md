@@ -517,6 +517,12 @@ candidate or release is cut.
 
 ## Fixed
 
+- An approval refused because a higher authority took the resource while the
+  operator decided (`refused_late_approval`, on the host-state Tier C and
+  approval-required Tier B workflow) runs no safe default, and is no longer
+  recorded as having used one: `safe_default_used` is false on the returned
+  result, the action log row and the Tier C decision record. A NO, an invalid
+  reply or an unanswered request still records the safe default it ran.
 - A request carrying a JSON integer longer than the interpreter's
   string-conversion limit is refused as malformed by the firmware MQTT
   operator socket (`invalid_request`) and the operator socket
