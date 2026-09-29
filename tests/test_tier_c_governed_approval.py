@@ -780,6 +780,7 @@ class TestBindingAndBlocking:
             await store.close()
         assert outcome.approved is True and outcome.executed is False
         assert outcome.action_taken == "dispatch_refused_contention"
+        assert outcome.safe_default_used is True
         assert states == [("P9", adm.DISPATCH_REFUSED_CONTENTION)]
         assert [i["outcome"] for i in intents] == ["executed"]
         assert journal == ["act:log_to_dashboard"]
