@@ -673,19 +673,21 @@ async def test_a_hazard_that_repeats_the_last_value_is_observed(
         assert SENSOR in harness.runtime._sensor_last_seen_ms
 
 
-async def test_the_staleness_watch_uses_the_same_silence_bound() -> None:
+@pytest.mark.parametrize("poll_ms", [POLL_MS, 5000])
+async def test_the_staleness_watch_uses_the_same_silence_bound(poll_ms: int) -> None:
     """The adapter refuses and the watch warns at one bound, so neither lags."""
     from unittest.mock import AsyncMock
 
     from ori.utils.time_utils import now_ms
 
+    bound = silence_bound_ms(poll_ms)
     runtime = OriRuntime(config_path="ori.yaml")
     runtime._shutdown_event = asyncio.Event()
-    runtime._sensor_poll_interval_ms = {"inside": POLL_MS, "past": POLL_MS}
+    runtime._sensor_poll_interval_ms = {"inside": poll_ms, "past": poll_ms}
     now = now_ms()
     runtime._sensor_last_seen_ms = {
-        "inside": now - (BOUND_MS - 500),
-        "past": now - (BOUND_MS + 500),
+        "inside": now - (bound - 500),
+        "past": now - (bound + 500),
     }
     runtime._stale_sensor_active = set()
     runtime._send_or_queue_alert = AsyncMock(return_value=True)  # type: ignore[method-assign]
@@ -700,3 +702,21 @@ async def test_the_staleness_watch_uses_the_same_silence_bound() -> None:
     runtime._shutdown_event.set()
     await loop
     assert runtime._stale_sensor_active == {"past"}
+
+
+@pytest.mark.parametrize("poll_ms", [POLL_MS, 5000])
+async def test_the_health_stale_flag_uses_the_same_silence_bound(poll_ms: int) -> None:
+    bound = silence_bound_ms(poll_ms)
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._configured_sensors = [
+        SimpleNamespace(
+            id=name, type="current", protocol="mqtt", poll_interval_ms=poll_ms
+        )
+        for name in ("inside", "past")
+    ]
+    seen_at = 1_700_000_000_000
+    runtime._sensor_last_seen_ms = {"inside": seen_at + 1, "past": seen_at}
+    with patch("ori.runtime.now_ms", return_value=seen_at + bound + 1):
+        snapshot = await runtime._build_health_snapshot()
+    stale = {s["id"]: s["stale"] for s in snapshot["sensors"]}
+    assert stale == {"inside": False, "past": True}
