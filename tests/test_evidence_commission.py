@@ -37,7 +37,11 @@ from ori.security.evidence.disposition import (
     DispositionValue,
     VerifiedDisposition,
 )
-from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
+from ori.security.evidence.executor import EvidenceExecutorClosedError
+from ori.security.evidence.first_party import (
+    FirstPartyEvidenceAttestor,
+    RegistrationUnreadableError,
+)
 from ori.state.store import StateStore
 
 REPO = Path(__file__).resolve().parent.parent
@@ -701,6 +705,64 @@ async def test_registration_that_cannot_be_read_is_store_unavailable(site):
     assert len(site.health_reads) == 1
     assert site.references() == []
     # Health still omits what it cannot read rather than failing.
+    assert await site.attestor.registration_health(0) is None
+
+
+def _failing_read(site: Site, raised: BaseException) -> None:
+    """The attestor's registration read, on its own worker, raising *raised*."""
+    assert site.attestor is not None
+
+    def fail(_at_ms: int) -> Any:
+        raise raised
+
+    site.attestor._registration_health_sync = fail  # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        sqlite3.DatabaseError("database disk image is malformed"),
+        sqlite3.ProgrammingError("Cannot operate on a closed database."),
+        OSError(5, "Input/output error"),
+        EvidenceExecutorClosedError("the evidence executor is closed"),
+    ],
+    ids=["a malformed store", "a closed connection", "an I/O error", "a closed worker"],
+)
+async def test_a_storage_failure_in_the_read_is_store_unavailable(site, raised):
+    await site.start_runtime()
+    _failing_read(site, raised)
+    _refused(await site.bridge(*_commission()), "runtime_store_unavailable")
+    assert len(site.health_reads) == 1
+    assert site.references() == []
+    # The attestor's own boundary, not only the socket's handler behind it.
+    assert site.attestor is not None
+    with pytest.raises(RegistrationUnreadableError):
+        await site.attestor.read_registration_health(0)
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        TypeError("unsupported operand"),
+        AssertionError(),
+        KeyError("sealed_at_ms"),
+        ValueError("not a status"),
+    ],
+    ids=["a TypeError", "an AssertionError", "a KeyError", "a ValueError"],
+)
+async def test_a_fault_in_the_read_is_internal_and_not_a_store_failure(site, raised):
+    """A programming fault is not reported as the store being unavailable."""
+    await site.start_runtime()
+    assert site.attestor is not None
+    _failing_read(site, raised)
+    run = await site.bridge(*_commission())
+    assert run.payload["ok"] is False, run.payload
+    assert (run.rc, run.payload["error"]["code"]) == (1, "internal_error")
+    assert len(site.health_reads) == 1
+    assert site.references() == []
+    with pytest.raises(type(raised)):
+        await site.attestor.read_registration_health(0)
+    # Health still degrades to omitting what it cannot read.
     assert await site.attestor.registration_health(0) is None
 
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 import unicodedata
 from collections.abc import Callable
 from pathlib import Path
@@ -47,7 +48,10 @@ from ori.security.evidence.chain import (
 from ori.security.evidence.custody_keys import CustodyKeyRegistry
 from ori.security.evidence.device_key import EvidenceDeviceKey
 from ori.security.evidence.disposition import DispositionVerifier
-from ori.security.evidence.executor import EvidenceExecutor
+from ori.security.evidence.executor import (
+    EvidenceExecutor,
+    EvidenceExecutorClosedError,
+)
 from ori.security.evidence.ingest_service import (
     ConfirmedEpochReader,
     EvidenceIngestService,
@@ -512,17 +516,24 @@ class FirstPartyEvidenceAttestor:
         """The three `runtime-health/v3` registration fields; None when unknown."""
         try:
             return await self.read_registration_health(at_ms)
-        except RegistrationUnreadableError as exc:
-            logger.warning("[evidence] registration status read failed (%s)", exc)
+        except Exception as exc:
+            logger.warning(
+                "[evidence] registration status read failed (%s)",
+                safe_failure_reason(exc),
+            )
             return None
 
     async def read_registration_health(self, at_ms: int) -> dict[str, Any] | None:
-        """The same fields; None with no ledger or anchor, raising when the read fails."""
+        """The same fields; None with no ledger or anchor.
+
+        A storage failure raises `RegistrationUnreadableError`; any other fault
+        propagates as itself.
+        """
         if self._ledger is None or self._anchor is None:
             return None
         try:
             return await self._executor.run_async(self._registration_health_sync, at_ms)
-        except Exception as exc:
+        except (sqlite3.Error, OSError, EvidenceExecutorClosedError) as exc:
             raise RegistrationUnreadableError(safe_failure_reason(exc)) from exc
 
     def _registration_health_sync(self, at_ms: int) -> dict[str, Any]:
