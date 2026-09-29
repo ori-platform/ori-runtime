@@ -7,8 +7,9 @@ Routes every :class:`~ori.network.events.ReasoningResult` to the appropriate
 execution path based on its action tier:
 
 - **Tier A** (Informational): execute immediately, no approval.
-- **Tier B** (Soft Physical): execute immediately *unless* ``requires_approval``
-  is ``True`` in the skill config, in which case run the approval workflow.
+- **Tier B** (Soft Physical): execute immediately *unless* the matched
+  trigger's ``requires_approval`` is ``True``, in which case run the approval
+  workflow. The skill config is read only when no trigger has that name.
 - **Tier C** (Hard Physical): approval workflow **always**.  No exception.
 - **Tier D** (Safety-Critical): execute immediately, attempted before
   lower-authority work and subject to the resource gate.
@@ -963,7 +964,7 @@ class ActionDispatcher:
         - **D**: :meth:`_execute_immediately` — no approval, immediate.
         - **A**: :meth:`_execute_immediately`.
         - **B**: :meth:`_execute_immediately`, unless
-          ``context.skill.config.get('requires_approval')`` is truthy, in
+          :meth:`_tier_b_requires_approval` holds for the matched trigger, in
           which case :meth:`_approval_workflow`.
         - **C**: :meth:`_approval_workflow` — always, no exception.
 

@@ -562,13 +562,24 @@ class ActionDispatcher:
             return await self._execute_immediately(action, context)
 
         if tier == ActionTier.SOFT_PHYSICAL:
-            if context.skill_config.get('requires_approval', False):
+            # A post_action trigger reaches here only without requires_approval:
+            # the loader refuses both, and the elevator refuses to dispatch one.
+            if self._tier_b_requires_approval(context):
                 return await self._approval_workflow(action, context, result)
             return await self._execute_immediately(action, context)
 
         if tier == ActionTier.HARD_PHYSICAL:
             # Always approval workflow. No exception.
             return await self._approval_workflow(action, context, result)
+
+    @staticmethod
+    def _tier_b_requires_approval(context) -> bool:
+        # The matched trigger's requires_approval decides. skill.config is read
+        # only when no trigger carries context.trigger_name.
+        for trigger in context.skill.triggers:
+            if trigger.name == context.trigger_name:
+                return bool(trigger.requires_approval)
+        return bool(context.skill.config.get('requires_approval', False))
 
     async def _approval_workflow(self, action, context, result) -> ActionResult:
         # The existing workflow: host-state Tier C actions and Tier B actions
