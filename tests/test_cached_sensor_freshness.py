@@ -21,8 +21,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-import ori.hal.base as hal_base
-from ori.hal.base import AdapterReadError, silence_bound_ms
+from ori.hal.base import (
+    AdapterReadError,
+    cache_arrival,
+    refuse_stale_cache,
+    silence_bound_ms,
+)
 from ori.hal.coap_adapter import CoapAdapter
 from ori.hal.http_adapter import HttpAdapter
 from ori.hal.lorawan_adapter import LoraWanAdapter
@@ -62,7 +66,7 @@ class _Clock:
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
     fake = _Clock()
-    monkeypatch.setattr(hal_base, "_arrival_clock", fake)
+    monkeypatch.setattr("ori.hal.base._arrival_clock", fake)
     return fake
 
 
@@ -439,12 +443,12 @@ async def test_a_producer_timestamp_does_not_change_the_age(
 async def test_a_wall_clock_step_does_not_change_the_age(
     factory: Callable[[], Any], clock: _Clock, wall_step_ms: int
 ) -> None:
-    import ori.utils.time_utils as time_utils
+    import time
 
     async with _running(factory) as source:
         await source.send(12.0)
-        stepped = time_utils.time.time() + wall_step_ms / 1000.0
-        with patch.object(time_utils, "time", SimpleNamespace(time=lambda: stepped)):
+        stepped = time.time() + wall_step_ms / 1000.0
+        with patch("ori.utils.time_utils.time", SimpleNamespace(time=lambda: stepped)):
             assert _value(await source.adapter.read(SENSOR)) > 0
             clock.advance_ms(BOUND_MS + 1)
             with pytest.raises(AdapterReadError, match="past the silence bound"):
@@ -531,18 +535,18 @@ def test_the_silence_bound_is_two_intervals_with_a_floor() -> None:
 def test_arrival_is_timed_on_the_monotonic_clock() -> None:
     import time
 
-    with patch.object(hal_base.time, "time", lambda: 1e12):
-        assert abs(hal_base.cache_arrival() - time.monotonic()) < 1.0
+    with patch("time.time", lambda: 1e12):
+        assert abs(cache_arrival() - time.monotonic()) < 1.0
 
 
 def test_a_cached_value_with_no_arrival_is_refused(clock: _Clock) -> None:
     with pytest.raises(AdapterReadError, match="no arrival time"):
-        hal_base.refuse_stale_cache(None, POLL_MS, "Probe")
+        refuse_stale_cache(None, POLL_MS, "Probe")
 
 
 def test_a_value_that_arrived_after_now_is_refused(clock: _Clock) -> None:
     with pytest.raises(AdapterReadError, match="past the silence bound"):
-        hal_base.refuse_stale_cache(clock.now + 1.0, POLL_MS, "Probe")
+        refuse_stale_cache(clock.now + 1.0, POLL_MS, "Probe")
 
 
 @pytest.mark.parametrize("raw", [0, -1, True, "1000", 1.5, None])
@@ -705,7 +709,9 @@ async def test_the_staleness_watch_uses_the_same_silence_bound(poll_ms: int) -> 
             break
         await asyncio.sleep(0.01)
     runtime._shutdown_event.set()
-    await loop
+    done, _ = await asyncio.wait({loop}, timeout=5.0)
+    assert loop in done, "the staleness watch did not stop on shutdown"
+    assert loop.result() is None
     assert runtime._stale_sensor_active == {"past"}
 
 
@@ -786,16 +792,16 @@ async def _watch(runtime: OriRuntime) -> None:
     )
     await asyncio.sleep(0.02)
     runtime._shutdown_event.set()
-    await task
+    done, _ = await asyncio.wait({task}, timeout=5.0)
+    assert task in done, "the staleness watch did not stop on shutdown"
+    assert task.result() is None
 
 
 def _alerting(
     harness: _Harness, monkeypatch: pytest.MonkeyPatch, clock: _Clock
 ) -> AsyncMock:
-    import ori.runtime as runtime_module
-
-    monkeypatch.setattr(runtime_module, "now_ms", _WallClock(clock))
-    monkeypatch.setattr(runtime_module, "STALE_SENSOR_MIN_CHECK_INTERVAL_S", 0.001)
+    monkeypatch.setattr("ori.runtime.now_ms", _WallClock(clock))
+    monkeypatch.setattr("ori.runtime.STALE_SENSOR_MIN_CHECK_INTERVAL_S", 0.001)
     runtime = harness.runtime
     runtime._operator_contact = "+2340000000000"
     runtime._sensor_poll_interval_ms = {SENSOR: POLL_MS}
@@ -889,9 +895,7 @@ async def test_the_read_warning_interval_is_what_limits_the_log(
 ) -> None:
     import logging
 
-    import ori.runtime as runtime_module
-
-    monkeypatch.setattr(runtime_module, "READ_FAILURE_LOG_INTERVAL_S", 0.0)
+    monkeypatch.setattr("ori.runtime.READ_FAILURE_LOG_INTERVAL_S", 0.0)
     caplog.set_level(logging.DEBUG, logger="ori.runtime")
     async with _runtime(tmp_path) as harness, _running(_mqtt) as source:
         await source.send(12.0)
