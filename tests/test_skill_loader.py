@@ -1052,21 +1052,11 @@ class TestValidation:
             },
         )
 
-    @pytest.mark.parametrize(
-        "requires_approval",
-        [True, "true", "True", "yes", 1, "false", "no"],
-        ids=repr,
-    )
-    def test_requires_approval_with_post_action_is_refused(
-        self, tmp_path, requires_approval
-    ):
+    def test_requires_approval_with_post_action_is_refused(self, tmp_path):
         skill_dir = tmp_path / "both"
         self._tier_b_policy_skill(
             skill_dir,
-            {
-                "requires_approval": requires_approval,
-                "reasoning_policy": "post_action",
-            },
+            {"requires_approval": True, "reasoning_policy": "post_action"},
         )
         with pytest.raises(
             SkillValidationError,
@@ -1110,8 +1100,6 @@ class TestValidation:
             {"requires_approval": True},
             {"reasoning_policy": "post_action"},
             {"requires_approval": False, "reasoning_policy": "post_action"},
-            {"requires_approval": None, "reasoning_policy": "post_action"},
-            {"requires_approval": 0, "reasoning_policy": "post_action"},
         ],
         ids=repr,
     )
@@ -1123,6 +1111,96 @@ class TestValidation:
         assert not (
             trigger.requires_approval and trigger.reasoning_policy == "post_action"
         )
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "true",
+            "false",
+            "True",
+            "yes",
+            "no",
+            "0",
+            "off",
+            "",
+            1,
+            0,
+            1.0,
+            None,
+            [True],
+            {"on": True},
+        ],
+        ids=repr,
+    )
+    @pytest.mark.parametrize("with_post_action", [False, True])
+    def test_non_boolean_requires_approval_is_refused(
+        self, tmp_path, value, with_post_action
+    ):
+        skill_dir = tmp_path / "non-boolean"
+        fields: dict = {"requires_approval": value}
+        if with_post_action:
+            fields["reasoning_policy"] = "post_action"
+        self._tier_b_policy_skill(skill_dir, fields)
+        with pytest.raises(SkillValidationError) as excinfo:
+            _first_party_loader().load_one(skill_dir)
+        message = str(excinfo.value)
+        assert f"requires_approval={value!r}" in message
+        assert type(value).__name__ in message
+        assert "YAML boolean" in message
+        assert "declares both" not in message
+
+    @pytest.mark.parametrize("value", ["yes", "no", "on", "off"])
+    def test_quoted_yaml_boolean_word_is_refused(self, tmp_path, value):
+        skill_dir = tmp_path / "quoted"
+        _write_skill_yaml(
+            skill_dir,
+            f"""
+            name: quoted
+            version: 0.1.0
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+            triggers:
+              - name: over_threshold
+                condition: "value > 5"
+                action_tier: B
+                requires_approval: "{value}"
+            actions:
+              available:
+                - name: coap_command
+                  tier: B
+              defaults:
+                over_threshold: [coap_command]
+            """,
+        )
+        with pytest.raises(SkillValidationError, match="must be a YAML boolean"):
+            _first_party_loader().load_one(skill_dir)
+
+    @pytest.mark.parametrize("value", [True, False, "true", None])
+    @pytest.mark.parametrize("tier", ["A", "B"])
+    def test_requires_approval_on_action_entry_is_refused(self, tmp_path, value, tier):
+        skill_dir = tmp_path / "per-action"
+        action = "alert_whatsapp" if tier == "A" else "coap_command"
+        self._tier_b_policy_skill(
+            skill_dir,
+            {"reasoning_policy": "post_action"},
+            available=[
+                {"name": "coap_command", "tier": "B"},
+                {"name": "alert_whatsapp", "tier": "A"},
+            ],
+        )
+        manifest = yaml.safe_load((skill_dir / "skill.yaml").read_text())
+        for entry in manifest["actions"]["available"]:
+            if entry["name"] == action:
+                entry["requires_approval"] = value
+        _write_skill_yaml_mapping(skill_dir, manifest)
+        with pytest.raises(SkillValidationError) as excinfo:
+            _first_party_loader().load_one(skill_dir)
+        message = str(excinfo.value)
+        assert repr(action) in message
+        assert "actions.available" in message
+        assert "on the trigger" in message
 
     def test_padded_post_action_with_requires_approval_is_refused(self, tmp_path):
         skill_dir = tmp_path / "padded"
@@ -1895,3 +1973,16 @@ class TestCommunityAnchorAdmission:
         emitted = "\n".join(record.getMessage() for record in caplog.records)
         assert "\x1b" not in emitted
         assert "\\x1b[2K" in emitted
+
+
+_REPO_SKILLS = sorted(
+    (Path(__file__).resolve().parents[1] / "skills").glob("*/skill.yaml")
+)
+
+
+@pytest.mark.parametrize("manifest", _REPO_SKILLS, ids=lambda p: p.parent.name)
+def test_every_bundled_skill_loads(manifest: Path) -> None:
+    skill = SkillLoader().load_one(manifest.parent, load_hooks=False)
+    assert skill.first_party
+    for trigger in skill.triggers:
+        assert isinstance(trigger.requires_approval, bool)

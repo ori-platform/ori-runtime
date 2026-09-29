@@ -524,6 +524,14 @@ candidate or release is cut.
   the Tier B act, so the enrichment and the Tier A alert described an act that
   never ran. The elevator refuses to dispatch anything for such a trigger if one
   reaches it by any other route.
+- A trigger's `requires_approval` must be a YAML boolean. A string, number,
+  null, list or mapping is refused at skill load with the value and its type;
+  `"false"` was read as true. `requires_approval` on an `actions.available`
+  entry is refused at skill load: nothing read it there, so a skill that
+  declared it on its Tier B action with `reasoning_policy: post_action` on the
+  trigger ran that action without approval. Approval is declared on the
+  trigger. `requires_approval_for_soft_actions` is removed from
+  `ori.yaml.example`; the runtime never read it.
 - A request carrying a JSON integer longer than the interpreter's
   string-conversion limit is refused as malformed by the firmware MQTT
   operator socket (`invalid_request`) and the operator socket

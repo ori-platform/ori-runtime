@@ -674,7 +674,7 @@ triggers:
     cooldown_seconds: 60
     escalate_to: rule
     action_tier: B
-    reasoning_policy: post_action
+    reasoning_policy: post_action # or requires_approval: true to approve each termination; never both
 
   # Tier C: Hard physical — propose isolating the commissioned circuit, await approval
   - name: critical_fault
@@ -718,7 +718,6 @@ actions:
 
     - name: terminate_process
       tier: B
-      requires_approval: false # true = operator must approve each termination
 
     - name: trip_relay
       tier: C
@@ -824,7 +823,6 @@ skills:
     version: "0.2.1"
     config:
       energy_cost_naira: 225
-      requires_approval_for_soft_actions: false
       approval_timeout_seconds: 300
       safe_default_action: log_to_dashboard
       secondary_contact_number: ${SECONDARY_WHATSAPP}

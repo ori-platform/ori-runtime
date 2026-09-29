@@ -208,7 +208,8 @@ actions:
   the other.
 - Physical Tier B triggers MUST declare either `requires_approval: true` or
   `reasoning_policy: post_action`, never both. Tier B immediate execution
-  never uses `bypass_llm: true`.
+  never uses `bypass_llm: true`. `requires_approval` is a YAML boolean on the
+  trigger, never on an `actions.available` entry.
 - Tier C triggers MUST declare `safe_default_action`.
 - Tier C approval replies are scoped by default. Operators reply
   `YES-<proposal_id>` or `NO-<proposal_id>`; bare remote `YES`/`NO` is legacy

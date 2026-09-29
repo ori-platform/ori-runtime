@@ -212,6 +212,8 @@ Rules:
 - Physical Tier B triggers must declare either `requires_approval: true` or
   `reasoning_policy: post_action`, never both; a trigger declaring both is
   refused at skill load.
+- `requires_approval` is a YAML boolean declared on the trigger. Any other value
+  type, and the key on an `actions.available` entry, is refused at skill load.
 - `reasoning_policy: post_action` is valid only for Tier B triggers.
 - With `post_action`, the runtime dispatches deterministic Tier B default
   actions before invoking local or gateway reasoning.
