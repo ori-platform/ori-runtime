@@ -92,31 +92,32 @@ class MqttPerceptionAdapter(MqttCachedAdapter):
                     "MqttPerceptionAdapter: no perception message cached yet"
                 )
 
-            value, timestamp_ms, raw_payload = cached
-            payload = raw_payload if isinstance(raw_payload, dict) else {}
-            confidence = _clamp_quality(float(payload.get("confidence", 0.0)))
-            payload_ts = payload.get("timestamp_ms")
-            if isinstance(payload_ts, (int, float)):
-                timestamp_ms = int(payload_ts)
-            meta = payload.get("metadata", {})
-            metadata = meta if isinstance(meta, dict) else {}
+        self._require_fresh(self._topic)
+        value, timestamp_ms, raw_payload = cached
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        confidence = _clamp_quality(float(payload.get("confidence", 0.0)))
+        payload_ts = payload.get("timestamp_ms")
+        if isinstance(payload_ts, (int, float)):
+            timestamp_ms = int(payload_ts)
+        meta = payload.get("metadata", {})
+        metadata = meta if isinstance(meta, dict) else {}
 
-            return SensorReading(
-                sensor_id=sensor_id,
-                sensor_type=self._sensor_type,
-                value=float(value),
-                unit="score",
-                timestamp=timestamp_ms,
-                quality=confidence,
-                metadata={
-                    **metadata,
-                    "source": "mqtt_perception",
-                    "schema": _CONTRACT_VERSION,
-                    "topic": self._topic,
-                    "broker_host": self._broker_host,
-                    "port": self._port,
-                },
-            )
+        return SensorReading(
+            sensor_id=sensor_id,
+            sensor_type=self._sensor_type,
+            value=float(value),
+            unit="score",
+            timestamp=timestamp_ms,
+            quality=confidence,
+            metadata={
+                **metadata,
+                "source": "mqtt_perception",
+                "schema": _CONTRACT_VERSION,
+                "topic": self._topic,
+                "broker_host": self._broker_host,
+                "port": self._port,
+            },
+        )
 
     def _parse_payload(self, payload: Any) -> dict[str, Any]:
         if isinstance(payload, (bytes, bytearray)):

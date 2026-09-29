@@ -95,6 +95,57 @@ def refuse_unusable_reading(reading: Any) -> None:
         raise MeasurementRefusedError(f"reading quality {quality!r} is not in 0..1")
 
 
+SILENCE_INTERVALS = 2
+SILENCE_FLOOR_MS = 200
+DEFAULT_POLL_INTERVAL_MS = 1000
+
+
+def silence_bound_ms(poll_interval_ms: int) -> int:
+    """How long a sensor may go without a new value before it is silent."""
+    return max(SILENCE_INTERVALS * int(poll_interval_ms), SILENCE_FLOOR_MS)
+
+
+def poll_interval_from(config: dict, default: int, adapter_name: str) -> int:
+    """The sensor's poll interval from connect config, refused unless a positive integer."""
+    raw = config.get("poll_interval_ms", default)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise AdapterConnectionError(
+            f"{adapter_name}: poll_interval_ms must be a positive integer, got {raw!r}"
+        )
+    return raw
+
+
+def _arrival_clock() -> float:
+    return time.monotonic()
+
+
+def cache_arrival() -> float:
+    """The receiver's monotonic time for a value arriving into a cache."""
+    return _arrival_clock()
+
+
+def refuse_stale_cache(
+    arrived_at: float | None, poll_interval_ms: int, adapter_name: str
+) -> None:
+    """Refuse a cached value older than the sensor's silence bound.
+
+    Age runs from the receiver's monotonic arrival time, so neither a producer
+    timestamp nor a wall-clock step can make an old value look new.
+    """
+    bound_ms = silence_bound_ms(poll_interval_ms)
+    if arrived_at is None:
+        raise AdapterReadError(
+            f"{adapter_name}: the cached value has no arrival time; "
+            "it is not a live reading"
+        )
+    age_ms = (_arrival_clock() - arrived_at) * 1000.0
+    if not 0.0 <= age_ms <= bound_ms:
+        raise AdapterReadError(
+            f"{adapter_name}: no new value for {age_ms:.0f} ms (bound {bound_ms} ms); "
+            "the cached value is no longer a live reading"
+        )
+
+
 class CircuitState(enum.Enum):
     """Three states of the circuit breaker state machine."""
 

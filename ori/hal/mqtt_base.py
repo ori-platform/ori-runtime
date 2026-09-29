@@ -10,10 +10,14 @@ import ssl
 from typing import Any, Iterable
 
 from ori.hal.base import (
+    DEFAULT_POLL_INTERVAL_MS,
     AdapterConnectionError,
     AdapterReadError,
     BaseAdapter,
     HardwareCircuitBreaker,
+    cache_arrival,
+    poll_interval_from,
+    refuse_stale_cache,
 )
 from ori.utils.time_utils import now_ms
 
@@ -230,6 +234,9 @@ class MqttCachedAdapter(BaseAdapter):
 
         # topic -> (value, timestamp_ms, raw_payload)
         self._cache: dict[str, tuple[float, int, Any]] = {}
+        # topic -> receiver monotonic arrival time of the cached value
+        self._arrived_at: dict[str, float] = {}
+        self._poll_interval_ms: int = DEFAULT_POLL_INTERVAL_MS
 
     @property
     def is_connected(self) -> bool:
@@ -399,6 +406,9 @@ class MqttCachedAdapter(BaseAdapter):
 
         self._broker_host = str(config.get(broker_host_key, "")).strip()
         self._port = int(config.get(port_key, default_port))
+        self._poll_interval_ms = poll_interval_from(
+            config, DEFAULT_POLL_INTERVAL_MS, self.adapter_name
+        )
         self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
 
         if not self._broker_host:
@@ -475,6 +485,15 @@ class MqttCachedAdapter(BaseAdapter):
         try:
             async for message in self._client.messages:
                 topic = str(message.topic)
+                if getattr(message, "retain", False):
+                    # A retained message is replayed on subscribe with no age
+                    # the receiver can know; only a live delivery is a reading.
+                    logger.info(
+                        "%s: ignoring retained message on topic=%s",
+                        self.adapter_name,
+                        topic,
+                    )
+                    continue
                 try:
                     await self._handle_message(topic, message.payload)
                 except AdapterReadError as exc:
@@ -524,6 +543,18 @@ class MqttCachedAdapter(BaseAdapter):
 
     def _cache_value(self, topic: str, value: float, raw_payload: Any) -> None:
         self._cache[topic] = (float(value), now_ms(), raw_payload)
+        self._arrived_at[topic] = cache_arrival()
+
+    def _require_fresh(self, topic: str) -> None:
+        """Refuse the cached value for *topic* once it is past the silence bound.
+
+        Called outside the breaker. A silent source is not a fault the breaker
+        should back off from: counted there, a gap would keep reads refused for
+        the recovery timeout after the source resumed, and Tier D blind with it.
+        """
+        refuse_stale_cache(
+            self._arrived_at.get(topic), self._poll_interval_ms, self.adapter_name
+        )
 
     @staticmethod
     def parse_numeric_payload(payload: Any) -> tuple[float, Any]:

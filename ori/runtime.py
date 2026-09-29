@@ -91,6 +91,7 @@ from ori.hal.base import (
     MeasurementRefusedError,
     refuse_quality_above_one,
     refuse_unusable_reading,
+    silence_bound_ms,
 )
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
 from ori.hardware.led_indicator import (
@@ -3668,7 +3669,7 @@ class OriRuntime:
             last_seen_ms = self._sensor_last_seen_ms.get(sensor_id)
             stale = False
             if last_seen_ms is not None:
-                stale = (now - int(last_seen_ms)) > max(2 * poll_ms, 200)
+                stale = (now - int(last_seen_ms)) > silence_bound_ms(poll_ms)
             sensors.append(
                 {
                     "id": sensor_id,
@@ -4247,7 +4248,7 @@ class OriRuntime:
                 last_seen = self._sensor_last_seen_ms.get(sensor_id)
                 if last_seen is None:
                     continue
-                stale_after_ms = max(2 * int(poll_ms), 200)
+                stale_after_ms = silence_bound_ms(int(poll_ms))
                 stale_duration_ms = now - int(last_seen)
                 is_stale = stale_duration_ms > stale_after_ms
                 if is_stale and sensor_id not in self._stale_sensor_active:

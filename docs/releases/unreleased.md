@@ -517,6 +517,22 @@ candidate or release is cut.
 
 ## Fixed
 
+- A cached sensor no longer serves a frozen value while its source is silent.
+  The MQTT, LoRaWAN, Zigbee, MQTT perception and Victron adapters, and the HTTP
+  and CoAP pollers, served their last value on every read for as long as their
+  listener or poll loop lived, so the runtime counted each read as live, the
+  staleness watch never fired, and the safety registry judged the frozen value
+  as fresh. Each now records the receiver's monotonic arrival time of the value
+  it caches and refuses a read once that value is older than the sensor's
+  silence bound -- two poll intervals, never under 200 ms, the same bound the
+  staleness watch uses. A producer timestamp and a wall-clock step do not
+  change the age, a reconnect does not refresh an old value, and an MQTT
+  message the broker replays from its retained store on subscribe is not
+  cached, because its age cannot be known: a sensor's first reading after
+  connect is the next live publish, not the broker's stored copy. The refusal
+  is not counted by the circuit breaker: counted there, a gap in the source
+  would hold reads refused for the breaker's recovery timeout after the source
+  resumed.
 - A request carrying a JSON integer longer than the interpreter's
   string-conversion limit is refused as malformed by the firmware MQTT
   operator socket (`invalid_request`) and the operator socket
